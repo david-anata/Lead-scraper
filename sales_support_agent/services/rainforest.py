@@ -116,14 +116,48 @@ class RainforestClient:
             raise RuntimeError(f"Rainforest API error: {data.get('request_info', {}).get('message', 'unknown')}")
         return data
 
-    def get_product(self, asin: str) -> dict[str, Any]:
-        return self._get({"type": "product", "asin": asin})
+    @staticmethod
+    def _with_domain(params: dict[str, Any], amazon_domain: str | None) -> dict[str, Any]:
+        """Add a marketplace override only when the caller asked for one.
 
-    def get_bestsellers(self, url: str) -> dict[str, Any]:
-        return self._get({"type": "bestsellers", "url": url})
+        _get merges caller params after its own defaults, so an explicit
+        amazon_domain wins and omitting it keeps the module default.
+        """
+        if amazon_domain:
+            params["amazon_domain"] = amazon_domain
+        return params
 
-    def search(self, search_term: str, *, page: int = 1) -> dict[str, Any]:
-        return self._get({"type": "search", "search_term": search_term, "page": page})
+    def get_product(self, asin: str, *, amazon_domain: str | None = None) -> dict[str, Any]:
+        return self._get(self._with_domain({"type": "product", "asin": asin}, amazon_domain))
+
+    def get_bestsellers(self, url: str, *, amazon_domain: str | None = None) -> dict[str, Any]:
+        return self._get(self._with_domain({"type": "bestsellers", "url": url}, amazon_domain))
+
+    def search(
+        self,
+        search_term: str,
+        *,
+        page: int = 1,
+        amazon_domain: str | None = None,
+    ) -> dict[str, Any]:
+        return self._get(
+            self._with_domain(
+                {"type": "search", "search_term": search_term, "page": page},
+                amazon_domain,
+            )
+        )
+
+    def get_offers(
+        self,
+        asin: str,
+        *,
+        page: int = 1,
+        amazon_domain: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch the seller offer list for an ASIN (who else sells this listing)."""
+        return self._get(
+            self._with_domain({"type": "offers", "asin": asin, "page": page}, amazon_domain)
+        )
 
     # ------------------------------------------------------------------
     # Higher-level methods

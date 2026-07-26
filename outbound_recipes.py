@@ -94,6 +94,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "plan_upgrade.window_days": 60,
     "replatformed.window_days": 90,
     "churned_tool.window_days": 30,
+    # Amazon marketplace check. A brand losing control of its own listings is a
+    # real "why now", but a wrong claim is worse than no claim, so the gates are
+    # deliberately conservative and every one of them is tunable in the app.
+    "amazon.enabled": True,
+    "amazon.min_unknown_sellers": 3,
+    "amazon.max_listings_checked": 3,
+    "amazon.max_name_variants": 3,
+    "amazon.min_confidence": "high",
+    "amazon.follow_country_marketplace": False,
+    "amazon.price_erosion_min_pct": 5,
+    "amazon.finding_max_age_days": 7,
 }
 
 # Reasons that mention a time window must be regenerated when that window is
@@ -116,6 +127,14 @@ TUNABLE_LABELS: dict[str, str] = {
     "plan_upgrade.window_days": "Plan upgrade: how many days back still counts",
     "replatformed.window_days": "Replatformed: how many days back still counts",
     "social_surge.min_growth_pct": "Social surge: minimum follower growth percent",
+    "amazon.enabled": "Amazon check: use it at all",
+    "amazon.min_unknown_sellers": "Amazon check: how many unknown sellers before we call it a problem",
+    "amazon.max_listings_checked": "Amazon check: how many listings we look at per brand",
+    "amazon.max_name_variants": "Amazon check: how many spellings of the brand name we try",
+    "amazon.min_confidence": "Amazon check: how sure we must be before we mention it",
+    "amazon.follow_country_marketplace": "Amazon check: look at a brand's home store instead of the US one",
+    "amazon.price_erosion_min_pct": "Amazon check: how far the price must slip to count",
+    "amazon.finding_max_age_days": "Amazon check: how many days back a finding still counts",
 }
 
 

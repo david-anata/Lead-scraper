@@ -342,11 +342,33 @@ def score_store(store: dict[str, Any], *, now: Optional[datetime] = None) -> dic
     return {"score": score, "tier": tier, "reason": reason, "signals": signals, "excluded": excluded}
 
 
-def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None) -> dict[str, Any]:
+def _amazon_unknown_sellers(findings: Any) -> int:
+    """Total unknown third-party sellers across the matched listings."""
+    if not isinstance(findings, dict):
+        return 0
+    total = 0
+    for listing in findings.get("listings") or []:
+        if not isinstance(listing, dict):
+            continue
+        try:
+            total += int(listing.get("sellers_unknown") or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
+                 amazon: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Shape a matched store into the payload Clay's table expects, with the
-    fit score, Tier, and 'why now' reason attached for ranking + personalization."""
+    fit score, Tier, and 'why now' reason attached for ranking + personalization.
+
+    amazon is the result of outbound_amazon.brand_control(). A brand losing
+    control of its own Amazon listings beats any StoreLeads signal as an opener,
+    so when that check produced a reason it takes over the reason line. When the
+    check was skipped, switched off, or never run, the StoreLeads reason stands.
+    """
     scored = score_store(store, now=now)
-    return {
+    lead = {
         "domain": str(store.get("name") or "").strip().lower(),
         "brand": str(store.get("merchant_name") or store.get("name") or "").strip(),
         "niche": store_niche(store),
@@ -359,6 +381,18 @@ def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None) -> di
         "categories": store.get("categories"),
         "apps": store.get("apps"),
     }
+    if isinstance(amazon, dict):
+        findings = amazon.get("findings")
+        lead["amazon_confidence"] = str(amazon.get("confidence") or "none")
+        lead["amazon_marketplace"] = str(amazon.get("marketplace") or "")
+        lead["amazon_checked_at"] = str(amazon.get("checked_at") or "")
+        lead["amazon_absent"] = bool(findings.get("absent")) if isinstance(findings, dict) else False
+        lead["amazon_sellers_unknown"] = _amazon_unknown_sellers(findings)
+        lead["amazon_skipped_reason"] = str(amazon.get("skipped_reason") or "")
+        amazon_reason = str(amazon.get("reason") or "").strip()
+        if amazon_reason:
+            lead["reason"] = amazon_reason
+    return lead
 
 
 # ---- thin network layer (injectable for tests) -------------------------------
@@ -563,6 +597,12 @@ def load_config_from_env() -> tuple[str, str]:
 # Column order for the CSV that gets imported into Clay (used on the Launch plan,
 # before webhooks unlock on Growth). These are the fields Clay needs to run its
 # enrichment and the two prompts.
+#
+# DO NOT add or rename entries here or in CLAY_CSV_HEADERS. The Clay table's import
+# mapping is keyed on these exact headers, so a change silently creates a second set
+# of columns that the enrichment never reads. New per-lead fields (the amazon_* keys,
+# for instance) ride along in the lead dict and the webhook payload only; the CSV
+# writer drops them via extrasaction="ignore".
 CLAY_CSV_COLUMNS = ("tier", "brand", "domain", "niche", "country", "reason", "recipe", "score", "revenue_usd", "categories")
 
 # The CSV header we WRITE for each field. These are named to match the Clay table's

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -322,6 +323,138 @@ _LEADOPS_CSS = """
 """
 
 
+_AMAZON_CSS = """
+  .am-panel { margin:8px 0 0; padding:16px 18px; border-radius:14px; background:#fff; border:1px solid var(--border); }
+  .am-counters { display:flex; gap:34px; flex-wrap:wrap; margin:0 0 12px; }
+  .am-c { display:flex; flex-direction:column; gap:2px; }
+  .am-c b { font-family:"Montserrat",sans-serif; font-size:26px; line-height:1; }
+  .am-c span { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; font-weight:700; }
+  .am-sum { margin:0 0 10px; padding:8px 12px; border-radius:10px; background:rgba(133,187,218,.14);
+    font-size:14px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .am-line { margin:4px 0 0; font-size:14px; color:rgba(43,54,68,.75); }
+  .am-empty { margin:0; font-size:15px; }
+  .am-badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:800; letter-spacing:.04em; }
+  .am-high { background:rgba(10,125,51,.12); color:#0a7d33; }
+  .am-med { background:rgba(181,71,8,.12); color:#b54708; }
+  .am-low { background:rgba(43,54,68,.10); color:#6b7280; }
+  .am-none { color:#9ca3af; }
+  .am-open { white-space:normal; min-width:280px; max-width:420px; }
+  .am-skip { color:#6b7280; font-style:italic; }
+"""
+
+
+def _amazon_scan_summary(leads: list[dict]) -> dict[str, Any]:
+    """The Amazon scan as numbers that have to add up.
+
+    Every scanned brand lands in exactly one of findings / skipped / absent, so
+    the panel can print the arithmetic. A brand quietly dropped from a scan is
+    the failure this whole panel exists to catch.
+    """
+    scanned = findings = skipped = absent = 0
+    leaking = clean = 0
+    reasons: dict[str, int] = {}
+    markets: dict[str, int] = {}
+
+    for lead in leads:
+        if not str(lead.get("amazon_checked_at") or "").strip():
+            continue
+        scanned += 1
+        market = str(lead.get("amazon_marketplace") or "").strip() or "not recorded"
+        markets[market] = markets.get(market, 0) + 1
+
+        reason = str(lead.get("amazon_skipped_reason") or "").strip()
+        if reason:
+            skipped += 1
+            reasons[reason] = reasons.get(reason, 0) + 1
+        elif lead.get("amazon_absent"):
+            absent += 1
+        else:
+            findings += 1
+            if int(lead.get("amazon_sellers_unknown") or 0) > 0:
+                leaking += 1
+            else:
+                clean += 1
+
+    return {
+        "scanned": scanned, "findings": findings, "skipped": skipped, "absent": absent,
+        "leaking": leaking, "clean": clean, "never_checked": max(0, len(leads) - scanned),
+        "reasons": reasons, "markets": markets, "held": len(leads),
+    }
+
+
+def _lower_first(text: str) -> str:
+    return text[:1].lower() + text[1:] if text else text
+
+
+def _amazon_panel(leads: list[dict]) -> str:
+    """The Amazon brand control panel for Lead Ops."""
+    s = _amazon_scan_summary(leads)
+
+    if not s["scanned"]:
+        return ('<div class="am-panel"><p class="am-empty">No scan yet. Run one to see '
+                'what is happening on Amazon.</p></div>')
+
+    counters = "".join(
+        f'<div class="am-c"><b>{s[key]:,}</b><span>{label}</span></div>'
+        for key, label in (("scanned", "Scanned"), ("findings", "Findings"),
+                           ("skipped", "Skipped"), ("absent", "Absent"))
+    )
+
+    # The identity, printed rather than assumed, so a truncated scan is obvious.
+    reconcile = (f"{s['scanned']:,} scanned = {s['findings']:,} with findings "
+                 f"+ {s['skipped']:,} skipped + {s['absent']:,} absent")
+
+    lines = []
+    for reason, count in sorted(s["reasons"].items(), key=lambda x: -x[1]):
+        lines.append(f'<p class="am-line">{count:,} skipped: '
+                     f'{html.escape(_lower_first(reason))}</p>')
+    if s["findings"]:
+        lines.append(f'<p class="am-line">Of the {s["findings"]:,} with findings, '
+                     f'{s["leaking"]:,} show unknown sellers and {s["clean"]:,} look clean.</p>')
+    market_split = " ".join(f"{html.escape(m)} ({n:,})" for m, n
+                            in sorted(s["markets"].items(), key=lambda x: -x[1]))
+    lines.append(f'<p class="am-line">Checked on: {market_split}</p>')
+    if s["never_checked"]:
+        lines.append(f'<p class="am-line">{s["never_checked"]:,} of the {s["held"]:,} stored '
+                     "brands have never been through the Amazon check.</p>")
+
+    return (f'<div class="am-panel"><div class="am-counters">{counters}</div>'
+            f'<p class="am-sum">{reconcile}</p>{"".join(lines)}</div>')
+
+
+_CONF_BADGE = {"high": ("HIGH", "am-high"), "medium": ("MED", "am-med"), "low": ("LOW", "am-low")}
+
+
+def _confidence_badge(value: Any) -> str:
+    label, cls = _CONF_BADGE.get(str(value or "").strip().lower(), ("", ""))
+    if not label:
+        return '<span class="am-none">-</span>'
+    return f'<span class="am-badge {cls}">{label}</span>'
+
+
+def _marketplace_short(value: Any) -> str:
+    """amazon.co.uk reads as .co.uk, which is all the column needs to say."""
+    market = str(value or "").strip().lower()
+    if not market:
+        return '<span class="am-none">-</span>'
+    short = market[len("amazon"):] if market.startswith("amazon") else market
+    return html.escape(short or market)
+
+
+def _opening_line_cell(lead: dict) -> str:
+    """What we would open with, or why we cannot. A skipped brand keeps its row
+    and states its reason rather than vanishing from the list."""
+    skipped = str(lead.get("amazon_skipped_reason") or "").strip()
+    if skipped:
+        return f'<span class="am-skip">Skipped: {html.escape(_lower_first(skipped))}</span>'
+    if not str(lead.get("amazon_checked_at") or "").strip():
+        return '<span class="am-none">Not checked yet</span>'
+    reason = str(lead.get("reason") or "").strip()
+    if not reason:
+        return '<span class="am-none">Checked, nothing to open with</span>'
+    return html.escape(reason)
+
+
 @router.get("/admin/outbound/lead-ops", response_class=HTMLResponse)
 def outbound_lead_ops(request: Request) -> Response:
     """What we pull, when it fires, and what every past pull returned."""
@@ -409,6 +542,13 @@ def outbound_lead_ops(request: Request) -> Response:
     except Exception:  # noqa: BLE001
         contacted_count = 0
 
+    # Amazon brand control: what the last scan actually covered, and what it did not.
+    try:
+        from sales_support_agent.services import outbound_memory as _mem3
+        amazon_panel = _amazon_panel(_mem3.load_leads(_eng, limit=2000))
+    except Exception:  # noqa: BLE001
+        amazon_panel = _amazon_panel([])
+
     # Tuning: the numbers an operator should be able to change without a deploy.
     tune_fields = "".join(
         f'<div class="lo-field"><label for="s_{k}">{html.escape(lbl)}</label>'
@@ -445,6 +585,12 @@ def outbound_lead_ops(request: Request) -> Response:
         <p class="lo-note">Triggers run Tuesday and Wednesday because StoreLeads refreshes
         its data weekly on Monday. The core ICP pull runs every weekday to keep volume steady.
         Caps are deliberately small: frequent and low beats one big blast.</p>
+
+        <p class="lo-h">Amazon brand control</p>
+        {amazon_panel}
+        <p class="lo-note">Scanned always equals findings plus skipped plus absent. If those
+        do not add up, a scan was cut short and the numbers above are hiding it. Skipped is
+        not a failure: it is us refusing to guess which listings belong to a brand.</p>
 
         <p class="lo-h">Recent pulls</p>
         <table class="lo-table">
@@ -544,7 +690,7 @@ def outbound_lead_ops(request: Request) -> Response:
     """
     return HTMLResponse(_shell_page(
         request, active="outbound_leadops", title="Outbound Lead Ops",
-        extra_css=_LEADOPS_CSS, body=body,
+        extra_css=_LEADOPS_CSS + _AMAZON_CSS, body=body,
     ))
 
 
@@ -636,6 +782,9 @@ _LEADS_CSS = """
   .ld-note { margin:12px 0 0; font-size:14px; color:rgba(43,54,68,.7); }
   .ld-stat { display:inline-block; margin-right:22px; font-size:14px; }
   .ld-stat b { font-size:20px; font-family:"Montserrat",sans-serif; }
+  .lo-btn { display:inline-block; padding:6px 12px; border-radius:9px; background:#2B3644; color:#fff;
+    font-family:"Montserrat",sans-serif; font-weight:800; font-size:11px; text-decoration:none; white-space:nowrap; }
+  .lo-btn:hover { background:#1f2833; color:#fff; }
 """
 
 
@@ -671,13 +820,18 @@ def outbound_leads(request: Request) -> Response:
             f"<td>{html.escape(str(l.get('country') or '-'))}</td>"
             f"<td>${(int(l.get('revenue_cents') or 0)//100):,}</td>"
             f"<td>{html.escape(str(l.get('score') if l.get('score') is not None else '-'))}</td>"
+            f"<td>{_confidence_badge(l.get('amazon_confidence'))}</td>"
+            f"<td>{_marketplace_short(l.get('amazon_marketplace'))}</td>"
+            f"<td class='am-open'>{_opening_line_cell(l)}</td>"
             f"<td>{html.escape(str(l.get('recipe') or '-'))}</td>"
             f"<td>v{l.get('config_version') or 0}</td>"
-            f"<td>{html.escape(str(l.get('first_seen_at'))[:16])}</td></tr>"
+            f"<td>{html.escape(str(l.get('first_seen_at'))[:16])}</td>"
+            f"<td><a class='lo-btn' href='/admin/outbound/leak-report/"
+            f"{html.escape(str(l.get('domain') or ''))}'>Leak report</a></td></tr>"
             for l in leads
         )
     else:
-        rows = "<tr><td colspan='10'>No leads stored yet. Pull a batch on Lead Ops.</td></tr>"
+        rows = "<tr><td colspan='14'>No leads stored yet. Pull a batch on Lead Ops.</td></tr>"
 
     tier_line = " &middot; ".join(f"{k}: {v}" for k, v in sorted(tiers.items())) or "-"
     top_niches = ", ".join(f"{k} ({v})" for k, v in sorted(niches.items(), key=lambda x: -x[1])[:4]) or "-"
@@ -698,17 +852,277 @@ def outbound_leads(request: Request) -> Response:
         <div class="ld-scroll">
         <table class="ld-table">
           <thead><tr><th>Tier</th><th>Brand</th><th>Domain</th><th>Niche</th><th>Country</th>
-          <th>Revenue/yr</th><th>Score</th><th>Recipe</th><th>Settings</th><th>Sourced</th></tr></thead>
+          <th>Revenue/yr</th><th>Score</th><th>Amazon</th><th>Market</th><th>Opening line</th>
+          <th>Recipe</th><th>Settings</th><th>Sourced</th><th></th></tr></thead>
           <tbody>{rows}</tbody>
         </table>
         </div>
         <p class="ld-note">Showing the {len(leads):,} most recent. Every row records which
         recipe found it and which settings version was live at the time, so results stay
         attributable.</p>
+        <p class="ld-note">Amazon shows how sure we are that we found the right listings.
+        A brand we could not match keeps its row and says why, because a brand that
+        disappears from this list looks like a brand we never had.</p>
     """
     return HTMLResponse(_shell_page(
         request, active="outbound_leads", title="Outbound Leads",
-        extra_css=_LEADS_CSS, body=body,
+        extra_css=_LEADS_CSS + _AMAZON_CSS, body=body,
+    ))
+
+
+_LEAK_CSS = """
+  .lk-meta { display:flex; gap:34px; flex-wrap:wrap; margin:0 0 18px; }
+  .lk-m { display:flex; flex-direction:column; gap:3px; }
+  .lk-m span { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; font-weight:700; }
+  .lk-m b { font-family:"Montserrat",sans-serif; font-size:17px; }
+  .lk-table { border-collapse:collapse; width:100%; background:#fff; border:1px solid #e5e7eb;
+    border-radius:14px; overflow:hidden; margin:6px 0 0; }
+  .lk-table th, .lk-table td { text-align:left; padding:10px 13px; border-bottom:1px solid #f0f0f3;
+    font-size:13px; vertical-align:top; }
+  .lk-table th { background:#fafafa; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; }
+  .lk-num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .lk-unknown { font-weight:800; color:#b54708; }
+  .lk-scroll { max-width:100%; overflow-x:auto; }
+  .lk-h { font-size:13px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:#6b7280; margin:24px 0 8px; }
+  .lk-caveat { margin:8px 0 0; padding:14px 16px; border-radius:14px; background:rgba(133,187,218,.14);
+    border:1px solid rgba(43,54,68,.08); font-size:14px; }
+  .lk-caveat b { font-family:"Montserrat",sans-serif; }
+  .lk-note { margin:10px 0 0; font-size:14px; color:rgba(43,54,68,.7); }
+  .lk-btn { display:inline-block; padding:10px 18px; border:none; border-radius:10px; background:#2B3644;
+    color:#fff; font-family:"Montserrat",sans-serif; font-weight:800; font-size:13px; cursor:pointer; text-decoration:none; }
+  .lk-btn:hover { background:#1f2833; color:#fff; }
+  .lk-bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:20px 0 0; }
+  .lk-stale { color:#b54708; font-weight:700; }
+  .lk-plain { position:absolute; left:-9999px; top:-9999px; }
+"""
+
+_LEAK_COPY_JS = """
+    <script>
+      (function(){
+        var btn=document.getElementById('lk-copy'), box=document.getElementById('lk-plain'),
+            msg=document.getElementById('lk-copied');
+        if(!btn||!box) return;
+        btn.addEventListener('click', function(){
+          var done=function(){ msg.textContent='Copied.'; setTimeout(function(){msg.textContent='';},2000); };
+          if(navigator.clipboard && navigator.clipboard.writeText){
+            navigator.clipboard.writeText(box.value).then(done, function(){ box.select(); document.execCommand('copy'); done(); });
+          } else { box.select(); document.execCommand('copy'); done(); }
+        });
+      })();
+    </script>
+"""
+
+_CURRENCY = {"amazon.co.uk": "£", "amazon.com": "$", "amazon.ca": "$", "amazon.com.au": "$"}
+
+
+def _money(value: Any, symbol: str) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "-"
+    return f"{symbol}{value:,.2f}"
+
+
+def _erosion_pct(brand_price: Any, cheapest: Any) -> Any:
+    """How far below the brand's OWN current price the cheapest unknown offer sits.
+    Never measured against a struck-through list price."""
+    if not isinstance(brand_price, (int, float)) or isinstance(brand_price, bool):
+        return None
+    if not isinstance(cheapest, (int, float)) or isinstance(cheapest, bool):
+        return None
+    if brand_price <= 0 or cheapest >= brand_price:
+        return None
+    return (brand_price - cheapest) / brand_price * 100.0
+
+
+@router.get("/admin/outbound/leak-report/{domain}", response_class=HTMLResponse)
+def outbound_leak_report(request: Request, domain: str, refresh: int = 0) -> Response:
+    """One brand's Amazon picture, in a form that can be shown to that brand.
+
+    The stored record is the summary only, because listing level detail is not
+    kept between runs. Asking for the detail re-checks Amazon live rather than
+    dressing up an old number, which on a page a prospect may read is the
+    difference between a useful report and a wrong one.
+    """
+    import outbound_amazon as _az
+    import outbound_recipes as _rx
+    from sales_support_agent.services import outbound_memory, outbound_settings as _st
+
+    try:
+        from sales_support_agent.models.database import get_engine
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        engine = None
+
+    wanted = str(domain or "").strip().lower()
+    lead = next((l for l in outbound_memory.load_leads(engine, limit=5000)
+                 if str(l.get("domain") or "").strip().lower() == wanted), None)
+
+    if lead is None:
+        body = f"""
+        <h1>Leak report</h1>
+        <p class="sub">We hold no record for {html.escape(wanted or "that brand")}. Only brands
+        we have sourced can have a report. Check the domain, or pull a batch on Lead Ops.</p>
+        <p><a class="lk-btn" href="/admin/outbound/leads">Back to leads</a></p>
+        """
+        return HTMLResponse(_shell_page(
+            request, active="outbound_leads", title="Leak Report",
+            extra_css=_LEAK_CSS, body=body,
+        ))
+
+    tunables = _st.effective(engine, _rx.DEFAULT_SETTINGS)
+    brand = str(lead.get("brand") or "").strip() or wanted
+    marketplace = str(lead.get("amazon_marketplace") or "").strip()
+    checked_at = str(lead.get("amazon_checked_at") or "").strip()
+    skipped = str(lead.get("amazon_skipped_reason") or "").strip()
+    symbol = _CURRENCY.get(marketplace, "")
+
+    fresh = _az.finding_is_fresh(checked_at, settings=tunables) if checked_at else False
+    if not checked_at:
+        stamp = "Never checked"
+    elif fresh:
+        stamp = html.escape(checked_at)
+    else:
+        stamp = (f'{html.escape(checked_at)} <span class="lk-stale">(old enough that Amazon '
+                 "has likely moved)</span>")
+
+    # The live re-check, only when explicitly asked for. brand_control never raises.
+    result: dict[str, Any] = {}
+    if refresh:
+        try:
+            result = _az.brand_control(
+                brand, wanted, str(lead.get("country") or ""),
+                niche=str(lead.get("niche") or ""), settings=tunables,
+            )
+        except Exception:  # noqa: BLE001 - a report must render even if the check dies
+            logger.exception("[outbound] live Amazon re-check failed for %s", wanted)
+            result = {}
+
+    findings = result.get("findings") if isinstance(result.get("findings"), dict) else {}
+    listings = findings.get("listings") or []
+    sponsored = findings.get("sponsored_competitors") or []
+    live_skip = str(result.get("skipped_reason") or "").strip()
+
+    plain: list[str] = [
+        f"Amazon report: {brand} ({wanted})",
+        f"Marketplace: {marketplace or 'not recorded'}",
+        f"Checked: {checked_at or 'never'}",
+        "",
+    ]
+
+    if listings:
+        rows = []
+        for item in listings:
+            pct = _erosion_pct(item.get("brand_price"), item.get("cheapest"))
+            pct_cell = f"{pct:.0f}% below" if pct is not None else "-"
+            title = str(item.get("title") or "-")
+            rows.append(
+                f"<tr><td>{html.escape(title[:70])}<br>"
+                f"<span style='color:rgba(43,54,68,.55)'>{html.escape(str(item.get('asin') or ''))}</span></td>"
+                f"<td class='lk-num lk-unknown'>{int(item.get('sellers_unknown') or 0):,}</td>"
+                f"<td class='lk-num'>{int(item.get('sellers_retailer') or 0):,}</td>"
+                f"<td class='lk-num'>{int(item.get('sellers_used') or 0):,}</td>"
+                f"<td class='lk-num'>{_money(item.get('brand_price'), symbol)}</td>"
+                f"<td class='lk-num'>{_money(item.get('cheapest'), symbol)}</td>"
+                f"<td class='lk-num'>{pct_cell}</td>"
+                f"<td>{'in stock' if item.get('in_stock') else 'not confirmed'}</td></tr>"
+            )
+            plain.append(
+                f"- {title[:70]} | unknown sellers {int(item.get('sellers_unknown') or 0)} "
+                f"| retailers {int(item.get('sellers_retailer') or 0)} "
+                f"| your price {_money(item.get('brand_price'), symbol)} "
+                f"| cheapest other offer {_money(item.get('cheapest'), symbol)}"
+                + (f" ({pct:.0f}% below)" if pct is not None else "")
+            )
+        listing_block = f"""
+        <div class="lk-scroll">
+        <table class="lk-table">
+          <thead><tr><th>Listing</th><th class="lk-num">Unknown</th><th class="lk-num">Retailer</th>
+          <th class="lk-num">Used</th><th class="lk-num">Your price</th>
+          <th class="lk-num">Cheapest other</th><th class="lk-num">Difference</th><th>Stock</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+        </div>
+        <p class="lk-note">Unknown and retailer are counted separately on purpose. A known
+        retailer on a listing is normal trade. An unknown seller is the one worth asking about.
+        The difference column compares the cheapest unknown offer against the brand's own
+        current selling price, never against a struck-through list price.</p>
+        """
+    elif refresh and live_skip:
+        listing_block = (f'<p class="lk-note">No listing detail: {html.escape(_lower_first(live_skip))}. '
+                         "Nothing is being hidden here, we simply could not stand behind a match.</p>")
+        plain.append(f"No listing detail: {_lower_first(live_skip)}")
+    elif refresh:
+        listing_block = ('<p class="lk-note">The check ran and found no listings we could '
+                         "confirm belong to this brand.</p>")
+        plain.append("The check ran and found no listings we could confirm belong to this brand.")
+    else:
+        listing_block = ('<p class="lk-note">Listing level detail is not kept between runs, '
+                         "because a stored price goes stale within hours. Run a fresh check "
+                         "to fill in the table below it.</p>")
+
+    if sponsored:
+        items = "".join(f"<li>{html.escape(str(s))}</li>" for s in sponsored)
+        sponsored_block = f"<ul style='margin:6px 0 0;padding-left:20px;font-size:14px'>{items}</ul>"
+        plain.append("")
+        plain.append("Competitors sponsored on your brand name: "
+                     + ", ".join(str(s) for s in sponsored))
+    elif refresh:
+        sponsored_block = '<p class="lk-note">No competitors were sponsored on the brand name at check time.</p>'
+    else:
+        sponsored_block = '<p class="lk-note">Run a fresh check to see who is buying ads on this brand name.</p>'
+
+    plain.extend([
+        "",
+        "Two things to be straight about:",
+        "- We cannot tell which of these sellers you have authorized. That is the question "
+        "to ask, not something we can answer from the outside.",
+        "- Sponsored placements are an auction and change often, so this is a snapshot "
+        "rather than a fixed picture.",
+    ])
+
+    stored_note = (f"{int(lead.get('amazon_sellers_unknown') or 0):,} unknown sellers"
+                   if not lead.get("amazon_absent") else "absent from this marketplace")
+
+    body = f"""
+        <h1>Leak report: {html.escape(brand)}</h1>
+        <p class="sub">What we can see on Amazon for {html.escape(wanted)}, and what we
+        deliberately cannot. Safe to share with the brand.</p>
+
+        <div class="lk-meta">
+          <div class="lk-m"><span>Marketplace</span><b>{html.escape(marketplace or "not recorded")}</b></div>
+          <div class="lk-m"><span>Match confidence</span><b>{_confidence_badge(lead.get("amazon_confidence"))}</b></div>
+          <div class="lk-m"><span>Last stored check</span><b>{stamp}</b></div>
+          <div class="lk-m"><span>Stored result</span><b>{html.escape(stored_note)}</b></div>
+        </div>
+
+        {f'<p class="lk-note">The stored check was skipped: {html.escape(_lower_first(skipped))}.</p>' if skipped else ''}
+
+        <p class="lk-h">Listings</p>
+        {listing_block}
+
+        <p class="lk-h">Sponsored on this brand name</p>
+        {sponsored_block}
+
+        <p class="lk-h">Before you read anything into this</p>
+        <div class="lk-caveat"><b>We cannot tell which sellers are authorized.</b>
+        Some of the sellers above may be distributors or resellers the brand has approved,
+        and from the outside those look identical to the ones it has not. This report says
+        who is on the listing, not who is allowed to be. That is the question to put to the brand.</div>
+        <div class="lk-caveat"><b>Sponsored placements are an auction.</b>
+        Who appears on a brand name search changes daily, and often hourly. Treat the list
+        above as a snapshot taken at the time stamped on this page, not a standing fact.</div>
+
+        <div class="lk-bar">
+          <a class="lk-btn" href="/admin/outbound/leak-report/{html.escape(wanted)}?refresh=1">Run a fresh check</a>
+          <button class="lk-btn" id="lk-copy" type="button">Copy as plain text</button>
+          <span id="lk-copied" style="font-size:14px;font-weight:700"></span>
+          <a class="lk-btn" href="/admin/outbound/leads" style="background:rgba(43,54,68,.12);color:#2B3644">Back to leads</a>
+        </div>
+        <textarea class="lk-plain" id="lk-plain" readonly>{html.escape(chr(10).join(plain))}</textarea>
+        {_LEAK_COPY_JS}
+    """
+    return HTMLResponse(_shell_page(
+        request, active="outbound_leads", title="Leak Report",
+        extra_css=_LEAK_CSS + _AMAZON_CSS, body=body,
     ))
 
 

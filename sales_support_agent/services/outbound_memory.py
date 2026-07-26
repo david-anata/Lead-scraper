@@ -38,22 +38,47 @@ CREATE TABLE IF NOT EXISTS {_TABLE} (
     revenue_cents BIGINT,
     categories TEXT,
     config_version INTEGER,
+    amazon_confidence TEXT,
+    amazon_marketplace TEXT,
+    amazon_checked_at TEXT,
+    amazon_absent INTEGER,
+    amazon_sellers_unknown INTEGER,
+    amazon_skipped_reason TEXT,
     first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
 _SELECT_SQL = f"SELECT domain FROM {_TABLE}"
 _SELECT_PUSHED_SQL = f"SELECT domain, tier, signals FROM {_TABLE}"
 _INSERT_SQL = f"INSERT INTO {_TABLE} (domain, source) VALUES (:domain, :source) ON CONFLICT (domain) DO NOTHING"
-_LEAD_COLS = ("domain", "source", "tier", "signals", "brand", "niche", "country",
-              "score", "reason", "recipe", "revenue_cents", "categories", "config_version")
-_INSERT_LEAD_SQL = (
-    f"INSERT INTO {_TABLE} ({', '.join(_LEAD_COLS)}) "
-    f"VALUES ({', '.join(':' + c for c in _LEAD_COLS)}) ON CONFLICT (domain) DO NOTHING"
-)
-_SELECT_LEADS_SQL = (
-    f"SELECT {', '.join(_LEAD_COLS)}, first_seen_at FROM {_TABLE} "
-    "ORDER BY first_seen_at DESC"
-)
+# The columns every lead has had since before the Amazon check existed. Kept
+# separate so a table we could not widen still stores and returns its leads.
+_CORE_LEAD_COLS = ("domain", "source", "tier", "signals", "brand", "niche", "country",
+                   "score", "reason", "recipe", "revenue_cents", "categories", "config_version")
+# What the Amazon check found, and how old the finding is. Stored here because
+# a finding we cannot reproduce later is a finding we have lost.
+_AMAZON_LEAD_COLS = ("amazon_confidence", "amazon_marketplace", "amazon_checked_at",
+                     "amazon_absent", "amazon_sellers_unknown", "amazon_skipped_reason")
+_LEAD_COLS = _CORE_LEAD_COLS + _AMAZON_LEAD_COLS
+
+
+def _insert_lead_sql(cols: tuple[str, ...]) -> str:
+    return (
+        f"INSERT INTO {_TABLE} ({', '.join(cols)}) "
+        f"VALUES ({', '.join(':' + c for c in cols)}) ON CONFLICT (domain) DO NOTHING"
+    )
+
+
+def _select_leads_sql(cols: tuple[str, ...]) -> str:
+    return (
+        f"SELECT {', '.join(cols)}, first_seen_at FROM {_TABLE} "
+        "ORDER BY first_seen_at DESC"
+    )
+
+
+_INSERT_LEAD_SQL = _insert_lead_sql(_LEAD_COLS)
+_INSERT_LEAD_CORE_SQL = _insert_lead_sql(_CORE_LEAD_COLS)
+_SELECT_LEADS_SQL = _select_leads_sql(_LEAD_COLS)
+_SELECT_LEADS_CORE_SQL = _select_leads_sql(_CORE_LEAD_COLS)
 # Best-effort upgrade for tables created before tier/signals existed. SQLite and
 # Postgres both accept ADD COLUMN; we swallow the "already exists" error.
 _ALTERS = (
@@ -68,6 +93,12 @@ _ALTERS = (
     f"ALTER TABLE {_TABLE} ADD COLUMN revenue_cents BIGINT",
     f"ALTER TABLE {_TABLE} ADD COLUMN categories TEXT",
     f"ALTER TABLE {_TABLE} ADD COLUMN config_version INTEGER",
+    f"ALTER TABLE {_TABLE} ADD COLUMN amazon_confidence TEXT",
+    f"ALTER TABLE {_TABLE} ADD COLUMN amazon_marketplace TEXT",
+    f"ALTER TABLE {_TABLE} ADD COLUMN amazon_checked_at TEXT",
+    f"ALTER TABLE {_TABLE} ADD COLUMN amazon_absent INTEGER",
+    f"ALTER TABLE {_TABLE} ADD COLUMN amazon_sellers_unknown INTEGER",
+    f"ALTER TABLE {_TABLE} ADD COLUMN amazon_skipped_reason TEXT",
 )
 
 
@@ -113,6 +144,61 @@ _SELECT_RUNS_SQL = (
 
 def _norm(domain: str) -> str:
     return str(domain or "").strip().lower()
+
+
+def _text(value: Any) -> str:
+    """Anything at all as a stored string. None and junk become empty, never an error."""
+    return "" if value is None else str(value).strip()
+
+
+def _whole(value: Any) -> int:
+    """A count we can store. Anything unreadable counts as none seen."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+_FALSEY_TEXT = {"", "0", "false", "no", "none", "null"}
+
+
+def _flag(value: Any) -> int:
+    """A yes/no we can store, tolerant of the string forms a CSV or an API sends."""
+    if isinstance(value, str):
+        return 0 if value.strip().lower() in _FALSEY_TEXT else 1
+    return 1 if value else 0
+
+
+def _amazon_values(lead: dict[str, Any]) -> dict[str, Any]:
+    """The Amazon check as stored columns.
+
+    Flat amazon_* keys lead; a whole brand_control result parked under "amazon"
+    is read as a fallback so a finding never falls off the lead on its way in.
+    """
+    nested = lead.get("amazon")
+    nested = nested if isinstance(nested, dict) else {}
+    findings = nested.get("findings")
+    findings = findings if isinstance(findings, dict) else {}
+
+    def pick(flat: str, *fallbacks: Any) -> Any:
+        val = lead.get(flat)
+        if val not in (None, ""):
+            return val
+        for candidate in fallbacks:
+            if candidate not in (None, ""):
+                return candidate
+        return None
+
+    return {
+        "amazon_confidence": _text(pick("amazon_confidence", nested.get("confidence"))),
+        "amazon_marketplace": _text(pick("amazon_marketplace", nested.get("marketplace"))),
+        "amazon_checked_at": _text(pick("amazon_checked_at", nested.get("checked_at"))),
+        "amazon_absent": _flag(pick("amazon_absent", findings.get("absent"))),
+        "amazon_sellers_unknown": _whole(pick("amazon_sellers_unknown",
+                                              nested.get("sellers_unknown"))),
+        "amazon_skipped_reason": _text(pick("amazon_skipped_reason",
+                                            nested.get("skipped_reason"))),
+    }
 
 
 def ensure_runs_table(engine) -> None:
@@ -260,6 +346,31 @@ def release_contacted(engine, domains: Iterable[str] | None = None) -> int:
         return 0
 
 
+def _write_leads(engine, payload: list[dict[str, Any]]) -> None:
+    """Write the widest row the table accepts.
+
+    A database we could not widen still keeps the lead, minus the Amazon
+    columns, because a lead is worth more than the finding attached to it.
+    """
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(_INSERT_LEAD_SQL), payload)
+    except Exception:  # noqa: BLE001, table predates the Amazon columns
+        core = [{c: row.get(c) for c in _CORE_LEAD_COLS} for row in payload]
+        with engine.begin() as conn:
+            conn.execute(text(_INSERT_LEAD_CORE_SQL), core)
+
+
+def _read_leads(engine) -> tuple[list[Any], tuple[str, ...]]:
+    """Rows plus the column names they carry, narrowing on an older table."""
+    try:
+        with engine.connect() as conn:
+            return conn.execute(text(_SELECT_LEADS_SQL)).fetchall(), _LEAD_COLS
+    except Exception:  # noqa: BLE001, table predates the Amazon columns
+        with engine.connect() as conn:
+            return conn.execute(text(_SELECT_LEADS_CORE_SQL)).fetchall(), _CORE_LEAD_COLS
+
+
 def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_export",
                  config_version: int = 0) -> int:
     """Store the FULL sourced lead, not just the domain.
@@ -267,7 +378,8 @@ def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_
     This table is our own record of every brand we have sourced: what it is, why
     we picked it, which recipe found it and under which settings. Clay and
     Instantly process these leads, but the record of them lives here, so losing
-    access to either tool never loses the leads.
+    access to either tool never loses the leads. The Amazon check rides along
+    with the time it was made, so a stale finding is never read as a fresh one.
 
     De-dupes by domain within the batch; existing domains are left as-is.
     Best-effort: returns 0 on error rather than raising."""
@@ -301,14 +413,14 @@ def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_
             "revenue_cents": revenue,
             "categories": cats,
             "config_version": int(config_version or 0),
+            **_amazon_values(lead),
         }
     payload = list(seen.values())
     if not payload:
         return 0
     try:
         ensure_table(engine)
-        with engine.begin() as conn:
-            conn.execute(text(_INSERT_LEAD_SQL), payload)
+        _write_leads(engine, payload)
         return len(payload)
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-memory] record_leads failed; %s leads not saved", len(payload))
@@ -321,15 +433,22 @@ def load_leads(engine, limit: int = 500) -> list[dict[str, Any]]:
         return []
     try:
         ensure_table(engine)
-        with engine.connect() as conn:
-            rows = conn.execute(text(_SELECT_LEADS_SQL)).fetchall()
+        rows, cols = _read_leads(engine)
         out = []
         for r in rows[:limit]:
-            d = dict(zip(_LEAD_COLS, r))
+            d = dict(zip(cols, r))
             try:
                 d["signals"] = json.loads(d.get("signals") or "[]")
             except (ValueError, TypeError):
                 d["signals"] = []
+            # Rows written before the Amazon check read back as "never checked"
+            # rather than as a missing key or a None the callers have to guard.
+            d["amazon_confidence"] = _text(d.get("amazon_confidence"))
+            d["amazon_marketplace"] = _text(d.get("amazon_marketplace"))
+            d["amazon_checked_at"] = _text(d.get("amazon_checked_at"))
+            d["amazon_absent"] = bool(_flag(d.get("amazon_absent")))
+            d["amazon_sellers_unknown"] = _whole(d.get("amazon_sellers_unknown"))
+            d["amazon_skipped_reason"] = _text(d.get("amazon_skipped_reason"))
             d["first_seen_at"] = r[-1]
             out.append(d)
         return out
