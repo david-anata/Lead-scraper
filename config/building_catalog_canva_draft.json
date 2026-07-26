@@ -1,0 +1,266 @@
+{
+  "schema_version": 1,
+  "catalog_id": "anata-building-canva-draft-2026-07-26",
+  "source": {
+    "kind": "canva_design",
+    "design_id": "DAGv4nPFotM",
+    "title": "The anata Building // Pamplet",
+    "page_count": 7,
+    "design_updated_at": "2026-07-15T00:00:00Z",
+    "extracted_at": "2026-07-26T00:00:00Z"
+  },
+  "safety": {
+    "review_status": "owner_review_required",
+    "publish_allowed": false,
+    "reason": "Deck availability labels and price references are time-sensitive and contain unresolved variants."
+  },
+  "spaces": [
+    {
+      "id": "bullpen",
+      "slug": "bullpen",
+      "name": "The Bullpen",
+      "space_type": "coworking",
+      "floor": "2nd floor",
+      "capacity": 0,
+      "status": "unavailable",
+      "public_description": "Shared open-plan workspace for independent operators and small teams.",
+      "internal_notes": "Canva deck p.3 labels coworking desks AVAILABLE. Treat as historical evidence only; confirm current desk count and status before publication.",
+      "features": [
+        "High-speed internet",
+        "Utilities",
+        "Common areas",
+        "Conference rooms by schedule",
+        "Call rooms when available",
+        "Mail room and welcome area",
+        "On-site parking",
+        "Networking opportunities"
+      ],
+      "media": [],
+      "is_public": false
+    },
+    {
+      "id": "private-offices",
+      "slug": "private-offices",
+      "name": "Private offices",
+      "space_type": "private_office",
+      "floor": "1st and 2nd floors",
+      "capacity": 0,
+      "status": "unavailable",
+      "public_description": "Private offices for individuals and small teams.",
+      "internal_notes": "Canva deck pp.2-3 maps offices 102-110 and 201-211, approximately 63-262 sq. ft. Create one current space record per office after owner review.",
+      "features": [
+        "Secure access",
+        "High-speed internet",
+        "Utilities",
+        "Month-to-month options"
+      ],
+      "media": [],
+      "is_public": false
+    },
+    {
+      "id": "conference-room-1",
+      "slug": "conference-room-1",
+      "name": "Conference Room 1",
+      "space_type": "conference",
+      "floor": "1st floor",
+      "capacity": 0,
+      "status": "unavailable",
+      "public_description": "A 100-square-foot meeting room inside The Anata Building.",
+      "internal_notes": "Canva deck p.2 identifies room 100 as Conference Room 1, 100 sq. ft. Confirm seating capacity, current name, booking rules, and status.",
+      "features": [],
+      "media": [],
+      "is_public": false
+    },
+    {
+      "id": "conference-room-2",
+      "slug": "conference-room-2",
+      "name": "Conference Room 2",
+      "space_type": "conference",
+      "floor": "1st floor",
+      "capacity": 0,
+      "status": "unavailable",
+      "public_description": "A 237-square-foot meeting room inside The Anata Building.",
+      "internal_notes": "Canva deck p.2 identifies room 111 as Conference Room 2, 237 sq. ft. Confirm seating capacity, current name, booking rules, and status.",
+      "features": [],
+      "media": [],
+      "is_public": false
+    },
+    {
+      "id": "arena",
+      "slug": "arena",
+      "name": "The Arena",
+      "space_type": "event",
+      "floor": "2nd floor",
+      "capacity": 0,
+      "status": "unavailable",
+      "public_description": "A flexible setting for company gatherings, workshops, celebrations, and community events.",
+      "internal_notes": "Canva deck p.3 identifies The Arena as the event space. Confirm capacity by layout, event rules, included items, and live availability.",
+      "features": [],
+      "media": [],
+      "is_public": false
+    },
+    {
+      "id": "warehouse-south",
+      "slug": "warehouse-south",
+      "name": "Warehouse South",
+      "space_type": "warehouse",
+      "floor": "",
+      "capacity": 0,
+      "status": "unavailable",
+      "public_description": "Flexible warehouse, storage, and fulfillment configurations.",
+      "internal_notes": "Canva deck pp.4-5 shows divisible areas from 100 to 3,460 sq. ft. with AVAILABLE, PENDING, and COMING SOON labels. Confirm current configuration and permanent public name.",
+      "features": [
+        "Bay-door access",
+        "High dock",
+        "Power",
+        "Forklift access",
+        "Fulfillment support"
+      ],
+      "media": [],
+      "is_public": false
+    },
+    {
+      "id": "golf-simulator",
+      "slug": "golf-simulator",
+      "name": "Golf simulator",
+      "space_type": "amenity",
+      "floor": "",
+      "capacity": 0,
+      "status": "unavailable",
+      "public_description": "A private simulator room inside the building.",
+      "internal_notes": "The deck positions Golf as a core offering but does not provide reliable capacity or commercial terms.",
+      "features": [],
+      "media": [],
+      "is_public": false
+    },
+    {
+      "id": "boom-fitness",
+      "slug": "boom-fitness",
+      "name": "Boom Fitness Culture",
+      "space_type": "amenity",
+      "floor": "",
+      "capacity": 0,
+      "status": "unavailable",
+      "public_description": "An independently operated, coaching-led gym located inside the building.",
+      "internal_notes": "Publicly promote Boom. Do not expose the private tenant free-membership arrangement. Deck p.5 says discounted rates and is superseded for internal tenant-benefit handling.",
+      "features": [
+        "24/7 access",
+        "Kids care",
+        "Coaching"
+      ],
+      "media": [],
+      "is_public": false
+    }
+  ],
+  "offerings": [
+    {
+      "id": "bullpen-membership",
+      "slug": "bullpen-membership",
+      "name": "The Bullpen coworking",
+      "offering_type": "coworking",
+      "space_id": "bullpen",
+      "public_description": "A desk in a shared open-plan workspace with building amenities.",
+      "price_display": "",
+      "booking_unit": "month",
+      "call_to_action": "inquire",
+      "features": [
+        "Internet",
+        "Utilities",
+        "Common areas",
+        "Conference rooms by schedule",
+        "Call rooms when available",
+        "Mail room and welcome area",
+        "Parking"
+      ],
+      "is_published": false,
+      "evidence_price_reference": "$150/month per person",
+      "review_note": "Confirm current price, tax, deposit, effective date, and exact inclusions."
+    },
+    {
+      "id": "private-office",
+      "slug": "private-office",
+      "name": "Private office",
+      "offering_type": "private_office",
+      "space_id": "private-offices",
+      "public_description": "A secure private office for an individual or small team.",
+      "price_display": "",
+      "booking_unit": "month",
+      "call_to_action": "tour",
+      "features": [
+        "Secure access",
+        "Internet",
+        "Utilities",
+        "Month-to-month options"
+      ],
+      "is_published": false,
+      "evidence_price_reference": "$6-$8 per sq. ft.",
+      "review_note": "Confirm billing basis and resolve the floor-plan price pairs and $4/$5/$6 markers."
+    },
+    {
+      "id": "conference-room",
+      "slug": "conference-room",
+      "name": "Conference room",
+      "offering_type": "meeting_room",
+      "space_id": "conference-room-1",
+      "public_description": "Meeting-room access inside The Anata Building.",
+      "price_display": "",
+      "booking_unit": "hour",
+      "call_to_action": "request-date",
+      "features": [],
+      "is_published": false,
+      "evidence_price_reference": "",
+      "review_note": "Confirm whether rooms 100 and 111 share one offering or need separate rate plans."
+    },
+    {
+      "id": "arena-event",
+      "slug": "arena-event",
+      "name": "The Arena event booking",
+      "offering_type": "event",
+      "space_id": "arena",
+      "public_description": "A flexible event setting for gatherings, workshops, celebrations, and community events.",
+      "price_display": "",
+      "booking_unit": "event",
+      "call_to_action": "request-date",
+      "features": [],
+      "is_published": false,
+      "evidence_price_reference": "",
+      "review_note": "Confirm capacity, packages, deposit, cancellation policy, and included services."
+    },
+    {
+      "id": "warehouse-storage",
+      "slug": "warehouse-storage",
+      "name": "Warehouse or storage",
+      "offering_type": "warehouse",
+      "space_id": "warehouse-south",
+      "public_description": "Flexible storage and fulfillment space for inventory, bulk goods, or overflow stock.",
+      "price_display": "",
+      "booking_unit": "custom",
+      "call_to_action": "inquire",
+      "features": [
+        "Bay doors",
+        "High dock",
+        "Power",
+        "Forklift access",
+        "Fulfillment support"
+      ],
+      "is_published": false,
+      "evidence_price_reference": "$2-$4 per sq. ft.; floor-plan labels also show $400, $800, and $2,000",
+      "review_note": "Confirm billing basis, current divisible units, unit-specific prices, and status."
+    },
+    {
+      "id": "golf-access",
+      "slug": "golf-access",
+      "name": "Golf simulator access",
+      "offering_type": "membership",
+      "space_id": "golf-simulator",
+      "public_description": "Access to the building's private golf simulator.",
+      "price_display": "",
+      "booking_unit": "custom",
+      "call_to_action": "inquire",
+      "features": [],
+      "is_published": false,
+      "evidence_price_reference": "",
+      "review_note": "Confirm access rules, pricing, guest policy, and availability."
+    }
+  ]
+}
