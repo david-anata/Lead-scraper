@@ -334,19 +334,45 @@ def delete_rule(rule_id: str) -> None:
 
 
 def bookkeeping_summary() -> dict[str, Any]:
-    """Counts for the bookkeeping panel, including the honest write-back state."""
+    """Counts for the bookkeeping panel, including the honest write-back state.
+
+    The split between "QuickBooks already booked this" and "filed only here"
+    matters: the first needs nothing, while the second is spend the operator's
+    real books still do not have, because nothing is written back.
+    """
+    # Every number is counted in one pass using the same transfer check the
+    # queue uses, so the nav badge, the queue and these totals cannot drift
+    # apart. Moving your own money is not bookkeeping, so transfers are outside
+    # all of it, including the denominator. A QuickBooks account of
+    # "Uncategorized Expense" is the books saying they do not know either, so
+    # those rows count as needing a decision rather than as booked. That makes
+    # the three states add up to the total, which is the point of showing them.
     with get_engine().connect() as connection:
-        total = int(connection.execute(text(
-            "SELECT COUNT(*) FROM cash_events WHERE record_kind='transaction'"
-        )).scalar() or 0)
+        rows = connection.execute(text("""
+            SELECT name, description, vendor_or_customer, category, source, subcategory
+            FROM cash_events WHERE record_kind='transaction'
+        """)).fetchall()
         rule_count = int(connection.execute(text(
             "SELECT COUNT(*) FROM finance_booking_rules"
         )).scalar() or 0)
-    needs = len(_unfiled_transactions(limit=1000))
+
+    total = needs = booked_in_quickbooks = 0
+    for raw in rows:
+        row = dict(raw._mapping)
+        if is_internal_transfer(row):
+            continue
+        total += 1
+        if str(row.get("category") or "").lower() in UNFILED_CATEGORIES:
+            needs += 1
+        elif row.get("source") == "qbo_bank" and str(row.get("subcategory") or "").strip():
+            booked_in_quickbooks += 1
+
     return {
         "total_transactions": total,
         "needs_decision": needs,
-        "filed": max(0, total - needs),
+        "filed": total - needs,
+        "booked_in_quickbooks": booked_in_quickbooks,
+        "filed_here_only": total - needs - booked_in_quickbooks,
         "rule_count": rule_count,
         "qbo_writeback": QBO_WRITEBACK_STATUS,
     }

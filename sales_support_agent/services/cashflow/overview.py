@@ -2798,8 +2798,11 @@ def _render_bookkeeping() -> str:
 
     head = (
         '<div class="finance-accounts-totals">'
-        + '<div><span>Filed automatically</span><strong>' + str(summary["filed"])
+        + '<div><span>Already booked in QuickBooks</span><strong>'
+        + str(summary.get("booked_in_quickbooks", 0))
         + ' of ' + str(summary["total_transactions"]) + '</strong></div>'
+        + '<div><span>Filed here only</span><strong>'
+        + str(summary.get("filed_here_only", summary["filed"])) + '</strong></div>'
         + '<div><span>Need a decision</span><strong>' + str(summary["needs_decision"]) + '</strong></div>'
         + '<div><span>Rules you taught</span><strong>' + str(summary["rule_count"]) + '</strong></div>'
         + '</div>'
@@ -2907,12 +2910,15 @@ def _render_bookkeeping() -> str:
         rules_html = ""
 
     writeback = (
-        '<p class="finance-accounts-asof">QuickBooks write-back: <strong>not connected</strong>. '
-        + 'Bookkeeping stays inside this app; nothing is written to QuickBooks.</p>'
+        '<p class="finance-accounts-asof">QuickBooks runs the books. Anything it has already '
+        + 'posted arrives here with the account it was booked to, so it never asks you again. '
+        + 'Nothing is written back the other way: the '
+        + str(summary.get("filed_here_only", 0)) + ' transaction(s) filed here only are still '
+        + 'uncategorised in QuickBooks. Book those in QuickBooks and they will come back filed.</p>'
     )
     return (
         '<section class="finance-source-row finance-bookkeeping"><div style="width:100%">'
-        + '<strong>Bookkeeping</strong><span>Transactions file themselves; only real unknowns ask you.</span>'
+        + '<strong>Bookkeeping</strong><span>QuickBooks decides the category; this page only chases what it has not booked yet.</span>'
         + head + queue + rules_html + writeback + '</div></section>'
     )
 

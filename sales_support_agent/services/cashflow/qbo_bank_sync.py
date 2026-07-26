@@ -122,6 +122,63 @@ def _dollars_to_cents(val: Any) -> int:
 
 
 # ---------------------------------------------------------------------------
+# The account QuickBooks booked a transaction to
+# ---------------------------------------------------------------------------
+#
+# QuickBooks is where the books are run, so every transaction it has already
+# posted carries the operator's own categorisation. Reading it means this app
+# reflects the books instead of guessing at the same transaction a second time
+# and then asking the operator to answer a question they already answered.
+
+# Accounts that mean "the books do not know either". Booking to one of these is
+# not a categorisation, so the transaction still needs a decision.
+_UNBOOKED_ACCOUNTS = ("uncategorized", "uncategorised", "ask my accountant", "suspense")
+
+# QuickBooks accounts reduced to the buckets this app already reasons about, so
+# cash grouping and settlement matching keep working. Order matters: "Payroll
+# Taxes" is payroll, not tax. Whole-word matching keeps "Automobile:Gas" from
+# being read as a gas utility bill. An account that matches nothing keeps its
+# own name rather than being flattened into "other".
+_ACCOUNT_BUCKETS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("payroll", ("payroll", "wages", "salary", "salaries", "contract labor", "employee benefits")),
+    ("rent", ("rent", "lease")),
+    ("insurance", ("insurance",)),
+    ("utilities", ("utilities", "electric", "electricity", "telephone", "internet")),
+    ("software", ("software", "subscriptions")),
+    ("loan", ("loan", "notes payable", "interest expense")),
+    ("tax", ("tax", "taxes")),
+)
+
+
+def _booked_account(lines: Any) -> str:
+    """The QuickBooks account this transaction was posted to, verbatim."""
+    for line in lines or []:
+        detail = (
+            line.get("AccountBasedExpenseLineDetail")
+            or line.get("ItemBasedExpenseLineDetail")
+            or {}
+        )
+        account = str((detail.get("AccountRef") or {}).get("name") or "").strip()
+        if account:
+            return account
+    return ""
+
+
+def _category_from_account(account: str) -> str:
+    """QuickBooks' account as a spend category, or "" if the books don't know."""
+    lowered = re.sub(r"\s+", " ", str(account or "").strip().lower())
+    if not lowered or any(marker in lowered for marker in _UNBOOKED_ACCOUNTS):
+        return ""
+    for bucket, keywords in _ACCOUNT_BUCKETS:
+        if any(re.search(rf"\b{re.escape(word)}\b", lowered) for word in keywords):
+            return bucket
+    # Sub-accounts read as "Parent:Child"; the child is the identifying half.
+    leaf = lowered.split(":")[-1].strip()
+    # A bare "Other Expense" is no more of an answer than no account at all.
+    return "" if leaf in {"other", "expense", "expenses", "other expense"} else leaf[:64]
+
+
+# ---------------------------------------------------------------------------
 # Entity → cash_event converters
 # ---------------------------------------------------------------------------
 
@@ -158,6 +215,8 @@ def _purchase_to_event(p: dict) -> Optional[dict]:
             description = desc.strip()
             break
 
+    booked_account = _booked_account(p.get("Line", []))
+
     memo = str(p.get("PrivateNote", "") or "").strip()
     name = vendor or description or f"QBO Purchase #{qbo_id}"
 
@@ -170,8 +229,8 @@ def _purchase_to_event(p: dict) -> Optional[dict]:
         "source": "qbo_bank",
         "source_id": f"purchase-{qbo_id}",
         "event_type": "outflow",
-        "category": _infer_category(name),
-        "subcategory": "",
+        "category": _category_from_account(booked_account) or _infer_category(name),
+        "subcategory": booked_account[:64],
         "description": description[:500],
         "name": name[:255],
         "vendor_or_customer": vendor[:255],
@@ -310,13 +369,14 @@ def _vendor_payment_to_event(payment: dict, *, entity_type: str) -> Optional[dic
     if memo:
         notes += f" | {memo[:440]}"
     entity_key = entity_type.lower().replace(" ", "-")
+    booked_account = _booked_account(payment.get("Line", []))
     return {
         "id": f"qbo-{entity_key}-{qbo_id}",
         "source": "qbo_bank",
         "source_id": f"{entity_key}-{qbo_id}",
         "event_type": "outflow",
-        "category": _infer_category(name),
-        "subcategory": "",
+        "category": _category_from_account(booked_account) or _infer_category(name),
+        "subcategory": booked_account[:64],
         "description": description[:500],
         "name": name[:255],
         "vendor_or_customer": vendor[:255],

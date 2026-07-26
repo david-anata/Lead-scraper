@@ -25,12 +25,14 @@ def _setup():
     return factory.kw["bind"]
 
 
-def _txn(engine, *, cid, name, amount=100_00, category="uncategorized", description=None):
+def _txn(engine, *, cid, name, amount=100_00, category="uncategorized", description=None,
+         source="plaid", subcategory=""):
     now = datetime.now(timezone.utc)
     with engine.begin() as connection:
         insert_cash_event(
-            connection, id=cid, source="plaid", source_id=cid,
+            connection, id=cid, source=source, source_id=cid,
             record_kind="transaction", event_type="outflow", category=category,
+            subcategory=subcategory,
             name=name, vendor_or_customer=name, description=description or name,
             amount_cents=amount, due_date=date(2026, 7, 10), status="posted",
             confidence="confirmed", created_at=now, updated_at=now,
@@ -242,6 +244,78 @@ def test_filing_a_merchant_without_a_category_is_refused():
     for bad in ("", "uncategorized", "other"):
         with pytest.raises(ValueError, match="choose a category"):
             file_merchant("kfc", bad)
+
+
+# --- QuickBooks runs the books; this page only chases what it has not booked --
+
+def test_a_transaction_quickbooks_booked_never_reaches_the_queue():
+    engine = _setup()
+    _txn(engine, cid="booked", name="Madison Bicycle Shop", source="qbo_bank",
+         category="job materials", subcategory="Job Expenses:Job Materials")
+    _txn(engine, cid="unbooked", name="Madison Bicycle Shop")
+
+    assert [item["id"] for item in list_needs_decision()] == ["unbooked"]
+
+
+def test_the_summary_separates_booked_in_quickbooks_from_filed_here_only():
+    """Filing here does not touch QuickBooks, so the two are not the same
+    thing and the page must not imply the books are up to date."""
+    engine = _setup()
+    _txn(engine, cid="booked", name="Vendor A", source="qbo_bank",
+         category="job materials", subcategory="Job Expenses:Job Materials")
+    _txn(engine, cid="here", name="COMCAST CABLE COMM")
+    _txn(engine, cid="open", name="MYSTERY VENDOR")
+    file_transactions()
+
+    summary = bookkeeping_summary()
+    assert summary["total_transactions"] == 3
+    assert summary["booked_in_quickbooks"] == 1
+    assert summary["filed_here_only"] == 1, "Comcast is filed here but missing from the books"
+    assert summary["needs_decision"] == 1
+
+
+def test_a_quickbooks_row_with_no_account_is_not_counted_as_booked():
+    engine = _setup()
+    _txn(engine, cid="a", name="Vendor A", source="qbo_bank", category="software")
+    assert bookkeeping_summary()["booked_in_quickbooks"] == 0
+
+
+def test_quickbooks_calling_it_uncategorised_is_not_counted_as_booked():
+    """It claimed 61 of 71 booked while 15 still needed a decision. Three
+    states that overlap are three numbers the operator cannot act on."""
+    engine = _setup()
+    for index in range(4):
+        _txn(engine, cid=f"real{index}", name="Vendor A", source="qbo_bank",
+             category="job materials", subcategory="Job Expenses:Job Materials")
+    for index in range(6):
+        _txn(engine, cid=f"dunno{index}", name="Weird Vendor", source="qbo_bank",
+             category="other", subcategory="Uncategorized Expense")
+
+    summary = bookkeeping_summary()
+    assert summary["booked_in_quickbooks"] == 4
+    assert summary["needs_decision"] == 6
+    assert (
+        summary["booked_in_quickbooks"]
+        + summary["filed_here_only"]
+        + summary["needs_decision"]
+    ) == summary["total_transactions"], "the three states must account for every transaction"
+
+
+def test_transfers_are_outside_every_bookkeeping_number():
+    """A transfer is not spend, so counting it as "filed here only" would claim
+    the books are missing something that was never an expense."""
+    engine = _setup()
+    _txn(engine, cid="real", name="Vendor A", source="qbo_bank",
+         category="software", subcategory="Dues and Subscriptions")
+    for index in range(3):
+        _txn(engine, cid=f"t{index}", name="Home banking Withdrawal Transfer to S0050",
+             amount=25000_00)
+
+    summary = bookkeeping_summary()
+    assert summary["total_transactions"] == 1
+    assert summary["booked_in_quickbooks"] == 1
+    assert summary["filed_here_only"] == 0
+    assert summary["needs_decision"] == 0
 
 
 def test_internal_transfers_are_not_offered_as_a_merchant_group():
