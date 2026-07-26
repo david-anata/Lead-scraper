@@ -30,14 +30,15 @@ structural drift, not merely inconsistent styling.
   open whitespace or one-off sidebars.
 - Route labels and page labels can describe the same workflow differently.
 
-### Confirmed desktop header defect
+### Resolved desktop header defect
 
-`sales_support_agent/services/admin_nav.py` applies the warm section-navigation
-background directly to `.topbar-section-row`, which is also constrained to
-`max-width: 1320px`. On a wide desktop, the background stops at the constrained
-container instead of extending across the viewport.
+The original implementation applied the warm section-navigation background to
+the width-constrained row, producing the visible desktop cutoff. The shared
+navigation now separates `.topbar-section-band` from
+`.topbar-section-row`: the band spans the viewport and the row constrains only
+its contents. Preserve this structure in every shell migration.
 
-The canonical implementation must separate:
+The canonical implementation separates:
 
 1. a full-width background band; and
 2. a width-constrained inner content container.

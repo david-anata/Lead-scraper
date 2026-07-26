@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import html
 from functools import lru_cache
 from pathlib import Path
@@ -118,17 +117,18 @@ def _nav_item(label: str, href: str, *, active: bool = False, extra_class: str =
 def render_agent_favicon_links() -> str:
     favicon_path = Path(__file__).resolve().parents[2] / "shared" / "anata_brand" / "assets" / "agent-favicon.png"
     try:
-        encoded = base64.b64encode(favicon_path.read_bytes()).decode("ascii")
+        stat = favicon_path.stat()
     except OSError:
         return ""
-    href = f"data:image/png;base64,{encoded}"
+    version = f"{stat.st_mtime_ns:x}-{stat.st_size:x}"
+    href = f"/brand-static/agent-favicon.png?v={version}"
     return (
         f'<link rel="icon" type="image/png" href="{href}">'
         f'<link rel="apple-touch-icon" href="{href}">'
     )
 
 
-def render_agent_nav_styles() -> str:
+def render_agent_nav_css() -> str:
     return """
       *, *::before, *::after { box-sizing: border-box; }
       body {
@@ -448,7 +448,19 @@ def render_agent_nav_styles() -> str:
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
       }
-    """
+      """
+
+
+@lru_cache(maxsize=1)
+def render_agent_nav_styles() -> str:
+    """Return one cacheable stylesheet reference for the shared Agent shell."""
+    source_path = Path(__file__).resolve()
+    try:
+        stat = source_path.stat()
+        version = f"{stat.st_mtime_ns:x}-{stat.st_size:x}"
+    except OSError:
+        version = "1"
+    return f'<link rel="stylesheet" href="/admin/assets/navigation.css?v={version}">'
 
 
 def _user_chip_html(user: Optional[dict]) -> str:

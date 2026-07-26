@@ -74,11 +74,59 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertEqual(rebuilt.lead_builder_missing, ["STORELEADS_API_KEY"])
         self.assertTrue(rebuilt.deck_generator_ready)
 
+    def test_page_specific_dashboard_projection_skips_unrelated_data(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        settings = self._settings()
+        with session_scope(session_factory) as session:
+            session.add(
+                LeadMirror(
+                    clickup_task_id="task-projection",
+                    list_id=settings.clickup_list_id,
+                    task_name="Projection lead",
+                    task_url="https://app.clickup.com/t/task-projection",
+                    status="new lead",
+                    created_at=datetime(2026, 3, 14, 9, 0, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 3, 14, 9, 0, tzinfo=timezone.utc),
+                    last_sync_at=datetime(2026, 3, 14, 9, 0, tzinfo=timezone.utc),
+                    raw_task_payload={},
+                )
+            )
+            session.add(
+                AutomationRun(
+                    run_type="deck_generation",
+                    status="success",
+                    started_at=datetime(2026, 3, 14, 10, 0, tzinfo=timezone.utc),
+                    summary_json={"design_title": "Projection deck"},
+                )
+            )
+
+        with session_scope(session_factory) as session:
+            queue_only = build_dashboard_data(
+                settings=settings,
+                session=session,
+                lead_builder_status={"ready": True, "missing": []},
+                as_of_date=date(2026, 3, 14),
+                include_deck_history=False,
+            )
+            decks_only = build_dashboard_data(
+                settings=settings,
+                session=session,
+                lead_builder_status={"ready": True, "missing": []},
+                as_of_date=date(2026, 3, 14),
+                include_lead_queue=False,
+            )
+
+        self.assertEqual(queue_only.recent_deck_runs, [])
+        self.assertEqual(decks_only.total_active_leads, 0)
+        self.assertEqual(len(decks_only.recent_deck_runs), 1)
+
     def test_admin_pages_include_favicon_links(self) -> None:
         html = render_login_page()
         self.assertIn('rel="icon"', html)
         self.assertIn('rel="apple-touch-icon"', html)
-        self.assertIn("data:image/png;base64,", html)
+        self.assertIn("/brand-static/agent-favicon.png?v=", html)
+        self.assertNotIn("data:image/png;base64,", html)
         self.assertIn("Shared fallback password", html)
         self.assertNotIn("Admin email", html)
 
