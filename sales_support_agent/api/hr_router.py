@@ -12,7 +12,7 @@ from threading import Lock
 from time import monotonic
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -30,6 +30,7 @@ from sales_support_agent.services.auth_deps import (
 from sales_support_agent.services.access.notify import send_invite_email
 from sales_support_agent.services.hr import store
 from sales_support_agent.services.hr import payroll_store
+from sales_support_agent.services.hr import legacy_import
 from sales_support_agent.services.hr import workforce
 from sales_support_agent.services.hr import reporting
 from sales_support_agent.services.hr.provider_contract import contract_descriptor
@@ -45,6 +46,7 @@ from sales_support_agent.services.hr.pages import (
     render_hr_payroll_run,
     render_hr_pay_statements,
     render_hr_settings,
+    render_hr_legacy_import,
     render_hr_contractors,
     render_hr_compliance,
     render_hr_offboarding,
@@ -95,6 +97,9 @@ _recent_pay_approve_guard = require_recent_tool(
 )
 _pay_submit_guard = require_any_tool("hr.payroll.submit", "hr.payroll")
 _settings_guard = require_any_tool("hr.settings.manage", "hr.payroll")
+_recent_settings_guard = require_recent_tool(
+    "hr.settings.manage", legacy_keys=("hr.payroll",), max_age_minutes=30
+)
 _reports_guard = require_any_tool("hr.audit.view", "hr.payroll.view", "hr.payroll")
 
 _sensitive_attempts: dict[str, deque] = defaultdict(deque)
@@ -1073,6 +1078,67 @@ async def hr_provider_contract(user: dict = Depends(_settings_guard)):
             ),
         },
     )
+
+
+@router.get("/settings/legacy-import", response_class=HTMLResponse)
+async def hr_legacy_import_page(user: dict = Depends(_settings_guard)):
+    return HTMLResponse(render_hr_legacy_import(user=user))
+
+
+async def _read_legacy_archive(archive: UploadFile) -> bytes:
+    if not archive.filename or not archive.filename.lower().endswith(".zip"):
+        raise legacy_import.LegacyImportError(
+            "Choose the Base44 HR data-table ZIP."
+        )
+    payload = await archive.read(legacy_import.MAX_ARCHIVE_BYTES + 1)
+    if len(payload) > legacy_import.MAX_ARCHIVE_BYTES:
+        raise legacy_import.LegacyImportError(
+            "The selected ZIP is larger than the safe import limit."
+        )
+    return payload
+
+
+@router.post("/settings/legacy-import/preview", response_class=HTMLResponse)
+async def hr_legacy_import_preview(
+    archive: UploadFile = File(...),
+    user: dict = Depends(_settings_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
+):
+    try:
+        preview = legacy_import.preview_legacy_export(
+            await _read_legacy_archive(archive)
+        )
+    except legacy_import.LegacyImportError as exc:
+        return HTMLResponse(
+            render_hr_legacy_import(user=user, error=str(exc)), status_code=422
+        )
+    store.audit_sensitive_read(
+        user.get("email", ""), scope="legacy_hr_export",
+        entity_id=preview["digest"][:16], purpose="Base44 recovery preview",
+    )
+    return HTMLResponse(render_hr_legacy_import(user=user, preview=preview))
+
+
+@router.post("/settings/legacy-import/commit", response_class=HTMLResponse)
+async def hr_legacy_import_commit(
+    archive: UploadFile = File(...),
+    expected_digest: str = Form(""),
+    attested: bool = Form(False),
+    user: dict = Depends(_recent_settings_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
+):
+    try:
+        result = legacy_import.import_legacy_export(
+            await _read_legacy_archive(archive),
+            actor=user.get("email", ""),
+            expected_digest=expected_digest,
+            attested=attested,
+        )
+    except legacy_import.LegacyImportError as exc:
+        return HTMLResponse(
+            render_hr_legacy_import(user=user, error=str(exc)), status_code=422
+        )
+    return HTMLResponse(render_hr_legacy_import(user=user, result=result))
 
 
 @router.post("/settings")

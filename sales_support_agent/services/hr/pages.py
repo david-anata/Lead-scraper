@@ -1037,6 +1037,82 @@ def render_hr_reports(*, user) -> str:
     return hr_shell("Reports", "reports", body, user=user)
 
 
+def render_hr_legacy_import(*, user, preview: dict | None = None,
+                            error: str = "", result: dict | None = None) -> str:
+    """Render the guarded Base44 recovery preview/commit workflow."""
+    notice = (
+        f'<div class="hr-callout danger"><strong>Import could not be reviewed.</strong>'
+        f'<p>{_esc(error)}</p></div>' if error else ""
+    )
+    result_html = ""
+    if result:
+        counts = result.get("counts") or {}
+        result_rows = "".join(
+            f"<tr><td>{_esc(key.replace('_', ' ').title())}</td><td>{int(value)}</td></tr>"
+            for key, value in counts.items()
+        )
+        result_html = f"""<section class="hr-callout">
+          <div class="hr-kicker">Recovery completed</div>
+          <h2>Historical records are now in Anata</h2>
+          <p>Employees recovered from history remain inactive until reviewed. Draft opening balances still require a second person’s approval.</p>
+          <table class="hr-tbl"><thead><tr><th>Record type</th><th>Result</th></tr></thead>
+          <tbody>{result_rows}</tbody></table>
+          <div class="hr-inline"><a class="hr-btn" href="/admin/hr/employees">Review recovered people</a>
+          <a class="hr-btn hr-btn-light" href="/admin/hr/settings">Review opening balances</a></div>
+        </section>"""
+    preview_html = ""
+    if preview:
+        employee_rows = "".join(
+            f"""<tr><td>{_esc(item['name'] or 'Name unavailable')}</td>
+            <td>{_esc(item['email'])}</td><td>{_esc(item['proposed_type'])}</td>
+            <td>{item['time_count']}</td><td>{item['line_count']}</td>
+            <td>${item['gross_cents'] / 100:,.2f}</td></tr>"""
+            for item in preview["employees"]
+        ) or '<tr><td colspan="6" class="hr-empty">No real employee identities were found.</td></tr>'
+        count_rows = "".join(
+            f"<tr><td>{_esc(key)}</td><td>{int(value)}</td></tr>"
+            for key, value in preview["counts"].items()
+        )
+        warnings = "".join(f"<li>{_esc(item)}</li>" for item in preview["warnings"])
+        preview_html = f"""<section class="hr-card">
+          <div class="hr-kicker">Preview only · no records written</div>
+          <h2>Recovery contents</h2>
+          <p>Archive fingerprint: <code>{_esc(preview['digest'])}</code></p>
+          <div class="hr-grid2">
+            <div><h3>Employee history found</h3>
+              <table class="hr-tbl"><thead><tr><th>Person</th><th>Email</th><th>Proposed type</th><th>Time</th><th>Payroll lines</th><th>Historical gross</th></tr></thead>
+              <tbody>{employee_rows}</tbody></table></div>
+            <div><h3>Source tables</h3>
+              <table class="hr-tbl"><thead><tr><th>Table</th><th>Rows</th></tr></thead>
+              <tbody>{count_rows}</tbody></table>
+              <p>{int(preview['sample_rows_excluded'])} sample/test rows will be excluded.</p></div>
+          </div>
+          <div class="hr-callout warn"><strong>Controls that remain in force</strong><ul>{warnings}</ul></div>
+          <form class="hr-form" method="post" enctype="multipart/form-data" action="/admin/hr/settings/legacy-import/commit">
+            <input type="hidden" name="expected_digest" value="{_esc(preview['digest'])}">
+            <label>Select the same reviewed ZIP again</label>
+            <input type="file" name="archive" accept=".zip,application/zip" required>
+            <label><input type="checkbox" name="attested" value="true" required style="width:auto">
+              I reviewed this preview and understand current employee status, pay setup, and opening balances remain subject to human review.</label>
+            <button class="hr-btn" type="submit">Import historical records</button>
+          </form>
+        </section>"""
+    body = f"""{notice}{result_html}
+    <h1 class="hr-h1">Recover Base44 HR history</h1>
+    <p class="hr-sub">Bring the exported HR tables into Anata without reconnecting to Von’s app. Previewing never writes data.</p>
+    <section class="hr-callout warn">
+      <div class="hr-kicker">Historical evidence—not payroll authority</div>
+      <p>The import preserves time, checks, pay periods, and payroll history. It does not trust Base44’s simplified tax rules, activate employees, invite anyone, file taxes, or move money.</p>
+    </section>
+    <form class="hr-form" method="post" enctype="multipart/form-data" action="/admin/hr/settings/legacy-import/preview">
+      <label>Base44 “HR data table export” ZIP</label>
+      <input type="file" name="archive" accept=".zip,application/zip" required>
+      <button class="hr-btn" type="submit">Preview recovery</button>
+    </form>
+    {preview_html}"""
+    return hr_shell("Recover HR history", "settings", body, user=user)
+
+
 def render_hr_compliance(
     tasks: list, calendar_rows: list, *, year: int, user, flash=None
 ) -> str:
@@ -1173,6 +1249,12 @@ def render_hr_settings(settings: dict, company: dict, employees: list, opening_b
       <h2>Integration contract ready · authority undecided</h2>
       <p>Square is deferred. The future internal service must declare whether it owns final calculation, wage distribution, tax payment, and tax filing. Anata will not infer those outcomes.</p>
       <a class="hr-btn hr-btn-light" href="/admin/hr/settings/provider-contract.json">Download machine-readable contract</a>
+    </section>
+    <section class="hr-card">
+      <div class="hr-kicker">Base44 recovery</div>
+      <h2>Recover the history you already exported</h2>
+      <p class="hr-sub">Preview the original data-table ZIP, exclude sample rows, and import historical records without trusting legacy tax settings.</p>
+      <a class="hr-btn hr-btn-light" href="/admin/hr/settings/legacy-import">Open recovery tool</a>
     </section>
     <section class="hr-card">
       <div class="hr-kicker">Employee handbook</div>

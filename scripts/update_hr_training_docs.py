@@ -63,6 +63,18 @@ def update_operator() -> None:
     )
     insert_before(
         document,
+        "9. Authoritative payroll-service handoff",
+        [
+            ("Recover the Base44 history", "Heading 2"),
+            ("Open HR → Settings → Recover the history you already exported. Select the original “HR data table export” ZIP and review the preview before importing anything.", "Normal"),
+            ("The preview shows the people, time entries, payroll history, issued checks, excluded sample rows, and a unique archive fingerprint. It does not write records.", "Normal"),
+            ("If the preview is correct, select the same ZIP again, confirm the review statement, and import. The matching fingerprint prevents a different file from being substituted after review.", "Normal"),
+            ("Recovered people remain inactive until David or Val reviews their current employment type and compensation. Historical Base44 tax settings are never activated. Opening balances are draft candidates based on issued-check evidence and still require independent approval.", "Normal"),
+            ("The import is idempotent: uploading the same export again skips records already recovered. It never sends invitations, stores full SSNs or bank details, files taxes, or moves money.", "Normal"),
+        ],
+    )
+    insert_before(
+        document,
         "9. Contractor payments through Wise",
         [
             ("9. Authoritative payroll-service handoff", "Heading 1"),
