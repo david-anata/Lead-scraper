@@ -140,6 +140,106 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(r.pushed, 0)
 
 
+class TestAmazonReachesTheLead(unittest.TestCase):
+    """The Amazon check has to actually run during a pull and actually win.
+
+    Shipped once without these: brand_control existed, was fully unit tested, and
+    was never called by run_storeleads_to_clay. Every lead kept the old
+    plan-upgrade line and the Amazon work never reached a single email.
+    """
+
+    QUESTION = "There are a handful of other sellers on your listing. Are those all authorized?"
+
+    def _fetch(self):
+        def fetch(api_key, *, page=0, page_size=50, **kw):
+            return [_store(name="a.com")] if page == 0 else []
+        return fetch
+
+    class _Recipe:
+        key = "plan_upgrade"
+
+        def params(self, now, settings):
+            return {}
+
+        def keeps(self, store, now, settings):
+            return True
+
+        def reason_for(self, settings):
+            return "They upgraded their store plan recently"
+
+    def _run(self, amazon_check, recipe=None):
+        return op.run_storeleads_to_clay(
+            api_key="x", clay_webhook_url="https://clay/webhook",
+            processed_domains=set(), max_new=10, throttle_seconds=0, recipe=recipe,
+            fetch_page=self._fetch(), push=lambda u, l: {"pushed": len(l), "leads": l},
+            amazon_check=amazon_check,
+        )
+
+    def test_the_check_is_called_for_every_matched_brand(self):
+        seen = []
+        self._run(lambda lead: seen.append(lead["domain"]) or None)
+        self.assertEqual(seen, ["a.com"], "the pull never called the Amazon check")
+
+    def test_an_amazon_finding_beats_the_recipe_reason(self):
+        """The recipe writes its reason AFTER the lead is built, so an Amazon
+        result applied too early is silently overwritten and nobody notices."""
+        captured = {}
+
+        def push(url, leads):
+            captured["leads"] = leads
+            return {"pushed": len(leads)}
+
+        op.run_storeleads_to_clay(
+            api_key="x", clay_webhook_url="https://clay/webhook",
+            processed_domains=set(), max_new=10, throttle_seconds=0,
+            recipe=self._Recipe(),
+            fetch_page=self._fetch(), push=push,
+            amazon_check=lambda lead: {"reason": self.QUESTION, "confidence": "high",
+                                       "marketplace": "amazon.com",
+                                       "checked_at": "2026-07-26T12:00:00+00:00",
+                                       "findings": {"listings": [{"sellers_unknown": 18}],
+                                                    "absent": False}},
+        )
+        lead = captured["leads"][0]
+        self.assertEqual(lead["reason"], self.QUESTION)
+        self.assertNotIn("upgraded their store plan", lead["reason"])
+        self.assertEqual(lead["signals"][0], self.QUESTION)
+        self.assertEqual(lead["amazon_confidence"], "high")
+        self.assertEqual(lead["amazon_sellers_unknown"], 18)
+
+    def test_the_recipe_reason_stands_when_amazon_found_nothing(self):
+        captured = {}
+
+        def push(url, leads):
+            captured["leads"] = leads
+            return {"pushed": len(leads)}
+
+        op.run_storeleads_to_clay(
+            api_key="x", clay_webhook_url="https://clay/webhook",
+            processed_domains=set(), max_new=10, throttle_seconds=0,
+            recipe=self._Recipe(),
+            fetch_page=self._fetch(), push=push,
+            amazon_check=lambda lead: {"reason": "", "skipped_reason": "no confident match",
+                                       "confidence": "low", "marketplace": "amazon.com",
+                                       "checked_at": "2026-07-26T12:00:00+00:00",
+                                       "findings": {"listings": [], "absent": False}},
+        )
+        lead = captured["leads"][0]
+        self.assertIn("upgraded their store plan", lead["reason"])
+        self.assertEqual(lead["amazon_skipped_reason"], "no confident match")
+
+    def test_a_broken_amazon_check_does_not_kill_the_pull(self):
+        """A data provider outage must cost us the finding, not the batch."""
+        def boom(lead):
+            raise RuntimeError("rainforest down")
+        r = self._run(boom)
+        self.assertEqual(r.fresh, 1)
+
+    def test_no_check_supplied_behaves_exactly_as_before(self):
+        r = self._run(None)
+        self.assertEqual(r.fresh, 1)
+
+
 class TestLeadsToCsv(unittest.TestCase):
     def test_headers_match_clay_columns_so_import_auto_maps(self):
         """Clay creates a NEW column when the header does not match an existing

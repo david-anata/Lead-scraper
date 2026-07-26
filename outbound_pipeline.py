@@ -381,17 +381,33 @@ def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
         "categories": store.get("categories"),
         "apps": store.get("apps"),
     }
-    if isinstance(amazon, dict):
-        findings = amazon.get("findings")
-        lead["amazon_confidence"] = str(amazon.get("confidence") or "none")
-        lead["amazon_marketplace"] = str(amazon.get("marketplace") or "")
-        lead["amazon_checked_at"] = str(amazon.get("checked_at") or "")
-        lead["amazon_absent"] = bool(findings.get("absent")) if isinstance(findings, dict) else False
-        lead["amazon_sellers_unknown"] = _amazon_unknown_sellers(findings)
-        lead["amazon_skipped_reason"] = str(amazon.get("skipped_reason") or "")
-        amazon_reason = str(amazon.get("reason") or "").strip()
-        if amazon_reason:
-            lead["reason"] = amazon_reason
+    apply_amazon(lead, amazon)
+    return lead
+
+
+def apply_amazon(lead: dict[str, Any], amazon: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Fold an Amazon brand-control result onto a lead, in place.
+
+    Applied LAST in the pull, after the recipe has had its say, because a real
+    finding about a brand's own listings beats a guess made from a store plan
+    change. Getting this order wrong silently reverts every lead to the old
+    reason and the Amazon work never reaches the email.
+    """
+    if not isinstance(amazon, dict):
+        return lead
+    findings = amazon.get("findings")
+    lead["amazon_confidence"] = str(amazon.get("confidence") or "none")
+    lead["amazon_marketplace"] = str(amazon.get("marketplace") or "")
+    lead["amazon_checked_at"] = str(amazon.get("checked_at") or "")
+    lead["amazon_absent"] = bool(findings.get("absent")) if isinstance(findings, dict) else False
+    lead["amazon_sellers_unknown"] = _amazon_unknown_sellers(findings)
+    lead["amazon_skipped_reason"] = str(amazon.get("skipped_reason") or "")
+    amazon_reason = str(amazon.get("reason") or "").strip()
+    if amazon_reason:
+        lead["reason"] = amazon_reason
+        lead["signals"] = [amazon_reason] + [
+            s for s in lead.get("signals") or [] if s != amazon_reason
+        ]
     return lead
 
 
@@ -505,6 +521,7 @@ def run_storeleads_to_clay(
     settings: Optional[dict[str, Any]] = None,
     fetch_page: Optional[Callable[..., list[dict[str, Any]]]] = None,
     push: Optional[Callable[..., dict[str, Any]]] = None,
+    amazon_check: Optional[Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = None,
 ) -> PipelineResult:
     """Pull ICP brands from StoreLeads, drop already-contacted ones, push the
     rest to Clay. With dry_run=True (or no Clay webhook) nothing is pushed; the
@@ -558,6 +575,14 @@ def run_storeleads_to_clay(
                 lead["signals"] = [reason] + [
                     s for s in lead.get("signals", []) if s != reason
                 ]
+            # Amazon last, so a real finding about their own listings wins over
+            # the recipe's guess at why now.
+            if amazon_check is not None:
+                try:
+                    apply_amazon(lead, amazon_check(lead))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[outbound] amazon check failed for %s: %s",
+                                   lead.get("domain"), exc)
             if lead.get("tier") == "X":
                 continue  # public company / out of profile — drop
             domain = lead["domain"]

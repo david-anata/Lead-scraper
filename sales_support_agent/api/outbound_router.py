@@ -273,6 +273,7 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "") 
             dry_run=True,
             recipe=chosen,
             settings=tunables,
+            amazon_check=_amazon_checker(tunables),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[outbound] StoreLeads CSV build failed")
@@ -341,6 +342,48 @@ _AMAZON_CSS = """
   .am-open { white-space:normal; min-width:280px; max-width:420px; }
   .am-skip { color:#6b7280; font-style:italic; }
 """
+
+
+def _amazon_checker(tunables: dict[str, Any]):
+    """The per-lead Amazon lookup handed to a pull, or None when it is off.
+
+    Returns None rather than a no-op callable when the check is disabled or the
+    key is missing, so a pull behaves exactly as it did before this existed.
+    Every failure degrades to no finding: a data provider outage should cost us
+    the opening line, never the batch.
+    """
+    import os
+
+    import outbound_amazon as _az
+
+    if not _az._bool_setting(tunables, "amazon.enabled"):
+        return None
+    if not (os.getenv("RAINFOREST_API_KEY", "") or "").strip():
+        logger.info("[outbound] amazon check skipped: no RAINFOREST_API_KEY")
+        return None
+
+    try:
+        from sales_support_agent.services.rainforest import RainforestClient
+        client = RainforestClient()
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound] could not build the Amazon client")
+        return None
+
+    def check(lead: dict[str, Any]) -> Any:
+        try:
+            return _az.brand_control(
+                str(lead.get("brand") or ""),
+                str(lead.get("domain") or ""),
+                str(lead.get("country") or ""),
+                niche=str(lead.get("niche") or ""),
+                client=client,
+                settings=tunables,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound] amazon check failed for %s", lead.get("domain"))
+            return None
+
+    return check
 
 
 def _amazon_scan_summary(leads: list[dict]) -> dict[str, Any]:
@@ -739,6 +782,7 @@ async def outbound_push_to_clay(request: Request) -> Response:
             api_key=api_key, clay_webhook_url="", processed_domains=already,
             max_new=chosen.cap(tunables) if chosen else 25, dry_run=True,
             recipe=chosen, settings=tunables,
+            amazon_check=_amazon_checker(tunables),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[outbound] pull before Clay push failed")
