@@ -20,11 +20,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 # ---- ICP floor, applied to EVERY recipe --------------------------------------
-# StoreLeads' revenue filters are MONTHLY sales in cents; our band is yearly.
-_YEARLY_MIN_CENTS = 1_000_000_00      # $1M/yr
-_YEARLY_MAX_CENTS = 15_000_000_00     # $15M/yr
-MONTHLY_MIN_CENTS = _YEARLY_MIN_CENTS // 12
-MONTHLY_MAX_CENTS = _YEARLY_MAX_CENTS // 12
+# The revenue band lives in DEFAULT_SETTINGS so it can be retuned in the app.
+# There are deliberately no module-level copies of it: a second definition is
+# how a "we changed the target" edit silently fails to take effect.
 
 def base_filters(settings: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """The ICP floor applied to EVERY recipe. The revenue band is tunable on the
@@ -47,9 +45,6 @@ def base_filters(settings: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         "f:tags:op": "not",                     # brief 2: these are never a fit
     }
 
-
-# Kept for callers that want the shipped defaults without passing settings.
-BASE_FILTERS: dict[str, Any] = {}
 
 # High-signal apps. Installing one means budget just moved; uninstalling one
 # means they had the problem, tried a tool, and still have the problem.

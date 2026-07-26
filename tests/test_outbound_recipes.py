@@ -25,10 +25,15 @@ class BaseFilterTests(unittest.TestCase):
             self.assertEqual(p["f:tags:op"], "not", r.key)
 
     def test_revenue_band_is_monthly_cents(self):
+        """We think in dollars a year; StoreLeads filters on monthly cents."""
         p = rc.recipe("icp_baseline").params(WED)
-        # $1M/yr and $15M/yr expressed as monthly cents
-        self.assertEqual(p["f:ermin"], 1_000_000_00 // 12)
-        self.assertEqual(p["f:ermax"], 15_000_000_00 // 12)
+        self.assertEqual(p["f:ermin"], 1_000_000 * 100 // 12)    # $1M/yr
+        self.assertEqual(p["f:ermax"], 20_000_000 * 100 // 12)   # $20M/yr
+
+    def test_there_is_only_one_definition_of_the_band(self):
+        """A second copy of the band is how a retune silently fails to apply."""
+        self.assertFalse(hasattr(rc, "BASE_FILTERS") and rc.BASE_FILTERS)
+        self.assertFalse(hasattr(rc, "MONTHLY_MAX_CENTS"))
 
     def test_dropshippers_excluded(self):
         p = rc.recipe("icp_baseline").params(WED)
