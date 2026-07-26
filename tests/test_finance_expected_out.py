@@ -351,3 +351,45 @@ def test_what_is_committable_ignoring_predictions_is_still_reported(monkeypatch)
 
     assert metrics["safe_to_commit_required_only_cents"] == 100_000
     assert metrics["safe_to_commit_cents"] == 0
+
+
+def test_a_tracked_bill_beyond_the_fortnight_is_reported_not_buried(monkeypatch):
+    """David confirmed Boulder Ranch, due 28 days out, and nothing he was looking
+    at moved: Expected out stayed at zero and the amount went silently into the
+    due-later figure alongside real commitments. A correct result read as a
+    broken button."""
+    rows = [
+        *_history(5_000_000),
+        _payable("real-soon", amount_cents=100_000, days_out=3),
+    ]
+    _install_bill_patterns(
+        monkeypatch,
+        [
+            _predicted_bill(
+                "predicted-rent", amount_cents=3_873_500, days_out=28, probability_bps=10_000
+            )
+        ],
+    )
+
+    metrics = build_finance_control_state(rows, [], as_of=AS_OF, floor_cents=100_000)["metrics"]
+
+    assert metrics["expected_outgoing_cents"] == 0, "28 days out is not inside a fortnight"
+    assert metrics["expected_outgoing_later_cents"] == 3_873_500
+    assert metrics["outgoing_exposure_cents"] == 0, (
+        "a forecast must not be mixed into money that is genuinely owed later"
+    )
+
+
+def test_a_prediction_beyond_the_window_does_not_move_the_funding_gap(monkeypatch):
+    """It is not in the fortnight, so it must not change the fortnight's shortfall."""
+    rows = [*_history(500_000), _payable("real", amount_cents=450_000, days_out=1)]
+    baseline = build_finance_control_state(rows, [], as_of=AS_OF, floor_cents=100_000)
+
+    _install_bill_patterns(
+        monkeypatch,
+        [_predicted_bill("far-off", amount_cents=900_000, days_out=40, probability_bps=10_000)],
+    )
+    forecast = build_finance_control_state(rows, [], as_of=AS_OF, floor_cents=100_000)
+
+    assert forecast["metrics"]["funding_gap_cents"] == baseline["metrics"]["funding_gap_cents"]
+    assert forecast["metrics"]["expected_outgoing_later_cents"] == 900_000

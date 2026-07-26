@@ -1200,6 +1200,7 @@ def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[st
             # Predicted bills are never in the fallback: it only reads dated rows.
             # Zero there is the honest answer, not a missing number.
             "expected_out_cents": max(0, _cents(_control_value(cash, "expected_out_cents", "expected_outgoing_cents", default=0))),
+            "expected_out_later_cents": max(0, _cents(_control_value(cash, "expected_out_later_cents", "expected_outgoing_later_cents", default=0))),
             "funding_gap_required_only_cents": max(0, _cents(_control_value(cash, "funding_gap_required_only_cents", default=0))),
             "historical_backlog_cents": _cents(_control_value(cash, "historical_backlog_cents", default=0)),
             "historical_backlog_count": int(_control_value(cash, "historical_backlog_count", default=0) or 0),
@@ -3012,8 +3013,25 @@ def _render_out_metric(cash: Mapping[str, Any], backlog_note: str = "") -> str:
         '<small>Bills your own bank history says are coming</small>'
         '<div class="finance-income-line is-review"><span>Total out</span>'
         f'<strong>{_money(committed + expected)}</strong></div>'
-        f'<small>Plus {_money(_cents(cash.get("exposure_out_cents")))} due later{backlog_note}</small>'
+        f'<small>Plus {_money(_cents(cash.get("exposure_out_cents")))} due later{backlog_note}'
+        + _later_prediction_note(cash)
+        + '</small>'
         '</article>'
+    )
+
+
+def _later_prediction_note(cash: Mapping[str, Any]) -> str:
+    """Say when a tracked prediction sits beyond the fortnight.
+
+    Without this, confirming a bill due in four weeks moved nothing the operator
+    was looking at: Expected out stayed at zero and the only change was buried in
+    the due-later figure. A correct result looked like a button that did nothing.
+    """
+    later = _cents(cash.get("expected_out_later_cents"))
+    if later <= 0:
+        return ""
+    return (
+        f", and {_money(later)} you track that lands after the next 14 days"
     )
 
 

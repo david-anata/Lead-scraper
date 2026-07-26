@@ -202,7 +202,13 @@ def test_answering_a_bill_returns_to_the_list_and_not_the_finance_home(books):
     assert location.startswith("/admin/finances/whats-coming?flash="), (
         "answering one question threw the operator back to the finance home"
     )
-    assert "next 14 and 30 days" in _flash(response)
+    # Deliberately not "counts in your next 14 and 30 days". A bill due in four
+    # weeks does not land in a fortnight, and promising it does made a correct
+    # result look like a button that had done nothing.
+    flash = _flash(response)
+    assert "Tracking that one" in flash
+    assert "next 14 and 30 days" not in flash
+    assert "next due" in flash
 
 
 def test_tracking_a_bill_makes_it_count_on_the_page(books):

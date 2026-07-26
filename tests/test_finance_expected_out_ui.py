@@ -280,3 +280,28 @@ def test_the_filing_queue_says_money_coming_in_is_handled_elsewhere():
     assert "Only money going out is sorted here." in section
     assert "Money coming in is not in this list" in section
     assert 'href="/admin/finances/collections"' in section, "it says where instead"
+
+
+def test_the_card_says_when_a_tracked_bill_lands_after_the_fortnight():
+    """Boulder Ranch was confirmed and the 14 day figure stayed at zero, so the
+    click looked like it had done nothing. The card has to account for it."""
+    card = _render_out_metric({
+        "required_out_cents": 14_758_00,
+        "expected_out_cents": 0,
+        "expected_out_later_cents": 38_735_00,
+        "exposure_out_cents": 2_284_00,
+    })
+
+    assert _money(38_735_00) in card
+    assert "lands after the next 14 days" in card
+
+
+def test_the_card_stays_quiet_when_nothing_is_predicted_later():
+    card = _render_out_metric({
+        "required_out_cents": 14_758_00,
+        "expected_out_cents": 0,
+        "expected_out_later_cents": 0,
+        "exposure_out_cents": 2_284_00,
+    })
+
+    assert "lands after the next 14 days" not in card

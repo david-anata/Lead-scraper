@@ -1158,7 +1158,7 @@ def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window
     end = as_of + timedelta(days=window_days - 1)
     stale_before = as_of - timedelta(days=HISTORICAL_BACKLOG_DAYS)
     confirmed_in = expected_in = required_out = exposure_out = 0
-    expected_out = 0
+    expected_out = expected_out_later = 0
     historical_backlog = 0
     historical_backlog_count = 0
     for row in canonical:
@@ -1223,11 +1223,18 @@ def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window
                     exposure_out += open_amount - reserved
                 else:
                     required_out += open_amount
+            elif row.get("trend_inferred"):
+                # Beyond the window it is still only a forecast, so it must not
+                # be mixed into money that is genuinely owed later. Reported on
+                # its own, the page can say a tracked bill exists further out
+                # instead of leaving a confirmed prediction looking ignored.
+                expected_out_later += open_amount * _probability_bps(row) // 10_000
             else:
                 exposure_out += open_amount
     return {
         "historical_backlog_cents": historical_backlog,
         "historical_backlog_count": historical_backlog_count,
+        "expected_outgoing_later_cents": expected_out_later,
         "confirmed_incoming_cents": confirmed_in,
         "expected_incoming_cents": expected_in,
         "required_outgoing_cents": required_out,
@@ -2068,6 +2075,7 @@ def build_finance_control(
         "incoming_expected_cents": metrics["expected_incoming_cents"],
         "required_out_cents": metrics["required_outgoing_cents"],
         "expected_out_cents": metrics.get("expected_outgoing_cents", 0),
+        "expected_out_later_cents": metrics.get("expected_outgoing_later_cents", 0),
         "historical_backlog_cents": metrics.get("historical_backlog_cents", 0),
         "historical_backlog_count": metrics.get("historical_backlog_count", 0),
         "exposure_out_cents": metrics["outgoing_exposure_cents"],

@@ -83,7 +83,7 @@ def _summary_line(counts: Mapping[str, Any]) -> str:
         sentences.append("Everything found in your bank history has an answer.")
     if confirmed:
         counted = "it is" if confirmed == 1 else "they are"
-        sentences.append(f"{confirmed} you already track, so {counted} in your next 14 and 30 days.")
+        sentences.append(f"{confirmed} you already track, counting from the date each one is next due.")
     if monthly:
         sentences.append(f"Together these run about {_money(monthly)} a month.")
     if tracked:
@@ -92,14 +92,38 @@ def _summary_line(counts: Mapping[str, Any]) -> str:
     return " ".join(sentences)
 
 
-def _decision_note(decision: str) -> str:
-    """What the last answer did, said as an outcome rather than a state."""
-    if decision == "track":
-        return (
-            '<p class="metric-note" style="margin:8px 0 0">You track this one, so it counts '
-            "in your next 14 and 30 days.</p>"
+def _decision_note(decision: str, next_due: Any = None) -> str:
+    """What the last answer did, said as an outcome rather than a state.
+
+    It used to promise "counts in your next 14 and 30 days" for every tracked
+    bill. A bill due in four weeks does not show up in a fortnight, so the
+    operator clicked, watched the 14 day figure stay put, and reasonably
+    concluded nothing had happened. Now it says which window it lands in.
+    """
+    if decision != "track":
+        return ""
+    days = _days_away(next_due)
+    if days is None:
+        where = "it counts once its date is known"
+    elif days <= 14:
+        where = "it counts in your next 14 days"
+    elif days <= 30:
+        where = (
+            "the next one is more than a fortnight out, so it shows in your 30 day "
+            "view and not the 14 day one yet"
         )
-    return ""
+    else:
+        where = (
+            f"the next one is about {days} days out, so it is beyond both your 14 and "
+            "30 day views for now"
+        )
+    return f'<p class="metric-note" style="margin:8px 0 0">You track this one, and {where}.</p>'
+
+
+def _days_away(next_due: Any) -> int | None:
+    if not isinstance(next_due, date):
+        return None
+    return (next_due - date.today()).days
 
 
 def _pattern_card(pattern: Mapping[str, Any]) -> str:
@@ -126,7 +150,7 @@ def _pattern_card(pattern: Mapping[str, Any]) -> str:
       </div>
       <p style="margin:8px 0 0;font-size:13px;color:#6b7a8d">Why we think so: {why}.</p>
       {_evidence_line(pattern.get("evidence") or [])}
-      {_decision_note(decision)}
+      {_decision_note(decision, pattern.get("next_due"))}
       <form method="post" action="{DECIDE_ACTION}" class="action-row" style="margin:12px 0 0">
         <input type="hidden" name="pattern_key" value="{key}">
         <input type="hidden" name="return_to" value="{PAGE_PATH}">

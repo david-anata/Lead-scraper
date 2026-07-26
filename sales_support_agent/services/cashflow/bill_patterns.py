@@ -45,6 +45,7 @@ import statistics
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
+from uuid import uuid4
 from typing import Any, Mapping, Sequence
 
 from sqlalchemy import text
@@ -100,6 +101,9 @@ _NOT_A_MERCHANT = frozenset({
     "type", "company", "misc", "ach", "pos", "web", "recurring",
     "purch", "name", "svcs", "autopay", "paymt", "charge",
 })
+# Memoised answer, keyed by the data fingerprint so a new payment or a recorded
+# answer invalidates it immediately rather than after a timeout.
+_PATTERN_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 # How many of these land in a month, used only to rank by cost.
 _MONTHLY_MULTIPLIER = {
     "weekly": 52 / 12,
@@ -126,9 +130,61 @@ def list_bill_patterns(
     confirmed, biggest monthly cost first. ``tracked`` holds the ones a recurring
     template already covers, so the page can collapse them instead of asking
     about a bill that is already on the schedule.
+
+    The answer is memoised, because three separate things want it on a single
+    page load: the nav badge, the page itself and the cash forecast. Recomputing
+    it for each of them made every finance page noticeably slower to use. The
+    cache key carries a stamp of the bank rows and the recorded answers, so a new
+    payment or a click is reflected at once rather than after a delay.
     """
     as_of = as_of or datetime.utcnow().date()
     lookback_days = max(1, int(lookback_days))
+    cache_key = (as_of, lookback_days, scope, _data_stamp())
+    cached = _PATTERN_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    result = _list_bill_patterns_uncached(
+        as_of=as_of, lookback_days=lookback_days, scope=scope
+    )
+    # One entry is all that is useful, and it keeps a long-lived process from
+    # holding every day's answer in memory.
+    _PATTERN_CACHE.clear()
+    _PATTERN_CACHE[cache_key] = result
+    return result
+
+
+def _data_stamp() -> tuple[Any, ...]:
+    """A cheap fingerprint of everything the answer depends on.
+
+    Cheaper than the detection by a wide margin, and exact: if it has not moved,
+    nothing that could change the answer has happened.
+    """
+    from sales_support_agent.models.database import get_engine
+
+    try:
+        with get_engine().connect() as connection:
+            bank = connection.execute(text("""
+                SELECT COUNT(*), MAX(updated_at) FROM cash_events
+                WHERE source = 'csv' AND event_type = 'outflow'
+                  AND status IN ('posted', 'matched')
+            """)).fetchone()
+            answers = connection.execute(
+                text("SELECT COUNT(*) FROM finance_action_audit WHERE action_type = :action"),
+                {"action": BILL_PATTERN_ACTION},
+            ).scalar()
+            schedules = connection.execute(text(
+                "SELECT COUNT(*) FROM recurring_templates WHERE event_type = 'outflow'"
+            )).scalar()
+    except Exception:
+        # Never let the fingerprint be the thing that breaks the page. A unique
+        # value simply means this call is not served from cache.
+        return (uuid4().hex,)
+    return (bank[0], str(bank[1]), answers, schedules)
+
+
+def _list_bill_patterns_uncached(
+    *, as_of: date, lookback_days: int, scope: str
+) -> dict[str, Any]:
     history = _load_bill_history(as_of=as_of, lookback_days=lookback_days)
     decisions = _decision_records(scope=scope)
 

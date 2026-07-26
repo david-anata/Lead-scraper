@@ -1660,9 +1660,12 @@ async def recurring_delete(request: Request, template_id: str):
 
 _WHATS_COMING_PATH = "/admin/finances/whats-coming"
 
-# What each answer did, in the words the operator picked it with.
+# What each answer did, in the words the operator picked it with. The tracking
+# message deliberately does not promise the 14 day figure will move: a bill due in
+# four weeks does not land in a fortnight, and claiming otherwise made a correct
+# result look like a broken button.
 _BILL_DECISION_FLASH = {
-    "track": "Tracking that one. It now counts in your next 14 and 30 days.",
+    "track": "Tracking that one. It counts from the date it is next due, shown on its card.",
     "not_a_bill": "Noted, that is not a bill. We will stop asking about it.",
     "snooze": "Left for now. We will ask about it again in a week.",
 }
