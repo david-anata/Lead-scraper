@@ -561,6 +561,26 @@ class RootAppGuardsTest(unittest.TestCase):
     stack is frozen — leaving router-guarded sections (Finance/Advertising/
     Fulfillment/Brand Analysis) to 500 instead of rendering a 403."""
 
+    @staticmethod
+    def _route_paths(app) -> set[str]:
+        """Return paths from direct and FastAPI lazy-included routers."""
+        paths: set[str] = set()
+
+        def visit(routes) -> None:
+            for route in routes:
+                path = getattr(route, "path", None)
+                if path:
+                    paths.add(path)
+                original_router = getattr(route, "original_router", None)
+                if original_router is not None:
+                    visit(original_router.routes)
+                nested_routes = getattr(route, "routes", None)
+                if nested_routes is not None:
+                    visit(nested_routes)
+
+        visit(app.routes)
+        return paths
+
     def test_root_app_registers_rbac_middleware_and_handler(self) -> None:
         import main as rootmain
         from sales_support_agent.services.auth_deps import ToolForbidden
@@ -575,7 +595,7 @@ class RootAppGuardsTest(unittest.TestCase):
         /admin/auth/google → /admin/auth/callback. Those routes live in
         auth_router and MUST be mounted on the root app, or both 404."""
         import main as rootmain
-        paths = {r.path for r in rootmain.app.routes if hasattr(r, "path")}
+        paths = self._route_paths(rootmain.app)
         self.assertIn("/admin/auth/google", paths,
                       "root app must mount the Google login-start route")
         self.assertIn("/admin/auth/callback", paths,
@@ -590,8 +610,8 @@ class RootAppGuardsTest(unittest.TestCase):
             "/api/public/amazon-profit-calculator/catalog/{asin}",
             "/api/public/amazon-profit-calculator/profitability/estimate",
         }
-        root_paths = {r.path for r in rootmain.app.routes if hasattr(r, "path")}
-        agent_paths = {r.path for r in agentmain.app.routes if hasattr(r, "path")}
+        root_paths = self._route_paths(rootmain.app)
+        agent_paths = self._route_paths(agentmain.app)
         self.assertTrue(expected.issubset(root_paths))
         self.assertTrue(expected.issubset(agent_paths))
 
@@ -604,8 +624,8 @@ class RootAppGuardsTest(unittest.TestCase):
             "/admin/sales/decks",
             "/admin/sales/decks/",
         }
-        root_paths = {r.path for r in rootmain.app.routes if hasattr(r, "path")}
-        agent_paths = {r.path for r in agentmain.app.routes if hasattr(r, "path")}
+        root_paths = self._route_paths(rootmain.app)
+        agent_paths = self._route_paths(agentmain.app)
         self.assertTrue(expected.issubset(root_paths))
         self.assertTrue(expected.issubset(agent_paths))
 
