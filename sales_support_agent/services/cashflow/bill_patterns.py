@@ -504,13 +504,20 @@ def _explain(*, frequency: str, dates: Sequence[date], median_gap_days: float) -
         if spread == 0:
             return f"{opening}, always on the {_ordinal(typical_day)}"
         if spread <= 4:
-            return f"{opening}, always within {spread} days of the {_ordinal(typical_day)}"
+            return (
+                f"{opening}, always within {_days(spread)} of the {_ordinal(typical_day)}"
+            )
     else:
         weekdays = [day.weekday() for day in dates]
         common = Counter(weekdays).most_common(1)[0][0]
         if weekdays.count(common) * 10 >= len(weekdays) * 7:
             return f"{opening}, nearly always on a {calendar.day_name[common]}"
-    return f"{opening}, about every {int(round(median_gap_days))} days"
+    return f"{opening}, about every {_days(int(round(median_gap_days)))}"
+
+
+def _days(count: int) -> str:
+    """Reads as a sentence rather than as a field: "1 day", not "1 days"."""
+    return "1 day" if count == 1 else f"{count} days"
 
 
 def _typical_day_of_month(dates: Sequence[date]) -> int:

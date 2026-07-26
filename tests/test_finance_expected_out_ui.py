@@ -194,10 +194,20 @@ def test_the_new_card_is_the_one_the_page_renders():
     source = inspect.getsource(render_cashflow_overview_page)
     assert "_render_out_metric(" in source
     assert "_predicted_gap_note(" in source
-    # The heading itself stays "Required out 14 days": it is the landmark the
-    # operator navigates by. What must not happen is the page building that card
-    # inline again with a single figure, which is what the two calls above prove.
-    assert "Committed" not in source, "the card must come from the helper, not be re-inlined"
+
+    # The heading stays "Required out 14 days": it is the landmark the operator
+    # and several page tests both navigate by. What matters is that the card the
+    # page shows is the new three-line one, so assert on the rendered output
+    # rather than on the source, which also mentions "Committed" in a chart legend.
+    card = _render_out_metric({
+        "required_out_cents": 60_673_00,
+        "expected_out_cents": 23_120_00,
+        "exposure_out_cents": 0,
+    })
+    assert card.count("Required out 14 days") == 1
+    for line in ("Committed", "Expected out", "Total out"):
+        assert line in card, line
+    assert _money(83_793_00) in card, "the total must be the two added together"
 
 
 def test_the_nav_offers_the_predicted_bills_page_on_every_finance_page():
