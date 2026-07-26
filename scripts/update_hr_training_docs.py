@@ -63,6 +63,18 @@ def update_operator() -> None:
     )
     insert_before(
         document,
+        "9. Authoritative payroll-service handoff",
+        [
+            ("Recover the Base44 history", "Heading 2"),
+            ("Open HR → Settings → Recover the history you already exported. Select the original “HR data table export” ZIP and review the preview before importing anything.", "Normal"),
+            ("The preview shows the people, time entries, payroll history, issued checks, excluded sample rows, and a unique archive fingerprint. It does not write records.", "Normal"),
+            ("If the preview is correct, select the same ZIP again, confirm the review statement, and import. The matching fingerprint prevents a different file from being substituted after review.", "Normal"),
+            ("Recovered people remain inactive until David or Val reviews their current employment type and compensation. Historical Base44 tax settings are never activated. Opening balances are draft candidates based on issued-check evidence and still require independent approval.", "Normal"),
+            ("The import is idempotent: uploading the same export again skips records already recovered. It never sends invitations, stores full SSNs or bank details, files taxes, or moves money.", "Normal"),
+        ],
+    )
+    insert_before(
+        document,
         "9. Contractor payments through Wise",
         [
             ("9. Authoritative payroll-service handoff", "Heading 1"),
@@ -87,6 +99,17 @@ def update_operator() -> None:
         ("13. Payroll-day checklist", "14. Payroll-day checklist"),
     ):
         replace(document, old, new)
+    insert_before(
+        document,
+        "12. Offboarding",
+        [
+            ("Publish and track the employee handbook", "Heading 2"),
+            ("Open HR → Settings → Employee handbook. Enter the handbook title, a new unique version label, and the secure HTTPS link to the exact document employees must read.", "Normal"),
+            ("Review the document yourself, check the publication confirmation, and publish. The prior version becomes superseded but its acknowledgements remain in history.", "Normal"),
+            ("Employees open HR → Policies, read the linked handbook, and acknowledge that exact version. The settings table shows the acknowledgement count; the daily HR reminder reports outstanding active employees without exposing their names in email.", "Normal"),
+            ("Never replace the file behind an existing version link. Correct the document, assign a new version, and publish it so employees receive a fresh acknowledgement requirement.", "Normal"),
+        ],
+    )
     insert_before(
         document,
         "13. Troubleshooting quick reference",
@@ -167,6 +190,15 @@ def update_employee() -> None:
             ("6. Use HR on your phone", "Heading 1"),
             ("Use the bottom shortcuts: Home for open tasks, Time for clocking and PTO, Pay for issued statements, and Profile for onboarding and secure forms.", "Normal"),
             ("Tables scroll sideways inside the record when needed. Your full Social Security number and sealed tax form are never displayed in those tables or downloads.", "Normal"),
+        ],
+    )
+    insert_before(
+        document,
+        "Need help?",
+        [
+            ("7. Read and acknowledge the current handbook", "Heading 1"),
+            ("Open Policies, select Open handbook securely, and read the complete current version. Return to HR and acknowledge only after you have read that exact version.", "Normal"),
+            ("A new handbook version requires a new acknowledgement. If the link is unavailable or the document appears different from the version shown in HR, stop and tell David or Val.", "Normal"),
         ],
     )
     document.save(EMPLOYEE)

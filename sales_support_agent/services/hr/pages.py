@@ -265,6 +265,10 @@ def _flash(flash: Optional[str]) -> str:
         "offboarding_complete": "Offboarding completed and the employee was made inactive.",
         "policy_acknowledged": "Current policy version acknowledged.",
         "policy_already_acknowledged": "You already acknowledged this policy version.",
+        "policy_changed": "The handbook changed before acknowledgement. Review the current version and try again.",
+        "handbook_published": "New handbook version published. Employees must acknowledge this version.",
+        "handbook_invalid": "Enter a unique version, a secure HTTPS handbook link, and confirm publication.",
+        "handbook_version_exists": "That handbook version already exists. Publish a new version label.",
         "compliance_confirmed": "Compliance submission evidence recorded.",
         "compliance_reopened": "Compliance task reopened for follow-up.",
         "compliance_evidence_required": "Add a note describing the evidence reviewed.",
@@ -1033,6 +1037,82 @@ def render_hr_reports(*, user) -> str:
     return hr_shell("Reports", "reports", body, user=user)
 
 
+def render_hr_legacy_import(*, user, preview: dict | None = None,
+                            error: str = "", result: dict | None = None) -> str:
+    """Render the guarded Base44 recovery preview/commit workflow."""
+    notice = (
+        f'<div class="hr-callout danger"><strong>Import could not be reviewed.</strong>'
+        f'<p>{_esc(error)}</p></div>' if error else ""
+    )
+    result_html = ""
+    if result:
+        counts = result.get("counts") or {}
+        result_rows = "".join(
+            f"<tr><td>{_esc(key.replace('_', ' ').title())}</td><td>{int(value)}</td></tr>"
+            for key, value in counts.items()
+        )
+        result_html = f"""<section class="hr-callout">
+          <div class="hr-kicker">Recovery completed</div>
+          <h2>Historical records are now in Anata</h2>
+          <p>Employees recovered from history remain inactive until reviewed. Draft opening balances still require a second person’s approval.</p>
+          <table class="hr-tbl"><thead><tr><th>Record type</th><th>Result</th></tr></thead>
+          <tbody>{result_rows}</tbody></table>
+          <div class="hr-inline"><a class="hr-btn" href="/admin/hr/employees">Review recovered people</a>
+          <a class="hr-btn hr-btn-light" href="/admin/hr/settings">Review opening balances</a></div>
+        </section>"""
+    preview_html = ""
+    if preview:
+        employee_rows = "".join(
+            f"""<tr><td>{_esc(item['name'] or 'Name unavailable')}</td>
+            <td>{_esc(item['email'])}</td><td>{_esc(item['proposed_type'])}</td>
+            <td>{item['time_count']}</td><td>{item['line_count']}</td>
+            <td>${item['gross_cents'] / 100:,.2f}</td></tr>"""
+            for item in preview["employees"]
+        ) or '<tr><td colspan="6" class="hr-empty">No real employee identities were found.</td></tr>'
+        count_rows = "".join(
+            f"<tr><td>{_esc(key)}</td><td>{int(value)}</td></tr>"
+            for key, value in preview["counts"].items()
+        )
+        warnings = "".join(f"<li>{_esc(item)}</li>" for item in preview["warnings"])
+        preview_html = f"""<section class="hr-card">
+          <div class="hr-kicker">Preview only · no records written</div>
+          <h2>Recovery contents</h2>
+          <p>Archive fingerprint: <code>{_esc(preview['digest'])}</code></p>
+          <div class="hr-grid2">
+            <div><h3>Employee history found</h3>
+              <table class="hr-tbl"><thead><tr><th>Person</th><th>Email</th><th>Proposed type</th><th>Time</th><th>Payroll lines</th><th>Historical gross</th></tr></thead>
+              <tbody>{employee_rows}</tbody></table></div>
+            <div><h3>Source tables</h3>
+              <table class="hr-tbl"><thead><tr><th>Table</th><th>Rows</th></tr></thead>
+              <tbody>{count_rows}</tbody></table>
+              <p>{int(preview['sample_rows_excluded'])} sample/test rows will be excluded.</p></div>
+          </div>
+          <div class="hr-callout warn"><strong>Controls that remain in force</strong><ul>{warnings}</ul></div>
+          <form class="hr-form" method="post" enctype="multipart/form-data" action="/admin/hr/settings/legacy-import/commit">
+            <input type="hidden" name="expected_digest" value="{_esc(preview['digest'])}">
+            <label>Select the same reviewed ZIP again</label>
+            <input type="file" name="archive" accept=".zip,application/zip" required>
+            <label><input type="checkbox" name="attested" value="true" required style="width:auto">
+              I reviewed this preview and understand current employee status, pay setup, and opening balances remain subject to human review.</label>
+            <button class="hr-btn" type="submit">Import historical records</button>
+          </form>
+        </section>"""
+    body = f"""{notice}{result_html}
+    <h1 class="hr-h1">Recover Base44 HR history</h1>
+    <p class="hr-sub">Bring the exported HR tables into Anata without reconnecting to Von’s app. Previewing never writes data.</p>
+    <section class="hr-callout warn">
+      <div class="hr-kicker">Historical evidence—not payroll authority</div>
+      <p>The import preserves time, checks, pay periods, and payroll history. It does not trust Base44’s simplified tax rules, activate employees, invite anyone, file taxes, or move money.</p>
+    </section>
+    <form class="hr-form" method="post" enctype="multipart/form-data" action="/admin/hr/settings/legacy-import/preview">
+      <label>Base44 “HR data table export” ZIP</label>
+      <input type="file" name="archive" accept=".zip,application/zip" required>
+      <button class="hr-btn" type="submit">Preview recovery</button>
+    </form>
+    {preview_html}"""
+    return hr_shell("Recover HR history", "settings", body, user=user)
+
+
 def render_hr_compliance(
     tasks: list, calendar_rows: list, *, year: int, user, flash=None
 ) -> str:
@@ -1094,8 +1174,15 @@ def render_hr_policies(policy: dict, *, user, flash=None) -> str:
         f"Acknowledged {_esc(policy.get('acknowledged_at'))}"
         if policy.get("acknowledged") else "Acknowledgement required"
     )
+    handbook_link = (
+        f'''<section class="hr-callout"><div class="hr-kicker">Current employee handbook</div>
+        <p>Open and read the complete handbook before acknowledging this version.</p>
+        <a class="hr-btn hr-btn-light" href="{_esc(policy.get('file_url'))}" target="_blank" rel="noopener noreferrer">Open handbook securely</a></section>'''
+        if str(policy.get("file_url") or "").startswith("https://") else ""
+    )
     body = f"""{_flash(flash)}<h1 class="hr-h1">{_esc(policy['title'])}</h1>
     <p class="hr-sub">Version {_esc(policy['version'])} · {ack}</p>
+    {handbook_link}
     <div class="hr-stack">
       <section class="hr-callout"><h2>Timekeeping and overtime</h2><p>Hourly employees clock in and out for the day using exact time. The workweek is Sunday through Saturday. Overtime should be approved in advance, but all time actually worked must be reported and will be paid.</p></section>
       <section class="hr-callout"><h2>PTO</h2><p>W-2 employees accrue one PTO hour for each 52 paid hours, up to 40 hours. Accrual starts on the hire date; use begins after 90 days. Balances cannot go negative. PTO is paid at the base rate and does not count as hours worked for overtime.</p></section>
@@ -1110,11 +1197,18 @@ def render_hr_policies(policy: dict, *, user, flash=None) -> str:
 
 
 def render_hr_settings(settings: dict, company: dict, employees: list, opening_balances: list,
-                       *, user, flash=None) -> str:
+                       handbooks: list, *, user, flash=None) -> str:
     checked = lambda key: " checked" if settings.get(key) else ""
     review = settings.get("qualified_review") or {}
     balance_by_email = {row["employee_email"]: row for row in opening_balances}
     balance_forms = ""
+    handbook_rows = "".join(
+        f"""<tr><td>{_esc(item['version'])}</td><td>{_esc(item['title'])}</td>
+        <td>{'Active — acknowledgement required' if item['is_active'] else 'Superseded'}</td>
+        <td>{item['acknowledgement_count']}</td><td>{_esc(item['uploaded_by'])}</td>
+        <td><a href="{_esc(item['file_url'])}" target="_blank" rel="noopener noreferrer">Open</a></td></tr>"""
+        for item in handbooks
+    ) or '<tr><td colspan="6" class="hr-empty">The built-in operating policy will be used until a handbook is published.</td></tr>'
     for employee in employees:
         if employee.get("employee_type") == "contractor":
             continue
@@ -1155,6 +1249,25 @@ def render_hr_settings(settings: dict, company: dict, employees: list, opening_b
       <h2>Integration contract ready · authority undecided</h2>
       <p>Square is deferred. The future internal service must declare whether it owns final calculation, wage distribution, tax payment, and tax filing. Anata will not infer those outcomes.</p>
       <a class="hr-btn hr-btn-light" href="/admin/hr/settings/provider-contract.json">Download machine-readable contract</a>
+    </section>
+    <section class="hr-card">
+      <div class="hr-kicker">Base44 recovery</div>
+      <h2>Recover the history you already exported</h2>
+      <p class="hr-sub">Preview the original data-table ZIP, exclude sample rows, and import historical records without trusting legacy tax settings.</p>
+      <a class="hr-btn hr-btn-light" href="/admin/hr/settings/legacy-import">Open recovery tool</a>
+    </section>
+    <section class="hr-card">
+      <div class="hr-kicker">Employee handbook</div>
+      <h2>Publish a version for acknowledgement</h2>
+      <p class="hr-sub">Publishing retires the prior active version but preserves its acknowledgements. The secure document itself remains in your approved company document store.</p>
+      <form class="hr-form" method="post" action="/admin/hr/settings/handbook">
+        <div class="hr-grid2"><div><label>Handbook title</label><input name="title" required maxlength="255" placeholder="Anata Employee Handbook"></div>
+        <div><label>Unique version</label><input name="version" required maxlength="32" placeholder="2026.1"></div></div>
+        <label>Secure HTTPS document link</label><input type="url" name="file_url" required pattern="https://.*" placeholder="https://docs.google.com/...">
+        <label><input type="checkbox" name="attested" value="true" required style="width:auto"> I reviewed this exact document and intend to require employee acknowledgement.</label>
+        <button class="hr-btn" type="submit">Publish handbook version</button>
+      </form>
+      <table class="hr-tbl"><thead><tr><th>Version</th><th>Title</th><th>Status</th><th>Acknowledged</th><th>Published by</th><th>Document</th></tr></thead><tbody>{handbook_rows}</tbody></table>
     </section>
     <form class="hr-form" method="post" action="/admin/hr/settings/company">
       <div class="hr-kicker">Employer legal profile</div>
