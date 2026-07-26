@@ -685,3 +685,50 @@ def test_genuinely_different_vendors_are_still_kept_apart(finance_engine):
         ("Google Workspace Anatai Ca", "Slack Slack Com Ca"),
     ]:
         assert bill_merchant_key(left) != bill_merchant_key(right), (left, right)
+
+
+def test_the_month_in_progress_does_not_drag_a_bill_below_its_real_cost(finance_engine):
+    """David's Boulder Ranch figures exactly. The app read $38,735 while he said
+    it is now $40,000 a month. Half of July's rent was being counted as though
+    July were finished, and it was the smallest number in the set."""
+    # Uneven pieces, as the real payments are, summing to the totals he sees:
+    # Feb 39,636 | Mar 30,065 | Apr 36,000 | May 36,033 | Jun 40,084 | Jul 15,075
+    pieces = [
+        (date(2026, 2, 10), 30_000_00), (date(2026, 2, 26), 9_636_00),
+        (date(2026, 3, 6), 25_000_00), (date(2026, 3, 26), 5_065_00),
+        (date(2026, 4, 7), 28_000_00), (date(2026, 4, 21), 8_000_00),
+        (date(2026, 5, 8), 30_000_00), (date(2026, 5, 21), 6_033_00),
+        (date(2026, 6, 9), 32_000_00), (date(2026, 6, 30), 8_084_00),
+        # July is only half gone, so this is not a month's cost.
+        (date(2026, 7, 14), 15_075_00),
+    ]
+    _post_mixed(finance_engine, [
+        (RENT_A if index % 2 else RENT_B, cents, when)
+        for index, (when, cents) in enumerate(pieces)
+    ], category="rent")
+
+    bill = list_bill_patterns(as_of=date(2026, 7, 26), lookback_days=400)["patterns"][0]
+
+    assert bill["frequency"] == "monthly"
+    assert bill["amount_cents"] >= 39_000_00, (
+        f"projected {bill['amount_cents'] / 100:,.2f} for a bill now costing about 40,000"
+    )
+    assert bill["occurrences"] == 5, "the unfinished month is not one of the observations"
+    assert all(
+        row["due_date"].month != 7 for row in bill["evidence"]
+    ), "the month in progress must not appear as evidence of a month's cost"
+
+
+def test_the_month_in_progress_is_kept_when_dropping_it_leaves_too_little(finance_engine):
+    """Three months of history is already the minimum. Discarding one to be tidy
+    would silently stop predicting the bill at all."""
+    _post_mixed(finance_engine, [
+        (RENT_A, 10_000_00, date(2026, 5, 4)), (RENT_B, 6_000_00, date(2026, 5, 20)),
+        (RENT_A, 12_000_00, date(2026, 6, 3)), (RENT_B, 4_000_00, date(2026, 6, 19)),
+        (RENT_A, 9_000_00, date(2026, 7, 2)), (RENT_B, 5_000_00, date(2026, 7, 14)),
+    ], category="rent")
+
+    found = list_bill_patterns(as_of=date(2026, 7, 26), lookback_days=400)["patterns"]
+
+    assert found, "dropping the current month must not drop the bill"
+    assert found[0]["occurrences"] == 3

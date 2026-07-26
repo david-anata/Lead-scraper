@@ -448,7 +448,7 @@ def _build_pattern(
     """
     label = _display_label(merchant, occurrences)
     original = sorted(occurrences, key=lambda row: row[0])
-    series, paid_in_pieces = _consolidate_part_payments(original)
+    series, paid_in_pieces = _consolidate_part_payments(original, as_of=as_of)
     if len(series) < MIN_OCCURRENCES:
         return None
 
@@ -511,6 +511,8 @@ def _amount_spread(amounts: Sequence[int]) -> float:
 
 def _consolidate_part_payments(
     occurrences: Sequence[tuple[date, int, str]],
+    *,
+    as_of: date,
 ) -> tuple[list[tuple[date, int, str]], bool]:
     """Add up a month's payments when one bill is settled in several.
 
@@ -518,6 +520,10 @@ def _consolidate_part_payments(
     repayment of the same figure is more useful forecast as four hits than as one
     monthly lump. It is the uneven ones landing several times a month that are
     pieces of a single bill.
+
+    The month in progress is left out. Half of this month's rent is not a month's
+    rent, and because it is always the smallest figure in the set it dragged the
+    projection below what the bill actually costs now.
     """
     by_month: dict[tuple[int, int], list[tuple[date, int, str]]] = {}
     for row in occurrences:
@@ -528,8 +534,14 @@ def _consolidate_part_payments(
     if _amount_spread([row[1] for row in occurrences]) <= STEADY_AMOUNT_SPREAD:
         return list(occurrences), False
 
+    complete = dict(by_month)
+    current = (as_of.year, as_of.month)
+    last_day = calendar.monthrange(as_of.year, as_of.month)[1]
+    if as_of.day < last_day and current in complete and len(complete) - 1 >= MIN_OCCURRENCES:
+        complete.pop(current)
+
     consolidated: list[tuple[date, int, str]] = []
-    for _month, rows in sorted(by_month.items()):
+    for _month, rows in sorted(complete.items()):
         total = sum(row[1] for row in rows)
         # The last payment of the month is when the bill is actually settled.
         consolidated.append((max(row[0] for row in rows), total, rows[0][2]))
