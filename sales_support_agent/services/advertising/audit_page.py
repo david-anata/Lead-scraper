@@ -48,6 +48,7 @@ def _page(
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>
       :root {{
         --dark-blue: #2B3644; --light-blue: #85BBDA; --light-brown: #F9F7F3;
@@ -126,13 +127,13 @@ def _page(
       @media (max-width: 900px) {{ .two-col {{ grid-template-columns: 1fr; }} }}
     </style>
   </head>
-  <body>
+  <body class="app app--operator">
     {render_agent_nav("advertising", advertising_section=advertising_section, user=user)}
-    <div class="shell">
+    <main id="agent-main-content" class="shell app-container app-page">
       <div class="workspace">
         {body}
       </div>
-    </div>
+    </main>
   </body>
 </html>"""
 

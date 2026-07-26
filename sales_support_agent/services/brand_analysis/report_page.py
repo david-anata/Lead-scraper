@@ -171,11 +171,12 @@ def _doc(title: str, body: str, *, user: Optional[dict], section: str = "brand_a
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>{_styles()}</style>
   </head>
-  <body>
+  <body class="app app--operator">
     {render_agent_nav(section, executive_section=section, user=user)}
-    <main class="shell">
+    <main id="agent-main-content" class="shell app-container app-page">
       <div class="workspace">
         {body}
       </div>

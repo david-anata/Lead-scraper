@@ -2616,7 +2616,7 @@ def render_rate_sheet_review_page(
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/admin.css">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>{styles}
       .preview-frame {{ width: 100%; height: 70vh; border: 1px solid var(--border);
         border-radius: 16px; background: #fff; box-shadow: 0 12px 28px var(--shadow); }}
@@ -2626,7 +2626,7 @@ def render_rate_sheet_review_page(
   </head>
   <body>
     {render_agent_nav("fulfillment", fulfillment_section="fulfillment_sales", user=user)}
-    <main class="shell">
+    <main id="agent-main-content" class="shell app-container app-page">
       <div class="workspace">
         <p class="eyebrow"><a href="{base}" style="color:inherit;text-decoration:none;opacity:0.7">← Pipeline</a> · Review</p>
         <h1>{_esc(summary.get('prospect') or 'Rate sheet')} <span style="color:var(--light-blue)">rate sheet</span>.</h1>
