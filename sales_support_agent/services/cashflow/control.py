@@ -805,6 +805,35 @@ def _build_source_status(
     return result
 
 
+def load_annotated_obligations(*, limit: int = 5000) -> list[dict[str, Any]]:
+    """Obligations carrying the annotations the issue classifier depends on.
+
+    The flags that decide whether an obligation is blocked (its open balance
+    after settlements, and whether a completed ClickUp task still needs bank
+    evidence) are computed during the control build, not stored on the row. Any
+    surface that classifies raw database rows therefore finds nothing and
+    reports "nothing needs review" while the trust gate reports dozens.
+
+    Sharing the classifier was not enough; the input has to match too.
+    """
+    from sqlalchemy import text
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services.cashflow.obligations import list_obligations
+
+    rows = list_obligations(limit=limit)
+    try:
+        with get_engine().connect() as connection:
+            allocations = [
+                dict(row._mapping)
+                for row in connection.execute(text("SELECT * FROM settlement_allocations")).fetchall()
+            ]
+    except Exception:
+        allocations = []
+
+    annotated = annotate_open_amounts(rows, allocations)
+    return _annotate_clickup_completion_evidence(annotated, {})
+
+
 def classify_payable_issues(
     canonical: Sequence[Mapping[str, Any]],
     *,

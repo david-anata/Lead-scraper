@@ -110,3 +110,57 @@ def test_pages_survive_an_empty_database():
         html = render()
         assert "finance-nav" in html
         assert len(html) > 500
+
+
+def test_the_review_page_agrees_with_the_trust_check():
+    """The trust check reported 94 items to review while the Review page showed
+    nothing, because the flags it reads are computed rather than stored and the
+    review page was classifying raw rows. Sharing the classifier is not enough;
+    the input has to match."""
+    from sales_support_agent.services.cashflow.bulk_resolve import list_review_items
+    from sales_support_agent.services.cashflow.control import (
+        classify_payable_issues,
+        load_annotated_obligations,
+    )
+
+    engine = _setup()
+    now = datetime.now(timezone.utc)
+    with engine.begin() as connection:
+        for index in range(3):
+            insert_cash_event(
+                connection, id=f"done{index}", source="clickup", source_id=f"done{index}",
+                record_kind="obligation", event_type="outflow", category="rent",
+                name=f"Marked done {index}", vendor_or_customer="Vendor",
+                amount_cents=1200_00, due_date=TODAY - timedelta(days=10),
+                status="completed", confidence="confirmed",
+                created_at=now, updated_at=now,
+            )
+
+    annotated = load_annotated_obligations()
+    expected = classify_payable_issues(annotated, as_of=TODAY)
+    assert len(expected) == 3, "a completed ClickUp bill with no payment still needs review"
+
+    listed = list_review_items(as_of=TODAY)
+    assert listed["total"] == len(expected), "both surfaces must report the same count"
+    assert "Marked done, no bank proof" in {group["label"] for group in listed["groups"]}
+
+
+def test_raw_rows_would_have_missed_those_items():
+    """Guards the actual regression: classifying un-annotated rows finds nothing."""
+    from sales_support_agent.services.cashflow.control import classify_payable_issues
+    from sales_support_agent.services.cashflow.obligations import list_obligations
+
+    engine = _setup()
+    now = datetime.now(timezone.utc)
+    with engine.begin() as connection:
+        insert_cash_event(
+            connection, id="done", source="clickup", source_id="done",
+            record_kind="obligation", event_type="outflow", category="rent",
+            name="Marked done", vendor_or_customer="Vendor", amount_cents=1200_00,
+            due_date=TODAY - timedelta(days=10), status="completed",
+            confidence="confirmed", created_at=now, updated_at=now,
+        )
+
+    assert classify_payable_issues(list_obligations(limit=100), as_of=TODAY) == []
+    from sales_support_agent.services.cashflow.control import load_annotated_obligations
+    assert classify_payable_issues(load_annotated_obligations(), as_of=TODAY) != []
