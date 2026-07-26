@@ -1278,6 +1278,7 @@ def _page_shell(title: str, body: str) -> str:
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>
       :root {{
         --anata-ink: #2b3644;
@@ -1394,7 +1395,7 @@ def _page_shell(title: str, body: str) -> str:
       }}
     </style>
   </head>
-  <body>
+  <body class="app app--operator">
     {body}
 </body>
 </html>"""
@@ -1410,6 +1411,7 @@ def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "repor
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     """
     nav_style_block = f"<style>{nav_styles}</style>"
     shell_styles = """
@@ -1442,13 +1444,13 @@ def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "repor
     if "<body" in injected:
         injected = re.sub(
             r"(<body[^>]*>)",
-            r"\1" + render_agent_nav(active, user=user) + '<div class="admin-report-shell">',
+            r"\1" + render_agent_nav(active, user=user) + '<main id="agent-main-content" class="admin-report-shell app-container app-page">',
             injected,
             count=1,
             flags=re.IGNORECASE,
         )
         if "</body>" in injected:
-            injected = injected.replace("</body>", "</div></body>", 1)
+            injected = injected.replace("</body>", "</main></body>", 1)
     return injected
 
 
@@ -1571,7 +1573,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     )
     body = f"""
       {_nav("website_ops", website_ops_section="seo_dashboard", user=user)}
-      <main class="shell">
+      <main id="agent-main-content" class="shell app-container app-page">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
         <section class="hero">
           <div class="card stack">
@@ -1692,7 +1694,7 @@ def render_queue_page(settings: Settings, *, flash_message: str = "", status_fil
     queue_title = _humanize_label(normalized_filter) if normalized_filter else "Active"
     body = f"""
       {_nav("queue", website_ops_section="queue", user=user)}
-      <main class="shell">
+      <main id="agent-main-content" class="shell app-container app-page">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
         <section class="card stack">
           <p class="eyebrow">Website Ops queue</p>
@@ -1721,7 +1723,7 @@ def render_queue_page(settings: Settings, *, flash_message: str = "", status_fil
 def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_message: str = "", user: dict | None = None) -> str:
     record = get_feedback_record(settings, feedback_id)
     if not record:
-        return _page_shell("Not Found", f"{_nav('queue', website_ops_section='queue', user=user)}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The feedback record could not be located.</p></section></main>")
+        return _page_shell("Not Found", f"{_nav('queue', website_ops_section='queue', user=user)}<main id='agent-main-content' class='shell app-container app-page'><section class='card'><h1>Not found</h1><p class='lead'>The feedback record could not be located.</p></section></main>")
     is_auto_generated = bool(record.get("auto_generated"))
     confidence = str(record.get("confidence", "")).strip()
     suggested_action_type = str(record.get("suggested_action_type", "")).strip()
@@ -1749,7 +1751,7 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
         workflow_notice = f"<div class='flash'>{html.escape(str(record.get('execution_error', '') or 'The last execution failed.'))}</div>"
     body = f"""
       {_nav("queue", website_ops_section="queue", user=user)}
-      <main class="shell">
+      <main id="agent-main-content" class="shell app-container app-page">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
         {workflow_notice}
         <section class="detail-layout">
@@ -1798,7 +1800,7 @@ def render_reports_page(settings: Settings, *, user: dict | None = None) -> str:
     reports = _report_entries(settings)
     body = f"""
       {_nav("reports", website_ops_section="reports", user=user)}
-      <main class="shell">
+      <main id="agent-main-content" class="shell app-container app-page">
         <section class="card stack">
           <p class="eyebrow">Website Ops reports</p>
           <h1>Daily, weekly, and monthly <span style="color:var(--accent)">history</span>.</h1>
@@ -1815,7 +1817,7 @@ def render_reports_page(settings: Settings, *, user: dict | None = None) -> str:
 def render_report_page(settings: Settings, mode: str, slug: str, *, user: dict | None = None) -> str:
     entry = get_report_entry(settings, mode, slug)
     if not entry:
-        return _page_shell("Not Found", f"{_nav('reports', website_ops_section='reports', user=user)}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The requested report was not found.</p></section></main>")
+        return _page_shell("Not Found", f"{_nav('reports', website_ops_section='reports', user=user)}<main id='agent-main-content' class='shell app-container app-page'><section class='card'><h1>Not found</h1><p class='lead'>The requested report was not found.</p></section></main>")
     payload = _mvp_filter_report_payload(_report_payload(entry))
     debug_insights = list(payload.get("page_insights") or [])[:6]
     debug_panel = ""
@@ -1837,5 +1839,5 @@ def render_report_page(settings: Settings, mode: str, slug: str, *, user: dict |
     markdown_path = entry["path"]
     return _page_shell(
         entry["title"],
-        f"{_nav('reports', website_ops_section='reports', user=user)}<main class='shell'><section class='card stack'>{_mvp_mode_banner() if MVP_MODE_ACTIVE else ''}<p class='eyebrow'>{html.escape(mode.title())}</p><h1>{html.escape(entry['title'])}</h1><pre>{html.escape(markdown_path.read_text())}</pre></section>{debug_panel}</main>",
+        f"{_nav('reports', website_ops_section='reports', user=user)}<main id='agent-main-content' class='shell app-container app-page'><section class='card stack'>{_mvp_mode_banner() if MVP_MODE_ACTIVE else ''}<p class='eyebrow'>{html.escape(mode.title())}</p><h1>{html.escape(entry['title'])}</h1><pre>{html.escape(markdown_path.read_text())}</pre></section>{debug_panel}</main>",
     )
