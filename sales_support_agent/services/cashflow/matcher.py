@@ -43,6 +43,28 @@ VENDOR_SIMILARITY_THRESHOLD: float = 0.55 # Jaccard token similarity
 AUTO_MATCH_MIN_BPS: int = 8_000
 AUTO_MATCH_LEAD_BPS: int = 1_500
 
+# Categories that carry no information. An obligation imported without one, or a
+# transaction nobody has filed, says "unknown" rather than naming a kind of
+# spend, so two of them agreeing is not evidence that they are the same payment.
+_UNKNOWN_CATEGORIES = frozenset({"", "uncategorized", "other"})
+
+
+def _category_conflict(csv_ev: dict[str, Any], planned: dict[str, Any]) -> bool:
+    """True only when both sides name a category and the names disagree.
+
+    Before QuickBooks' own account was read, nearly every posted transaction and
+    obligation fell back to "other", so the category bonus fired on two unknowns
+    matching. The threshold was calibrated with that phantom bonus in it, which
+    means simply withdrawing it would act as a penalty and stop real payments
+    auto-matching. An unknown on either side therefore scores exactly as a match
+    did: it tells us nothing. Only a real disagreement withholds the points.
+    """
+    csv_category = str(csv_ev.get("category") or "").lower()
+    planned_category = str(planned.get("category") or "").lower()
+    if csv_category in _UNKNOWN_CATEGORIES or planned_category in _UNKNOWN_CATEGORIES:
+        return False
+    return csv_category != planned_category
+
 
 @dataclass
 class MatchResult:
@@ -238,15 +260,21 @@ def _score_match_bps(
         score_bps += 1_500
         reasons.append(f"partial vendor match ({vendor_sim:.0%})")
 
-    # Category agreement
-    if csv_ev.get("category") == planned.get("category") and csv_ev.get("category") != "uncategorized":
+    # Category agreement. Unknown on either side is worth the same as a match,
+    # because it is no information; a genuine disagreement is what costs points.
+    if _category_conflict(csv_ev, planned):
+        reasons.append(
+            f"category conflict ({csv_ev.get('category')} vs {planned.get('category')})"
+        )
+    else:
         score_bps += 1_500
-        reasons.append("category match")
+        if csv_ev.get("category") == planned.get("category"):
+            reasons.append("category match")
 
     # Amount exactness bonus. A partial is intentionally eligible only with an
     # exact/strong vendor match plus close date and category evidence.
     if partial_payment:
-        if vendor_sim >= 0.80 and csv_ev.get("category") == planned.get("category") and date_delta <= 2:
+        if vendor_sim >= 0.80 and not _category_conflict(csv_ev, planned) and date_delta <= 2:
             score_bps += 3_000
             reasons.append("partial payment with strong vendor/date evidence")
         else:
