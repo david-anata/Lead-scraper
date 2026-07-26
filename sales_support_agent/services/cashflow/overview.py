@@ -3101,12 +3101,14 @@ async def render_cashflow_overview_page(
             disconnect_action = (
                 f'<form method="post" action="/admin/finances/plaid/items/{item_id}/disconnect" '
                 f'onsubmit="return confirm(\'Disconnect this bank? Plaid access will be revoked, the stored credential will be removed, and the bank will stop refreshing.\');">'
+                f'<input type="hidden" name="return_to" value="/admin/finances#update-money">'
                 f'<button class="btn btn-secondary btn-sm" type="submit">Disconnect</button></form>'
             )
             force_disconnect_action = (
                 f'<form method="post" action="/admin/finances/plaid/items/{item_id}/disconnect" '
                 f'onsubmit="return confirm(\'Force remove this bank? Use this only for a stuck connection. It clears the bank here even if Plaid does not confirm, and imported transactions stop counting once no bank remains connected.\');">'
                 f'<input type="hidden" name="force" value="1">'
+                f'<input type="hidden" name="return_to" value="/admin/finances#update-money">'
                 f'<button class="btn btn-secondary btn-sm" type="submit">Force remove</button></form>'
             )
             action = f'<div class="finance-plaid-item-actions">{reconnect_action}{disconnect_action}{force_disconnect_action}</div>'
@@ -3169,6 +3171,7 @@ async def render_cashflow_overview_page(
                     + '<td class="finance-accounts-amount">' + _money(_acct["balance_cents"]) + '</td>'
                     + '<td><form method="post" class="finance-account-role-form" '
                     + 'action="/admin/finances/plaid/accounts/' + _acct_id + '/cash-role">'
+                    + '<input type="hidden" name="return_to" value="/admin/finances#update-money">'
                     + '<select name="role" aria-label="How this account counts">' + _options + '</select>'
                     + '<button type="submit" class="btn btn-secondary btn-sm">Set</button></form></td></tr>'
                 )
@@ -3744,6 +3747,14 @@ async def render_cashflow_overview_page(
           }}
         }}
       }});
+      // An action inside Update money returns here with #update-money so the
+      // dialog reopens instead of dropping the operator on the page behind it.
+      if (window.location.hash === '#update-money') {{
+        const backTo = document.getElementById('finance-update-modal');
+        if (backTo && !backTo.open) {{
+          if (backTo.showModal) backTo.showModal(); else backTo.setAttribute('open', '');
+        }}
+      }}
       const plaidOAuthState = new URLSearchParams(window.location.search).get('oauth_state_id');
       const plaidOAuthToken = sessionStorage.getItem(plaidOAuthTokenKey);
       if (plaidOAuthState && plaidOAuthToken && window.Plaid) {{
