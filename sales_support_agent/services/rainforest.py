@@ -44,6 +44,47 @@ _BSR_ESTIMATE_CAP = 50_000
 _DEFAULT_COMPETITOR_LIMIT = 12
 
 
+def _normalize_brand_identity(value: str) -> str:
+    """Normalize an API-provided brand for conservative exact comparison."""
+    return "".join(character for character in (value or "").casefold() if character.isalnum())
+
+
+def _clean_comparison_products(
+    products: list[XrayProduct],
+    *,
+    target_asin: str,
+    target_brand: str,
+    limit: int,
+) -> list[XrayProduct]:
+    """Return unique, non-subject products from brands other than the subject.
+
+    Brand identity is based only on Rainforest's explicit product ``brand``
+    field. Titles, seller names, and URLs are intentionally not used to infer
+    ownership.
+    """
+    normalized_target_asin = _normalize_asin(target_asin)
+    normalized_target_brand = _normalize_brand_identity(target_brand)
+    if not normalized_target_brand:
+        raise RuntimeError(
+            "Rainforest did not provide the subject product brand; "
+            "a competitor comparison cannot be built without an explicit brand identity."
+        )
+
+    cleaned: list[XrayProduct] = []
+    seen_asins: set[str] = set()
+    for product in products:
+        product_asin = _normalize_asin(product.asin) or _normalize_asin(product.url)
+        if not product_asin or product_asin == normalized_target_asin or product_asin in seen_asins:
+            continue
+        if _normalize_brand_identity(product.brand) == normalized_target_brand:
+            continue
+        seen_asins.add(product_asin)
+        cleaned.append(product)
+        if len(cleaned) >= max(0, limit):
+            break
+    return cleaned
+
+
 def _bsr_to_units(bsr: float | None) -> int:
     """Estimate monthly unit sales from BSR. Same formula as service.py:180.
 
@@ -300,14 +341,23 @@ class RainforestClient:
         # 1. Target product
         target_data = self.get_product(target_asin)
         target_product = target_data.get("product") or {}
+        target_brand = str(target_product.get("brand") or "").strip()
+        if not _normalize_brand_identity(target_brand):
+            raise RuntimeError(
+                "Rainforest did not provide the subject product brand; "
+                "a competitor comparison cannot be built without an explicit brand identity."
+            )
 
         # 2. Discover competitor ASINs
+        # Fetch beyond the final report limit so subject-brand catalog entries
+        # do not crowd real competitors out before the comparison set is cleaned.
+        discovery_limit = max(competitor_limit, competitor_limit * 2)
         competitor_asins = self._competitor_asins_from_bestsellers(
-            target_product, target_asin, limit=competitor_limit
+            target_product, target_asin, limit=discovery_limit
         )
         if not competitor_asins:
             competitor_asins = self._competitor_asins_from_search(
-                target_product, target_asin, limit=competitor_limit
+                target_product, target_asin, limit=discovery_limit
             )
 
         if not competitor_asins:
@@ -331,14 +381,20 @@ class RainforestClient:
                         competitor_raw.append(result)
 
         # 4. Convert to XrayProduct
-        products: list[XrayProduct] = []
-        for i, raw in enumerate(competitor_raw[:competitor_limit]):
+        discovered_products: list[XrayProduct] = []
+        for i, raw in enumerate(competitor_raw):
             xp = self._product_to_xray(raw, display_order=i + 1)
             if xp:
-                products.append(xp)
+                discovered_products.append(xp)
 
         # Sort by BSR ascending (better rank = higher on list)
-        products.sort(key=lambda p: (p.bsr or 999_999, p.display_order))
+        discovered_products.sort(key=lambda p: (p.bsr or 999_999, p.display_order))
+        products = _clean_comparison_products(
+            discovered_products,
+            target_asin=target_asin,
+            target_brand=target_brand,
+            limit=competitor_limit,
+        )
         products = [
             dataclasses.replace(p, display_order=i + 1)
             for i, p in enumerate(products)
@@ -374,11 +430,18 @@ class RainforestClient:
 
         # Honest sourcing note: how many listings carried Amazon's real
         # "bought in past month" badge vs. fell back to a BSR estimate.
+        included_asins = {p.asin for p in products}
         real_units_count = sum(
             1 for raw in competitor_raw
+            if str((raw.get("product") or {}).get("asin") or "").strip() in included_asins
             if _parse_recent_sales((raw.get("product") or {}).get("recent_sales")) is not None
         )
-        if real_units_count and real_units_count == len(products):
+        if not products:
+            _sales_warning = (
+                "No eligible competitor listings remained after excluding the "
+                "subject product and subject brand catalog; market comparison claims are unavailable."
+            )
+        elif real_units_count and real_units_count == len(products):
             _sales_warning = (
                 "Unit/revenue figures use Amazon's real \"bought in past month\" "
                 "data for every listing (a reported floor)."

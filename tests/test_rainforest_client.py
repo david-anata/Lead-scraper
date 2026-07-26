@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from sales_support_agent.services.rainforest import (
     RainforestClient,
     _bsr_to_units,
+    _clean_comparison_products,
     _normalize_asin,
     _parse_recent_sales,
 )
@@ -192,7 +193,12 @@ class TestRainforestBuildXrayReport(unittest.TestCase):
         # get_product: first call = target, subsequent calls = competitors
         target_raw = _mock_product(target_asin, bsr=2000, price=49.99, category_url=category_url)
         comp_raws = {
-            asin: _mock_product(asin, bsr=3000 + i * 500, price=39.99)
+            asin: _mock_product(
+                asin,
+                brand=f"Competitor {i}",
+                bsr=3000 + i * 500,
+                price=39.99,
+            )
             for i, asin in enumerate(competitor_asins)
         }
 
@@ -240,6 +246,91 @@ class TestRainforestBuildXrayReport(unittest.TestCase):
         bsrs = [p.bsr for p in report.products]
         self.assertEqual(bsrs, sorted(bsrs))
 
+    def test_clean_comparison_products_excludes_subject_asin_and_brand(self):
+        products = [
+            self.client._product_to_xray(
+                _mock_product("B09AAAAAAA", brand="Subject Brand"), display_order=1
+            ),
+            self.client._product_to_xray(
+                _mock_product("B09BBBBBBB", brand="Subject-Brand"), display_order=2
+            ),
+            self.client._product_to_xray(
+                _mock_product("B09CCCCCCC", brand="Actual Competitor"), display_order=3
+            ),
+        ]
+
+        cleaned = _clean_comparison_products(
+            [product for product in products if product is not None],
+            target_asin="B09AAAAAAA",
+            target_brand="Subject Brand",
+            limit=10,
+        )
+
+        self.assertEqual([product.asin for product in cleaned], ["B09CCCCCCC"])
+
+    @patch.object(RainforestClient, "get_product")
+    @patch.object(RainforestClient, "get_bestsellers")
+    def test_subject_brand_catalog_is_excluded_before_aggregates(
+        self, mock_bestsellers, mock_get_product
+    ):
+        target_asin = "B09AAAAAAA"
+        catalog_asin = "B09BBBBBBB"
+        competitor_asin = "B09CCCCCCC"
+        target_raw = _mock_product(target_asin, brand="Subject Brand", bsr=1000)
+        raws = {
+            catalog_asin: _mock_product(
+                catalog_asin, brand="subject-brand", bsr=10, price=100.00
+            ),
+            competitor_asin: _mock_product(
+                competitor_asin, brand="Actual Competitor", bsr=5000, price=20.00
+            ),
+        }
+        mock_get_product.side_effect = lambda asin: (
+            target_raw if asin == target_asin else raws[asin]
+        )
+        mock_bestsellers.return_value = _mock_bestsellers([catalog_asin, competitor_asin])
+
+        report, _ = self.client.build_xray_report(target_asin, competitor_limit=2)
+
+        self.assertEqual([product.asin for product in report.products], [competitor_asin])
+        competitor = report.products[0]
+        self.assertEqual(report.total_revenue, competitor.revenue)
+        self.assertEqual(report.total_units_sold, competitor.units_sold)
+        self.assertEqual(report.average_bsr, competitor.bsr)
+        self.assertEqual(report.average_price, competitor.price)
+        self.assertEqual(report.search_results_count, 1)
+        self.assertEqual(report.distinct_brand_count, 1)
+
+    @patch.object(RainforestClient, "get_product")
+    def test_missing_subject_brand_stops_comparison(self, mock_get_product):
+        mock_get_product.return_value = _mock_product("B09AAAAAAA", brand="")
+
+        with self.assertRaisesRegex(RuntimeError, "explicit brand identity"):
+            self.client.build_xray_report("B09AAAAAAA")
+
+    @patch.object(RainforestClient, "get_product")
+    @patch.object(RainforestClient, "get_bestsellers")
+    def test_only_subject_catalog_yields_no_market_claim(
+        self, mock_bestsellers, mock_get_product
+    ):
+        target_asin = "B09AAAAAAA"
+        catalog_asin = "B09BBBBBBB"
+        target_raw = _mock_product(target_asin, brand="Subject Brand")
+        mock_get_product.side_effect = lambda asin: (
+            target_raw
+            if asin == target_asin
+            else _mock_product(catalog_asin, brand="Subject Brand")
+        )
+        mock_bestsellers.return_value = _mock_bestsellers([catalog_asin])
+
+        report, _ = self.client.build_xray_report(target_asin)
+
+        self.assertEqual(report.products, [])
+        self.assertEqual(report.total_revenue, 0)
+        self.assertIsNone(report.average_price)
+        self.assertEqual(report.search_results_count, 0)
+        self.assertTrue(any("claims are unavailable" in warning for warning in report.warnings))
+
     def test_missing_api_key_raises(self):
         client = RainforestClient(api_key="")
         with self.assertRaises(RuntimeError, msg="RAINFOREST_API_KEY is not configured."):
@@ -262,7 +353,7 @@ class TestRainforestWarnings(unittest.TestCase):
         mock_get_product.side_effect = lambda a: (
             _mock_product(target_asin, bsr=5000, category_url=category_url)
             if a == target_asin
-            else _mock_product(a, bsr=6000)
+            else _mock_product(a, brand="Competitor Brand", bsr=6000)
         )
 
         client = RainforestClient(api_key="key")
