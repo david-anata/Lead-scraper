@@ -881,11 +881,12 @@ def render_deal_detail_page(d: DealDetail, *, user: dict | None = None, flash: s
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>{styles}</style>
   </head>
   <body>
     {render_agent_nav("sales", sales_section="sales_deals", user=user)}
-    <main class="shell">
+    <main id="agent-main-content" class="shell app-container app-page">
       <div class="crumbs"><a href="/admin/sales/deals">← Deal Board</a></div>
       {flash_html}
       <div class="workspace">

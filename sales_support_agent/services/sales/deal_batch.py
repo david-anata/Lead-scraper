@@ -463,6 +463,7 @@ def render_batch_cleanup_page(
     {favicons}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>
       {nav_styles}
       :root {{
@@ -572,7 +573,7 @@ def render_batch_cleanup_page(
   </head>
   <body>
     {nav}
-    <main class="shell">
+    <main id="agent-main-content" class="shell app-container app-page">
       <div class="workspace">
         <a href="/admin/sales/deals" class="back-link">← Deal Board</a>
         <p class="eyebrow">Sales — HubSpot</p>
