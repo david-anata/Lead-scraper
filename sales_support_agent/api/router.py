@@ -319,6 +319,7 @@ def _inline_sync_dashboard_data(request: Request, settings) -> dict[str, object]
             session=session,
             lead_builder_status=_lead_builder_status(settings),
             clickup_client=ClickUpClient(settings),
+            include_deck_history=False,
         )
     return dashboard_data_to_dict(dashboard)
 
@@ -789,6 +790,7 @@ def admin_dashboard(request: Request) -> Response:
             session=session,
             lead_builder_status=_lead_builder_status(settings),
             clickup_client=ClickUpClient(settings),
+            include_deck_history=False,
         )
     if settings.dashboard_auto_sync_enabled:
         _start_dashboard_sync(request, trigger="admin_page_load", force=False)
@@ -820,6 +822,7 @@ def admin_sales_decks(request: Request) -> Response:
             session=session,
             lead_builder_status=_lead_builder_status(settings),
             clickup_client=ClickUpClient(settings),
+            include_lead_queue=False,
         )
         hubspot_deal_id = str(request.query_params.get("hubspot_deal_id") or "").strip()
         sales_deck_context = None

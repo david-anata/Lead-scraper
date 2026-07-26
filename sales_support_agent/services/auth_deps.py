@@ -84,22 +84,34 @@ def get_session_user_from_request(request: Request) -> Optional[dict]:
     (minted by main.py, which may use a different default secret) is found
     even when ADMIN_DASHBOARD_SESSION_SECRET is not explicitly set.
     """
+    state = getattr(request, "state", None)
+    if state is not None and getattr(state, "_agent_session_user_resolved", False):
+        return getattr(state, "_agent_session_user", None)
+
+    resolved: Optional[dict] = None
     try:
         for settings in _all_auth_settings(request):
             named = request.cookies.get(settings.admin_cookie_name, "")
             if named:
                 user = get_session_user(settings, named)
                 if user:
-                    return user
+                    resolved = user
+                    break
             for token in request.cookies.values():
                 if token == named:
                     continue
                 user = get_session_user(settings, token)
                 if user:
-                    return user
+                    resolved = user
+                    break
+            if resolved is not None:
+                break
     except AttributeError:
         pass
-    return None
+    if state is not None:
+        state._agent_session_user = resolved
+        state._agent_session_user_resolved = True
+    return resolved
 
 
 def is_authenticated(request: Request) -> bool:
@@ -131,8 +143,15 @@ def get_current_user(request: Request) -> Optional[dict]:
     authenticated but un-provisioned user resolves to empty permissions (status
     "unprovisioned") so callers can offer the request-access flow.
     """
+    state = getattr(request, "state", None)
+    if state is not None and getattr(state, "_agent_current_user_resolved", False):
+        return getattr(state, "_agent_current_user", None)
+
     identity = get_session_user_from_request(request)
     if not identity:
+        if state is not None:
+            state._agent_current_user = None
+            state._agent_current_user_resolved = True
         return None
     email = (identity.get("email") or "").strip().lower()
     name = identity.get("name") or email
@@ -141,7 +160,11 @@ def get_current_user(request: Request) -> Optional[dict]:
     # Kill-switch: if RBAC is disabled, any authenticated user has full access
     # (restores the pre-RBAC single-admin behaviour).
     if not getattr(settings, "rbac_enabled", True):
-        return _superadmin_dict(email, name)
+        resolved_user = _superadmin_dict(email, name)
+        if state is not None:
+            state._agent_current_user = resolved_user
+            state._agent_current_user_resolved = True
+        return resolved_user
 
     # Break-glass: configured super-admins and the legacy password admin are
     # always full-access and can never be locked out, even if the DB is empty.
@@ -158,6 +181,9 @@ def get_current_user(request: Request) -> Optional[dict]:
                 out["picture"] = row.get("picture") or ""
         except Exception:  # noqa: BLE001 — enrichment only; never block a super-admin
             pass
+        if state is not None:
+            state._agent_current_user = out
+            state._agent_current_user_resolved = True
         return out
 
     try:
@@ -170,16 +196,26 @@ def get_current_user(request: Request) -> Optional[dict]:
             sa = _superadmin_dict(email, access.get("name") or name)
             sa["picture"] = access.get("picture") or ""  # keep the Google avatar
             sa["session_issued_at"] = identity.get("session_issued_at", "")
+            if state is not None:
+                state._agent_current_user = sa
+                state._agent_current_user_resolved = True
             return sa
         access["session_issued_at"] = identity.get("session_issued_at", "")
+        if state is not None:
+            state._agent_current_user = access
+            state._agent_current_user_resolved = True
         return access
 
     # Authenticated, domain-allowed, but not provisioned -> default deny.
-    return {
+    resolved_user = {
         "email": email, "name": name, "role_id": None, "role_name": "",
         "status": "unprovisioned", "is_superadmin": False, "permissions": set(),
         "session_issued_at": identity.get("session_issued_at", ""),
     }
+    if state is not None:
+        state._agent_current_user = resolved_user
+        state._agent_current_user_resolved = True
+    return resolved_user
 
 
 def has_tool(request: Request, key: str) -> bool:

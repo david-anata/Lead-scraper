@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from sales_support_agent.api.advertising_router import public_router as advertising_public_router, router as advertising_router
 from sales_support_agent.api.auth_router import router as auth_router
+from sales_support_agent.api.assets_router import router as assets_router
 from sales_support_agent.api.access_router import router as access_router, _settings_router
 from sales_support_agent.api.hr_router import router as hr_router
 from sales_support_agent.api.hr_jobs_router import router as hr_jobs_router
@@ -104,8 +105,19 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Sales Support Agent")
     static_dir = os.path.join(os.path.dirname(__file__), "static")
+    brand_static_dir = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "shared",
+        "anata_brand",
+        "assets",
+    )
     os.makedirs(static_dir, exist_ok=True)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    app.mount(
+        "/brand-static",
+        StaticFiles(directory=brand_static_dir),
+        name="brand-static",
+    )
     app.state.settings = settings
     # Also expose as agent_settings so auth_deps._get_auth_settings() finds it
     # via the preferred code path (agent_settings → admin_dashboard_settings → settings).
@@ -117,6 +129,7 @@ def create_app() -> FastAPI:
     app.state.dashboard_sync_last_started_at = None
     app.state.dashboard_sync_last_completed_at = None
     app.state.dashboard_sync_last_error = ""
+    app.include_router(assets_router)
     app.include_router(router)
     app.include_router(auth_router)
     app.include_router(cashflow_router)
@@ -157,6 +170,9 @@ def create_app() -> FastAPI:
     # RBAC: per-tool authorization gate + friendly 403 handler.
     from sales_support_agent.services.access.middleware import install_access_middleware
     from sales_support_agent.services.auth_deps import ToolForbidden, render_forbidden_response
+    from sales_support_agent.services.performance import install_performance_middleware
+
+    install_performance_middleware(app, session_factory.kw.get("bind"))
     install_access_middleware(app)
     app.add_exception_handler(ToolForbidden, render_forbidden_response)
     return app

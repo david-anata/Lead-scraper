@@ -113,8 +113,22 @@ app = FastAPI()
 
 # Mount static files so finance.css (and future assets) are served at /static/*
 _static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sales_support_agent", "static")
+_brand_static_dir = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "shared",
+    "anata_brand",
+    "assets",
+)
 os.makedirs(_static_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+app.mount(
+    "/brand-static",
+    StaticFiles(directory=_brand_static_dir),
+    name="brand-static",
+)
+
+from sales_support_agent.api.assets_router import router as _assets_router  # noqa: E402
+app.include_router(_assets_router)
 
 from sales_support_agent.api.cashflow_router import plaid_webhook_router as _plaid_webhook_router, router as _cashflow_router  # noqa: E402
 app.include_router(_cashflow_router)
@@ -185,6 +199,8 @@ app.include_router(_qbo_auth_router, prefix="/admin/finances/qbo")
 try:
     from sales_support_agent.services.access.middleware import install_access_middleware  # noqa: E402
     from sales_support_agent.services.auth_deps import ToolForbidden, render_forbidden_response  # noqa: E402
+    from sales_support_agent.services.performance import install_performance_middleware  # noqa: E402
+    install_performance_middleware(app)
     install_access_middleware(app)
     app.add_exception_handler(ToolForbidden, render_forbidden_response)
 except Exception as _e:  # noqa: BLE001

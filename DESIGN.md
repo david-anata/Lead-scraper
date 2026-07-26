@@ -21,9 +21,13 @@ rewrite the information architecture without an approved product decision.
 
 ## Brand And Tokens
 
-- Reuse the shared Anata brand primitives and `sales_support_agent/static/finance.css`
-  tokens. Do not introduce raw colors, font families, shadow values, or radii
-  when an existing token or component rule already fits.
+- `shared/anata_brand/tokens.json` is the machine-readable brand-token
+  authority. `sales_support_agent/static/admin.css` maps those values to Agent
+  semantic variables and shared primitives. Finance may define contextual
+  extensions, but it may not redefine shared text, focus, controls, status, or
+  spacing.
+- Do not introduce raw colors, font families, shadow values, or radii when an
+  existing token or component rule already fits.
 - The established pale blue-to-warm-neutral Finance background is intentional.
   It is not a generic "AI cream" default and may not be replaced merely to
   satisfy an external anti-pattern rule.
@@ -33,6 +37,44 @@ rewrite the information architecture without an approved product decision.
 - Status color carries meaning only: teal for verified/positive, amber for
   caution, red for blocked/required attention, and sky for neutral context.
   Never use color as the only status signal.
+
+## Application Modes
+
+- **Operator:** authenticated, information-dense, calm, explicit, and
+  auditable. Uses the persistent Agent shell and restrained title scale.
+- **Public deliverable:** recipient-facing and presentation-led. Uses canonical
+  brand values while preserving tracking, token security, print, and recovery.
+- **Authentication/transition:** minimal and reassuring. Explains the next step
+  without exposing account existence, infrastructure, secrets, or raw errors.
+
+## Canonical Shell And Page Anatomy
+
+Every authenticated document uses one full-viewport global band and one
+full-viewport section band. Their contents and the page body align to the same
+1320px container with 24px desktop gutters. The shell owns metadata, favicon,
+fonts, navigation, skip link, background, focus, reduced motion, and core CSS.
+
+Page regions appear in this order when applicable:
+
+1. Page header: one `h1`, concise purpose, real source/freshness context, and
+   one primary action.
+2. Decision summary: three to five decision-relevant metrics, or one compact
+   state summary.
+3. Command bar: scope, search, filters, sort, secondary actions, freshness, and
+   visible result count.
+4. Primary workspace: table, queue, board, form, or detail with contained
+   overflow.
+5. Supporting evidence or activity history.
+
+Shared primitive contracts are `AppContainer`, `PageHeader`, `PageActions`,
+`MetricStrip`, `CommandBar`, `DataWorkspace`, `ActivityHistory`, canonical
+buttons and fields, `StatusBadge`, `EvidenceLabel`, `Alert`, `StatePanel`,
+`FieldError`, `ErrorSummary`, `ProgressStatus`, `LiveConfirmation`,
+`ConfirmationDialog`, and the shared table contract. Buttons act, links
+navigate, and badges communicate state.
+
+The shared state vocabulary is: Ready, Queued, Running, Needs review,
+Confirmed, Delivered, Failed, Blocked, and Stale.
 
 ## Layout And Hierarchy
 
