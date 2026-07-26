@@ -219,12 +219,25 @@ def _build_market_summary(
     xray_report: Helium10XrayReport,
     keyword_report: Helium10KeywordReport | None,
 ) -> str:
+    if not xray_report.market_evidence_sufficient:
+        return ""
     lead_keyword = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else "the niche"
     search_volume = keyword_report.top_search_volume if keyword_report and keyword_report.top_search_volume else None
     search_text = f" The leading search term in the current dataset is {lead_keyword} with {search_volume:,} monthly searches." if search_volume else ""
+    revenue_observations = [
+        product.revenue
+        for product in xray_report.products
+        if product.revenue is not None
+    ]
+    revenue_text = (
+        f" and {_label_money_value(xray_report.total_revenue)} in 30-day "
+        "competitor revenue across listings with available sales evidence"
+        if revenue_observations
+        else ""
+    )
     return (
-        f"The current {lead_keyword} market shows {xray_report.search_results_count} comparable listings and "
-        f"{_label_money_value(xray_report.total_revenue)} in 30-day competitor revenue across the visible market set."
+        f"The current {lead_keyword} market shows "
+        f"{xray_report.search_results_count} comparable listings{revenue_text}."
         f"{search_text}"
     )
 def _build_executive_summary(
@@ -236,12 +249,26 @@ def _build_executive_summary(
     keyword_text = ""
     if keyword_report and keyword_report.keywords:
         keyword_text = f" The leading search objective in the dataset is {keyword_report.keywords[0].phrase}."
+    if not xray_report.market_evidence_sufficient:
+        return (
+            f"This deck reviews {_brand_product_reference(brand_name)} using the "
+            f"available public product evidence and translates it into an offer, "
+            f"PDP, SEO, and service plan for {brand_name}.{keyword_text}"
+        )
     return (
-        f"This deck benchmarks {_brand_product_reference(brand_name)} against the live market set and translates the data into an offer, PDP, SEO, and service plan for {brand_name}."
-        f"{keyword_text}"
+        f"This deck benchmarks {_brand_product_reference(brand_name)} against "
+        f"the live market set and translates the data into an offer, PDP, SEO, "
+        f"and service plan for {brand_name}.{keyword_text}"
     )
 def _build_advertising_summary(xray_report: Helium10XrayReport, keyword_report: Helium10KeywordReport | None) -> str:
     top_keyword = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else "the primary search terms"
+    if not xray_report.market_evidence_sufficient:
+        return (
+            f"Advertising should follow listing cleanup. Once the PDP is aligned, "
+            f"validate {top_keyword} and adjacent terms against campaign evidence. "
+            "Competitor opportunity claims are withheld until the comparison set "
+            "has enough evidence."
+        )
     return (
         f"Advertising should follow listing cleanup. Once the PDP is aligned, lean into {top_keyword} and the adjacent high-volume terms while exploiting low-review competitors in the category."
     )
@@ -257,6 +284,15 @@ def _build_plan_summary(offer_cards: list[dict[str, str]], channels: list[str]) 
         services.append("package the TikTok Shop offer and creative")
     return "Phase 1: " + "; ".join(services[:3]) + ". Phase 2: launch the first measurement sprint and tune against live market response."
 def _build_expected_impact_summary(xray_report: Helium10XrayReport) -> str:
+    if not xray_report.market_evidence_sufficient:
+        return ""
+    review_observations = [
+        product.review_count
+        for product in xray_report.products
+        if product.review_count is not None
+    ]
+    if not review_observations:
+        return ""
     return (
         f"The niche is large enough to justify a tighter positioning and conversion sprint. {xray_report.under_75_reviews_count} listings are still competing with under 75 reviews, which leaves room for differentiated creative and offer design."
     )
@@ -277,28 +313,64 @@ def _build_market_metric_cards(
     xray_report: Helium10XrayReport,
     keyword_report: Helium10KeywordReport | None,
 ) -> list[dict[str, str]]:
-    average_revenue_per_listing = (xray_report.total_revenue / xray_report.search_results_count) if xray_report.search_results_count else 0.0
-    average_units_per_listing = (xray_report.total_units_sold / xray_report.search_results_count) if xray_report.search_results_count else 0.0
-    return [
-        {
+    if not xray_report.market_evidence_sufficient:
+        return []
+    cards: list[dict[str, str]] = []
+    revenue_products = [
+        product for product in xray_report.products if product.revenue is not None
+    ]
+    if revenue_products:
+        cards.append({
             "label": "30-day revenue",
             "value": _label_money_value(xray_report.total_revenue),
-            "meta": f"Avg per listing { _label_money_value(average_revenue_per_listing) }",
-        },
-        {
+            "meta": (
+                "Avg per listing "
+                f"{_label_money_value(xray_report.total_revenue / len(revenue_products))}"
+            ),
+        })
+    units_products = [
+        product for product in xray_report.products if product.units_sold is not None
+    ]
+    if units_products:
+        cards.append({
             "label": "30-day units sold",
             "value": _label_integer(xray_report.total_units_sold),
-            "meta": f"Avg per listing { _label_integer(average_units_per_listing) }",
-        },
-        {"label": "Average BSR", "value": _label_float(xray_report.average_bsr, 0), "meta": "Lower is stronger"},
-        {"label": "Average price", "value": _label_money_value(xray_report.average_price or 0.0), "meta": "From the current market set"},
-        {"label": "Average rating", "value": _label_float(xray_report.average_rating, 1), "meta": "Competitive review signal"},
-        {
-            "label": "Open opportunity",
-            "value": f"{xray_report.under_75_reviews_count}/{xray_report.search_results_count}",
-            "meta": f"{xray_report.revenue_over_5000_count} listings clear $5k revenue while {xray_report.under_75_reviews_count} stay under 75 reviews.",
-        },
+            "meta": (
+                "Avg per listing "
+                f"{_label_integer(xray_report.total_units_sold / len(units_products))}"
+            ),
+        })
+    if xray_report.average_bsr is not None:
+        cards.append({
+            "label": "Average BSR",
+            "value": _label_float(xray_report.average_bsr, 0),
+            "meta": "Lower is stronger",
+        })
+    if xray_report.average_price is not None:
+        cards.append({
+            "label": "Average price",
+            "value": _label_money_value(xray_report.average_price),
+            "meta": "From listings with an observed price",
+        })
+    if xray_report.average_rating is not None:
+        cards.append({
+            "label": "Average rating",
+            "value": _label_float(xray_report.average_rating, 1),
+            "meta": "From listings with an observed rating",
+        })
+    review_products = [
+        product for product in xray_report.products if product.review_count is not None
     ]
+    if review_products:
+        cards.append({
+            "label": "Open opportunity",
+            "value": f"{xray_report.under_75_reviews_count}/{len(review_products)}",
+            "meta": (
+                f"{xray_report.under_75_reviews_count} listings with review "
+                "evidence stay under 75 reviews."
+            ),
+        })
+    return cards
 def _build_keyword_metric_cards(keyword_report: Helium10KeywordReport | None) -> list[dict[str, str]]:
     if keyword_report is None:
         return []

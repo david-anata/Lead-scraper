@@ -374,6 +374,10 @@ class DeckGenerationService:
                             ("last_viewed_at", ""),
                             ("story_markdown", ""),
                             ("share_preview", {}),
+                            ("comparison_audit", []),
+                            ("subject_brand_identity", []),
+                            ("market_evidence_sufficient", True),
+                            ("market_evidence_reason", ""),
                         )
                     },
                 },
@@ -499,6 +503,18 @@ class DeckGenerationService:
             "story_markdown": story_markdown,
             "share_preview": share_preview,
             "renderer_version": PUBLIC_REPORT_DESIGN_VERSION,
+            "comparison_audit": list(
+                dataset.deck_payload.get("comparison_audit", [])
+            ),
+            "subject_brand_identity": list(
+                dataset.deck_payload.get("subject_brand_identity", [])
+            ),
+            "market_evidence_sufficient": bool(
+                getattr(dataset.deck_payload.get("xray_report"), "market_evidence_sufficient", True)
+            ),
+            "market_evidence_reason": str(
+                getattr(dataset.deck_payload.get("xray_report"), "market_evidence_reason", "")
+            ),
         }
         self.session.add(run)
         self.session.flush()
@@ -752,7 +768,11 @@ class DeckGenerationService:
                     product.brand,
                     product.price_label,
                     product.revenue_label,
-                    _label_share(product.revenue, xray_report.total_revenue),
+                    (
+                        _label_share(product.revenue, xray_report.total_revenue)
+                        if xray_report.market_evidence_sufficient
+                        else ""
+                    ),
                     str(product.review_count or ""),
                     product.bsr_label,
                     product.fulfillment,
@@ -836,7 +856,11 @@ class DeckGenerationService:
             hero_product=hero_product,
             search_insights=search_insights,
             market_average_price=xray_report.average_price or 0.0,
-            best_seller=xray_report.products[0] if xray_report.products else None,
+            best_seller=(
+                xray_report.products[0]
+                if xray_report.market_evidence_sufficient and xray_report.products
+                else None
+            ),
         )
         effective_date = datetime.now(timezone.utc).date()
 
@@ -979,6 +1003,8 @@ class DeckGenerationService:
                 "market_cards": market_cards,
                 "keyword_cards": keyword_cards,
                 "xray_report": xray_report,
+                "comparison_audit": list(xray_report.comparison_audit),
+                "subject_brand_identity": list(xray_report.subject_brand_identity),
                 "keyword_report": keyword_report,
                 "cerebro_report": cerebro_report,
                 "word_frequency_report": word_frequency_report,
@@ -1143,7 +1169,19 @@ class DeckGenerationService:
         keyword_table_rows = payload.get("keyword_table_rows") or []
         if not isinstance(keyword_table_rows, list):
             keyword_table_rows = []
-        revenue_bars = "".join(_render_revenue_bar(product, xray_report.total_revenue) for product in xray_report.products[:8])
+        comparison_revenue_total = (
+            xray_report.total_revenue
+            if xray_report.market_evidence_sufficient
+            else 0.0
+        )
+        revenue_bars = (
+            "".join(
+                _render_revenue_bar(product, comparison_revenue_total)
+                for product in xray_report.products[:8]
+            )
+            if xray_report.market_evidence_sufficient
+            else ""
+        )
         offering_html = _render_offering_tabs(offering_sections)
         gallery_items = [target] + [_product_to_gallery_item(product) for product in primary_competitors[:4]]
         gallery_html = "".join(_render_gallery_card(item) for item in gallery_items if item)
@@ -1180,9 +1218,13 @@ class DeckGenerationService:
         keyword_table_caption = "Top keyword opportunities from the Cerebro rank set" if cerebro_report else "Highest search volume from the current keyword dataset"
         keyword_rank_summary_html = _render_cerebro_rank_summary(cerebro_report)
         keyword_bubble_html = _render_word_frequency_bubbles(payload.get("word_frequency_report"))
-        niche_table_rows = "".join(
-            _render_niche_summary_row(product, xray_report.total_revenue)
-            for product in xray_report.products[:10]
+        niche_table_rows = (
+            "".join(
+                _render_niche_summary_row(product, comparison_revenue_total)
+                for product in xray_report.products[:10]
+            )
+            if xray_report.market_evidence_sufficient
+            else ""
         )
         # Audit item 3: brand-aggregated view of the same data, toggled by a
         # button group above the table.
@@ -1191,18 +1233,33 @@ class DeckGenerationService:
             _render_niche_summary_brand_row,
         )
         brand_buckets = _aggregate_brands(xray_report.products)[:10]
-        niche_table_brand_rows = "".join(
-            _render_niche_summary_brand_row(b, xray_report.total_revenue, i + 1)
-            for i, b in enumerate(brand_buckets)
+        niche_table_brand_rows = (
+            "".join(
+                _render_niche_summary_brand_row(
+                    bucket,
+                    comparison_revenue_total,
+                    index + 1,
+                )
+                for index, bucket in enumerate(brand_buckets)
+            )
+            if xray_report.market_evidence_sufficient
+            else ""
         )
         search_title_html = _render_signal_list("Title coverage", search_insights.get("title_hits", []), search_insights.get("title_misses", []), "Missing title targets")
         search_copy_html = _render_signal_list("Bullet / copy coverage", search_insights.get("copy_hits", []), search_insights.get("copy_misses", []), "Missing copy targets")
         target_strength_html = "".join(_render_action_item(item) for item in target_strengths)
         target_gap_html = "".join(_render_action_item(item) for item in target_gaps)
-        best_seller = xray_report.products[0] if xray_report.products else None
+        best_seller = (
+            xray_report.products[0]
+            if xray_report.market_evidence_sufficient and xray_report.products
+            else None
+        )
         comparison_mode = str(target.get("comparison_mode", "") or "")
         launch_mode = comparison_mode == "concept_only"
-        competitor_landscape_table = _render_competitor_landscape_table(xray_report.products[:10], xray_report.total_revenue)
+        competitor_landscape_table = _render_competitor_landscape_table(
+            xray_report.products[:10],
+            comparison_revenue_total,
+        )
         comparison_table_html = _render_target_comparison_table(target, best_seller, no_product_image)
         target_identifier = str(target.get("asin") or "").strip()
         resolved_target_title = _clean_listing_title(str(target.get("title", "") or ""))

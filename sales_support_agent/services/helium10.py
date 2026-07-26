@@ -75,6 +75,12 @@ class Helium10XrayReport:
     # PR45: distinct brand count after parent-listing dedupe.
     # search_results_count is row count (every variant), this is brand count.
     distinct_brand_count: int = 0
+    # Digital Shelf comparison integrity metadata. Manual CSV reports retain
+    # the permissive defaults because their evidence is supplied by an operator.
+    market_evidence_sufficient: bool = True
+    market_evidence_reason: str = ""
+    comparison_audit: tuple[dict[str, str], ...] = ()
+    subject_brand_identity: tuple[dict[str, str], ...] = ()
 
     def find_by_asin(self, asin: str) -> XrayProduct | None:
         normalized = _extract_asin(asin)
