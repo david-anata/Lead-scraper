@@ -169,6 +169,8 @@ def _employee_candidates(tables: dict[str, list[dict[str, str]]]) -> list[dict[s
             "email": email, "name": "", "rates": [], "gross_cents": 0,
             "federal_cents": 0, "state_cents": 0, "ss_cents": 0,
             "medicare_cents": 0, "line_count": 0, "time_count": 0,
+            "substantive_time_count": 0, "period_count": 0,
+            "paycheck_count": 0,
         })
         if row.get("employee_name") and not item["name"]:
             item["name"] = row["employee_name"].strip()
@@ -201,17 +203,56 @@ def _employee_candidates(tables: dict[str, list[dict[str, str]]]) -> list[dict[s
         item = identity(row)
         if item:
             item["time_count"] += 1
+            if (
+                _number(row.get("hours")) > 0
+                or (
+                    row.get("start_time", "").strip()
+                    and row.get("stop_time", "").strip()
+                    and row.get("start_time", "").strip()
+                    != row.get("stop_time", "").strip()
+                )
+                or bool(row.get("clocked_in_at", "").strip())
+                or bool(row.get("pay_period_id", "").strip())
+            ):
+                item["substantive_time_count"] += 1
+    for row in tables["PayPeriod_export.csv"]:
+        item = identity(row)
+        if item:
+            item["period_count"] += 1
+    for row in tables["Paycheck_export.csv"]:
+        item = identity(row)
+        if item:
+            item["paycheck_count"] += 1
     for item in grouped.values():
         item["hourly_rate_cents"] = item["rates"][-1] if item["rates"] else 0
         item["proposed_type"] = "hourly" if item["hourly_rate_cents"] else "salaried"
         item.pop("rates", None)
-    return sorted(grouped.values(), key=lambda item: (item["name"], item["email"]))
+    candidates = [
+        item for item in grouped.values()
+        if (
+            item["line_count"]
+            or item["gross_cents"]
+            or item["substantive_time_count"]
+            or item["period_count"]
+            or item["paycheck_count"]
+        )
+    ]
+    return sorted(candidates, key=lambda item: (item["name"], item["email"]))
 
 
 def preview_legacy_export(payload: bytes) -> dict[str, Any]:
     """Validate an export and return a privacy-conscious review summary."""
     tables, digest = _read_archive(payload)
     employees = _employee_candidates(tables)
+    included_emails = {item["email"] for item in employees}
+    orphan_rows = sum(
+        1 for rows in tables.values() for row in rows
+        if (
+            _email(row.get("employee_email"))
+            and not _is_sample(row)
+            and _email(row.get("employee_email")) not in included_emails
+        )
+    )
     return {
         "digest": digest,
         "employees": employees,
@@ -219,11 +260,13 @@ def preview_legacy_export(payload: bytes) -> dict[str, Any]:
         "sample_rows_excluded": sum(
             1 for rows in tables.values() for row in rows if _is_sample(row)
         ),
+        "orphan_rows_excluded": orphan_rows,
         "warnings": [
             "Imported employee profiles stay inactive until David or Val reviews them.",
             "Legacy tax settings are archived as source evidence but never activated.",
             "Opening balances are draft candidates and still need independent approval.",
             "No bank details, Social Security numbers, invitations, or money movement are included.",
+            "Zero-duration orphan time rows with no payroll or pay-period evidence are excluded.",
         ],
     }
 
@@ -252,6 +295,7 @@ def import_legacy_export(
     if not expected_digest or digest != expected_digest.strip().lower():
         raise LegacyImportError("The uploaded ZIP does not match the reviewed preview.")
     candidates = _employee_candidates(tables)
+    included_emails = {item["email"] for item in candidates}
     counts = {
         "employees_created": 0, "employees_existing": 0, "teams": 0,
         "periods": 0, "time_entries": 0, "runs": 0, "line_items": 0,
@@ -284,7 +328,7 @@ def import_legacy_export(
             counts["teams" if inserted else "existing_rows_skipped"] += 1
 
         for row in tables["PayPeriod_export.csv"]:
-            if _is_sample(row):
+            if _is_sample(row) or _email(row.get("employee_email")) not in included_emails:
                 continue
             inserted = _insert_missing(
                 session, HRPayPeriod, row,
@@ -299,7 +343,7 @@ def import_legacy_export(
             counts["periods" if inserted else "existing_rows_skipped"] += 1
 
         for row in tables["TimeEntry_export.csv"]:
-            if _is_sample(row):
+            if _is_sample(row) or _email(row.get("employee_email")) not in included_emails:
                 continue
             inserted = _insert_missing(
                 session, HRTimeEntry, row,
@@ -335,7 +379,7 @@ def import_legacy_export(
             counts["runs" if inserted else "existing_rows_skipped"] += 1
 
         for row in tables["PayrollLineItem_export.csv"]:
-            if _is_sample(row):
+            if _is_sample(row) or _email(row.get("employee_email")) not in included_emails:
                 continue
             inserted = _insert_missing(
                 session, HRPayrollLineItem, row,
@@ -358,7 +402,7 @@ def import_legacy_export(
             counts["line_items" if inserted else "existing_rows_skipped"] += 1
 
         for row in tables["Paycheck_export.csv"]:
-            if _is_sample(row):
+            if _is_sample(row) or _email(row.get("employee_email")) not in included_emails:
                 continue
             inserted = _insert_missing(
                 session, HRPaycheck, row,
@@ -374,7 +418,7 @@ def import_legacy_export(
             counts["paychecks" if inserted else "existing_rows_skipped"] += 1
 
         for row in tables["PrintedCheck_export.csv"]:
-            if _is_sample(row):
+            if _is_sample(row) or _email(row.get("employee_email")) not in included_emails:
                 continue
             inserted = _insert_missing(
                 session, HRPrintedCheck, row,

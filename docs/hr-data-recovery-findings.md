@@ -21,13 +21,15 @@ The Base44 export is a real data-table export, not just application source. It c
 | Teams | 2 |
 | Time entries | 133 |
 
-The recovery preview identifies five non-sample employee email identities:
+The recovery preview identifies four substantive non-sample employee identities:
 
 - four have names in issued-check/payroll history;
-- one unnamed identity appears only in two time entries and requires alias review;
 - three named identities show hourly-rate history;
 - one named identity shows fixed-pay history;
 - five sample/test rows are excluded automatically.
+- an unnamed `von@anatainc.com` identity is excluded because its only two rows
+  start and stop at the same minute and contain no hours, pay period, note,
+  project, payroll line, or check evidence.
 
 The history covers time from March 23 through July 22, 2026, and payroll pay dates
 from April 10 through July 20, 2026.
@@ -63,6 +65,7 @@ The Anata recovery tool:
 - requires the same archive fingerprint at commit;
 - rejects unexpected, encrypted, oversized, or path-containing ZIP files;
 - excludes sample rows;
+- excludes zero-duration orphan identities with no substantive employment evidence;
 - imports idempotently using Base44 record IDs;
 - creates newly discovered employees as inactive;
 - does not send invitations;

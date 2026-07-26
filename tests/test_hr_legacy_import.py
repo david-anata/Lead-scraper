@@ -63,6 +63,10 @@ def _archive(email: str, suffix: str) -> bytes:
             }, {
                 "id": f"sample-time-{suffix}", "employee_email": "demo@example.com",
                 "date": "2026-07-01", "hours": "8", "is_sample": "true",
+            }, {
+                "id": f"orphan-time-{suffix}", "employee_email": f"orphan-{suffix}@anatainc.com",
+                "date": "2026-07-01", "start_time": "09:00",
+                "stop_time": "09:00", "hours": "", "is_sample": "false",
             }],
             [
                 "id", "employee_email", "date", "start_time", "stop_time",
@@ -158,6 +162,7 @@ class LegacyHRImportTests(unittest.TestCase):
         self.assertEqual(len(preview["employees"]), 1)
         self.assertEqual(preview["employees"][0]["gross_cents"], 20_000)
         self.assertEqual(preview["sample_rows_excluded"], 1)
+        self.assertEqual(preview["orphan_rows_excluded"], 1)
 
         with self.assertRaises(legacy_import.LegacyImportError):
             legacy_import.import_legacy_export(
@@ -170,6 +175,10 @@ class LegacyHRImportTests(unittest.TestCase):
             expected_digest=preview["digest"], attested=True,
         )
         self.assertEqual(result["counts"]["employees_created"], 1)
+        self.assertEqual(result["counts"]["time_entries"], 1)
+        self.assertIsNone(
+            hr_store.get_employee_by_email(f"orphan-{suffix}@anatainc.com")
+        )
         employee = hr_store.get_employee_by_email(email)
         self.assertEqual(employee["status"], "inactive")
         self.assertEqual(employee["hourly_rate_cents"], 2_500)
