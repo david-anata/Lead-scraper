@@ -10,7 +10,8 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import lru_cache
 from typing import Any
-from urllib.parse import quote
+from contextvars import ContextVar
+from urllib.parse import quote, urlparse
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
@@ -79,10 +80,22 @@ def _plaid_client_user_id(user: Any) -> str:
     return f"finance-{digest[:32]}"
 
 
+_CURRENT_REQUEST: ContextVar[Optional[Request]] = ContextVar("finance_current_request", default=None)
+
+
+async def _track_finance_request(request: Request) -> None:
+    """Remember the request so a redirect can return to the page it came from."""
+    _CURRENT_REQUEST.set(request)
+
+
 router = APIRouter(
     prefix="/admin/finances",
     tags=["finance"],
-    dependencies=[Depends(require_tool("finance")), Depends(_set_finance_nav_user)],
+    dependencies=[
+        Depends(require_tool("finance")),
+        Depends(_set_finance_nav_user),
+        Depends(_track_finance_request),
+    ],
 )
 
 plaid_webhook_router = APIRouter(tags=["plaid"])
@@ -162,20 +175,69 @@ def _redirect_login() -> RedirectResponse:
     return RedirectResponse("/admin/login", status_code=303)
 
 
+def _safe_return_path(default: str = "/admin/finances") -> str:
+    """Where to send the operator after an action: back where they were.
+
+    Every action used to bounce to the finance home page, so dismissing one
+    audit finding meant navigating back and scrolling again. The destination is
+    taken from an explicit return_to field, or the page that submitted the form,
+    and is only honoured when it points inside Finance on this host. Anything
+    else falls back, so this cannot be used to redirect somewhere unexpected.
+    """
+    request = _CURRENT_REQUEST.get()
+    if request is None:
+        return default
+
+    candidates: list[str] = []
+    explicit = ""
+    try:
+        explicit = str(getattr(request.state, "finance_return_to", "") or "")
+    except Exception:
+        explicit = ""
+    if explicit:
+        candidates.append(str(explicit))
+    candidates.append(str(request.headers.get("referer") or ""))
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        parsed = urlparse(candidate)
+        if parsed.scheme and parsed.netloc and parsed.netloc != request.url.netloc:
+            continue  # another host, never follow it
+        path = parsed.path or ""
+        if not path.startswith("/admin/finances"):
+            continue
+        fragment = f"#{parsed.fragment}" if parsed.fragment else ""
+        return f"{path}{fragment}"
+    return default
+
+
+def _redirect_with_flash(message: str, *, level: str = "ok") -> RedirectResponse:
+    """Flash a message and return to the originating page, keeping any anchor."""
+    target = _safe_return_path()
+    path, _, fragment = target.partition("#")
+    separator = "&" if "?" in path else "?"
+    suffix = f"#{fragment}" if fragment else ""
+    return RedirectResponse(
+        f"{path}{separator}flash={quote(f'{level}:{message}')}{suffix}",
+        status_code=303,
+    )
+
+
 def _redirect_finance_home(message: str = "Finance now lives on one control page.") -> RedirectResponse:
-    return RedirectResponse(f"/admin/finances?flash={quote(f'ok:{message}')}", status_code=303)
+    return _redirect_with_flash(message)
 
 
 def _redirect_review_home(message: str) -> RedirectResponse:
-    return RedirectResponse(f"/admin/finances/review?flash={quote(f'ok:{message}')}", status_code=303)
+    return _redirect_with_flash(message)
 
 
 def _redirect_review_error(message: str) -> RedirectResponse:
-    return RedirectResponse(f"/admin/finances/review?flash={quote(f'err:{message}')}", status_code=303)
+    return _redirect_with_flash(message, level="err")
 
 
 def _redirect_finance_error(message: str) -> RedirectResponse:
-    return RedirectResponse(f"/admin/finances?flash={quote(f'err:{message}')}", status_code=303)
+    return _redirect_with_flash(message, level="err")
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +528,9 @@ async def plaid_update_link_token(request: Request, item_id: str):
 
 
 @router.post("/plaid/items/{item_id}/disconnect")
-async def plaid_disconnect_item(request: Request, item_id: str, force: bool = Form(False)):
+async def plaid_disconnect_item(
+    request: Request, item_id: str, force: bool = Form(False), return_to: str = Form(""),
+):
     """Revoke a bank connection and destroy its reusable Plaid credential.
 
     ``force`` clears a stuck connection locally without waiting for Plaid to
@@ -475,6 +539,7 @@ async def plaid_disconnect_item(request: Request, item_id: str, force: bool = Fo
     """
     from sales_support_agent.services.cashflow.plaid import PlaidError, disconnect_item
 
+    request.state.finance_return_to = return_to
     user = get_current_user(request) or {}
     actor = str(user.get("email") or user.get("id") or "finance-operator")
     try:
@@ -493,9 +558,13 @@ async def plaid_disconnect_item(request: Request, item_id: str, force: bool = Fo
 
 
 @router.post("/plaid/accounts/{account_id}/cash-role")
-async def plaid_set_account_cash_role(request: Request, account_id: str, role: str = Form(...)):
+async def plaid_set_account_cash_role(
+    request: Request, account_id: str, role: str = Form(...), return_to: str = Form(""),
+):
     """Reclassify one bank account as spendable cash, reserve, or excluded."""
     from sales_support_agent.services.cashflow.accounts_view import set_cash_role
+
+    request.state.finance_return_to = return_to
 
     user = get_current_user(request) or {}
     actor = str(user.get("email") or user.get("id") or "finance-operator")
