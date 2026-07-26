@@ -76,8 +76,19 @@ def store_niche(store: dict[str, Any]) -> str:
     return ""
 
 
-def store_matches_icp(store: dict[str, Any]) -> bool:
-    """Authoritative ICP gate applied to a StoreLeads store record."""
+def store_matches_icp(store: dict[str, Any], settings: Optional[dict[str, Any]] = None) -> bool:
+    """Authoritative ICP gate applied to a StoreLeads store record.
+
+    The revenue band is tunable on the Lead Ops page; settings are in dollars a
+    year, while StoreLeads reports cents, so the conversion happens here.
+    """
+    lo, hi = ICP_MIN_YEARLY_SALES_CENTS, ICP_MAX_YEARLY_SALES_CENTS
+    if settings:
+        try:
+            lo = int(settings.get("icp.revenue_min_usd") or lo // 100) * 100
+            hi = int(settings.get("icp.revenue_max_usd") or hi // 100) * 100
+        except (TypeError, ValueError):
+            pass
     domain = str(store.get("name") or "").strip().lower()
     if not domain:
         return False
@@ -92,7 +103,7 @@ def store_matches_icp(store: dict[str, Any]) -> bool:
 
     yearly = store.get("estimated_sales_yearly")
     if isinstance(yearly, (int, float)) and yearly > 0:
-        if yearly < ICP_MIN_YEARLY_SALES_CENTS or yearly > ICP_MAX_YEARLY_SALES_CENTS:
+        if yearly < lo or yearly > hi:
             return False
 
     searchable = " ".join(
@@ -485,7 +496,7 @@ def run_storeleads_to_clay(
             # express it as a single filter (see outbound_recipes.Recipe.keeps).
             if recipe is not None and not recipe.keeps(store, now, settings):
                 continue
-            if not store_matches_icp(store):
+            if not store_matches_icp(store, settings):
                 continue
             result.matched_icp += 1
             lead = to_clay_lead(store, now=now)

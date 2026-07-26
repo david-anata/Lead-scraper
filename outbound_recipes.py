@@ -26,17 +26,30 @@ _YEARLY_MAX_CENTS = 15_000_000_00     # $15M/yr
 MONTHLY_MIN_CENTS = _YEARLY_MIN_CENTS // 12
 MONTHLY_MAX_CENTS = _YEARLY_MAX_CENTS // 12
 
-BASE_FILTERS: dict[str, Any] = {
-    "f:p": "shopify",
-    "f:cc": "US,GB,CA,AU",
-    "f:cc:op": "or",
-    "f:ds": "Active",                       # skip password-protected / inactive
-    "f:it": "email",                        # must have a contact route
-    "f:ermin": MONTHLY_MIN_CENTS,
-    "f:ermax": MONTHLY_MAX_CENTS,
-    "f:tags": "Dropshipper,Print on Demand",
-    "f:tags:op": "not",                     # brief 2: these are never a fit
-}
+def base_filters(settings: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """The ICP floor applied to EVERY recipe. The revenue band is tunable on the
+    Lead Ops page and takes effect on the very next pull.
+
+    StoreLeads filters on MONTHLY sales in cents, while we think in dollars per
+    year, so the conversion happens here in one place.
+    """
+    lo = _int(settings, "icp.revenue_min_usd") * 100 // 12
+    hi = _int(settings, "icp.revenue_max_usd") * 100 // 12
+    return {
+        "f:p": "shopify",
+        "f:cc": "US,GB,CA,AU",
+        "f:cc:op": "or",
+        "f:ds": "Active",                       # skip password-protected / inactive
+        "f:it": "email",                        # must have a contact route
+        "f:ermin": lo,
+        "f:ermax": hi,
+        "f:tags": "Dropshipper,Print on Demand",
+        "f:tags:op": "not",                     # brief 2: these are never a fit
+    }
+
+
+# Kept for callers that want the shipped defaults without passing settings.
+BASE_FILTERS: dict[str, Any] = {}
 
 # High-signal apps. Installing one means budget just moved; uninstalling one
 # means they had the problem, tried a tool, and still have the problem.
@@ -63,6 +76,8 @@ def _iso(dt: datetime) -> str:
 # Everything an operator should be able to change without a code deploy. Stored
 # in the database and edited on the Lead Ops page; these are only the fallbacks.
 DEFAULT_SETTINGS: dict[str, Any] = {
+    "icp.revenue_min_usd": 1_000_000,     # smallest brand worth our time
+    "icp.revenue_max_usd": 20_000_000,    # largest before they have an agency
     "new_growth_app.window_days": 14,     # how recent an install still counts
     "churned_tool.tools_per_day": 1,      # how many tools we check for churn daily
     "new_growth_app.max_per_run": 40,
@@ -87,6 +102,8 @@ _REASON_TEMPLATES: dict[str, str] = {
 }
 
 TUNABLE_LABELS: dict[str, str] = {
+    "icp.revenue_min_usd": "Smallest brand we want (dollars a year)",
+    "icp.revenue_max_usd": "Largest brand we want (dollars a year)",
     "new_growth_app.window_days": "Just installed: how many days back still counts",
     "churned_tool.tools_per_day": "Just dropped: how many tools to check each day",
     "churned_tool.window_days": "Just dropped: how many days back still counts",
@@ -129,7 +146,7 @@ class Recipe:
                settings: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """Full StoreLeads query for this recipe at a point in time."""
         now = now or datetime.now(timezone.utc)
-        return {**BASE_FILTERS, **self.build(now, settings)}
+        return {**base_filters(settings), **self.build(now, settings)}
 
     def keeps(self, store: dict[str, Any], now: Optional[datetime] = None,
               settings: Optional[dict[str, Any]] = None) -> bool:

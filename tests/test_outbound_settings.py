@@ -137,5 +137,48 @@ class TunablesChangeBehaviourTests(unittest.TestCase):
         self.assertTrue(rc.recipe("icp_baseline").enabled(None))
 
 
+class IcpBandTunableTests(unittest.TestCase):
+    """The revenue band is the ICP lever David most needs to move, and a change
+    must take effect on the very next pull, both server-side and in our own gate."""
+
+    def test_band_reaches_the_storeleads_query_as_monthly_cents(self):
+        p = rc.recipe("icp_baseline").params(
+            WED, {"icp.revenue_min_usd": 2_000_000, "icp.revenue_max_usd": 10_000_000})
+        self.assertEqual(p["f:ermin"], 2_000_000 * 100 // 12)
+        self.assertEqual(p["f:ermax"], 10_000_000 * 100 // 12)
+
+    def test_defaults_are_one_to_twenty_million(self):
+        p = rc.recipe("icp_baseline").params(WED)
+        self.assertEqual(p["f:ermin"], 1_000_000 * 100 // 12)
+        self.assertEqual(p["f:ermax"], 20_000_000 * 100 // 12)
+
+    def test_our_own_gate_honours_the_same_band(self):
+        import outbound_pipeline as op
+
+        def store(yearly_cents):
+            return {"name": "a.com", "merchant_name": "B", "platform": "shopify",
+                    "country_code": "US", "estimated_sales_yearly": yearly_cents,
+                    "categories": "Beauty & Skincare", "tags": "",
+                    "contact_info": [{"type": "email", "value": "a@b.com"}]}
+
+        tight = {"icp.revenue_min_usd": 2_000_000, "icp.revenue_max_usd": 10_000_000}
+        self.assertTrue(op.store_matches_icp(store(835_227_012), tight))    # $8.35M in
+        self.assertFalse(op.store_matches_icp(store(1_337_650_920), tight))  # $13.4M out
+        self.assertFalse(op.store_matches_icp(store(150_000_000), tight))    # $1.5M out
+
+    def test_a_bad_setting_falls_back_instead_of_letting_everything_through(self):
+        import outbound_pipeline as op
+        store = {"name": "a.com", "merchant_name": "B", "platform": "shopify",
+                 "country_code": "US", "estimated_sales_yearly": 50_000_000_00,
+                 "categories": "Beauty & Skincare", "tags": "",
+                 "contact_info": [{"type": "email", "value": "a@b.com"}]}
+        # $50M with a nonsense setting must still be rejected by the default ceiling
+        self.assertFalse(op.store_matches_icp(store, {"icp.revenue_max_usd": "abc"}))
+
+    def test_band_is_listed_as_editable_in_the_app(self):
+        self.assertIn("icp.revenue_min_usd", rc.TUNABLE_LABELS)
+        self.assertIn("icp.revenue_max_usd", rc.TUNABLE_LABELS)
+
+
 if __name__ == "__main__":
     unittest.main()
