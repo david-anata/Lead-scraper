@@ -3508,7 +3508,7 @@ async def render_cashflow_overview_page(
     inline_result = inline_result_html or ""
 
     body = f"""
-    <main class="finance-control" data-smart-mode="on">
+    <div class="finance-control" data-smart-mode="on">
       <div id="finance-page-content" class="finance-control__content">
       <header class="finance-control__header">
         <div>
@@ -3724,7 +3724,7 @@ async def render_cashflow_overview_page(
       <template id="finance-import-error-state"><section class="finance-state-copy is-error"><strong>Import failed. No records were committed.</strong><p>The failed file, reason, and row-error report will appear here.</p><a href="#">Download row-error report</a></section></template>
       <p id="finance-live-region" class="sr-only" aria-live="polite"></p>
       <script id="finance-drawer-payloads" type="application/json">{drawer_json}</script>
-    </main>
+    </div>
 
     <script src="/api/integrations/plaid/link-initialize.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
