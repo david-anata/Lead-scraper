@@ -47,7 +47,11 @@ def test_authenticated_page_families_use_canonical_canvas_width() -> None:
 
     for relative_path in sources:
         text = (ROOT / relative_path).read_text(encoding="utf-8")
-        assert "max-width: 1320px" in text or "max-width:1320px" in text
+        assert (
+            "max-width: 1320px" in text
+            or "max-width:1320px" in text
+            or "max-width: var(--agent-container)" in text
+        )
 
 
 def test_legacy_operator_canvas_widths_are_not_reintroduced() -> None:

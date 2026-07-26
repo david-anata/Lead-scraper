@@ -5,6 +5,26 @@ Scope: all authenticated Agent pages, transition states, and retained public del
 Primary implementation model: server-rendered Python/FastAPI with shared CSS and render helpers
 Prepared: July 26, 2026
 
+## Implementation status
+
+All phases 0–12 were implemented and deployed on July 26, 2026.
+
+- The route inventory covers 481 mounted routes and assigns each route family
+  to its migration phase.
+- Authenticated Sales, Fulfillment, Admin, Executive, Advertising, Brand,
+  Website Ops, Building, HR, and Finance pages use the canonical application
+  shell and 1320px container contract.
+- Shared and public reports use the reconciled Anata semantic tokens while
+  preserving recipient security, tracking, print behavior, and historical
+  renderer compatibility.
+- Request timing, SQL query timing/counts, request-level permission memoization,
+  and immutable versioned static assets are active.
+- Desktop visual QA confirmed a full-width header background, one page
+  landmark and heading, visible empty states, and no global horizontal overflow
+  on representative operator pages.
+- Finance/Plaid behavior, permissions, routes, audits, and external-write
+  contracts were not changed by this migration.
+
 ## Outcome
 
 Make `agent.anatainc.com` operate as one coherent internal product without

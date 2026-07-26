@@ -125,41 +125,47 @@ class FulfillmentDashboardTests(unittest.TestCase):
             }
             with mock.patch.dict(os.environ, env, clear=False):
                 app = create_app()
-                client = TestClient(app)
-                session_token = create_admin_session_token(app.state.settings)
-                client.cookies.set(app.state.settings.admin_cookie_name, session_token)
+                try:
+                    with TestClient(app) as client:
+                        session_token = create_admin_session_token(app.state.settings)
+                        client.cookies.set(app.state.settings.admin_cookie_name, session_token)
 
-                response = client.get("/admin/fulfillment/cs/")
-                self.assertEqual(response.status_code, 200)
-                self.assertIn("Fulfillment CS", response.text)
-                self.assertIn("Support thread preview", response.text)
-                self.assertIn("Unresolved", response.text)
+                        response = client.get("/admin/fulfillment/cs/")
+                        self.assertEqual(response.status_code, 200)
+                        self.assertIn("Fulfillment CS", response.text)
+                        self.assertIn("Support thread preview", response.text)
+                        self.assertIn("Unresolved", response.text)
 
-                response = client.get("/admin/fulfillment/cs/reports/")
-                self.assertEqual(response.status_code, 200)
-                self.assertIn("Fulfillment CS Review", response.text)
-                self.assertIn("JSON", response.text)
+                        response = client.get("/admin/fulfillment/cs/reports/")
+                        self.assertEqual(response.status_code, 200)
+                        self.assertIn("Fulfillment CS Review", response.text)
+                        self.assertIn("JSON", response.text)
 
-                response = client.get("/admin/fulfillment/cs/reports/latest", follow_redirects=False)
-                self.assertEqual(response.status_code, 302)
-                self.assertEqual(response.headers["location"], f"/admin/fulfillment/cs/reports/{slug}")
+                        response = client.get("/admin/fulfillment/cs/reports/latest", follow_redirects=False)
+                        self.assertEqual(response.status_code, 302)
+                        self.assertEqual(response.headers["location"], f"/admin/fulfillment/cs/reports/{slug}")
 
-                response = client.get(f"/admin/fulfillment/cs/reports/{slug}")
-                self.assertEqual(response.status_code, 200)
-                self.assertIn("Mule Deer Foundation", response.text)
-                self.assertIn("Escalations", response.text)
+                        response = client.get(f"/admin/fulfillment/cs/reports/{slug}")
+                        self.assertEqual(response.status_code, 200)
+                        self.assertIn("Mule Deer Foundation", response.text)
+                        self.assertIn("Escalations", response.text)
 
-                response = client.get(f"/admin/fulfillment/cs/reports/{slug}.json")
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.headers["content-type"].split(";")[0], "application/json")
+                        response = client.get(f"/admin/fulfillment/cs/reports/{slug}.json")
+                        self.assertEqual(response.status_code, 200)
+                        self.assertEqual(response.headers["content-type"].split(";")[0], "application/json")
 
-                response = client.get(f"/admin/fulfillment/cs/reports/{slug}.md")
-                self.assertEqual(response.status_code, 200)
-                self.assertIn("Fulfillment CS Review", response.text)
+                        response = client.get(f"/admin/fulfillment/cs/reports/{slug}.md")
+                        self.assertEqual(response.status_code, 200)
+                        self.assertIn("Fulfillment CS Review", response.text)
 
-                response = client.get(f"/admin/fulfillment/cs/reports/{slug}.html")
-                self.assertEqual(response.status_code, 200)
-                self.assertIn("artifact html", response.text)
+                        response = client.get(f"/admin/fulfillment/cs/reports/{slug}.html")
+                        self.assertEqual(response.status_code, 200)
+                        self.assertIn("artifact html", response.text)
+                finally:
+                    app.state.session_factory.kw["bind"].dispose()
+                    from sales_support_agent.models.database import get_engine
+
+                    get_engine().dispose()
 
     def test_report_entries_read_timestamped_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
