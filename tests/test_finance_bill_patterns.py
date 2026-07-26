@@ -14,6 +14,7 @@ from sales_support_agent.models import database
 from sales_support_agent.models.database import Base, _register_models
 from sales_support_agent.models.entities import CashEvent, RecurringTemplate
 from sales_support_agent.services.cashflow.bill_patterns import (
+    bill_merchant_key,
     bill_pattern_key,
     confirmed_bill_projections,
     list_bill_patterns,
@@ -204,8 +205,13 @@ def test_pattern_carries_the_keys_the_page_needs(finance_engine):
         "category",
         "already_tracked",
         "decision",
+        "merchant_key",
+        "paid_in_pieces",
     }
-    assert pattern["pattern_key"] == bill_pattern_key("Canyon View Management")
+    # The key follows the merchant the descriptor is reduced to, not the raw
+    # descriptor, so the same vendor keeps one key however the bank words it.
+    assert pattern["merchant_key"] == bill_merchant_key("Canyon View Management")
+    assert pattern["pattern_key"] == bill_pattern_key(pattern["merchant_key"])
     assert len(pattern["pattern_key"]) == 16
     assert pattern["frequency"] == "monthly"
     assert pattern["category"] == "rent"
@@ -509,3 +515,150 @@ def test_an_already_tracked_bill_is_never_projected_twice(finance_engine):
     )
 
     assert confirmed_bill_projections(as_of=AS_OF, horizon_days=95) == []
+
+
+# ---------------------------------------------------------------------------
+# The shapes David's real bank history actually has
+#
+# Everything below was found by loading the live page. Clean synthetic data of
+# one steady payment per period passed every earlier test while the real page
+# offered internal transfers as bills, split one rent into two, and read a rent
+# paid in pieces as a weekly bill projecting four times its cost.
+# ---------------------------------------------------------------------------
+
+RENT_A = "Withdrawal ACH B TYPE: WEB PMTS CO: Boulder Ranch L."
+RENT_B = "Ach Withdrawal Company: Boulder Ranch Entry: Web"
+
+
+def _post_mixed(engine, rows, *, category="other"):
+    """Post payments whose descriptor varies between them, as the bank really does."""
+    with Session(engine) as session:
+        for index, (descriptor, cents, when) in enumerate(rows):
+            session.add(CashEvent(
+                id=f"csv-mixed-{index}",
+                source="csv",
+                source_id=f"mixed-{index}",
+                record_kind="transaction",
+                event_type="outflow",
+                category=category,
+                name=descriptor,
+                description=descriptor,
+                vendor_or_customer=descriptor,
+                amount_cents=cents,
+                due_date=datetime(when.year, when.month, when.day),
+                status="posted",
+                confidence="confirmed",
+            ))
+        session.commit()
+
+
+def test_moving_your_own_money_is_never_offered_as_a_bill(finance_engine):
+    _post_mixed(finance_engine, [
+        *[("Home banking Withdrawal Transfer to S0050", 25_000_00,
+           AS_OF - timedelta(days=6 * (i + 1))) for i in range(9)],
+        *[("To Share 58", 14_499_51, AS_OF - timedelta(days=9 * (i + 1))) for i in range(6)],
+    ])
+
+    listing = list_bill_patterns(as_of=AS_OF, lookback_days=400)
+
+    assert listing["patterns"] == [], (
+        "a transfer between the operator's own accounts is not a bill, and "
+        "tracking one inflates the cash the forecast says is needed"
+    )
+
+
+def test_a_descriptor_that_names_nobody_is_not_offered(finance_engine):
+    _post_mixed(finance_engine, [
+        ("Draft Withdrawal Draft #**0012 Tracer: ****5078", 1_087_00,
+         AS_OF - timedelta(days=6 * (i + 1))) for i in range(9)
+    ])
+
+    assert list_bill_patterns(as_of=AS_OF, lookback_days=400)["patterns"] == []
+
+
+def test_a_merchant_charged_almost_daily_is_not_a_bill_on_a_cycle(finance_engine):
+    """Sixty charges from one merchant was being called a weekly bill and
+    multiplied up. It is a pile of charges, not something arriving on a cycle."""
+    _post_mixed(finance_engine, [
+        ("Store Leads", 14_00 + i, AS_OF - timedelta(days=i + 1)) for i in range(60)
+    ])
+
+    assert list_bill_patterns(as_of=AS_OF, lookback_days=400)["patterns"] == []
+
+
+def test_one_rent_worded_two_ways_stays_one_bill(finance_engine):
+    """The bank writes the same payment differently between runs. Grouping on the
+    raw descriptor counted the rent twice and halved each half's cadence."""
+    _post_mixed(finance_engine, [
+        (RENT_A, 10_000_00, date(2026, 6, 3)),
+        (RENT_B, 6_042_00, date(2026, 6, 12)),
+        (RENT_A, 5_000_00, date(2026, 6, 21)),
+        (RENT_A, 12_000_00, date(2026, 5, 2)),
+        (RENT_B, 9_042_00, date(2026, 5, 15)),
+        (RENT_A, 8_000_00, date(2026, 4, 4)),
+        (RENT_B, 7_000_00, date(2026, 4, 18)),
+        (RENT_A, 6_042_00, date(2026, 4, 26)),
+    ], category="rent")
+
+    found = list_bill_patterns(as_of=AS_OF, lookback_days=400)["patterns"]
+
+    assert len(found) == 1, [row["vendor"] for row in found]
+    assert found[0]["vendor"] == "Boulder Ranch", "the raw descriptor is not a name"
+
+
+def test_a_rent_paid_in_pieces_is_one_monthly_bill_at_its_real_cost(finance_engine):
+    """This is the case David warned about. Read as a weekly bill of one
+    instalment it projected roughly four times the rent."""
+    _post_mixed(finance_engine, [
+        (RENT_A, 10_000_00, date(2026, 6, 3)),
+        (RENT_B, 6_042_00, date(2026, 6, 12)),
+        (RENT_A, 5_000_00, date(2026, 6, 21)),
+        (RENT_A, 12_000_00, date(2026, 5, 2)),
+        (RENT_B, 9_042_00, date(2026, 5, 15)),
+        (RENT_A, 8_000_00, date(2026, 4, 4)),
+        (RENT_B, 7_000_00, date(2026, 4, 18)),
+        (RENT_A, 6_042_00, date(2026, 4, 26)),
+    ], category="rent")
+
+    bill = list_bill_patterns(as_of=AS_OF, lookback_days=400)["patterns"][0]
+
+    assert bill["frequency"] == "monthly", f"a monthly rent read as {bill['frequency']}"
+    assert bill["paid_in_pieces"] is True
+    assert abs(bill["amount_cents"] - 21_042_00) <= 100_00, (
+        f"the rent is 21,042 a month; projected {bill['amount_cents'] / 100:,.2f}"
+    )
+    assert "pieces" in bill["why"], "the operator has to be told why it was added up"
+
+
+def test_a_steady_weekly_charge_is_left_weekly_and_not_lumped_monthly(finance_engine):
+    """Adding up the month is only right for uneven pieces of one bill. A real
+    weekly repayment of the same figure forecasts better as four hits."""
+    _post_mixed(finance_engine, [
+        (
+            "Withdrawal ACH A TYPE: Stripe Cap CO: Anata Entry Class Code: CCD" if i % 2
+            else "Ach Withdrawal Company: Anata Entry: Stripe Cap David Narayan",
+            843_00,
+            AS_OF - timedelta(days=7 * (i + 1)),
+        ) for i in range(12)
+    ])
+
+    found = list_bill_patterns(as_of=AS_OF, lookback_days=400)["patterns"]
+
+    assert len(found) == 1, [row["vendor"] for row in found]
+    assert found[0]["frequency"] == "weekly"
+    assert found[0]["paid_in_pieces"] is False
+    assert found[0]["amount_cents"] == 843_00
+
+
+def test_a_wildly_uneven_series_is_not_called_likely(finance_engine):
+    """Arriving often was enough to earn "Likely" while the amount swung between
+    75 and 30,000, which is the opposite of what the word should mean."""
+    _post_mixed(finance_engine, [
+        ("Scattergun Supplies", cents, AS_OF - timedelta(days=30 * (i + 1)))
+        for i, cents in enumerate([75_00, 30_000_00, 5_000_00, 100_00, 12_000_00, 250_00])
+    ])
+
+    found = list_bill_patterns(as_of=AS_OF, lookback_days=400)["patterns"]
+
+    assert found, "it is still a repeating payment, it just should not look certain"
+    assert found[0]["confidence_label"] == "Possible", found[0]["confidence_label"]

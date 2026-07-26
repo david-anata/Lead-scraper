@@ -24,10 +24,15 @@ from sqlalchemy.pool import StaticPool
 from sales_support_agent.api.cashflow_router import router as cashflow_router
 from sales_support_agent.models import database
 from sales_support_agent.models.database import init_database, insert_cash_event
-from sales_support_agent.services.cashflow.bill_patterns import bill_pattern_key
+from sales_support_agent.services.cashflow.bill_patterns import (
+    bill_merchant_key,
+    bill_pattern_key,
+)
 
 VENDOR = "Comcast Cable Comm"
-PATTERN_KEY = bill_pattern_key(VENDOR)
+# The key follows the cleaned merchant, so the same vendor keeps one key
+# however the bank words the descriptor.
+PATTERN_KEY = bill_pattern_key(bill_merchant_key(VENDOR))
 
 
 @pytest.fixture()

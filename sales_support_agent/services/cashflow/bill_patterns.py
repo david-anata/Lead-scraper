@@ -6,15 +6,31 @@ and turns the ones the operator confirms into read-only forecast rows.
 
 How it fits together
 --------------------
-1. ``trend_detector.detect_recurring_patterns`` does the detection: vendor
-   normalisation, grouping, frequency from the median gap, a 0-1 confidence and
-   the already-tracked check against recurring templates. This module wraps it
-   for outflows only and adds what a bill needs: a safe projected amount, a plain
-   English explanation, an operator decision and forecast rows.
+1. Posted bank outflows are grouped by ``bill_merchant_key``, then each group is
+   judged: is this a bill arriving on a cycle, and if so at what amount?
 2. Decisions are appended to the existing ``finance_action_audit`` table, exactly
    as income pattern decisions are, so predicting bills needs no new table.
 3. Projections are synthetic. They are never written to ``cash_events``, which is
    what keeps stored history actuals-only.
+
+What real bank history forced, all found by loading the live page
+----------------------------------------------------------------
+The obvious version of this offered internal transfers as bills, split one rent
+into two, and read a rent paid in instalments as a weekly bill projecting four
+times its cost. So, in order:
+
+* Transfers between the operator's own accounts are excluded. Tracking one
+  inflates the cash the forecast says is needed.
+* Grouping is on two cleaned words, not the raw descriptor, because the bank
+  words the same payment differently between runs. The label is fuller than the
+  grouping key, since two words reads badly. See ``_display_label``.
+* A descriptor with no payee left in it ("Draft", "Check") is dropped.
+* Uneven payments landing several times a month are one bill paid in pieces, and
+  are added into a monthly figure. Steady ones are left on their own cycle.
+  See ``_consolidate_part_payments``.
+* A merchant charged almost daily is a pile of charges, not a cycle, and is
+  dropped rather than multiplied up.
+* An unpredictable amount caps confidence, because the amount is the forecast.
 
 The one place this deliberately diverges from the income equivalent is the
 projected amount. See ``_projected_bill_amount``.
@@ -49,7 +65,6 @@ from sales_support_agent.services.cashflow.trend_detector import (
     _jaccard,
     _normalize_vendor,
     _to_date,
-    detect_recurring_patterns,
 )
 
 
@@ -62,14 +77,28 @@ MIN_OCCURRENCES = 3
 SNOOZE_DAYS = 7
 # A predicted date and a real bill this close together are the same bill.
 DOUBLE_COUNT_WINDOW_DAYS = 3
-# Same threshold trend_detector uses for its already-tracked check, so a vendor
-# that counts as covered there also counts as covered here.
+# How alike a predicted vendor and a real bill's vendor must read before the two
+# are treated as the same payment, so a guess and the invoice cannot both count.
 VENDOR_MATCH_MIN_SIMILARITY = 0.45
 # Frequencies obligations._next_occurrence accepts. Anything else must be mapped
 # or dropped before it reaches a caller.
 ALLOWED_FREQUENCIES = ("weekly", "biweekly", "monthly", "quarterly", "annual")
 _ACTIVE_OBLIGATION_STATUSES = ("planned", "pending", "overdue", "open", "due")
 _PATTERN_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
+# Below this a series is not a bill arriving on a cycle, it is a pile of charges
+# from one merchant. Real bank history has vendors billing almost daily; calling
+# those "every week" and multiplying them up overstates the month enormously.
+MIN_BILL_GAP_DAYS = 5
+# How much a bill is allowed to vary and still be treated as the same charge
+# repeating. Measured as the inter-quartile spread over the median.
+STEADY_AMOUNT_SPREAD = 0.25
+# What is left after the bank boilerplate is stripped but still says nothing
+# about who was paid. Offering these as bills to track is noise.
+_NOT_A_MERCHANT = frozenset({
+    "check", "draft", "home", "banking", "withdrawal", "deposit", "transfer",
+    "payment", "pmts", "debits", "credit", "bill", "sale", "fee", "entry",
+    "type", "company", "misc", "ach", "pos", "web", "recurring",
+})
 # How many of these land in a month, used only to rank by cost.
 _MONTHLY_MULTIPLIER = {
     "weekly": 52 / 12,
@@ -102,27 +131,25 @@ def list_bill_patterns(
     history = _load_bill_history(as_of=as_of, lookback_days=lookback_days)
     decisions = _decision_records(scope=scope)
 
-    detected = [
-        pattern
-        for pattern in detect_recurring_patterns(
-            min_occurrences=MIN_OCCURRENCES, lookback_days=lookback_days
-        )
-        if pattern.event_type == "outflow"
-    ]
+    # The history is grouped by the same merchant reader the filing queue uses,
+    # so a vendor whose descriptor varies stays one bill. Driving off the
+    # detector's own grouping split Boulder Ranch into "Type: Pmts Boulder Ranch"
+    # and "Company: Boulder Ranch Entry:" and counted the rent twice.
+    tracked_keys = _keys_already_on_a_schedule()
 
     patterns: list[dict[str, Any]] = []
     tracked: list[dict[str, Any]] = []
     dismissed = 0
     snoozed = 0
-    for detected_pattern in detected:
-        occurrences = history.get(detected_pattern.normalized_vendor)
-        if not occurrences or len(occurrences) < MIN_OCCURRENCES:
+    for merchant, occurrences in history.items():
+        if len(occurrences) < MIN_OCCURRENCES:
             continue
         built = _build_pattern(
-            detected_pattern,
+            merchant,
             occurrences=occurrences,
             as_of=as_of,
             decisions=decisions,
+            already_tracked=merchant in tracked_keys,
         )
         if built is None:
             continue
@@ -342,20 +369,42 @@ def confirmed_bill_projections(
 # ---------------------------------------------------------------------------
 
 def _build_pattern(
-    detected: Any,
+    merchant: str,
     *,
     occurrences: list[tuple[date, int, str]],
     as_of: date,
     decisions: Mapping[str, Mapping[str, Any]],
+    already_tracked: bool,
 ) -> dict[str, Any] | None:
-    """Turn one detected outflow into the dict the page and forecast consume."""
-    dates = [row[0] for row in occurrences]
-    amounts = [row[1] for row in occurrences]
+    """Turn one merchant's payment history into the dict the page consumes.
+
+    Returns None when the history is not a bill on a cycle. Two real shapes have
+    to be handled before the amount means anything:
+
+    Paid in pieces. A rent settled with several payments across the month looks
+    like a weekly bill of one instalment. Read that way it projects roughly four
+    times the rent. When the amounts are uneven and several land in most months,
+    the month's payments are added into one monthly bill instead.
+
+    Not a bill at all. A merchant charged almost daily is a pile of charges, not
+    something arriving on a cycle, so it is dropped rather than multiplied up.
+    """
+    label = _display_label(merchant, occurrences)
+    original = sorted(occurrences, key=lambda row: row[0])
+    series, paid_in_pieces = _consolidate_part_payments(original)
+    if len(series) < MIN_OCCURRENCES:
+        return None
+
+    dates = [row[0] for row in series]
+    amounts = [row[1] for row in series]
     gaps = [(right - left).days for left, right in zip(dates, dates[1:])]
     if not gaps:
         return None
     median_gap = float(statistics.median(gaps))
-    frequency = _bill_frequency(detected.frequency, median_gap)
+    if median_gap < MIN_BILL_GAP_DAYS:
+        return None
+
+    frequency = _bill_frequency(_frequency_from_gap(median_gap), median_gap)
     if frequency is None:
         return None
 
@@ -363,28 +412,180 @@ def _build_pattern(
     if amount_cents <= 0:
         return None
 
-    vendor = detected.normalized_vendor
-    pattern_key = bill_pattern_key(vendor)
+    pattern_key = bill_pattern_key(merchant)
     next_due = _next_due_date(dates, frequency=frequency, as_of=as_of)
-    confidence_bps = max(0, min(10_000, int(round(float(detected.confidence) * 10_000))))
+    confidence_bps = _confidence(dates=dates, amounts=amounts, gaps=gaps)
+    why = _explain(frequency=frequency, dates=dates, median_gap_days=median_gap)
+    if paid_in_pieces:
+        why += ", paid in pieces across each month and added up here"
     return {
         "pattern_key": pattern_key,
-        "vendor": vendor,
+        "vendor": label,
+        "merchant_key": merchant,
         "amount_cents": amount_cents,
         "frequency": frequency,
         "next_due": next_due,
         "confidence_bps": confidence_bps,
         "confidence_label": _confidence_label(confidence_bps),
-        "occurrences": len(occurrences),
+        "occurrences": len(series),
+        "paid_in_pieces": paid_in_pieces,
         "evidence": [
             {"due_date": row[0], "amount_cents": row[1]}
-            for row in sorted(occurrences, key=lambda row: row[0], reverse=True)[:6]
+            for row in sorted(series, key=lambda row: row[0], reverse=True)[:6]
         ],
-        "why": _explain(frequency=frequency, dates=dates, median_gap_days=median_gap),
-        "category": _bill_category([row[2] for row in occurrences], vendor),
-        "already_tracked": bool(detected.already_tracked),
+        "why": why,
+        "category": _bill_category([row[2] for row in occurrences], label),
+        "already_tracked": already_tracked,
         "decision": _effective_decision(decisions.get(pattern_key), as_of=as_of),
     }
+
+
+def _amount_spread(amounts: Sequence[int]) -> float:
+    """Inter-quartile spread over the median. 0 means every payment is the same."""
+    ordered = sorted(int(amount) for amount in amounts)
+    median = statistics.median(ordered)
+    if median <= 0:
+        return 0.0
+    if len(ordered) < 4:
+        return (ordered[-1] - ordered[0]) / median
+    quarters = statistics.quantiles(ordered, n=4, method="inclusive")
+    return (quarters[2] - quarters[0]) / median
+
+
+def _consolidate_part_payments(
+    occurrences: Sequence[tuple[date, int, str]],
+) -> tuple[list[tuple[date, int, str]], bool]:
+    """Add up a month's payments when one bill is settled in several.
+
+    Steady amounts are left alone however often they arrive: a genuine weekly
+    repayment of the same figure is more useful forecast as four hits than as one
+    monthly lump. It is the uneven ones landing several times a month that are
+    pieces of a single bill.
+    """
+    by_month: dict[tuple[int, int], list[tuple[date, int, str]]] = {}
+    for row in occurrences:
+        by_month.setdefault((row[0].year, row[0].month), []).append(row)
+    per_month = sorted(len(rows) for rows in by_month.values())
+    if len(by_month) < 2 or statistics.median(per_month) < 2:
+        return list(occurrences), False
+    if _amount_spread([row[1] for row in occurrences]) <= STEADY_AMOUNT_SPREAD:
+        return list(occurrences), False
+
+    consolidated: list[tuple[date, int, str]] = []
+    for _month, rows in sorted(by_month.items()):
+        total = sum(row[1] for row in rows)
+        # The last payment of the month is when the bill is actually settled.
+        consolidated.append((max(row[0] for row in rows), total, rows[0][2]))
+    return consolidated, True
+
+
+def _frequency_from_gap(median_gap_days: float) -> str:
+    """Name the cycle from how far apart the payments actually are.
+
+    The bands sit close around the real cadences and leave deliberate gaps. A
+    series arriving every 130 days is not quarterly and not annual; saying it is
+    quarterly would put a date on the forecast that nothing supports, so it is
+    called irregular and dropped instead.
+    """
+    if median_gap_days <= 10:
+        return "weekly"
+    if median_gap_days <= 20:
+        return "biweekly"
+    if 21 <= median_gap_days <= 45:
+        return "monthly"
+    if 75 <= median_gap_days <= 115:
+        return "quarterly"
+    if 300 <= median_gap_days <= 430:
+        return "annual"
+    return "irregular"
+
+
+def _confidence(
+    *, dates: Sequence[date], amounts: Sequence[int], gaps: Sequence[int]
+) -> int:
+    """How much of this the operator should believe, in basis points.
+
+    Amount steadiness carries real weight. A series swinging between $75 and
+    $30,000 was being called "Likely" purely because it arrived often, which is
+    the opposite of what the label should mean.
+    """
+    occurrence_score = min(1.0, len(dates) / 6.0)
+    spread = _amount_spread(amounts)
+    amount_score = max(0.0, 1.0 - min(1.0, spread))
+    median_gap = float(statistics.median(gaps)) or 1.0
+    drift = statistics.median([abs(gap - median_gap) for gap in gaps]) / median_gap
+    timing_score = max(0.0, 1.0 - min(1.0, drift))
+    blended = 0.35 * occurrence_score + 0.35 * timing_score + 0.30 * amount_score
+    # An unpredictable amount caps the whole thing, because the amount IS the
+    # forecast. Arriving reliably on the 1st tells the operator nothing useful if
+    # the charge swings between 75 and 30,000, and it was earning "Likely" on
+    # timing alone.
+    blended = min(blended, 0.30 + 0.70 * amount_score)
+    return max(0, min(10_000, int(round(blended * 10_000))))
+
+
+def _display_label(merchant: str, occurrences: Sequence[tuple[date, int, str]]) -> str:
+    """The name to put on the page.
+
+    The raw descriptor reads like plumbing: "Withdrawal ACH B TYPE: WEB PMTS CO:
+    Boulder Ranch L." names nothing the operator would recognise. Grouping is
+    deliberately done on two words so a vendor survives the bank rewording the
+    same payment, but two words makes a poor label ("Canyon View" for Canyon View
+    Management), so the label is the shortest fully cleaned name in the group.
+    Shortest wins because the extra words are usually the noise that differs.
+    """
+    cleaned = set()
+    for row in occurrences:
+        if len(row) <= 3:
+            continue
+        name = _cleaned_name(str(row[3] or ""))
+        if name:
+            cleaned.add(name)
+    if cleaned:
+        return min(sorted(cleaned), key=len).title()[:120]
+    return merchant.title()[:120]
+
+
+def _cleaned_name(descriptor: str) -> str:
+    """The descriptor with the bank wording stripped but the words kept."""
+    from sales_support_agent.services.cashflow.bookkeeping import (
+        _BANK_NOISE_RE,
+        _normalise,
+    )
+
+    cleaned = _BANK_NOISE_RE.sub(" ", _normalise(descriptor))
+    cleaned = _EXTRA_BILL_NOISE_RE.sub(" ", cleaned)
+    cleaned = re.sub(r"[^a-z0-9 ]+", " ", cleaned)
+    words = [word for word in cleaned.split() if len(word) > 1 and not word.isdigit()]
+    without_codes = [word for word in words if not any(ch.isdigit() for ch in word)]
+    return " ".join((without_codes or words)[:6])
+
+
+def _keys_already_on_a_schedule() -> set[str]:
+    """Merchant keys a recurring template already covers.
+
+    Matching on the same merchant key the grouping uses is exact, where the
+    detector's fuzzy vendor comparison both missed real matches and joined
+    unrelated vendors.
+    """
+    from sales_support_agent.models.database import get_engine
+
+    try:
+        with get_engine().connect() as connection:
+            rows = connection.execute(text(
+                "SELECT name, vendor_or_customer FROM recurring_templates "
+                "WHERE event_type = 'outflow'"
+            )).fetchall()
+    except Exception:
+        return set()
+    keys: set[str] = set()
+    for row in rows:
+        values = dict(row._mapping)
+        for field in ("vendor_or_customer", "name"):
+            key = bill_merchant_key(str(values.get(field) or ""))
+            if key:
+                keys.add(key)
+    return keys
 
 
 def bill_pattern_key(vendor: str) -> str:
@@ -655,31 +856,81 @@ def _load_bill_history(
             {"cutoff": cutoff},
         ).fetchall()
 
-    grouped: dict[str, list[tuple[date, int, str]]] = {}
+    from sales_support_agent.services.cashflow.transfers import is_internal_transfer
+
+    grouped: dict[str, list[tuple[date, int, str, str]]] = {}
     for row in rows:
         values = dict(row._mapping)
         row_date = _to_date(values.get("due_date"))
         # A payment after the forecast date is not yet evidence.
         if row_date is None or row_date > as_of:
             continue
-        vendor = _normalize_vendor(
-            str(
-                values.get("vendor_or_customer")
-                or values.get("name")
-                or values.get("description")
-                or ""
-            )
-        )
-        if not vendor:
+        # Moving money between the operator's own accounts is not a bill. Without
+        # this, share transfers and home-banking moves were offered as bills to
+        # track, which would have inflated the cash the forecast says is needed.
+        if is_internal_transfer(values):
             continue
-        grouped.setdefault(vendor, []).append((
+        readable = str(
+            values.get("vendor_or_customer") or values.get("name") or ""
+        ).strip()
+        # The same reader the filing queue uses, so a merchant whose descriptor
+        # varies between payments stays one bill instead of several.
+        merchant = bill_merchant_key(
+            readable or str(values.get("description") or "")
+        )
+        if not merchant or _is_not_a_merchant(merchant):
+            continue
+        grouped.setdefault(merchant, []).append((
             row_date,
             int(values.get("amount_cents") or 0),
             str(values.get("category") or ""),
+            readable,
         ))
     for occurrences in grouped.values():
         occurrences.sort(key=lambda entry: entry[0])
     return grouped
+
+
+# Bank wording the filing queue leaves behind. Grouping the queue can live with
+# "boulder ranch web" and "b web pmts boulder ranch" being two piles, because
+# each is still one decision. A bill cannot: the same rent split in two is
+# counted twice and each half looks like a smaller, more frequent bill.
+_EXTRA_BILL_NOISE = (
+    r"\bach\b", r"\bweb\b", r"\bpmts?\b", r"\bccd\b", r"\bppd\b", r"\btel\b",
+    r"\bclass\b", r"\bcode\b", r"\btrace\b", r"\bnumber\b", r"\bdebits?\b",
+    r"\bof\b", r"\bthe\b", r"\band\b", r"\bpos\b", r"\bmisc\b", r"\bcred\b",
+)
+_EXTRA_BILL_NOISE_RE = re.compile("|".join(_EXTRA_BILL_NOISE), re.IGNORECASE)
+# Two words is enough to tell real vendors apart and it survives the trailing
+# junk that differs between wordings of the same payment ("Stripe Cap David
+# Narayan" against "Stripe Cap ... CCD").
+_BILL_KEY_WORDS = 2
+
+
+def bill_merchant_key(description: str) -> str:
+    """The merchant behind a bank descriptor, grouped tightly enough for a bill."""
+    from sales_support_agent.services.cashflow.bookkeeping import (
+        _BANK_NOISE_RE,
+        _normalise,
+    )
+
+    cleaned = _BANK_NOISE_RE.sub(" ", _normalise(description))
+    cleaned = _EXTRA_BILL_NOISE_RE.sub(" ", cleaned)
+    cleaned = re.sub(r"[^a-z0-9 ]+", " ", cleaned)
+    words = [word for word in cleaned.split() if len(word) > 1 and not word.isdigit()]
+    without_codes = [word for word in words if not any(ch.isdigit() for ch in word)]
+    words = without_codes or words
+    return " ".join(words[:_BILL_KEY_WORDS])[:255]
+
+
+def _is_not_a_merchant(merchant: str) -> bool:
+    """True when nothing identifying survived the bank boilerplate.
+
+    A key of "check" or "draft draft" names no payee, so asking whether to track
+    it as a bill is a question with no useful answer.
+    """
+    words = [word for word in merchant.split() if word]
+    return not words or all(word in _NOT_A_MERCHANT for word in words)
 
 
 def _load_real_outflow_obligations(
