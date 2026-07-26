@@ -10,7 +10,10 @@ from sqlalchemy import create_engine, text
 from starlette.requests import Request
 
 from sales_support_agent.services import auth_deps
-from sales_support_agent.services.admin_nav import render_agent_nav_styles
+from sales_support_agent.services.admin_nav import (
+    render_agent_nav_styles,
+    render_agent_stylesheet_links,
+)
 from sales_support_agent.services.performance import install_performance_middleware
 
 
@@ -104,8 +107,15 @@ def test_performance_middleware_reports_sql_and_static_cache_policy() -> None:
     assert unversioned.headers["cache-control"] == "public, max-age=3600, must-revalidate"
 
 
-def test_navigation_styles_are_referenced_once_not_embedded() -> None:
-    markup = render_agent_nav_styles()
+def test_navigation_stylesheet_links_are_available_for_migrated_pages() -> None:
+    markup = render_agent_stylesheet_links()
     assert markup.startswith('<link rel="stylesheet"')
     assert "/admin/assets/navigation.css?v=" in markup
+    assert "/static/admin.css?v=" in markup
     assert "<style" not in markup
+
+
+def test_legacy_navigation_style_helper_remains_css_compatible() -> None:
+    css = render_agent_nav_styles()
+    assert ".topbar" in css
+    assert "<link" not in css

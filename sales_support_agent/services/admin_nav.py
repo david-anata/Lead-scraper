@@ -451,16 +451,24 @@ def render_agent_nav_css() -> str:
       """
 
 
-@lru_cache(maxsize=1)
 def render_agent_nav_styles() -> str:
-    """Return one cacheable stylesheet reference for the shared Agent shell."""
+    """Compatibility helper for legacy renderers that embed shell CSS."""
+    return render_agent_nav_css()
+
+
+@lru_cache(maxsize=1)
+def render_agent_stylesheet_links() -> str:
+    """Return cacheable stylesheet references for migrated Agent pages."""
     source_path = Path(__file__).resolve()
     try:
         stat = source_path.stat()
         version = f"{stat.st_mtime_ns:x}-{stat.st_size:x}"
     except OSError:
         version = "1"
-    return f'<link rel="stylesheet" href="/admin/assets/navigation.css?v={version}">'
+    return (
+        f'<link rel="stylesheet" href="/admin/assets/navigation.css?v={version}">'
+        '<link rel="stylesheet" href="/static/admin.css?v=2">'
+    )
 
 
 def _user_chip_html(user: Optional[dict]) -> str:
