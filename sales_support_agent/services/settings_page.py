@@ -18,10 +18,9 @@ import html
 from typing import Optional
 
 from sales_support_agent.services.admin_nav import (
-    render_agent_favicon_links,
     render_agent_nav,
-    render_agent_nav_styles,
 )
+from sales_support_agent.services.ui_shell import render_operator_document
 from sales_support_agent.services.website_ops import MVP_ALLOWED_ACTION_TYPES, MVP_MODE_ACTIVE
 
 
@@ -449,23 +448,8 @@ def render_settings_page(
 
     nav = render_agent_nav("settings", is_superadmin=is_superadmin,
                            permissions=user.get("permissions"), user=user)
-    styles = _STYLES.replace("__NAV__", render_agent_nav_styles())
-    favicon = render_agent_favicon_links()
-
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>agent | Settings</title>
-  {favicon}
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-  <style>{styles}</style>
-</head>
-<body>
-  {nav}
-  <div class="settings-shell">
+    styles = _STYLES.replace("__NAV__", "")
+    body = f"""<div class="settings-shell">
     <div class="settings-title">Settings</div>
     <div class="settings-grid">
       {account_card}
@@ -478,6 +462,11 @@ def render_settings_page(
       {notifications_card}
       {appearance_card}
     </div>
-  </div>
-</body>
-</html>"""
+  </div>"""
+    return render_operator_document(
+        title="agent | Settings",
+        navigation=nav,
+        body=body,
+        page_class="settings-page",
+        extra_head=f"<style>{styles}</style>",
+    )

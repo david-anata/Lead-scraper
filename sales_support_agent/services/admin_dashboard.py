@@ -1692,6 +1692,7 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>
       :root {{
         --dark-blue: #2B3644;
@@ -1919,8 +1920,8 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
       }}
     </style>
   </head>
-  <body>
-    <main class="shell">
+  <body class="app app--transition">
+    <main id="agent-main-content" class="shell app-container app-page">
       <div class="workspace">
       <div class="split">
         <section>
@@ -2210,6 +2211,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>
       :root {{
         --dark-blue: #2B3644;
@@ -3651,7 +3653,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
   </head>
   <body>
     {render_agent_nav("sales", sales_section="sales", user=user)}
-    <div class="shell">
+    <div id="agent-main-content" class="shell app-container app-page" role="main">
       <div class="workspace">
         <section class="page-header">
           <div>
@@ -4700,6 +4702,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>
       :root {{
         --dark-blue: #2B3644;
@@ -5699,7 +5702,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
   </head>
   <body>
     {render_agent_nav("sales_decks", sales_section="sales_decks", user=user)}
-    <div class="shell">
+    <div id="agent-main-content" class="shell app-container app-page" role="main">
       <div class="workspace">
         <section class="page-header">
           <div>

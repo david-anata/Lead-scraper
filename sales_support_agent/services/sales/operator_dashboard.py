@@ -1870,6 +1870,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/admin.css">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>
       :root {{ --dark-blue:#2B3644; --light-blue:#85BBDA; --light-brown:#F9F7F3; --white:#FFF; --border:rgba(43,54,68,0.12); --shadow:rgba(43,54,68,0.10); }}
       * {{ box-sizing:border-box; }}
@@ -1926,7 +1927,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
   </head>
   <body>
     {nav}
-    <main class="shell">
+    <main id="agent-main-content" class="shell app-container app-page">
       <section class="workspace hero">
         <p class="eyebrow">Sales Control Room</p>
         <h1>Work the highest-value sales action first.</h1>

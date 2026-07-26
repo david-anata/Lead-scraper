@@ -129,6 +129,9 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertNotIn("data:image/png;base64,", html)
         self.assertIn("Shared fallback password", html)
         self.assertNotIn("Admin email", html)
+        self.assertIn('class="app app--transition"', html)
+        self.assertIn('id="agent-main-content"', html)
+        self.assertIn("/static/admin.css?v=", html)
 
     def test_login_page_allows_custom_password_action(self) -> None:
         html = render_login_page(password_form_action="/admin/break-glass")

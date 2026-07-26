@@ -207,6 +207,7 @@ def render_rep_dashboard_page(
 {render_agent_favicon_links()}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/admin.css?v=2">
 <style>
 {render_agent_nav_styles()}
 body {{ margin:0; font-family:"Inter",sans-serif; background:#f9f7f3; color:#2B3644; }}
@@ -228,18 +229,18 @@ tr:hover td {{ background:rgba(43,54,68,.02); }}
 </head>
 <body>
 {render_agent_nav("sales_reps", sales_section="sales_reps", user=user)}
-<div class="page">
+<main id="agent-main-content" class="page app-container app-page">
   <h1>Rep Accountability</h1>
   <p class="subtitle">Open pipeline health per sales rep — updated on each HubSpot sync. Stale = no inbound touch in {dashboard.stale_days}+ days.</p>
 
-  <div class="stats">
-    <div class="stat-card"><div class="val">{len(dashboard.reps)}</div><div class="lbl">Active reps</div></div>
-    <div class="stat-card"><div class="val">{dashboard.total_open}</div><div class="lbl">Open deals</div></div>
-    <div class="stat-card"><div class="val">{_fmt_dollars(dashboard.total_pipeline_cents)}</div><div class="lbl">Total pipeline</div></div>
+  <div class="stats app-metric-strip">
+    <div class="stat-card app-metric"><div class="val app-metric__value">{len(dashboard.reps)}</div><div class="lbl app-metric__label">Active reps</div></div>
+    <div class="stat-card app-metric"><div class="val app-metric__value">{dashboard.total_open}</div><div class="lbl app-metric__label">Open deals</div></div>
+    <div class="stat-card app-metric"><div class="val app-metric__value">{_fmt_dollars(dashboard.total_pipeline_cents)}</div><div class="lbl app-metric__label">Total pipeline</div></div>
   </div>
 
-  <div class="card">
-    <table>
+  <div class="card app-data-workspace">
+    <table class="app-table app-table--sticky">
       <thead>
         <tr>
           <th>Rep</th>
@@ -257,6 +258,6 @@ tr:hover td {{ background:rgba(43,54,68,.02); }}
       </tbody>
     </table>
   </div>
-</div>
+</main>
 </body>
 </html>"""

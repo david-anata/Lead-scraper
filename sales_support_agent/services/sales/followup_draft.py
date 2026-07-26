@@ -337,11 +337,12 @@ def render_draft_followup_page(
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>{styles}</style>
   </head>
   <body>
     {nav}
-    <main class="shell">
+    <main id="agent-main-content" class="shell app-container app-page">
       <div class="crumbs">
         <a href="/admin/sales/deals">← Deal Board</a>
         &nbsp;/&nbsp;
@@ -463,6 +464,7 @@ def render_send_preview_page(
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>
       :root {{--dark-blue:#2B3644;--light-blue:#85BBDA;--light-brown:#F9F7F3;
         --white:#FFF;--border:rgba(43,54,68,0.12);--shadow:rgba(43,54,68,0.10);}}
@@ -498,7 +500,7 @@ def render_send_preview_page(
   </head>
   <body>
     {nav}
-    <main class="shell">
+    <main id="agent-main-content" class="shell app-container app-page">
       <div class="crumbs">
         <a href="/admin/sales/deals">← Deal Board</a>
         &nbsp;/&nbsp;
