@@ -98,6 +98,7 @@ _NOT_A_MERCHANT = frozenset({
     "check", "draft", "home", "banking", "withdrawal", "deposit", "transfer",
     "payment", "pmts", "debits", "credit", "bill", "sale", "fee", "entry",
     "type", "company", "misc", "ach", "pos", "web", "recurring",
+    "purch", "name", "svcs", "autopay", "paymt", "charge",
 })
 # How many of these land in a month, used only to rank by cost.
 _MONTHLY_MULTIPLIER = {
@@ -920,7 +921,10 @@ def bill_merchant_key(description: str) -> str:
     words = [word for word in cleaned.split() if len(word) > 1 and not word.isdigit()]
     without_codes = [word for word in words if not any(ch.isdigit() for ch in word)]
     words = without_codes or words
-    return " ".join(words[:_BILL_KEY_WORDS])[:255]
+    # Words that name no payee must not take one of the two slots, or the same
+    # vendor splits on whether the bank happened to prefix "Payment" or "Purch".
+    named = [word for word in words if word not in _NOT_A_MERCHANT]
+    return " ".join((named or words)[:_BILL_KEY_WORDS])[:255]
 
 
 def _is_not_a_merchant(merchant: str) -> bool:

@@ -662,3 +662,26 @@ def test_a_wildly_uneven_series_is_not_called_likely(finance_engine):
 
     assert found, "it is still a repeating payment, it just should not look certain"
     assert found[0]["confidence_label"] == "Possible", found[0]["confidence_label"]
+
+
+def test_a_bank_prefix_does_not_split_one_vendor_in_two(finance_engine):
+    """The live page showed "Payment Canyon View Fede Name Davi" and "Canyon View
+    Fede Canyon View F" as two separate $300 bills. A word that names no payee
+    must not take one of the two slots the grouping key has."""
+    assert bill_merchant_key("Payment Canyon View Fede Name Davi") == bill_merchant_key(
+        "Canyon View Fede Canyon View F"
+    )
+    assert bill_merchant_key("Purch Ups Billing Center Ga") == bill_merchant_key(
+        "UPS*BILLING CENTER 800-811-1648 GA"
+    )
+
+
+def test_genuinely_different_vendors_are_still_kept_apart(finance_engine):
+    """Merging harder must not start joining unrelated payees, which would hide a
+    real bill inside another one's figure."""
+    for left, right in [
+        ("Select Hea Instamed", "Dentalsel Select Benefits"),
+        ("Amazon Prime Amzn Com Bill Wa", "Wal Mart Grassland Dr American"),
+        ("Google Workspace Anatai Ca", "Slack Slack Com Ca"),
+    ]:
+        assert bill_merchant_key(left) != bill_merchant_key(right), (left, right)
