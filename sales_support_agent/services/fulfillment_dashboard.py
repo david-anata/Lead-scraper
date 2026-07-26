@@ -341,7 +341,7 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/admin.css">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>
       :root {{
         --dark-blue: #2B3644;
@@ -659,9 +659,9 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
   </head>
   <body>
     {render_agent_nav("fulfillment", fulfillment_section=active_subnav, user=user)}
-    <div class="shell">
+    <main id="agent-main-content" class="shell app-container app-page">
       <div class="workspace">
-        <section class="page-header">
+        <section class="page-header app-page-header">
           <div>
             <div class="eyebrow">{html.escape(eyebrow)}</div>
             <h1 class="page-title">{heading}</h1>
@@ -670,7 +670,7 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
         </section>
         {body}
       </div>
-    </div>
+    </main>
   </body>
 </html>"""
 
