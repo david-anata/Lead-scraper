@@ -273,7 +273,6 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "") 
             dry_run=True,
             recipe=chosen,
             settings=tunables,
-            amazon_check=_amazon_checker(tunables),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[outbound] StoreLeads CSV build failed")
@@ -345,7 +344,13 @@ _AMAZON_CSS = """
 
 
 def _amazon_checker(tunables: dict[str, Any]):
-    """The per-lead Amazon lookup handed to a pull, or None when it is off.
+    """The per-lead Amazon lookup, for a bounded scan. NOT for a pull.
+
+    Measured on live data: one brand costs up to six sequential Amazon lookups
+    at 20 to 35 seconds each, so 2 to 4 minutes per brand. Wiring this into
+    run_storeleads_to_clay made a 30 brand pull take one to two hours and the
+    request never returned. It belongs in a scan that does a few brands at a
+    time and can be stopped, which is how the spec drew it.
 
     Returns None rather than a no-op callable when the check is disabled or the
     key is missing, so a pull behaves exactly as it did before this existed.
@@ -782,7 +787,6 @@ async def outbound_push_to_clay(request: Request) -> Response:
             api_key=api_key, clay_webhook_url="", processed_domains=already,
             max_new=chosen.cap(tunables) if chosen else 25, dry_run=True,
             recipe=chosen, settings=tunables,
-            amazon_check=_amazon_checker(tunables),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[outbound] pull before Clay push failed")
