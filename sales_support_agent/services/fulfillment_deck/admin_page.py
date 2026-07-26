@@ -996,8 +996,7 @@ def _pipeline_next_action(runs: list[dict], engagement: dict[int, dict]) -> str:
         return (
             '<section class="operator-callout">'
             '<div><p class="eyebrow">Next action</p><h2>Create the first prospect rate sheet.</h2>'
-            '<p>Paste prospect notes, upload supporting files, and generate the hosted rate sheet. The pipeline will track follow-up after the sheet exists.</p></div>'
-            '<div class="operator-callout__side"><a class="btn" href="#notes">Start intake</a></div>'
+            '<p>Use the Create rate sheet action above, then paste prospect notes and supporting files. The pipeline will track follow-up after the sheet exists.</p></div>'
             '</section>'
         )
 
@@ -1086,8 +1085,7 @@ def _pipeline_next_action(runs: list[dict], engagement: dict[int, dict]) -> str:
     return (
         '<section class="operator-callout">'
         '<div><p class="eyebrow">Next action</p><h2>No open fulfillment prospects.</h2>'
-        '<p>Closed prospects are preserved for history. Start intake when the next fulfillment opportunity appears.</p></div>'
-        '<div class="operator-callout__side"><a class="btn" href="#notes">Start intake</a></div>'
+        '<p>Closed prospects are preserved for history. Use the Create rate sheet action above when the next fulfillment opportunity appears.</p></div>'
         '</section>'
     )
 
