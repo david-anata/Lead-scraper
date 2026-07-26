@@ -301,6 +301,18 @@ def test_quickbooks_calling_it_uncategorised_is_not_counted_as_booked():
     ) == summary["total_transactions"], "the three states must account for every transaction"
 
 
+def test_the_badge_count_matches_the_rows_the_queue_actually_offers():
+    """The nav badge comes from this count and the queue comes from another
+    query. Any row one includes and the other drops is a badge that never
+    reaches zero however much the operator files."""
+    engine = _setup()
+    _txn(engine, cid="real", name="MYSTERY VENDOR", amount=500_00)
+    _txn(engine, cid="zero", name="ZERO AMOUNT ROW", amount=0)
+    _txn(engine, cid="moved", name="To Share 58", amount=25000_00)
+
+    assert bookkeeping_summary()["needs_decision"] == len(list_needs_decision())
+
+
 def test_transfers_are_outside_every_bookkeeping_number():
     """A transfer is not spend, so counting it as "filed here only" would claim
     the books are missing something that was never an expense."""

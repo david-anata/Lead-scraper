@@ -350,7 +350,8 @@ def bookkeeping_summary() -> dict[str, Any]:
     with get_engine().connect() as connection:
         rows = connection.execute(text("""
             SELECT name, description, vendor_or_customer, category, source, subcategory
-            FROM cash_events WHERE record_kind='transaction'
+            FROM cash_events
+            WHERE record_kind='transaction' AND COALESCE(amount_cents,0) > 0
         """)).fetchall()
         rule_count = int(connection.execute(text(
             "SELECT COUNT(*) FROM finance_booking_rules"
