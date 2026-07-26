@@ -14,6 +14,10 @@ from sales_support_agent.services.admin_nav import (
     render_agent_nav_styles,
     render_agent_stylesheet_links,
 )
+from sales_support_agent.services.access.pages import (
+    render_access_pending_page,
+    render_forbidden_page,
+)
 from sales_support_agent.services.performance import install_performance_middleware
 
 
@@ -119,3 +123,23 @@ def test_legacy_navigation_style_helper_remains_css_compatible() -> None:
     css = render_agent_nav_styles()
     assert ".topbar" in css
     assert "<link" not in css
+
+
+def test_access_pages_use_canonical_operator_and_transition_shells() -> None:
+    forbidden = render_forbidden_page(
+        user={
+            "email": "operator@anatainc.com",
+            "permissions": set(),
+            "is_superadmin": False,
+        },
+        tool_label="Finance",
+    )
+    assert 'class="app app--operator access-page"' in forbidden
+    assert 'id="agent-main-content"' in forbidden
+    assert "/admin/assets/navigation.css?v=" in forbidden
+    assert forbidden.count("<h1") == 1
+
+    pending = render_access_pending_page("operator@anatainc.com")
+    assert 'class="app app--transition"' in pending
+    assert 'class="app-container app-container--focused app-page"' in pending
+    assert pending.count("<h1") == 1

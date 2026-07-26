@@ -12,9 +12,11 @@ from typing import Optional
 
 from sales_support_agent.services.access.catalog import SECTIONS, label_for
 from sales_support_agent.services.admin_nav import (
-    render_agent_favicon_links,
     render_agent_nav,
-    render_agent_nav_styles,
+)
+from sales_support_agent.services.ui_shell import (
+    render_operator_document,
+    render_transition_document,
 )
 
 
@@ -151,19 +153,14 @@ def _shell(title: str, body: str, *, user: Optional[dict], active: str = "",
     is_superadmin = bool((user or {}).get("is_superadmin"))
     nav = render_agent_nav(active, permissions=permissions, is_superadmin=is_superadmin, user=user)
     container = "shell-wide" if wide else "shell"
-    all_styles = (_BASE_STYLES + _ADMIN_STYLES).replace("__NAV__", render_agent_nav_styles())
-    return f"""<!doctype html>
-<html lang="en"><head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>agent | {_esc(title)}</title>
-  {render_agent_favicon_links()}
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
-  <style>{all_styles}</style>
-</head><body>
-  {nav}
-  <main class="{container}">{body}</main>
-</body></html>"""
+    styles = (_BASE_STYLES + _ADMIN_STYLES).replace("__NAV__", "")
+    return render_operator_document(
+        title=f"agent | {title}",
+        navigation=nav,
+        body=f'<div class="{container}">{body}</div>',
+        page_class="access-page",
+        extra_head=f"<style>{styles}</style>",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -493,22 +490,18 @@ def render_roles_page(roles: list, user_counts: dict, *, current_user: dict,
 
 def _standalone_page(title: str, icon: str, heading: str, body_html: str) -> str:
     styles = (_BASE_STYLES + _ADMIN_STYLES).replace("__NAV__", "")
-    return f"""<!doctype html>
-<html lang="en"><head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>agent | {_esc(title)}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
-  <style>{styles}</style>
-</head><body>
-  <div class="shell">
+    body = f"""<div class="shell">
     <div class="card" style="margin-top:60px">
       <div class="lock">{icon}</div>
       <h1>{_esc(heading)}</h1>
       {body_html}
     </div>
-  </div>
-</body></html>"""
+  </div>"""
+    return render_transition_document(
+        title=f"agent | {title}",
+        body=body,
+        extra_head=f"<style>{styles}</style>",
+    )
 
 
 def render_access_pending_page(email: str, *, request_record: Optional[dict] = None) -> str:
