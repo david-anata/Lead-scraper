@@ -55,11 +55,15 @@ REASON_LABELS = {
 
 def list_review_items(*, as_of: Optional[date] = None) -> dict[str, Any]:
     """Return the blocked obligations grouped by reason, newest issues first."""
-    from sales_support_agent.services.cashflow.control import classify_payable_issues
-    from sales_support_agent.services.cashflow.obligations import list_obligations
+    from sales_support_agent.services.cashflow.control import (
+        classify_payable_issues,
+        load_annotated_obligations,
+    )
 
     as_of = as_of or date.today()
-    rows = list_obligations(limit=5000)
+    # The annotated rows, not raw ones: the flags the classifier reads are
+    # computed, not stored, so raw rows would silently report nothing to do.
+    rows = load_annotated_obligations()
     by_id = {str(row.get("id")): row for row in rows}
     issues = classify_payable_issues(rows, as_of=as_of)
 
