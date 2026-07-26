@@ -786,6 +786,12 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
             "created_by":            "ALTER TABLE cash_events ADD COLUMN created_by VARCHAR(255) NOT NULL DEFAULT 'system'",
             "archived_at":           "ALTER TABLE cash_events ADD COLUMN archived_at DATETIME",
         },
+        # First additive column recurring_templates has ever taken. The
+        # existing-column check below is what keeps it safe on a fresh database,
+        # where create_all has already made it and SQLite has no IF NOT EXISTS.
+        "recurring_templates": {
+            "flexibility": "ALTER TABLE recurring_templates ADD COLUMN flexibility VARCHAR(32) NOT NULL DEFAULT 'unknown'",
+        },
         "finance_action_audit": {
             "idempotency_key": "ALTER TABLE finance_action_audit ADD COLUMN idempotency_key VARCHAR(128)",
         },
@@ -1120,6 +1126,7 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                     amount_cents          INTEGER      NOT NULL DEFAULT 0,
                     confidence            VARCHAR(16)  NOT NULL DEFAULT 'estimated',
                     notes                 TEXT         NOT NULL DEFAULT '',
+                    flexibility           VARCHAR(32)  NOT NULL DEFAULT 'unknown',
                     frequency             VARCHAR(32)  NOT NULL DEFAULT 'monthly',
                     next_due_date         TIMESTAMPTZ  NULL,
                     day_of_month          INTEGER      NULL,
@@ -1206,6 +1213,18 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                 """
             )
         )
+        # First additive column recurring_templates has ever taken, so check
+        # before touching it. A fresh database already got the column from
+        # create_all above, and an ALTER that raises here would abort the boot.
+        template_columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("recurring_templates")
+        }
+        if "flexibility" not in template_columns:
+            connection.execute(text(
+                "ALTER TABLE recurring_templates "
+                "ADD COLUMN IF NOT EXISTS flexibility VARCHAR(32) NOT NULL DEFAULT 'unknown'"
+            ))
         connection.execute(text(
             "ALTER TABLE finance_action_audit "
             "ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(128) NULL"

@@ -951,6 +951,12 @@ class RecurringTemplate(Base):
     amount_cents: Mapped[int] = mapped_column(Integer, default=0)
     confidence: Mapped[str] = mapped_column(String(16), default="estimated")
     notes: Mapped[str] = mapped_column(Text, default="")
+    # Rent is paid in pieces across the month, so the occurrences this template
+    # generates have to say so or the first part-payment leaves the bill looking
+    # overdue. Mirrors CashEvent.flexibility.
+    flexibility: Mapped[str] = mapped_column(
+        String(32), default="unknown", server_default="unknown"
+    )
 
     # When
     frequency: Mapped[str] = mapped_column(String(32), default="monthly", index=True)

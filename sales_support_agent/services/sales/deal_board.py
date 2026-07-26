@@ -399,8 +399,8 @@ def render_deal_board_page(
             )
             all_rows_html += "".join(_row_html(r, as_of=as_of, portal_id=portal_id) for r in brows)
         table = (
-            '<div class="table-wrap">'
-            "<table><thead><tr>"
+            '<div class="table-wrap app-data-workspace">'
+            '<table class="app-table app-table--sticky"><thead><tr>'
             "<th>Deal</th><th>Stage</th><th>Amount</th><th>Close date</th>"
             "<th>Owner</th><th>Status</th>"
             "</tr></thead>"
@@ -468,29 +468,36 @@ def render_deal_board_page(
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>{styles}</style>
   </head>
   <body>
     {render_agent_nav("sales", sales_section="sales_deals", user=user)}
-    <main class="shell">
+    <main id="agent-main-content" class="shell app-container app-page">
       <div class="workspace">
-        <p class="eyebrow">Sales — HubSpot</p>
-        <h1>Deal <span style="color:var(--light-blue)">Board</span>.</h1>
-        <p class="intro">Every open HubSpot deal, sorted top-down by close date — soonest first. Each deal is checked for the essentials needed to close: an amount, line items (what we’re offering), contacts, and a close date.</p>
-        <div class="stats">
-          <div class="stat"><div class="n">{board.total_open}</div><div class="l">Open deals</div></div>
-          <div class="stat{overdue_cls}"><div class="n">{board.overdue_count}</div><div class="l">Past close date</div></div>
-          <div class="stat{incomplete_cls}"><div class="n">{board.incomplete_count}</div><div class="l">Incomplete</div></div>
+        <header class="app-page-header">
+          <div>
+            <p class="eyebrow">Sales — HubSpot</p>
+            <h1>Deal <span style="color:var(--light-blue)">Board</span>.</h1>
+            <p class="intro">Every open HubSpot deal, sorted by close date and checked for the essentials needed to close: amount, line items, contacts, and close date.</p>
+          </div>
+          <div class="app-page-actions">
+            <a href="/admin/sales/deals/create" class="create-link admin-btn">Create deal</a>
+          </div>
+        </header>
+        <div class="stats app-metric-strip" aria-label="Deal summary">
+          <div class="stat app-metric"><div class="n app-metric__value">{board.total_open}</div><div class="l app-metric__label">Open deals</div></div>
+          <div class="stat app-metric{overdue_cls}"><div class="n app-metric__value">{board.overdue_count}</div><div class="l app-metric__label">Past close date</div></div>
+          <div class="stat app-metric{incomplete_cls}"><div class="n app-metric__value">{board.incomplete_count}</div><div class="l app-metric__label">Incomplete</div></div>
         </div>
-        <div class="filter-tabs">
-          <a href="/admin/sales/deals" class="tab{all_active}">All deals</a>
-          <a href="/admin/sales/deals?my=1" class="tab{my_active}">My deals</a>
-        </div>
-        <div class="syncbar">
+        <div class="syncbar app-command-bar" aria-label="Deal controls">
+          <div class="filter-tabs">
+            <a href="/admin/sales/deals" class="tab{all_active}">All deals</a>
+            <a href="/admin/sales/deals?my=1" class="tab{my_active}">My deals</a>
+          </div>
           <form method="post" action="/admin/sales/deals/sync" style="margin:0">
             <button type="submit" onclick="this.textContent='Syncing…';this.disabled=true">Sync now</button>
           </form>
-          <a href="/admin/sales/deals/create" class="create-link">Create deal</a>
           <a href="/admin/sales/deals/cleanup" class="cleanup-link">Review HubSpot fixes -></a>
           {last_synced_html}
           <span id="sync-note">{sync_note}</span>

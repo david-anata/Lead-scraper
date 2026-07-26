@@ -987,86 +987,92 @@ def build_dashboard_data(
     clickup_client: object | None = None,
     as_of_date: date | None = None,
     max_items_per_owner: int = 8,
+    include_lead_queue: bool = True,
+    include_deck_history: bool = True,
 ) -> DashboardData:
     effective_date = as_of_date or date.today()
-    reminder_service = ReminderService(settings, session)
-
-    leads_query: Select[tuple[LeadMirror]] = (
-        select(LeadMirror)
-        .where(LeadMirror.list_id == settings.clickup_list_id)
-        .order_by(LeadMirror.updated_at.desc(), LeadMirror.last_sync_at.desc())
-    )
-    leads = list(session.execute(leads_query).scalars())
+    leads: list[LeadMirror] = []
+    if include_lead_queue:
+        leads_query: Select[tuple[LeadMirror]] = (
+            select(LeadMirror)
+            .where(LeadMirror.list_id == settings.clickup_list_id)
+            .order_by(LeadMirror.updated_at.desc(), LeadMirror.last_sync_at.desc())
+        )
+        leads = list(session.execute(leads_query).scalars())
     latest_sync_at = max((lead.last_sync_at for lead in leads if lead.last_sync_at), default=None)
 
     stale_counts = {urgency: 0 for urgency in STALE_URGENCY_ORDER}
     owner_items: dict[str, list[DashboardActionItem]] = defaultdict(list)
     active_lead_count = 0
 
-    for lead in leads:
-        status = (lead.status or "").strip()
-        if not status:
-            continue
-        if not is_active_pipeline_status(
-            status,
-            active_statuses=settings.active_statuses,
-            inactive_statuses=settings.inactive_statuses,
-        ):
-            continue
-        if _exclude_from_dashboard(status):
-            continue
-        active_lead_count += 1
-        evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=[])
-        if evaluation is None:
-            continue
-        digest_item = reminder_service.build_digest_item(evaluation)
-        if digest_item.urgency == "follow_up_due":
-            continue
-        stale_counts[digest_item.urgency] += 1
-        owner_name = digest_item.owner_label or "Assigned AE"
-        owner_items[owner_name].append(
-            DashboardActionItem(
-                owner_name=owner_name,
-                urgency=digest_item.urgency,
-                title=evaluation.lead.task_name,
-                subtitle=evaluation.lead.status,
-                action_summary=digest_item.action_summary,
-                suggested_reply=digest_item.suggested_reply_draft,
-                source="stale lead",
-                link_url=evaluation.lead.task_url,
-                date_label=format_date_label(evaluation.assessment.anchor_date),
-                sort_timestamp=float(datetime.combine(evaluation.assessment.anchor_date, datetime.min.time()).timestamp()),
+    if include_lead_queue:
+        reminder_service = ReminderService(settings, session)
+        for lead in leads:
+            status = (lead.status or "").strip()
+            if not status:
+                continue
+            if not is_active_pipeline_status(
+                status,
+                active_statuses=settings.active_statuses,
+                inactive_statuses=settings.inactive_statuses,
+            ):
+                continue
+            if _exclude_from_dashboard(status):
+                continue
+            active_lead_count += 1
+            evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=[])
+            if evaluation is None:
+                continue
+            digest_item = reminder_service.build_digest_item(evaluation)
+            if digest_item.urgency == "follow_up_due":
+                continue
+            stale_counts[digest_item.urgency] += 1
+            owner_name = digest_item.owner_label or "Assigned AE"
+            owner_items[owner_name].append(
+                DashboardActionItem(
+                    owner_name=owner_name,
+                    urgency=digest_item.urgency,
+                    title=evaluation.lead.task_name,
+                    subtitle=evaluation.lead.status,
+                    action_summary=digest_item.action_summary,
+                    suggested_reply=digest_item.suggested_reply_draft,
+                    source="stale lead",
+                    link_url=evaluation.lead.task_url,
+                    date_label=format_date_label(evaluation.assessment.anchor_date),
+                    sort_timestamp=float(datetime.combine(evaluation.assessment.anchor_date, datetime.min.time()).timestamp()),
+                )
             )
-        )
 
-    mailbox_start = datetime.combine(effective_date - timedelta(days=7), datetime.min.time(), tzinfo=timezone.utc)
-    mailbox_query = (
-        select(MailboxSignal)
-        .where(MailboxSignal.received_at >= mailbox_start)
-        .order_by(MailboxSignal.received_at.desc())
-        .limit(100)
-    )
-    mailbox_signals = [
-        signal
-        for signal in session.execute(mailbox_query).scalars()
-        if (signal.urgency or "").strip() != "follow_up_due"
-    ]
-    for signal in mailbox_signals:
-        owner_name = signal.owner_name or "Triage"
-        owner_items[owner_name].append(
-            DashboardActionItem(
-                owner_name=owner_name,
-                urgency=signal.urgency or "needs_immediate_review",
-                title=signal.subject or signal.task_name or signal.sender_email or "Mailbox signal",
-                subtitle=signal.task_name or signal.sender_email or signal.sender_domain or "Unmatched mailbox item",
-                action_summary=signal.action_summary or "Review and decide the next action.",
-                suggested_reply=signal.suggested_reply_draft or "Review the message and reply with the next step.",
-                source="mailbox",
-                link_url=signal.task_url,
-                date_label=format_date_label(signal.received_at),
-                sort_timestamp=signal.received_at.timestamp() if signal.received_at else 0.0,
-            )
+    mailbox_signals: list[MailboxSignal] = []
+    if include_lead_queue:
+        mailbox_start = datetime.combine(effective_date - timedelta(days=7), datetime.min.time(), tzinfo=timezone.utc)
+        mailbox_query = (
+            select(MailboxSignal)
+            .where(MailboxSignal.received_at >= mailbox_start)
+            .order_by(MailboxSignal.received_at.desc())
+            .limit(100)
         )
+        mailbox_signals = [
+            signal
+            for signal in session.execute(mailbox_query).scalars()
+            if (signal.urgency or "").strip() != "follow_up_due"
+        ]
+        for signal in mailbox_signals:
+            owner_name = signal.owner_name or "Triage"
+            owner_items[owner_name].append(
+                DashboardActionItem(
+                    owner_name=owner_name,
+                    urgency=signal.urgency or "needs_immediate_review",
+                    title=signal.subject or signal.task_name or signal.sender_email or "Mailbox signal",
+                    subtitle=signal.task_name or signal.sender_email or signal.sender_domain or "Unmatched mailbox item",
+                    action_summary=signal.action_summary or "Review and decide the next action.",
+                    suggested_reply=signal.suggested_reply_draft or "Review the message and reply with the next step.",
+                    source="mailbox",
+                    link_url=signal.task_url,
+                    date_label=format_date_label(signal.received_at),
+                    sort_timestamp=signal.received_at.timestamp() if signal.received_at else 0.0,
+                )
+            )
 
     owner_queues: list[DashboardOwnerQueue] = []
     for owner_name, items in owner_items.items():
@@ -1111,14 +1117,16 @@ def build_dashboard_data(
     # Search filters for narrowing, so a wider initial load is fine.
     # 200 covers months of typical usage; if it ever needs to grow, add
     # pagination.
-    deck_runs = list(
-        session.execute(
-            select(AutomationRun)
-            .where(AutomationRun.run_type == "deck_generation")
-            .order_by(AutomationRun.started_at.desc())
-            .limit(200)
-        ).scalars()
-    )
+    deck_runs = []
+    if include_deck_history:
+        deck_runs = list(
+            session.execute(
+                select(AutomationRun)
+                .where(AutomationRun.run_type == "deck_generation")
+                .order_by(AutomationRun.started_at.desc())
+                .limit(200)
+            ).scalars()
+        )
     # PR56: batch the engagement query — was 2 queries per deck (sessions
     # + section_views) running inside the list comprehension below,
     # which made the past-decks page do 400 DB round-trips at 200 decks.

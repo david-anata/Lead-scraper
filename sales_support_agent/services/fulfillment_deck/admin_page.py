@@ -996,8 +996,7 @@ def _pipeline_next_action(runs: list[dict], engagement: dict[int, dict]) -> str:
         return (
             '<section class="operator-callout">'
             '<div><p class="eyebrow">Next action</p><h2>Create the first prospect rate sheet.</h2>'
-            '<p>Paste prospect notes, upload supporting files, and generate the hosted rate sheet. The pipeline will track follow-up after the sheet exists.</p></div>'
-            '<div class="operator-callout__side"><a class="btn" href="#notes">Start intake</a></div>'
+            '<p>Use the Create rate sheet action above, then paste prospect notes and supporting files. The pipeline will track follow-up after the sheet exists.</p></div>'
             '</section>'
         )
 
@@ -1086,8 +1085,7 @@ def _pipeline_next_action(runs: list[dict], engagement: dict[int, dict]) -> str:
     return (
         '<section class="operator-callout">'
         '<div><p class="eyebrow">Next action</p><h2>No open fulfillment prospects.</h2>'
-        '<p>Closed prospects are preserved for history. Start intake when the next fulfillment opportunity appears.</p></div>'
-        '<div class="operator-callout__side"><a class="btn" href="#notes">Start intake</a></div>'
+        '<p>Closed prospects are preserved for history. Use the Create rate sheet action above when the next fulfillment opportunity appears.</p></div>'
         '</section>'
     )
 
@@ -1324,7 +1322,7 @@ def render_fulfillment_sales_page(
             '</div>'
         )
     table = (
-        "<table><thead><tr>"
+        '<table class="app-table app-table--sticky"><thead><tr>'
         "<th>Prospect</th><th>Stage</th><th>Vol/mo</th>"
         "<th>Pitched $/mo</th><th>Actual cost</th><th>Margin</th>"
         "<th>Views</th><th>Actions</th>"
@@ -1344,20 +1342,27 @@ def render_fulfillment_sales_page(
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/admin.css">
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>{styles}</style>
   </head>
   <body>
     {render_agent_nav("fulfillment", fulfillment_section="fulfillment_sales", user=user)}
-    <main class="shell">
+    <main id="agent-main-content" class="shell app-container app-page">
       <div class="workspace">
-        <p class="eyebrow">Fulfillment — Pipeline</p>
-        <h1>Prospect <span style="color:var(--light-blue)">Pipeline</span>.</h1>
-        <p class="intro">Turn fulfillment opportunities into one next action: intake, review, collect costs, create quote, follow up, or close. The table below is supporting context, not the starting point.</p>
+        <header class="app-page-header">
+          <div>
+            <p class="eyebrow">Fulfillment — Pipeline</p>
+            <h1>Prospect <span style="color:var(--light-blue)">Pipeline</span>.</h1>
+            <p class="intro">Turn fulfillment opportunities into one next action: intake, review, collect costs, create quote, follow up, or close.</p>
+          </div>
+          <div class="app-page-actions">
+            <a href="#new-rate-sheet" class="btn admin-btn">Create rate sheet</a>
+          </div>
+        </header>
         {flash_html}
         {ctx_banner}
         {next_action_html}
-        <form method="post" action="/admin/fulfillment/sales/generate" enctype="multipart/form-data">
+        <form id="new-rate-sheet" method="post" action="/admin/fulfillment/sales/generate" enctype="multipart/form-data">
           <input type="hidden" name="hubspot_deal_id" value="{_esc(ctx_deal_id)}">
           <input type="hidden" name="hubspot_company_id" value="{_esc(ctx_company_id)}">
           <input type="hidden" name="hubspot_contact_ids" value="{_esc(ctx_contact_ids)}">
@@ -1394,14 +1399,14 @@ def render_fulfillment_sales_page(
         <h2 id="pipeline">Pipeline</h2>
         <p class="muted" style="margin:-6px 0 12px">Click a row to expand — enter fulfillment costs, track margin, update stage. Click again to close. Changes save automatically.</p>
         {_pipeline_stats(runs) if runs else ""}
-        {f'''<div class="pipeline-toolbar" aria-label="Pipeline result controls">
+        {f'''<div class="app-command-bar"><div class="pipeline-toolbar" aria-label="Pipeline result controls">
           <div class="pipeline-toolbar__field"><label for="pipe-search">Search prospects</label><input id="pipe-search" type="search" placeholder="Prospect name" oninput="filterPipeline()"></div>
           <div class="pipeline-toolbar__field"><label for="pipe-stage">Stage</label><select id="pipe-stage" onchange="filterPipeline()"><option value="">All stages</option><option value="intake">Intake</option><option value="pending_fulfillment">Sent to Fulfillment</option><option value="costs_received">Costs Received</option><option value="published">Published</option><option value="won">Won</option><option value="lost">Lost</option></select></div>
           <div class="pipeline-toolbar__field"><label for="pipe-sort">Sort results</label><select id="pipe-sort" onchange="sortPipeline()"><option value="">Newest</option><option value="volume">Volume ↓</option><option value="pitched">Pitched $ ↓</option><option value="margin">Margin ↓</option><option value="views">Views ↓</option></select></div>
           <a href="/admin/fulfillment/sales/export.csv" class="btn btn--ghost" title="Download pipeline as CSV">Export CSV</a>
           <span id="pipe-count" class="pipeline-results-count" aria-live="polite">Showing {len(runs)} of {len(runs)} prospects</span>
-        </div>''' if runs else ""}
-        {f'<div class="pipeline-table-wrap">{table}</div>' if runs else table}
+        </div></div>''' if runs else ""}
+        {f'<div class="app-data-workspace"><div class="pipeline-table-wrap">{table}</div></div>' if runs else table}
         {'<p class="pipeline-filter-empty" id="pipe-empty">No prospects match the current search and stage filters.</p>' if runs else ""}
       </div>
     </main>

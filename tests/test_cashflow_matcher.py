@@ -147,5 +147,66 @@ class TestAutoMatchTransactions(unittest.TestCase):
         self.assertEqual(results[0].candidate_ids, ["p1", "p2"])
 
 
+class CategoryEvidenceTests(unittest.TestCase):
+    """Reading QuickBooks' own account must not cost us settlement matches.
+
+    Before the account was read, almost every posted transaction and obligation
+    fell back to "other", so the category bonus fired on two unknowns agreeing.
+    The auto-match threshold was calibrated with that phantom bonus in it, so
+    once real accounts arrived the same true payments scored 1,500 bps lower and
+    stopped matching. This is a real bank descriptor shape: the obligation is
+    "Boulder Ranch LLC" and the payment reads "Withdrawal ACH Boulder Ranch".
+    """
+
+    def _pair(self, obligation_category: str, actual_category: str):
+        due = date(2026, 7, 10)
+        actual = _csv("c1", "Withdrawal ACH Boulder Ranch", 505_00, date(2026, 7, 12))
+        actual["category"] = actual_category
+        planned = _planned("p1", "Boulder Ranch LLC", 500_00, due)
+        planned["category"] = obligation_category
+        return auto_match_transactions([actual], [planned])[0]
+
+    def test_a_quickbooks_account_still_matches_an_uncategorised_obligation(self) -> None:
+        booked = self._pair("other", "job materials")
+        unknown = self._pair("other", "other")
+
+        self.assertEqual(booked.score_bps, unknown.score_bps, "knowing more must not score less")
+        self.assertEqual(booked.planned_event_id, "p1")
+
+    def test_an_unknown_category_is_never_treated_as_a_disagreement(self) -> None:
+        for obligation_category, actual_category in (
+            ("other", "job materials"), ("job materials", "other"),
+            ("", "job materials"), ("uncategorized", "job materials"),
+        ):
+            result = self._pair(obligation_category, actual_category)
+            self.assertNotIn("conflict", result.reason, (obligation_category, actual_category))
+
+    def test_two_known_categories_that_disagree_lose_the_points(self) -> None:
+        """This never cost anything before, because nothing had a real category."""
+        agree = self._pair("payroll", "payroll")
+        conflict = self._pair("payroll", "software")
+
+        self.assertEqual(agree.score_bps - conflict.score_bps, 1_500)
+        self.assertEqual(agree.planned_event_id, "p1")
+        self.assertIsNone(
+            conflict.planned_event_id,
+            "a bill booked as payroll settled by a software charge is not confident enough",
+        )
+
+    def test_a_disagreement_is_named_in_the_reason_when_it_still_matches(self) -> None:
+        """Strong vendor, amount and date evidence still wins, but the operator
+        should be able to see the books disagreed about what kind of spend it is."""
+        due = date(2026, 7, 10)
+        actual = _csv("c1", "Gusto Payroll", 500_00, due)
+        actual["category"] = "software"
+        planned = _planned("p1", "Gusto Payroll", 500_00, due)
+        planned["category"] = "payroll"
+
+        result = auto_match_transactions([actual], [planned])[0]
+
+        self.assertEqual(result.planned_event_id, "p1")
+        self.assertIn("category conflict", result.reason)
+
+
 if __name__ == "__main__":
     unittest.main()

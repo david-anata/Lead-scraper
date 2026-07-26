@@ -19,6 +19,9 @@ NAV_ITEMS = (
     ("audit", "Bill audit", "/admin/finances/audit"),
     ("collections", "Who owes you", "/admin/finances/collections"),
     ("schedules", "Schedules", "/admin/finances/recurring"),
+    # No apostrophe in the label: the strip escapes it, and a nav item nobody
+    # can find by reading it is worse than slightly stiff wording.
+    ("whats_coming", "What is coming", "/admin/finances/whats-coming"),
     ("setup", "Setup", "/admin/finances/setup"),
 )
 
@@ -45,6 +48,13 @@ def nav_counts() -> dict[str, int]:
     try:
         from sales_support_agent.services.cashflow.collections import build_collections
         counts["collections"] = int(build_collections()["customer_count"])
+    except Exception:
+        pass
+    try:
+        # Only the predicted bills nobody has answered yet. Confirmed and
+        # dismissed ones are decided, so badging them would never clear.
+        from sales_support_agent.services.cashflow.bill_patterns import list_bill_patterns
+        counts["whats_coming"] = int(list_bill_patterns()["counts"]["unreviewed"])
     except Exception:
         pass
     return counts

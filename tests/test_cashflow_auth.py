@@ -151,8 +151,6 @@ class TestFinanceRoleGate(unittest.TestCase):
             "/admin/finances/alerts",
             "/admin/finances/scenario",
             "/admin/finances/upload",
-            "/admin/finances/recurring",
-            "/admin/finances/reconcile",
             "/admin/finances/qbo",
         ]
         for route in legacy_routes:
@@ -160,6 +158,24 @@ class TestFinanceRoleGate(unittest.TestCase):
                 resp = _get_finances_response(route, "finance")
                 self.assertEqual(resp.status_code, 303)
                 self.assertTrue(resp.headers["location"].startswith("/admin/finances?flash="))
+
+    def test_reconcile_now_leads_to_the_predicted_bills_page(self) -> None:
+        """It used to dead-end at the finance home. Repeating bills found in the
+        bank history are what that page was always trying to show."""
+        resp = _get_finances_response("/admin/finances/reconcile", "finance")
+
+        self.assertEqual(resp.status_code, 303)
+        self.assertEqual(resp.headers["location"], "/admin/finances/whats-coming")
+
+    def test_schedules_is_a_real_page_and_no_longer_bounces_to_the_home(self) -> None:
+        """The Schedules tab pointed at a route that redirected home, so the page
+        existed but nobody could reach it."""
+        resp = _get_finances_response("/admin/finances/recurring", "finance")
+
+        self.assertNotEqual(
+            resp.status_code, 303,
+            "Schedules must render rather than redirect; it is the page that replaces ClickUp",
+        )
 
 
 if __name__ == "__main__":

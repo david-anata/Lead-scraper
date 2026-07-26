@@ -83,6 +83,12 @@ def render_setup_page(*, flash: str = "") -> str:
         'Turn your existing recurring items into schedules this app owns.</p>'
         '<div class="action-row"><a class="btn btn-secondary" href="/admin/finances/import">'
         'Open the importer</a></div></div>'
+        + '<div class="card"><h2>What is coming</h2>'
+        '<p style="font-size:13px;color:#6b7a8d;margin:0">'
+        'Bills your own bank history says are on the way, before anyone sends them. '
+        'Say yes or no to each one and the schedule keeps itself up to date.</p>'
+        '<div class="action-row"><a class="btn btn-secondary" href="/admin/finances/whats-coming">'
+        'Open what is coming</a></div></div>'
     )
     return _wrap(
         "Setup", "setup",

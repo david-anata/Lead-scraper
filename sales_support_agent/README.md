@@ -183,6 +183,32 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `GET /admin/building`
 - `GET /api/internal/building/bookings`
 - `POST /api/internal/building/bookings`
+
+### Review-gated Building catalog import
+
+The Canva-derived draft catalog lives at
+`config/building_catalog_canva_draft.json`. It records source evidence but
+keeps all spaces private and unavailable, all offerings unpublished, and all
+public price fields blank until an owner reviews current inventory and terms.
+
+Preview and validate the import without network writes:
+
+```bash
+python scripts/import_building_catalog.py
+```
+
+Applying the draft is intentionally explicit and uses the audited internal API:
+
+```bash
+SALES_AGENT_INTERNAL_API_KEY=... \
+python scripts/import_building_catalog.py \
+  --apply \
+  --confirm IMPORT_UNPUBLISHED_CANVA_DRAFT
+```
+
+Importing the draft does not publish inventory. Operators still review and
+activate spaces, offerings, availability, and rate plans in the Building
+control room.
 - `GET /api/internal/building/calendar/projections`
 - `POST /api/internal/building/calendar/sync`
 - `GET /api/internal/building/checklists`

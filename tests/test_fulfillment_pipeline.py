@@ -546,6 +546,9 @@ def test_pipeline_page_uses_shared_results_toolbar(isolated_db):
     html = render_fulfillment_sales_page(fds.list_runs(), {})
 
     assert 'class="pipeline-toolbar"' in html
+    assert 'class="app-page-header"' in html
+    assert 'class="app-command-bar"' in html
+    assert "app-data-workspace" in html
     assert 'id="pipe-search"' in html
     assert 'id="pipe-stage"' in html
     assert 'id="pipe-sort"' in html

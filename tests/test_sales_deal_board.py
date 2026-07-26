@@ -276,6 +276,9 @@ class TestDealBoardP1Routes(unittest.TestCase):
         self.assertIn('id="deal-count" aria-live="polite"', body)
         self.assertIn('class="deal-row"', body)
         self.assertIn("max-height:min(64vh,720px)", body)
+        self.assertIn('class="app-page-header"', body)
+        self.assertIn("app-command-bar", body)
+        self.assertIn("app-data-workspace", body)
 
     def test_my_deals_empty_state_render(self) -> None:
         # Unit-level: render_deal_board_page with empty board + show_my renders the right message.
