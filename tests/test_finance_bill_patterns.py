@@ -732,3 +732,46 @@ def test_the_month_in_progress_is_kept_when_dropping_it_leaves_too_little(financ
 
     assert found, "dropping the current month must not drop the bill"
     assert found[0]["occurrences"] == 3
+
+
+def test_a_tracked_bill_past_the_horizon_is_still_accounted_for(finance_engine):
+    """Boulder Ranch came out 31 days away, past the forecast window, so it
+    produced nothing and the Today page went silent about a bill David had just
+    tracked. Tracking something and finding no trace of it is the same failure as
+    the button appearing to do nothing."""
+    _post_mixed(finance_engine, [
+        ("Faraway Leasing", 5_000_00, date(2026, 4, 26)),
+        ("Faraway Leasing", 5_000_00, date(2026, 5, 26)),
+        ("Faraway Leasing", 5_000_00, date(2026, 6, 26)),
+    ])
+    listing = list_bill_patterns(as_of=date(2026, 7, 1), lookback_days=400)
+    pattern = listing["patterns"][0]
+    record_bill_pattern_decision(pattern["pattern_key"], "track", actor=ACTOR)
+
+    # A 14 day window, while the bill is due on the 26th, four weeks out.
+    projections = confirmed_bill_projections(as_of=date(2026, 7, 1), horizon_days=14)
+
+    assert projections, "the next occurrence must survive a short horizon"
+    assert len(projections) == 1, "only the next one, not an unbounded run of them"
+    assert projections[0]["due_date"] > date(2026, 7, 15), "and it is genuinely outside the window"
+
+
+def test_a_short_horizon_does_not_invent_extra_occurrences(finance_engine):
+    """Reaching past the horizon is for the next occurrence only."""
+    _post_mixed(finance_engine, [
+        ("Weekly Yard Service", 100_00, date(2026, 6, 1)),
+        ("Weekly Yard Service", 100_00, date(2026, 6, 8)),
+        ("Weekly Yard Service", 100_00, date(2026, 6, 15)),
+        ("Weekly Yard Service", 100_00, date(2026, 6, 22)),
+    ])
+    listing = list_bill_patterns(as_of=date(2026, 6, 23), lookback_days=400)
+    pattern = listing["patterns"][0]
+    record_bill_pattern_decision(pattern["pattern_key"], "track", actor=ACTOR)
+
+    projections = confirmed_bill_projections(as_of=date(2026, 6, 23), horizon_days=21)
+
+    assert projections
+    for row in projections[:-1]:
+        assert row["due_date"] <= date(2026, 6, 23) + timedelta(days=21), (
+            "everything except the reach-ahead must sit inside the window"
+        )

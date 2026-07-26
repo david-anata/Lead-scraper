@@ -381,6 +381,13 @@ def confirmed_bill_projections(
     Only a pattern answered with "track" contributes cash. Silence is not
     consent: an unreviewed or dismissed pattern is worth nothing to the forecast.
     These rows are never persisted.
+
+    The next occurrence of a tracked bill is always included, even when it falls
+    past the horizon. A monthly bill can easily sit five weeks out, and dropping
+    it meant the operator tracked something and then found no trace of it
+    anywhere, which is the same silence that made tracking feel broken. It cannot
+    distort the fortnight either way, because a date outside the window is only
+    ever reported as due later.
     """
     horizon_days = max(1, int(horizon_days))
     horizon_end = as_of + timedelta(days=horizon_days)
@@ -707,16 +714,22 @@ def _next_due_date(dates: Sequence[date], *, frequency: str, as_of: date) -> dat
 def _occurrences_in_window(
     pattern: Mapping[str, Any], *, as_of: date, horizon_end: date
 ) -> list[date]:
-    """Every future date this bill is expected inside the forecast window."""
+    """Every future date this bill is expected inside the forecast window.
+
+    Plus the very next one whatever its date, so a tracked bill five weeks out is
+    still accounted for somewhere rather than vanishing.
+    """
     frequency = str(pattern["frequency"])
     cursor = pattern["next_due"]
     typical_day = cursor.day
     dates: list[date] = []
     for _ in range(600):
-        if cursor > horizon_end:
+        if cursor > horizon_end and dates:
             break
         if cursor > as_of:
             dates.append(cursor)
+            if cursor > horizon_end:
+                break
         cursor = _next_occurrence(cursor, frequency, typical_day)
     return dates
 
