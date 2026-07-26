@@ -26,12 +26,12 @@ def _setup():
 
 
 def _txn(engine, *, cid, name, amount=100_00, category="uncategorized", description=None,
-         source="plaid", subcategory=""):
+         source="plaid", subcategory="", event_type="outflow"):
     now = datetime.now(timezone.utc)
     with engine.begin() as connection:
         insert_cash_event(
             connection, id=cid, source=source, source_id=cid,
-            record_kind="transaction", event_type="outflow", category=category,
+            record_kind="transaction", event_type=event_type, category=category,
             subcategory=subcategory,
             name=name, vendor_or_customer=name, description=description or name,
             amount_cents=amount, due_date=date(2026, 7, 10), status="posted",
@@ -337,3 +337,103 @@ def test_internal_transfers_are_not_offered_as_a_merchant_group():
     for index in range(5):
         _txn(engine, cid=f"t{index}", name="Home banking Withdrawal Transfer to S0050", amount=25000_00)
     assert group_needs_decision()["groups"] == []
+
+
+# --- the queue is money going out only -------------------------------------
+
+def test_money_coming_in_never_reaches_the_filing_queue():
+    """184 Intuit deposits worth $495,932 sat here asking which expense
+    category they belonged to. A deposit is not an expense, so there is no
+    answer and the queue must not ask."""
+    from sales_support_agent.services.cashflow.bookkeeping import group_needs_decision
+
+    engine = _setup()
+    for index in range(4):
+        _txn(engine, cid=f"in{index}", name="Ach Deposit Company: Intuit Payment",
+             amount=2695_00, event_type="inflow")
+    _txn(engine, cid="spend", name="MYSTERY VENDOR", amount=500_00)
+
+    assert [item["id"] for item in list_needs_decision()] == ["spend"]
+
+    grouped = group_needs_decision()
+    assert grouped["transaction_count"] == 1
+    assert [group["count"] for group in grouped["groups"]] == [1]
+    assert all("intuit" not in group["key"] for group in grouped["groups"])
+
+    summary = bookkeeping_summary()
+    assert summary["total_transactions"] == 1, "deposits are outside the denominator too"
+    assert summary["needs_decision"] == 1
+    assert file_transactions()["reviewed"] == 1
+
+
+def test_the_four_summary_numbers_add_up_with_deposits_and_transfers_present():
+    engine = _setup()
+    _txn(engine, cid="booked", name="Vendor A", source="qbo_bank",
+         category="software", subcategory="Dues and Subscriptions")
+    _txn(engine, cid="here", name="COMCAST CABLE COMM")
+    _txn(engine, cid="open", name="MYSTERY VENDOR")
+    for index in range(3):
+        _txn(engine, cid=f"in{index}", name="Ach Deposit Company: Intuit Payment",
+             amount=2695_00, event_type="inflow")
+    _txn(engine, cid="moved", name="Home banking Withdrawal Transfer to S0050", amount=25000_00)
+    _txn(engine, cid="refund", name="Amazon Refund", amount=40_00, event_type="inflow",
+         category="supplies")
+    file_transactions()
+
+    summary = bookkeeping_summary()
+    assert summary["total_transactions"] == 3
+    assert summary["booked_in_quickbooks"] == 1
+    assert summary["filed_here_only"] == 1
+    assert summary["needs_decision"] == 1
+    assert (
+        summary["booked_in_quickbooks"]
+        + summary["filed_here_only"]
+        + summary["needs_decision"]
+    ) == summary["total_transactions"], "the three states must account for every transaction"
+
+
+def test_the_badge_count_still_matches_the_queue_when_deposits_exist():
+    engine = _setup()
+    _txn(engine, cid="spend", name="MYSTERY VENDOR", amount=500_00)
+    for index in range(6):
+        _txn(engine, cid=f"in{index}", name="Ach Deposit Company: Intuit Payment",
+             amount=2695_00, event_type="inflow")
+    _txn(engine, cid="moved", name="To Share 58", amount=25000_00)
+
+    assert bookkeeping_summary()["needs_decision"] == len(list_needs_decision())
+
+
+def test_filing_money_coming_in_is_refused():
+    """A page left open before deposits were removed can still post one."""
+    from sales_support_agent.services.cashflow.bookkeeping import file_merchant
+
+    engine = _setup()
+    _txn(engine, cid="in", name="Ach Deposit Company: Intuit Payment", amount=2695_00,
+         event_type="inflow")
+
+    with pytest.raises(ValueError, match="money coming in"):
+        file_transaction("in", "software")
+    with pytest.raises(ValueError, match="money coming in"):
+        file_merchant("intuit payment", "software")
+
+    assert _category(engine, "in") == "uncategorized", "the deposit is left alone"
+    assert list_rules() == [], "nothing was taught that would file future deposits as spend"
+
+
+def test_a_merchant_with_both_directions_files_only_the_money_going_out():
+    from sales_support_agent.services.cashflow.bookkeeping import (
+        file_merchant,
+        group_needs_decision,
+    )
+
+    engine = _setup()
+    _txn(engine, cid="paid", name="Madison Bicycle Shop", amount=500_00)
+    _txn(engine, cid="refunded", name="Madison Bicycle Shop", amount=120_00,
+         event_type="inflow")
+
+    key = group_needs_decision()["groups"][0]["key"]
+    result = file_merchant(key, "supplies")
+
+    assert result["filed"] == 1
+    assert _category(engine, "paid") == "supplies"
+    assert _category(engine, "refunded") == "uncategorized", "the money back is untouched"

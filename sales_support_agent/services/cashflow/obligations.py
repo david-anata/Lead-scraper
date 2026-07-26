@@ -221,6 +221,7 @@ def update_obligation(event_id: str, **fields: Any) -> Optional[dict[str, Any]]:
         "amount_cents", "due_date", "status", "confidence",
         "notes", "matched_to_id", "commitment_type", "workflow_status",
         "owner", "approval_status", "archived_at", "pay_priority",
+        "flexibility",
     }
     safe = {k: v for k, v in fields.items() if k in allowed}
     if not safe:
@@ -331,7 +332,9 @@ def create_recurring_template(
     next_due_date: date,
     day_of_month: Optional[int] = None,
     confidence: str = "estimated",
+    flexibility: str = "unknown",
     notes: str = "",
+    is_active: bool = True,
 ) -> dict[str, Any]:
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
@@ -340,20 +343,21 @@ def create_recurring_template(
     now = datetime.utcnow()
 
     with get_engine().begin() as conn:
-        # confidence and notes are NOT NULL with only a Python-side default, so
-        # this raw INSERT has to supply them explicitly or it fails outright.
+        # confidence, flexibility and notes are NOT NULL with only a Python-side
+        # default, so this raw INSERT has to supply them explicitly or it fails
+        # outright.
         conn.execute(
             text("""
                 INSERT INTO recurring_templates (
                     id, name, vendor_or_customer, event_type, category,
-                    amount_cents, confidence, notes, clickup_task_id,
+                    amount_cents, confidence, flexibility, notes, clickup_task_id,
                     frequency, next_due_date, day_of_month,
                     is_active, created_at, updated_at
                 ) VALUES (
                     :id, :name, :vendor_or_customer, :event_type, :category,
-                    :amount_cents, :confidence, :notes, '',
+                    :amount_cents, :confidence, :flexibility, :notes, '',
                     :frequency, :next_due_date, :day_of_month,
-                    TRUE, :now, :now
+                    :is_active, :now, :now
                 )
             """),
             {
@@ -364,10 +368,12 @@ def create_recurring_template(
                 "category": category,
                 "amount_cents": amount_cents,
                 "confidence": confidence,
+                "flexibility": flexibility or "unknown",
                 "notes": notes,
                 "frequency": frequency,
                 "next_due_date": next_due_date.isoformat(),
                 "day_of_month": day_of_month,
+                "is_active": bool(is_active),
                 "now": now.isoformat(),
             },
         )
@@ -406,6 +412,9 @@ def update_recurring_template(template_id: str, **fields: Any) -> Optional[dict[
     allowed = {
         "name", "vendor_or_customer", "event_type", "category",
         "amount_cents", "frequency", "next_due_date", "day_of_month", "is_active",
+        # Both of these decide how the generated occurrences behave, so they have
+        # to be changeable after the schedule is first written down.
+        "confidence", "flexibility",
     }
     safe = {k: v for k, v in fields.items() if k in allowed}
     if not safe:
@@ -423,16 +432,113 @@ def update_recurring_template(template_id: str, **fields: Any) -> Optional[dict[
     return get_recurring_template(template_id)
 
 
-def delete_recurring_template(template_id: str) -> bool:
+def delete_recurring_template(template_id: str, *, actor: str = "system") -> bool:
+    """Remove a schedule and retire the future it has already generated.
+
+    Deleting the template on its own left its occurrences behind with nothing
+    left to explain them, so a bill David had stopped kept demanding cash in the
+    forecast for months. Occurrences that are already in the past are history and
+    stay exactly as they are, and anything with a payment recorded against it is
+    never touched.
+    """
     from sales_support_agent.models.database import get_engine
-    from sqlalchemy import text
+    from sqlalchemy import inspect, text
+
+    today = _today()
+    now = datetime.utcnow()
 
     with get_engine().begin() as conn:
-        result = conn.execute(
+        template = conn.execute(
+            text("SELECT name FROM recurring_templates WHERE id = :id"),
+            {"id": template_id},
+        ).fetchone()
+        if template is None:
+            return False
+
+        tables = set(inspect(conn).get_table_names())
+        cancelled: list[dict[str, Any]] = []
+
+        if "cash_events" in tables:
+            # Older/minimal databases may not carry the settlement table yet, and
+            # without it there is nothing to check against.
+            settlement_guard = (
+                "AND id NOT IN (SELECT obligation_event_id FROM settlement_allocations)"
+                if "settlement_allocations" in tables
+                else ""
+            )
+            rows = conn.execute(
+                text(f"""
+                    SELECT id, name, amount_cents, due_date
+                    FROM cash_events
+                    WHERE recurring_template_id = :tid
+                      AND record_kind <> 'transaction'
+                      AND archived_at IS NULL
+                      AND LOWER(COALESCE(status,'')) IN ('planned','pending','overdue')
+                      AND due_date IS NOT NULL
+                      AND due_date >= :today
+                      {settlement_guard}
+                """),  # noqa: S608
+                {"tid": template_id, "today": today.isoformat()},
+            ).fetchall()
+
+            for raw in rows:
+                row = dict(raw._mapping)
+                conn.execute(
+                    text("""
+                        UPDATE cash_events
+                        SET workflow_status='cancelled', archived_at=:now,
+                            snoozed_until=NULL, follow_up_on=NULL, updated_at=:now
+                        WHERE id=:id
+                    """),
+                    {"now": now, "id": str(row["id"])},
+                )
+                cancelled.append({
+                    "id": str(row["id"]),
+                    "name": str(row.get("name") or ""),
+                    "amount_cents": int(row.get("amount_cents") or 0),
+                    "due_date": str(row.get("due_date") or "")[:10],
+                })
+
+        conn.execute(
             text("DELETE FROM recurring_templates WHERE id = :id"),
             {"id": template_id},
         )
-    return result.rowcount > 0
+
+        if "finance_action_audit" in tables:
+            # The occurrence ids are recorded so this can be undone, not just seen.
+            conn.execute(
+                text("""
+                    INSERT INTO finance_action_audit (
+                        id, scope_key, action_type, entity_type, entity_id, actor,
+                        evidence_json, created_at
+                    ) VALUES (
+                        :audit_id, 'default', 'recurring_template_deleted',
+                        'recurring_template', :template_id, :actor, :evidence, :now
+                    )
+                """),
+                {
+                    "audit_id": str(uuid.uuid4()),
+                    "template_id": template_id,
+                    "actor": actor,
+                    "evidence": _json.dumps({
+                        "template_name": str(template[0] or ""),
+                        "cancelled_count": len(cancelled),
+                        "cancelled_amount_cents": sum(
+                            item["amount_cents"] for item in cancelled
+                        ),
+                        "cancelled_event_ids": [item["id"] for item in cancelled],
+                        "as_of": today.isoformat(),
+                    }),
+                    "now": now,
+                },
+            )
+
+    if cancelled:
+        logger.info(
+            "Schedule deleted: %d future occurrence(s) retired with it",
+            len(cancelled),
+        )
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +561,10 @@ def supersede_stale_template_occurrences(
     occurrence carries its template id, so the series is exact rather than
     inferred from names and dates. Only template-generated rows are touched,
     and an occurrence with any settlement against it is always left alone.
+
+    Safe to call straight from a button as well as from the background job: pass
+    an explicit *as_of* and it archives only, so a second run finds nothing left
+    to roll forward and reports an empty list.
     """
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
@@ -589,6 +699,12 @@ def generate_upcoming_from_templates(
 
         frequency   = tmpl["frequency"]
         day_of_month = tmpl.get("day_of_month")
+        # A schedule David has already pinned down (auto-pay, signed lease) is not
+        # a guess, so its occurrences must not be probability-weighted like one.
+        tmpl_confidence = str(tmpl.get("confidence") or "").strip() or "estimated"
+        # A bill paid in pieces has to say so on every occurrence, otherwise the
+        # first part-payment leaves it looking overdue.
+        tmpl_flexibility = str(tmpl.get("flexibility") or "").strip() or "unknown"
 
         # --- Fill the FULL horizon in one call ----------------------------
         # Previously this loop only created ONE occurrence per template per
@@ -619,9 +735,11 @@ def generate_upcoming_from_templates(
                     amount_cents=tmpl["amount_cents"],
                     due_date=next_due,
                     status="planned",
-                    confidence="estimated",
+                    confidence=tmpl_confidence,
                     recurring_template_id=tmpl["id"],
                 )
+                if event and tmpl_flexibility != "unknown":
+                    event = update_obligation(event["id"], flexibility=tmpl_flexibility)
 
             if event:
                 created.append(event)

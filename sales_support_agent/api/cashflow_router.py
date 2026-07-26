@@ -784,6 +784,29 @@ async def finance_setup_page(request: Request, flash: str = ""):
     return HTMLResponse(await asyncio.to_thread(render_setup_page, flash=flash))
 
 
+def _render_cutover_page(flash: str = "") -> str:
+    """The cutover verdict card wrapped in the standard Finance page."""
+    from sales_support_agent.services.cashflow.cutover import render_cutover_readiness
+    from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
+    from sales_support_agent.services.cashflow.overview import _page_shell
+
+    title = "Switching off the old bill list"
+    body = (
+        render_finance_nav("setup")
+        + f"<h1>{title}</h1>"
+        + '<p class="page-sub">What would happen to your forecast if the old ClickUp bill '
+        "list went away today. Nothing on this page switches anything off.</p>"
+        + render_cutover_readiness()
+    )
+    return _page_shell(title, "setup", body, flash=flash)
+
+
+@router.get("/cutover", response_class=HTMLResponse)
+async def finance_cutover_page(request: Request, flash: str = ""):
+    """Whether the old ClickUp bill list can be switched off yet."""
+    return HTMLResponse(await asyncio.to_thread(_render_cutover_page, flash))
+
+
 @router.post("/audit/clear-dismissals")
 async def audit_clear_dismissals_endpoint(request: Request):
     """Forget dismissals made against the old, broken rules."""
@@ -1506,6 +1529,17 @@ async def sync_clickup(request: Request):
         or getattr(request.app.state, "admin_dashboard_settings", None)
         or request.app.state.settings
     )
+    if bool(getattr(settings, "disable_clickup_finance_sync", False)):
+        # Switching the old list off has to hold here too, or one click on this
+        # button pulls every retired bill straight back into the forecast.
+        return RedirectResponse(
+            "/admin/finances?flash="
+            + quote(
+                "ok:The old ClickUp bill list is switched off, so nothing was brought in. "
+                "The schedules in this app are in charge now."
+            ),
+            status_code=303,
+        )
     try:
         result = await asyncio.to_thread(sync_clickup_finance, settings)
         flash = f"ok:Synced from ClickUp — {result.rows_inserted} added · {result.rows_skipped_duplicate} updated/skipped"
@@ -1524,7 +1558,10 @@ async def sync_clickup(request: Request):
 
 @router.get("/recurring", response_class=HTMLResponse)
 async def recurring_list(request: Request, flash: str = ""):
-    return _redirect_finance_home()
+    """The schedules that build the next 14 and 30 days."""
+    from sales_support_agent.services.cashflow.recurring import render_recurring_page
+
+    return HTMLResponse(await asyncio.to_thread(render_recurring_page, flash=flash))
 
 
 @router.get("/recurring/new", response_class=HTMLResponse)
@@ -1535,12 +1572,23 @@ async def recurring_new_form(request: Request):
 @router.post("/recurring/new", response_class=HTMLResponse)
 async def recurring_new_submit(request: Request):
     form = dict(await request.form())
-    kwargs = parse_template_form(form)
     try:
+        kwargs = parse_template_form(form)
         create_recurring_template(**kwargs)
-        return RedirectResponse("/admin/finances?flash=ok:Template+created", status_code=303)
-    except Exception as exc:
+    except ValueError as exc:
+        # A ValueError here is a problem with what was typed in, so the wording
+        # is already meant for the operator.
         return render_recurring_new_page(flash=f"err:{exc}")
+    except Exception:
+        # Anything else is our fault, not theirs. Showing them the Python text
+        # tells them nothing they can act on.
+        logger.exception("Creating a schedule failed")
+        return render_recurring_new_page(
+            flash="err:That could not be saved. Nothing was changed. Please try again."
+        )
+    return RedirectResponse(
+        "/admin/finances/recurring?flash=ok:Schedule+added", status_code=303
+    )
 
 
 @router.get("/recurring/{template_id}/edit", response_class=HTMLResponse)
@@ -1551,18 +1599,135 @@ async def recurring_edit_form(request: Request, template_id: str):
 @router.post("/recurring/{template_id}/edit", response_class=HTMLResponse)
 async def recurring_edit_submit(request: Request, template_id: str):
     form = dict(await request.form())
-    kwargs = parse_template_form(form)
     try:
+        kwargs = parse_template_form(form)
         update_recurring_template(template_id, **kwargs)
-        return RedirectResponse("/admin/finances?flash=ok:Template+updated", status_code=303)
-    except Exception as exc:
+    except ValueError as exc:
         return render_recurring_edit_page(template_id, flash=f"err:{exc}")
+    except Exception:
+        logger.exception("Saving a schedule failed template_id=%s", template_id)
+        return render_recurring_edit_page(
+            template_id,
+            flash="err:That could not be saved. Nothing was changed. Please try again.",
+        )
+    # Back to the list, not the finance home: being thrown to a different page
+    # after every action means finding your place again each time.
+    return RedirectResponse(
+        "/admin/finances/recurring?flash=ok:Schedule+saved", status_code=303
+    )
+
+
+@router.post("/recurring/roll-forward")
+async def recurring_roll_forward(request: Request, return_to: str = Form("")):
+    """Move dates that have passed on to the next one in the same series."""
+    from sales_support_agent.services.cashflow.obligations import (
+        supersede_stale_template_occurrences,
+    )
+
+    request.state.finance_return_to = return_to or "/admin/finances/recurring"
+    try:
+        rolled = await asyncio.to_thread(supersede_stale_template_occurrences)
+    except Exception:
+        logger.exception("Rolling stale schedule dates forward failed")
+        return _redirect_finance_error(
+            "Those dates could not be moved on, so nothing changed."
+        )
+    if not rolled:
+        return _redirect_finance_home(
+            "Nothing to move on. Every schedule date is already current."
+        )
+    dates = "date" if len(rolled) == 1 else "dates"
+    return _redirect_finance_home(
+        f"Moved {len(rolled)} old schedule {dates} on, so they stop counting as money you owe."
+    )
 
 
 @router.post("/recurring/{template_id}/delete")
 async def recurring_delete(request: Request, template_id: str):
-    delete_recurring_template(template_id)
-    return RedirectResponse("/admin/finances?flash=ok:Deleted", status_code=303)
+    try:
+        delete_recurring_template(template_id)
+    except Exception:
+        logger.exception("Deleting a schedule failed template_id=%s", template_id)
+        return _redirect_finance_error("That schedule could not be removed, so nothing changed.")
+    return RedirectResponse(
+        "/admin/finances/recurring?flash=ok:Schedule+removed", status_code=303
+    )
+
+
+# ---------------------------------------------------------------------------
+# What is coming: bills predicted from the bank history itself
+# ---------------------------------------------------------------------------
+
+_WHATS_COMING_PATH = "/admin/finances/whats-coming"
+
+# What each answer did, in the words the operator picked it with.
+_BILL_DECISION_FLASH = {
+    "track": "Tracking that one. It now counts in your next 14 and 30 days.",
+    "not_a_bill": "Noted, that is not a bill. We will stop asking about it.",
+    "snooze": "Left for now. We will ask about it again in a week.",
+}
+
+
+@router.get("/whats-coming", response_class=HTMLResponse)
+async def whats_coming_page(request: Request, flash: str = ""):
+    """Bills found in the bank history that no schedule covers yet."""
+    from sales_support_agent.services.cashflow.whats_coming_page import (
+        render_whats_coming_page,
+    )
+
+    return HTMLResponse(await asyncio.to_thread(render_whats_coming_page, flash=flash))
+
+
+@router.post("/whats-coming/decide")
+async def whats_coming_decide(
+    request: Request,
+    pattern_key: str = Form(""),
+    decision: str = Form(""),
+    return_to: str = Form(""),
+):
+    """Record one answer about a predicted bill and come back to this page.
+
+    A missing or unrecognised answer is a message on the page, never a validation
+    error page, so a stale form cannot dead-end the operator.
+    """
+    from sales_support_agent.services.cashflow.bill_patterns import (
+        pattern_exists,
+        record_bill_pattern_decision,
+    )
+
+    # This page is a list of questions, so an answer has to land back on it
+    # rather than on the finance home with the list scrolled away.
+    request.state.finance_return_to = return_to or _WHATS_COMING_PATH
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+
+    # A key can be well formed and still name nothing, which is what a stale tab
+    # or a re-submitted form sends. Recording it would report success for a bill
+    # that was never tracked.
+    if not await asyncio.to_thread(pattern_exists, pattern_key):
+        return _redirect_finance_error(
+            "That bill is no longer in the list, so nothing changed. "
+            "The page below is up to date."
+        )
+    try:
+        await asyncio.to_thread(
+            record_bill_pattern_decision,
+            pattern_key,
+            decision,
+            actor=actor,
+            request_id=request.headers.get("Idempotency-Key") or uuid4().hex,
+        )
+    except ValueError:
+        return _redirect_finance_error(
+            "That answer could not be read, so nothing changed. Try the buttons again."
+        )
+    except Exception:
+        logger.exception("A predicted bill decision could not be recorded")
+        return _redirect_finance_error(
+            "That answer could not be saved, so nothing changed."
+        )
+    return _redirect_finance_home(_BILL_DECISION_FLASH.get(decision, "Answer saved."))
 
 
 # ---------------------------------------------------------------------------
@@ -1701,7 +1866,11 @@ async def qbo_disconnect(request: Request):
 
 @router.get("/reconcile", response_class=HTMLResponse)
 async def reconcile_page(request: Request, flash: str = ""):
-    return _redirect_finance_home()
+    """An old link. The bills it used to guess at now live on What is coming."""
+    target = _WHATS_COMING_PATH
+    if flash:
+        target = f"{target}?flash={quote(flash)}"
+    return RedirectResponse(target, status_code=303)
 
 
 @router.post("/reconcile/accept-pattern", response_class=HTMLResponse)

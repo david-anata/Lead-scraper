@@ -1197,6 +1197,10 @@ def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[st
             "incoming_confirmed_cents": _cents(_control_value(cash, "incoming_confirmed_cents", "confirmed_incoming_cents", default=fallback_cash["incoming_confirmed_cents"])),
             "incoming_expected_cents": _cents(_control_value(cash, "incoming_expected_cents", "expected_incoming_cents", default=fallback_cash["incoming_expected_cents"])),
             "required_out_cents": _cents(_control_value(cash, "required_out_cents", "required_outgoing_cents", "outgoing_cents", default=fallback_cash["required_out_cents"])),
+            # Predicted bills are never in the fallback: it only reads dated rows.
+            # Zero there is the honest answer, not a missing number.
+            "expected_out_cents": max(0, _cents(_control_value(cash, "expected_out_cents", "expected_outgoing_cents", default=0))),
+            "funding_gap_required_only_cents": max(0, _cents(_control_value(cash, "funding_gap_required_only_cents", default=0))),
             "historical_backlog_cents": _cents(_control_value(cash, "historical_backlog_cents", default=0)),
             "historical_backlog_count": int(_control_value(cash, "historical_backlog_count", default=0) or 0),
             "exposure_out_cents": _cents(_control_value(cash, "exposure_out_cents", "outgoing_exposure_cents", default=fallback_cash["exposure_out_cents"])),
@@ -2909,6 +2913,13 @@ def _render_bookkeeping() -> str:
     else:
         rules_html = ""
 
+    # The queue only holds money going out. Saying so here stops the counters
+    # reading as "every transaction" when a deposit is missing from the list.
+    money_in_note = (
+        '<p class="finance-accounts-asof">Money coming in is not in this list, because a deposit '
+        'is not a cost to sort: your income patterns on the Today page and '
+        '<a href="/admin/finances/collections">Who owes you</a> handle that side.</p>'
+    )
     writeback = (
         '<p class="finance-accounts-asof">QuickBooks runs the books. Anything it has already '
         + 'posted arrives here with the account it was booked to, so it never asks you again. '
@@ -2918,8 +2929,9 @@ def _render_bookkeeping() -> str:
     )
     return (
         '<section class="finance-source-row finance-bookkeeping"><div style="width:100%">'
-        + '<strong>Bookkeeping</strong><span>QuickBooks decides the category; this page only chases what it has not booked yet.</span>'
-        + head + queue + rules_html + writeback + '</div></section>'
+        + '<strong>Bookkeeping</strong><span>Only money going out is sorted here. '
+        + 'QuickBooks decides the category; this page only chases what it has not booked yet.</span>'
+        + head + queue + rules_html + money_in_note + writeback + '</div></section>'
     )
 
 
@@ -2974,6 +2986,59 @@ def _render_trust_check(cash: dict, trust_gate: dict) -> str:
         '<section class="finance-source-row finance-trust-check"><div style="width:100%">'
         + '<strong>Trust check</strong><span>How each number ties back to its source.</span>'
         + cash_block + recv_block + oblig_block + '</div></section>'
+    )
+
+
+def _render_out_metric(cash: Mapping[str, Any], backlog_note: str = "") -> str:
+    """The money-out card on Today.
+
+    Committed and expected sit on separate lines because one is owed and the
+    other is only a guess from bank history. Adding them in one figure would
+    make a prediction look like a bill.
+    """
+    committed = _cents(cash.get("required_out_cents"))
+    expected = _cents(cash.get("expected_out_cents"))
+    return (
+        '<article class="finance-cash-metric finance-income-metric">'
+        # The heading is unchanged deliberately. It is the landmark the operator
+        # and several page tests both navigate by; the two lines below it are
+        # what separate what is owed from what is only predicted.
+        '<span>Required out 14 days</span>'
+        '<div class="finance-income-line"><span>Committed</span>'
+        f'<strong class="amount-out">{_money(committed)}</strong></div>'
+        '<small>What you actually owe</small>'
+        '<div class="finance-income-line"><span>Expected out</span>'
+        f'<strong>{_money(expected)}</strong></div>'
+        '<small>Bills your own bank history says are coming</small>'
+        '<div class="finance-income-line is-review"><span>Total out</span>'
+        f'<strong>{_money(committed + expected)}</strong></div>'
+        f'<small>Plus {_money(_cents(cash.get("exposure_out_cents")))} due later{backlog_note}</small>'
+        '</article>'
+    )
+
+
+def _predicted_gap_note(cash: Mapping[str, Any]) -> str:
+    """One line under the funding gap separating predicted bills from real ones.
+
+    Returns nothing when no bill is predicted, so a fortnight with only real
+    invoices in it stays uncluttered.
+    """
+    expected = _cents(cash.get("expected_out_cents"))
+    if expected <= 0:
+        return ""
+    gap = _cents(cash.get("funding_gap_cents"))
+    from_predictions = max(0, gap - _cents(cash.get("funding_gap_required_only_cents")))
+    link = '<a href="/admin/finances/whats-coming">See what is coming</a>'
+    if from_predictions:
+        return (
+            '<small class="finance-income-breakdown">'
+            f'{_money(from_predictions)} of this shortfall is bills your bank history says are '
+            f'coming, not bills anyone has sent you. {link}</small>'
+        )
+    return (
+        '<small class="finance-income-breakdown">'
+        f'This already sets aside {_money(expected)} for bills your bank history says are '
+        f'coming, before anyone has sent them. {link}</small>'
     )
 
 
@@ -3071,6 +3136,7 @@ async def render_cashflow_overview_page(
         + _panel_link("/admin/finances/audit", "Bill audit", "audit")
         + _panel_link("/admin/finances/collections", "Who owes you", "collections")
         + _panel_link("/admin/finances/recurring", "Schedules")
+        + _panel_link("/admin/finances/whats-coming", "What is coming", "whats_coming")
         + _panel_link("/admin/finances/setup", "Setup")
         + '</div></div></section>'
     )
@@ -3255,7 +3321,10 @@ async def render_cashflow_overview_page(
         if _backlog_cents else ""
     )
 
+    out_metric_html = _render_out_metric(cash, backlog_note)
+
     gap = cash["funding_gap_cents"]
+    predicted_gap_note_html = _predicted_gap_note(cash)
     fourth_label = "Funding gap" if gap else "Safe to commit"
     calculation_unavailable = control_error or not cash["balance_available"]
     fourth_value = "Unavailable" if calculation_unavailable else _money(gap or cash["safe_to_commit_cents"])
@@ -3457,12 +3526,10 @@ async def render_cashflow_overview_page(
           <div class="finance-income-line is-review"><span>Needs review</span><strong>{_money(income_projection['needs_review_cents'])}</strong></div>
           <button type="button" class="finance-text-action" data-open-income-review>Review income patterns</button>
         </article>
-        <article class="finance-cash-metric">
-          <span>Required out 14 days</span><strong class="amount-out">{_money(cash['required_out_cents'])}</strong>
-          <small>Required &middot; +{_money(cash['exposure_out_cents'])} exposure{backlog_note}</small>
-        </article>
+        {out_metric_html}
         <article class="finance-cash-metric {'is-gap' if gap else 'is-safe'}">
           <span>{fourth_label}</span><strong>{fourth_value}</strong><small>{fourth_note}</small>
+          {predicted_gap_note_html}
         </article>
       </section>
 

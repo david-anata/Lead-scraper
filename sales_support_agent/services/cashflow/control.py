@@ -7,6 +7,7 @@ are integer cents and all returned collections have deterministic ordering.
 
 from __future__ import annotations
 
+import logging
 import re
 import statistics
 from hashlib import sha256
@@ -14,6 +15,8 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 
+
+logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = {"planned", "pending", "overdue", "open", "due"}
 TERMINAL_STATUSES = {"paid", "matched", "cancelled", "canceled", "void", "completed"}
@@ -446,10 +449,17 @@ def build_forecast_paths(
         if due is None or due > horizon_end:
             continue
         if event_type == "outflow":
+            # A predicted bill is not a commitment, so it must leave the
+            # Committed line alone. It reduces Expected by how likely it is, and
+            # in full under Stress, where the worst case is every bill arriving.
+            predicted = bool(row.get("trend_inferred"))
             for path in changes:
+                if predicted and path == "committed":
+                    continue
+                weight = _probability_bps(row) if predicted and path == "expected" else 10_000
                 for event_date, amount in _outflow_schedule(row, path, as_of, horizon_end):
                     if event_date <= horizon_end:
-                        changes[path][event_date] -= amount
+                        changes[path][event_date] -= amount * weight // 10_000
             continue
 
         open_amount = _amount(row.get("open_amount_cents"))
@@ -1148,6 +1158,7 @@ def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window
     end = as_of + timedelta(days=window_days - 1)
     stale_before = as_of - timedelta(days=HISTORICAL_BACKLOG_DAYS)
     confirmed_in = expected_in = required_out = exposure_out = 0
+    expected_out = 0
     historical_backlog = 0
     historical_backlog_count = 0
     for row in canonical:
@@ -1161,10 +1172,13 @@ def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window
         # history, not an upcoming cash requirement. Counting it as "required
         # out in 14 days" overstates what has to leave the bank. It is reported
         # separately so it stays visible and can be reconciled or cleared.
+        # A predicted bill can never be history: history is actuals only. Even a
+        # badly dated prediction stays out of the backlog figures.
         if (
             row.get("event_type") != "inflow"
             and due is not None
             and due < stale_before
+            and not row.get("trend_inferred")
         ):
             historical_backlog += open_amount
             historical_backlog_count += 1
@@ -1178,6 +1192,13 @@ def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window
                 expected_in += open_amount * _probability_bps(row) // 10_000
         else:
             if due is not None and due <= end:
+                if row.get("trend_inferred"):
+                    # A predicted bill counts against forward cash, but nobody
+                    # has sent it yet. It is weighted by how likely it is and
+                    # kept out of the required total so the page can tell a
+                    # commitment apart from a forecast.
+                    expected_out += open_amount * _probability_bps(row) // 10_000
+                    continue
                 items = row.get("payment_installments") or row.get("installments") or []
                 confirmed_installments = [
                     item
@@ -1210,6 +1231,7 @@ def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window
         "confirmed_incoming_cents": confirmed_in,
         "expected_incoming_cents": expected_in,
         "required_outgoing_cents": required_out,
+        "expected_outgoing_cents": expected_out,
         "outgoing_exposure_cents": exposure_out,
     }
 
@@ -1768,6 +1790,39 @@ def _rank(candidates: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     return ordered
 
 
+def _predicted_bill_rows(*, as_of: date, horizon_days: int) -> list[dict[str, Any]]:
+    """Return predicted recurring bills for the forward view only.
+
+    Bill pattern detection is a forecast, so a failure there is never worth
+    taking the whole finance page down for: the page degrades to showing only
+    the bills that actually exist.
+    """
+    try:
+        from sales_support_agent.services.cashflow.bill_patterns import confirmed_bill_projections
+
+        projections = confirmed_bill_projections(as_of=as_of, horizon_days=horizon_days)
+    except Exception as exc:
+        logger.warning("Predicted bills unavailable: %s", exc)
+        return []
+    rows: list[dict[str, Any]] = []
+    for source_row in projections or []:
+        if not isinstance(source_row, Mapping):
+            continue
+        row = dict(source_row)
+        # Open amounts are re-derived from the face amount during
+        # canonicalization, so a projection carrying only an open amount would
+        # otherwise arrive as zero.
+        row.setdefault("amount_cents", _amount(row.get("open_amount_cents")))
+        row.setdefault("record_kind", "obligation")
+        row.setdefault("status", "planned")
+        # These two flags are what keep a prediction out of the required total
+        # and out of every action, so they are not left to the caller.
+        row["trend_inferred"] = True
+        row["read_only"] = True
+        rows.append(row)
+    return rows
+
+
 def build_finance_control_state(
     rows: Sequence[Mapping[str, Any]],
     settlement_annotations: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
@@ -1829,6 +1884,7 @@ def build_finance_control_state(
     projected_rows = annotate_open_amounts([
         *canonical,
         *income_projection["projections"],
+        *_predicted_bill_rows(as_of=effective_date, horizon_days=horizon_days),
     ])
     forecast = build_forecast_paths(
         projected_rows,
@@ -1840,6 +1896,10 @@ def build_finance_control_state(
     metrics: dict[str, Any] = _summary_metrics(projected_rows, effective_date, summary_days)
     minimum_stress = int(forecast["minimum_stress_cash_cents"])
     cash_after_required = starting_cash - metrics["required_outgoing_cents"]
+    # Predicted bills count against cash in the forward view, so the funding gap
+    # has to see them. They stay in their own figure so the page can show what
+    # is owed for certain apart from what is only expected.
+    cash_after_expected = cash_after_required - int(metrics.get("expected_outgoing_cents") or 0)
     metrics.update(
         {
             "cash_on_hand_cents": snapshot["balance_cents"],
@@ -1847,8 +1907,14 @@ def build_finance_control_state(
             "floor_cents": int(floor_cents),
             "minimum_stress_cash_cents": minimum_stress if snapshot["available"] else None,
             "cash_after_required_outgoing_cents": cash_after_required if snapshot["available"] else None,
-            "safe_to_commit_cents": max(0, cash_after_required - floor_cents) if snapshot["available"] else None,
-            "funding_gap_cents": max(0, floor_cents - cash_after_required) if snapshot["available"] else None,
+            "cash_after_expected_outgoing_cents": cash_after_expected if snapshot["available"] else None,
+            # Both of these have to answer from the same cash, or the page can
+            # say "safe to commit" and "you are short" at the same moment, and
+            # the assistant gets handed both numbers in one packet.
+            "safe_to_commit_cents": max(0, cash_after_expected - floor_cents) if snapshot["available"] else None,
+            "safe_to_commit_required_only_cents": max(0, cash_after_required - floor_cents) if snapshot["available"] else None,
+            "funding_gap_cents": max(0, floor_cents - cash_after_expected) if snapshot["available"] else None,
+            "funding_gap_required_only_cents": max(0, floor_cents - cash_after_required) if snapshot["available"] else None,
         }
     )
     queue = build_queue(
@@ -2001,6 +2067,7 @@ def build_finance_control(
         "incoming_confirmed_cents": metrics["confirmed_incoming_cents"],
         "incoming_expected_cents": metrics["expected_incoming_cents"],
         "required_out_cents": metrics["required_outgoing_cents"],
+        "expected_out_cents": metrics.get("expected_outgoing_cents", 0),
         "historical_backlog_cents": metrics.get("historical_backlog_cents", 0),
         "historical_backlog_count": metrics.get("historical_backlog_count", 0),
         "exposure_out_cents": metrics["outgoing_exposure_cents"],

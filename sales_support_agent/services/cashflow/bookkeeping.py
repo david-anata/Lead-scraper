@@ -1,5 +1,9 @@
 """Automated bookkeeping: file bank transactions without hand-sorting them all.
 
+Only money going out is filed here. Money arriving is not an expense, so asking
+which expense category a deposit belongs to is a question with no answer; the
+incoming side is handled where income and who-owes-you live.
+
 Filing order for each unfiled transaction:
 
 1. a rule the operator taught ("always do this") wins;
@@ -26,9 +30,21 @@ from sales_support_agent.services.cashflow.transfers import is_internal_transfer
 UNFILED_CATEGORIES = {"", "uncategorized", "other"}
 QBO_WRITEBACK_STATUS = "not_connected"
 
+# Shown when something tries to file a deposit. Plain enough for the redirect
+# banner the page puts it in.
+MONEY_IN_NOT_FILED_HERE = (
+    "money coming in is not filed here, it belongs with the rest of your income"
+)
+
 
 def _normalise(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _is_money_in(row: dict[str, Any]) -> bool:
+    """True when this row is money arriving rather than money going out."""
+    # Rows with nothing recorded are spend: that is the column's own default.
+    return str(row.get("event_type") or "").strip().lower() == "inflow"
 
 
 # Bank wording that wraps the real merchant name. Stripping it first stops
@@ -86,24 +102,35 @@ def _rules() -> list[dict[str, Any]]:
     return [dict(row._mapping) for row in rows]
 
 
-def _unfiled_transactions(limit: int = 500) -> list[dict[str, Any]]:
+def _unfiled_transactions(limit: int = 500, *, money_in: bool = False) -> list[dict[str, Any]]:
+    """The rows the filing queue can offer, money going out only.
+
+    Deposits are filtered in the query, not afterwards, so the row limit is
+    spent on transactions the operator can actually decide about. Pass
+    money_in=True only to recognise a deposit a stale page is trying to file.
+    """
     placeholders = ",".join(f"'{value}'" for value in sorted(UNFILED_CATEGORIES))
+    direction = "=" if money_in else "<>"
     with get_engine().connect() as connection:
         rows = connection.execute(text(f"""
             SELECT id, name, description, vendor_or_customer, category, amount_cents,
-                   COALESCE(effective_date, due_date) AS posted_on
+                   event_type, COALESCE(effective_date, due_date) AS posted_on
             FROM cash_events
             WHERE record_kind='transaction'
               AND LOWER(COALESCE(category,'')) IN ({placeholders})
               AND COALESCE(amount_cents,0) > 0
+              AND LOWER(COALESCE(event_type,'outflow')) {direction} 'inflow'
             ORDER BY COALESCE(effective_date, due_date) DESC
             LIMIT :limit
         """), {"limit": limit}).fetchall()  # noqa: S608 - fixed internal allowlist
     # Moving money between the operator's own accounts is not an expense, so it
-    # must never sit in a queue asking what category it belongs to.
+    # must never sit in a queue asking what category it belongs to. The
+    # direction check is repeated here so the one Python answer stays the same
+    # whatever the column happens to hold.
     return [
         dict(row._mapping) for row in rows
         if not is_internal_transfer(dict(row._mapping))
+        and _is_money_in(dict(row._mapping)) == money_in
     ]
 
 
@@ -245,6 +272,15 @@ def file_merchant(
         if merchant_key(str(row.get("description") or row.get("name") or "")) == key
     ]
     if not matches:
+        # A page opened before deposits left the queue can still post one of
+        # them. Say why instead of quietly filing nothing and teaching a rule
+        # that would file every future deposit as spend.
+        incoming = [
+            row for row in _unfiled_transactions(limit=limit, money_in=True)
+            if merchant_key(str(row.get("description") or row.get("name") or "")) == key
+        ]
+        if incoming:
+            raise ValueError(MONEY_IN_NOT_FILED_HERE)
         return {"filed": 0, "rule_id": ""}
 
     now = datetime.now(timezone.utc)
@@ -289,10 +325,13 @@ def file_transaction(
     rule_created = ""
     with get_engine().begin() as connection:
         row = connection.execute(text(
-            "SELECT name, description, vendor_or_customer FROM cash_events WHERE id=:id"
+            "SELECT name, description, vendor_or_customer, event_type"
+            " FROM cash_events WHERE id=:id"
         ), {"id": event_id}).fetchone()
         if row is None:
             raise ValueError("transaction not found")
+        if _is_money_in(dict(row._mapping)):
+            raise ValueError(MONEY_IN_NOT_FILED_HERE)
         connection.execute(text(
             "UPDATE cash_events SET category=:category, updated_at=:now WHERE id=:id"
         ), {"category": category, "now": now, "id": event_id})
@@ -340,16 +379,18 @@ def bookkeeping_summary() -> dict[str, Any]:
     matters: the first needs nothing, while the second is spend the operator's
     real books still do not have, because nothing is written back.
     """
-    # Every number is counted in one pass using the same transfer check the
-    # queue uses, so the nav badge, the queue and these totals cannot drift
-    # apart. Moving your own money is not bookkeeping, so transfers are outside
-    # all of it, including the denominator. A QuickBooks account of
-    # "Uncategorized Expense" is the books saying they do not know either, so
-    # those rows count as needing a decision rather than as booked. That makes
-    # the three states add up to the total, which is the point of showing them.
+    # Every number is counted in one pass using the same checks the queue uses,
+    # so the nav badge, the queue and these totals cannot drift apart. Money
+    # arriving and moving your own money are both outside all of it, including
+    # the denominator, because neither is spend waiting for an expense
+    # category. A QuickBooks account of "Uncategorized Expense" is the books
+    # saying they do not know either, so those rows count as needing a decision
+    # rather than as booked. That makes the three states add up to the total,
+    # which is the point of showing them.
     with get_engine().connect() as connection:
         rows = connection.execute(text("""
-            SELECT name, description, vendor_or_customer, category, source, subcategory
+            SELECT name, description, vendor_or_customer, category, source, subcategory,
+                   event_type
             FROM cash_events
             WHERE record_kind='transaction' AND COALESCE(amount_cents,0) > 0
         """)).fetchall()
@@ -360,7 +401,7 @@ def bookkeeping_summary() -> dict[str, Any]:
     total = needs = booked_in_quickbooks = 0
     for raw in rows:
         row = dict(raw._mapping)
-        if is_internal_transfer(row):
+        if is_internal_transfer(row) or _is_money_in(row):
             continue
         total += 1
         if str(row.get("category") or "").lower() in UNFILED_CATEGORIES:
