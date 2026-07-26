@@ -33,6 +33,11 @@ def base_filters(settings: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """
     lo = _int(settings, "icp.revenue_min_usd") * 100 // 12
     hi = _int(settings, "icp.revenue_max_usd") * 100 // 12
+    # Revenue alone is a weak size gate: StoreLeads call their sales figures
+    # "directionally useful, not perfectly accurate", so an understated estimate
+    # lets a much bigger company through. Headcount is the harder cross-check.
+    emp_lo = _int(settings, "icp.employees_min")
+    emp_hi = _int(settings, "icp.employees_max")
     return {
         "f:p": "shopify",
         "f:cc": "US,GB,CA,AU",
@@ -41,6 +46,8 @@ def base_filters(settings: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         "f:it": "email",                        # must have a contact route
         "f:ermin": lo,
         "f:ermax": hi,
+        "f:empcmin": emp_lo,
+        "f:empcmax": emp_hi,
         "f:tags": "Dropshipper,Print on Demand",
         "f:tags:op": "not",                     # brief 2: these are never a fit
     }
@@ -73,6 +80,8 @@ def _iso(dt: datetime) -> str:
 DEFAULT_SETTINGS: dict[str, Any] = {
     "icp.revenue_min_usd": 1_000_000,     # smallest brand worth our time
     "icp.revenue_max_usd": 20_000_000,    # largest before they have an agency
+    "icp.employees_min": 2,               # a real business, not a side project
+    "icp.employees_max": 80,              # the stated ICP, now actually enforced
     "new_growth_app.window_days": 14,     # how recent an install still counts
     "churned_tool.tools_per_day": 1,      # how many tools we check for churn daily
     "new_growth_app.max_per_run": 40,
@@ -99,6 +108,8 @@ _REASON_TEMPLATES: dict[str, str] = {
 TUNABLE_LABELS: dict[str, str] = {
     "icp.revenue_min_usd": "Smallest brand we want (dollars a year)",
     "icp.revenue_max_usd": "Largest brand we want (dollars a year)",
+    "icp.employees_min": "Fewest employees",
+    "icp.employees_max": "Most employees (a harder size check than revenue)",
     "new_growth_app.window_days": "Just installed: how many days back still counts",
     "churned_tool.tools_per_day": "Just dropped: how many tools to check each day",
     "churned_tool.window_days": "Just dropped: how many days back still counts",

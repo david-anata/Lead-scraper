@@ -106,6 +106,21 @@ def store_matches_icp(store: dict[str, Any], settings: Optional[dict[str, Any]] 
         if yearly < lo or yearly > hi:
             return False
 
+    # Headcount cross-check. StoreLeads call their sales figures directional
+    # only, so a low revenue estimate must not be the sole thing keeping a
+    # 500-person company out of the list.
+    emp_lo, emp_hi = 2, 80
+    if settings:
+        try:
+            emp_lo = int(settings.get("icp.employees_min") or emp_lo)
+            emp_hi = int(settings.get("icp.employees_max") or emp_hi)
+        except (TypeError, ValueError):
+            pass
+    employees = store.get("employee_count")
+    if isinstance(employees, (int, float)) and employees > 0:
+        if employees < emp_lo or employees > emp_hi:
+            return False
+
     searchable = " ".join(
         str(part) for part in (
             domain,
@@ -387,7 +402,7 @@ def fetch_storeleads_page(
             "estimated_sales_yearly", "categories", "tags", "contact_info", "apps",
             # Richer fields the signal scorer reads (docs/outbound/08).
             "technologies", "monthly_app_spend", "last_plan_change_at",
-            "plan", "created_at", "features",
+            "plan", "created_at", "features", "employee_count",
         )),
     }
     if extra_params:

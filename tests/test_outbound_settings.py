@@ -180,5 +180,48 @@ class IcpBandTunableTests(unittest.TestCase):
         self.assertIn("icp.revenue_max_usd", rc.TUNABLE_LABELS)
 
 
+class HeadcountGateTests(unittest.TestCase):
+    """Revenue alone is a weak size gate: StoreLeads call their sales figures
+    'directionally useful, not perfectly accurate', so an understated estimate
+    would let a much larger company through. Headcount is the cross-check."""
+
+    def _store(self, yearly_cents, employees):
+        return {"name": "a.com", "merchant_name": "B", "platform": "shopify",
+                "country_code": "US", "estimated_sales_yearly": yearly_cents,
+                "employee_count": employees, "categories": "Beauty & Skincare",
+                "tags": "", "contact_info": [{"type": "email", "value": "a@b.com"}]}
+
+    def test_headcount_catches_what_revenue_misses(self):
+        import outbound_pipeline as op
+        # revenue looks perfectly in-band, but it is a 600-person company
+        self.assertFalse(op.store_matches_icp(self._store(800_000_000, 600)))
+
+    def test_in_band_on_both_is_kept(self):
+        import outbound_pipeline as op
+        self.assertTrue(op.store_matches_icp(self._store(800_000_000, 40)))
+
+    def test_one_person_shop_is_dropped(self):
+        import outbound_pipeline as op
+        self.assertFalse(op.store_matches_icp(self._store(800_000_000, 1)))
+
+    def test_unknown_headcount_does_not_drop_a_good_brand(self):
+        import outbound_pipeline as op
+        s = self._store(800_000_000, 40)
+        del s["employee_count"]
+        self.assertTrue(op.store_matches_icp(s))
+
+    def test_band_reaches_the_storeleads_query(self):
+        p = rc.recipe("icp_baseline").params(WED)
+        self.assertEqual(p["f:empcmin"], 2)
+        self.assertEqual(p["f:empcmax"], 80)
+
+    def test_headcount_is_tunable_in_the_app(self):
+        import outbound_pipeline as op
+        self.assertIn("icp.employees_max", rc.TUNABLE_LABELS)
+        tight = {"icp.employees_min": 5, "icp.employees_max": 30}
+        self.assertFalse(op.store_matches_icp(self._store(800_000_000, 50), tight))
+        self.assertTrue(op.store_matches_icp(self._store(800_000_000, 20), tight))
+
+
 if __name__ == "__main__":
     unittest.main()
