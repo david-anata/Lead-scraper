@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import dataclasses
+import json
 import logging
 import os
 import re
@@ -42,6 +43,9 @@ _BSR_ESTIMATE_CAP = 50_000
 # so discovering 12 keeps full display coverage while cutting generation time
 # roughly in half versus 20 (one fetch wave instead of three).
 _DEFAULT_COMPETITOR_LIMIT = 12
+_MIN_MARKET_LISTINGS = 3
+_MIN_MARKET_BRANDS = 2
+_DISCOVERY_REQUEST_CEILING = 36
 
 
 def _normalize_brand_identity(value: str) -> str:
@@ -55,6 +59,7 @@ def _clean_comparison_products(
     target_asin: str,
     target_brand: str,
     limit: int,
+    target_brand_aliases: tuple[str, ...] = (),
 ) -> list[XrayProduct]:
     """Return unique, non-subject products from brands other than the subject.
 
@@ -70,19 +75,126 @@ def _clean_comparison_products(
             "a competitor comparison cannot be built without an explicit brand identity."
         )
 
+    subject_brands = {
+        normalized
+        for normalized in (
+            _normalize_brand_identity(value)
+            for value in (target_brand, *target_brand_aliases)
+        )
+        if normalized
+    }
     cleaned: list[XrayProduct] = []
     seen_asins: set[str] = set()
     for product in products:
         product_asin = _normalize_asin(product.asin) or _normalize_asin(product.url)
         if not product_asin or product_asin == normalized_target_asin or product_asin in seen_asins:
             continue
-        if _normalize_brand_identity(product.brand) == normalized_target_brand:
+        normalized_product_brand = _normalize_brand_identity(product.brand)
+        if not normalized_product_brand or normalized_product_brand in subject_brands:
             continue
         seen_asins.add(product_asin)
         cleaned.append(product)
         if len(cleaned) >= max(0, limit):
             break
     return cleaned
+
+
+def _comparison_audit(
+    candidate_asins: list[str],
+    products: list[XrayProduct],
+    *,
+    target_asin: str,
+    target_brand: str,
+    target_brand_aliases: tuple[str, ...] = (),
+) -> tuple[dict[str, str], ...]:
+    """Classify every discovered candidate using public product evidence only."""
+    normalized_target_asin = _normalize_asin(target_asin)
+    subject_brands = {
+        normalized
+        for normalized in (
+            _normalize_brand_identity(value)
+            for value in (target_brand, *target_brand_aliases)
+        )
+        if normalized
+    }
+    products_by_asin = {
+        _normalize_asin(product.asin) or _normalize_asin(product.url): product
+        for product in products
+    }
+    seen: set[str] = set()
+    decisions: list[dict[str, str]] = []
+    for candidate in candidate_asins:
+        asin = _normalize_asin(candidate)
+        product = products_by_asin.get(asin)
+        brand = str(product.brand if product else "").strip()
+        if not product:
+            reason = "fetch_failed"
+        elif asin == normalized_target_asin:
+            reason = "excluded_subject_product"
+        elif asin in seen:
+            reason = "excluded_duplicate_asin"
+        elif not _normalize_brand_identity(brand):
+            reason = "excluded_unresolved_brand"
+        elif _normalize_brand_identity(brand) in subject_brands:
+            reason = "excluded_subject_brand"
+        else:
+            reason = "included_competitor"
+        if asin:
+            seen.add(asin)
+        decisions.append(
+            {
+                "asin": asin,
+                "reported_brand": brand,
+                "decision": reason,
+                "evidence_source": "rainforest_product",
+            }
+        )
+    return tuple(decisions)
+
+
+def _market_evidence_status(products: list[XrayProduct]) -> tuple[bool, str]:
+    """Return whether public comparison evidence supports market-level claims."""
+    distinct_brands = {
+        _normalize_brand_identity(product.brand)
+        for product in products
+        if _normalize_brand_identity(product.brand)
+    }
+    if len(products) < _MIN_MARKET_LISTINGS:
+        return (
+            False,
+            f"insufficient_comparison_evidence: {len(products)} eligible listings; "
+            f"{_MIN_MARKET_LISTINGS} required",
+        )
+    if len(distinct_brands) < _MIN_MARKET_BRANDS:
+        return (
+            False,
+            f"insufficient_comparison_evidence: {len(distinct_brands)} competitor brands; "
+            f"{_MIN_MARKET_BRANDS} required",
+        )
+    return True, ""
+
+
+def _load_brand_aliases(value: str) -> dict[str, tuple[str, ...]]:
+    """Parse operator-approved canonical-brand aliases from JSON."""
+    if not (value or "").strip():
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("RAINFOREST_BRAND_ALIASES_JSON must be valid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("RAINFOREST_BRAND_ALIASES_JSON must be a JSON object.")
+    aliases: dict[str, tuple[str, ...]] = {}
+    for canonical, values in payload.items():
+        normalized = _normalize_brand_identity(str(canonical))
+        if not normalized or not isinstance(values, list):
+            raise RuntimeError(
+                "RAINFOREST_BRAND_ALIASES_JSON values must be arrays keyed by canonical brand."
+            )
+        aliases[normalized] = tuple(
+            alias for alias in (str(item).strip() for item in values) if alias
+        )
+    return aliases
 
 
 def _bsr_to_units(bsr: float | None) -> int:
@@ -139,10 +251,21 @@ def _normalize_asin(value: str) -> str:
 class RainforestClient:
     """Thin wrapper around the Rainforest API for product + bestseller data."""
 
-    def __init__(self, api_key: str | None = None, *, base_url: str = _RAINFOREST_BASE):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        *,
+        base_url: str = _RAINFOREST_BASE,
+        brand_aliases_json: str | None = None,
+    ):
         self.api_key = (api_key or os.getenv("RAINFOREST_API_KEY", "")).strip()
         self._base_url = base_url
         self._session = requests.Session()
+        self._brand_aliases = _load_brand_aliases(
+            brand_aliases_json
+            if brand_aliases_json is not None
+            else os.getenv("RAINFOREST_BRAND_ALIASES_JSON", "")
+        )
 
     def _get(self, params: dict[str, Any]) -> dict[str, Any]:
         params = {
@@ -349,16 +472,21 @@ class RainforestClient:
             )
 
         # 2. Discover competitor ASINs
-        # Fetch beyond the final report limit so subject-brand catalog entries
-        # do not crowd real competitors out before the comparison set is cleaned.
-        discovery_limit = max(competitor_limit, competitor_limit * 2)
+        # Fetch to a documented ceiling so excluded catalog entries do not
+        # crowd real competitors out before final truncation.
+        discovery_limit = min(
+            _DISCOVERY_REQUEST_CEILING,
+            max(competitor_limit, competitor_limit * 3),
+        )
         competitor_asins = self._competitor_asins_from_bestsellers(
             target_product, target_asin, limit=discovery_limit
         )
-        if not competitor_asins:
-            competitor_asins = self._competitor_asins_from_search(
-                target_product, target_asin, limit=discovery_limit
-            )
+        search_asins = self._competitor_asins_from_search(
+            target_product, target_asin, limit=discovery_limit
+        )
+        competitor_asins = list(
+            dict.fromkeys([*competitor_asins, *search_asins])
+        )[:discovery_limit]
 
         if not competitor_asins:
             logger.warning("No competitor ASINs found for %s; report will be empty.", target_asin)
@@ -389,11 +517,15 @@ class RainforestClient:
 
         # Sort by BSR ascending (better rank = higher on list)
         discovered_products.sort(key=lambda p: (p.bsr or 999_999, p.display_order))
+        target_brand_aliases = self._brand_aliases.get(
+            _normalize_brand_identity(target_brand), ()
+        )
         products = _clean_comparison_products(
             discovered_products,
             target_asin=target_asin,
             target_brand=target_brand,
             limit=competitor_limit,
+            target_brand_aliases=target_brand_aliases,
         )
         products = [
             dataclasses.replace(p, display_order=i + 1)
@@ -408,6 +540,29 @@ class RainforestClient:
         ratings = [p.rating for p in products if p.rating]
 
         distinct_brands = len({(p.brand or "").lower() for p in products if p.brand})
+        evidence_sufficient, evidence_reason = _market_evidence_status(products)
+        comparison_audit = _comparison_audit(
+            competitor_asins,
+            discovered_products,
+            target_asin=target_asin,
+            target_brand=target_brand,
+            target_brand_aliases=target_brand_aliases,
+        )
+        subject_brand_identity = (
+            {
+                "brand": target_brand,
+                "identity_type": "canonical",
+                "evidence_source": "rainforest_product",
+            },
+            *(
+                {
+                    "brand": alias,
+                    "identity_type": "approved_alias",
+                    "evidence_source": "RAINFOREST_BRAND_ALIASES_JSON",
+                }
+                for alias in target_brand_aliases
+            ),
+        )
 
         # Real fulfillment distribution from the parsed FBA/FBM labels.
         # Seller "country of origin" is NOT reliably available from Rainforest,
@@ -436,10 +591,9 @@ class RainforestClient:
             if str((raw.get("product") or {}).get("asin") or "").strip() in included_asins
             if _parse_recent_sales((raw.get("product") or {}).get("recent_sales")) is not None
         )
-        if not products:
+        if not evidence_sufficient:
             _sales_warning = (
-                "No eligible competitor listings remained after excluding the "
-                "subject product and subject brand catalog; market comparison claims are unavailable."
+                f"{evidence_reason}; market comparison claims are unavailable."
             )
         elif real_units_count and real_units_count == len(products):
             _sales_warning = (
@@ -466,13 +620,23 @@ class RainforestClient:
             average_price=sum(prices) / len(prices) if prices else None,
             average_rating=sum(ratings) / len(ratings) if ratings else None,
             search_results_count=len(products),
-            revenue_over_5000_count=sum(1 for p in products if (p.revenue or 0) > 5_000),
-            under_75_reviews_count=sum(1 for p in products if (p.review_count or 0) < 75),
+            revenue_over_5000_count=sum(
+                1 for p in products if p.revenue is not None and p.revenue > 5_000
+            ),
+            under_75_reviews_count=sum(
+                1
+                for p in products
+                if p.review_count is not None and p.review_count < 75
+            ),
             seller_country_distribution=seller_dist,
             size_tier_distribution=[],
             fulfillment_distribution=fulfillment_dist,
             warnings=[_sales_warning],
             distinct_brand_count=distinct_brands,
+            market_evidence_sufficient=evidence_sufficient,
+            market_evidence_reason=evidence_reason,
+            comparison_audit=comparison_audit,
+            subject_brand_identity=subject_brand_identity,
         )
 
         return xray_report, target_data

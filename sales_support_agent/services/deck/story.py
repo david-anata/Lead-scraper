@@ -83,17 +83,26 @@ def _section_market(payload: dict[str, Any]) -> str:
 
     if products:
         total_rev = getattr(xray, "total_revenue", 0.0) or 0.0
-        parts.append("**Top 5 listings on the visible market set:**")
+        evidence_sufficient = bool(
+            getattr(xray, "market_evidence_sufficient", True)
+        )
+        parts.append(
+            "**Top 5 listings on the visible market set:**"
+            if evidence_sufficient
+            else "**Public listings observed (market ranking withheld):**"
+        )
         parts.append("")
         for product in products:
             share = (
                 (product.revenue or 0.0) / total_rev * 100.0
-                if total_rev > 0 else 0.0
+                if evidence_sufficient and total_rev > 0
+                else None
             )
+            share_text = f" ({share:.1f}% share)" if share is not None else ""
             parts.append(
                 f"- **{product.brand or 'Unbranded'}** — _{product.title[:60]}_  \n"
                 f"  ASIN `{product.asin}` · {product.price_label} · "
-                f"{product.revenue_label} ({share:.1f}% share) · "
+                f"{product.revenue_label}{share_text} · "
                 f"BSR {product.bsr_label}"
             )
         parts.append("")

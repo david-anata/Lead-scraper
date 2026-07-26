@@ -96,6 +96,17 @@ Amazon-first deck intake:
 
 Optional deck generator tuning:
 
+- `RAINFOREST_API_KEY`
+- `RAINFOREST_BRAND_ALIASES_JSON`
+  - operator-approved canonical-brand aliases used only to exclude the
+    subject catalog from Digital Shelf comparison sets
+  - JSON object format:
+    `{"Canonical Brand": ["Approved Alias", "Parent Brand"]}`
+  - aliases are never inferred from titles, sellers, URLs, or AI
+  - Digital Shelf market claims require at least three eligible listings
+    across at least two competitor brands; thinner sets retain sourced
+    observations but suppress market totals, shares, rankings, and opportunity
+    claims
 - `AMAZON_PROFIT_API_BASE_URL`
 - `DECK_COMPETITOR_REQUIRED_COLUMNS`
 - `DECK_COMPETITOR_ALLOWED_COLUMNS`
