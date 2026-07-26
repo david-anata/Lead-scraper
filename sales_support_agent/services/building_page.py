@@ -846,6 +846,7 @@ def render_building_page(
   {favicons}
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/admin.css?v=2">
   <style>
     :root{{--ink:#2B3644;--paper:#F9F7F3;--white:#fff;--sky:#85BBDA;--teal:#18776f;--amber:#9b650e;--border:rgba(43,54,68,.14);}}
     {nav_styles}
@@ -886,9 +887,9 @@ def render_building_page(
     @media(max-width:600px){{.page-head{{align-items:start;flex-direction:column}}.metrics{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--border)!important}}.metric:last-child{{border-bottom:0!important}}.shell{{padding-inline:16px}}.form-grid{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
   </style>
 </head>
-<body>
+<body class="app app--operator">
   {nav}
-  <main class="shell">
+  <main id="agent-main-content" class="shell app-container app-page">
     {flash}
     <header class="page-head">
       <div>

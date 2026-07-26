@@ -172,7 +172,11 @@ def _finance_css_version() -> str:
         return "1"
 
 def _page_shell(title: str, active_section: str, body: str, *, flash: str = "") -> str:
-    from sales_support_agent.services.admin_nav import render_agent_nav, render_agent_nav_styles
+    from sales_support_agent.services.admin_nav import (
+        render_agent_favicon_links,
+        render_agent_nav,
+        render_agent_nav_styles,
+    )
 
     flash_html = ""
     if flash.startswith("ok:"):
@@ -236,22 +240,24 @@ function editName(wrapId, currentVal, fieldName) {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>agent | {_html.escape(title)}</title>
+    {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
     <style>
       {render_agent_nav_styles()}
     </style>
+    <link rel="stylesheet" href="/static/admin.css?v=2">
     <link rel="stylesheet" href="/static/finance.css?v={_html.escape(finance_css_version, quote=True)}">
     {inline_edit_js}
   </head>
-  <body>
+  <body class="app app--operator app--finance">
     {render_agent_nav(active="finance", user=_finance_nav_user.get())}
     {subnav_shell}
-    <div class="shell">
+    <main id="agent-main-content" class="shell app-container app-page">
       {flash_html}
       {body}
-    </div>
+    </main>
   </body>
 </html>"""
 

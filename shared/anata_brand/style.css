@@ -1,18 +1,36 @@
 :root {
+  --anata-background: #f9f7f3;
+  --anata-surface: #ffffff;
+  --anata-surface-soft: #f2ece3;
   --anata-ink: #2b3644;
+  --anata-ink-muted: #5d6977;
   --anata-ink-soft: #5d6977;
+  --anata-accent: #85bbda;
+  --anata-accent-strong: #5e9fc4;
+  --anata-accent-soft: #e7f3f9;
   --anata-sky: #85bbda;
   --anata-sky-deep: #5e9fc4;
+  --anata-support: #bfa889;
   --anata-sand: #bfa889;
   --anata-sand-soft: #f9f7f3;
   --anata-paper: #ffffff;
   --anata-line: rgba(43, 54, 68, 0.12);
   --anata-shadow: rgba(43, 54, 68, 0.10);
   --anata-muted: #5d6977;
+  --anata-success: #477a59;
+  --anata-warning: #986817;
+  --anata-danger: #8b4c42;
+  --anata-focus: #2b3644;
 }
 
 * {
   box-sizing: border-box;
+}
+
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--anata-focus);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 3px rgba(133, 187, 218, 0.45);
 }
 
 body {
@@ -65,6 +83,15 @@ body {
   padding: 12px 18px;
   font-weight: 700;
   cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 .slide {

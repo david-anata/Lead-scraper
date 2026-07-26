@@ -116,10 +116,11 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
   {render_agent_favicon_links()}
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/admin.css?v=2">
   <style>{styles}{_HR_STYLES}</style>
-</head><body>
+</head><body class="app app--operator">
   {nav}
-  <main class="hr-main">{body}</main>
+  <main id="agent-main-content" class="hr-main app-container app-page">{body}</main>
   <nav class="hr-mobile-nav" aria-label="Employee HR shortcuts">{mobile_nav}</nav>
   <script>
     var csrfMeta = document.querySelector('meta[name="hr-csrf-token"]');
