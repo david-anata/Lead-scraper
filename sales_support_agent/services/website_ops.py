@@ -1695,6 +1695,7 @@ def _page_shell(title: str, body: str) -> str:
       input[type="text"], textarea, select {{ width: 100%; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--line); background: #fff; color: var(--ink); }}
       textarea {{ min-height: 120px; resize: vertical; }}
       button {{ appearance: none; border: 0; border-radius: 999px; padding: 11px 16px; background: var(--ink); color: #fff; font-weight: 800; cursor: pointer; }}
+      button:disabled {{ cursor: not-allowed; opacity: .48; }}
       button.ghost {{ background: #fff; color: var(--ink); border: 1px solid var(--line); }}
       button.tiny {{ padding: 8px 12px; font-size: 12px; }}
       button.active {{ background: var(--accent); color: var(--ink); }}
@@ -1749,8 +1750,19 @@ def _page_shell(title: str, body: str) -> str:
       .flash {{ padding: 14px 16px; border-radius: 16px; background: rgba(133,187,218,.18); border: 1px solid rgba(133,187,218,.35); }}
       code {{ background: #f3efe6; padding: 2px 6px; border-radius: 6px; }}
       .compact-list {{ margin: 0; padding-left: 18px; color: var(--muted); display: grid; gap: 4px; }}
+      .ops-state {{ display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 24px; align-items: center; padding: 24px; border: 1px solid var(--line); border-radius: 24px; }}
+      .ops-state--blocked {{ background: #fffaf0; border-color: rgba(161,98,7,.28); }}
+      .ops-state--ready {{ background: #f4fbf8; border-color: rgba(15,118,110,.20); }}
+      .ops-state__action {{ justify-items: end; }}
+      .section-heading {{ display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }}
+      .loop-grid {{ display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; }}
+      .loop-step {{ padding:16px; border:1px solid var(--line); border-radius:18px; background:#fcfbf8; }}
+      .loop-step > span {{ display:inline-grid; place-items:center; width:28px; height:28px; border-radius:999px; background:rgba(133,187,218,.18); font-weight:800; }}
+      .loop-step h3 {{ margin-top:12px; }}
+      .loop-step p {{ margin-top:6px; color:var(--muted); font-size:13px; line-height:1.45; }}
       @media (max-width: 900px) {{
-        .hero, .grid-2, .detail-layout, .stats, .form-grid, .setup-grid, .diff-grid, .mini-grid {{ grid-template-columns: 1fr; }}
+        .hero, .grid-2, .detail-layout, .stats, .form-grid, .setup-grid, .diff-grid, .mini-grid, .ops-state, .loop-grid {{ grid-template-columns: 1fr; }}
+        .ops-state__action {{ justify-items:start; }}
         .shell {{ width: auto; padding: 24px 12px 48px; }}
         .help-copy {{ right: auto; left: 0; width: min(300px, 70vw); }}
       }}
@@ -1839,7 +1851,66 @@ def _report_cards(entries: list[dict[str, Any]]) -> str:
     return "".join(cards)
 
 
-def _feedback_empty_state(status_filter: str = "") -> str:
+def _decision_data_ready(analytics_status: Mapping[str, Any]) -> bool:
+    return bool(analytics_status.get("search_console") and analytics_status.get("ga4"))
+
+
+def _operator_blocker_panel(analytics_status: Mapping[str, Any]) -> str:
+    if _decision_data_ready(analytics_status):
+        return """
+        <section class="ops-state ops-state--ready" aria-labelledby="ops-state-title">
+          <div>
+            <p class="eyebrow">Operating state</p>
+            <h2 id="ops-state-title">Continuous optimization is ready.</h2>
+            <p>Agent can measure demand and conversions, validate eligible updates, publish them, verify production, and retain the audit trail.</p>
+          </div>
+          <span class="status-pill status-ok">Ready</span>
+        </section>
+        """
+    notes = [
+        str(item).strip()
+        for item in analytics_status.get("notes", [])
+        if str(item).strip()
+    ]
+    reason = notes[0] if notes else "Search Console or GA4 decision data is unavailable."
+    return f"""
+    <section class="ops-state ops-state--blocked" aria-labelledby="ops-state-title">
+      <div class="stack">
+        <p class="eyebrow">Operating state</p>
+        <h2 id="ops-state-title">Ranking optimization is paused safely.</h2>
+        <p>{html.escape(reason)}</p>
+        <p class="muted">Technical monitoring continues. Agent will resume ranking-led recommendations automatically after both Google connections pass validation.</p>
+      </div>
+      <div class="stack ops-state__action">
+        <span class="status-pill status-bad">Blocked</span>
+        <a class="btn" href="/admin/website-ops#data-sources">Repair Google connections</a>
+      </div>
+    </section>
+    """
+
+
+def _continuous_loop_panel() -> str:
+    steps = (
+        ("1", "Observe", "Crawl production and collect search and conversion evidence."),
+        ("2", "Decide", "Prioritize one-page-one-intent opportunities with explicit evidence."),
+        ("3", "Improve", "Apply only eligible marketing-site corrections."),
+        ("4", "Verify", "Check deployment, rendered production, indexability, and rollback state."),
+        ("5", "Learn", "Track outcomes and improve the next decision cycle."),
+    )
+    return (
+        '<section class="card stack"><div class="section-heading">'
+        '<div><p class="eyebrow">Self-sustaining system</p><h2>Continuous optimization loop</h2></div>'
+        '<span class="status-pill status-neutral">Runs automatically</span></div>'
+        '<div class="loop-grid">'
+        + "".join(
+            f"<article class='loop-step'><span>{number}</span><h3>{title}</h3><p>{copy}</p></article>"
+            for number, title, copy in steps
+        )
+        + "</div></section>"
+    )
+
+
+def _feedback_empty_state(status_filter: str = "", *, decision_data_ready: bool = True) -> str:
     if status_filter == "approved":
         title = "No approved actions ready."
         copy = "Approve an exact action from Needs review first, then execute the approved batch from this queue."
@@ -1854,16 +1925,28 @@ def _feedback_empty_state(status_filter: str = "") -> str:
         copy = "Rejected recommendations will appear here for audit history."
     else:
         title = "No Website Ops records need review."
-        copy = "Generate current recommendations with a daily sweep, or submit the exact website issue you want reviewed."
+        copy = (
+            "Ranking recommendations are paused until Search Console and GA4 are connected."
+            if not decision_data_ready
+            else "No new evidence-backed actions were generated in the latest completed run."
+        )
+    run_control = (
+        '<button type="button" disabled aria-disabled="true">Daily sweep unavailable</button>'
+        if not decision_data_ready
+        else """
+        <form class="inline" action="/admin/api/website-ops/run" method="post">
+          <input type="hidden" name="mode" value="daily">
+          <button type="submit">Run Daily Sweep</button>
+        </form>
+        """
+    )
     return f"""
     <div class="list-card empty-state">
       <h3>{html.escape(title)}</h3>
       <p class="muted">{html.escape(copy)}</p>
       <div class="button-row">
-        <form class="inline" action="/admin/api/website-ops/run" method="post">
-          <input type="hidden" name="mode" value="daily">
-          <button type="submit">Run Daily Sweep</button>
-        </form>
+        {run_control}
+        {('<a class="text-link" href="/admin/website-ops#data-sources">Repair Google connections</a>' if not decision_data_ready else '')}
         <a class="text-link" href="/admin/website-ops#submit-issue">Submit issue</a>
         <a class="text-link" href="/admin/website-ops/reports/latest">Open latest report</a>
       </div>
@@ -1871,9 +1954,18 @@ def _feedback_empty_state(status_filter: str = "") -> str:
     """
 
 
-def _feedback_cards(entries: list[dict[str, Any]], *, with_actions: bool = False, empty_context: str = "") -> str:
+def _feedback_cards(
+    entries: list[dict[str, Any]],
+    *,
+    with_actions: bool = False,
+    empty_context: str = "",
+    decision_data_ready: bool = True,
+) -> str:
     if not entries:
-        return _feedback_empty_state(empty_context)
+        return _feedback_empty_state(
+            empty_context,
+            decision_data_ready=decision_data_ready,
+        )
     cards = []
     for entry in entries:
         actions = ""
@@ -1930,6 +2022,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     )
     analytics_status.setdefault("customer_language_status", "quarantined")
     latest_payload["analytics_status"] = analytics_status
+    decision_ready = _decision_data_ready(analytics_status)
     page_insights = [
         dict(item)
         for item in list(latest_payload.get("page_insights") or [])[:5]
@@ -1961,19 +2054,19 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
       {_nav("website_ops", website_ops_section="seo_dashboard", user=user)}
       <main id="agent-main-content" class="shell app-container app-page">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
-        <section class="hero">
-          <div class="card stack">
+        <section class="card stack">
             <p class="eyebrow">Website Ops</p>
-            <h1>Website <span style="color:var(--accent)">action center</span>.</h1>
-            <p class="lead">See what changed, what Agent verified, and what happened next.</p>
-            {_mvp_mode_banner()}
+            <h1>Continuous website <span style="color:var(--accent)">optimization</span>.</h1>
+            <p class="lead">Agent continuously observes, improves, verifies, and learns across the anatainc.com marketing site.</p>
             <div class="button-row">
-              <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit">Run Daily Sweep</button></form>
-              <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run Weekly Sweep</button></form>
+              {('<a class="btn" href="#data-sources">Repair Google connections</a>' if not decision_ready else '<form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit">Run Daily Sweep</button></form>')}
+              {('<button class="ghost" type="button" disabled aria-disabled="true">Weekly sweep unavailable</button>' if not decision_ready else '<form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run Weekly Sweep</button></form>')}
               <a class="btn btn--ghost" href="/admin/website-ops/reports/latest">Open Latest Report</a>
             </div>
             {schedule_note}
-          </div>
+        </section>
+        {_operator_blocker_panel(analytics_status)}
+        <section class="hero">
           <div id="submit-issue" class="card stack">
             <p class="eyebrow">Current scope</p>
             <div class="summary-grid">
@@ -1985,7 +2078,18 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             </div>
             <p class="muted">Scope is restricted to anatainc.com and discovered from the production sitemap. High-confidence metadata changes require a documented reason and evidence, then commit to the marketing repository and verify on production.</p>
           </div>
+          <div class="card stack">
+            <p class="eyebrow">Automation policy</p>
+            <h2>Validated autopush</h2>
+            <p class="lead-sm">Eligible marketing updates publish without routine approval only after evidence, scope, intent, build, deployment, production, and rollback checks pass.</p>
+            <div class="summary-grid">
+              {_summary_chip("Writable host", "anatainc.com", tone="good")}
+              {_summary_chip("Change email", "Only when changed", tone="neutral")}
+              {_summary_chip("Schedule", "8 AM Mountain", tone="neutral")}
+            </div>
+          </div>
         </section>
+        {_continuous_loop_panel()}
         <section class="stats">
           {_dashboard_stat_card("Reports", len(reports), "Daily, weekly, monthly", "/admin/website-ops/reports")}
           {_dashboard_stat_card("Needs Review", status_counts.get('new', 0), "Needs a decision", "/admin/website-ops/queue?status=new")}
@@ -2022,10 +2126,10 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         <section class="grid-2">
           <div class="card stack">
             <h2>Priority action queue</h2>
-            <p class="lead">Each card shows the page, exact section, current state, proposed state, and why the change supports the goal.</p>
+            <p class="lead">Agent records why each change qualified, how it was validated, and what happened in production.</p>
             <div class="button-row">
-              <a href="/admin/website-ops/queue" class="text-link">Open approval queue</a>
-              <span class="muted">Approve tasks there, then the next run executes the approved safe actions.</span>
+              <a href="/admin/website-ops/queue" class="text-link">Inspect action ledger</a>
+              <span class="muted">Blocked, validating, published, failed, and rolled-back work remains auditable.</span>
             </div>
             <div class="widget-scroll">{_action_queue_cards(action_queue)}</div>
           </div>
@@ -2053,11 +2157,11 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <p class="lead">Structured content updates generated from search demand and buyer language.</p>
             <div class="widget-scroll compact-scroll">{_content_task_cards(content_tasks)}</div>
           </div>
-          <div class="card stack"><h2>Open issues</h2><div class="widget-scroll compact-scroll">{_feedback_cards(active_feedback[:8], with_actions=True)}</div></div>
+          <div class="card stack"><h2>Open issues</h2><div class="widget-scroll compact-scroll">{_feedback_cards(active_feedback[:8], with_actions=True, decision_data_ready=decision_ready)}</div></div>
         </section>
         <section class="grid-2">
           <div class="card stack"><h2>Recent reports</h2><div class="widget-scroll compact-scroll">{_report_cards(reports[:8])}</div></div>
-          <div class="card stack"><h2>Data sources</h2><p class="lead">Website Ops uses these signals to decide what to change next.</p><div class="setup-grid">{_analytics_connection_cards(analytics_status)}</div></div>
+          <div id="data-sources" class="card stack"><h2>Data sources</h2><p class="lead">Both sources must pass before ranking-led recommendations resume.</p><div class="setup-grid">{_analytics_connection_cards(analytics_status)}</div></div>
         </section>
         <section class="grid-2">
           {_system_details_panel(settings, analytics_status)}
@@ -2069,6 +2173,10 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
 
 
 def render_queue_page(settings: Settings, *, flash_message: str = "", status_filter: str = "", user: dict | None = None) -> str:
+    reports = _report_entries(settings)
+    latest_payload = _report_payload(reports[0]) if reports else {}
+    analytics_status = dict(latest_payload.get("analytics_status") or {})
+    decision_ready = _decision_data_ready(analytics_status)
     normalized_filter = _feedback_status(status_filter) if status_filter else ""
     entries = _mvp_filter_feedback_records(load_feedback_records(settings))
     if normalized_filter:
@@ -2078,16 +2186,19 @@ def render_queue_page(settings: Settings, *, flash_message: str = "", status_fil
             entries = [item for item in entries if item.get("status") == normalized_filter]
     else:
         entries = [item for item in entries if item.get("status") not in {"done", "rejected"}]
-    queue_title = _humanize_label(normalized_filter) if normalized_filter else "Active"
+    approved_count = sum(
+        1 for item in load_feedback_records(settings)
+        if str(item.get("status", "")).strip().lower() in {"approved", "in-progress"}
+    )
     body = f"""
       {_nav("queue", website_ops_section="queue", user=user)}
       <main id="agent-main-content" class="shell app-container app-page">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
+        {("" if decision_ready else _operator_blocker_panel(analytics_status))}
         <section class="card stack">
           <p class="eyebrow">Website Ops queue</p>
-          <h1>Review <span style="color:var(--accent)">and approve</span>.</h1>
-          {_mvp_mode_banner()}
-          <p class="lead">Approve a deterministic action when the requested change is exact. Leave it as manual review if the request is still ambiguous.</p>
+          <h1>Website action <span style="color:var(--accent)">ledger</span>.</h1>
+          <p class="lead">Inspect what Agent blocked, validated, published, verified, failed, or rolled back.</p>
           <div class="button-row" style="margin-top:8px">
             <a href="/admin/website-ops/queue" class="{'btn' if not normalized_filter else 'btn btn--ghost'}" style="font-size:13px">Needs review</a>
             <a href="/admin/website-ops/queue?status=approved" class="{'btn' if normalized_filter == 'approved' else 'btn btn--ghost'}" style="font-size:13px">Approved to run</a>
@@ -2095,12 +2206,12 @@ def render_queue_page(settings: Settings, *, flash_message: str = "", status_fil
             <a href="/admin/website-ops/queue?status=error" class="{'btn' if normalized_filter == 'error' else 'btn btn--ghost'}" style="font-size:13px">Failed</a>
             <a href="/admin/website-ops/queue?status=rejected" class="{'btn' if normalized_filter == 'rejected' else 'btn btn--ghost'}" style="font-size:13px">Rejected</a>
             <form class="inline" action="/admin/api/website-ops/actions/execute-approved" method="post">
-              <button type="submit">Execute approved now</button>
+              <button type="submit" {('' if decision_ready and approved_count else 'disabled aria-disabled="true"')}>Execute approved now</button>
             </form>
           </div>
         </section>
         <section class="card stack">
-          {_feedback_cards(entries, with_actions=True, empty_context=normalized_filter)}
+          {_feedback_cards(entries, with_actions=True, empty_context=normalized_filter, decision_data_ready=decision_ready)}
         </section>
       </main>
     """
@@ -2201,11 +2312,69 @@ def render_reports_page(settings: Settings, *, user: dict | None = None) -> str:
     return _page_shell("agent | Website Ops — Reports", body)
 
 
+def _blocked_report_page(
+    entry: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    *,
+    user: dict | None = None,
+) -> str:
+    analytics_status = dict(payload.get("analytics_status") or {})
+    page_insights = [dict(item) for item in list(payload.get("page_insights") or [])[:10]]
+    for item in page_insights:
+        item["score"] = None
+        item["bucket"] = "data unavailable"
+        item["metric_availability"] = {
+            "search_console": "unavailable",
+            "ga4": "unavailable",
+        }
+        item["task_block_reason"] = (
+            "Decision data was unavailable for this run. No ranking-led conclusion is valid."
+        )
+    technical_status = str(payload.get("status", "unknown") or "unknown").replace("-", " ")
+    body = f"""
+      {_nav("reports", website_ops_section="reports", user=user)}
+      <main id="agent-main-content" class="shell app-container app-page">
+        <p class="breadcrumb"><a href="/admin/website-ops/reports">← All reports</a></p>
+        <section class="card stack">
+          <p class="eyebrow">{html.escape(str(entry.get('mode', '')).title())} report · archived evidence</p>
+          <h1>{html.escape(str(entry.get('title', 'Website Ops report')))}</h1>
+          <p class="lead">This report predates corrected missing-data semantics. Its raw performance scores are suppressed because Search Console and GA4 were unavailable.</p>
+        </section>
+        {_operator_blocker_panel(analytics_status)}
+        <section class="card stack">
+          <div class="section-heading">
+            <div><p class="eyebrow">Verified scope</p><h2>Technical crawl only</h2></div>
+            <span class="status-pill status-warn">Archived · decision data unavailable</span>
+          </div>
+          <div class="summary-grid">
+            {_summary_chip("Pages reviewed", payload.get("pages_reviewed", 0), tone="neutral")}
+            {_summary_chip("Technical crawl", technical_status, tone="good" if technical_status == "healthy" else "warn")}
+            {_summary_chip("Ranking operations", "Blocked", tone="bad")}
+            {_summary_chip("Changes applied", payload.get("changes_applied", 0), tone="neutral")}
+          </div>
+        </section>
+        <section class="card stack">
+          <h2>Decision-data sources</h2>
+          <div class="setup-grid">{_analytics_connection_cards(analytics_status)}</div>
+        </section>
+        <section class="card stack">
+          <h2>Page evidence</h2>
+          <p class="lead-sm">Technical observations remain available. Search and conversion values are withheld rather than represented as zero.</p>
+          <div class="widget-scroll">{_insight_snapshot_cards(page_insights)}</div>
+        </section>
+      </main>
+    """
+    return _page_shell(str(entry.get("title", "Website Ops report")), body)
+
+
 def render_report_page(settings: Settings, mode: str, slug: str, *, user: dict | None = None) -> str:
     entry = get_report_entry(settings, mode, slug)
     if not entry:
         return _page_shell("Not Found", f"{_nav('reports', website_ops_section='reports', user=user)}<main id='agent-main-content' class='shell app-container app-page'><section class='card'><h1>Not found</h1><p class='lead'>The requested report was not found.</p></section></main>")
     payload = _mvp_filter_report_payload(_report_payload(entry))
+    analytics_status = dict(payload.get("analytics_status") or {})
+    if analytics_status and not _decision_data_ready(analytics_status):
+        return _blocked_report_page(entry, payload, user=user)
     debug_insights = list(payload.get("page_insights") or [])[:6]
     debug_panel = ""
     if MVP_MODE_ACTIVE and debug_insights:

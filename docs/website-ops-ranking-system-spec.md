@@ -84,3 +84,25 @@ action classes that repeatedly fail to deliver value.
 8. Unchanged successful runs remain in the ledger without sending email.
 9. The dashboard identifies the blocking source and the concrete next action.
 10. No raw or unrelated Gmail material appears in Website Ops.
+
+## Operator control-room addendum
+
+Website Ops is a self-sustaining optimization system, not a reporting
+dashboard. The authenticated interface must lead with operating readiness,
+the exact blocker or next action, and the continuous Observe → Decide → Improve
+→ Verify → Learn loop.
+
+- When decision data is blocked, ranking-led run controls are disabled and the
+  primary action is `Repair Google connections`.
+- Technical crawling may continue, but it is never presented as ranking-system
+  readiness.
+- Empty queues identify whether work is blocked, absent, validating, awaiting
+  publishing, completed, failed, or rolled back.
+- `Execute approved now` is disabled when no approved work exists.
+- Legacy reports generated with unavailable analytics suppress scores, buckets,
+  and zero-valued performance metrics. They render as archived technical crawl
+  evidence with ranking operations explicitly blocked.
+- The action ledger preserves evidence, validation, deployment, production
+  verification, and rollback outcomes.
+- The overview explains that validated marketing changes autopublish and that
+  routine unchanged runs do not email the operator.
