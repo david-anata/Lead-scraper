@@ -77,7 +77,18 @@ class BuildingOperationsTests(unittest.TestCase):
                 "public_description": "A flexible gathering space.",
                 "internal_notes": "Never public.",
                 "features": ["Stage"],
-                "media": [{"src": "/media/legacy.webp", "alt": "Legacy unapproved media"}],
+                "media": [
+                    {"src": "/media/legacy.webp", "alt": "Legacy unapproved media"},
+                    {
+                        "id": "arena-readiness",
+                        "src": "/media/arena-readiness.webp",
+                        "kind": "image",
+                        "alt": "Open event floor inside The Arena",
+                        "placement": "card",
+                        "sort_order": 0,
+                        "approved": True,
+                    },
+                ],
                 "is_public": True,
             },
         )
@@ -103,7 +114,17 @@ class BuildingOperationsTests(unittest.TestCase):
         public = self.client.get("/api/public/building/offerings").json()
         self.assertEqual(public["offerings"][0]["space"]["availability"], "available")
         self.assertNotIn("internal_notes", public["offerings"][0]["space"])
-        self.assertEqual(public["offerings"][0]["space"]["media"], [])
+        self.assertEqual(
+            public["offerings"][0]["space"]["media"][0]["id"],
+            "arena-readiness",
+        )
+        removed = self.client.request(
+            "DELETE",
+            "/api/internal/building/spaces/arena/media/arena-readiness",
+            headers=self.internal_headers,
+            json={"actor": "test@example.com", "reason": "Fixture review complete"},
+        )
+        self.assertEqual(removed.status_code, 200, removed.text)
 
     def test_space_media_requires_review_and_stays_attached_to_exact_space(self) -> None:
         for media_id, approved, alt, order in (
@@ -170,6 +191,15 @@ class BuildingOperationsTests(unittest.TestCase):
                 "name": "Availability Office",
                 "space_type": "private_office",
                 "status": "available",
+                "public_description": "A private office available for lease.",
+                "media": [{
+                    "id": "office-availability-card",
+                    "src": "/media/office-availability.webp",
+                    "kind": "image",
+                    "alt": "Private office with a desk and natural light",
+                    "placement": "card",
+                    "approved": True,
+                }],
                 "is_public": True,
             },
         )
@@ -183,6 +213,8 @@ class BuildingOperationsTests(unittest.TestCase):
                 "name": "Availability Office",
                 "offering_type": "private_office",
                 "space_id": "office-availability",
+                "public_description": "Ask about this private office.",
+                "price_display": "Contact us for pricing",
                 "is_published": True,
             },
         )
