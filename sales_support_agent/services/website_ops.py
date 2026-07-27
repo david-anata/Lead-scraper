@@ -1235,12 +1235,19 @@ def _latest_report_panel(entry: dict[str, Any] | None, payload: dict[str, Any]) 
         </div>
         """
     status = str(payload.get("status") or entry.get("mode") or "unknown")
+    analytics_status = payload.get("analytics_status") if isinstance(payload.get("analytics_status"), dict) else {}
+    operational_status = str(analytics_status.get("operational_status", "unknown") or "unknown")
     stats = [
         ("Pages reviewed", payload.get("pages_reviewed", "0"), "neutral"),
         ("Healthy", payload.get("pages_healthy", "0"), "good"),
         ("Needs work", payload.get("pages_with_issues", "0"), "warn" if int(payload.get("pages_with_issues", 0) or 0) else "neutral"),
         ("Issues found", payload.get("issues_found", "0"), "warn" if int(payload.get("issues_found", 0) or 0) else "neutral"),
-        ("Status", status.replace("-", " "), "bad" if status == "needs-attention" else "good"),
+        ("Technical crawl", status.replace("-", " "), "bad" if status == "needs-attention" else "good"),
+        (
+            "Ranking operations",
+            operational_status.replace("-", " "),
+            "good" if operational_status == "operational" else "bad",
+        ),
     ]
     return f"""
     <div class="card stack">
@@ -1298,7 +1305,7 @@ def _system_details_panel(settings: Settings, analytics_status: dict[str, Any]) 
     <section class="card stack card-muted">
       <p class="eyebrow">System details</p>
       <div class="mini-grid">
-        {_mini_chip("Monitored Pages", len(settings.website_ops_site_urls))}
+        {_mini_chip("Sitemap Seeds", len(settings.website_ops_site_urls))}
         {_mini_chip("Workspace", _humanize_label(settings.website_ops_root.name))}
         {_mini_chip("Search Console Property", search_console_property or "Not set")}
         {_mini_chip("GA4 Property", ga4_property_id or "Not set")}
@@ -1512,8 +1519,8 @@ def _insight_snapshot_cards(page_insights: list[dict[str, Any]]) -> str:
             )
             aeo_details = f"""
               <div class="mini-grid">
-                {_mini_chip("AEO eligibility", aeo_eligibility.title())}
-                {_mini_chip("Answer readiness", aeo_readiness.replace("-", " ").title())}
+                {_mini_chip("Answer-engine access", aeo_eligibility.title())}
+                {_mini_chip("Structural readiness", aeo_readiness.replace("-", " ").title())}
                 {_mini_chip("Observed queries", len(list(aeo.get("observed_queries") or [])))}
                 {_mini_chip("Simulated prompts", len(simulated_prompts))}
               </div>
@@ -1530,15 +1537,15 @@ def _insight_snapshot_cards(page_insights: list[dict[str, Any]]) -> str:
             <article class="insight-card">
               <div class="row-actions">
                 <h3>{html.escape(str(item.get("page_title") or _short_page_label(str(item.get("page_url", "")))))}</h3>
-                <span class="status-pill status-neutral">Score {html.escape(str(item.get("score", "")))}</span>
+                <span class="status-pill status-neutral">Score {html.escape(str(item.get("score"))) if item.get("score") is not None else "Unavailable"}</span>
               </div>
               <p class="muted">{html.escape(_short_page_label(str(item.get("page_url", ""))))}</p>
               <div class="mini-grid">
                 {_mini_chip("Bucket", str(item.get("bucket", "hold")).title())}
-                {_mini_chip("Impressions", int((item.get("search_console") or {}).get("impressions", 0)))}
-                {_mini_chip("CTR", f"{round(float((item.get('search_console') or {}).get('ctr', 0) or 0) * 100, 2)}%")}
-                {_mini_chip("Sessions", int((item.get("ga4") or {}).get("sessions", 0)))}
-                {_mini_chip("Lead Events", int((item.get("ga4") or {}).get("lead_conversions", 0)))}
+                {_mini_chip("Impressions", int((item.get("search_console") or {}).get("impressions", 0)) if (item.get("metric_availability") or {}).get("search_console") == "observed" else "Unavailable")}
+                {_mini_chip("CTR", f"{round(float((item.get('search_console') or {}).get('ctr', 0) or 0) * 100, 2)}%" if (item.get("metric_availability") or {}).get("search_console") == "observed" else "Unavailable")}
+                {_mini_chip("Sessions", int((item.get("ga4") or {}).get("sessions", 0)) if (item.get("metric_availability") or {}).get("ga4") == "observed" else "Unavailable")}
+                {_mini_chip("Lead Events", int((item.get("ga4") or {}).get("lead_conversions", 0)) if (item.get("metric_availability") or {}).get("ga4") == "observed" else "Unavailable")}
                 {_mini_chip("Trust", str(item.get("ga4_trust_status", "missing")).title())}
               </div>
               {top_query}
@@ -1945,7 +1952,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <div class="summary-grid">
               {_summary_chip("Marketing pages", monitored_count, tone="neutral")}
               {_summary_chip("Approved action runner", "Enabled" if settings.website_ops_execute_approved else "Disabled", tone="good" if settings.website_ops_execute_approved else "warn")}
-              {_summary_chip("Metadata autopush", "Ready" if github_metadata_is_configured() else "Needs GitHub token", tone="good" if github_metadata_is_configured() else "warn")}
+              {_summary_chip("Metadata autopush", "Configured" if github_metadata_is_configured() else "Needs GitHub token", tone="good" if github_metadata_is_configured() else "warn")}
               {_run_state_summary(run_state)}
               {_connection_summary_chips(analytics_status)}
             </div>
@@ -2003,8 +2010,8 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         </section>
         <section class="grid-2">
           <div class="card stack">
-            <h2>Buyer questions to answer</h2>
-            <p class="lead">Repeated buyer questions extracted from Gmail threads and normalized for content decisions.</p>
+            <h2>Customer-language evidence</h2>
+            <p class="lead">{'Gmail-derived questions are quarantined until relevance and privacy validation is complete.' if analytics_status.get('customer_language_status') == 'quarantined' else 'Sanitized, relevant customer questions available for content decisions.'}</p>
             <div class="widget-scroll compact-scroll">{_customer_question_cards(customer_questions)}</div>
           </div>
           <div class="card stack">

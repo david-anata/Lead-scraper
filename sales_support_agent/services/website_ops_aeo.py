@@ -115,14 +115,17 @@ def build_aeo_assessment(
     ]
     return {
         "technical_eligibility": "blocked" if blockers else "eligible",
+        "technical_eligibility_label": "Technically accessible to answer engines",
         "technical_blockers": blockers,
         "answer_readiness": "needs-work" if readiness_issues else "ready",
+        "answer_readiness_label": "Structural answer readiness",
         "answer_readiness_issues": readiness_issues,
+        "observed_demand_status": "observed" if observed_queries else "not-observed",
         "observed_queries": observed_queries,
         "observed_customer_questions": observed_questions,
         "simulated_coverage_prompts": simulated_fanout(observation),
         "method_note": (
             "Observed evidence comes from connected sources. Simulated prompts are coverage "
-            "hypotheses only and carry no inferred volume, ranking, or citation claim."
+            "hypotheses only and carry no inferred demand, volume, ranking, or citation claim."
         ),
     }

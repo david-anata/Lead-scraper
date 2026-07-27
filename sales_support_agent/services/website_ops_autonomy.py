@@ -77,7 +77,59 @@ def _load_service_account_info(raw: str) -> dict[str, Any]:
         payload = json.loads(Path(raw).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON must resolve to an object.")
+    required_fields = ("client_email", "private_key", "token_uri")
+    missing_fields = [field for field in required_fields if not str(payload.get(field, "")).strip()]
+    if missing_fields:
+        raise RuntimeError(
+            "GOOGLE_SERVICE_ACCOUNT_JSON is missing required fields: "
+            + ", ".join(missing_fields)
+            + "."
+        )
     return payload
+
+
+def analytics_configuration_status(settings: Any) -> dict[str, Any]:
+    """Return secret-free readiness for ranking-decision data sources."""
+
+    config = analytics_config_from_settings(settings)
+    checks = {
+        "google_service_account": False,
+        "search_console_property": bool(config.search_console_property),
+        "ga4_property": bool(config.ga4_property_id),
+    }
+    blockers: list[dict[str, str]] = []
+    try:
+        _load_service_account_info(config.service_account_json)
+        checks["google_service_account"] = True
+    except Exception as exc:  # noqa: BLE001 - converted to a safe operator message
+        blockers.append(
+            {
+                "code": "GOOGLE_SERVICE_ACCOUNT_INVALID",
+                "source": "google",
+                "message": f"Google service-account configuration is invalid: {exc}",
+            }
+        )
+    if not checks["search_console_property"]:
+        blockers.append(
+            {
+                "code": "GSC_PROPERTY_MISSING",
+                "source": "google_search_console",
+                "message": "Search Console property is not configured.",
+            }
+        )
+    if not checks["ga4_property"]:
+        blockers.append(
+            {
+                "code": "GA4_PROPERTY_MISSING",
+                "source": "google_analytics_4",
+                "message": "GA4 property is not configured.",
+            }
+        )
+    return {
+        "status": "ready" if all(checks.values()) else "blocked",
+        "checks": checks,
+        "blockers": blockers,
+    }
 
 
 def _service_account_project_name(raw: str) -> str:
@@ -967,10 +1019,18 @@ def _analytics_actions(
     return actions
 
 
-def _page_bucket(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Mapping[str, Any]) -> str:
+def _page_bucket(
+    page: Mapping[str, Any],
+    gsc: Mapping[str, Any],
+    ga4: Mapping[str, Any],
+    *,
+    decision_data_ready: bool = True,
+) -> str:
     issues = list(page.get("issues") or [])
     if issues:
         return "repair"
+    if not decision_data_ready:
+        return "data unavailable"
     impressions = float(gsc.get("impressions", 0) or 0)
     ctr = float(gsc.get("ctr", 0) or 0)
     sessions = float(ga4.get("sessions", 0) or 0)
@@ -986,7 +1046,15 @@ def _page_bucket(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Mapping[s
     return "hold"
 
 
-def _page_score(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Mapping[str, Any]) -> int:
+def _page_score(
+    page: Mapping[str, Any],
+    gsc: Mapping[str, Any],
+    ga4: Mapping[str, Any],
+    *,
+    decision_data_ready: bool = True,
+) -> int | None:
+    if not decision_data_ready:
+        return None
     score = 100
     for issue in page.get("issues") or []:
         priority = str(issue.get("priority", "P3"))
@@ -1022,6 +1090,7 @@ def _content_actions(
     primary_lead_event: str,
     blueprint_cache: dict[str, dict[str, Any]],
     customer_questions: list[Mapping[str, Any]],
+    search_console_ready: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, dict[str, Any]]:
     impressions = float(gsc.get("impressions", 0) or 0)
     ctr = float(gsc.get("ctr", 0) or 0)
@@ -1036,6 +1105,11 @@ def _content_actions(
         "query_seed": "",
         "page_has_faq_coverage": _page_has_faq_coverage(page),
     }
+    if not search_console_ready:
+        debug_state["task_block_reason"] = (
+            "Search Console data is unavailable. Ranking-led content recommendations are suspended."
+        )
+        return [], None, debug_state
     if impressions < MVP_FAQ_IMPRESSIONS_THRESHOLD:
         debug_state["task_block_reason"] = f"Impressions below MVP threshold ({int(impressions)} < {int(MVP_FAQ_IMPRESSIONS_THRESHOLD)})."
         return [], None, debug_state
@@ -1191,12 +1265,24 @@ def build_autonomy_overlay(
     identity = _service_account_identity(config.service_account_json)
     gsc_metrics, gsc_notes = fetch_search_console_snapshot(settings, urls)
     ga4_metrics, ga4_notes = fetch_ga4_snapshot(settings, urls)
+    search_console_ready = not gsc_notes
+    ga4_ready = not ga4_notes
+    decision_data_ready = search_console_ready and ga4_ready
     cluster_map = _service_cluster_map(urls)
     ga4_trust_status = _lead_trust_status(ga4_metrics, ga4_notes)
-    try:
-        customer_questions = collect_customer_questions(settings, max_messages=int(getattr(settings, "gmail_poll_max_messages", 25) or 25))
-    except Exception:
-        customer_questions = []
+    customer_language_enabled = os.getenv(
+        "WEBSITE_OPS_CUSTOMER_LANGUAGE_ENABLED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    customer_questions: list[dict[str, Any]] = []
+    if customer_language_enabled:
+        try:
+            customer_questions = collect_customer_questions(
+                settings,
+                max_messages=int(getattr(settings, "gmail_poll_max_messages", 25) or 25),
+            )
+        except Exception:
+            customer_questions = []
     blueprint_cache: dict[str, dict[str, Any]] = {}
 
     page_insights: list[dict[str, Any]] = []
@@ -1208,8 +1294,18 @@ def build_autonomy_overlay(
         url = _normalize_url(str(observation.get("url", "")))
         gsc = gsc_metrics.get(url, {})
         ga4 = ga4_metrics.get(url, {})
-        bucket = _page_bucket(observation, gsc, ga4)
-        score = _page_score(observation, gsc, ga4)
+        bucket = _page_bucket(
+            observation,
+            gsc,
+            ga4,
+            decision_data_ready=decision_data_ready,
+        )
+        score = _page_score(
+            observation,
+            gsc,
+            ga4,
+            decision_data_ready=decision_data_ready,
+        )
         insights: list[str] = []
         if observation.get("issues"):
             insights.extend(str(issue.get("summary", "")) for issue in observation.get("issues") or [])
@@ -1226,6 +1322,7 @@ def build_autonomy_overlay(
             primary_lead_event=config.primary_lead_event,
             blueprint_cache=blueprint_cache,
             customer_questions=customer_questions,
+            search_console_ready=search_console_ready,
         )
         if blueprint:
             blueprint_cache[str(blueprint.get("query", "")).strip()] = blueprint
@@ -1259,6 +1356,10 @@ def build_autonomy_overlay(
                 "score": score,
                 "search_console": gsc,
                 "ga4": ga4,
+                "metric_availability": {
+                    "search_console": "observed" if search_console_ready else "unavailable",
+                    "ga4": "observed" if ga4_ready else "unavailable",
+                },
                 "top_queries": gsc.get("top_queries", []),
                 "insights": insights[:3],
                 "why_this_page_now": insights[:2] or ["This page is part of the monitored commercial service set."],
@@ -1308,6 +1409,8 @@ def build_autonomy_overlay(
         "analytics_status": {
             "search_console": not gsc_notes,
             "ga4": not ga4_notes,
+            "decision_data_status": "ready" if decision_data_ready else "blocked",
+            "operational_status": "operational" if decision_data_ready else "blocked",
             "notes": gsc_notes + ga4_notes,
             "project_id": identity.get("project_id", ""),
             "client_email": identity.get("client_email", ""),
@@ -1323,9 +1426,17 @@ def build_autonomy_overlay(
             "auto_executable_today": auto_executable_count,
             "mvp_mode_active": MVP_MODE_ACTIVE,
             "mvp_allowed_action_types": list(MVP_ALLOWED_ACTION_TYPES),
+            "customer_language_status": "enabled" if customer_language_enabled else "quarantined",
         },
         "support_requests": list(dict.fromkeys(item for item in support_requests if item)),
-        "page_insights": sorted(page_insights, key=lambda item: (item["score"], item["page_url"]))[:20],
+        "page_insights": sorted(
+            page_insights,
+            key=lambda item: (
+                item["score"] is None,
+                item["score"] if item["score"] is not None else 101,
+                item["page_url"],
+            ),
+        )[:20],
         "action_queue": filtered_action_queue[:25],
         "serp_blueprints": serp_blueprints[:10],
         "customer_questions": customer_questions[:12],
