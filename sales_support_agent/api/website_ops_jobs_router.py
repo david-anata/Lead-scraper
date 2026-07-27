@@ -212,7 +212,11 @@ def website_ops_runtime_health(request: Request) -> dict:
             "citation_testing": "ready" if checks["citation_testing"] else "blocked",
         },
         "blockers": analytics_readiness["blockers"]
-        + ([] if checks["citation_testing"] else ["Citation testing needs OPENAI_API_KEY."]),
+        + (
+            []
+            if checks["citation_testing"]
+            else ["Citation testing needs OPENAI_API_KEY or ANTHROPIC_API_KEY."]
+        ),
         "schedule": {
             "timezone": "America/Denver",
             "hour": 8,
