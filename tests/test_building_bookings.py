@@ -16,6 +16,9 @@ try:
         BuildingAgreement,
         BuildingAvailabilityBlock,
         BuildingDepositEvidence,
+        BuildingCalendarProjection,
+        BuildingEventLifecycleCommand,
+        BuildingInquiry,
         BuildingProposal,
         BuildingRelationship,
         BuildingReservation,
@@ -185,6 +188,104 @@ class BuildingBookingTests(unittest.TestCase):
                 "actor": "operator@example.com",
             },
         )
+
+    def test_event_review_is_idempotent_and_freezes_authoritative_window(self) -> None:
+        review_start = self.start + timedelta(days=7)
+        with self.factory() as session:
+            session.add(BuildingInquiry(
+                id="accepted-event-inquiry",
+                idempotency_key="accepted-event-inquiry-key",
+                kind="event",
+                offering_id="arena-events",
+                name="Reviewed Host",
+                email="reviewed@example.com",
+                consent_to_contact=True,
+                payload_json={"_lifecycle": {"stage": "qualified"}},
+            ))
+            session.commit()
+        payload = {
+            "inquiry_id": "accepted-event-inquiry",
+            "reservation_id": "reviewed-event",
+            "space_id": "arena",
+            "offering_id": "arena-events",
+            "contact_id": "event-host",
+            "setup_starts_at": review_start.isoformat(),
+            "guest_starts_at": (review_start + timedelta(hours=2)).isoformat(),
+            "guest_ends_at": (review_start + timedelta(hours=6)).isoformat(),
+            "teardown_ends_at": (review_start + timedelta(hours=8)).isoformat(),
+            "hold_expires_at": (
+                datetime.now(timezone.utc) + timedelta(days=2)
+            ).isoformat(),
+            "attendance": 80,
+            "units": 1,
+            "terms_summary": "Reviewed terms remain subject to agreement and payment.",
+            "operator_notes": "Customer confirmed the access window.",
+            "assigned_owner": "operator@example.com",
+            "actor": "operator@example.com",
+        }
+        headers = {**self.headers, "Idempotency-Key": "reviewed-event-v1"}
+        created = self.client.post(
+            "/api/internal/building/bookings/event-reviews",
+            headers=headers,
+            json=payload,
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        body = created.json()
+        self.assertFalse(body["replayed"])
+        self.assertEqual(body["reservation"]["starts_at"], review_start.isoformat())
+        self.assertEqual(
+            body["reservation"]["guest_starts_at"],
+            (review_start + timedelta(hours=2)).isoformat(),
+        )
+        self.assertTrue(body["readiness"]["agreement_ready"])
+        self.assertFalse(body["readiness"]["booking_confirmed"])
+        self.assertFalse(body["customer_status"]["is_booked"])
+        self.assertEqual(
+            body["quote"]["rate_plan_snapshot"]["access_window"]["teardown_ends_at"],
+            (review_start + timedelta(hours=8)).isoformat(),
+        )
+        replay = self.client.post(
+            "/api/internal/building/bookings/event-reviews",
+            headers=headers,
+            json=payload,
+        )
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertTrue(replay.json()["replayed"])
+        changed = {
+            **payload,
+            "attendance": 81,
+        }
+        conflict = self.client.post(
+            "/api/internal/building/bookings/event-reviews",
+            headers=headers,
+            json=changed,
+        )
+        self.assertEqual(conflict.status_code, 409)
+        lifecycle = self.client.get(
+            "/api/internal/building/bookings/reviewed-event/lifecycle",
+            headers=self.headers,
+        )
+        self.assertEqual(lifecycle.status_code, 200, lifecycle.text)
+        self.assertFalse(lifecycle.json()["readiness"]["contract_generated"])
+        with self.factory() as session:
+            self.assertEqual(
+                session.query(BuildingEventLifecycleCommand).filter_by(
+                    reservation_id="reviewed-event"
+                ).count(),
+                1,
+            )
+            block = session.query(BuildingAvailabilityBlock).filter_by(
+                source_reference="reservation:reviewed-event"
+            ).one()
+            self.assertEqual(
+                block.starts_at.replace(tzinfo=timezone.utc),
+                review_start,
+            )
+            projection = session.query(BuildingCalendarProjection).filter_by(
+                reservation_id="reviewed-event"
+            ).one()
+            self.assertEqual(projection.status, "pending")
+            self.assertEqual(projection.payload_json["start"]["dateTime"], review_start.isoformat())
 
     def test_00_capacity_and_time_window_are_enforced(self) -> None:
         too_large = self._create("event-too-large", attendance=121)

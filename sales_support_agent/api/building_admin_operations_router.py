@@ -33,11 +33,13 @@ from sales_support_agent.api.building_billing_router import (
 from sales_support_agent.api.building_booking_router import (
     AgreementInput,
     DepositInput,
+    EventReviewInput,
     ProposalInput,
     ReservationInput,
     TourInput,
     TransitionInput,
     create_reservation,
+    create_event_review,
     create_tour,
     record_agreement,
     record_deposit,
@@ -284,6 +286,58 @@ def create_reservation_from_control_room(
         create_reservation(payload, request, _internal_key(request))
 
     return _run_form_action(action, "Booking workflow created as an inquiry.")
+
+
+@router.post("/event-reviews", dependencies=FORM_DEPS)
+def create_event_review_from_control_room(
+    request: Request,
+    inquiry_id: str = Form(...),
+    reservation_id: str = Form(...),
+    space_id: str = Form(...),
+    offering_id: str = Form(...),
+    contact_id: str = Form(""),
+    setup_starts_at: str = Form(...),
+    guest_starts_at: str = Form(...),
+    guest_ends_at: str = Form(...),
+    teardown_ends_at: str = Form(...),
+    hold_expires_at: str = Form(...),
+    attendance: int = Form(...),
+    units: int = Form(...),
+    terms_summary: str = Form(...),
+    operator_notes: str = Form(""),
+    assigned_owner: str = Form(...),
+    idempotency_key: str = Form(...),
+    user: dict = Depends(require_tool("building.events.manage")),
+) -> RedirectResponse:
+    def action() -> None:
+        create_event_review(
+            EventReviewInput(
+                inquiry_id=inquiry_id.strip(),
+                reservation_id=reservation_id.strip(),
+                space_id=space_id.strip(),
+                offering_id=offering_id.strip(),
+                contact_id=contact_id.strip() or None,
+                setup_starts_at=_local_datetime(setup_starts_at),
+                guest_starts_at=_local_datetime(guest_starts_at),
+                guest_ends_at=_local_datetime(guest_ends_at),
+                teardown_ends_at=_local_datetime(teardown_ends_at),
+                hold_expires_at=_local_datetime(hold_expires_at),
+                attendance=attendance,
+                units=units,
+                terms_summary=terms_summary.strip(),
+                operator_notes=operator_notes.strip(),
+                assigned_owner=assigned_owner.strip(),
+                actor=_actor(user),
+            ),
+            request,
+            idempotency_key.strip(),
+            _internal_key(request),
+        )
+
+    return _run_form_action(
+        action,
+        "Authoritative event window reviewed; temporary hold and quote draft created.",
+    )
 
 
 @router.post("/reservations/{reservation_id}/transition", dependencies=FORM_DEPS)

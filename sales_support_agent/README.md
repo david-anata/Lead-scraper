@@ -673,3 +673,12 @@ Before the first live payroll, complete `/admin/hr/settings`:
 4. have a qualified reviewer confirm the 2026 calculations;
 5. complete each employee's employment setup and W-4;
 6. resolve all open punches, time corrections, and payroll inputs.
+
+## Authoritative event review
+
+Qualified event inquiries can move through one atomic, idempotent date review
+into a temporary Agent hold and versioned internal quote draft. Availability
+uses the complete setup-through-teardown window while guest times remain
+separately visible. Approved pricing and reviewed terms are frozen into the
+quote version; contract, signature, payment, and confirmation remain explicit
+gates. See `../docs/building-event-review-lifecycle.md`.
