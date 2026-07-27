@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import os
 import secrets
+import logging
 from datetime import datetime
+from threading import Event, Thread
+from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 
 from sales_support_agent.services.website_ops import (
     load_website_ops_run_state,
@@ -19,6 +22,7 @@ from sales_support_agent.services.website_ops import (
 
 
 router = APIRouter(prefix="/api/jobs/website-ops", tags=["website-ops-jobs"])
+logger = logging.getLogger(__name__)
 
 
 def _require_internal_key(request: Request) -> None:
@@ -26,6 +30,101 @@ def _require_internal_key(request: Request) -> None:
     supplied = request.headers.get("X-Internal-Api-Key", "").strip()
     if not expected or not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Invalid internal API key.")
+
+
+def _scheduled_modes(local_now: datetime) -> list[str]:
+    modes = ["daily"]
+    if local_now.weekday() == 0:
+        modes.append("weekly")
+        if local_now.day <= 7:
+            modes.append("monthly")
+    return modes
+
+
+def _run_due_modes(settings: Any, modes: list[str], *, trigger: str) -> dict[str, dict]:
+    results: dict[str, dict] = {}
+    for mode in modes:
+        if not website_ops_run_is_due(settings, mode):
+            results[mode] = {"status": "skipped", "message": "Already completed for this period."}
+            continue
+        now = datetime.now(ZoneInfo("UTC"))
+        write_website_ops_run_state(
+            settings,
+            mode,
+            {
+                "mode": mode,
+                "status": "running",
+                "run_date": now.date().isoformat(),
+                "trigger": trigger,
+                "last_started_at": now.isoformat(),
+                "last_error": "",
+            },
+        )
+        try:
+            result = run_website_ops(settings, mode=mode)
+        except Exception as exc:  # noqa: BLE001
+            write_website_ops_run_state(
+                settings,
+                mode,
+                {
+                    "status": "failed",
+                    "last_completed_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+                    "last_error": str(exc),
+                },
+            )
+            send_website_ops_failure_email(settings, mode=mode, error=str(exc))
+            results[mode] = {"status": "failed", "message": str(exc)}
+            continue
+        completed_at = datetime.now(ZoneInfo("UTC"))
+        write_website_ops_run_state(
+            settings,
+            mode,
+            {
+                "status": "succeeded",
+                "last_completed_at": completed_at.isoformat(),
+                "last_successful_date": completed_at.date().isoformat(),
+                "last_error": "",
+            },
+        )
+        results[mode] = {"status": "succeeded", "message": result.message}
+    return results
+
+
+def install_embedded_website_ops_scheduler(app: FastAPI) -> None:
+    """Run the 8 AM sweep in-process, with restart catch-up and due-state locking."""
+
+    settings = app.state.settings
+    enabled = os.getenv("WEBSITE_OPS_EMBEDDED_SCHEDULER", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not enabled or not str(getattr(settings, "internal_api_key", "") or "").strip():
+        return
+    if getattr(app.state, "website_ops_scheduler_thread", None):
+        return
+
+    stop_event = Event()
+
+    def worker() -> None:
+        while not stop_event.is_set():
+            local_now = datetime.now(ZoneInfo("America/Denver"))
+            if local_now.hour >= 8:
+                try:
+                    _run_due_modes(
+                        settings,
+                        _scheduled_modes(local_now),
+                        trigger="embedded_scheduler",
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("Embedded Website Ops scheduler failed.")
+            stop_event.wait(300)
+
+    thread = Thread(target=worker, name="website-ops-scheduler", daemon=True)
+    app.state.website_ops_scheduler_stop = stop_event
+    app.state.website_ops_scheduler_thread = thread
+    thread.start()
 
 
 @router.get("/health")
@@ -100,57 +199,7 @@ async def run_scheduled_website_ops(request: Request) -> dict:
             "local_time": local_now.isoformat(),
         }
 
-    modes = [requested_mode] if requested_mode != "scheduled" else ["daily"]
-    if requested_mode == "scheduled" and local_now.weekday() == 0:
-        modes.append("weekly")
-        if local_now.day <= 7:
-            modes.append("monthly")
-
-    settings = request.app.state.settings
-    results: dict[str, dict] = {}
-    for mode in modes:
-        if not website_ops_run_is_due(settings, mode):
-            results[mode] = {"status": "skipped", "message": "Already completed for this period."}
-            continue
-        now = datetime.now(ZoneInfo("UTC"))
-        write_website_ops_run_state(
-            settings,
-            mode,
-            {
-                "mode": mode,
-                "status": "running",
-                "run_date": now.date().isoformat(),
-                "trigger": "render_cron",
-                "last_started_at": now.isoformat(),
-                "last_error": "",
-            },
-        )
-        try:
-            result = run_website_ops(settings, mode=mode)
-        except Exception as exc:  # noqa: BLE001
-            write_website_ops_run_state(
-                settings,
-                mode,
-                {
-                    "status": "failed",
-                    "last_completed_at": datetime.now(ZoneInfo("UTC")).isoformat(),
-                    "last_error": str(exc),
-                },
-            )
-            send_website_ops_failure_email(settings, mode=mode, error=str(exc))
-            results[mode] = {"status": "failed", "message": str(exc)}
-            continue
-        completed_at = datetime.now(ZoneInfo("UTC"))
-        write_website_ops_run_state(
-            settings,
-            mode,
-            {
-                "status": "succeeded",
-                "last_completed_at": completed_at.isoformat(),
-                "last_successful_date": completed_at.date().isoformat(),
-                "last_error": "",
-            },
-        )
-        results[mode] = {"status": "succeeded", "message": result.message}
+    modes = [requested_mode] if requested_mode != "scheduled" else _scheduled_modes(local_now)
+    results = _run_due_modes(request.app.state.settings, modes, trigger="render_cron")
 
     return {"status": "ok", "details": results}
