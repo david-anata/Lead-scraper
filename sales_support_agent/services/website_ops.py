@@ -19,6 +19,11 @@ from sales_support_agent.config import Settings
 from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.services.admin_nav import render_agent_favicon_links, render_agent_nav, render_agent_nav_styles
 from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
+from sales_support_agent.services.website_ops_github import (
+    METADATA_ACTION_TYPES,
+    execute_github_metadata_action,
+    github_metadata_is_configured,
+)
 from sales_support_agent.services import website_ops_vendor as website_ops
 
 
@@ -823,6 +828,18 @@ def _record_is_auto_executable(record: Mapping[str, Any]) -> bool:
     )
 
 
+def _execute_feedback_action(
+    settings: Settings,
+    record: Mapping[str, Any],
+    *,
+    config: website_ops.WebsiteOpsConfig,
+) -> dict[str, Any]:
+    action_type = str(record.get("action_type", "")).strip()
+    if action_type in METADATA_ACTION_TYPES and github_metadata_is_configured():
+        return execute_github_metadata_action(record, config=config)
+    return website_ops.execute_feedback_action(record, config=config)
+
+
 def _autofill_review_updates(existing: Mapping[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     updates = dict(payload)
     status = _feedback_status(str(updates.get("status", "")))
@@ -866,7 +883,7 @@ def review_feedback_record(
     record = website_ops.update_feedback_entry(existing, updates)
     if settings.website_ops_execute_approved and record.get("status") == "approved" and record.get("action_type") and _record_is_auto_executable(record):
         try:
-            result = website_ops.execute_feedback_action(record, config=_config(settings))
+            result = _execute_feedback_action(settings, record, config=_config(settings))
         except website_ops.ExecutionError as exc:
             record = website_ops.update_feedback_entry(
                 record,
@@ -903,7 +920,7 @@ def _execute_record(
     if require_auto_executable and not _record_is_auto_executable(record):
         return None
     try:
-        result = website_ops.execute_feedback_action(record, config=config)
+        result = _execute_feedback_action(settings, record, config=config)
     except website_ops.ExecutionError as exc:
         website_ops.update_feedback_entry(
             record,
@@ -1897,10 +1914,11 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <div class="summary-grid">
               {_summary_chip("Marketing pages", monitored_count, tone="neutral")}
               {_summary_chip("Approved action runner", "Enabled" if settings.website_ops_execute_approved else "Disabled", tone="good" if settings.website_ops_execute_approved else "warn")}
+              {_summary_chip("Metadata autopush", "Ready" if github_metadata_is_configured() else "Needs GitHub token", tone="good" if github_metadata_is_configured() else "warn")}
               {_run_state_summary(run_state)}
               {_connection_summary_chips(analytics_status)}
             </div>
-            <p class="muted">Scope is restricted to anatainc.com and discovered from the production sitemap.</p>
+            <p class="muted">Scope is restricted to anatainc.com and discovered from the production sitemap. High-confidence metadata changes require a documented reason and evidence, then commit to the marketing repository and verify on production.</p>
           </div>
         </section>
         <section class="stats">

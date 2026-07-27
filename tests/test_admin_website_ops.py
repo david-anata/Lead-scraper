@@ -19,7 +19,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from sales_support_agent.services import website_ops_vendor as website_ops
-from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
+from sales_support_agent.services.website_ops_autonomy import (
+    _deterministic_metadata_actions,
+    build_autonomy_overlay,
+)
 from sales_support_agent.services.website_ops_content import clean_generated_content
 from sales_support_agent.services.website_ops import (
     discover_website_ops_urls,
@@ -47,6 +50,12 @@ from sales_support_agent.services.website_ops_vendor.executor import (
     resolve_insertion_point,
 )
 from sales_support_agent.api.website_ops_jobs_router import router as website_ops_jobs_router
+from sales_support_agent.services.website_ops_github import (
+    execute_github_metadata_action,
+    route_source_path,
+    update_static_metadata_source,
+    validate_metadata_action,
+)
 
 
 class AdminWebsiteOpsTests(unittest.TestCase):
@@ -773,6 +782,154 @@ class AdminWebsiteOpsTests(unittest.TestCase):
         self.assertTrue(details["eligible"])
         self.assertEqual(details["execution_eligibility"], "auto_execute")
         self.assertIn("seo metadata", details["reason"].lower())
+
+    def test_github_metadata_route_mapping_is_marketing_only(self) -> None:
+        self.assertEqual(
+            route_source_path("https://anatainc.com/services/amazon-advertising/"),
+            "src/app/services/amazon-advertising/page.tsx",
+        )
+        self.assertEqual(route_source_path("https://anatainc.com/"), "src/app/page.tsx")
+        with self.assertRaises(ExecutionError):
+            route_source_path("https://app.anatainc.com/services/amazon-advertising/")
+        with self.assertRaises(ExecutionError):
+            route_source_path("https://anatainc.com/book")
+
+    def test_github_metadata_validation_requires_reason_evidence_and_safe_lengths(self) -> None:
+        record = {
+            "action_type": "meta_update",
+            "confidence": "high",
+            "reason": "The production title is duplicated across two distinct intents.",
+            "evidence": ["Rendered title matches another canonical page."],
+            "page_url": "https://anatainc.com/services/amazon-advertising/",
+            "action_value": json.dumps(
+                {
+                    "meta_title": "Amazon Advertising Agency | Anata",
+                    "meta_description": "Connect sponsored ads and DSP to one accountable Amazon advertising plan with operator decisions made visible.",
+                    "canonical_url": "https://anatainc.com/services/amazon-advertising/",
+                }
+            ),
+        }
+        validated = validate_metadata_action(record)
+        self.assertEqual(validated["meta_title"], "Amazon Advertising Agency | Anata")
+        with self.assertRaises(ExecutionError):
+            validate_metadata_action({**record, "evidence": []})
+        with self.assertRaises(ExecutionError):
+            validate_metadata_action(
+                {
+                    **record,
+                    "action_value": json.dumps(
+                        {
+                            "meta_title": "Too short",
+                            "meta_description": validated["meta_description"],
+                        }
+                    ),
+                }
+            )
+
+    def test_static_metadata_source_update_preserves_page_code(self) -> None:
+        source = '''import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Old Amazon Advertising Title | Anata",
+  description:
+    "This is the existing long description that should be safely replaced by the executor.",
+};
+
+export default function Page() {
+  return <main>Keep this page body.</main>;
+}
+'''
+        updated = update_static_metadata_source(
+            source,
+            {
+                "meta_title": "Amazon Advertising Agency | Anata",
+                "meta_description": "Connect sponsored ads and DSP to one accountable Amazon advertising plan with operator decisions made visible.",
+                "canonical_url": "https://anatainc.com/services/amazon-advertising/",
+            },
+        )
+        self.assertIn('title: "Amazon Advertising Agency | Anata"', updated)
+        self.assertIn("operator decisions made visible", updated)
+        self.assertIn(
+            'alternates: { canonical: "https://anatainc.com/services/amazon-advertising/" }',
+            updated,
+        )
+        self.assertIn("<main>Keep this page body.</main>", updated)
+
+    def test_github_metadata_execution_commits_and_verifies(self) -> None:
+        record = {
+            "feedback_id": "fb_meta_github",
+            "action_type": "meta_update",
+            "confidence": "high",
+            "reason": "The production metadata does not match the approved intent map.",
+            "evidence": ["Rendered metadata differs from the approved title and description."],
+            "page_url": "https://anatainc.com/services/amazon-advertising/",
+            "action_value": json.dumps(
+                {
+                    "meta_title": "Amazon Advertising Agency | Anata",
+                    "meta_description": "Connect sponsored ads and DSP to one accountable Amazon advertising plan with operator decisions made visible.",
+                }
+            ),
+        }
+        source = '''export const metadata = {
+  title: "Old Amazon Advertising Title | Anata",
+  description: "This is the existing long description that should be safely replaced by the executor.",
+};
+'''
+        client = mock.Mock()
+        client.repository = "david-anata/anata-website"
+        client.branch = "main"
+        client.get_file.return_value = (source, "source-sha")
+        client.put_file.return_value = {"commit": {"sha": "commit-sha"}}
+        with mock.patch(
+            "sales_support_agent.services.website_ops_github.GitHubWebsiteClient",
+            return_value=client,
+        ):
+            with mock.patch(
+                "sales_support_agent.services.website_ops_github._live_metadata_matches",
+                return_value=True,
+            ):
+                result = execute_github_metadata_action(
+                    record,
+                    config=SimpleNamespace(),
+                    timestamp=datetime(2026, 7, 27, tzinfo=timezone.utc),
+                )
+        self.assertEqual(result["verification_status"], "verified")
+        self.assertEqual(result["commit_sha"], "commit-sha")
+        self.assertEqual(result["source_path"], "src/app/services/amazon-advertising/page.tsx")
+        client.put_file.assert_called_once()
+
+    def test_missing_canonical_creates_high_confidence_github_action(self) -> None:
+        page = {
+            "url": "https://anatainc.com/services/amazon-advertising/",
+            "final_url": "https://anatainc.com/services/amazon-advertising/",
+            "title": "Amazon Advertising Agency | Anata",
+            "canonical_url": "",
+            "issues": [
+                {
+                    "code": "MISSING_CANONICAL",
+                    "summary": "The page does not declare a canonical URL.",
+                }
+            ],
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "WEBSITE_OPS_GITHUB_TOKEN": "test-token",
+                "WEBSITE_OPS_GITHUB_REPOSITORY": "david-anata/anata-website",
+            },
+            clear=False,
+        ):
+            actions = _deterministic_metadata_actions(
+                page,
+                {},
+                {},
+                primary_lead_event="generate_lead",
+            )
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["action_type"], "canonical_update")
+        self.assertEqual(actions[0]["confidence"], "high")
+        self.assertEqual(actions[0]["execution_eligibility"], "auto_execute")
+        self.assertIn("production sitemap", actions[0]["insight_source"])
 
     def test_execute_feedback_action_meta_update_calls_plugin_endpoint(self) -> None:
         feedback = {

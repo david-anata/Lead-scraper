@@ -755,6 +755,55 @@ def _structural_action_from_issue(page: Mapping[str, Any], issue: Mapping[str, A
     }
 
 
+def _deterministic_metadata_actions(
+    page: Mapping[str, Any],
+    gsc: Mapping[str, Any],
+    ga4: Mapping[str, Any],
+    *,
+    primary_lead_event: str,
+) -> list[dict[str, Any]]:
+    """Build only metadata corrections whose desired value is unambiguous."""
+
+    page_url = str(page.get("final_url") or page.get("url") or "").strip()
+    if not page_url:
+        return []
+    actions: list[dict[str, Any]] = []
+    for issue in page.get("issues") or []:
+        code = str(issue.get("code", "")).strip()
+        if code not in {"MISSING_CANONICAL", "CANONICAL_MISMATCH"}:
+            continue
+        current = str(page.get("canonical_url", "") or "No canonical tag").strip()
+        action = _base_action(
+            page=page,
+            gsc=gsc,
+            ga4=ga4,
+            action_type="canonical_update",
+            section_name="Canonical metadata",
+            before_state=current,
+            after_state=page_url,
+            reason=(
+                "The rendered canonical is missing or differs from the final production URL; "
+                "the final 2xx sitemap URL is the deterministic preferred URL."
+            ),
+            insight_source="Rendered crawl + production sitemap",
+            confidence="high",
+            action_payload={"canonical_url": page_url},
+            primary_lead_event=primary_lead_event,
+            confidence_basis=[
+                "The URL is in the production sitemap.",
+                "The page resolves successfully on the restricted marketing host.",
+                "The requested canonical exactly matches the final production URL.",
+            ],
+        )
+        action["evidence"] = [
+            str(issue.get("summary", "")).strip(),
+            f"Rendered canonical: {current}.",
+            f"Final production URL: {page_url}.",
+        ]
+        actions.append(action)
+    return actions
+
+
 def _analytics_actions(
     page: Mapping[str, Any],
     gsc: Mapping[str, Any],
@@ -1182,6 +1231,14 @@ def build_autonomy_overlay(
         filtered_generated_content_actions = _mvp_filter_actions(generated_content_actions)
         action_queue.extend(filtered_generated_content_actions)
         content_tasks.extend(filtered_generated_content_actions)
+        action_queue.extend(
+            _deterministic_metadata_actions(
+                observation,
+                gsc,
+                ga4,
+                primary_lead_event=config.primary_lead_event,
+            )
+        )
 
         page_insights.append(
             {
