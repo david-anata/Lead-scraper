@@ -562,17 +562,9 @@ def load_settings() -> Settings:
         website_ops_site_urls=_parse_csv_tuple(
             os.getenv(
                 "WEBSITE_OPS_URLS",
-                "https://anatainc.com/,https://anatainc.com/services/,https://anatainc.com/services/fulfillment/,https://anatainc.com/services/shipping/,https://anatainc.com/services/ai/,https://anatainc.com/services/advertising/,https://anatainc.com/contact/",
-            ),
-            default=(
                 "https://anatainc.com/",
-                "https://anatainc.com/services/",
-                "https://anatainc.com/services/fulfillment/",
-                "https://anatainc.com/services/shipping/",
-                "https://anatainc.com/services/ai/",
-                "https://anatainc.com/services/advertising/",
-                "https://anatainc.com/contact/",
             ),
+            default=("https://anatainc.com/",),
         ),
         website_ops_execute_approved=_parse_bool(os.getenv("WEBSITE_OPS_EXECUTE_APPROVED", "true"), default=True),
         use_due_date_for_follow_up=_parse_bool(os.getenv("CLICKUP_USE_DUE_DATE_FOR_FOLLOW_UP", "")),

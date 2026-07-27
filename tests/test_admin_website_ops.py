@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import tempfile
 import unittest
@@ -10,14 +11,21 @@ import sys
 from types import SimpleNamespace
 from unittest import mock
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from sales_support_agent.services import website_ops_vendor as website_ops
-from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
+from sales_support_agent.services.website_ops_autonomy import (
+    _deterministic_metadata_actions,
+    build_autonomy_overlay,
+)
 from sales_support_agent.services.website_ops_content import clean_generated_content
 from sales_support_agent.services.website_ops import (
+    discover_website_ops_urls,
     execute_approved_website_ops_actions,
     get_website_ops_run_state,
     latest_report_entry,
@@ -29,6 +37,7 @@ from sales_support_agent.services.website_ops import (
     review_feedback_record,
     run_website_ops,
     save_feedback_record,
+    send_website_ops_report_email,
     website_ops_run_is_due,
     write_website_ops_run_state,
 )
@@ -39,6 +48,13 @@ from sales_support_agent.services.website_ops_vendor.executor import (
     faq_exists,
     inject_faq_block,
     resolve_insertion_point,
+)
+from sales_support_agent.api.website_ops_jobs_router import router as website_ops_jobs_router
+from sales_support_agent.services.website_ops_github import (
+    execute_github_metadata_action,
+    route_source_path,
+    update_static_metadata_source,
+    validate_metadata_action,
 )
 
 
@@ -83,6 +99,125 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertIn("action center", html)
             self.assertIn("/admin/api/website-ops/run", html)
             self.assertIn("/admin/api/website-ops/feedback", html)
+            self.assertIn("8:00 AM America/Denver", html)
+
+    def test_sitemap_discovery_restricts_scope_and_private_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                website_ops_root=Path(tmpdir),
+                website_ops_site_urls=("https://anatainc.com/",),
+                website_ops_sitemap_url="https://anatainc.com/sitemap.xml",
+                website_ops_allowed_host="anatainc.com",
+            )
+            sitemap = b"""<?xml version="1.0"?>
+            <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+              <url><loc>https://anatainc.com/</loc></url>
+              <url><loc>https://anatainc.com/services</loc></url>
+              <url><loc>https://anatainc.com/book</loc></url>
+              <url><loc>https://app.anatainc.com/register</loc></url>
+            </urlset>"""
+            with mock.patch(
+                "sales_support_agent.services.website_ops.urllib.request.urlopen",
+                return_value=io.BytesIO(sitemap),
+            ):
+                urls = discover_website_ops_urls(settings)
+            self.assertEqual(
+                urls,
+                ("https://anatainc.com/", "https://anatainc.com/services"),
+            )
+
+    def test_daily_email_is_change_only_and_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                website_ops_root=Path(tmpdir),
+                website_ops_report_email_to=("david@anatainc.com",),
+                website_ops_email_from="Anata Agent <noreply@anatainc.com>",
+                resend_api_key="test-key",
+                resend_from="Anata Agent <noreply@anatainc.com>",
+            )
+            report = self._fake_report()
+            with mock.patch(
+                "sales_support_agent.services.website_ops.ResendClient.send_message",
+                return_value="email-1",
+            ) as send:
+                first = send_website_ops_report_email(settings, mode="daily", report=report)
+                second = send_website_ops_report_email(settings, mode="daily", report=report)
+            self.assertTrue(first["sent"])
+            self.assertFalse(second["sent"])
+            self.assertEqual(second["reason"], "unchanged")
+            send.assert_called_once()
+
+    def test_daily_email_ignores_volatile_report_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                website_ops_root=Path(tmpdir),
+                website_ops_report_email_to=("david@anatainc.com",),
+                website_ops_email_from="Anata Agent <noreply@anatainc.com>",
+                resend_api_key="test-key",
+                resend_from="Anata Agent <noreply@anatainc.com>",
+            )
+            first_report = self._fake_report()
+            first_report["generated_at"] = "2026-07-26T14:00:00Z"
+            second_report = dict(first_report)
+            second_report["generated_at"] = "2026-07-27T14:00:00Z"
+            with mock.patch(
+                "sales_support_agent.services.website_ops.ResendClient.send_message",
+                return_value="email-1",
+            ) as send:
+                send_website_ops_report_email(settings, mode="daily", report=first_report)
+                second = send_website_ops_report_email(settings, mode="daily", report=second_report)
+            self.assertFalse(second["sent"])
+            self.assertEqual(second["reason"], "unchanged")
+            send.assert_called_once()
+
+    def test_run_due_respects_daily_weekly_and_monthly_periods(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            write_website_ops_run_state(
+                settings,
+                "daily",
+                {"status": "succeeded", "last_successful_date": "2026-07-26"},
+            )
+            write_website_ops_run_state(
+                settings,
+                "weekly",
+                {"status": "succeeded", "last_successful_date": "2026-07-20"},
+            )
+            write_website_ops_run_state(
+                settings,
+                "monthly",
+                {"status": "succeeded", "last_successful_date": "2026-07-01"},
+            )
+            self.assertFalse(website_ops_run_is_due(settings, "daily", today=date(2026, 7, 26)))
+            self.assertTrue(website_ops_run_is_due(settings, "daily", today=date(2026, 7, 27)))
+            self.assertFalse(website_ops_run_is_due(settings, "weekly", today=date(2026, 7, 26)))
+            self.assertTrue(website_ops_run_is_due(settings, "weekly", today=date(2026, 7, 27)))
+            self.assertFalse(website_ops_run_is_due(settings, "monthly", today=date(2026, 7, 31)))
+            self.assertTrue(website_ops_run_is_due(settings, "monthly", today=date(2026, 8, 1)))
+
+    def test_scheduled_job_requires_internal_key_and_runs_requested_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app = FastAPI()
+            app.state.settings = SimpleNamespace(
+                internal_api_key="test-internal-key",
+                website_ops_root=Path(tmpdir),
+            )
+            app.include_router(website_ops_jobs_router)
+            client = TestClient(app)
+            unauthorized = client.post("/api/jobs/website-ops/run", json={"mode": "daily"})
+            self.assertEqual(unauthorized.status_code, 401)
+            with mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
+                return_value=SimpleNamespace(message="Daily website ops run completed."),
+            ) as run:
+                response = client.post(
+                    "/api/jobs/website-ops/run",
+                    headers={"X-Internal-Api-Key": "test-internal-key"},
+                    json={"mode": "daily"},
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["details"]["daily"]["status"], "succeeded")
+            run.assert_called_once_with(app.state.settings, mode="daily")
 
     def test_queue_empty_state_points_to_resolution_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -647,6 +782,154 @@ class AdminWebsiteOpsTests(unittest.TestCase):
         self.assertTrue(details["eligible"])
         self.assertEqual(details["execution_eligibility"], "auto_execute")
         self.assertIn("seo metadata", details["reason"].lower())
+
+    def test_github_metadata_route_mapping_is_marketing_only(self) -> None:
+        self.assertEqual(
+            route_source_path("https://anatainc.com/services/amazon-advertising/"),
+            "src/app/services/amazon-advertising/page.tsx",
+        )
+        self.assertEqual(route_source_path("https://anatainc.com/"), "src/app/page.tsx")
+        with self.assertRaises(ExecutionError):
+            route_source_path("https://app.anatainc.com/services/amazon-advertising/")
+        with self.assertRaises(ExecutionError):
+            route_source_path("https://anatainc.com/book")
+
+    def test_github_metadata_validation_requires_reason_evidence_and_safe_lengths(self) -> None:
+        record = {
+            "action_type": "meta_update",
+            "confidence": "high",
+            "reason": "The production title is duplicated across two distinct intents.",
+            "evidence": ["Rendered title matches another canonical page."],
+            "page_url": "https://anatainc.com/services/amazon-advertising/",
+            "action_value": json.dumps(
+                {
+                    "meta_title": "Amazon Advertising Agency | Anata",
+                    "meta_description": "Connect sponsored ads and DSP to one accountable Amazon advertising plan with operator decisions made visible.",
+                    "canonical_url": "https://anatainc.com/services/amazon-advertising/",
+                }
+            ),
+        }
+        validated = validate_metadata_action(record)
+        self.assertEqual(validated["meta_title"], "Amazon Advertising Agency | Anata")
+        with self.assertRaises(ExecutionError):
+            validate_metadata_action({**record, "evidence": []})
+        with self.assertRaises(ExecutionError):
+            validate_metadata_action(
+                {
+                    **record,
+                    "action_value": json.dumps(
+                        {
+                            "meta_title": "Too short",
+                            "meta_description": validated["meta_description"],
+                        }
+                    ),
+                }
+            )
+
+    def test_static_metadata_source_update_preserves_page_code(self) -> None:
+        source = '''import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Old Amazon Advertising Title | Anata",
+  description:
+    "This is the existing long description that should be safely replaced by the executor.",
+};
+
+export default function Page() {
+  return <main>Keep this page body.</main>;
+}
+'''
+        updated = update_static_metadata_source(
+            source,
+            {
+                "meta_title": "Amazon Advertising Agency | Anata",
+                "meta_description": "Connect sponsored ads and DSP to one accountable Amazon advertising plan with operator decisions made visible.",
+                "canonical_url": "https://anatainc.com/services/amazon-advertising/",
+            },
+        )
+        self.assertIn('title: "Amazon Advertising Agency | Anata"', updated)
+        self.assertIn("operator decisions made visible", updated)
+        self.assertIn(
+            'alternates: { canonical: "https://anatainc.com/services/amazon-advertising/" }',
+            updated,
+        )
+        self.assertIn("<main>Keep this page body.</main>", updated)
+
+    def test_github_metadata_execution_commits_and_verifies(self) -> None:
+        record = {
+            "feedback_id": "fb_meta_github",
+            "action_type": "meta_update",
+            "confidence": "high",
+            "reason": "The production metadata does not match the approved intent map.",
+            "evidence": ["Rendered metadata differs from the approved title and description."],
+            "page_url": "https://anatainc.com/services/amazon-advertising/",
+            "action_value": json.dumps(
+                {
+                    "meta_title": "Amazon Advertising Agency | Anata",
+                    "meta_description": "Connect sponsored ads and DSP to one accountable Amazon advertising plan with operator decisions made visible.",
+                }
+            ),
+        }
+        source = '''export const metadata = {
+  title: "Old Amazon Advertising Title | Anata",
+  description: "This is the existing long description that should be safely replaced by the executor.",
+};
+'''
+        client = mock.Mock()
+        client.repository = "david-anata/anata-website"
+        client.branch = "main"
+        client.get_file.return_value = (source, "source-sha")
+        client.put_file.return_value = {"commit": {"sha": "commit-sha"}}
+        with mock.patch(
+            "sales_support_agent.services.website_ops_github.GitHubWebsiteClient",
+            return_value=client,
+        ):
+            with mock.patch(
+                "sales_support_agent.services.website_ops_github._live_metadata_matches",
+                return_value=True,
+            ):
+                result = execute_github_metadata_action(
+                    record,
+                    config=SimpleNamespace(),
+                    timestamp=datetime(2026, 7, 27, tzinfo=timezone.utc),
+                )
+        self.assertEqual(result["verification_status"], "verified")
+        self.assertEqual(result["commit_sha"], "commit-sha")
+        self.assertEqual(result["source_path"], "src/app/services/amazon-advertising/page.tsx")
+        client.put_file.assert_called_once()
+
+    def test_missing_canonical_creates_high_confidence_github_action(self) -> None:
+        page = {
+            "url": "https://anatainc.com/services/amazon-advertising/",
+            "final_url": "https://anatainc.com/services/amazon-advertising/",
+            "title": "Amazon Advertising Agency | Anata",
+            "canonical_url": "",
+            "issues": [
+                {
+                    "code": "MISSING_CANONICAL",
+                    "summary": "The page does not declare a canonical URL.",
+                }
+            ],
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "WEBSITE_OPS_GITHUB_TOKEN": "test-token",
+                "WEBSITE_OPS_GITHUB_REPOSITORY": "david-anata/anata-website",
+            },
+            clear=False,
+        ):
+            actions = _deterministic_metadata_actions(
+                page,
+                {},
+                {},
+                primary_lead_event="generate_lead",
+            )
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["action_type"], "canonical_update")
+        self.assertEqual(actions[0]["confidence"], "high")
+        self.assertEqual(actions[0]["execution_eligibility"], "auto_execute")
+        self.assertIn("production sitemap", actions[0]["insight_source"])
 
     def test_execute_feedback_action_meta_update_calls_plugin_endpoint(self) -> None:
         feedback = {

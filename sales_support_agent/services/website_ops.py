@@ -5,15 +5,25 @@ from __future__ import annotations
 import html
 import hashlib
 import json
+import os
 import re
+import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 from sales_support_agent.config import Settings
+from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.services.admin_nav import render_agent_favicon_links, render_agent_nav, render_agent_nav_styles
 from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
+from sales_support_agent.services.website_ops_github import (
+    METADATA_ACTION_TYPES,
+    execute_github_metadata_action,
+    github_metadata_is_configured,
+)
 from sales_support_agent.services import website_ops_vendor as website_ops
 
 
@@ -195,13 +205,24 @@ def write_website_ops_run_state(settings: Settings, mode: str, updates: Mapping[
 
 
 def website_ops_run_is_due(settings: Settings, mode: str = "daily", *, today: date | None = None) -> bool:
-    if mode != "daily":
-        return True
-    current_day = (today or date.today()).isoformat()
-    state = get_website_ops_run_state(settings, mode)
+    normalized_mode = mode if mode in RUN_MODES else "daily"
+    current_date = today or date.today()
+    current_day = current_date.isoformat()
+    state = get_website_ops_run_state(settings, normalized_mode)
     if state.get("status") in {"queued", "running"} and state.get("run_date") == current_day:
         return False
-    return state.get("last_successful_date") != current_day
+    try:
+        last_successful = date.fromisoformat(str(state.get("last_successful_date", "")))
+    except ValueError:
+        return True
+    if normalized_mode == "daily":
+        return last_successful != current_date
+    if normalized_mode == "weekly":
+        return last_successful.isocalendar()[:2] != current_date.isocalendar()[:2]
+    return (last_successful.year, last_successful.month) != (
+        current_date.year,
+        current_date.month,
+    )
 
 
 def _config(settings: Settings) -> website_ops.WebsiteOpsConfig:
@@ -224,6 +245,285 @@ def _ensure_storage(settings: Settings) -> None:
     (root / "feedback").mkdir(parents=True, exist_ok=True)
     (root / "backups").mkdir(parents=True, exist_ok=True)
     (root / "state").mkdir(parents=True, exist_ok=True)
+    (root / "emails").mkdir(parents=True, exist_ok=True)
+
+
+def discover_website_ops_urls(settings: Settings) -> tuple[str, ...]:
+    """Discover the public marketing-site scope from its sitemap.
+
+    The explicit URL setting remains a fail-safe only. App, preview, booking,
+    report, and tokenized paths never enter the marketing-site scope.
+    """
+
+    configured_urls = tuple(getattr(settings, "website_ops_site_urls", ()) or ())
+    configured_host = (
+        (urlparse(str(configured_urls[0])).hostname or "").lower()
+        if configured_urls
+        else ""
+    )
+    sitemap_url = str(
+        getattr(settings, "website_ops_sitemap_url", "")
+        or os.getenv("WEBSITE_OPS_SITEMAP_URL", "")
+        or (f"https://{configured_host}/sitemap.xml" if configured_host else "")
+        or "https://anatainc.com/sitemap.xml"
+    ).strip()
+    allowed_host = str(
+        getattr(settings, "website_ops_allowed_host", "")
+        or os.getenv("WEBSITE_OPS_ALLOWED_HOST", "")
+        or configured_host
+        or "anatainc.com"
+    ).strip().lower()
+    excluded_prefixes = (
+        "/book",
+        "/brand",
+        "/preview",
+        "/x/",
+        "/tools/advertising-audit/results/",
+        "/tools/fulfillment-rate-sheet/results",
+    )
+
+    def _allowed(value: str) -> bool:
+        parsed = urlparse(value)
+        path = parsed.path or "/"
+        return (
+            parsed.scheme in {"http", "https"}
+            and (parsed.hostname or "").lower() == allowed_host
+            and not any(path == prefix or path.startswith(prefix) for prefix in excluded_prefixes)
+        )
+
+    discovered: list[str] = []
+    try:
+        request = urllib.request.Request(
+            sitemap_url,
+            headers={"User-Agent": "anata-website-ops/2.0"},
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            root = ET.fromstring(response.read())
+        for node in root.iter():
+            if node.tag.rsplit("}", 1)[-1] != "loc" or not node.text:
+                continue
+            value = node.text.strip()
+            if _allowed(value):
+                discovered.append(value)
+    except (OSError, ValueError, ET.ParseError):
+        discovered = []
+
+    if not discovered:
+        discovered = [
+            str(value).strip()
+            for value in configured_urls
+            if _allowed(str(value).strip())
+        ]
+
+    unique = sorted(set(discovered), key=lambda value: (urlparse(value).path != "/", urlparse(value).path))
+    return tuple(unique)
+
+
+def _report_change_fingerprint(report: Mapping[str, Any]) -> str:
+    def _stable_records(values: Any, fields: tuple[str, ...]) -> list[dict[str, Any]]:
+        records = []
+        for value in values or []:
+            if not isinstance(value, Mapping):
+                continue
+            records.append(
+                {field: value.get(field) for field in fields if value.get(field) not in (None, "")}
+            )
+        return sorted(records, key=lambda item: json.dumps(item, sort_keys=True, default=str))
+
+    stable_payload = {
+        "status": report.get("status"),
+        "issues": _stable_records(
+            report.get("issues"),
+            ("page_url", "url", "issue_type", "category", "priority", "status", "evidence"),
+        ),
+        "action_queue": _stable_records(
+            report.get("action_queue"),
+            (
+                "automation_key",
+                "page_url",
+                "action_type",
+                "before_state",
+                "after_state",
+                "status",
+                "execution_eligibility",
+            ),
+        ),
+        "executed_actions": _stable_records(
+            report.get("executed_actions"),
+            ("feedback_id", "page_url", "action_type", "verification_status"),
+        ),
+        "analytics_status": {
+            key: value
+            for key, value in dict(report.get("analytics_status") or {}).items()
+            if key in {"search_console", "ga4", "ga4_trust_status", "primary_lead_event"}
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(stable_payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _notification_state_path(settings: Settings) -> Path:
+    return _state_dir(settings) / "website_ops_notification_state.json"
+
+
+def _load_notification_state(settings: Settings) -> dict[str, Any]:
+    path = _notification_state_path(settings)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_email_delivery(settings: Settings, payload: Mapping[str, Any]) -> None:
+    _ensure_storage(settings)
+    path = settings.website_ops_root / "emails" / "deliveries.jsonl"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(dict(payload), sort_keys=True, default=str) + "\n")
+
+
+def send_website_ops_report_email(
+    settings: Settings,
+    *,
+    mode: str,
+    report: Mapping[str, Any],
+    force: bool = False,
+) -> dict[str, Any]:
+    """Send a change-only daily report and an unconditional weekly/monthly report."""
+
+    recipients = tuple(getattr(settings, "website_ops_report_email_to", ()) or ())
+    if not recipients:
+        recipients = tuple(
+            value.strip()
+            for value in os.getenv("WEBSITE_OPS_REPORT_EMAIL_TO", "david@anatainc.com").split(",")
+            if value.strip()
+        )
+    fingerprint = _report_change_fingerprint(report)
+    state = _load_notification_state(settings)
+    previous = str(state.get(f"{mode}_fingerprint", "") or "")
+    changed = fingerprint != previous
+    should_send = bool(force or mode in {"weekly", "monthly"} or changed)
+    result = {
+        "attempted": False,
+        "sent": False,
+        "changed": changed,
+        "reason": "unchanged" if not should_send else "",
+        "provider_message_id": "",
+    }
+    if not should_send:
+        return result
+
+    resend = ResendClient(settings)
+    if not recipients or not resend.is_configured(
+        from_address=str(getattr(settings, "website_ops_email_from", "") or "")
+    ):
+        result["reason"] = "email_not_configured"
+        return result
+
+    issues = list(report.get("issues") or [])
+    executed = list(report.get("executed_actions") or [])
+    priority_counts = dict(report.get("issue_counts_by_priority") or {})
+    subject = (
+        f"Website Ops {mode}: "
+        f"{len(executed)} fixed, {len(issues)} open"
+    )
+    text = "\n".join(
+        [
+            f"Anata Website Ops {mode.title()} Report",
+            "",
+            f"Status: {report.get('status', 'unknown')}",
+            f"Pages reviewed: {report.get('pages_reviewed', 0)}",
+            f"Open findings: {len(issues)}",
+            f"Automated corrections: {len(executed)}",
+            (
+                "Priority: "
+                + ", ".join(
+                    f"{key} {value}" for key, value in sorted(priority_counts.items())
+                )
+            ),
+            "",
+            "Review the evidence and full report:",
+            "https://agent.anatainc.com/admin/website-ops/reports/latest",
+        ]
+    )
+    result["attempted"] = True
+    try:
+        message_id = resend.send_message(
+            to=recipients,
+            subject=subject,
+            text=text,
+            idempotency_key=f"website-ops-{mode}-{fingerprint[:24]}",
+            from_address=str(getattr(settings, "website_ops_email_from", "") or ""),
+        )
+        result.update({"sent": True, "provider_message_id": message_id})
+        state[f"{mode}_fingerprint"] = fingerprint
+        state[f"{mode}_sent_at"] = _utc_now().isoformat()
+        path = _notification_state_path(settings)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2, sort_keys=True))
+    except Exception as exc:  # noqa: BLE001 - delivery failure belongs in the run record
+        result["reason"] = str(exc)
+    _write_email_delivery(
+        settings,
+        {
+            **result,
+            "mode": mode,
+            "fingerprint": fingerprint,
+            "created_at": _utc_now().isoformat(),
+            "recipients": list(recipients),
+        },
+    )
+    return result
+
+
+def send_website_ops_failure_email(settings: Settings, *, mode: str, error: str) -> dict[str, Any]:
+    recipients = tuple(getattr(settings, "website_ops_report_email_to", ()) or ())
+    if not recipients:
+        recipients = tuple(
+            value.strip()
+            for value in os.getenv("WEBSITE_OPS_REPORT_EMAIL_TO", "david@anatainc.com").split(",")
+            if value.strip()
+        )
+    resend = ResendClient(settings)
+    result = {"attempted": False, "sent": False, "provider_message_id": "", "reason": ""}
+    if not recipients or not resend.is_configured(
+        from_address=str(getattr(settings, "website_ops_email_from", "") or "")
+    ):
+        result["reason"] = "email_not_configured"
+        return result
+    result["attempted"] = True
+    try:
+        message_id = resend.send_message(
+            to=recipients,
+            subject=f"Website Ops {mode} failed",
+            text=(
+                f"The {mode} Website Ops run failed.\n\n"
+                f"Error: {error}\n\n"
+                "Review the run at https://agent.anatainc.com/admin/website-ops"
+            ),
+            idempotency_key=(
+                f"website-ops-failure-{mode}-"
+                f"{hashlib.sha256(error.encode('utf-8')).hexdigest()[:24]}"
+            ),
+            from_address=str(getattr(settings, "website_ops_email_from", "") or ""),
+        )
+        result.update({"sent": True, "provider_message_id": message_id})
+    except Exception as exc:  # noqa: BLE001
+        result["reason"] = str(exc)
+    _write_email_delivery(
+        settings,
+        {
+            **result,
+            "mode": mode,
+            "failure": True,
+            "created_at": _utc_now().isoformat(),
+            "recipients": list(recipients),
+        },
+    )
+    return result
 
 
 def _feedback_status(value: str) -> str:
@@ -528,6 +828,18 @@ def _record_is_auto_executable(record: Mapping[str, Any]) -> bool:
     )
 
 
+def _execute_feedback_action(
+    settings: Settings,
+    record: Mapping[str, Any],
+    *,
+    config: website_ops.WebsiteOpsConfig,
+) -> dict[str, Any]:
+    action_type = str(record.get("action_type", "")).strip()
+    if action_type in METADATA_ACTION_TYPES and github_metadata_is_configured():
+        return execute_github_metadata_action(record, config=config)
+    return website_ops.execute_feedback_action(record, config=config)
+
+
 def _autofill_review_updates(existing: Mapping[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     updates = dict(payload)
     status = _feedback_status(str(updates.get("status", "")))
@@ -571,7 +883,7 @@ def review_feedback_record(
     record = website_ops.update_feedback_entry(existing, updates)
     if settings.website_ops_execute_approved and record.get("status") == "approved" and record.get("action_type") and _record_is_auto_executable(record):
         try:
-            result = website_ops.execute_feedback_action(record, config=_config(settings))
+            result = _execute_feedback_action(settings, record, config=_config(settings))
         except website_ops.ExecutionError as exc:
             record = website_ops.update_feedback_entry(
                 record,
@@ -608,7 +920,7 @@ def _execute_record(
     if require_auto_executable and not _record_is_auto_executable(record):
         return None
     try:
-        result = website_ops.execute_feedback_action(record, config=config)
+        result = _execute_feedback_action(settings, record, config=config)
     except website_ops.ExecutionError as exc:
         website_ops.update_feedback_entry(
             record,
@@ -669,10 +981,11 @@ def execute_approved_website_ops_actions(settings: Settings) -> WebsiteOpsAction
 
 def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsActionResult:
     config = _config(settings)
+    has_baseline = bool(_report_entries(settings))
     feedback_entries = load_feedback_records(settings)
     visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
     executed_actions: list[dict[str, Any]] = []
-    if settings.website_ops_execute_approved:
+    if settings.website_ops_execute_approved and has_baseline:
         for record in visible_feedback_entries:
             result = _execute_record(settings, config, record)
             if result:
@@ -686,8 +999,9 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         "monthly": "Anata Website Ops Monthly Report",
     }[mode]
     output_dir = settings.website_ops_root / "reports" / mode
+    monitored_urls = discover_website_ops_urls(settings)
     pipeline = website_ops.run_daily_report_pipeline(
-        list(settings.website_ops_site_urls),
+        list(monitored_urls),
         config=config,
         output_dir=output_dir,
         feedback_entries=visible_feedback_entries,
@@ -696,7 +1010,8 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         scope=f"agent-admin {mode} sweep",
         notes=[
             f"Run mode: {mode}.",
-            f"Monitored URLs: {len(settings.website_ops_site_urls)}.",
+            f"Monitored URLs: {len(monitored_urls)}.",
+            "Scope source: production sitemap with marketing-site host restrictions.",
             f"Feedback loaded: {len(feedback_entries)}.",
             f"Changes applied: {len(executed_actions)}.",
         ],
@@ -713,13 +1028,16 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         )
     )
     enriched_report = _mvp_filter_report_payload(enriched_report)
+    enriched_report["automation_mode"] = (
+        "validated_autopush" if has_baseline else "baseline_report_only"
+    )
     enriched_report["action_queue"] = _sync_action_queue_feedback(
         settings,
         list(enriched_report.get("action_queue") or []),
         visible_feedback_entries,
         report_slug=_slugify_text(report_title),
     )
-    if settings.website_ops_execute_approved:
+    if settings.website_ops_execute_approved and has_baseline:
         current_records = {str(item.get("feedback_id", "")): item for item in _mvp_filter_feedback_records(load_feedback_records(settings))}
         for item in enriched_report["action_queue"]:
             feedback_id = str(item.get("feedback_id", "")).strip()
@@ -753,6 +1071,11 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
                 report_slug=_slugify_text(report_title),
             )
     artifacts = website_ops.write_daily_report_artifacts(enriched_report, output_dir=output_dir, config=config)
+    enriched_report["email_delivery"] = send_website_ops_report_email(
+        settings,
+        mode=mode,
+        report=enriched_report,
+    )
     return WebsiteOpsActionResult(
         ok=True,
         message=f"{mode.title()} website ops run completed.",
@@ -1564,12 +1887,10 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     serp_blueprints = list(latest_payload.get("serp_blueprints") or [])[:6]
     content_tasks = list(latest_payload.get("content_tasks") or [])[:6]
     analytics_status = latest_payload.get("analytics_status") or {}
-    today = date.today().isoformat()
-    latest_date = str(latest.get("date", "") if latest else "")
-    auto_refresh_note = (
-        "<p class='muted'>Refreshing today’s Website Ops signals automatically on load.</p>"
-        if latest_date != today
-        else ""
+    monitored_count = int(latest_payload.get("pages_reviewed", 0) or len(settings.website_ops_site_urls))
+    schedule_note = (
+        "<p class='muted'>Scheduled for 8:00 AM America/Denver. "
+        "Daily email is sent only when findings change, automation runs, or a run fails.</p>"
     )
     body = f"""
       {_nav("website_ops", website_ops_section="seo_dashboard", user=user)}
@@ -1579,24 +1900,25 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
           <div class="card stack">
             <p class="eyebrow">Website Ops</p>
             <h1>Website <span style="color:var(--accent)">action center</span>.</h1>
-            <p class="lead">Review what changed, what needs approval, and which website actions are safe to run.</p>
+            <p class="lead">See what changed, what Agent verified, and what happened next.</p>
             {_mvp_mode_banner()}
             <div class="button-row">
               <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit">Run Daily Sweep</button></form>
               <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run Weekly Sweep</button></form>
               <a href="/admin/website-ops/reports/latest" style="text-decoration:none;"><button class="ghost" type="button">Open Latest Report</button></a>
             </div>
-            {auto_refresh_note}
+            {schedule_note}
           </div>
           <div id="submit-issue" class="card stack">
             <p class="eyebrow">Current scope</p>
             <div class="summary-grid">
-              {_summary_chip("Monitored Pages", len(settings.website_ops_site_urls), tone="neutral")}
-              {_summary_chip("Auto execution", "Enabled" if settings.website_ops_execute_approved else "Disabled", tone="good" if settings.website_ops_execute_approved else "warn")}
+              {_summary_chip("Marketing pages", monitored_count, tone="neutral")}
+              {_summary_chip("Approved action runner", "Enabled" if settings.website_ops_execute_approved else "Disabled", tone="good" if settings.website_ops_execute_approved else "warn")}
+              {_summary_chip("Metadata autopush", "Ready" if github_metadata_is_configured() else "Needs GitHub token", tone="good" if github_metadata_is_configured() else "warn")}
               {_run_state_summary(run_state)}
               {_connection_summary_chips(analytics_status)}
             </div>
-            <p class="muted">Core system status only. Full connection and developer details are lower on the page.</p>
+            <p class="muted">Scope is restricted to anatainc.com and discovered from the production sitemap. High-confidence metadata changes require a documented reason and evidence, then commit to the marketing repository and verify on production.</p>
           </div>
         </section>
         <section class="stats">

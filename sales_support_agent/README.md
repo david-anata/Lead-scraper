@@ -77,6 +77,27 @@ Operational:
 - `INSTANTLY_WEBHOOK_SECRET`
 - `INSTANTLY_WEBHOOK_SECRET_HEADER`
 
+Website Ops:
+
+- `WEBSITE_OPS_ROOT` — persistent report, state, backup, and delivery storage
+- `WEBSITE_OPS_SITEMAP_URL` — production marketing sitemap
+- `WEBSITE_OPS_ALLOWED_HOST` — exact host allowed for crawling and corrections
+- `WEBSITE_OPS_REPORT_EMAIL_TO` — change-report recipients
+- `WEBSITE_OPS_GITHUB_TOKEN` — fine-grained GitHub token restricted to Contents
+  read/write on `david-anata/anata-website`; never use an organization-wide token
+- `WEBSITE_OPS_GITHUB_REPOSITORY` — defaults to `david-anata/anata-website`
+- `WEBSITE_OPS_GITHUB_BRANCH` — defaults to `main`
+- `WEBSITE_OPS_DEPLOY_VERIFY_TIMEOUT_SECONDS` — production verification window
+- `WEBSITE_OPS_DEPLOY_VERIFY_POLL_SECONDS` — production verification interval
+
+Metadata autopush is deliberately narrower than reporting. It accepts only
+high-confidence title, description, or canonical actions with a recorded reason
+and evidence, maps the production URL to a static Next.js route, commits through
+GitHub using the current source SHA, and verifies the rendered production
+metadata. If production does not converge inside the verification window, the
+executor attempts a rollback commit and records the action as failed. Branded
+body-copy changes remain suggestion-only.
+
 Deck generator:
 
 - `SHARED_BRAND_PACKAGE_PATH`

@@ -444,12 +444,18 @@ def execution_target_details(feedback: Mapping[str, Any]) -> Dict[str, Any]:
     if action_type in {"meta_update", "meta_title_update", "meta_description_update", "canonical_update"}:
         page_url = str(feedback.get("page_url", "")).strip()
         target_post_id = str(feedback.get("target_post_id", "")).strip()
-        if not plugin_shared_secret() or not plugin_base_url(page_url):
+        github_configured = bool(
+            os.getenv("WEBSITE_OPS_GITHUB_TOKEN", "").strip()
+            and os.getenv(
+                "WEBSITE_OPS_GITHUB_REPOSITORY", "david-anata/anata-website"
+            ).strip()
+        )
+        if not github_configured and (not plugin_shared_secret() or not plugin_base_url(page_url)):
             return {
                 "eligible": False,
                 "execution_eligibility": "approval_required",
                 "target_region": _infer_region_label(action_type),
-                "reason": "Website Ops plugin endpoint or shared secret is not configured.",
+                "reason": "GitHub or Website Ops plugin execution is not configured.",
                 "verification_requirements": [],
             }
         if not page_url and not target_post_id:
@@ -471,7 +477,11 @@ def execution_target_details(feedback: Mapping[str, Any]) -> Dict[str, Any]:
             "eligible": True,
             "execution_eligibility": "auto_execute",
             "target_region": _infer_region_label(action_type),
-            "reason": "SEO metadata updates are safe back-office mutations in MVP.",
+            "reason": (
+                "SEO metadata updates use validated GitHub commits with production verification."
+                if github_configured
+                else "SEO metadata updates are safe back-office mutations in MVP."
+            ),
             "verification_requirements": verification,
         }
     if action_type != "inject_faq_block":

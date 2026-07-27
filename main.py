@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import time
 import threading
 import unicodedata
@@ -17,6 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
+from zoneinfo import ZoneInfo
 
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -75,6 +77,7 @@ from sales_support_agent.services.website_ops import (
     review_feedback_record as review_website_ops_feedback_record,
     run_website_ops as run_website_ops_pipeline,
     save_feedback_record as save_website_ops_feedback_record,
+    send_website_ops_failure_email,
     website_ops_run_is_due,
     write_website_ops_run_state,
 )
@@ -631,6 +634,12 @@ class WebsiteOpsHostSettings:
     website_ops_root: Path
     website_ops_site_urls: tuple[str, ...]
     website_ops_execute_approved: bool
+    website_ops_sitemap_url: str
+    website_ops_allowed_host: str
+    website_ops_report_email_to: tuple[str, ...]
+    website_ops_email_from: str
+    resend_api_key: str
+    resend_from: str
 
 
 @dataclass(frozen=True)
@@ -747,19 +756,33 @@ def load_website_ops_settings() -> WebsiteOpsHostSettings:
         website_ops_site_urls=_parse_csv_tuple(
             os.getenv(
                 "WEBSITE_OPS_URLS",
-                "https://anatainc.com/,https://anatainc.com/services/,https://anatainc.com/services/fulfillment/,https://anatainc.com/services/shipping/,https://anatainc.com/services/ai/,https://anatainc.com/services/advertising/,https://anatainc.com/contact/",
-            ),
-            default=(
                 "https://anatainc.com/",
-                "https://anatainc.com/services/",
-                "https://anatainc.com/services/fulfillment/",
-                "https://anatainc.com/services/shipping/",
-                "https://anatainc.com/services/ai/",
-                "https://anatainc.com/services/advertising/",
-                "https://anatainc.com/contact/",
             ),
+            default=("https://anatainc.com/",),
         ),
         website_ops_execute_approved=_parse_bool(os.getenv("WEBSITE_OPS_EXECUTE_APPROVED", "true"), default=True),
+        website_ops_sitemap_url=(
+            os.getenv("WEBSITE_OPS_SITEMAP_URL", "https://anatainc.com/sitemap.xml").strip()
+            or "https://anatainc.com/sitemap.xml"
+        ),
+        website_ops_allowed_host=(
+            os.getenv("WEBSITE_OPS_ALLOWED_HOST", "anatainc.com").strip().lower()
+            or "anatainc.com"
+        ),
+        website_ops_report_email_to=_parse_csv_tuple(
+            os.getenv("WEBSITE_OPS_REPORT_EMAIL_TO", "david@anatainc.com"),
+            default=("david@anatainc.com",),
+        ),
+        website_ops_email_from=(
+            os.getenv("WEBSITE_OPS_EMAIL_FROM", "").strip()
+            or os.getenv("RESEND_FROM", "").strip()
+            or "Anata Agent <noreply@anatainc.com>"
+        ),
+        resend_api_key=os.getenv("RESEND_API_KEY", "").strip(),
+        resend_from=(
+            os.getenv("RESEND_FROM", "").strip()
+            or "Anata Agent <noreply@anatainc.com>"
+        ),
     )
 
 
@@ -4160,6 +4183,7 @@ def _website_ops_run_worker(app_instance: FastAPI, settings: WebsiteOpsHostSetti
         run_website_ops_pipeline(settings, mode=mode)
     except Exception as exc:
         logger.exception("[WebsiteOps] %s run failed trigger=%s", mode, trigger)
+        send_website_ops_failure_email(settings, mode=mode, error=str(exc))
         write_website_ops_run_state(
             settings,
             mode,
@@ -4239,11 +4263,6 @@ def admin_website_ops(request: Request) -> Response:
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
-    if website_ops_run_is_due(load_website_ops_settings(), "daily"):
-        try:
-            _start_website_ops_run(request, mode="daily", force=False, trigger="visit")
-        except Exception:
-            logger.exception("[WebsiteOps] auto daily sweep on page load failed")
     return HTMLResponse(render_website_ops_dashboard_page(load_website_ops_settings(), user=_current_nav_user(request)))
 
 
@@ -4482,6 +4501,49 @@ async def admin_website_ops_run(request: Request, mode: str = Form(default="dail
         return JSONResponse(status_code=400, content={"detail": "Unsupported run mode."})
     _start_website_ops_run(request, mode=normalized_mode, force=True, trigger="manual")
     return RedirectResponse(url="/admin/website-ops", status_code=302)
+
+
+@app.post("/api/jobs/website-ops/run")
+async def scheduled_website_ops_run(request: Request) -> JSONResponse:
+    """Authenticated Render cron entrypoint for Website Ops."""
+
+    expected = os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip()
+    supplied = request.headers.get("X-Internal-Api-Key", "").strip()
+    if not expected or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Invalid internal API key.")
+    try:
+        payload = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        payload = {}
+    mode = str(payload.get("mode", "scheduled") or "scheduled").strip().lower()
+    if mode not in {"scheduled", "daily", "weekly", "monthly"}:
+        raise HTTPException(status_code=400, detail="Unsupported run mode.")
+    local_now = datetime.now(ZoneInfo("America/Denver"))
+    if mode == "scheduled" and local_now.hour != 8:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "skipped",
+                "message": "Website Ops scheduler is waiting for 8:00 AM America/Denver.",
+                "local_time": local_now.isoformat(),
+            },
+        )
+
+    modes = [mode] if mode != "scheduled" else ["daily"]
+    if mode == "scheduled" and local_now.weekday() == 0:
+        modes.append("weekly")
+        if local_now.day <= 7:
+            modes.append("monthly")
+    details = {
+        selected_mode: _start_website_ops_run(
+            request,
+            mode=selected_mode,
+            force=False,
+            trigger="render_cron",
+        )
+        for selected_mode in modes
+    }
+    return JSONResponse(status_code=202, content={"status": "ok", "details": details})
 
 
 @app.get("/admin/api/website-ops/status")
