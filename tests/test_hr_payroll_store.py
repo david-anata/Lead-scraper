@@ -178,6 +178,61 @@ def test_check_must_be_confirmed_before_payroll_can_close():
         assert check.confirmation_reference == "bank-cleared-2001"
 
 
+def test_company_profile_accepts_only_authorized_payroll_approver():
+    engine = _engine()
+    profile = {
+        "legal_name": "Anata LLC",
+        "trade_name": "Anata",
+        "ein_last4": "1234",
+        "address_line1": "1 Main Street",
+        "address_line2": "",
+        "city": "Salt Lake City",
+        "state": "UT",
+        "zip_code": "84101",
+        "payroll_contact_email": "val@anatainc.com",
+        "final_approver_email": "david@anatainc.com",
+        "utah_withholding_account_last4": "1234",
+        "utah_ui_account_last4": "5678",
+        "federal_deposit_schedule": "semiweekly",
+        "utah_withholding_payment_frequency": "monthly",
+        "source_note": "Reviewed against the company registration.",
+        "actor": "val@anatainc.com",
+    }
+    with (
+        mock.patch.object(payroll_store, "get_engine", return_value=engine),
+        mock.patch(
+            "sales_support_agent.services.access.store.resolve_access",
+            return_value={
+                "email": "david@anatainc.com",
+                "status": "active",
+                "permissions": set(),
+            },
+        ),
+    ):
+        assert payroll_store.save_company_profile(
+            **profile
+        ) == (False, "company_profile_invalid")
+
+    with (
+        mock.patch.object(payroll_store, "get_engine", return_value=engine),
+        mock.patch(
+            "sales_support_agent.services.access.store.resolve_access",
+            return_value={
+                "email": "david@anatainc.com",
+                "status": "active",
+                "permissions": {"hr.payroll.approve"},
+            },
+        ),
+    ):
+        assert payroll_store.save_company_profile(
+            **profile
+        ) == (True, "company_profile_saved")
+
+    with Session(engine) as session:
+        company = session.query(HRCompanyProfile).one()
+        assert company.final_approver_email == "david@anatainc.com"
+
+
 def test_provider_handoff_detects_exact_match_and_variance():
     engine = _engine()
     run = _run()

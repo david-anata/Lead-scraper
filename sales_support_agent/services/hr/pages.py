@@ -1484,8 +1484,10 @@ def render_hr_policies(policy: dict, *, user, flash=None) -> str:
     return hr_shell("Policies", "policies", body, user=user)
 
 
-def render_hr_settings(settings: dict, company: dict, employees: list, opening_balances: list,
-                       handbooks: list, *, user, flash=None) -> str:
+def render_hr_settings(
+    settings: dict, company: dict, employees: list, payroll_approvers: list,
+    opening_balances: list, handbooks: list, *, user, flash=None,
+) -> str:
     checked = lambda key: " checked" if settings.get(key) else ""
     review = settings.get("qualified_review") or {}
     balance_by_email = {row["employee_email"]: row for row in opening_balances}
@@ -1530,13 +1532,11 @@ def render_hr_settings(settings: dict, company: dict, employees: list, opening_b
           <button class="hr-btn" type="submit">Save reviewed opening balance</button>
         </form>{approval_form}</details>"""
     selected_approver = str(company.get("final_approver_email") or "").lower()
-    active_employee_options = "".join(
-        f'<option value="{_esc(employee["email"])}"'
-        f'{" selected" if employee["email"].lower() == selected_approver else ""}>'
-        f'{_esc(employee["full_name"])} — {_esc(employee["email"])}</option>'
-        for employee in employees
-        if employee.get("employee_type") != "contractor"
-        and employee.get("status", "active") == "active"
+    approver_options = "".join(
+        f'<option value="{_esc(account["email"])}"'
+        f'{" selected" if account["email"].lower() == selected_approver else ""}>'
+        f'{_esc(account.get("name") or account["email"])} — {_esc(account["email"])}</option>'
+        for account in payroll_approvers
     )
     body = f"""
     {_flash(flash)}
@@ -1578,8 +1578,8 @@ def render_hr_settings(settings: dict, company: dict, employees: list, opening_b
       <label>ZIP</label><input name="zip_code" value="{_esc(company.get('zip_code'))}" required>
       <label>Payroll contact email</label><input type="email" name="payroll_contact_email" value="{_esc(company.get('payroll_contact_email'))}" required>
       <label>Required final payroll approver</label>
-      <p class="hr-help">Only this person can give final approval. The person who prepared the payroll must still be someone else.</p>
-      <select name="final_approver_email" required><option value="">Choose an active employee…</option>{active_employee_options}</select>
+      <p class="hr-help">Only this authorized Agent user can give final approval. They do not need to be a W-2 employee. The person who prepared the payroll must still be someone else.</p>
+      <select name="final_approver_email" required><option value="">Choose an authorized payroll approver…</option>{approver_options}</select>
       <div class="hr-grid2"><div><label>Utah withholding account last 4</label><input name="utah_withholding_account_last4" value="{_esc(company.get('utah_withholding_account_last4'))}" maxlength="4"></div>
       <div><label>Utah UI account last 4</label><input name="utah_ui_account_last4" value="{_esc(company.get('utah_ui_account_last4'))}" maxlength="4"></div></div>
       <label>Federal deposit schedule confirmed from lookback evidence</label>

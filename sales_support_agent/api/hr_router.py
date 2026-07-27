@@ -28,6 +28,7 @@ from sales_support_agent.services.auth_deps import (
     require_tool,
 )
 from sales_support_agent.services.access.notify import send_invite_email
+from sales_support_agent.services.access import store as access_store
 from sales_support_agent.services.hr import store
 from sales_support_agent.services.hr import payroll_store
 from sales_support_agent.services.hr import legacy_import
@@ -1239,6 +1240,11 @@ async def hr_settings(request: Request, user: dict = Depends(_settings_guard)):
     return HTMLResponse(render_hr_settings(
         payroll_store.get_payroll_settings(), payroll_store.get_company_profile(),
         store.list_employees(),
+        [
+            account for account in access_store.list_users()
+            if account.get("status") == "active"
+            and "hr.payroll.approve" in account.get("permissions", set())
+        ],
         payroll_store.list_opening_balances(2026),
         store.list_handbooks(),
         user=user, flash=_flash(request)

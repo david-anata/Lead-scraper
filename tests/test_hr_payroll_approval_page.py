@@ -1,6 +1,7 @@
 from sales_support_agent.services.hr.pages import (
     render_hr_payroll_approval,
     render_hr_payroll_control,
+    render_hr_settings,
 )
 from sales_support_agent.services.hr.payroll import SemimonthlyPeriod
 from datetime import date
@@ -92,3 +93,24 @@ def test_control_room_links_to_confirmation_instead_of_inline_approval():
         in html
     )
     assert 'action="/admin/hr/payroll/payroll-version-123/approve"' not in html
+
+
+def test_settings_lists_authorized_owner_without_employee_record():
+    html = render_hr_settings(
+        {},
+        {"final_approver_email": ""},
+        [],
+        [{
+            "email": "david@anatainc.com",
+            "name": "David Narayan",
+            "status": "active",
+            "permissions": {"hr.payroll.approve"},
+        }],
+        [],
+        [],
+        user={"email": "david@anatainc.com"},
+    )
+
+    assert "They do not need to be a W-2 employee" in html
+    assert "David Narayan — david@anatainc.com" in html
+    assert "Choose an authorized payroll approver" in html

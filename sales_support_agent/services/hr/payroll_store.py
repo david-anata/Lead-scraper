@@ -186,6 +186,8 @@ def save_company_profile(
     utah_withholding_payment_frequency: str,
     source_note: str, actor: str,
 ) -> tuple[bool, str]:
+    from sales_support_agent.services.access.store import resolve_access
+
     digits = "".join(character for character in (ein_last4 or "") if character.isdigit())
     withholding_last4 = "".join(
         character for character in (utah_withholding_account_last4 or "")
@@ -194,10 +196,13 @@ def save_company_profile(
     ui_last4 = "".join(
         character for character in (utah_ui_account_last4 or "") if character.isdigit()
     )
+    approver_access = resolve_access(final_approver_email)
     if (
         not legal_name.strip() or len(digits) != 4 or not address_line1.strip()
         or not city.strip() or state.strip().upper() != "UT" or not zip_code.strip()
         or "@" not in payroll_contact_email or "@" not in final_approver_email
+        or not approver_access
+        or "hr.payroll.approve" not in approver_access.get("permissions", set())
         or federal_deposit_schedule not in {"monthly", "semiweekly"}
         or utah_withholding_payment_frequency not in {"monthly", "quarterly"}
         or not source_note.strip()
