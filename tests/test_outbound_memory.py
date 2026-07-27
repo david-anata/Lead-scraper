@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import create_engine
 
@@ -202,3 +203,80 @@ class FullLeadRecordTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AmazonScanStorageTests(unittest.TestCase):
+    """A scan revisits brands we already hold, which record_leads cannot do."""
+
+    def _e(self):
+        return create_engine("sqlite://", future=True)
+
+    def _finding(self, **over):
+        base = {"reason": "There are a handful of other sellers on your listing. All authorized?",
+                "confidence": "high", "marketplace": "amazon.com",
+                "checked_at": "2026-07-26T12:00:00+00:00", "skipped_reason": "",
+                "findings": {"listings": [{"sellers_unknown": 18}], "absent": False}}
+        base.update(over)
+        return base
+
+    def test_a_finding_lands_on_a_brand_we_already_hold(self):
+        """record_leads leaves existing rows alone, so without this the scan
+        would silently do nothing."""
+        e = self._e()
+        m.record_leads(e, [{"domain": "rho.com", "brand": "Rho", "tier": "A", "score": 9,
+                            "reason": "They upgraded their store plan recently"}])
+        self.assertTrue(m.update_amazon_finding(e, "rho.com", self._finding()))
+        lead = m.load_leads(e)[0]
+        self.assertIn("other sellers", lead["reason"])
+        self.assertEqual(lead["amazon_confidence"], "high")
+        self.assertEqual(lead["amazon_sellers_unknown"], 18)
+
+    def test_a_skipped_brand_keeps_the_reason_it_had(self):
+        """Overwriting with a blank would leave the lead with no opener at all."""
+        e = self._e()
+        m.record_leads(e, [{"domain": "rho.com", "brand": "Rho", "tier": "A",
+                            "reason": "They upgraded their store plan recently"}])
+        m.update_amazon_finding(e, "rho.com", self._finding(
+            reason="", skipped_reason="no confident match", confidence="low"))
+        lead = m.load_leads(e)[0]
+        self.assertIn("upgraded their store plan", lead["reason"])
+        self.assertEqual(lead["amazon_skipped_reason"], "no confident match")
+
+    def test_an_unknown_brand_is_not_invented(self):
+        self.assertFalse(m.update_amazon_finding(self._e(), "nope.com", self._finding()))
+
+    def test_it_fails_safe_without_a_database(self):
+        self.assertFalse(m.update_amazon_finding(None, "rho.com", self._finding()))
+
+    def test_the_queue_puts_the_best_brands_first(self):
+        """Each brand costs minutes and money, so we check the ones we would
+        actually email, not whatever came back first."""
+        e = self._e()
+        m.record_leads(e, [
+            {"domain": "c.com", "brand": "C", "tier": "C", "score": 2},
+            {"domain": "a.com", "brand": "A", "tier": "A", "score": 14},
+            {"domain": "b.com", "brand": "B", "tier": "B", "score": 6},
+        ])
+        order = [l["domain"] for l in m.leads_needing_amazon(e, limit=3)]
+        self.assertEqual(order, ["a.com", "b.com", "c.com"])
+
+    def test_the_queue_is_bounded(self):
+        e = self._e()
+        m.record_leads(e, [{"domain": f"{i}.com", "brand": str(i), "tier": "A"} for i in range(9)])
+        self.assertEqual(len(m.leads_needing_amazon(e, limit=3)), 3)
+
+    def test_a_brand_checked_recently_is_not_checked_again(self):
+        e = self._e()
+        m.record_leads(e, [{"domain": "rho.com", "brand": "Rho", "tier": "A"}])
+        m.update_amazon_finding(e, "rho.com", self._finding(
+            checked_at=datetime.now(timezone.utc).isoformat()))
+        self.assertEqual(m.leads_needing_amazon(e, limit=3), [])
+
+    def test_a_stale_finding_is_checked_again(self):
+        """Seller counts move daily, so an old finding must not be sent as news."""
+        e = self._e()
+        m.record_leads(e, [{"domain": "rho.com", "brand": "Rho", "tier": "A"}])
+        old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+        m.update_amazon_finding(e, "rho.com", self._finding(checked_at=old))
+        self.assertEqual([l["domain"] for l in m.leads_needing_amazon(e, limit=3, max_age_days=7)],
+                         ["rho.com"])

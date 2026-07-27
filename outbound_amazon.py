@@ -69,8 +69,8 @@ def marketplace_for(country: str, settings: Optional[dict[str, Any]] = None) -> 
 AMAZON_DEFAULT_SETTINGS: dict[str, Any] = {
     "amazon.enabled": True,
     "amazon.min_unknown_sellers": 3,      # below this, "a handful of sellers" is not true
-    "amazon.max_listings_checked": 3,     # offers calls per brand
-    "amazon.max_name_variants": 3,        # searches per brand
+    "amazon.max_listings_checked": 1,     # offers calls per brand; each costs ~30s
+    "amazon.max_name_variants": 2,        # searches per brand; each costs ~30s
     "amazon.min_confidence": "high",      # anything weaker is skipped, never guessed
     # Off means always check amazon.com, even for an overseas brand. The US
     # marketplace is the one we sell and the one we can serve.
@@ -94,8 +94,15 @@ def _setting(settings: Optional[dict[str, Any]], key: str) -> Any:
 
 
 def _bool_setting(settings: Optional[dict[str, Any]], key: str) -> bool:
-    """Settings arrive from a web form, so "false" and "0" must read as off."""
+    """Settings arrive from a web form as text, so "false", "0" and "off" have
+    to read as off rather than as a non-empty string. A blank field falls back
+    to the shipped default, which is what setting() already does.
+
+    Defined once on purpose: a second copy of this lower down the file silently
+    replaced this one and read every unset flag as on."""
     val = _setting(settings, key)
+    if val is None:
+        return bool(AMAZON_DEFAULT_SETTINGS.get(key))
     if isinstance(val, str):
         return val.strip().lower() not in ("", "0", "false", "no", "off")
     return bool(val)
@@ -113,13 +120,6 @@ def _float_setting(settings: Optional[dict[str, Any]], key: str) -> float:
         return float(_setting(settings, key))
     except (TypeError, ValueError):
         return float(AMAZON_DEFAULT_SETTINGS.get(key) or 0.0)
-
-
-def _bool_setting(settings: Optional[dict[str, Any]], key: str) -> bool:
-    val = _setting(settings, key)
-    if val is None:
-        return True
-    return str(val).strip().lower() not in ("0", "false", "no", "off")
 
 
 # ---- names -------------------------------------------------------------------

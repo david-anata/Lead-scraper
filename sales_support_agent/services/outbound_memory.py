@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from sqlalchemy import text
@@ -455,6 +456,89 @@ def load_leads(engine, limit: int = 500) -> list[dict[str, Any]]:
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-memory] load_leads failed")
         return []
+
+
+_UPDATE_AMAZON_SQL = (
+    f"UPDATE {_TABLE} SET "
+    "amazon_confidence = :amazon_confidence, "
+    "amazon_marketplace = :amazon_marketplace, "
+    "amazon_checked_at = :amazon_checked_at, "
+    "amazon_absent = :amazon_absent, "
+    "amazon_sellers_unknown = :amazon_sellers_unknown, "
+    "amazon_skipped_reason = :amazon_skipped_reason, "
+    "reason = :reason "
+    "WHERE domain = :domain"
+)
+
+
+def update_amazon_finding(engine, domain: str, amazon: dict[str, Any] | None) -> bool:
+    """Write one brand's Amazon result onto its existing lead row.
+
+    record_leads inserts and leaves existing rows alone, which is right for
+    dedup and useless for a scan that revisits brands we already hold. Written
+    one brand at a time so a scan that stops halfway keeps everything it found.
+
+    The opening line is only overwritten when the check actually produced one,
+    so a skipped brand keeps whatever reason it already had.
+    """
+    if engine is None or not isinstance(amazon, dict):
+        return False
+    key = _norm(domain)
+    if not key:
+        return False
+    # Shape it through the same fold the pull uses, so a scanned brand and a
+    # pulled one are stored identically instead of drifting apart.
+    from outbound_pipeline import apply_amazon
+    shaped = apply_amazon({}, amazon)
+    vals = _amazon_values(shaped)
+    reason = _text(shaped.get("reason"))
+    try:
+        ensure_table(engine)
+        with engine.begin() as conn:
+            existing = conn.execute(
+                text(f"SELECT reason FROM {_TABLE} WHERE domain = :d"), {"d": key}
+            ).fetchone()
+            if existing is None:
+                return False
+            conn.execute(text(_UPDATE_AMAZON_SQL), {
+                "domain": key,
+                "reason": reason or _text(existing[0]),
+                **vals,
+            })
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] could not save the Amazon finding for %s", key)
+        return False
+
+
+def leads_needing_amazon(engine, *, limit: int = 3, max_age_days: int = 7) -> list[dict[str, Any]]:
+    """The brands worth checking next: best first, never checked or gone stale.
+
+    We only look up brands we would actually email, rather than every brand we
+    hold, because each one costs minutes and real money at the data provider.
+    """
+    leads = load_leads(engine, limit=1000)
+    if not leads:
+        return []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(max_age_days or 7)))
+
+    def stale(lead: dict[str, Any]) -> bool:
+        stamp = _text(lead.get("amazon_checked_at"))
+        if not stamp:
+            return True
+        try:
+            when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return when < cutoff
+
+    tier_rank = {"A": 0, "B": 1, "C": 2, "X": 9}
+    pending = [l for l in leads if stale(l)]
+    pending.sort(key=lambda l: (tier_rank.get(_text(l.get("tier")).upper(), 5),
+                                -_whole(l.get("score"))))
+    return pending[:max(1, int(limit or 1))]
 
 
 def load_pushed(engine) -> list[dict[str, Any]]:

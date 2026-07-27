@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -332,6 +333,11 @@ _AMAZON_CSS = """
   .am-sum { margin:0 0 10px; padding:8px 12px; border-radius:10px; background:rgba(133,187,218,.14);
     font-size:14px; font-weight:700; font-variant-numeric:tabular-nums; }
   .am-line { margin:4px 0 0; font-size:14px; color:rgba(43,54,68,.75); }
+  .am-run { margin:14px 0 0; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .am-btn { padding:10px 18px; border:none; border-radius:10px; background:#2B3644; color:#fff;
+    font-weight:800; font-size:14px; cursor:pointer; }
+  .am-btn:disabled { opacity:.55; cursor:default; }
+  .am-note { font-size:13px; color:rgba(43,54,68,0.65); }
   .am-empty { margin:0; font-size:15px; }
   .am-badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:800; letter-spacing:.04em; }
   .am-high { background:rgba(10,125,51,.12); color:#0a7d33; }
@@ -434,13 +440,47 @@ def _lower_first(text: str) -> str:
     return text[:1].lower() + text[1:] if text else text
 
 
+_AMAZON_SCAN_CONTROL = """
+    <div class="am-run">
+      <button class="am-btn" id="am-go" type="button">Check next 3 brands</button>
+      <span class="am-note" id="am-msg">Checks the best brands we have not looked at yet.
+        Roughly two minutes each, so this runs in the background.</span>
+    </div>
+    <script>
+      (function(){
+        var b=document.getElementById('am-go'), m=document.getElementById('am-msg');
+        if(!b) return;
+        function poll(){
+          fetch('/admin/api/outbound/amazon-scan').then(function(r){return r.json();})
+            .then(function(s){
+              if(s.running){ m.textContent='Checking... '+s.done+' of '+s.total+' done.';
+                             setTimeout(poll, 5000); }
+              else { m.textContent=(s.last||'Done.')+' Refresh to see the results.';
+                     b.disabled=false; b.textContent='Check next 3 brands'; }
+            }).catch(function(){ m.textContent='Lost track of the scan. Refresh the page.'; });
+        }
+        b.addEventListener('click', function(){
+          b.disabled=true; b.textContent='Starting...'; m.textContent='Starting...';
+          var fd=new FormData(); fd.append('limit','3');
+          fetch('/admin/api/outbound/amazon-scan',{method:'POST',body:fd})
+            .then(function(r){return r.json();})
+            .then(function(d){ m.textContent=d.reason||''; if(d.ok&&d.started){ poll(); }
+                               else { b.disabled=false; b.textContent='Check next 3 brands'; } })
+            .catch(function(){ m.textContent='Could not reach the server.';
+                               b.disabled=false; b.textContent='Check next 3 brands'; });
+        });
+      })();
+    </script>
+"""
+
+
 def _amazon_panel(leads: list[dict]) -> str:
     """The Amazon brand control panel for Lead Ops."""
     s = _amazon_scan_summary(leads)
 
     if not s["scanned"]:
         return ('<div class="am-panel"><p class="am-empty">No scan yet. Run one to see '
-                'what is happening on Amazon.</p></div>')
+                'what is happening on Amazon.</p>' + _AMAZON_SCAN_CONTROL + '</div>')
 
     counters = "".join(
         f'<div class="am-c"><b>{s[key]:,}</b><span>{label}</span></div>'
@@ -467,7 +507,8 @@ def _amazon_panel(leads: list[dict]) -> str:
                      "brands have never been through the Amazon check.</p>")
 
     return (f'<div class="am-panel"><div class="am-counters">{counters}</div>'
-            f'<p class="am-sum">{reconcile}</p>{"".join(lines)}</div>')
+            f'<p class="am-sum">{reconcile}</p>{"".join(lines)}'
+            f'{_AMAZON_SCAN_CONTROL}</div>')
 
 
 _CONF_BADGE = {"high": ("HIGH", "am-high"), "medium": ("MED", "am-med"), "low": ("LOW", "am-low")}
@@ -1172,6 +1213,108 @@ def outbound_leak_report(request: Request, domain: str, refresh: int = 0) -> Res
         request, active="outbound_leads", title="Leak Report",
         extra_css=_LEAK_CSS + _AMAZON_CSS, body=body,
     ))
+
+
+# One scan at a time, process-wide. Two scans would double the spend at the data
+# provider and race each other writing the same rows.
+_AMAZON_SCAN: dict[str, Any] = {"running": False, "done": 0, "total": 0, "started": "", "last": ""}
+
+
+def _run_amazon_scan(domains: list[str], tunables: dict[str, Any]) -> None:
+    """Check a short list of brands, saving each finding as it lands.
+
+    Runs after the response has already gone back, because one brand costs
+    minutes. Saving per brand means a deploy or a restart halfway through keeps
+    everything found so far instead of losing the batch.
+    """
+    from sales_support_agent.services import outbound_memory
+
+    check = _amazon_checker(tunables)
+    try:
+        from sales_support_agent.models.database import get_engine
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        engine = None
+
+    if check is None or engine is None:
+        _AMAZON_SCAN.update(running=False, last="Could not start: no Amazon key, or the check is switched off.")
+        return
+
+    for domain in domains:
+        try:
+            lead = next((l for l in outbound_memory.load_leads(engine, limit=1000)
+                         if str(l.get("domain") or "") == domain), None)
+            if lead is None:
+                continue
+            outbound_memory.update_amazon_finding(engine, domain, check(lead))
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound] amazon scan failed on %s", domain)
+        finally:
+            _AMAZON_SCAN["done"] = _AMAZON_SCAN.get("done", 0) + 1
+
+    _AMAZON_SCAN.update(running=False, last=f"Finished {_AMAZON_SCAN['done']} of {_AMAZON_SCAN['total']}.")
+
+
+@router.post("/admin/api/outbound/amazon-scan", response_class=JSONResponse)
+async def outbound_amazon_scan(request: Request) -> Response:
+    """Check the next few brands on Amazon, best ones first.
+
+    Deliberately small. Each brand costs a couple of minutes and real money at
+    the data provider, so we only ever look up brands we would actually email,
+    a few at a time, when asked.
+    """
+    from starlette.background import BackgroundTask
+
+    from sales_support_agent.services import outbound_memory, outbound_settings as _st
+    import outbound_recipes as _rx
+
+    if _AMAZON_SCAN.get("running"):
+        return JSONResponse(status_code=409, content={
+            "ok": False,
+            "reason": f"A scan is already running ({_AMAZON_SCAN.get('done', 0)} of {_AMAZON_SCAN.get('total', 0)} done).",
+        })
+
+    form = await request.form()
+    try:
+        limit = max(1, min(int(str(form.get("limit") or 3)), 10))
+    except (TypeError, ValueError):
+        limit = 3
+
+    try:
+        from sales_support_agent.models.database import get_engine
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        engine = None
+
+    tunables = _st.effective(engine, _rx.DEFAULT_SETTINGS) if engine is not None else _rx.DEFAULT_SETTINGS
+    import outbound_amazon as _az
+    max_age = _az._int_setting(tunables, "amazon.finding_max_age_days")
+    pending = outbound_memory.leads_needing_amazon(engine, limit=limit, max_age_days=max_age)
+    domains = [str(l.get("domain") or "") for l in pending if l.get("domain")]
+
+    if not domains:
+        return JSONResponse(content={
+            "ok": True, "started": 0,
+            "reason": "Nothing to check. Every brand we hold has a recent Amazon result.",
+        })
+
+    _AMAZON_SCAN.update(running=True, done=0, total=len(domains),
+                        started=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        last="")
+    minutes = len(domains) * 2
+    return JSONResponse(
+        content={
+            "ok": True, "started": len(domains), "brands": domains,
+            "reason": f"Checking {len(domains)} brand(s). Expect roughly {minutes} to {minutes * 2} minutes. Refresh to see progress.",
+        },
+        background=BackgroundTask(_run_amazon_scan, domains, tunables),
+    )
+
+
+@router.get("/admin/api/outbound/amazon-scan", response_class=JSONResponse)
+def outbound_amazon_scan_status(request: Request) -> Response:
+    """Where the running scan has got to."""
+    return JSONResponse(content=dict(_AMAZON_SCAN))
 
 
 @router.post("/admin/api/outbound/release", response_class=JSONResponse)

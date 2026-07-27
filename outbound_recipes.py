@@ -99,8 +99,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # deliberately conservative and every one of them is tunable in the app.
     "amazon.enabled": True,
     "amazon.min_unknown_sellers": 3,
-    "amazon.max_listings_checked": 3,
-    "amazon.max_name_variants": 3,
+    "amazon.max_listings_checked": 1,
+    "amazon.max_name_variants": 2,
     "amazon.min_confidence": "high",
     "amazon.follow_country_marketplace": False,
     "amazon.price_erosion_min_pct": 5,
