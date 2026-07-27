@@ -22,6 +22,10 @@ from sales_support_agent.services.website_ops import (
 from sales_support_agent.services.website_ops_autonomy import (
     analytics_configuration_status,
 )
+from sales_support_agent.services.website_ops_query_intelligence import (
+    citation_config,
+    load_query_intelligence,
+)
 
 
 router = APIRouter(prefix="/api/jobs/website-ops", tags=["website-ops-jobs"])
@@ -161,6 +165,11 @@ def website_ops_runtime_health(request: Request) -> dict:
         analytics_readiness["checks"]["google_service_account"]
         and analytics_readiness["checks"]["ga4_property"]
     )
+    citation_readiness = citation_config(settings)
+    checks["citation_testing"] = bool(
+        citation_readiness.enabled and citation_readiness.api_key
+    )
+    query_intelligence = load_query_intelligence(settings)
     state = load_website_ops_run_state(settings)
     sanitized_runs = {
         mode: {
@@ -195,8 +204,11 @@ def website_ops_runtime_health(request: Request) -> dict:
             else "blocked",
             "decision_data": analytics_readiness["status"],
             "publishing": "ready" if checks["github_autopush"] else "blocked",
+            "query_intelligence": str(query_intelligence.get("status", "not-run")),
+            "citation_testing": "ready" if checks["citation_testing"] else "blocked",
         },
-        "blockers": analytics_readiness["blockers"],
+        "blockers": analytics_readiness["blockers"]
+        + ([] if checks["citation_testing"] else ["Citation testing needs OPENAI_API_KEY."]),
         "schedule": {
             "timezone": "America/Denver",
             "hour": 8,

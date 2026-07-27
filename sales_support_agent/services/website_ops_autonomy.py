@@ -21,6 +21,9 @@ from sales_support_agent.services.website_ops_content import (
 from sales_support_agent.services.website_ops_customer_language import collect_customer_questions
 from sales_support_agent.services.website_ops_serp import build_blueprint
 from sales_support_agent.services.website_ops_aeo import build_aeo_assessment
+from sales_support_agent.services.website_ops_query_intelligence import (
+    build_query_intelligence,
+)
 
 try:
     from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -1259,6 +1262,7 @@ def build_autonomy_overlay(
     report: Mapping[str, Any],
     observations: list[Mapping[str, Any]],
     feedback_entries: list[Mapping[str, Any]],
+    run_mode: str = "daily",
 ) -> dict[str, Any]:
     urls = [str(item.get("url", "")) for item in observations]
     config = analytics_config_from_settings(settings)
@@ -1387,6 +1391,57 @@ def build_autonomy_overlay(
     if any(action.get("action_type") == "resolve_canonical_route" for action in action_queue):
         support_requests.append("Standardize all active commercial services under /services/, then redirect legacy /ecommerce-services/ routes so Website Ops can consolidate authority on one canonical page family.")
 
+    query_intelligence = build_query_intelligence(
+        settings=settings,
+        page_insights=page_insights,
+        decision_data_ready=decision_data_ready,
+        run_mode=run_mode,
+    )
+    page_by_url = {
+        _normalize_url(str(item.get("url", ""))): item for item in observations
+    }
+    for recommendation in query_intelligence.get("recommendations", []) or []:
+        if recommendation.get("execution_status") != "eligible":
+            continue
+        page_url = _normalize_url(str(recommendation.get("page_url", "")))
+        page = page_by_url.get(page_url, {})
+        action = {
+            "page_url": page_url,
+            "page_title": str(page.get("title", "") or recommendation.get("current_state", "")),
+            "action_type": str(recommendation.get("action_type", "")),
+            "section_name": str(recommendation.get("target", "")),
+            "before_state": str(recommendation.get("current_state", "")),
+            "after_state": str(recommendation.get("proposed_state", "")),
+            "reason": str(recommendation.get("reason", "")),
+            "insight_source": "Validated query intelligence",
+            "expected_impact": (
+                "Stronger semantic alignment between observed buyer demand, the search result, "
+                "and answer-engine retrieval."
+            ),
+            "confidence": "high",
+            "status": "recommended",
+            "evidence": [
+                f"Validated query cluster: {recommendation.get('query_cluster', '')}.",
+                "Independent evidence: "
+                + ", ".join(
+                    str(value).replace("_", " ")
+                    for value in recommendation.get("evidence_classes", []) or []
+                )
+                + ".",
+                "Two comparable weekly shadow-mode cycles completed.",
+            ],
+            "confidence_basis": [
+                "The query cluster has at least two independent evidence signals.",
+                "Exactly one production marketing page owns the intent.",
+                "The proposal is a deterministic low-risk metadata correction.",
+            ],
+            "ga4_trust_status": ga4_trust_status,
+            "action_value": str(recommendation.get("action_value", "")),
+        }
+        action.update(_execution_envelope(action, page_url=page_url))
+        if action.get("execution_eligibility") == "auto_execute":
+            action_queue.append(action)
+
     approved_actions = [item for item in feedback_entries if str(item.get("status", "")).strip().lower() == "approved"]
     filtered_action_queue = _mvp_filter_actions(action_queue)
     filtered_content_tasks = _mvp_filter_actions(content_tasks)
@@ -1396,7 +1451,6 @@ def build_autonomy_overlay(
     serp_blueprints = list(blueprint_cache.values())
     _save_blueprints(settings, serp_blueprints)
     save_content_tasks(settings, filtered_content_tasks)
-
     return {
         "goal": {
             "primary": "Increase qualified organic leads by improving the service pages with the strongest search opportunity, weakest conversion efficiency, and highest upside for Google and AI search visibility.",
@@ -1441,6 +1495,7 @@ def build_autonomy_overlay(
         "serp_blueprints": serp_blueprints[:10],
         "customer_questions": customer_questions[:12],
         "content_tasks": filtered_content_tasks[:25],
+        "query_intelligence": query_intelligence,
         "approved_action_count": len(approved_actions),
         "mvp_mode_active": MVP_MODE_ACTIVE,
         "mvp_allowed_action_types": list(MVP_ALLOWED_ACTION_TYPES),

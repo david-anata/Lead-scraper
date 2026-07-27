@@ -33,6 +33,7 @@ from sales_support_agent.services.website_ops import (
     load_website_ops_run_state,
     render_dashboard_page,
     render_feedback_detail_page,
+    render_query_map_page,
     render_queue_page,
     render_report_page,
     review_feedback_record,
@@ -106,6 +107,66 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertNotIn('action="/admin/api/website-ops/run"', html)
             self.assertIn("/admin/api/website-ops/feedback", html)
             self.assertIn("8:00 AM America/Denver", html)
+
+    def test_query_map_renders_evidence_ownership_and_shadow_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            settings = self._settings(root)
+            intelligence_root = root / "query_intelligence"
+            intelligence_root.mkdir(parents=True)
+            (intelligence_root / "snapshot.json").write_text(
+                json.dumps(
+                    {
+                        "status": "ready",
+                        "summary": {
+                            "validated_clusters": 1,
+                            "hypothesis_clusters": 2,
+                            "ownership_conflicts": 0,
+                            "cited_clusters": 1,
+                            "weekly_validation_cycles": 1,
+                        },
+                        "clusters": [
+                            {
+                                "cluster_id": "cluster-1",
+                                "label": "amazon ppc agency",
+                                "intent": "commercial",
+                                "funnel_stage": "consideration",
+                                "validation_status": "validated",
+                                "evidence_classes": [
+                                    "observed_search",
+                                    "simulated",
+                                ],
+                                "owner_url": "https://anatainc.com/services/amazon-ppc-management",
+                                "ownership_status": "assigned",
+                                "conflict_urls": [],
+                                "citation": {"status": "cited"},
+                                "observed_impressions": 42,
+                            }
+                        ],
+                        "recommendations": [
+                            {
+                                "query_cluster": "amazon ppc agency",
+                                "page_url": "https://anatainc.com/services/amazon-ppc-management",
+                                "target": "title",
+                                "action_type": "meta_title_update",
+                                "reason": "The validated cluster is not aligned with the title.",
+                                "execution_status": "shadow",
+                                "block_reasons": [
+                                    "Two comparable weekly shadow-mode cycles have not completed."
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            page = render_query_map_page(settings)
+            self.assertIn("One query cluster.", page)
+            self.assertIn("Observed Search", page)
+            self.assertIn("amazon ppc agency", page)
+            self.assertIn("Cited", page)
+            self.assertIn("Shadow", page)
+            self.assertIn("Two comparable weekly", page)
 
     def test_sitemap_discovery_restricts_scope_and_private_routes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -238,6 +299,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             settings = SimpleNamespace(
                 internal_api_key="test-internal-key",
                 resend_api_key="test-resend-key",
+                openai_api_key="test-openai-key",
                 website_ops_execute_approved=True,
                 website_ops_root=Path(tmpdir),
             )
@@ -286,6 +348,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             settings = SimpleNamespace(
                 internal_api_key="test-internal-key",
                 resend_api_key="test-resend-key",
+                openai_api_key="test-openai-key",
                 website_ops_execute_approved=True,
                 website_ops_root=Path(tmpdir),
                 google_service_account_json="{not valid json",

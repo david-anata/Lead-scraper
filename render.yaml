@@ -86,6 +86,14 @@ services:
         sync: false
       - key: GOOGLE_SERVICE_ACCOUNT_JSON
         sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: WEBSITE_OPS_CITATION_TESTING_ENABLED
+        value: "true"
+      - key: WEBSITE_OPS_CITATION_MODEL
+        value: gpt-5-mini
+      - key: WEBSITE_OPS_CITATION_MAX_CLUSTERS
+        value: "5"
       - key: WEBSITE_OPS_EXECUTE_APPROVED
         value: "true"
       - key: WEBSITE_OPS_ROOT
