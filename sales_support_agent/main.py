@@ -18,6 +18,7 @@ from sales_support_agent.api.hr_router import router as hr_router
 from sales_support_agent.api.hr_jobs_router import router as hr_jobs_router
 from sales_support_agent.api.marketing_router import router as marketing_router
 from sales_support_agent.api.website_ops_jobs_router import router as website_ops_jobs_router
+from sales_support_agent.api.outbound_jobs import install_embedded_outbound_scheduler
 from sales_support_agent.api.website_ops_jobs_router import install_embedded_website_ops_scheduler
 from sales_support_agent.api.sales_jobs_router import router as sales_jobs_router
 from sales_support_agent.api.sales_router import router as sales_router
@@ -159,6 +160,7 @@ def create_app() -> FastAPI:
     app.include_router(marketing_router)
     app.include_router(website_ops_jobs_router)
     install_embedded_website_ops_scheduler(app)
+    install_embedded_outbound_scheduler(app)
     app.include_router(building_public_router)
     app.include_router(building_internal_router)
     app.include_router(building_crm_public_router)
