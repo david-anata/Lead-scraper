@@ -1089,6 +1089,53 @@ def current_clock(employee_email: str) -> Optional[dict]:
         return ({"id": row.id, "clocked_in_at": row.clocked_in_at} if row else None)
 
 
+def time_clock_summary(employee_email: str) -> dict:
+    """Return employee-owned clock context for the current Utah workweek."""
+    email = (employee_email or "").strip().lower()
+    now = datetime.now(timezone.utc)
+    local_now = now.astimezone(ANATA_TIMEZONE)
+    today = local_now.date()
+    week_start = today - timedelta(days=(today.weekday() + 1) % 7)
+    week_end = week_start + timedelta(days=6)
+    with _session() as session:
+        entries = session.query(HRTimeEntry).filter(
+            HRTimeEntry.employee_email == email,
+            HRTimeEntry.date >= week_start,
+            HRTimeEntry.date <= week_end,
+        ).order_by(HRTimeEntry.date.desc(), HRTimeEntry.id.desc()).all()
+        weekly_hours = sum(
+            (
+                float(row.elapsed_seconds) / 3600
+                if row.elapsed_seconds else float(row.hours or 0)
+            )
+            for row in entries if row.stop_time
+        )
+        open_entry = next((row for row in entries if not row.stop_time), None)
+        elapsed_hours = 0.0
+        if open_entry and open_entry.clocked_in_at:
+            started = open_entry.clocked_in_at
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            elapsed_hours = max(0.0, (now - started).total_seconds() / 3600)
+        last_closed = next((row for row in entries if row.stop_time), None)
+        return {
+            "local_now": local_now.strftime("%A, %B %-d at %-I:%M %p")
+            if os.name != "nt" else local_now.strftime("%A, %B %d at %I:%M %p").replace(" 0", " "),
+            "week_start": week_start, "week_end": week_end,
+            "weekly_hours": round(weekly_hours + elapsed_hours, 2),
+            "closed_weekly_hours": round(weekly_hours, 2),
+            "open_elapsed_hours": round(elapsed_hours, 2),
+            "last_shift": ({
+                "date": last_closed.date, "start_time": last_closed.start_time,
+                "stop_time": last_closed.stop_time,
+                "hours": round(
+                    float(last_closed.elapsed_seconds) / 3600
+                    if last_closed.elapsed_seconds else float(last_closed.hours or 0), 2
+                ),
+            } if last_closed else None),
+        }
+
+
 def time_review_flags(
     employee_email: Optional[str] = None, *, start_date: Optional[date] = None,
     end_date: Optional[date] = None,
@@ -1342,6 +1389,53 @@ def request_time_correction(time_entry_id: int, *, employee_email: str,
         return True, "correction_requested"
 
 
+def request_missed_punch(
+    employee_email: str, *, work_date: date, proposed_start: str,
+    proposed_stop: str, reason: str, actor: str,
+) -> tuple[bool, str]:
+    """Request a reviewed time entry when no punch exists for the work date."""
+    email = (employee_email or "").strip().lower()
+    if actor.strip().lower() != email or not reason.strip() or work_date > date.today():
+        return False, "correction_invalid"
+    try:
+        start_value = time.fromisoformat(proposed_start)
+        stop_value = time.fromisoformat(proposed_stop)
+    except ValueError:
+        return False, "correction_invalid"
+    start_at = datetime.combine(work_date, start_value)
+    stop_at = datetime.combine(work_date, stop_value)
+    if stop_at <= start_at or (stop_at - start_at).total_seconds() > 16 * 3600:
+        return False, "correction_invalid"
+    with _session() as session:
+        if session.query(HRTimeEntry).filter_by(
+            employee_email=email, date=work_date
+        ).first():
+            return False, "missed_punch_entry_exists"
+        pending = session.query(HRTimeCorrection).filter(
+            HRTimeCorrection.employee_email == email,
+            HRTimeCorrection.time_entry_id == 0,
+            HRTimeCorrection.status == "requested",
+        ).all()
+        if any((row.proposed_json or {}).get("date") == work_date.isoformat() for row in pending):
+            return False, "correction_pending"
+        proposed_hours = (stop_at - start_at).total_seconds() / 3600
+        row = HRTimeCorrection(
+            time_entry_id=0, employee_email=email,
+            original_json={"date": work_date.isoformat(), "missing": True},
+            proposed_json={
+                "date": work_date.isoformat(), "start_time": proposed_start,
+                "stop_time": proposed_stop, "hours": round(proposed_hours, 4),
+            },
+            reason=reason.strip(), requested_by=email,
+        )
+        session.add(row)
+        session.flush()
+        _audit(session, actor, "time.missed_punch_requested", "time_correction", row.id, {
+            "work_date": work_date.isoformat(),
+        })
+        return True, "correction_requested"
+
+
 def list_time_corrections(employee_email: Optional[str] = None) -> list:
     with _session() as s:
         query = s.query(HRTimeCorrection)
@@ -1359,7 +1453,7 @@ def list_time_corrections(employee_email: Optional[str] = None) -> list:
 
 def decide_time_correction(correction_id: int, *, decision: str,
                            reviewer_reason: str, actor: str) -> tuple[bool, str]:
-    if decision not in {"approved", "denied"}:
+    if decision not in {"approved", "denied"} or not reviewer_reason.strip():
         return False, "correction_invalid"
     with _session() as s:
         row = s.get(HRTimeCorrection, correction_id)
@@ -1367,21 +1461,42 @@ def decide_time_correction(correction_id: int, *, decision: str,
             return False, "correction_not_found"
         if row.requested_by.strip().lower() == actor.strip().lower():
             return False, "self_approval_blocked"
-        entry = s.get(HRTimeEntry, row.time_entry_id)
-        if not entry:
-            return False, "correction_not_found"
+        entry = s.get(HRTimeEntry, row.time_entry_id) if row.time_entry_id else None
         if decision == "approved":
             proposed = row.proposed_json or {}
-            entry.start_time = proposed.get("start_time", entry.start_time)
-            entry.stop_time = proposed.get("stop_time", entry.stop_time)
-            entry.hours = Decimal(str(proposed.get("hours", float(entry.hours or 0))))
-            entry.elapsed_seconds = int(round(float(proposed.get("hours", 0)) * 3600))
-            entry.notes = (
-                f"{entry.notes}\nCorrection approved by {actor}: {reviewer_reason}".strip()
-            )
+            if row.time_entry_id == 0:
+                try:
+                    work_date = date.fromisoformat(proposed.get("date", ""))
+                except ValueError:
+                    return False, "correction_not_found"
+                if s.query(HRTimeEntry).filter_by(
+                    employee_email=row.employee_email, date=work_date
+                ).first():
+                    return False, "missed_punch_entry_exists"
+                entry = HRTimeEntry(
+                    employee_email=row.employee_email, date=work_date,
+                    start_time=proposed.get("start_time", ""),
+                    stop_time=proposed.get("stop_time", ""),
+                    hours=Decimal(str(proposed.get("hours", 0))),
+                    elapsed_seconds=int(round(float(proposed.get("hours", 0)) * 3600)),
+                    notes=f"Missed punch approved by {actor}: {reviewer_reason}".strip(),
+                )
+                s.add(entry)
+                s.flush()
+                row.time_entry_id = entry.id
+            elif entry:
+                entry.start_time = proposed.get("start_time", entry.start_time)
+                entry.stop_time = proposed.get("stop_time", entry.stop_time)
+                entry.hours = Decimal(str(proposed.get("hours", float(entry.hours or 0))))
+                entry.elapsed_seconds = int(round(float(proposed.get("hours", 0)) * 3600))
+                entry.notes = (
+                    f"{entry.notes}\nCorrection approved by {actor}: {reviewer_reason}".strip()
+                )
+            else:
+                return False, "correction_not_found"
             row.final_json = dict(proposed)
             _supersede_open_payrolls(
-                s, actor=actor, effective_start=entry.date or date.today(),
+                s, actor=actor, effective_start=entry.date,
                 reason="approved time correction",
             )
         row.status = decision

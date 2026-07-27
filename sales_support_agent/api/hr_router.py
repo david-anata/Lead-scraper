@@ -535,7 +535,8 @@ async def hr_time(
         scoped(store.list_timesheet_approvals(
             period.start_date, period.end_date, None
         )),
-        period, entry_total=len(scoped_entries), entry_page=page,
+        period, clock_summary=store.time_clock_summary(email),
+        entry_total=len(scoped_entries), entry_page=page,
         entry_page_size=page_size, entry_page_count=page_count,
         user=user, flash=_flash(request)))
 
@@ -561,6 +562,22 @@ async def hr_time_correction(
         proposed_stop=proposed_stop, reason=reason, actor=email,
     )
     return RedirectResponse(f"/admin/hr/time?{'ok' if ok else 'err'}={message}", status_code=303)
+
+
+@router.post("/time/missed-punch")
+async def hr_time_missed_punch(
+    work_date: date = Form(...), proposed_start: str = Form(""),
+    proposed_stop: str = Form(""), reason: str = Form(""),
+    user: dict = Depends(_guard),
+):
+    email = (user.get("email") or "").strip().lower()
+    ok, message = store.request_missed_punch(
+        email, work_date=work_date, proposed_start=proposed_start,
+        proposed_stop=proposed_stop, reason=reason, actor=email,
+    )
+    return RedirectResponse(
+        f"/admin/hr/time?{'ok' if ok else 'err'}={message}", status_code=303
+    )
 
 
 @router.post("/time/corrections/{correction_id}/decision")

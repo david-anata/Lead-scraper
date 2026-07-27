@@ -475,6 +475,50 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("does not open or alter payroll", page.text)
         self.assertIn("Page 1 of", page.text)
         self.assertIn("Employees see only their own punches", page.text)
+        self.assertIn("Hours this Sunday–Saturday workweek", page.text)
+        self.assertIn("Request missed-day review", page.text)
+
+    def test_missed_day_creates_time_only_after_independent_approval(self):
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        employee_email = f"missed-{suffix}@anatainc.com"
+        reviewer_email = f"reviewer-{suffix}@anatainc.com"
+        hr_store.create_employee(email=employee_email, full_name="Missed Punch")
+        employee_user = access_store.upsert_user(employee_email, "Missed Punch")
+        access_store.set_user_permissions(employee_user, ["hr.access"])
+        reviewer_user = access_store.upsert_user(reviewer_email, "Reviewer")
+        access_store.set_user_permissions(
+            reviewer_user, ["hr.access", "hr.payroll"]
+        )
+        work_date = date(2026, 7, 24)
+        requested = self._post(
+            "/admin/hr/time/missed-punch",
+            {
+                "work_date": str(work_date), "proposed_start": "08:00",
+                "proposed_stop": "16:30", "reason": "Forgot both punches",
+            },
+            _cookie(employee_email),
+        )
+        self.assertIn("ok=correction_requested", requested.headers["location"])
+        self.assertEqual(hr_store.list_time_entries(employee_email), [])
+        correction = hr_store.list_time_corrections(employee_email)[0]
+        self.assertEqual(correction["original"]["missing"], True)
+
+        own = hr_store.decide_time_correction(
+            correction["id"], decision="approved",
+            reviewer_reason="Reviewed schedule", actor=employee_email,
+        )
+        self.assertEqual(own, (False, "self_approval_blocked"))
+        approved = self._post(
+            f"/admin/hr/time/corrections/{correction['id']}/decision",
+            {"decision": "approved", "reviewer_reason": "Confirmed with employee"},
+            _cookie(reviewer_email),
+        )
+        self.assertIn("correction_approved", approved.headers["location"])
+        entries = hr_store.list_time_entries(employee_email)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["date"], work_date)
+        self.assertEqual(entries[0]["hours"], 8.5)
 
     def test_pto_rejects_weekends_holidays_and_overlaps(self):
         import uuid

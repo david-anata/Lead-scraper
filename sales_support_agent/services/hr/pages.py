@@ -202,6 +202,7 @@ def _flash(flash: Optional[str]) -> str:
         "correction_requested": "Time correction sent for review.",
         "correction_approved": "Time correction approved.",
         "correction_denied": "Time correction denied.",
+        "missed_punch_entry_exists": "A time entry already exists for that date. Use Correct on the existing punch instead.",
         "self_approval_blocked": "The requester cannot approve their own correction.",
         "timesheet_submitted": "Timesheet submitted for independent review.",
         "timesheet_already_approved": "This unchanged timesheet is already approved.",
@@ -549,8 +550,10 @@ def render_hr_time(
     corrections: list, review_flags: list, timesheets: list, period,
     entry_total: int = 0, entry_page: int = 1, entry_page_size: int = 10,
     entry_page_count: int = 1,
+    clock_summary: Optional[dict] = None,
     *, user, flash=None
 ) -> str:
+    clock_summary = clock_summary or {}
     punch_action = "out" if current else "in"
     punch_label = "Clock out" if current else "Clock in"
     review_permissions = (user or {}).get("permissions") or set()
@@ -572,7 +575,7 @@ def render_hr_time(
         requests = '<tr><td colspan="6" class="hr-empty">No PTO requests yet.</td></tr>'
     correction_rows = "".join(f"""<tr><td>{_esc(c['employee_email'])}</td><td>{_esc(c['original'].get('start_time'))}–{_esc(c['original'].get('stop_time'))}</td>
       <td>{_esc(c['proposed'].get('start_time'))}–{_esc(c['proposed'].get('stop_time'))}</td><td>{_esc(c['reason'])}</td><td>{_esc(c['status'])}</td>
-      <td>{f'<form class="hr-inline" method="post" action="/admin/hr/time/corrections/{c["id"]}/decision"><input name="reviewer_reason" placeholder="Review note"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and c['status'] == 'requested' else '—'}</td></tr>""" for c in corrections)
+      <td>{f'<form class="hr-inline" method="post" action="/admin/hr/time/corrections/{c["id"]}/decision"><input name="reviewer_reason" placeholder="Required review note" required><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and c['status'] == 'requested' else '—'}</td></tr>""" for c in corrections)
     if not correction_rows:
         correction_rows = '<tr><td colspan="6" class="hr-empty">No time corrections.</td></tr>'
     timesheet_rows = "".join(
@@ -614,9 +617,16 @@ def render_hr_time(
       <p><strong>{_esc(period.start_date)} through {_esc(period.end_date)}</strong>. Choosing a date changes the punches, timesheet, and review period shown below; it does not open or alter payroll.</p>
     </div>
     <div class="hr-callout"><div class="hr-kicker">Your time clock</div>
-      <p>{'Clocked in. Your time is running.' if current else 'You are currently clocked out.'}</p>
+      <p><strong>{_esc(clock_summary.get('local_now'))}</strong></p>
+      <p>{'Clocked in. Your time is running.' if current else 'You are currently clocked out.'}
+      {' Current shift: ' + format(clock_summary.get('open_elapsed_hours', 0), '.2f') + ' hours.' if current else ''}</p>
       <form method="post" action="/admin/hr/time/clock"><input type="hidden" name="action" value="{punch_action}">
         <button class="hr-btn" type="submit">{punch_label}</button></form></div>
+    <div class="hr-cards">
+      <div class="hr-card"><div class="n">{clock_summary.get('weekly_hours', 0):.2f}</div><div class="l">Hours this Sunday–Saturday workweek</div></div>
+      <div class="hr-card"><div class="n">{_esc((clock_summary.get('last_shift') or {}).get('hours', '—'))}</div><div class="l">Last completed shift hours</div></div>
+      <div class="hr-card"><div class="n">{_esc(clock_summary.get('week_start'))}</div><div class="l">Current workweek begins</div></div>
+    </div>
     {flags_html}
     <div class="hr-cards">
       <div class="hr-card"><div class="n">{pto.get('available',0):.2f}</div><div class="l">PTO hours available</div></div>
@@ -629,6 +639,15 @@ def render_hr_time(
     <table class="hr-tbl"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Employee</th><th>Correction</th></tr></thead><tbody>{rows}</tbody></table>
     <div class="hr-pagination"><span>Page {entry_page} of {entry_page_count}</span><div class="hr-inline">{previous_link}{next_link}</div></div>
     <h2 style="margin-top:28px">Time corrections</h2><table class="hr-tbl"><thead><tr><th>Employee</th><th>Original</th><th>Requested</th><th>Reason</th><th>Status</th><th>Decision</th></tr></thead><tbody>{correction_rows}</tbody></table>
+    <h2 style="margin-top:28px">Missed an entire workday?</h2>
+    <p class="hr-sub">Use this only when no punch exists for the date. Nothing is added to paid time until another authorized person reviews and approves it.</p>
+    <form class="hr-form" method="post" action="/admin/hr/time/missed-punch">
+      <label for="missed-date">Work date</label><input id="missed-date" type="date" name="work_date" required>
+      <div class="hr-grid2"><div><label for="missed-start">Requested start</label><input id="missed-start" type="time" name="proposed_start" required></div>
+      <div><label for="missed-stop">Requested end</label><input id="missed-stop" type="time" name="proposed_stop" required></div></div>
+      <label for="missed-reason">What happened?</label><textarea id="missed-reason" name="reason" required maxlength="500" placeholder="For example: I forgot to clock in and out."></textarea>
+      <div class="hr-actions"><button class="hr-btn hr-btn-light" type="submit">Request missed-day review</button></div>
+    </form>
     <h2 style="margin-top:28px">Timesheet approval</h2>
     <p class="hr-sub">Period {_esc(period.start_date)}–{_esc(period.end_date)}. Hourly payroll remains blocked until the employee submits and another authorized person approves an unchanged timesheet.</p>
     <form class="hr-form" method="post" action="/admin/hr/time/timesheets/submit">
