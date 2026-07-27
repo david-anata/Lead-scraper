@@ -481,7 +481,8 @@ class HRSectionTests(unittest.TestCase):
         email = f"pto-guard-{uuid.uuid4().hex[:8]}@anatainc.com"
         hr_store.create_employee(email=email, full_name="PTO Guard")
         hr_store.upsert_employment_profile(
-            email, hire_date=date(2025, 1, 1), actor="test"
+            email, hire_date=date(2025, 1, 1), pay_basis="fixed_semimonthly",
+            fixed_pay_per_period="1000", actor="test"
         )
         weekend = hr_store.create_pto_request(
             email, start_date=date(2026, 8, 8), end_date=date(2026, 8, 8),
@@ -493,6 +494,57 @@ class HRSectionTests(unittest.TestCase):
         )
         self.assertEqual(weekend, (False, "pto_non_workday"))
         self.assertEqual(holiday, (False, "pto_paid_holiday"))
+
+        spanning_weekend = hr_store.create_pto_request(
+            email, start_date=date(2026, 8, 7), end_date=date(2026, 8, 10),
+            hours=16, reason="Long weekend", actor=email,
+        )
+        self.assertEqual(spanning_weekend, (True, "pto_requested"))
+        request = hr_store.list_pto_requests(email)[0]
+        self.assertEqual(request["working_day_count"], 2)
+        self.assertEqual(request["excluded_day_count"], 2)
+
+        too_many_hours = hr_store.create_pto_request(
+            email, start_date=date(2026, 8, 11), end_date=date(2026, 8, 11),
+            hours=12, reason="", actor=email,
+        )
+        self.assertEqual(too_many_hours, (False, "pto_hours_exceed_workdays"))
+
+    def test_employee_can_withdraw_only_their_own_pending_pto(self):
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        employee_email = f"pto-owner-{suffix}@anatainc.com"
+        outsider_email = f"pto-outsider-{suffix}@anatainc.com"
+        for email in (employee_email, outsider_email):
+            hr_store.create_employee(email=email, full_name=email.split("@")[0])
+            hr_store.upsert_employment_profile(
+                email, hire_date=date(2025, 1, 1),
+                pay_basis="fixed_semimonthly", fixed_pay_per_period="1000",
+                actor="test",
+            )
+            user_id = access_store.upsert_user(email, email.split("@")[0])
+            access_store.set_user_permissions(user_id, ["hr.access"])
+        created = hr_store.create_pto_request(
+            employee_email, start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3), hours=8, reason="Personal",
+            actor=employee_email,
+        )
+        self.assertEqual(created, (True, "pto_requested"))
+        request_id = hr_store.list_pto_requests(employee_email)[0]["id"]
+
+        outsider = self._post(
+            f"/admin/hr/time/pto/{request_id}/withdraw", {},
+            _cookie(outsider_email),
+        )
+        self.assertIn("err=pto_withdraw_not_allowed", outsider.headers["location"])
+        owner = self._post(
+            f"/admin/hr/time/pto/{request_id}/withdraw", {},
+            _cookie(employee_email),
+        )
+        self.assertIn("ok=pto_withdrawn", owner.headers["location"])
+        self.assertEqual(
+            hr_store.list_pto_requests(employee_email)[0]["status"], "withdrawn"
+        )
 
     def test_onboarding_correction_preserves_submission_and_shows_employee_reason(self):
         self._post("/admin/hr/onboarding/profile", {

@@ -1485,15 +1485,21 @@ def create_pto_request(employee_email: str, *, start_date: date, end_date: date,
         start_date + timedelta(days=offset)
         for offset in range((end_date - start_date).days + 1)
     ]
-    if any(day.weekday() >= 5 for day in requested_dates):
+    if start_date.weekday() >= 5 or end_date.weekday() >= 5:
         return False, "pto_non_workday"
     holiday_dates = {
         holiday["observed_date"]
         for year in range(start_date.year, end_date.year + 1)
         for holiday in paid_holidays(year)
     }
-    if any(day in holiday_dates for day in requested_dates):
+    if start_date in holiday_dates or end_date in holiday_dates:
         return False, "pto_paid_holiday"
+    working_dates = [
+        day for day in requested_dates
+        if day.weekday() < 5 and day not in holiday_dates
+    ]
+    if not working_dates:
+        return False, "pto_non_workday"
     from sales_support_agent.services.hr.payroll import semimonthly_period
     if (
         semimonthly_period(start_date).start_date
@@ -1507,6 +1513,11 @@ def create_pto_request(employee_email: str, *, start_date: date, end_date: date,
             return False, "pto_setup_required"
         if start_date < employment.pto_eligible_date:
             return False, "pto_not_eligible"
+        normal_daily_hours = min(
+            8.0, max(0.0, float(employment.standard_weekly_hours or 0) / 5)
+        )
+        if normal_daily_hours <= 0 or hours > len(working_dates) * normal_daily_hours:
+            return False, "pto_hours_exceed_workdays"
         summary = _pto_summary_in_session(s, email, employment)
         pending = float(
             s.query(func.coalesce(func.sum(HRPTORequest.hours), 0)).filter(
@@ -1528,7 +1539,10 @@ def create_pto_request(employee_email: str, *, start_date: date, end_date: date,
                            hours=Decimal(str(round(hours, 2))), reason=(reason or "").strip())
         s.add(row)
         s.flush()
-        _audit(s, actor, "pto.requested", "pto_request", row.id, {"hours": hours})
+        _audit(s, actor, "pto.requested", "pto_request", row.id, {
+            "hours": hours, "working_days": len(working_dates),
+            "excluded_weekend_or_holiday_days": len(requested_dates) - len(working_dates),
+        })
         return True, "pto_requested"
 
 
@@ -1538,10 +1552,45 @@ def list_pto_requests(employee_email: Optional[str] = None) -> list:
         if employee_email:
             q = q.filter(HRPTORequest.employee_email == employee_email.strip().lower())
         rows = q.order_by(HRPTORequest.created_at.desc()).limit(100).all()
-        return [{"id": r.id, "employee_email": r.employee_email,
-                 "start_date": r.start_date, "end_date": r.end_date,
-                 "hours": float(r.hours), "reason": r.reason, "status": r.status}
-                for r in rows]
+        result = []
+        for row in rows:
+            dates = [
+                row.start_date + timedelta(days=offset)
+                for offset in range((row.end_date - row.start_date).days + 1)
+            ]
+            holidays = {
+                holiday["observed_date"]
+                for year in range(row.start_date.year, row.end_date.year + 1)
+                for holiday in paid_holidays(year)
+            }
+            workdays = [day for day in dates if day.weekday() < 5 and day not in holidays]
+            result.append({
+                "id": row.id, "employee_email": row.employee_email,
+                "start_date": row.start_date, "end_date": row.end_date,
+                "hours": float(row.hours), "reason": row.reason, "status": row.status,
+                "working_day_count": len(workdays),
+                "excluded_day_count": len(dates) - len(workdays),
+            })
+        return result
+
+
+def withdraw_pto(request_id: int, *, employee_email: str, actor: str) -> tuple[bool, str]:
+    """Let an employee withdraw their own still-pending PTO request."""
+    email = (employee_email or "").strip().lower()
+    if not email or actor.strip().lower() != email:
+        return False, "pto_withdraw_not_allowed"
+    with _session() as session:
+        row = session.get(HRPTORequest, request_id)
+        if not row or row.employee_email != email or row.status != "pending":
+            return False, "pto_withdraw_not_allowed"
+        row.status = "withdrawn"
+        row.decided_by = email
+        row.decided_at = datetime.now(timezone.utc)
+        _audit(session, actor, "pto.withdrawn", "pto_request", row.id, {
+            "start_date": str(row.start_date), "end_date": str(row.end_date),
+            "hours": float(row.hours),
+        })
+        return True, "pto_withdrawn"
 
 
 def decide_pto(request_id: int, *, decision: str, actor: str) -> bool:

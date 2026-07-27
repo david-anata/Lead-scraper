@@ -628,6 +628,17 @@ async def hr_pto_decision(request_id: int, decision: str = Form(""),
                             status_code=303)
 
 
+@router.post("/time/pto/{request_id}/withdraw")
+async def hr_pto_withdraw(request_id: int, user: dict = Depends(_guard)):
+    email = (user.get("email") or "").strip().lower()
+    ok, message = store.withdraw_pto(
+        request_id, employee_email=email, actor=email
+    )
+    return RedirectResponse(
+        f"/admin/hr/time?{'ok' if ok else 'err'}={message}", status_code=303
+    )
+
+
 @router.post("/time/pto")
 async def hr_pto_request(start_date: date = Form(...), end_date: date = Form(...),
                          hours: float = Form(...), reason: str = Form(""),

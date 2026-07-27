@@ -221,6 +221,9 @@ def _flash(flash: Optional[str]) -> str:
         "pto_non_workday": "PTO can only be requested for scheduled weekdays. Remove Saturday or Sunday from the request.",
         "pto_paid_holiday": "That request includes a paid Anata holiday, so PTO is not needed for that day.",
         "pto_conflict": "Those dates overlap an existing pending or approved PTO request.",
+        "pto_hours_exceed_workdays": "The requested hours exceed the normal hours available on those working days.",
+        "pto_withdrawn": "Your pending PTO request was withdrawn.",
+        "pto_withdraw_not_allowed": "Only your own pending PTO request can be withdrawn.",
         "pii_secret_missing": "Secure tax storage is not configured. Ask David or Val to finish setup.",
         "invalid_w4": "Review the SSN and W-4 selections.",
         "attestation_required": "You must complete and sign your own attestation.",
@@ -560,9 +563,11 @@ def render_hr_time(
       <td>{f'<details><summary>Correct</summary><form method="post" action="/admin/hr/time/{r["id"]}/correction"><label>Correct start</label><input type="time" name="proposed_start" value="{_esc(r["start_time"])}" required><label>Correct end</label><input type="time" name="proposed_stop" value="{_esc(r["stop_time"])}" required><label>Reason</label><input name="reason" required maxlength="500"><button class="hr-btn" type="submit">Request correction</button></form></details>' if not r['is_open'] else 'Close the shift first'}</td></tr>""" for r in entries)
     if not rows:
         rows = '<tr><td colspan="6" class="hr-empty">No time recorded yet.</td></tr>'
-    requests = "".join(f"""<tr><td>{_esc(r['employee_email'])}</td><td>{_esc(r['start_date'])}–{_esc(r['end_date'])}</td>
-      <td>{r['hours']:.2f}</td><td>{_esc(r['status'])}</td><td>{_esc(r['reason'] or '—')}</td><td>
-      {f'<form class="hr-inline" method="post" action="/admin/hr/time/pto/{r["id"]}/decision"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and r['status'] == 'pending' else '—'}</td></tr>""" for r in pto_requests)
+    viewer_email = ((user or {}).get("email") or "").strip().lower()
+    requests = "".join(f"""<tr><td>{_esc(r['employee_email'])}</td><td>{_esc(r['start_date'])}–{_esc(r['end_date'])}
+      <div class="hr-help">{r.get('working_day_count', 0)} working day(s){f"; {r.get('excluded_day_count')} weekend/holiday day(s) ignored" if r.get('excluded_day_count') else ""}</div></td>
+      <td>{r['hours']:.2f}</td><td>{_esc(r['status'].title())}</td><td>{_esc(r['reason'] or '—')}</td><td>
+      {f'<form class="hr-inline" method="post" action="/admin/hr/time/pto/{r["id"]}/decision"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and r['status'] == 'pending' and r['employee_email'] != viewer_email else f'<form method="post" action="/admin/hr/time/pto/{r["id"]}/withdraw"><button class="hr-btn hr-btn-light" type="submit">Withdraw request</button></form>' if r['status'] == 'pending' and r['employee_email'] == viewer_email else '—'}</td></tr>""" for r in pto_requests)
     if not requests:
         requests = '<tr><td colspan="6" class="hr-empty">No PTO requests yet.</td></tr>'
     correction_rows = "".join(f"""<tr><td>{_esc(c['employee_email'])}</td><td>{_esc(c['original'].get('start_time'))}–{_esc(c['original'].get('stop_time'))}</td>
@@ -639,7 +644,7 @@ def render_hr_time(
       <div><label for="pto-end">End date</label><input id="pto-end" type="date" name="end_date" required></div></div>
       <label for="pto-hours">Hours requested</label><input id="pto-hours" type="number" min="0.25" max="40" step="0.25" name="hours" required>
       <label for="pto-reason">Note (optional)</label><input id="pto-reason" name="reason" maxlength="500">
-      <p class="hr-help">Request only scheduled weekdays. The system blocks weekends, observed paid holidays, overlapping requests, unavailable hours, and requests that cross a payroll boundary.</p>
+      <p class="hr-help">Start and end on scheduled weekdays. Weekends and observed paid holidays inside a longer range are automatically ignored and do not use PTO. The system also blocks overlaps, unavailable hours, and requests that cross a payroll boundary.</p>
       <div class="hr-actions"><button class="hr-btn" type="submit">Send request</button></div></form>
     <h2 style="margin-top:28px">PTO requests</h2><table class="hr-tbl"><thead><tr><th>Employee</th><th>Dates</th><th>Hours</th><th>Status</th><th>Note</th><th>Decision</th></tr></thead><tbody>{requests}</tbody></table>
     """
