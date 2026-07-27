@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: starter
     numInstances: 2
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: commit
     buildCommand: pip install -r requirements.txt
     preDeployCommand: python scripts/predeploy_agent.py
     startCommand: uvicorn sales_support_agent.main:app --host 0.0.0.0 --port $PORT
