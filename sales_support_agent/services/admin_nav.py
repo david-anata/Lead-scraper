@@ -59,6 +59,7 @@ _NAV_SECTIONS = [
     ]),
     _NavSection("website_ops", "Website Ops", "website_ops", [
         _NavSubpage("website_ops.seo", "Overview", "/admin/website-ops", "seo_dashboard"),
+        _NavSubpage("website_ops.seo", "Query Map", "/admin/website-ops/queries", "queries"),
         _NavSubpage("website_ops.queue", "Queue", "/admin/website-ops/queue", "queue"),
         _NavSubpage("website_ops.reports", "Reports", "/admin/website-ops/reports", "reports"),
     ]),
@@ -552,7 +553,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         from sales_support_agent.services.access.catalog import grants_tool
         return grants_tool(_granted, key)
 
-    primary_active = "website_ops" if active in {"website_ops", "seo_dashboard", "queue", "reports"} else active
+    primary_active = "website_ops" if active in {"website_ops", "seo_dashboard", "queries", "queue", "reports"} else active
     if active in {"sales", "sales_decks", "sales_reps"}:
         primary_active = "sales"
     if active in {"finance", "finances"}:

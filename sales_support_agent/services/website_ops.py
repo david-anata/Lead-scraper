@@ -19,6 +19,9 @@ from sales_support_agent.config import Settings
 from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.services.admin_nav import render_agent_favicon_links, render_agent_nav, render_agent_nav_styles
 from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
+from sales_support_agent.services.website_ops_query_intelligence import (
+    load_query_intelligence,
+)
 from sales_support_agent.services.website_ops_github import (
     METADATA_ACTION_TYPES,
     execute_github_metadata_action,
@@ -1025,6 +1028,7 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
             report=enriched_report,
             observations=list(pipeline.get("observations") or []),
             feedback_entries=visible_feedback_entries,
+            run_mode=mode,
         )
     )
     enriched_report = _mvp_filter_report_payload(enriched_report)
@@ -1760,6 +1764,15 @@ def _page_shell(title: str, body: str) -> str:
       .loop-step > span {{ display:inline-grid; place-items:center; width:28px; height:28px; border-radius:999px; background:rgba(133,187,218,.18); font-weight:800; }}
       .loop-step h3 {{ margin-top:12px; }}
       .loop-step p {{ margin-top:6px; color:var(--muted); font-size:13px; line-height:1.45; }}
+      .data-workspace {{ width:100%; overflow:auto; border:1px solid var(--line); border-radius:20px; background:#fff; }}
+      .data-table {{ width:100%; min-width:980px; border-collapse:collapse; }}
+      .data-table th, .data-table td {{ padding:13px 14px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }}
+      .data-table th {{ position:sticky; top:0; z-index:2; background:#f8f6f1; color:var(--muted); font-family:"Montserrat",sans-serif; font-size:11px; letter-spacing:.06em; text-transform:uppercase; }}
+      .data-table tr:last-child td {{ border-bottom:0; }}
+      .data-table td {{ font-size:13px; line-height:1.45; }}
+      .query-label {{ display:grid; gap:5px; min-width:220px; }}
+      .query-label strong {{ font-family:"Montserrat",sans-serif; font-size:14px; }}
+      .query-owner {{ max-width:240px; overflow-wrap:anywhere; }}
       @media (max-width: 900px) {{
         .hero, .grid-2, .detail-layout, .stats, .form-grid, .setup-grid, .diff-grid, .mini-grid, .ops-state, .loop-grid {{ grid-template-columns: 1fr; }}
         .ops-state__action {{ justify-items:start; }}
@@ -2045,6 +2058,10 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     )
     serp_blueprints = list(latest_payload.get("serp_blueprints") or [])[:6]
     content_tasks = list(latest_payload.get("content_tasks") or [])[:6]
+    query_intelligence = dict(
+        latest_payload.get("query_intelligence") or load_query_intelligence(settings)
+    )
+    query_summary = dict(query_intelligence.get("summary") or {})
     monitored_count = int(latest_payload.get("pages_reviewed", 0) or len(settings.website_ops_site_urls))
     schedule_note = (
         "<p class='muted'>Scheduled for 8:00 AM America/Denver. "
@@ -2086,12 +2103,15 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
               {_summary_chip("Writable host", "anatainc.com", tone="good")}
               {_summary_chip("Change email", "Only when changed", tone="neutral")}
               {_summary_chip("Schedule", "8 AM Mountain", tone="neutral")}
+              {_summary_chip("Query validation", f"{query_summary.get('validated_clusters', 0)} validated", tone="good" if query_summary.get('validated_clusters') else "neutral")}
             </div>
+            <a class="text-link" href="/admin/website-ops/queries">Inspect query ownership and citations</a>
           </div>
         </section>
         {_continuous_loop_panel()}
         <section class="stats">
           {_dashboard_stat_card("Reports", len(reports), "Daily, weekly, monthly", "/admin/website-ops/reports")}
+          {_dashboard_stat_card("Validated Queries", query_summary.get('validated_clusters', 0), "One page, one intent", "/admin/website-ops/queries?status=validated")}
           {_dashboard_stat_card("Needs Review", status_counts.get('new', 0), "Needs a decision", "/admin/website-ops/queue?status=new")}
           {_dashboard_stat_card("Approved to Run", status_counts.get('approved', 0) + status_counts.get('in-progress', 0), "Approved or running", "/admin/website-ops/queue?status=approved")}
           {_dashboard_stat_card("Completed", status_counts.get('done', 0), "Completed safely", "/admin/website-ops/queue?status=done")}
@@ -2170,6 +2190,126 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
       {_dashboard_auto_run_script(run_state)}
     """
     return _page_shell("agent | Website Ops", body)
+
+
+def _query_filter_matches(cluster: Mapping[str, Any], status_filter: str) -> bool:
+    if not status_filter:
+        return True
+    if status_filter == "validated":
+        return cluster.get("validation_status") == "validated"
+    if status_filter == "hypothesis":
+        return cluster.get("validation_status") == "hypothesis"
+    if status_filter == "conflict":
+        return cluster.get("ownership_status") == "conflict"
+    if status_filter == "cited":
+        return dict(cluster.get("citation") or {}).get("status") == "cited"
+    if status_filter == "citation-lost":
+        return dict(cluster.get("citation") or {}).get("change") == "lost"
+    return True
+
+
+def render_query_map_page(
+    settings: Settings,
+    *,
+    status_filter: str = "",
+    user: dict | None = None,
+) -> str:
+    intelligence = load_query_intelligence(settings)
+    summary = dict(intelligence.get("summary") or {})
+    clusters = [
+        dict(item)
+        for item in intelligence.get("clusters", []) or []
+        if isinstance(item, Mapping) and _query_filter_matches(item, status_filter)
+    ]
+    recommendations = [
+        dict(item)
+        for item in intelligence.get("recommendations", []) or []
+        if isinstance(item, Mapping)
+    ]
+    rows: list[str] = []
+    for cluster in clusters:
+        evidence = ", ".join(
+            str(item).replace("_", " ").title()
+            for item in cluster.get("evidence_classes", []) or []
+        ) or "No evidence"
+        citation = dict(cluster.get("citation") or {})
+        citation_status = str(citation.get("status", "Not tested") or "Not tested")
+        ownership_status = str(cluster.get("ownership_status", "assigned") or "assigned")
+        conflict_count = len(list(cluster.get("conflict_urls") or []))
+        rows.append(
+            f"""
+            <tr>
+              <td><div class="query-label"><strong>{html.escape(str(cluster.get("label", "Query cluster")))}</strong><span class="muted">{html.escape(str(cluster.get("intent", "unknown")).title())} · {html.escape(str(cluster.get("funnel_stage", "unknown")).title())}</span></div></td>
+              <td><span class="status-pill {'status-ok' if cluster.get('validation_status') == 'validated' else 'status-neutral'}">{html.escape(str(cluster.get("validation_status", "hypothesis")).title())}</span></td>
+              <td>{html.escape(evidence)}</td>
+              <td class="query-owner"><a href="{html.escape(str(cluster.get("owner_url", "#")), quote=True)}">{html.escape(str(cluster.get("owner_url", "Unassigned")))}</a></td>
+              <td><span class="status-pill {'status-bad' if ownership_status == 'conflict' else 'status-ok'}">{html.escape(ownership_status.title())}</span>{f'<div class="muted">{conflict_count} competing page(s)</div>' if conflict_count else ''}</td>
+              <td>{html.escape(citation_status.replace("-", " ").title())}</td>
+              <td>{html.escape(str(cluster.get("observed_impressions", "Unavailable"))) if "observed_search" in cluster.get("evidence_classes", []) else "Unavailable"}</td>
+            </tr>
+            """
+        )
+    empty = """
+      <div class="ops-state ops-state--blocked">
+        <div class="stack">
+          <p class="eyebrow">Query map state</p>
+          <h2>No matching query clusters.</h2>
+          <p class="lead-sm">Run a Website Ops sweep after the Google connections are healthy, or select another evidence filter.</p>
+        </div>
+        <a class="btn btn--ghost" href="/admin/website-ops">Open Website Ops</a>
+      </div>
+    """
+    recommendation_cards = "".join(
+        f"""
+        <article class="action-card">
+          <div class="section-heading">
+            <h3>{html.escape(str(item.get("query_cluster", "Validated cluster")))}</h3>
+            <span class="status-pill {'status-ok' if item.get('execution_status') == 'eligible' else 'status-warn'}">{html.escape(str(item.get("execution_status", "shadow")).title())}</span>
+          </div>
+          <p class="lead-sm">{html.escape(str(item.get("reason", "")))}</p>
+          <div class="mini-grid">
+            {_mini_chip("Page", str(item.get("page_url", "")))}
+            {_mini_chip("Target", str(item.get("target", "")))}
+            {_mini_chip("Action", str(item.get("action_type", "")).replace("_", " ").title())}
+          </div>
+          {f'<p class="muted"><strong>Blocked:</strong> {html.escape(" ".join(str(reason) for reason in item.get("block_reasons", [])))}</p>' if item.get("block_reasons") else ''}
+        </article>
+        """
+        for item in recommendations[:12]
+    )
+    body = f"""
+      {_nav("queries", website_ops_section="queries", user=user)}
+      <main id="agent-main-content" class="shell app-container app-page">
+        <section class="card stack">
+          <p class="eyebrow">Website Ops query intelligence</p>
+          <h1>One query cluster. <span style="color:var(--accent)">One owning page.</span></h1>
+          <p class="lead">Separate observed demand from hypotheses, catch cannibalization, and track whether answer engines cite Anata.</p>
+          <div class="summary-grid">
+            {_summary_chip("Validated", summary.get("validated_clusters", 0), tone="good")}
+            {_summary_chip("Hypotheses", summary.get("hypothesis_clusters", 0), tone="neutral")}
+            {_summary_chip("Ownership conflicts", summary.get("ownership_conflicts", 0), tone="bad" if summary.get("ownership_conflicts") else "neutral")}
+            {_summary_chip("Cited clusters", summary.get("cited_clusters", 0), tone="good" if summary.get("cited_clusters") else "neutral")}
+            {_summary_chip("Shadow cycles", summary.get("weekly_validation_cycles", 0), tone="warn" if int(summary.get("weekly_validation_cycles", 0) or 0) < 2 else "good")}
+          </div>
+          <div class="button-row">
+            <a class="{'btn' if not status_filter else 'btn btn--ghost'}" href="/admin/website-ops/queries">All</a>
+            <a class="{'btn' if status_filter == 'validated' else 'btn btn--ghost'}" href="/admin/website-ops/queries?status=validated">Validated</a>
+            <a class="{'btn' if status_filter == 'hypothesis' else 'btn btn--ghost'}" href="/admin/website-ops/queries?status=hypothesis">Hypotheses</a>
+            <a class="{'btn' if status_filter == 'conflict' else 'btn btn--ghost'}" href="/admin/website-ops/queries?status=conflict">Conflicts</a>
+            <a class="{'btn' if status_filter == 'cited' else 'btn btn--ghost'}" href="/admin/website-ops/queries?status=cited">Cited</a>
+          </div>
+        </section>
+        <section class="card stack">
+          <div class="section-heading"><div class="stack"><h2>Query map</h2><p class="lead-sm">{len(clusters)} matching cluster(s). Impressions appear only for observed Search Console evidence.</p></div></div>
+          {f'<div class="data-workspace"><table class="data-table"><thead><tr><th>Query cluster</th><th>Validation</th><th>Evidence</th><th>Owning page</th><th>Ownership</th><th>Citation</th><th>Impressions</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>' if rows else empty}
+        </section>
+        <section class="card stack">
+          <div class="section-heading"><div class="stack"><h2>Validated recommendations</h2><p class="lead-sm">Recommendations remain in shadow mode until two comparable weekly cycles and all production gates pass.</p></div></div>
+          {recommendation_cards or '<p class="muted">No validated query recommendation is ready yet.</p>'}
+        </section>
+      </main>
+    """
+    return _page_shell("agent | Website Ops — Query Map", body)
 
 
 def render_queue_page(settings: Settings, *, flash_message: str = "", status_filter: str = "", user: dict | None = None) -> str:

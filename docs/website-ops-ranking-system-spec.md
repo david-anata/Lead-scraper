@@ -106,3 +106,59 @@ the exact blocker or next action, and the continuous Observe → Decide → Impr
   verification, and rollback outcomes.
 - The overview explains that validated marketing changes autopublish and that
   routine unchanged runs do not email the operator.
+
+## Query intelligence and citation addendum
+
+Website Ops maintains an immutable query ledger under
+`WEBSITE_OPS_ROOT/query_intelligence`. Raw observations are append-only; the
+operator UI reads a reproducible snapshot derived from those records.
+
+### Evidence contract
+
+- `simulated` records are deterministic coverage hypotheses.
+- `observed_search` records come from a successful Search Console response.
+- `observed_customer` records come only from the approved sanitized
+  first-party language pipeline.
+- `observed_answer_engine` records come from a completed controlled retrieval
+  test and include provider, model, prompt template, date, fan-out queries,
+  citations, and response fingerprint.
+- Provider failure, missing credentials, and no web retrieval remain distinct
+  from a successful retrieval without an Anata citation.
+- A cluster requires two independent signals, including at least one observed
+  signal, before it is validated.
+
+### Intent ownership
+
+Every validated cluster has one owning production marketing page. Search
+Console overlap on a second page creates a blocking cannibalization conflict.
+Semantic similarity alone cannot create a conflict or authorize a URL,
+canonical, redirect, robots, noindex, deletion, or consolidation action.
+
+### Controlled citation testing
+
+Weekly and monthly runs test a bounded set of validated commercial clusters
+through the OpenAI Responses API web-search tool. The system records actual
+retrieval queries and URL citations when returned. It does not depend on
+ChatGPT conversation `/c/` URLs, UI scraping, or unverifiable citation scores.
+
+### Publishing gate
+
+Query-led actions operate in shadow mode until two comparable weekly cycles
+complete. After that gate, only exact low-risk metadata proposals may enter the
+existing audited autopush pipeline. Visible-content recommendations remain
+blocked until exact claim-supported copy exists. All existing repository,
+preview, deployment, production-recrawl, and rollback gates still apply.
+
+### Outcome learning
+
+Successful decision-data runs append Search Console and GA4 page observations.
+The system compares comparable observations and labels movement as an
+association. It never claims a publication caused an impression, click,
+session, lead, or citation change.
+
+### Operator workflow
+
+`/admin/website-ops/queries` exposes validated and hypothetical clusters,
+evidence classes, owning pages, conflicts, citation state, observed impressions,
+shadow-cycle readiness, and exact recommendations. Missing evidence is shown as
+unavailable rather than zero.
