@@ -75,6 +75,11 @@ def init_cashflow_db(db_url: str) -> None:
 
 
 def init_database(session_factory: sessionmaker[Session]) -> None:
+    from sales_support_agent.services.job_lease import ensure_job_lease_schema
+    from sales_support_agent.services.website_ops_storage import (
+        ensure_website_ops_storage_schema,
+    )
+
     engine = session_factory.kw.get("bind")
     if engine is None:
         raise RuntimeError("Session factory is missing an engine binding.")
@@ -87,6 +92,8 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
         ensure_finance_trust_schema(engine)
         _backfill_legacy_settlements(engine)
         _repair_legacy_building_event_inquiries(session_factory)
+        ensure_job_lease_schema(engine)
+        ensure_website_ops_storage_schema(engine)
         return
 
     # Production deployments use a persistent Postgres database. Running
@@ -109,6 +116,8 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     _ensure_hr_tables(engine)
     _ensure_hr_columns(engine)
     _repair_legacy_building_event_inquiries(session_factory)
+    ensure_job_lease_schema(engine)
+    ensure_website_ops_storage_schema(engine)
 
 
 def _repair_legacy_building_event_inquiries(

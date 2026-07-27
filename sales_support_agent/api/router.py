@@ -17,7 +17,7 @@ from html import escape
 import requests
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
-from sqlalchemy import func, inspect, select
+from sqlalchemy import func, inspect, select, text
 
 from main import (
     ICPBuildRequest as LeadBuildRequest,
@@ -500,8 +500,88 @@ def root() -> ApiMessage:
     return ApiMessage(status="ok", message="Sales support agent is running.")
 
 
+@router.get("/health/live")
+def health_live(request: Request) -> JSONResponse:
+    """Process-only liveness probe with no database or external calls."""
+
+    return JSONResponse(
+        {
+            "status": "live",
+            "render_git_commit": getattr(
+                request.app.state,
+                "render_git_commit",
+                "unknown",
+            ),
+        }
+    )
+
+
+@router.get("/health/ready")
+def health_ready(request: Request) -> JSONResponse:
+    """Truthful Render readiness probe with exactly one bounded SQL query."""
+
+    commit = getattr(request.app.state, "render_git_commit", "unknown")
+    if not bool(getattr(request.app.state, "ready", False)):
+        return JSONResponse(
+            {
+                "status": "not_ready",
+                "render_git_commit": commit,
+                "reason": "application_initializing",
+            },
+            status_code=503,
+        )
+    try:
+        with request.app.state.session_factory() as session:
+            session.execute(text("SELECT 1"))
+    except Exception:  # noqa: BLE001 — readiness must fail closed
+        logging.getLogger("agent.lifecycle").exception(
+            "readiness status=failed commit=%s",
+            commit,
+        )
+        return JSONResponse(
+            {
+                "status": "not_ready",
+                "render_git_commit": commit,
+                "reason": "database_unavailable",
+            },
+            status_code=503,
+        )
+    return JSONResponse(
+        {
+            "status": "ready",
+            "render_git_commit": commit,
+        }
+    )
+
+
+@router.get("/health/storage")
+def health_storage(request: Request) -> JSONResponse:
+    """Non-sensitive migration proof for the Website Ops disk cutover."""
+
+    from sales_support_agent.services.website_ops_storage import (
+        database_mirror_enabled,
+        website_ops_storage_status,
+    )
+
+    if not database_mirror_enabled():
+        return JSONResponse(
+            {"status": "disabled", "files": 0, "bytes": 0}
+        )
+    try:
+        payload = website_ops_storage_status(
+            request.app.state.session_factory.kw["bind"]
+        )
+    except Exception:  # noqa: BLE001
+        return JSONResponse(
+            {"status": "unavailable", "files": 0, "bytes": 0},
+            status_code=503,
+        )
+    return JSONResponse({"status": "ready", **payload})
+
+
 @router.get("/health", response_model=ApiMessage)
 def health(request: Request) -> ApiMessage:
+    """Backward-compatible detailed diagnostics; not a readiness gate."""
     settings = request.app.state.settings
     brand_package_path = Path(str(getattr(settings, "shared_brand_package_path", "") or "")).expanduser()
     ticket1_details: dict[str, object] = {}
