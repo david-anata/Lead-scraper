@@ -1936,6 +1936,12 @@ class BuildingReservation(Base):
     space_id: Mapped[str] = mapped_column(ForeignKey("building_spaces.id"), index=True)
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    guest_starts_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    guest_ends_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     hold_expires_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
@@ -1951,6 +1957,26 @@ class BuildingReservation(Base):
     created_by: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingEventLifecycleCommand(Base):
+    """Idempotency evidence for authoritative event review operations."""
+
+    __tablename__ = "building_event_lifecycle_commands"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    command_type: Mapped[str] = mapped_column(String(64), index=True)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    inquiry_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    reservation_id: Mapped[str] = mapped_column(
+        ForeignKey("building_reservations.id"), index=True
+    )
+    response_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    actor: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
 
 
 class BuildingCalendarProjection(Base):

@@ -599,6 +599,13 @@ def render_building_page(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name") or item.get("id"))}</option>'
         for item in offerings
     )
+    qualified_event_inquiry_options = "".join(
+        f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))} · {_esc(item.get("preferred_date") or "date not set")}</option>'
+        for item in inquiries
+        if item.get("kind") == "event"
+        and str((item.get("lifecycle") or {}).get("stage") or "new")
+        in {"qualified", "closed_won"}
+    )
     contact_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("full_name") or item.get("email"))}</option>'
         for item in contacts if item.get("status") != "merged"
@@ -1086,6 +1093,29 @@ def render_building_page(
           <div class="field"><label for="reservation-reference">Source reference</label><input id="reservation-reference" name="source_reference" placeholder="Listing, message, or inquiry ID"></div>
           <div class="field field--wide"><label for="reservation-requirements">Requirements and operator notes</label><textarea id="reservation-requirements" name="requirements"></textarea></div>
           <div class="form-actions"><label class="check"><input type="checkbox" name="deposit_required" value="true" checked> Deposit required before confirmation</label><button class="primary" type="submit">Create booking inquiry</button></div>
+        </form>
+      </section>
+      <section class="panel panel--wide">
+        <div class="panel-head"><div><h2>Review an event date</h2><p>Create one authoritative setup-through-teardown window, conflict-check it, place a temporary Agent hold, and freeze a quote draft from approved terms. This does not send a contract, collect payment, or confirm a booking.</p></div></div>
+        <form class="form-grid" method="post" action="/admin/building/event-reviews">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="review-inquiry">Qualified event inquiry</label><select id="review-inquiry" name="inquiry_id" required><option value="">Choose accepted inquiry</option>{qualified_event_inquiry_options}</select></div>
+          <div class="field"><label for="review-id">Reservation ID</label><input id="review-id" name="reservation_id" required pattern="[A-Za-z0-9_-]{{4,64}}" placeholder="event-2026-001"></div>
+          <div class="field"><label for="review-space">Event space</label><select id="review-space" name="space_id" required><option value="">Choose space</option>{linked_space_options}</select></div>
+          <div class="field"><label for="review-offering">Event offering</label><select id="review-offering" name="offering_id" required><option value="">Choose offering</option>{offering_options}</select></div>
+          <div class="field"><label for="review-contact">Responsible contact</label><select id="review-contact" name="contact_id"><option value="">Link later</option>{contact_options}</select></div>
+          <div class="field"><label for="review-attendance">Attendance</label><input id="review-attendance" name="attendance" type="number" min="1" required></div>
+          <div class="field"><label for="review-setup">Setup starts (Mountain time)</label><input id="review-setup" name="setup_starts_at" type="datetime-local" required></div>
+          <div class="field"><label for="review-guest-start">Guest event starts</label><input id="review-guest-start" name="guest_starts_at" type="datetime-local" required></div>
+          <div class="field"><label for="review-guest-end">Guest event ends</label><input id="review-guest-end" name="guest_ends_at" type="datetime-local" required></div>
+          <div class="field"><label for="review-teardown">Teardown ends</label><input id="review-teardown" name="teardown_ends_at" type="datetime-local" required></div>
+          <div class="field"><label for="review-expiry">Temporary hold expires</label><input id="review-expiry" name="hold_expires_at" type="datetime-local" required><span class="form-note">Expiry releases Agent availability and queues calendar cleanup.</span></div>
+          <div class="field"><label for="review-units">Approved pricing units</label><input id="review-units" name="units" type="number" min="1" required></div>
+          <div class="field"><label for="review-owner">Assigned owner</label><input id="review-owner" name="assigned_owner" required value="{_esc(user.get("email"))}"></div>
+          <div class="field field--wide"><label for="review-terms">Reviewed terms summary</label><textarea id="review-terms" name="terms_summary" required></textarea></div>
+          <div class="field field--wide"><label for="review-notes">Operator notes</label><textarea id="review-notes" name="operator_notes"></textarea></div>
+          <div class="field field--wide"><label for="review-key">Idempotency key</label><input id="review-key" name="idempotency_key" minlength="8" maxlength="128" required placeholder="date-review-event-2026-001-v1"><span class="form-note">Reuse this exact key only when retrying the same submission.</span></div>
+          <div class="form-actions"><span class="form-note">Fails closed on conflicts or missing approved pricing.</span><button class="primary" type="submit">Create reviewed hold and quote draft</button></div>
         </form>
       </section>
       <section class="panel panel--wide" id="service-requests">

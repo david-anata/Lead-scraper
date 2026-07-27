@@ -275,6 +275,7 @@ def _ensure_building_tables(engine: Any) -> None:
         "building_campaign_recipients",
         "building_email_events",
         "building_reservations",
+        "building_event_lifecycle_commands",
         "building_agreements",
         "building_proposals",
         "building_tours",
@@ -309,6 +310,18 @@ def _ensure_building_columns(engine: Any) -> None:
         },
         "building_inquiries": {
             "response_due_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+        },
+        "building_reservations": {
+            "guest_starts_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+            "guest_ends_at": (
                 "TIMESTAMP WITH TIME ZONE"
                 if engine.dialect.name == "postgresql"
                 else "DATETIME"

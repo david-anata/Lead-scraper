@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import date, datetime, timezone
 from typing import Any, Literal, Optional
 from uuid import uuid4
@@ -17,6 +19,7 @@ from sales_support_agent.models.entities import (
     BuildingAvailabilityBlock,
     BuildingContact,
     BuildingDepositEvidence,
+    BuildingEventLifecycleCommand,
     BuildingInquiry,
     BuildingOffering,
     BuildingProposal,
@@ -118,6 +121,46 @@ class TransitionInput(BaseModel):
     reason: str = Field(default="", max_length=1000)
 
 
+class EventReviewInput(BaseModel):
+    """One atomic, idempotent date-review and quote-readiness command."""
+
+    inquiry_id: str = Field(min_length=1, max_length=64)
+    reservation_id: str = Field(min_length=1, max_length=64)
+    space_id: str = Field(min_length=1, max_length=64)
+    offering_id: str = Field(min_length=1, max_length=64)
+    contact_id: str | None = Field(default=None, max_length=64)
+    setup_starts_at: datetime
+    guest_starts_at: datetime
+    guest_ends_at: datetime
+    teardown_ends_at: datetime
+    hold_expires_at: datetime
+    attendance: int = Field(ge=1)
+    units: int = Field(ge=1)
+    addons: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    terms_summary: str = Field(min_length=1, max_length=4000)
+    operator_notes: str = Field(default="", max_length=4000)
+    assigned_owner: str = Field(min_length=1, max_length=255)
+    actor: str = Field(min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def valid_windows(self) -> "EventReviewInput":
+        if not (
+            self.setup_starts_at
+            <= self.guest_starts_at
+            < self.guest_ends_at
+            <= self.teardown_ends_at
+        ):
+            raise ValueError(
+                "Times must run from setup start through guest start, guest end, and teardown end."
+            )
+        if self.hold_expires_at <= _now():
+            raise ValueError("A future hold expiration is required.")
+        addon_ids = [str(item.get("addon_id") or "") for item in self.addons]
+        if any(not value for value in addon_ids) or len(addon_ids) != len(set(addon_ids)):
+            raise ValueError("Each selected add-on requires one unique addon_id.")
+        return self
+
+
 class AgreementInput(BaseModel):
     id: str | None = Field(default=None, max_length=64)
     version: int = Field(default=1, ge=1)
@@ -181,6 +224,10 @@ def _reservation_payload(row: BuildingReservation) -> dict[str, Any]:
         "contact_id": row.contact_id,
         "starts_at": row.starts_at.isoformat(),
         "ends_at": row.ends_at.isoformat(),
+        "guest_starts_at": (
+            row.guest_starts_at.isoformat() if row.guest_starts_at else None
+        ),
+        "guest_ends_at": row.guest_ends_at.isoformat() if row.guest_ends_at else None,
         "hold_expires_at": row.hold_expires_at.isoformat() if row.hold_expires_at else None,
         "attendance": row.attendance,
         "agreement_status": row.agreement_status,
@@ -190,6 +237,67 @@ def _reservation_payload(row: BuildingReservation) -> dict[str, Any]:
         "requirements": dict(row.requirements_json or {}),
         "calendar_event_id": row.calendar_event_id,
         "updated_at": (row.updated_at or _now()).isoformat(),
+    }
+
+
+def _customer_event_status(row: BuildingReservation) -> dict[str, Any]:
+    """Deliberately redacted projection; never implies booking, signature, or payment."""
+
+    stages = {
+        "inquiry": ("Request received", "Our team is reviewing your request."),
+        "requirements_review": ("Date review", "We are reviewing the full event access window."),
+        "soft_hold": ("Temporary hold", "A temporary hold is active while quote details are reviewed."),
+        "quote_sent": ("Quote sent", "Review the current quote; the event is not booked yet."),
+        "contract_pending": ("Agreement review", "Agreement review is in progress; the event is not booked yet."),
+        "deposit_due": ("Payment required", "Required agreement and payment steps remain."),
+        "confirmed": ("Confirmed", "Agent has verified the agreement and required payment evidence."),
+        "expired": ("Hold expired", "The temporary hold expired; contact the events team to review dates."),
+        "cancelled": ("Cancelled", "This event request is closed."),
+    }
+    label, message = stages.get(
+        row.status, ("In progress", "Contact the events team for the latest status.")
+    )
+    return {
+        "status": row.status,
+        "label": label,
+        "message": message,
+        "is_booked": row.status in {"confirmed", "pre_event", "completed"},
+        "hold_expires_at": (
+            row.hold_expires_at.isoformat() if row.status == "soft_hold" and row.hold_expires_at else None
+        ),
+        "updated_at": (row.updated_at or _now()).isoformat(),
+    }
+
+
+def _event_review_response(
+    row: BuildingReservation,
+    proposal: BuildingProposal,
+    *,
+    replayed: bool,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "replayed": replayed,
+        "reservation": _reservation_payload(row),
+        "quote": {
+            "id": proposal.id,
+            "version": proposal.version,
+            "status": proposal.status,
+            "amount_cents": proposal.amount_cents,
+            "currency": proposal.currency,
+            "rate_plan_id": proposal.rate_plan_id,
+            "rate_plan_snapshot": dict(proposal.rate_plan_snapshot_json or {}),
+            "terms_summary": proposal.terms_summary,
+        },
+        "readiness": {
+            "quote_ready": proposal.status == "draft",
+            "agreement_ready": proposal.status == "draft" and row.status == "soft_hold",
+            "contract_generated": False,
+            "signature_verified": False,
+            "payment_verified": False,
+            "booking_confirmed": False,
+        },
+        "customer_status": _customer_event_status(row),
     }
 
 
@@ -484,6 +592,338 @@ def _availability_block(
             BuildingAvailabilityBlock.source_reference == f"reservation:{reservation.id}"
         )
     ).scalar_one_or_none()
+
+
+@router.post("/event-reviews", status_code=201)
+def create_event_review(
+    payload: EventReviewInput,
+    request: Request,
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=8, max_length=128),
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Create the authoritative access-window hold and frozen quote draft."""
+
+    _require_internal_key(request, x_internal_api_key)
+    canonical = payload.model_dump(mode="json")
+    request_hash = hashlib.sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    with session_scope(request.app.state.session_factory) as session:
+        prior = session.execute(
+            select(BuildingEventLifecycleCommand).where(
+                BuildingEventLifecycleCommand.idempotency_key == idempotency_key
+            )
+        ).scalar_one_or_none()
+        if prior is not None:
+            if prior.request_hash != request_hash:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This idempotency key was already used for a different request.",
+                )
+            row = session.get(BuildingReservation, prior.reservation_id)
+            proposal = session.get(
+                BuildingProposal, str(prior.response_json.get("quote_id") or "")
+            )
+            if row is None or proposal is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The original operation evidence is incomplete; operator review is required.",
+                )
+            return _event_review_response(row, proposal, replayed=True)
+
+        inquiry = session.get(BuildingInquiry, payload.inquiry_id)
+        if inquiry is None or inquiry.kind != "event":
+            raise HTTPException(status_code=404, detail="Accepted event inquiry not found.")
+        lifecycle = dict((inquiry.payload_json or {}).get("_lifecycle") or {})
+        if str(lifecycle.get("stage") or "new") not in {"qualified", "closed_won"}:
+            raise HTTPException(
+                status_code=409,
+                detail="The inquiry must be qualified before authoritative date review.",
+            )
+        if session.get(BuildingReservation, payload.reservation_id) is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Reservation ID already exists; retry with the original idempotency key.",
+            )
+        space = session.get(BuildingSpace, payload.space_id)
+        offering = session.get(BuildingOffering, payload.offering_id)
+        if (
+            space is None
+            or offering is None
+            or offering.offering_type != "event"
+            or offering.space_id != space.id
+        ):
+            raise HTTPException(status_code=422, detail="Event space and offering do not match.")
+        if space.capacity and payload.attendance > space.capacity:
+            raise HTTPException(status_code=422, detail="Attendance exceeds reviewed capacity.")
+        if payload.contact_id and session.get(BuildingContact, payload.contact_id) is None:
+            raise HTTPException(status_code=422, detail="Unknown contact.")
+        conflicts = _active_conflicts(
+            session,
+            space_id=space.id,
+            starts_at=payload.setup_starts_at,
+            ends_at=payload.teardown_ends_at,
+            reservation_id=payload.reservation_id,
+        )
+        if conflicts:
+            raise HTTPException(
+                status_code=409,
+                detail="The full setup-through-teardown window conflicts with Agent availability.",
+            )
+
+        event_date = payload.guest_starts_at.date()
+        plans = session.execute(
+            select(BuildingRatePlan).where(
+                BuildingRatePlan.offering_id == offering.id,
+                BuildingRatePlan.status == "approved",
+                BuildingRatePlan.effective_from <= event_date,
+                (
+                    BuildingRatePlan.effective_until.is_(None)
+                    | (BuildingRatePlan.effective_until >= event_date)
+                ),
+            )
+        ).scalars().all()
+        if len(plans) != 1 or not plans[0].approval_evidence.strip():
+            raise HTTPException(
+                status_code=409,
+                detail="Quote readiness requires exactly one approved effective rate plan with approval evidence.",
+            )
+        plan = plans[0]
+        billable_units = max(payload.units, plan.minimum_units)
+        line_items: list[dict[str, Any]] = [{
+            "type": "base",
+            "name": plan.name,
+            "quantity": billable_units,
+            "amount_cents": billable_units * plan.unit_amount_cents,
+        }]
+        allowed_addons = {
+            str(item.get("id") or ""): item
+            for item in list(plan.addons_json or [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        for selected in sorted(payload.addons, key=lambda item: str(item["addon_id"])):
+            addon_id = str(selected["addon_id"])
+            quantity = int(selected.get("quantity") or 1)
+            addon = allowed_addons.get(addon_id)
+            if addon is None or quantity < 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Add-on '{addon_id}' is not available with that quantity.",
+                )
+            mode = str(addon.get("pricing_mode") or "flat")
+            calculated_quantity = {
+                "flat": quantity,
+                "per_guest": payload.attendance * quantity,
+                "per_unit": billable_units * quantity,
+            }.get(mode)
+            if calculated_quantity is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Approved add-on '{addon_id}' has an unsupported pricing mode.",
+                )
+            line_items.append({
+                "type": "addon",
+                "addon_id": addon_id,
+                "name": str(addon.get("name") or addon_id),
+                "quantity": calculated_quantity,
+                "amount_cents": int(addon.get("amount_cents") or 0) * calculated_quantity,
+            })
+        subtotal_cents = sum(item["amount_cents"] for item in line_items)
+        tax_cents = (
+            (subtotal_cents * plan.tax_rate_bps + 5000) // 10000
+            if plan.tax_status == "taxable"
+            else 0
+        )
+        amount_cents = subtotal_cents + tax_cents
+        if amount_cents <= 0:
+            raise HTTPException(
+                status_code=409,
+                detail="The approved rate plan does not produce a reviewable quote amount.",
+            )
+
+        row = BuildingReservation(
+            id=payload.reservation_id,
+            kind="event",
+            status="soft_hold",
+            inquiry_id=inquiry.id,
+            contact_id=payload.contact_id,
+            offering_id=offering.id,
+            space_id=space.id,
+            starts_at=payload.setup_starts_at,
+            ends_at=payload.teardown_ends_at,
+            guest_starts_at=payload.guest_starts_at,
+            guest_ends_at=payload.guest_ends_at,
+            hold_expires_at=payload.hold_expires_at,
+            attendance=payload.attendance,
+            deposit_required=plan.deposit_type != "none",
+            assigned_owner=payload.assigned_owner,
+            requirements_json={
+                "operator_notes": payload.operator_notes,
+                "access_window_reviewed": True,
+                "units": payload.units,
+                "addons": payload.addons,
+            },
+            source="agent_event_review",
+            source_reference=f"inquiry:{inquiry.id}",
+            created_by=payload.actor,
+            updated_at=_now(),
+        )
+        session.add(row)
+        session.flush()
+        block = BuildingAvailabilityBlock(
+            id=str(uuid4()),
+            space_id=space.id,
+            state="soft_hold",
+            starts_at=row.starts_at,
+            ends_at=row.ends_at,
+            expires_at=row.hold_expires_at,
+            source="agent",
+            source_reference=f"reservation:{row.id}",
+            public_label="Contact us for availability",
+            notes="Authoritative Agent event-review hold.",
+            created_by=payload.actor,
+        )
+        session.add(block)
+        snapshot = {
+            "id": plan.id,
+            "version": plan.version,
+            "name": plan.name,
+            "offering_id": plan.offering_id,
+            "currency": plan.currency,
+            "booking_unit": plan.booking_unit,
+            "minimum_units": plan.minimum_units,
+            "unit_amount_cents": plan.unit_amount_cents,
+            "deposit_type": plan.deposit_type,
+            "deposit_amount_cents": plan.deposit_amount_cents,
+            "deposit_percent_bps": plan.deposit_percent_bps,
+            "cancellation_policy": plan.cancellation_policy,
+            "included": list(plan.included_json or []),
+            "addons": list(plan.addons_json or []),
+            "tax_status": plan.tax_status,
+            "tax_rate_bps": plan.tax_rate_bps,
+            "tax_note": plan.tax_note,
+            "approval_evidence": plan.approval_evidence,
+            "approved_by": plan.approved_by,
+            "approved_at": plan.approved_at.isoformat() if plan.approved_at else None,
+            "effective_from": plan.effective_from.isoformat(),
+            "effective_until": plan.effective_until.isoformat() if plan.effective_until else None,
+            "access_window": {
+                "setup_starts_at": row.starts_at.isoformat(),
+                "guest_starts_at": row.guest_starts_at.isoformat(),
+                "guest_ends_at": row.guest_ends_at.isoformat(),
+                "teardown_ends_at": row.ends_at.isoformat(),
+            },
+            "line_items": line_items,
+            "subtotal_cents": subtotal_cents,
+            "tax_cents": tax_cents if plan.tax_status != "review_required" else None,
+            "terms_summary": payload.terms_summary,
+            "snapshotted_at": _now().isoformat(),
+        }
+        proposal = BuildingProposal(
+            id=str(uuid4()),
+            reservation_id=row.id,
+            version=1,
+            proposal_type="quote",
+            status="draft",
+            currency=plan.currency,
+            amount_cents=amount_cents,
+            line_items_json=line_items,
+            rate_plan_id=plan.id,
+            rate_plan_snapshot_json=snapshot,
+            terms_summary=payload.terms_summary,
+            created_by=payload.actor,
+            updated_at=_now(),
+        )
+        session.add(proposal)
+        queue_calendar_projection(session, row)
+        session.add(BuildingAuditEvent(
+            entity_type="reservation",
+            entity_id=row.id,
+            action="event_review_hold_created",
+            actor=payload.actor,
+            after_json={
+                "inquiry_id": inquiry.id,
+                "status": row.status,
+                "access_window": snapshot["access_window"],
+                "hold_expires_at": row.hold_expires_at.isoformat(),
+                "quote_id": proposal.id,
+                "rate_plan_id": plan.id,
+                "operator_notes": payload.operator_notes,
+            },
+        ))
+        command = BuildingEventLifecycleCommand(
+            id=str(uuid4()),
+            idempotency_key=idempotency_key,
+            command_type="accepted_inquiry_to_quote_ready_hold",
+            request_hash=request_hash,
+            inquiry_id=inquiry.id,
+            reservation_id=row.id,
+            response_json={"quote_id": proposal.id},
+            actor=payload.actor,
+        )
+        session.add(command)
+        session.flush()
+        return _event_review_response(row, proposal, replayed=False)
+
+
+@router.get("/{reservation_id}/lifecycle")
+def get_event_lifecycle(
+    reservation_id: str,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Return operator timeline plus a separately redacted customer projection."""
+
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        row = session.get(BuildingReservation, reservation_id)
+        if row is None or row.kind != "event":
+            raise HTTPException(status_code=404, detail="Event reservation not found.")
+        audits = session.execute(
+            select(BuildingAuditEvent)
+            .where(
+                BuildingAuditEvent.entity_type == "reservation",
+                BuildingAuditEvent.entity_id == row.id,
+            )
+            .order_by(BuildingAuditEvent.created_at)
+        ).scalars().all()
+        proposals = session.execute(
+            select(BuildingProposal)
+            .where(BuildingProposal.reservation_id == row.id)
+            .order_by(BuildingProposal.version.desc())
+        ).scalars().all()
+        return {
+            "reservation": _reservation_payload(row),
+            "timeline": [{
+                "action": item.action,
+                "actor": item.actor,
+                "at": item.created_at.isoformat(),
+                "evidence": dict(item.after_json or {}),
+            } for item in audits],
+            "quote_versions": [{
+                "id": item.id,
+                "version": item.version,
+                "status": item.status,
+                "rate_plan_id": item.rate_plan_id,
+                "amount_cents": item.amount_cents,
+            } for item in proposals],
+            "customer_status": _customer_event_status(row),
+            "readiness": {
+                "agreement_can_be_prepared": bool(
+                    row.status == "soft_hold" and proposals and proposals[0].status == "draft"
+                ),
+                "contract_generated": bool(
+                    session.execute(
+                        select(BuildingAgreement).where(
+                            BuildingAgreement.reservation_id == row.id
+                        )
+                    ).scalars().first()
+                ),
+                "signature_verified": row.agreement_status == "signed",
+                "payment_verified": row.deposit_status == "paid",
+                "booking_confirmed": row.status in {"confirmed", "pre_event", "completed"},
+            },
+        }
 
 
 @router.get("")
