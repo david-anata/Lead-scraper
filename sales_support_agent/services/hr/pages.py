@@ -916,20 +916,32 @@ def render_hr_contractors(contractors: list, profiles: list, payments: list,
     profile_by_email = {row["contractor_email"]: row for row in profiles}
     profile_rows = "".join(
         f"""<tr><td>{_esc(contractor['full_name'])}<br><span class="hr-sub">{_esc(contractor['email'])}</span></td>
+        <td>{_esc(profile_by_email.get(contractor['email'], {}).get('country_code') or '—')}</td>
+        <td>{_esc(profile_by_email.get(contractor['email'], {}).get('engagement_start') or '—')}–{_esc(profile_by_email.get(contractor['email'], {}).get('engagement_end') or 'open')}</td>
+        <td>{_esc(profile_by_email.get(contractor['email'], {}).get('currency') or '—')} {_esc(profile_by_email.get(contractor['email'], {}).get('flat_fee') or '—')}<br><span class="hr-sub">{_esc(profile_by_email.get(contractor['email'], {}).get('fee_terms') or 'Terms missing')}</span></td>
+        <td>{_esc(profile_by_email.get(contractor['email'], {}).get('status') or 'not configured')}</td>
         <td>{_esc(profile_by_email.get(contractor['email'], {}).get('tax_form_type', 'undetermined'))}</td>
         <td>{_esc(profile_by_email.get(contractor['email'], {}).get('tax_form_status', 'missing'))}</td>
         <td>{_esc(profile_by_email.get(contractor['email'], {}).get('expiration_date') or '—')}</td>
         <td>{_esc(profile_by_email.get(contractor['email'], {}).get('wise_recipient_reference') or '—')}</td></tr>"""
         for contractor in contractors
-    ) or '<tr><td colspan="5" class="hr-empty">Add a contractor employee record first.</td></tr>'
+    ) or '<tr><td colspan="9" class="hr-empty">Add a contractor employee record first.</td></tr>'
     body = f"""{_flash(flash)}<h1 class="hr-h1">Contractors & Wise</h1>
     <p class="hr-sub">Contractor obligations stay separate from W-2 payroll. Agent records approvals and Wise evidence; it does not initiate a transfer.</p>
     <h2>Contractor readiness</h2>
     <p class="hr-sub">Choose the tax-form type only after a qualified review. Agent tracks status but does not select or prepare a country-specific tax form.</p>
-    <table class="hr-tbl"><thead><tr><th>Contractor</th><th>Tax form</th><th>Status</th><th>Expiry</th><th>Wise recipient</th></tr></thead><tbody>{profile_rows}</tbody></table>
+    <table class="hr-tbl"><thead><tr><th>Contractor</th><th>Country</th><th>Engagement</th><th>Flat fee</th><th>Engagement status</th><th>Tax form</th><th>Tax status</th><th>Expiry</th><th>Wise recipient</th></tr></thead><tbody>{profile_rows}</tbody></table>
     <form class="hr-form" method="post" action="/admin/hr/contractors/profile">
       <div class="hr-kicker">Review contractor profile</div>
       <label>Contractor</label><select name="contractor_email" required>{options}</select>
+      <div class="hr-grid2"><div><label>Country code</label><input name="country_code" minlength="2" maxlength="2" placeholder="PH" required></div>
+      <div><label>Engagement status</label><select name="engagement_status"><option value="active">Active</option><option value="inactive">Inactive</option></select></div></div>
+      <div class="hr-grid2"><div><label>Engagement start</label><input type="date" name="engagement_start" required></div>
+      <div><label>Engagement end, if known</label><input type="date" name="engagement_end"></div></div>
+      <div class="hr-grid2"><div><label>Approved flat fee</label><input name="flat_fee" inputmode="decimal" required></div>
+      <div><label>Currency</label><input name="currency" value="USD" minlength="3" maxlength="3" required></div></div>
+      <label>Fee terms</label><input name="fee_terms" placeholder="Per month, per project, or approved service period" required>
+      <label>Contract/reference</label><input name="contract_reference" placeholder="Agreement or source reference">
       <label>Tax form type (human selected)</label><select name="tax_form_type"><option value="undetermined">Not determined</option><option value="w9">W-9</option><option value="w8ben">W-8BEN</option><option value="w8bene">W-8BEN-E</option><option value="other">Other</option></select>
       <label>Tax form status</label><select name="tax_form_status"><option value="missing">Missing</option><option value="requested">Requested</option><option value="received">Received</option><option value="reviewed">Reviewed</option><option value="expired">Expired</option></select>
       <div class="hr-grid2"><div><label>Received date</label><input type="date" name="received_date"></div><div><label>Expiration date, if applicable</label><input type="date" name="expiration_date"></div></div>

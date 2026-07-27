@@ -604,11 +604,19 @@ class HROpeningBalanceApproval(Base):
 
 
 class HRContractorProfile(Base):
-    """Employer-tracked contractor compliance status; no tax form image."""
+    """Employer-tracked engagement and compliance status; no bank or form image."""
 
     __tablename__ = "hr_contractor_profiles"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     contractor_email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    country_code: Mapped[str] = mapped_column(String(2), default="")
+    engagement_start: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    engagement_end: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    flat_fee_minor: Mapped[int] = mapped_column(Integer, default=0)
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    fee_terms: Mapped[str] = mapped_column(String(255), default="")
+    contract_reference: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
     tax_form_type: Mapped[str] = mapped_column(String(32), default="undetermined")
     tax_form_status: Mapped[str] = mapped_column(String(24), default="missing", index=True)
     received_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)

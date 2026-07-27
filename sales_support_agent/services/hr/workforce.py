@@ -71,16 +71,28 @@ def create_contractor_payment(
 
 
 def save_contractor_profile(
-    *, contractor_email: str, tax_form_type: str, tax_form_status: str,
-    received_date: date | None, expiration_date: date | None,
+    *, contractor_email: str, country_code: str, engagement_start: date,
+    engagement_end: date | None, flat_fee: str, currency: str,
+    fee_terms: str, contract_reference: str, engagement_status: str,
+    tax_form_type: str, tax_form_status: str, received_date: date | None,
+    expiration_date: date | None,
     wise_recipient_reference: str, review_note: str, actor: str,
 ) -> tuple[bool, str]:
-    """Track the human-selected tax-document status without storing the form."""
+    """Track the engagement and human-selected tax status without bank/form data."""
     email = (contractor_email or "").strip().lower()
+    country = (country_code or "").strip().upper()
+    currency = (currency or "USD").strip().upper()
+    fee_minor = dollars_to_cents(flat_fee)
     allowed_forms = {"undetermined", "w9", "w8ben", "w8bene", "other"}
     allowed_statuses = {"missing", "requested", "received", "reviewed", "expired"}
+    allowed_engagement_statuses = {"active", "inactive"}
     if (
-        tax_form_type not in allowed_forms or tax_form_status not in allowed_statuses
+        len(country) != 2 or not country.isalpha()
+        or len(currency) != 3 or not currency.isalpha()
+        or fee_minor <= 0 or not (fee_terms or "").strip()
+        or engagement_end and engagement_end < engagement_start
+        or engagement_status not in allowed_engagement_statuses
+        or tax_form_type not in allowed_forms or tax_form_status not in allowed_statuses
         or not (review_note or "").strip()
         or expiration_date and received_date and expiration_date < received_date
     ):
@@ -97,6 +109,14 @@ def save_contractor_profile(
         if not row:
             row = HRContractorProfile(contractor_email=email)
             session.add(row)
+        row.country_code = country
+        row.engagement_start = engagement_start
+        row.engagement_end = engagement_end
+        row.flat_fee_minor = fee_minor
+        row.currency = currency
+        row.fee_terms = fee_terms.strip()
+        row.contract_reference = (contract_reference or "").strip()
+        row.status = engagement_status
         row.tax_form_type = tax_form_type
         row.tax_form_status = tax_form_status
         row.received_date = received_date
@@ -107,6 +127,8 @@ def save_contractor_profile(
         row.updated_at = datetime.now(timezone.utc)
         session.flush()
         _audit(session, actor, "contractor.profile_reviewed", "contractor_profile", row.id, {
+            "country_code": country, "currency": currency,
+            "engagement_status": engagement_status,
             "tax_form_type": tax_form_type, "tax_form_status": tax_form_status,
         })
         return True, "contractor_profile_saved"
@@ -119,6 +141,14 @@ def list_contractor_profiles() -> list[dict]:
         ).all()
         return [{
             "contractor_email": row.contractor_email,
+            "country_code": row.country_code,
+            "engagement_start": row.engagement_start,
+            "engagement_end": row.engagement_end,
+            "flat_fee": cents_to_dollars(row.flat_fee_minor),
+            "currency": row.currency,
+            "fee_terms": row.fee_terms,
+            "contract_reference": row.contract_reference,
+            "status": row.status,
             "tax_form_type": row.tax_form_type,
             "tax_form_status": row.tax_form_status,
             "received_date": row.received_date,

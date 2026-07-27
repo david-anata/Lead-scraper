@@ -363,6 +363,16 @@ def _ensure_hr_columns(engine: Any) -> None:
             "recurring": "BOOLEAN NOT NULL DEFAULT FALSE",
             "recurrence_key": "VARCHAR(64) NOT NULL DEFAULT ''",
         },
+        "hr_contractor_profiles": {
+            "country_code": "VARCHAR(2) NOT NULL DEFAULT ''",
+            "engagement_start": "DATE",
+            "engagement_end": "DATE",
+            "flat_fee_minor": "INTEGER NOT NULL DEFAULT 0",
+            "currency": "VARCHAR(3) NOT NULL DEFAULT 'USD'",
+            "fee_terms": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "contract_reference": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "status": "VARCHAR(16) NOT NULL DEFAULT 'active'",
+        },
     }
     inspector = inspect(engine)
     for table_name, table_columns in additions.items():
