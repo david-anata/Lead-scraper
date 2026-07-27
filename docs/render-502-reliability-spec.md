@@ -1,8 +1,21 @@
 # Agent production reliability and 502 prevention
 
-Status: build-ready specification  
+Status: implemented and production-verified  
 Prepared: July 27, 2026  
 Scope: `sales-support-agent` web service and its Render deployment lifecycle
+
+Production verification completed July 27, 2026:
+
+- release `72ab990` deployed successfully to the custom-domain service
+  `sales-support-agent` on two Starter instances;
+- Render uses the database-aware `/health/ready` gate;
+- Website Ops durable storage contains 15 files / 323,662 bytes in PostgreSQL;
+- embedded Website Ops and outbound schedulers are disabled;
+- Render Cron owns both schedules with database-backed run leases;
+- production promotion is manual because the available GitHub credential could
+  not create a required-check workflow;
+- 50 consecutive readiness samples remained `200` across the representative
+  two-instance readiness-gated release, with no 502.
 
 ## Plain-English summary
 
@@ -43,8 +56,10 @@ outbound scans, Finance actions, or scheduled jobs.
 
 ### Verified facts
 
-1. The Render Blueprint specifies a paid `starter` web service, automatic
-   deploys, `/health` as its health-check path, and no persistent disk.
+1. The repository Blueprint had accumulated a Website Ops disk declaration,
+   while the live Render service had no disk attached. The declaration was
+   removed, the live drift was reconciled, and Website Ops storage was migrated
+   to PostgreSQL before multi-instance scaling.
 2. During the July 26 release, production was observed in this sequence:
    healthy `200` responses, a short Cloudflare `502` window, then healthy
    `200` responses again.
