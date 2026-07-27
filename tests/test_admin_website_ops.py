@@ -34,6 +34,7 @@ from sales_support_agent.services.website_ops import (
     render_dashboard_page,
     render_feedback_detail_page,
     render_queue_page,
+    render_report_page,
     review_feedback_record,
     run_website_ops,
     save_feedback_record,
@@ -99,8 +100,10 @@ class AdminWebsiteOpsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir))
             html = render_dashboard_page(settings)
-            self.assertIn("action center", html)
-            self.assertIn("/admin/api/website-ops/run", html)
+            self.assertIn("Continuous website", html)
+            self.assertIn("Continuous optimization loop", html)
+            self.assertIn("Repair Google connections", html)
+            self.assertNotIn('action="/admin/api/website-ops/run"', html)
             self.assertIn("/admin/api/website-ops/feedback", html)
             self.assertIn("8:00 AM America/Denver", html)
 
@@ -313,9 +316,11 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             settings = self._settings(Path(tmpdir))
             html = render_queue_page(settings)
             self.assertIn("No Website Ops records need review.", html)
-            self.assertIn("/admin/api/website-ops/run", html)
+            self.assertIn("Daily sweep unavailable", html)
+            self.assertIn("Repair Google connections", html)
             self.assertIn("/admin/website-ops#submit-issue", html)
             self.assertIn("/admin/api/website-ops/actions/execute-approved", html)
+            self.assertIn('disabled aria-disabled="true"', html)
 
     def test_dashboard_render_uses_latest_report_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -428,6 +433,47 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertIn("Gmail-derived questions are quarantined", html)
             self.assertNotIn("private unrelated question", html)
             self.assertNotIn("<a href=\"/admin/website-ops/reports/latest\"", html)
+
+    def test_legacy_report_suppresses_false_performance_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            reports_dir = settings.website_ops_root / "reports" / "weekly"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            slug = "2026-07-27-legacy-report"
+            (reports_dir / f"{slug}.md").write_text("# Legacy report\n")
+            (reports_dir / f"{slug}.html").write_text(
+                "<html><body><p>Score: 92 · GSC: 0 impressions</p></body></html>"
+            )
+            (reports_dir / f"{slug}.json").write_text(
+                json.dumps(
+                    {
+                        "title": "Legacy report",
+                        "status": "healthy",
+                        "pages_reviewed": 1,
+                        "page_insights": [
+                            {
+                                "page_url": "https://anatainc.com/",
+                                "page_title": "Anata",
+                                "score": 92,
+                                "bucket": "build",
+                                "search_console": {"impressions": 0},
+                                "ga4": {"sessions": 0},
+                            }
+                        ],
+                        "analytics_status": {
+                            "search_console": False,
+                            "ga4": False,
+                            "notes": ["Search Console unavailable", "GA4 unavailable"],
+                        },
+                    }
+                )
+            )
+            html = render_report_page(settings, "weekly", slug)
+            self.assertIn("Archived · decision data unavailable", html)
+            self.assertIn("Score Unavailable", html)
+            self.assertIn("Ranking operations", html)
+            self.assertNotIn("Score: 92", html)
+            self.assertNotIn("GSC: 0 impressions", html)
 
     def test_review_feedback_round_trip_saves_execution_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
