@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import tempfile
 import unittest
@@ -10,6 +11,9 @@ import sys
 from types import SimpleNamespace
 from unittest import mock
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -18,6 +22,7 @@ from sales_support_agent.services import website_ops_vendor as website_ops
 from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
 from sales_support_agent.services.website_ops_content import clean_generated_content
 from sales_support_agent.services.website_ops import (
+    discover_website_ops_urls,
     execute_approved_website_ops_actions,
     get_website_ops_run_state,
     latest_report_entry,
@@ -29,6 +34,7 @@ from sales_support_agent.services.website_ops import (
     review_feedback_record,
     run_website_ops,
     save_feedback_record,
+    send_website_ops_report_email,
     website_ops_run_is_due,
     write_website_ops_run_state,
 )
@@ -40,6 +46,7 @@ from sales_support_agent.services.website_ops_vendor.executor import (
     inject_faq_block,
     resolve_insertion_point,
 )
+from sales_support_agent.api.website_ops_jobs_router import router as website_ops_jobs_router
 
 
 class AdminWebsiteOpsTests(unittest.TestCase):
@@ -83,6 +90,125 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertIn("action center", html)
             self.assertIn("/admin/api/website-ops/run", html)
             self.assertIn("/admin/api/website-ops/feedback", html)
+            self.assertIn("8:00 AM America/Denver", html)
+
+    def test_sitemap_discovery_restricts_scope_and_private_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                website_ops_root=Path(tmpdir),
+                website_ops_site_urls=("https://anatainc.com/",),
+                website_ops_sitemap_url="https://anatainc.com/sitemap.xml",
+                website_ops_allowed_host="anatainc.com",
+            )
+            sitemap = b"""<?xml version="1.0"?>
+            <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+              <url><loc>https://anatainc.com/</loc></url>
+              <url><loc>https://anatainc.com/services</loc></url>
+              <url><loc>https://anatainc.com/book</loc></url>
+              <url><loc>https://app.anatainc.com/register</loc></url>
+            </urlset>"""
+            with mock.patch(
+                "sales_support_agent.services.website_ops.urllib.request.urlopen",
+                return_value=io.BytesIO(sitemap),
+            ):
+                urls = discover_website_ops_urls(settings)
+            self.assertEqual(
+                urls,
+                ("https://anatainc.com/", "https://anatainc.com/services"),
+            )
+
+    def test_daily_email_is_change_only_and_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                website_ops_root=Path(tmpdir),
+                website_ops_report_email_to=("david@anatainc.com",),
+                website_ops_email_from="Anata Agent <noreply@anatainc.com>",
+                resend_api_key="test-key",
+                resend_from="Anata Agent <noreply@anatainc.com>",
+            )
+            report = self._fake_report()
+            with mock.patch(
+                "sales_support_agent.services.website_ops.ResendClient.send_message",
+                return_value="email-1",
+            ) as send:
+                first = send_website_ops_report_email(settings, mode="daily", report=report)
+                second = send_website_ops_report_email(settings, mode="daily", report=report)
+            self.assertTrue(first["sent"])
+            self.assertFalse(second["sent"])
+            self.assertEqual(second["reason"], "unchanged")
+            send.assert_called_once()
+
+    def test_daily_email_ignores_volatile_report_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                website_ops_root=Path(tmpdir),
+                website_ops_report_email_to=("david@anatainc.com",),
+                website_ops_email_from="Anata Agent <noreply@anatainc.com>",
+                resend_api_key="test-key",
+                resend_from="Anata Agent <noreply@anatainc.com>",
+            )
+            first_report = self._fake_report()
+            first_report["generated_at"] = "2026-07-26T14:00:00Z"
+            second_report = dict(first_report)
+            second_report["generated_at"] = "2026-07-27T14:00:00Z"
+            with mock.patch(
+                "sales_support_agent.services.website_ops.ResendClient.send_message",
+                return_value="email-1",
+            ) as send:
+                send_website_ops_report_email(settings, mode="daily", report=first_report)
+                second = send_website_ops_report_email(settings, mode="daily", report=second_report)
+            self.assertFalse(second["sent"])
+            self.assertEqual(second["reason"], "unchanged")
+            send.assert_called_once()
+
+    def test_run_due_respects_daily_weekly_and_monthly_periods(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            write_website_ops_run_state(
+                settings,
+                "daily",
+                {"status": "succeeded", "last_successful_date": "2026-07-26"},
+            )
+            write_website_ops_run_state(
+                settings,
+                "weekly",
+                {"status": "succeeded", "last_successful_date": "2026-07-20"},
+            )
+            write_website_ops_run_state(
+                settings,
+                "monthly",
+                {"status": "succeeded", "last_successful_date": "2026-07-01"},
+            )
+            self.assertFalse(website_ops_run_is_due(settings, "daily", today=date(2026, 7, 26)))
+            self.assertTrue(website_ops_run_is_due(settings, "daily", today=date(2026, 7, 27)))
+            self.assertFalse(website_ops_run_is_due(settings, "weekly", today=date(2026, 7, 26)))
+            self.assertTrue(website_ops_run_is_due(settings, "weekly", today=date(2026, 7, 27)))
+            self.assertFalse(website_ops_run_is_due(settings, "monthly", today=date(2026, 7, 31)))
+            self.assertTrue(website_ops_run_is_due(settings, "monthly", today=date(2026, 8, 1)))
+
+    def test_scheduled_job_requires_internal_key_and_runs_requested_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app = FastAPI()
+            app.state.settings = SimpleNamespace(
+                internal_api_key="test-internal-key",
+                website_ops_root=Path(tmpdir),
+            )
+            app.include_router(website_ops_jobs_router)
+            client = TestClient(app)
+            unauthorized = client.post("/api/jobs/website-ops/run", json={"mode": "daily"})
+            self.assertEqual(unauthorized.status_code, 401)
+            with mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
+                return_value=SimpleNamespace(message="Daily website ops run completed."),
+            ) as run:
+                response = client.post(
+                    "/api/jobs/website-ops/run",
+                    headers={"X-Internal-Api-Key": "test-internal-key"},
+                    json={"mode": "daily"},
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["details"]["daily"]["status"], "succeeded")
+            run.assert_called_once_with(app.state.settings, mode="daily")
 
     def test_queue_empty_state_points_to_resolution_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

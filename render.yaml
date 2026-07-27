@@ -7,6 +7,10 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn sales_support_agent.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
+    disk:
+      name: website-ops-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.11"
@@ -66,6 +70,10 @@ services:
         sync: false
       - key: RESEND_WEBHOOK_SECRET
         sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM
+        value: Anata Agent <noreply@anatainc.com>
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
@@ -80,6 +88,16 @@ services:
         sync: false
       - key: WEBSITE_OPS_EXECUTE_APPROVED
         value: "true"
+      - key: WEBSITE_OPS_ROOT
+        value: /var/data/website_ops
+      - key: WEBSITE_OPS_SITEMAP_URL
+        value: https://anatainc.com/sitemap.xml
+      - key: WEBSITE_OPS_ALLOWED_HOST
+        value: anatainc.com
+      - key: WEBSITE_OPS_REPORT_EMAIL_TO
+        value: david@anatainc.com
+      - key: WEBSITE_OPS_EMAIL_FROM
+        value: Anata Agent <noreply@anatainc.com>
       - key: CANVA_CLIENT_ID
         sync: false
       - key: CANVA_CLIENT_SECRET
@@ -102,6 +120,22 @@ services:
         value: https://agent.anatainc.com/api/integrations/plaid/webhook
       - key: PLAID_REDIRECT_URI
         value: https://agent.anatainc.com/admin/finances/plaid/oauth-return
+
+  - type: cron
+    name: website-ops-scheduler
+    runtime: python
+    schedule: "0 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: |
+      curl -sS -X POST "$AGENT_URL/api/jobs/website-ops/run" \
+        -H "Content-Type: application/json" \
+        -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY" \
+        -d '{"mode":"scheduled"}'
+    envVars:
+      - key: AGENT_URL
+        value: https://agent.anatainc.com
+      - key: SALES_AGENT_INTERNAL_API_KEY
+        sync: false
 
   - type: cron
     name: sales-support-stale-scan
