@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, Optional
@@ -50,6 +52,19 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _date_ranges_overlap(
+    start_a: date,
+    end_a: date | None,
+    start_b: date,
+    end_b: date | None,
+) -> bool:
+    """Return whether two inclusive effective-date ranges overlap."""
+
+    return (end_a is None or start_b <= end_a) and (
+        end_b is None or start_a <= end_b
+    )
 
 
 def _require_building_key(request: Request, provided: Optional[str]) -> None:
@@ -203,6 +218,15 @@ def _rate_plan_public_payload(rate_plan: BuildingRatePlan | None) -> dict[str, A
         "cancellation_policy": rate_plan.cancellation_policy,
         "included": list(rate_plan.included_json or []),
         "addons": list(rate_plan.addons_json or []),
+        "tax": {
+            "status": rate_plan.tax_status,
+            "rate_percent": (
+                rate_plan.tax_rate_bps / 100
+                if rate_plan.tax_status == "taxable"
+                else None
+            ),
+            "note": rate_plan.tax_note,
+        },
         "effective_from": rate_plan.effective_from.isoformat(),
         "effective_until": (
             rate_plan.effective_until.isoformat()
@@ -378,7 +402,7 @@ class RatePlanInput(BaseModel):
     id: str = Field(min_length=1, max_length=64)
     version: int = Field(default=1, ge=1)
     name: str = Field(min_length=1, max_length=255)
-    status: Literal["draft", "approved", "retired"] = "draft"
+    status: Literal["draft", "in_review", "approved", "retired"] = "draft"
     currency: str = Field(default="USD", min_length=3, max_length=3)
     unit_amount_cents: int = Field(default=0, ge=0)
     public_price_display: str = Field(default="", max_length=128)
@@ -390,6 +414,12 @@ class RatePlanInput(BaseModel):
     cancellation_policy: str = Field(default="", max_length=4000)
     included: list[str] = Field(default_factory=list)
     addons: list[dict[str, Any]] = Field(default_factory=list)
+    tax_status: Literal["review_required", "taxable", "non_taxable"] = (
+        "review_required"
+    )
+    tax_rate_bps: int = Field(default=0, ge=0, le=10000)
+    tax_note: str = Field(default="", max_length=1000)
+    approval_evidence: str = Field(default="", max_length=2000)
     effective_from: date
     effective_until: date | None = None
     approved_by: str = Field(default="", max_length=255)
@@ -403,6 +433,35 @@ class RatePlanInput(BaseModel):
             raise ValueError("A fixed deposit requires a positive amount.")
         if self.deposit_type == "percent" and self.deposit_percent_bps <= 0:
             raise ValueError("A percentage deposit requires a positive percentage.")
+        addon_ids: set[str] = set()
+        normalized_addons: list[dict[str, Any]] = []
+        for raw in self.addons:
+            addon_id = str(raw.get("id") or raw.get("slug") or "").strip()
+            name = str(raw.get("name") or "").strip()
+            pricing_mode = str(raw.get("pricing_mode") or "flat").strip()
+            amount_cents = raw.get("amount_cents")
+            if not re.fullmatch(r"[a-z0-9]+(?:[-_][a-z0-9]+)*", addon_id):
+                raise ValueError("Each add-on requires a stable lowercase ID.")
+            if addon_id in addon_ids:
+                raise ValueError("Add-on IDs must be unique within a rate plan.")
+            if not name:
+                raise ValueError("Each add-on requires a customer-facing name.")
+            if pricing_mode not in {"flat", "per_guest", "per_unit"}:
+                raise ValueError("Unsupported add-on pricing mode.")
+            if not isinstance(amount_cents, int) or amount_cents < 0:
+                raise ValueError("Each add-on requires a non-negative cent amount.")
+            addon_ids.add(addon_id)
+            normalized_addons.append({
+                "id": addon_id,
+                "name": name,
+                "pricing_mode": pricing_mode,
+                "amount_cents": amount_cents,
+            })
+        self.addons = normalized_addons
+        if self.tax_status == "taxable" and self.tax_rate_bps <= 0:
+            raise ValueError("A taxable rate plan requires a positive tax rate.")
+        if self.tax_status != "taxable" and self.tax_rate_bps:
+            raise ValueError("Only taxable rate plans may carry a tax rate.")
         if self.status == "approved":
             if self.unit_amount_cents <= 0:
                 raise ValueError("An approved rate plan requires a positive unit price.")
@@ -412,7 +471,32 @@ class RatePlanInput(BaseModel):
                 raise ValueError("An approved rate plan requires a cancellation policy.")
             if not self.approved_by.strip():
                 raise ValueError("An approved rate plan requires an approver.")
+            if not self.tax_note.strip():
+                raise ValueError("An approved rate plan requires a tax note.")
+            if not self.approval_evidence.strip():
+                raise ValueError("An approved rate plan requires approval evidence.")
         self.currency = self.currency.upper()
+        return self
+
+
+class EventEstimateAddonInput(BaseModel):
+    addon_id: str = Field(
+        pattern=r"^[a-z0-9]+(?:[-_][a-z0-9]+)*$", max_length=64
+    )
+    quantity: int = Field(default=1, ge=1, le=100)
+
+
+class EventEstimateInput(BaseModel):
+    offering_id: str = Field(min_length=1, max_length=64)
+    units: int = Field(ge=1, le=168)
+    attendance: int = Field(ge=1, le=10000)
+    addons: list[EventEstimateAddonInput] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def unique_addons(self) -> "EventEstimateInput":
+        ids = [item.addon_id for item in self.addons]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Each add-on may be selected only once.")
         return self
 
 
@@ -1096,6 +1180,10 @@ def _rate_plan_internal_payload(row: BuildingRatePlan) -> dict[str, Any]:
         "unit_amount_cents": row.unit_amount_cents,
         "deposit_amount_cents": row.deposit_amount_cents,
         "deposit_percent_bps": row.deposit_percent_bps,
+        "tax_status": row.tax_status,
+        "tax_rate_bps": row.tax_rate_bps,
+        "tax_note": row.tax_note,
+        "approval_evidence": row.approval_evidence,
         "approved_by": row.approved_by,
         "approved_at": row.approved_at.isoformat() if row.approved_at else None,
         "created_by": row.created_by,
@@ -1170,17 +1258,25 @@ def upsert_rate_plan(
                 detail="That rate-plan version already exists for this offering.",
             )
         if payload.status == "approved":
-            another_approved = session.execute(
+            approved_plans = session.execute(
                 select(BuildingRatePlan).where(
                     BuildingRatePlan.offering_id == offering_id,
                     BuildingRatePlan.status == "approved",
                     BuildingRatePlan.id != rate_plan_id,
                 )
-            ).scalar_one_or_none()
-            if another_approved is not None:
+            ).scalars().all()
+            if any(
+                _date_ranges_overlap(
+                    payload.effective_from,
+                    payload.effective_until,
+                    item.effective_from,
+                    item.effective_until,
+                )
+                for item in approved_plans
+            ):
                 raise HTTPException(
                     status_code=409,
-                    detail="Retire the current approved rate plan before approving a replacement.",
+                    detail="Approved rate-plan effective dates may not overlap.",
                 )
         if row is None:
             row = BuildingRatePlan(
@@ -1206,6 +1302,10 @@ def upsert_rate_plan(
             "cancellation_policy": payload.cancellation_policy.strip(),
             "included_json": payload.included,
             "addons_json": payload.addons,
+            "tax_status": payload.tax_status,
+            "tax_rate_bps": payload.tax_rate_bps,
+            "tax_note": payload.tax_note.strip(),
+            "approval_evidence": payload.approval_evidence.strip(),
             "effective_from": payload.effective_from,
             "effective_until": payload.effective_until,
             "updated_at": _now(),
@@ -1226,6 +1326,139 @@ def upsert_rate_plan(
             after_json=after,
         ))
         return {"ok": True, "rate_plan": after}
+
+
+@public_router.post("/event-estimates")
+def calculate_public_event_estimate(
+    payload: EventEstimateInput,
+    request: Request,
+) -> dict[str, Any]:
+    """Calculate a non-binding estimate from one approved current Agent plan."""
+
+    today = _now().date()
+    with session_scope(request.app.state.session_factory) as session:
+        offering = session.get(BuildingOffering, payload.offering_id)
+        if (
+            offering is None
+            or not offering.is_published
+            or offering.offering_type != "event"
+        ):
+            raise HTTPException(status_code=404, detail="Event offering not found.")
+        plans = session.execute(
+            select(BuildingRatePlan)
+            .where(
+                BuildingRatePlan.offering_id == offering.id,
+                BuildingRatePlan.status == "approved",
+                BuildingRatePlan.effective_from <= today,
+                (
+                    BuildingRatePlan.effective_until.is_(None)
+                    | (BuildingRatePlan.effective_until >= today)
+                ),
+            )
+            .order_by(BuildingRatePlan.version.desc())
+        ).scalars().all()
+        if len(plans) != 1 or not plans[0].approval_evidence.strip():
+            raise HTTPException(
+                status_code=409,
+                detail="Online pricing is unavailable until one approved current rate plan is reviewed.",
+            )
+        plan = plans[0]
+        if plan.tax_status not in {"review_required", "taxable", "non_taxable"}:
+            raise HTTPException(
+                status_code=409,
+                detail="Online pricing is unavailable while tax treatment is reviewed.",
+            )
+
+        billable_units = max(payload.units, plan.minimum_units)
+        base_amount = billable_units * plan.unit_amount_cents
+        line_items: list[dict[str, Any]] = [{
+            "type": "base",
+            "name": plan.name,
+            "quantity": billable_units,
+            "amount_cents": base_amount,
+        }]
+        allowed_addons = {
+            str(item.get("id") or ""): item
+            for item in list(plan.addons_json or [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        for selected in payload.addons:
+            addon = allowed_addons.get(selected.addon_id)
+            if addon is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Add-on '{selected.addon_id}' is not available on the current rate plan.",
+                )
+            mode = str(addon.get("pricing_mode") or "flat")
+            calculated_quantity = {
+                "flat": selected.quantity,
+                "per_guest": payload.attendance * selected.quantity,
+                "per_unit": billable_units * selected.quantity,
+            }[mode]
+            amount_cents = int(addon["amount_cents"]) * calculated_quantity
+            line_items.append({
+                "type": "addon",
+                "addon_id": selected.addon_id,
+                "name": str(addon["name"]),
+                "quantity": calculated_quantity,
+                "amount_cents": amount_cents,
+            })
+
+        subtotal_cents = sum(item["amount_cents"] for item in line_items)
+        estimated_tax_cents = (
+            (subtotal_cents * plan.tax_rate_bps + 5000) // 10000
+            if plan.tax_status == "taxable"
+            else (0 if plan.tax_status == "non_taxable" else None)
+        )
+        estimated_total_cents = subtotal_cents + (estimated_tax_cents or 0)
+        deposit_cents = {
+            "none": 0,
+            "fixed": plan.deposit_amount_cents,
+            "percent": (
+                estimated_total_cents * plan.deposit_percent_bps + 5000
+            ) // 10000,
+        }[plan.deposit_type]
+        canonical = {
+            "offering_id": offering.id,
+            "rate_plan_id": plan.id,
+            "rate_plan_version": plan.version,
+            "units": payload.units,
+            "attendance": payload.attendance,
+            "addons": [
+                {"addon_id": item.addon_id, "quantity": item.quantity}
+                for item in sorted(payload.addons, key=lambda item: item.addon_id)
+            ],
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return {
+            "estimate": {
+                "currency": plan.currency,
+                "booking_unit": plan.booking_unit,
+                "billable_units": billable_units,
+                "attendance": payload.attendance,
+                "line_items": line_items,
+                "subtotal_cents": subtotal_cents,
+                "estimated_tax_cents": estimated_tax_cents,
+                "estimated_total_cents": estimated_total_cents,
+                "deposit_cents": min(deposit_cents, estimated_total_cents),
+                "tax_note": plan.tax_note,
+                "is_binding": False,
+                "calculation_fingerprint": fingerprint,
+                "rate_plan": {
+                    "id": plan.id,
+                    "version": plan.version,
+                    "effective_from": plan.effective_from.isoformat(),
+                    "effective_until": (
+                        plan.effective_until.isoformat()
+                        if plan.effective_until
+                        else None
+                    ),
+                    "approved": True,
+                },
+            }
+        }
 
 
 @internal_router.post("/availability", status_code=201)

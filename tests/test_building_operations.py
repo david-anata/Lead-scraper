@@ -296,6 +296,16 @@ class BuildingOperationsTests(unittest.TestCase):
             },
         )
         self.assertEqual(invalid.status_code, 422, invalid.text)
+        unavailable = self.client.post(
+            "/api/public/building/event-estimates",
+            json={
+                "offering_id": "arena-events",
+                "units": 4,
+                "attendance": 80,
+                "addons": [],
+            },
+        )
+        self.assertEqual(unavailable.status_code, 409, unavailable.text)
         approved = self.client.put(
             "/api/internal/building/offerings/arena-events/rate-plans/arena-v1",
             headers=self.internal_headers,
@@ -313,7 +323,25 @@ class BuildingOperationsTests(unittest.TestCase):
                 "deposit_percent_bps": 5000,
                 "cancellation_policy": "Deposit is non-refundable within 30 days.",
                 "included": ["Tables", "Chairs"],
-                "addons": [{"name": "Extra cleaning", "amount_cents": 15000}],
+                "addons": [{
+                    "id": "extra-cleaning",
+                    "name": "Extra cleaning",
+                    "amount_cents": 15000,
+                    "pricing_mode": "flat",
+                }, {
+                    "id": "guest-service",
+                    "name": "Guest service",
+                    "amount_cents": 200,
+                    "pricing_mode": "per_guest",
+                }, {
+                    "id": "equipment-hour",
+                    "name": "Equipment hour",
+                    "amount_cents": 1000,
+                    "pricing_mode": "per_unit",
+                }],
+                "tax_status": "review_required",
+                "tax_note": "Tax treatment will be confirmed in the reviewed quote.",
+                "approval_evidence": "pricing-review-2026-01",
                 "effective_from": "2026-01-01",
                 "approved_by": "approver@example.com",
                 "actor": "operator@example.com",
@@ -327,6 +355,43 @@ class BuildingOperationsTests(unittest.TestCase):
         self.assertEqual(rate_plan["deposit"]["percent"], 50.0)
         self.assertNotIn("unit_amount_cents", rate_plan)
         self.assertNotIn("approved_by", rate_plan)
+        estimate_request = {
+            "offering_id": "arena-events",
+            "units": 4,
+            "attendance": 80,
+            "addons": [
+                {"addon_id": "extra-cleaning", "quantity": 1},
+                {"addon_id": "guest-service", "quantity": 1},
+                {"addon_id": "equipment-hour", "quantity": 1},
+            ],
+        }
+        first_estimate = self.client.post(
+            "/api/public/building/event-estimates",
+            json=estimate_request,
+        )
+        second_estimate = self.client.post(
+            "/api/public/building/event-estimates",
+            json=estimate_request,
+        )
+        self.assertEqual(first_estimate.status_code, 200, first_estimate.text)
+        self.assertEqual(first_estimate.json(), second_estimate.json())
+        estimate = first_estimate.json()["estimate"]
+        self.assertEqual(estimate["billable_units"], 4)
+        self.assertEqual(estimate["subtotal_cents"], 1035000)
+        self.assertIsNone(estimate["estimated_tax_cents"])
+        self.assertEqual(estimate["estimated_total_cents"], 1035000)
+        self.assertEqual(estimate["deposit_cents"], 517500)
+        self.assertFalse(estimate["is_binding"])
+        self.assertEqual(len(estimate["calculation_fingerprint"]), 64)
+        self.assertNotIn("approval_evidence", estimate["rate_plan"])
+        unknown_addon = self.client.post(
+            "/api/public/building/event-estimates",
+            json={
+                **estimate_request,
+                "addons": [{"addon_id": "not-approved", "quantity": 1}],
+            },
+        )
+        self.assertEqual(unknown_addon.status_code, 422, unknown_addon.text)
         overlapping = self.client.put(
             "/api/internal/building/offerings/arena-events/rate-plans/arena-v2",
             headers=self.internal_headers,
@@ -338,6 +403,9 @@ class BuildingOperationsTests(unittest.TestCase):
                 "unit_amount_cents": 275000,
                 "public_price_display": "From $2,750",
                 "cancellation_policy": "Deposit is non-refundable within 30 days.",
+                "tax_status": "non_taxable",
+                "tax_note": "No tax is calculated for this reviewed plan.",
+                "approval_evidence": "pricing-review-2027-01",
                 "effective_from": "2027-01-01",
                 "approved_by": "approver@example.com",
                 "actor": "operator@example.com",
@@ -358,6 +426,42 @@ class BuildingOperationsTests(unittest.TestCase):
         )
         self.assertEqual(retire.status_code, 200, retire.text)
         self.assertEqual(retire.json()["rate_plan"]["status"], "retired")
+        taxable = self.client.put(
+            "/api/internal/building/offerings/arena-events/rate-plans/arena-v3",
+            headers=self.internal_headers,
+            json={
+                "id": "arena-v3",
+                "version": 3,
+                "name": "Arena taxable plan",
+                "status": "approved",
+                "unit_amount_cents": 250000,
+                "public_price_display": "Reviewed event pricing",
+                "booking_unit": "event",
+                "deposit_type": "fixed",
+                "deposit_amount_cents": 50000,
+                "cancellation_policy": "Reviewed cancellation terms.",
+                "tax_status": "taxable",
+                "tax_rate_bps": 725,
+                "tax_note": "Estimated tax is calculated at the reviewed rate.",
+                "approval_evidence": "pricing-review-taxable",
+                "effective_from": "2026-01-01",
+                "approved_by": "approver@example.com",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(taxable.status_code, 200, taxable.text)
+        taxed_estimate = self.client.post(
+            "/api/public/building/event-estimates",
+            json={
+                "offering_id": "arena-events",
+                "units": 1,
+                "attendance": 50,
+                "addons": [],
+            },
+        ).json()["estimate"]
+        self.assertEqual(taxed_estimate["estimated_tax_cents"], 18125)
+        self.assertEqual(taxed_estimate["estimated_total_cents"], 268125)
+        self.assertEqual(taxed_estimate["deposit_cents"], 50000)
 
     def test_inquiry_requires_secret_consent_and_idempotency(self) -> None:
         payload = {
