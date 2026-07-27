@@ -883,7 +883,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         <td>${_esc(run['taxes'])}</td><td>${_esc(run.get('deductions'))}</td><td>${_esc(run['net'])}</td><td>${_esc(run['cash_impact'])}</td>
         <td>{run['employee_count']}</td><td>{_esc(run['initiated_by'])}</td>
         <td><a href="/admin/hr/payroll/runs/{_esc(run['id'])}">Review details</a>
-        {f'<form method="post" action="/admin/hr/payroll/{run["id"]}/approve"><label>Type exactly: I approve this payroll</label><input name="approval_text" required autocomplete="off"><input type="hidden" name="period_date" value="{period.start_date}"><button class="hr-btn" type="submit">Approve prepared payroll</button></form>' if run["status"] == "prepared" else ''}</td></tr>"""
+        {f'<br><a class="hr-btn" href="/admin/hr/payroll/runs/{_esc(run["id"])}/approve">Review and approve</a>' if run["status"] == "prepared" else ''}</td></tr>"""
         for run in control["runs"]
     ) or '<tr><td colspan="10" class="hr-empty">No prepared versions for this period.</td></tr>'
     liability_rows = "".join(
@@ -948,6 +948,73 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <li>Printed/manual checks at launch. Each check number, void, and reissue is recorded.</li></ul></div>
     """
     return hr_shell("Payroll", "payroll", body, user=user)
+
+
+def render_hr_payroll_approval(run: dict, *, user, flash=None) -> str:
+    """Render the deliberate final checkpoint before a payroll version is approved."""
+    handoff = run.get("provider_handoff") or {}
+    provider_name = handoff.get("provider_name") or "No authoritative payroll provider connected"
+    employee_count = len(run.get("calculations") or [])
+    approver = user.get("name") or user.get("email") or "Signed-in approver"
+    approver_email = user.get("email") or ""
+    prepared_by = run.get("prepared_by") or "Unknown"
+    independently_reviewed = (
+        bool(approver_email)
+        and approver_email.strip().lower() != str(prepared_by).strip().lower()
+    )
+    can_approve = run.get("status") == "prepared" and independently_reviewed
+    warning = (
+        "This version is ready for an independent approval."
+        if can_approve else
+        "This payroll cannot be approved here. It must be prepared and reviewed by a different signed-in person."
+    )
+    body = f"""
+    {_flash(flash)}
+    <h1 class="hr-h1">Confirm payroll approval</h1>
+    <p class="hr-sub">This is the final internal approval for one frozen payroll version. Review every item before signing.</p>
+    <div class="hr-callout {'ok' if can_approve else 'warn'}">
+      <div class="hr-kicker">Approval status</div>
+      <h2>{_esc(warning)}</h2>
+      <p>Approval records your decision and creates Anata's liability schedule. It does <strong>not</strong> transfer wages, debit the bank, pay taxes, or file tax returns.</p>
+    </div>
+    <section class="hr-card">
+      <div class="hr-kicker">Exact version</div>
+      <h2>{_esc(run['id'])}</h2>
+      <div class="hr-grid2">
+        <div><strong>Pay period</strong><p>{_esc(run['period_start'])}–{_esc(run['period_end'])}</p></div>
+        <div><strong>Pay date</strong><p>{_esc(run['pay_date'])}</p></div>
+        <div><strong>Employees included</strong><p>{employee_count}</p></div>
+        <div><strong>Prepared by</strong><p>{_esc(prepared_by)}</p></div>
+        <div><strong>Approver signing now</strong><p>{_esc(approver)}{f'<br><span class="hr-sub">{_esc(approver_email)}</span>' if approver_email and approver_email != approver else ''}</p></div>
+        <div><strong>Calculation/provider status</strong><p>Anata estimate<br><span class="hr-sub">{_esc(provider_name)}</span></p></div>
+      </div>
+    </section>
+    <div class="hr-cards">
+      <div class="hr-card"><div class="n">${_esc(run['gross'])}</div><div class="l">Estimated gross wages</div></div>
+      <div class="hr-card"><div class="n">${_esc(run['net'])}</div><div class="l">Estimated employee pay</div></div>
+      <div class="hr-card"><div class="n">${_esc(run['taxes'])}</div><div class="l">Estimated tax liability</div></div>
+      <div class="hr-card"><div class="n">${_esc(run['deductions'])}</div><div class="l">Other deduction liability</div></div>
+      <div class="hr-card"><div class="n">${_esc(run['cash_impact'])}</div><div class="l">Estimated employer cash impact</div></div>
+    </div>
+    <div class="hr-callout warn">
+      <strong>Authoritative comparison is still pending.</strong>
+      <p>Anata's calculations help prepare and review payroll. Final wage, withholding, filing, and payment records become authoritative only after they are matched to the service or documented process responsible for those actions.</p>
+    </div>
+    <div class="hr-actions">
+      <a class="hr-btn hr-btn-light" href="/admin/hr/payroll/runs/{_esc(run['id'])}">Review employee-by-employee details</a>
+      <a class="hr-btn hr-btn-light" href="/admin/hr/payroll?period_date={_esc(run['period_start'])}">Cancel and return</a>
+    </div>
+    {f'''
+    <form class="hr-form" method="post" action="/admin/hr/payroll/{_esc(run["id"])}/approve">
+      <input type="hidden" name="period_date" value="{_esc(run['period_start'])}">
+      <label for="approval-text">Type exactly: <strong>I approve this payroll</strong></label>
+      <p class="hr-help">Your name, the frozen version, totals, and time of approval will be kept in the audit record.</p>
+      <input id="approval-text" name="approval_text" required autocomplete="off" spellcheck="false">
+      <label><input type="checkbox" required style="width:auto"> I reviewed the employee detail, pay date, estimated cash impact, liabilities, and warnings above.</label>
+      <button class="hr-btn" type="submit">Approve this exact payroll version</button>
+    </form>''' if can_approve else ''}
+    """
+    return hr_shell("Confirm payroll approval", "payroll", body, user=user)
 
 
 def render_hr_payroll_run(run: dict, *, user, employee_view=False, flash=None) -> str:

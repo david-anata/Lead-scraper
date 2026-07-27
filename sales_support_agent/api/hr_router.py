@@ -43,6 +43,7 @@ from sales_support_agent.services.hr.pages import (
     render_hr_onboarding,
     render_hr_employee_record_missing,
     render_hr_payroll_control,
+    render_hr_payroll_approval,
     render_hr_payroll_run,
     render_hr_pay_statements,
     render_hr_settings,
@@ -1031,6 +1032,25 @@ async def hr_payroll_approve(
     return RedirectResponse(
         f"/admin/hr/payroll?period_date={period_date}&{'ok' if ok else 'err'}={message}",
         status_code=303,
+    )
+
+
+@router.get("/payroll/runs/{run_id}/approve", response_class=HTMLResponse)
+async def hr_payroll_approval_review(
+    run_id: str, request: Request, user: dict = Depends(_pay_approve_guard),
+):
+    run = payroll_store.payroll_run_detail(
+        run_id, actor=user.get("email", "")
+    )
+    if not run:
+        return RedirectResponse("/admin/hr/payroll?err=run_not_found", status_code=303)
+    if run["status"] != "prepared":
+        return RedirectResponse(
+            f"/admin/hr/payroll/runs/{run_id}?err=payroll_not_prepared",
+            status_code=303,
+        )
+    return HTMLResponse(
+        render_hr_payroll_approval(run, user=user, flash=_flash(request))
     )
 
 
