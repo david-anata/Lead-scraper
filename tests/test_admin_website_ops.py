@@ -219,6 +219,45 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertEqual(response.json()["details"]["daily"]["status"], "succeeded")
             run.assert_called_once_with(app.state.settings, mode="daily")
 
+    def test_website_ops_runtime_health_reports_readiness_and_run_freshness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                internal_api_key="test-internal-key",
+                resend_api_key="test-resend-key",
+                website_ops_execute_approved=True,
+                website_ops_root=Path(tmpdir),
+            )
+            write_website_ops_run_state(
+                settings,
+                "daily",
+                {
+                    "status": "succeeded",
+                    "trigger": "render_cron",
+                    "last_successful_date": "2026-07-27",
+                },
+            )
+            app = FastAPI()
+            app.state.settings = settings
+            app.include_router(website_ops_jobs_router)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "WEBSITE_OPS_REPORT_EMAIL_TO": "david@anatainc.com",
+                    "WEBSITE_OPS_ALLOWED_HOST": "anatainc.com",
+                    "WEBSITE_OPS_GITHUB_TOKEN": "test-github-key",
+                    "WEBSITE_OPS_GITHUB_REPOSITORY": "david-anata/anata-website",
+                },
+                clear=False,
+            ):
+                response = TestClient(app).get("/api/jobs/website-ops/health")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["status"], "ready")
+            self.assertTrue(all(payload["checks"].values()))
+            self.assertEqual(payload["schedule"]["hour"], 8)
+            self.assertEqual(payload["runs"]["daily"]["status"], "succeeded")
+            self.assertNotIn("last_error", payload["runs"]["daily"])
+
     def test_queue_empty_state_points_to_resolution_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir))

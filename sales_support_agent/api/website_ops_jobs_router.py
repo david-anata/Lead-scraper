@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -9,6 +10,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Request
 
 from sales_support_agent.services.website_ops import (
+    load_website_ops_run_state,
     run_website_ops,
     send_website_ops_failure_email,
     website_ops_run_is_due,
@@ -24,6 +26,59 @@ def _require_internal_key(request: Request) -> None:
     supplied = request.headers.get("X-Internal-Api-Key", "").strip()
     if not expected or not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Invalid internal API key.")
+
+
+@router.get("/health")
+def website_ops_runtime_health(request: Request) -> dict:
+    """Expose non-secret scheduler readiness and persisted run freshness."""
+
+    settings = request.app.state.settings
+    recipients = os.getenv("WEBSITE_OPS_REPORT_EMAIL_TO", "david@anatainc.com").strip()
+    allowed_host = os.getenv("WEBSITE_OPS_ALLOWED_HOST", "anatainc.com").strip().lower()
+    github_repository = os.getenv(
+        "WEBSITE_OPS_GITHUB_REPOSITORY",
+        "david-anata/anata-website",
+    ).strip()
+    checks = {
+        "internal_scheduler_key": bool(str(getattr(settings, "internal_api_key", "") or "").strip()),
+        "report_recipient": bool(recipients),
+        "email_delivery": bool(str(getattr(settings, "resend_api_key", "") or "").strip()),
+        "marketing_scope": allowed_host == "anatainc.com",
+        "github_autopush": bool(
+            os.getenv("WEBSITE_OPS_GITHUB_TOKEN", "").strip()
+            and github_repository == "david-anata/anata-website"
+            and bool(getattr(settings, "website_ops_execute_approved", True))
+        ),
+    }
+    state = load_website_ops_run_state(settings)
+    sanitized_runs = {
+        mode: {
+            key: str(value or "")
+            for key, value in run.items()
+            if key
+            in {
+                "mode",
+                "status",
+                "run_date",
+                "trigger",
+                "last_started_at",
+                "last_completed_at",
+                "last_successful_date",
+            }
+        }
+        for mode, run in state.get("runs", {}).items()
+    }
+    return {
+        "status": "ready" if all(checks.values()) else "degraded",
+        "schedule": {
+            "timezone": "America/Denver",
+            "hour": 8,
+            "trigger_path": "/api/jobs/website-ops/run",
+        },
+        "checks": checks,
+        "runs": sanitized_runs,
+        "state_updated_at": str(state.get("updated_at", "") or ""),
+    }
 
 
 @router.post("/run")
