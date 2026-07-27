@@ -1920,11 +1920,38 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     error_count = status_counts.get("error", 0)
     action_queue = list(latest_payload.get("action_queue") or [])[:6]
     support_requests = list(latest_payload.get("support_requests") or [])[:5]
-    page_insights = list(latest_payload.get("page_insights") or [])[:5]
-    customer_questions = list(latest_payload.get("customer_questions") or [])[:6]
+    analytics_status = dict(latest_payload.get("analytics_status") or {})
+    decision_data_ready = bool(
+        analytics_status.get("search_console") and analytics_status.get("ga4")
+    )
+    analytics_status.setdefault(
+        "operational_status",
+        "operational" if decision_data_ready else "blocked",
+    )
+    analytics_status.setdefault("customer_language_status", "quarantined")
+    latest_payload["analytics_status"] = analytics_status
+    page_insights = [
+        dict(item)
+        for item in list(latest_payload.get("page_insights") or [])[:5]
+    ]
+    if not decision_data_ready:
+        for item in page_insights:
+            item["score"] = None
+            item["bucket"] = "data unavailable"
+            item["metric_availability"] = {
+                "search_console": "unavailable",
+                "ga4": "unavailable",
+            }
+            item["task_block_reason"] = (
+                "Decision data is unavailable. Ranking-led recommendations are suspended."
+            )
+    customer_questions = (
+        list(latest_payload.get("customer_questions") or [])[:6]
+        if analytics_status.get("customer_language_status") == "enabled"
+        else []
+    )
     serp_blueprints = list(latest_payload.get("serp_blueprints") or [])[:6]
     content_tasks = list(latest_payload.get("content_tasks") or [])[:6]
-    analytics_status = latest_payload.get("analytics_status") or {}
     monitored_count = int(latest_payload.get("pages_reviewed", 0) or len(settings.website_ops_site_urls))
     schedule_note = (
         "<p class='muted'>Scheduled for 8:00 AM America/Denver. "
@@ -1943,7 +1970,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <div class="button-row">
               <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit">Run Daily Sweep</button></form>
               <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run Weekly Sweep</button></form>
-              <a href="/admin/website-ops/reports/latest" style="text-decoration:none;"><button class="ghost" type="button">Open Latest Report</button></a>
+              <a class="btn btn--ghost" href="/admin/website-ops/reports/latest">Open Latest Report</a>
             </div>
             {schedule_note}
           </div>
