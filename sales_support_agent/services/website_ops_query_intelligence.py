@@ -206,6 +206,21 @@ def _observation(
     }
 
 
+def _observed_query_quality(raw_query: str) -> tuple[str, str]:
+    lowered = _clean(raw_query).lower()
+    if re.search(r"(?:^|\s)-?(?:site|inurl|intitle|filetype):", lowered):
+        return "quarantined", "Search-operator query excluded from validation."
+    if len(lowered) > 180:
+        return "quarantined", "Overlong query excluded from validation."
+    return "eligible", ""
+
+
+def _brand_alignment_conflict(query: str, candidate: Any) -> bool:
+    query_tokens = set(_tokens(query))
+    candidate_tokens = set(_tokens(candidate))
+    return ("anata" in query_tokens) != ("anata" in candidate_tokens)
+
+
 def collect_query_observations(
     page_insights: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -229,6 +244,9 @@ def collect_query_observations(
                     "impressions": float(item.get("impressions", 0) or 0),
                 },
             )
+            quality_status, quality_reason = _observed_query_quality(raw_query)
+            record["quality_status"] = quality_status
+            record["quality_reason"] = quality_reason
             if record["observation_id"] not in seen:
                 records.append(record)
                 page_observed.append(record)
@@ -244,14 +262,22 @@ def collect_query_observations(
                 source_detail="sanitized_first_party_language",
                 metrics={"frequency": int(item.get("frequency", 0) or 0)},
             )
-            if page_observed:
+            eligible_observed = [
+                candidate
+                for candidate in page_observed
+                if candidate.get("quality_status", "eligible") != "quarantined"
+            ]
+            if eligible_observed:
                 best = max(
-                    page_observed,
+                    eligible_observed,
                     key=lambda candidate: _similarity(
                         raw_query, candidate.get("raw_query")
                     ),
                 )
-                if _similarity(raw_query, best.get("raw_query")) >= 0.25:
+                if (
+                    not _brand_alignment_conflict(raw_query, best.get("raw_query"))
+                    and _similarity(raw_query, best.get("raw_query")) >= 0.25
+                ):
                     record["cluster_id"] = best["cluster_id"]
             if record["observation_id"] not in seen:
                 records.append(record)
@@ -267,14 +293,22 @@ def collect_query_observations(
                 source_detail="deterministic_commercial_fanout",
                 facet=_clean(item.get("facet")),
             )
-            if page_observed:
+            eligible_observed = [
+                candidate
+                for candidate in page_observed
+                if candidate.get("quality_status", "eligible") != "quarantined"
+            ]
+            if eligible_observed:
                 best = max(
-                    page_observed,
+                    eligible_observed,
                     key=lambda candidate: _similarity(
                         raw_query, candidate.get("raw_query")
                     ),
                 )
-                if _similarity(raw_query, best.get("raw_query")) >= 0.25:
+                if (
+                    not _brand_alignment_conflict(raw_query, best.get("raw_query"))
+                    and _similarity(raw_query, best.get("raw_query")) >= 0.25
+                ):
                     record["cluster_id"] = best["cluster_id"]
             if record["observation_id"] not in seen:
                 records.append(record)
@@ -334,12 +368,27 @@ def build_clusters(
     for cluster_id, items in grouped.items():
         raw_queries = list(dict.fromkeys(_clean(item.get("raw_query")) for item in items))
         evidence_classes = sorted({_clean(item.get("evidence_class")) for item in items})
+        eligible_items = [
+            item
+            for item in items
+            if item.get("quality_status", "eligible") != "quarantined"
+        ]
+        quality_reasons = list(
+            dict.fromkeys(
+                _clean(item.get("quality_reason"))
+                for item in items
+                if _clean(item.get("quality_reason"))
+            )
+        )
         observed_pages: dict[str, float] = {}
         all_pages: set[str] = set()
         for item in items:
             page_url = _clean(item.get("page_url")).rstrip("/")
             all_pages.add(page_url)
-            if item.get("evidence_class") == "observed_search":
+            if (
+                item.get("evidence_class") == "observed_search"
+                and item in eligible_items
+            ):
                 metrics = item.get("metrics") if isinstance(item.get("metrics"), Mapping) else {}
                 observed_pages[page_url] = observed_pages.get(page_url, 0.0) + float(
                     metrics.get("impressions", 0) or 0
@@ -359,12 +408,15 @@ def build_clusters(
         citation = dict(latest_citations.get(cluster_id) or {})
         if citation and citation.get("status") in {"cited", "mentioned", "no-citation"}:
             evidence_classes = sorted(set(evidence_classes) | {"observed_answer_engine"})
+        validation_evidence_classes = sorted(
+            {_clean(item.get("evidence_class")) for item in eligible_items}
+        )
         independent_signals = {
             "search" if value == "observed_search" else
             "customer" if value == "observed_customer" else
             "answer_engine" if value == "observed_answer_engine" else
             "simulation"
-            for value in evidence_classes
+            for value in validation_evidence_classes
         }
         validated = len(independent_signals) >= 2 and bool(
             independent_signals & {"search", "customer", "answer_engine"}
@@ -381,6 +433,19 @@ def build_clusters(
                 "funnel_stage": funnel_stage,
                 "evidence_classes": evidence_classes,
                 "validation_status": "validated" if validated else "hypothesis",
+                "quality_status": (
+                    "quarantined"
+                    if quality_reasons and not any(
+                        item.get("evidence_class") in {
+                            "observed_search",
+                            "observed_customer",
+                            "observed_answer_engine",
+                        }
+                        for item in eligible_items
+                    )
+                    else "eligible"
+                ),
+                "quality_reasons": quality_reasons,
                 "owner_url": owner_url,
                 "owner_title": _clean(pages.get(owner_url, {}).get("page_title")),
                 "conflict_urls": conflict_urls,
@@ -844,6 +909,9 @@ def build_query_intelligence(
         ),
         "hypothesis_clusters": sum(
             1 for item in clusters if item.get("validation_status") == "hypothesis"
+        ),
+        "quarantined_clusters": sum(
+            1 for item in clusters if item.get("quality_status") == "quarantined"
         ),
         "ownership_conflicts": sum(
             1 for item in clusters if item.get("ownership_status") == "conflict"

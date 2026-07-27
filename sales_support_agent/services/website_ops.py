@@ -2199,6 +2199,8 @@ def _query_filter_matches(cluster: Mapping[str, Any], status_filter: str) -> boo
         return cluster.get("validation_status") == "validated"
     if status_filter == "hypothesis":
         return cluster.get("validation_status") == "hypothesis"
+    if status_filter == "quarantined":
+        return cluster.get("quality_status") == "quarantined"
     if status_filter == "conflict":
         return cluster.get("ownership_status") == "conflict"
     if status_filter == "cited":
@@ -2232,6 +2234,12 @@ def render_query_map_page(
             str(item).replace("_", " ").title()
             for item in cluster.get("evidence_classes", []) or []
         ) or "No evidence"
+        quality_status = str(cluster.get("quality_status", "eligible") or "eligible")
+        quality_reasons = " ".join(
+            str(item) for item in cluster.get("quality_reasons", []) or []
+        )
+        if quality_status == "quarantined":
+            evidence = f"{evidence} · Excluded from validation: {quality_reasons}"
         citation = dict(cluster.get("citation") or {})
         citation_status = str(citation.get("status", "Not tested") or "Not tested")
         ownership_status = str(cluster.get("ownership_status", "assigned") or "assigned")
@@ -2240,7 +2248,7 @@ def render_query_map_page(
             f"""
             <tr>
               <td><div class="query-label"><strong>{html.escape(str(cluster.get("label", "Query cluster")))}</strong><span class="muted">{html.escape(str(cluster.get("intent", "unknown")).title())} · {html.escape(str(cluster.get("funnel_stage", "unknown")).title())}</span></div></td>
-              <td><span class="status-pill {'status-ok' if cluster.get('validation_status') == 'validated' else 'status-neutral'}">{html.escape(str(cluster.get("validation_status", "hypothesis")).title())}</span></td>
+              <td><span class="status-pill {'status-bad' if quality_status == 'quarantined' else 'status-ok' if cluster.get('validation_status') == 'validated' else 'status-neutral'}">{html.escape('Quarantined' if quality_status == 'quarantined' else str(cluster.get("validation_status", "hypothesis")).title())}</span></td>
               <td>{html.escape(evidence)}</td>
               <td class="query-owner"><a href="{html.escape(str(cluster.get("owner_url", "#")), quote=True)}">{html.escape(str(cluster.get("owner_url", "Unassigned")))}</a></td>
               <td><span class="status-pill {'status-bad' if ownership_status == 'conflict' else 'status-ok'}">{html.escape(ownership_status.title())}</span>{f'<div class="muted">{conflict_count} competing page(s)</div>' if conflict_count else ''}</td>
@@ -2287,6 +2295,7 @@ def render_query_map_page(
           <div class="summary-grid">
             {_summary_chip("Validated", summary.get("validated_clusters", 0), tone="good")}
             {_summary_chip("Hypotheses", summary.get("hypothesis_clusters", 0), tone="neutral")}
+            {_summary_chip("Quarantined", summary.get("quarantined_clusters", 0), tone="warn" if summary.get("quarantined_clusters") else "neutral")}
             {_summary_chip("Ownership conflicts", summary.get("ownership_conflicts", 0), tone="bad" if summary.get("ownership_conflicts") else "neutral")}
             {_summary_chip("Cited clusters", summary.get("cited_clusters", 0), tone="good" if summary.get("cited_clusters") else "neutral")}
             {_summary_chip("Shadow cycles", summary.get("weekly_validation_cycles", 0), tone="warn" if int(summary.get("weekly_validation_cycles", 0) or 0) < 2 else "good")}
@@ -2295,6 +2304,7 @@ def render_query_map_page(
             <a class="{'btn' if not status_filter else 'btn btn--ghost'}" href="/admin/website-ops/queries">All</a>
             <a class="{'btn' if status_filter == 'validated' else 'btn btn--ghost'}" href="/admin/website-ops/queries?status=validated">Validated</a>
             <a class="{'btn' if status_filter == 'hypothesis' else 'btn btn--ghost'}" href="/admin/website-ops/queries?status=hypothesis">Hypotheses</a>
+            <a class="{'btn' if status_filter == 'quarantined' else 'btn btn--ghost'}" href="/admin/website-ops/queries?status=quarantined">Quarantined</a>
             <a class="{'btn' if status_filter == 'conflict' else 'btn btn--ghost'}" href="/admin/website-ops/queries?status=conflict">Conflicts</a>
             <a class="{'btn' if status_filter == 'cited' else 'btn btn--ghost'}" href="/admin/website-ops/queries?status=cited">Cited</a>
           </div>
