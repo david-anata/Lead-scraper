@@ -408,6 +408,14 @@ def apply_amazon(lead: dict[str, Any], amazon: Optional[dict[str, Any]]) -> dict
         lead["signals"] = [amazon_reason] + [
             s for s in lead.get("signals") or [] if s != amazon_reason
         ]
+
+    # The bucketed facts Clay writes the real sentence from. Our reason above is
+    # only the fallback for when Clay's column has not run.
+    try:
+        from outbound_amazon import clay_facts
+        lead.update(clay_facts(amazon))
+    except Exception:  # noqa: BLE001 — a missing fact must not lose the lead
+        logger.warning("[outbound] could not build Clay facts for %s", lead.get("domain"))
     return lead
 
 
@@ -619,16 +627,33 @@ def load_config_from_env() -> tuple[str, str]:
     return api_key, clay_webhook_url
 
 
+# What Clay's AI reads to write the opening sentence. Mirrors
+# outbound_amazon.CLAY_FACT_COLUMNS; kept as a literal so this module never has to
+# import outbound_amazon, which imports this one.
+AMAZON_FACT_COLUMNS = (
+    "amz_situation", "amz_product", "amz_sellers_band", "amz_undercut",
+    "amz_rivals_on_name", "amz_marketplace", "amz_confidence",
+)
+
 # Column order for the CSV that gets imported into Clay (used on the Launch plan,
 # before webhooks unlock on Growth). These are the fields Clay needs to run its
 # enrichment and the two prompts.
 #
-# DO NOT add or rename entries here or in CLAY_CSV_HEADERS. The Clay table's import
-# mapping is keyed on these exact headers, so a change silently creates a second set
-# of columns that the enrichment never reads. New per-lead fields (the amazon_* keys,
-# for instance) ride along in the lead dict and the webhook payload only; the CSV
-# writer drops them via extrasaction="ignore".
-CLAY_CSV_COLUMNS = ("tier", "brand", "domain", "niche", "country", "reason", "recipe", "score", "revenue_usd", "categories")
+# NEVER RENAME an existing entry here or in CLAY_CSV_HEADERS. The Clay table's import
+# mapping is keyed on these exact headers, so a rename silently creates a second set
+# of columns that the enrichment never reads.
+#
+# ADDING a column is a deliberate act: it appears as a new column to map, once, on the
+# next Clay import. The amz_* facts below were added on purpose, because Clay writes
+# the opening sentence now and needs something true to write it from.
+#
+# The facts are BUCKETED on our side ("a handful of other sellers", never 18). Once an
+# AI is holding a number there is nothing left to stop it quoting one, and a brand that
+# reads "19 sellers" and counts 14 stops reading. Send words, not counts.
+CLAY_CSV_COLUMNS = (
+    "tier", "brand", "domain", "niche", "country", "reason", "recipe", "score",
+    "revenue_usd", "categories",
+) + AMAZON_FACT_COLUMNS
 
 # The CSV header we WRITE for each field. These are named to match the Clay table's
 # existing columns exactly, so Clay auto-maps on import instead of creating a second

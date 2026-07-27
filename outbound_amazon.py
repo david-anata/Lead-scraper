@@ -820,3 +820,93 @@ def brand_control(brand: str, domain: str, country: str, *, niche: str = "",
                 confidence=confidence,
                 findings={"listings": listings, "sponsored_competitors": sponsored,
                           "absent": False})
+
+
+# ---- facts for Clay ----------------------------------------------------------
+# Clay writes the opening sentence, not us. It gets FACTS, and deliberately
+# bucketed ones: "a handful" instead of 18. The no-precise-figures rule is
+# enforced in code here, before the data ever leaves us, because once an AI is
+# holding the number there is nothing left to enforce it with. Send a count and
+# it will eventually quote a count, and a brand that reads "19 sellers" and
+# counts 14 stops reading there.
+
+CLAY_FACT_COLUMNS = (
+    "amz_situation",        # the one thing worth opening with
+    "amz_product",          # their product, in the words a person would use
+    "amz_sellers_band",     # "a handful", never a number
+    "amz_undercut",         # "yes" / "" - never by how much
+    "amz_rivals_on_name",   # "a few competitors", never a number
+    "amz_marketplace",
+    "amz_confidence",
+)
+
+
+def _band(count: int) -> str:
+    """A count as words. Survives the number moving between scan and send."""
+    if count <= 0:
+        return ""
+    if count == 1:
+        return "another seller"
+    if count <= 4:
+        return "a couple of other sellers"
+    if count <= 12:
+        return "a handful of other sellers"
+    return "a lot of other sellers"
+
+
+def _rivals_band(names: list[str]) -> str:
+    n = len([x for x in names or [] if x])
+    if n <= 0:
+        return ""
+    if n == 1:
+        return "a competitor"
+    if n <= 4:
+        return "a few competitors"
+    return "several competitors"
+
+
+def clay_facts(result: Optional[dict[str, Any]]) -> dict[str, str]:
+    """What Clay needs to write one sentence, with nothing precise in it.
+
+    amz_situation is the single most compelling thing found, so Clay writes
+    about one thing rather than listing everything we know. Empty situation
+    means we found nothing we can stand behind and Clay should skip the lead.
+    """
+    blank = {key: "" for key in CLAY_FACT_COLUMNS}
+    if not isinstance(result, dict):
+        return blank
+
+    findings = result.get("findings")
+    findings = findings if isinstance(findings, dict) else {}
+    listings = [l for l in (findings.get("listings") or []) if isinstance(l, dict)]
+    rivals = [str(x) for x in (findings.get("sponsored_competitors") or []) if x]
+
+    out = dict(blank)
+    out["amz_marketplace"] = str(result.get("marketplace") or "")
+    out["amz_confidence"] = str(result.get("confidence") or "")
+
+    if str(result.get("skipped_reason") or "").strip():
+        return out
+    if findings.get("absent"):
+        out["amz_situation"] = "absent"
+        return out
+
+    leaking = [l for l in listings if int(l.get("sellers_unknown") or 0) > 0]
+    undercut = [l for l in leaking if _erodes(l, 0.01)]
+    top = (undercut or leaking or listings or [None])[0]
+
+    if top:
+        out["amz_product"] = _short_product(top.get("title"))
+        out["amz_sellers_band"] = _band(int(top.get("sellers_unknown") or 0))
+    out["amz_rivals_on_name"] = _rivals_band(rivals)
+    if undercut:
+        out["amz_undercut"] = "yes"
+
+    if undercut:
+        out["amz_situation"] = "undercut"
+    elif leaking:
+        out["amz_situation"] = "resellers"
+    elif rivals:
+        out["amz_situation"] = "rivals_on_name"
+
+    return out

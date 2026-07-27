@@ -595,3 +595,85 @@ class TestBrandControlDegrades(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClayFactsTests(unittest.TestCase):
+    """Clay writes the sentence now, so the facts we hand it must be safe.
+
+    The no-precise-figures rule used to be enforced in code on the finished
+    line. Once an AI writes the line, the only place left to enforce it is the
+    input: send words, not counts, and nothing precise can leak.
+    """
+
+    def _result(self, **over):
+        base = {
+            "marketplace": "amazon.com", "confidence": "high", "skipped_reason": "",
+            "findings": {
+                "absent": False,
+                "sponsored_competitors": ["Cata-Kor", "Toniiq"],
+                "listings": [{"title": "Rho Nutrition Liposomal NAD+ Liquid Supplement",
+                              "brand_price": 50.18, "cheapest": 48.00,
+                              "sellers_unknown": 18, "sellers_retailer": 1,
+                              "sellers_used": 0, "in_stock": True}],
+            },
+        }
+        base.update(over)
+        return base
+
+    def test_no_count_or_price_is_ever_handed_to_clay(self):
+        """The whole guarantee. A model given "18" will eventually write "18",
+        and a brand that reads 19 and counts 14 stops reading there."""
+        facts = oa.clay_facts(self._result())
+        for key, value in facts.items():
+            if key == "amz_marketplace":
+                continue
+            self.assertFalse(any(ch.isdigit() for ch in str(value)),
+                             f"{key} leaked a figure to Clay: {value!r}")
+
+    def test_counts_arrive_as_words(self):
+        facts = oa.clay_facts(self._result())
+        self.assertEqual(facts["amz_sellers_band"], "a lot of other sellers")
+        self.assertEqual(facts["amz_rivals_on_name"], "a few competitors")
+
+    def test_bands_move_with_the_count(self):
+        def band(n):
+            r = self._result()
+            r["findings"]["listings"][0]["sellers_unknown"] = n
+            return oa.clay_facts(r)["amz_sellers_band"]
+        self.assertEqual(band(0), "")
+        self.assertEqual(band(1), "another seller")
+        self.assertEqual(band(3), "a couple of other sellers")
+        self.assertEqual(band(9), "a handful of other sellers")
+        self.assertEqual(band(40), "a lot of other sellers")
+
+    def test_clay_is_told_the_one_thing_worth_opening_with(self):
+        """Handing Clay everything we know produces a sentence that lists
+        findings. One situation produces a sentence about one thing."""
+        self.assertEqual(oa.clay_facts(self._result())["amz_situation"], "undercut")
+
+    def test_resellers_without_undercutting_reads_as_resellers(self):
+        r = self._result()
+        r["findings"]["listings"][0]["cheapest"] = 55.00  # nobody below the brand
+        self.assertEqual(oa.clay_facts(r)["amz_situation"], "resellers")
+
+    def test_absent_is_its_own_situation(self):
+        r = self._result(findings={"absent": True, "listings": [], "sponsored_competitors": []})
+        self.assertEqual(oa.clay_facts(r)["amz_situation"], "absent")
+
+    def test_a_skipped_brand_gives_clay_nothing_to_write_from(self):
+        """Clay must not invent an opener for a brand we could not match."""
+        r = self._result(skipped_reason="no confident match", confidence="low")
+        self.assertEqual(oa.clay_facts(r)["amz_situation"], "")
+
+    def test_junk_in_gives_blanks_not_a_crash(self):
+        for bad in (None, {}, {"findings": None}, "nope"):
+            facts = oa.clay_facts(bad)
+            self.assertEqual(set(facts), set(oa.CLAY_FACT_COLUMNS))
+            self.assertEqual(facts["amz_situation"], "")
+
+    def test_the_column_list_matches_the_csv(self):
+        """Drift here means Clay silently receives a column it cannot map."""
+        import outbound_pipeline as op
+        self.assertEqual(op.AMAZON_FACT_COLUMNS, oa.CLAY_FACT_COLUMNS)
+        for col in oa.CLAY_FACT_COLUMNS:
+            self.assertIn(col, op.CLAY_CSV_COLUMNS)
