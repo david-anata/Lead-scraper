@@ -19,6 +19,9 @@ from sales_support_agent.services.website_ops import (
     website_ops_run_is_due,
     write_website_ops_run_state,
 )
+from sales_support_agent.services.website_ops_autonomy import (
+    analytics_configuration_status,
+)
 
 
 router = APIRouter(prefix="/api/jobs/website-ops", tags=["website-ops-jobs"])
@@ -149,6 +152,15 @@ def website_ops_runtime_health(request: Request) -> dict:
             and bool(getattr(settings, "website_ops_execute_approved", True))
         ),
     }
+    analytics_readiness = analytics_configuration_status(settings)
+    checks["search_console_configuration"] = bool(
+        analytics_readiness["checks"]["google_service_account"]
+        and analytics_readiness["checks"]["search_console_property"]
+    )
+    checks["ga4_configuration"] = bool(
+        analytics_readiness["checks"]["google_service_account"]
+        and analytics_readiness["checks"]["ga4_property"]
+    )
     state = load_website_ops_run_state(settings)
     sanitized_runs = {
         mode: {
@@ -168,7 +180,23 @@ def website_ops_runtime_health(request: Request) -> dict:
         for mode, run in state.get("runs", {}).items()
     }
     return {
-        "status": "ready" if all(checks.values()) else "degraded",
+        "status": "ready" if all(checks.values()) else "blocked",
+        "states": {
+            "runtime": "ready"
+            if all(
+                checks[key]
+                for key in (
+                    "internal_scheduler_key",
+                    "report_recipient",
+                    "email_delivery",
+                    "marketing_scope",
+                )
+            )
+            else "blocked",
+            "decision_data": analytics_readiness["status"],
+            "publishing": "ready" if checks["github_autopush"] else "blocked",
+        },
+        "blockers": analytics_readiness["blockers"],
         "schedule": {
             "timezone": "America/Denver",
             "hour": 8,

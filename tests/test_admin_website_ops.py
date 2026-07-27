@@ -257,6 +257,15 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     "WEBSITE_OPS_ALLOWED_HOST": "anatainc.com",
                     "WEBSITE_OPS_GITHUB_TOKEN": "test-github-key",
                     "WEBSITE_OPS_GITHUB_REPOSITORY": "david-anata/anata-website",
+                    "GOOGLE_SERVICE_ACCOUNT_JSON": json.dumps(
+                        {
+                            "client_email": "website-ops@example.iam.gserviceaccount.com",
+                            "private_key": "test-private-key",
+                            "token_uri": "https://oauth2.googleapis.com/token",
+                        }
+                    ),
+                    "WEBSITE_OPS_GSC_PROPERTY": "sc-domain:anatainc.com",
+                    "WEBSITE_OPS_GA4_PROPERTY_ID": "372887830",
                 },
                 clear=False,
             ):
@@ -268,6 +277,36 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertEqual(payload["schedule"]["hour"], 8)
             self.assertEqual(payload["runs"]["daily"]["status"], "succeeded")
             self.assertNotIn("last_error", payload["runs"]["daily"])
+
+    def test_website_ops_runtime_health_blocks_invalid_decision_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                internal_api_key="test-internal-key",
+                resend_api_key="test-resend-key",
+                website_ops_execute_approved=True,
+                website_ops_root=Path(tmpdir),
+                google_service_account_json="{not valid json",
+                website_ops_gsc_property="sc-domain:anatainc.com",
+                website_ops_ga4_property_id="372887830",
+            )
+            app = FastAPI()
+            app.state.settings = settings
+            app.include_router(website_ops_jobs_router)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "WEBSITE_OPS_REPORT_EMAIL_TO": "david@anatainc.com",
+                    "WEBSITE_OPS_ALLOWED_HOST": "anatainc.com",
+                    "WEBSITE_OPS_GITHUB_TOKEN": "test-github-key",
+                    "WEBSITE_OPS_GITHUB_REPOSITORY": "david-anata/anata-website",
+                },
+                clear=False,
+            ):
+                payload = TestClient(app).get("/api/jobs/website-ops/health").json()
+            self.assertEqual(payload["status"], "blocked")
+            self.assertEqual(payload["states"]["decision_data"], "blocked")
+            self.assertFalse(payload["checks"]["search_console_configuration"])
+            self.assertTrue(payload["blockers"])
 
     def test_queue_empty_state_points_to_resolution_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -626,7 +665,11 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     "issues": [],
                 }
             ]
-            with mock.patch(
+            with mock.patch.dict(
+                os.environ,
+                {"WEBSITE_OPS_CUSTOMER_LANGUAGE_ENABLED": "true"},
+                clear=False,
+            ), mock.patch(
                 "sales_support_agent.services.website_ops_autonomy.fetch_search_console_snapshot",
                 return_value=(
                     {
@@ -696,6 +739,36 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertEqual(section_action["execution_eligibility"], "suggestion_only")
             self.assertTrue(faq_action["evidence"])
             self.assertTrue(faq_action["verification_requirements"])
+
+    def test_build_autonomy_overlay_does_not_score_unavailable_analytics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            with mock.patch(
+                "sales_support_agent.services.website_ops_autonomy.fetch_search_console_snapshot",
+                return_value=({}, ["Search Console unavailable: invalid credentials."]),
+            ), mock.patch(
+                "sales_support_agent.services.website_ops_autonomy.fetch_ga4_snapshot",
+                return_value=({}, ["GA4 unavailable: invalid credentials."]),
+            ):
+                overlay = build_autonomy_overlay(
+                    settings=settings,
+                    report=self._fake_report(),
+                    observations=[
+                        {
+                            "url": "https://anatainc.com/services/fulfillment/",
+                            "title": "Fulfillment",
+                            "issues": [],
+                        }
+                    ],
+                    feedback_entries=[],
+                )
+            insight = overlay["page_insights"][0]
+            self.assertIsNone(insight["score"])
+            self.assertEqual(insight["bucket"], "data unavailable")
+            self.assertEqual(insight["metric_availability"]["search_console"], "unavailable")
+            self.assertEqual(overlay["action_queue"], [])
+            self.assertEqual(overlay["analytics_status"]["decision_data_status"], "blocked")
+            self.assertEqual(overlay["analytics_status"]["customer_language_status"], "quarantined")
 
     def test_build_autonomy_overlay_degrades_invalid_google_credentials_to_setup_notes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
