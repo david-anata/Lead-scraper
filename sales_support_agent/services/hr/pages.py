@@ -249,6 +249,8 @@ def _flash(flash: Optional[str]) -> str:
         "final_approver_not_configured": "Select the required final payroll approver in HR settings first.",
         "final_approver_required": "Only the required final payroll approver can approve this version.",
         "payroll_approved": "Payroll approved. No money or tax payment was sent.",
+        "payroll_rejected": "Payroll returned for correction. The rejected version remains in the audit history.",
+        "payroll_rejection_reason_required": "Explain what must be corrected using at least 10 characters.",
         "payroll_already_approved": "This exact payroll version was already approved.",
         "provider_submitted": "Payroll-service handoff recorded.",
         "provider_matched": "Provider totals match Anata's approved estimate.",
@@ -1027,6 +1029,14 @@ def render_hr_payroll_approval(run: dict, *, user, flash=None) -> str:
       <input id="approval-text" name="approval_text" required autocomplete="off" spellcheck="false">
       <label><input type="checkbox" required style="width:auto"> I reviewed the employee detail, pay date, estimated cash impact, liabilities, and warnings above.</label>
       <button class="hr-btn" type="submit">Approve this exact payroll version</button>
+    </form>
+    <form class="hr-form" method="post" action="/admin/hr/payroll/{_esc(run["id"])}/reject" style="margin-top:18px">
+      <input type="hidden" name="period_date" value="{_esc(run['period_start'])}">
+      <div class="hr-kicker">Return for correction</div>
+      <label for="rejection-reason">What must be corrected?</label>
+      <p class="hr-help">The frozen version will remain in the audit history. Val or David can correct the inputs and prepare a new version.</p>
+      <textarea id="rejection-reason" name="reason" required minlength="10" maxlength="1000"></textarea>
+      <button class="hr-btn hr-btn-danger" type="submit">Reject this version</button>
     </form>''' if can_approve else ''}
     """
     return hr_shell("Confirm payroll approval", "payroll", body, user=user)

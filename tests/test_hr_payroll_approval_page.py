@@ -39,6 +39,7 @@ def test_confirmation_identifies_version_totals_provider_and_approver():
     assert "No authoritative payroll provider connected" in html
     assert "does <strong>not</strong> transfer wages" in html
     assert "Approve this exact payroll version" in html
+    assert "Reject this version" in html
 
 
 def test_preparer_cannot_approve_own_version():

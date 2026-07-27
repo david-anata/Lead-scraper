@@ -103,6 +103,39 @@ def test_prepared_payroll_requires_configured_final_approver():
         ) == (False, "final_approver_required")
 
 
+def test_required_approver_can_reject_frozen_version_with_reason():
+    engine = _engine()
+    run = _run("pay_rejected")
+    run.status = "prepared"
+    with Session(engine) as session:
+        session.add_all([
+            run,
+            HRCompanyProfile(
+                legal_name="Anata LLC",
+                final_approver_email="david@anatainc.com",
+            ),
+        ])
+        session.commit()
+
+    with mock.patch.object(payroll_store, "get_engine", return_value=engine):
+        assert payroll_store.reject_payroll(
+            "pay_rejected", actor="val@anatainc.com",
+            reason="The bonus amount needs correction.",
+        ) == (False, "final_approver_required")
+        assert payroll_store.reject_payroll(
+            "pay_rejected", actor="david@anatainc.com", reason="Too short",
+        ) == (False, "payroll_rejection_reason_required")
+        assert payroll_store.reject_payroll(
+            "pay_rejected", actor="david@anatainc.com",
+            reason="The bonus amount needs correction.",
+        ) == (True, "payroll_rejected")
+
+    with Session(engine) as session:
+        assert session.query(HRPayrollRun).filter_by(
+            base44_id="pay_rejected"
+        ).one().status == "rejected"
+
+
 def test_provider_handoff_detects_exact_match_and_variance():
     engine = _engine()
     run = _run()

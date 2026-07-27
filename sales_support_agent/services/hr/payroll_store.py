@@ -1148,6 +1148,34 @@ def approve_payroll(run_id: str, *, actor: str, approval_text: str) -> tuple[boo
         return True, "payroll_approved"
 
 
+def reject_payroll(run_id: str, *, actor: str, reason: str) -> tuple[bool, str]:
+    """Reject one prepared version without altering its frozen evidence."""
+    clean_reason = reason.strip()
+    if len(clean_reason) < 10:
+        return False, "payroll_rejection_reason_required"
+    with _session() as session:
+        run = session.query(HRPayrollRun).filter_by(base44_id=run_id).first()
+        if not run or run.status != "prepared":
+            return False, "run_not_prepared"
+        company = session.query(HRCompanyProfile).first()
+        required_approver = (
+            company.final_approver_email.strip().lower() if company else ""
+        )
+        if not required_approver:
+            return False, "final_approver_not_configured"
+        actor_email = actor.strip().lower()
+        if actor_email != required_approver:
+            return False, "final_approver_required"
+        if run.initiated_by.strip().lower() == actor_email:
+            return False, "self_approval_blocked"
+        run.status = "rejected"
+        _audit(session, actor_email, "payroll.rejected", "payroll_run", run_id, {
+            "reason": clean_reason,
+            "prepared_by": run.initiated_by,
+        })
+        return True, "payroll_rejected"
+
+
 def payroll_run_detail(
     run_id: str, *, employee_email: str | None = None, actor: str | None = None
 ) -> dict | None:

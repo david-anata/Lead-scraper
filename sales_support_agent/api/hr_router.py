@@ -1035,6 +1035,22 @@ async def hr_payroll_approve(
     )
 
 
+@router.post("/payroll/{run_id}/reject")
+async def hr_payroll_reject(
+    run_id: str, period_date: date = Form(...), reason: str = Form(""),
+    user: dict = Depends(_recent_pay_approve_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
+):
+    ok, message = payroll_store.reject_payroll(
+        run_id, actor=user.get("email", ""), reason=reason
+    )
+    return RedirectResponse(
+        f"/admin/hr/payroll?period_date={period_date}&"
+        f"{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
+
+
 @router.get("/payroll/runs/{run_id}/approve", response_class=HTMLResponse)
 async def hr_payroll_approval_review(
     run_id: str, request: Request, user: dict = Depends(_pay_approve_guard),
