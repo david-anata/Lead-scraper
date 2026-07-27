@@ -4,6 +4,7 @@ from sales_support_agent.services.website_ops_query_intelligence import (
     build_clusters,
     build_query_intelligence,
     build_recommendations,
+    citation_config,
     collect_query_observations,
     normalize_query,
     record_outcomes,
@@ -216,6 +217,77 @@ def test_missing_citation_provider_is_unavailable_not_zero(tmp_path) -> None:
     assert results[0]["status"] == "unavailable"
     assert results[0]["cited_urls"] == []
     assert "citation_count" not in results[0]
+
+
+def test_citation_config_falls_back_to_anthropic(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("WEBSITE_OPS_CITATION_PROVIDER", "auto")
+    monkeypatch.delenv("WEBSITE_OPS_CITATION_MODEL", raising=False)
+    settings = SimpleNamespace(website_ops_root=tmp_path, openai_api_key="")
+
+    config = citation_config(settings)
+
+    assert config.provider == "anthropic"
+    assert config.api_key == "anthropic-key"
+    assert config.model == "claude-sonnet-4-6"
+
+
+def test_anthropic_citation_records_search_and_citation(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("WEBSITE_OPS_CITATION_PROVIDER", "auto")
+    settings = SimpleNamespace(website_ops_root=tmp_path, openai_api_key="")
+    cluster = {
+        "cluster_id": "cluster-1",
+        "label": "amazon ppc agency",
+        "validation_status": "validated",
+        "ownership_status": "assigned",
+    }
+
+    def requester(**_kwargs):
+        return {
+            "content": [
+                {
+                    "type": "server_tool_use",
+                    "name": "web_search",
+                    "input": {"query": "amazon ppc agency comparison"},
+                },
+                {
+                    "type": "web_search_tool_result",
+                    "content": [
+                        {
+                            "type": "web_search_result",
+                            "url": "https://anatainc.com/services/amazon-ppc-management",
+                            "title": "Amazon PPC Management",
+                        }
+                    ],
+                },
+                {
+                    "type": "text",
+                    "text": "Anata is one option.",
+                    "citations": [
+                        {
+                            "type": "web_search_result_location",
+                            "url": "https://anatainc.com/services/amazon-ppc-management",
+                            "title": "Amazon PPC Management",
+                            "cited_text": "Amazon PPC management",
+                        }
+                    ],
+                },
+            ]
+        }
+
+    result = run_citation_harness(
+        settings=settings,
+        clusters=[cluster],
+        run_mode="weekly",
+        requester=requester,
+    )[0]
+
+    assert result["provider"] == "anthropic"
+    assert result["status"] == "cited"
+    assert result["fanout_queries"] == ["amazon ppc agency comparison"]
+    assert result["anata_cited"] is True
+    assert "response" not in result
 
 
 def test_recommendations_are_shadowed_until_two_weekly_cycles() -> None:

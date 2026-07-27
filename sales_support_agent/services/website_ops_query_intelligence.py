@@ -53,6 +53,7 @@ STOPWORDS = {
 @dataclass(frozen=True)
 class CitationHarnessConfig:
     enabled: bool
+    provider: str
     api_key: str
     model: str
     max_clusters: int
@@ -473,10 +474,37 @@ def citation_config(settings: Any) -> CitationHarnessConfig:
         "yes",
         "on",
     }
+    requested_provider = os.getenv("WEBSITE_OPS_CITATION_PROVIDER", "auto").strip().lower()
+    openai_key = _clean(getattr(settings, "openai_api_key", ""))
+    anthropic_key = _clean(os.getenv("ANTHROPIC_API_KEY", ""))
+    if requested_provider == "openai":
+        provider, api_key = "openai", openai_key
+    elif requested_provider == "anthropic":
+        provider, api_key = "anthropic", anthropic_key
+    elif openai_key:
+        provider, api_key = "openai", openai_key
+    elif anthropic_key:
+        provider, api_key = "anthropic", anthropic_key
+    else:
+        provider, api_key = "unconfigured", ""
+    legacy_model = os.getenv("WEBSITE_OPS_CITATION_MODEL", "").strip()
+    if provider == "anthropic":
+        model = (
+            os.getenv("WEBSITE_OPS_ANTHROPIC_CITATION_MODEL", "").strip()
+            or legacy_model
+            or "claude-sonnet-4-6"
+        )
+    else:
+        model = (
+            os.getenv("WEBSITE_OPS_OPENAI_CITATION_MODEL", "").strip()
+            or legacy_model
+            or "gpt-5-mini"
+        )
     return CitationHarnessConfig(
         enabled=enabled,
-        api_key=_clean(getattr(settings, "openai_api_key", "")),
-        model=os.getenv("WEBSITE_OPS_CITATION_MODEL", "gpt-5-mini").strip() or "gpt-5-mini",
+        provider=provider,
+        api_key=api_key,
+        model=model,
         max_clusters=max(
             1,
             min(int(os.getenv("WEBSITE_OPS_CITATION_MAX_CLUSTERS", "5") or "5"), 20),
@@ -503,6 +531,37 @@ def _openai_web_search(
             "store": False,
         },
         timeout=60,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return payload if isinstance(payload, dict) else {}
+
+
+def _anthropic_web_search(
+    *,
+    config: CitationHarnessConfig,
+    prompt: str,
+) -> dict[str, Any]:
+    response = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": config.api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": config.model,
+            "max_tokens": 1600,
+            "messages": [{"role": "user", "content": prompt}],
+            "tools": [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": 5,
+                }
+            ],
+        },
+        timeout=90,
     )
     response.raise_for_status()
     payload = response.json()
@@ -564,7 +623,83 @@ def _citation_from_response(
         "observed_at": _now(),
         "methodology_version": METHODOLOGY_VERSION,
         "prompt_template_version": PROMPT_TEMPLATE_VERSION,
-        "provider": "openai",
+        "provider": config.provider,
+        "model": config.model,
+        "cluster_id": _clean(cluster.get("cluster_id")),
+        "parent_prompt": prompt,
+        "status": status,
+        "retrieval_used": retrieval_used,
+        "fanout_queries": list(dict.fromkeys(queries)),
+        "cited_urls": citations,
+        "anata_cited": cited_anata,
+        "anata_mentioned": mentioned_anata,
+        "response_fingerprint": hashlib.sha256(output_text.encode("utf-8")).hexdigest()[:24],
+    }
+
+
+def _citation_from_anthropic_response(
+    *,
+    cluster: Mapping[str, Any],
+    config: CitationHarnessConfig,
+    prompt: str,
+    response: Mapping[str, Any],
+) -> dict[str, Any]:
+    queries: list[str] = []
+    citations: list[dict[str, str]] = []
+    output_parts: list[str] = []
+    retrieval_used = False
+    for item in response.get("content", []) or []:
+        if not isinstance(item, Mapping):
+            continue
+        item_type = item.get("type")
+        if item_type == "server_tool_use" and item.get("name") == "web_search":
+            retrieval_used = True
+            tool_input = item.get("input") if isinstance(item.get("input"), Mapping) else {}
+            if _clean(tool_input.get("query")):
+                queries.append(_clean(tool_input.get("query")))
+        elif item_type == "web_search_tool_result":
+            retrieval_used = True
+            result_content = item.get("content")
+            if isinstance(result_content, Mapping) and result_content.get("type") == "web_search_tool_result_error":
+                raise RuntimeError(_clean(result_content.get("error_code")) or "web search failed")
+        elif item_type == "text":
+            if _clean(item.get("text")):
+                output_parts.append(_clean(item.get("text")))
+            for citation in item.get("citations", []) or []:
+                if (
+                    isinstance(citation, Mapping)
+                    and citation.get("type") == "web_search_result_location"
+                    and _clean(citation.get("url"))
+                ):
+                    citations.append(
+                        {
+                            "url": _clean(citation.get("url")),
+                            "title": _clean(citation.get("title")),
+                        }
+                    )
+    output_text = _clean(" ".join(output_parts))
+    cited_anata = any(
+        (urlparse(item["url"]).hostname or "").lower().removeprefix("www.") == "anatainc.com"
+        for item in citations
+    )
+    mentioned_anata = "anata" in output_text.lower()
+    status = (
+        "cited"
+        if cited_anata
+        else "mentioned"
+        if mentioned_anata
+        else "no-citation"
+        if retrieval_used
+        else "no-retrieval"
+    )
+    return {
+        "citation_id": hashlib.sha256(
+            f"{cluster.get('cluster_id')}|{config.provider}|{config.model}|{prompt}|{_now()}".encode("utf-8")
+        ).hexdigest()[:24],
+        "observed_at": _now(),
+        "methodology_version": METHODOLOGY_VERSION,
+        "prompt_template_version": PROMPT_TEMPLATE_VERSION,
+        "provider": config.provider,
         "model": config.model,
         "cluster_id": _clean(cluster.get("cluster_id")),
         "parent_prompt": prompt,
@@ -603,7 +738,7 @@ def run_citation_harness(
                 "observed_at": _now(),
                 "methodology_version": METHODOLOGY_VERSION,
                 "prompt_template_version": PROMPT_TEMPLATE_VERSION,
-                "provider": "openai",
+                "provider": config.provider,
                 "model": config.model,
                 "cluster_id": _clean(item.get("cluster_id")),
                 "parent_prompt": "",
@@ -617,7 +752,9 @@ def run_citation_harness(
             }
             for item in eligible
         ]
-    request = requester or _openai_web_search
+    request = requester or (
+        _anthropic_web_search if config.provider == "anthropic" else _openai_web_search
+    )
     results: list[dict[str, Any]] = []
     for cluster in eligible:
         prompt = (
@@ -627,8 +764,13 @@ def run_citation_harness(
         )
         try:
             response = request(config=config, prompt=prompt)
+            parser = (
+                _citation_from_anthropic_response
+                if config.provider == "anthropic"
+                else _citation_from_response
+            )
             results.append(
-                _citation_from_response(
+                parser(
                     cluster=cluster,
                     config=config,
                     prompt=prompt,
@@ -644,7 +786,7 @@ def run_citation_harness(
                     "observed_at": _now(),
                     "methodology_version": METHODOLOGY_VERSION,
                     "prompt_template_version": PROMPT_TEMPLATE_VERSION,
-                    "provider": "openai",
+                    "provider": config.provider,
                     "model": config.model,
                     "cluster_id": _clean(cluster.get("cluster_id")),
                     "parent_prompt": prompt,
