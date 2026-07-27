@@ -663,6 +663,8 @@ class HROffboardingChecklist(Base):
     last_working_day: Mapped[date] = mapped_column(Date)
     final_pay_date: Mapped[date] = mapped_column(Date)
     reason: Mapped[str] = mapped_column(Text, default="")
+    final_pay_reference: Mapped[str] = mapped_column(String(128), default="")
+    final_pay_evidence_note: Mapped[str] = mapped_column(Text, default="")
     checklist_json: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(24), default="open", index=True)
     created_by: Mapped[str] = mapped_column(String(255), default="")

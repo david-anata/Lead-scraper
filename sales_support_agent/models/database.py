@@ -373,6 +373,10 @@ def _ensure_hr_columns(engine: Any) -> None:
             "contract_reference": "VARCHAR(255) NOT NULL DEFAULT ''",
             "status": "VARCHAR(16) NOT NULL DEFAULT 'active'",
         },
+        "hr_offboarding_checklists": {
+            "final_pay_reference": "VARCHAR(128) NOT NULL DEFAULT ''",
+            "final_pay_evidence_note": "TEXT NOT NULL DEFAULT ''",
+        },
     }
     inspector = inspect(engine)
     for table_name, table_columns in additions.items():

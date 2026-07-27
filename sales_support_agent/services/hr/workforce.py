@@ -216,6 +216,8 @@ def create_offboarding(
         return False, "offboarding_invalid"
     if final_pay_date < last_working_day:
         return False, "final_pay_date_invalid"
+    if not (reason or "").strip():
+        return False, "offboarding_reason_required"
     with _session() as session:
         employee = session.query(HREmployee).filter_by(email=email).first()
         if not employee or employee.status != "active":
@@ -240,15 +242,31 @@ def create_offboarding(
         return True, "offboarding_started"
 
 
-def update_offboarding(checklist_id: int, *, completed_steps: list[str],
-                       actor: str) -> tuple[bool, str]:
+def update_offboarding(
+    checklist_id: int, *, completed_steps: list[str],
+    final_pay_reference: str = "", final_pay_evidence_note: str = "",
+    actor: str,
+) -> tuple[bool, str]:
     with _session() as session:
         row = session.get(HROffboardingChecklist, checklist_id)
         if not row or row.status != "open":
             return False, "offboarding_not_found"
         checklist = dict(row.checklist_json or {})
+        completed = set(completed_steps or [])
+        if (
+            "final_pay_confirmed" in completed
+            and (
+                not (final_pay_reference or row.final_pay_reference).strip()
+                or not (final_pay_evidence_note or row.final_pay_evidence_note).strip()
+            )
+        ):
+            return False, "final_pay_evidence_required"
+        if final_pay_reference.strip():
+            row.final_pay_reference = final_pay_reference.strip()
+        if final_pay_evidence_note.strip():
+            row.final_pay_evidence_note = final_pay_evidence_note.strip()
         for key in checklist:
-            checklist[key] = key in set(completed_steps or [])
+            checklist[key] = key in completed
         row.checklist_json = checklist
         if all(checklist.values()):
             employee = session.query(HREmployee).filter_by(email=row.employee_email).first()
@@ -278,5 +296,7 @@ def list_offboarding() -> list[dict]:
             "separation_type": row.separation_type,
             "last_working_day": row.last_working_day,
             "final_pay_date": row.final_pay_date, "reason": row.reason,
+            "final_pay_reference": row.final_pay_reference,
+            "final_pay_evidence_note": row.final_pay_evidence_note,
             "checklist": row.checklist_json or {}, "status": row.status,
         } for row in rows]

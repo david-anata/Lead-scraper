@@ -840,10 +840,15 @@ async def hr_offboarding_create(
 @router.post("/offboarding/{checklist_id}")
 async def hr_offboarding_update(
     checklist_id: int, completed_steps: list[str] = Form(default=[]),
+    final_pay_reference: str = Form(""),
+    final_pay_evidence_note: str = Form(""),
     user: dict = Depends(_people_guard),
 ):
     ok, message = workforce.update_offboarding(
-        checklist_id, completed_steps=completed_steps, actor=user.get("email", "")
+        checklist_id, completed_steps=completed_steps,
+        final_pay_reference=final_pay_reference,
+        final_pay_evidence_note=final_pay_evidence_note,
+        actor=user.get("email", ""),
     )
     return RedirectResponse(
         f"/admin/hr/offboarding?{'ok' if ok else 'err'}={message}", status_code=303

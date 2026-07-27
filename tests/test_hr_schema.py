@@ -70,6 +70,14 @@ class HRSchemaTests(unittest.TestCase):
             "flat_fee_minor", "currency", "fee_terms", "contract_reference",
             "status",
         }.issubset(contractor_columns))
+        offboarding_columns = {
+            row["name"] for row in inspect(db.get_engine()).get_columns(
+                "hr_offboarding_checklists"
+            )
+        }
+        self.assertTrue({
+            "final_pay_reference", "final_pay_evidence_note"
+        }.issubset(offboarding_columns))
 
     def test_employee_money_in_cents_and_base44_id(self) -> None:
         Sess = db.create_session_factory(os.environ["SALES_AGENT_DB_URL"])

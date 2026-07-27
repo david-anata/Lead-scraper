@@ -187,6 +187,12 @@ def test_offboarding_preserves_history_and_suspends_access_only_when_complete():
             employee_email=email, separation_type="resignation",
             last_working_day=date(2026, 8, 15),
             final_pay_date=date(2026, 8, 20),
+            reason="", actor="val@anatainc.com",
+        ) == (False, "offboarding_reason_required")
+        assert workforce.create_offboarding(
+            employee_email=email, separation_type="resignation",
+            last_working_day=date(2026, 8, 15),
+            final_pay_date=date(2026, 8, 20),
             reason="Employee resignation", actor="val@anatainc.com",
         ) == (True, "offboarding_started")
         checklist_id = workforce.list_offboarding()[0]["id"]
@@ -207,6 +213,12 @@ def test_offboarding_preserves_history_and_suspends_access_only_when_complete():
         assert workforce.update_offboarding(
             checklist_id, completed_steps=completed,
             actor="val@anatainc.com",
+        ) == (False, "final_pay_evidence_required")
+        assert workforce.update_offboarding(
+            checklist_id, completed_steps=completed,
+            final_pay_reference="Check 1042",
+            final_pay_evidence_note="Approved final payroll and issued check matched.",
+            actor="val@anatainc.com",
         ) == (True, "offboarding_complete")
 
     with Session(engine) as session:
@@ -215,4 +227,7 @@ def test_offboarding_preserves_history_and_suspends_access_only_when_complete():
         assert session.query(HREmploymentProfile).filter_by(
             employee_email=email
         ).one().termination_date == date(2026, 8, 15)
-        assert session.get(HROffboardingChecklist, checklist_id).status == "complete"
+        checklist = session.get(HROffboardingChecklist, checklist_id)
+        assert checklist.status == "complete"
+        assert checklist.final_pay_reference == "Check 1042"
+        assert "issued check matched" in checklist.final_pay_evidence_note

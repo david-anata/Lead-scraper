@@ -555,6 +555,9 @@ Anata's Utah team. It is intentionally provider-independent:
   reference. Wise payment obligations are prepared, independently approved,
   evidenced, and reconciled separately from W-2 payroll. Agent does not store
   contractor bank credentials, call the Wise API, or initiate transfers.
+- Offboarding preserves the employee and payroll history. Completing the
+  checklist requires a final-pay reference and evidence note before Agent
+  deactivates the employee record or suspends application access.
 - Finance/Plaid is not part of this implementation. No Finance records are
   created or changed by HR.
 

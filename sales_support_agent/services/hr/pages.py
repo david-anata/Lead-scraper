@@ -984,7 +984,12 @@ def render_hr_offboarding(employees: list, checklists: list, *, user, flash=None
         cards += f"""<form class="hr-form" method="post" action="/admin/hr/offboarding/{row['id']}">
         <div class="hr-kicker">{_esc(row['status'])}</div><h2>{_esc(row['employee_email'])}</h2>
         <p>Last day {_esc(row['last_working_day'])}; final pay {_esc(row['final_pay_date'])}. {_esc(row['reason'])}</p>
-        {checks}<button class="hr-btn" type="submit">Save checklist</button></form>"""
+        {checks}
+        <div class="hr-callout warn"><strong>Final-pay evidence</strong>
+        <p>Checking “Final pay confirmed” requires the issued-check, approved-run, or payment reference and a note explaining what was verified.</p></div>
+        <label>Final-pay reference</label><input name="final_pay_reference" maxlength="128" value="{_esc(row.get('final_pay_reference'))}" placeholder="Check number, approved run, or provider reference">
+        <label>Final-pay evidence note</label><textarea name="final_pay_evidence_note" maxlength="1000">{_esc(row.get('final_pay_evidence_note'))}</textarea>
+        <button class="hr-btn" type="submit">Save checklist</button></form>"""
     body = f"""{_flash(flash)}<h1 class="hr-h1">Offboarding</h1>
     <p class="hr-sub">The employee stays active until every final-pay, access, property, and record step is confirmed.</p>
     <div class="hr-stack">{cards or '<div class="hr-empty">No offboarding workflows.</div>'}</div>
@@ -993,7 +998,7 @@ def render_hr_offboarding(employees: list, checklists: list, *, user, flash=None
       <label>Person</label><select name="employee_email" required>{options}</select>
       <label>Type</label><select name="separation_type"><option value="resignation">Resignation</option><option value="termination">Termination</option><option value="contract_end">Contract end</option></select>
       <div class="hr-grid2"><div><label>Last working day</label><input type="date" name="last_working_day" required></div><div><label>Final pay date</label><input type="date" name="final_pay_date" required></div></div>
-      <label>Reason/notes</label><textarea name="reason"></textarea>
+      <label>Reason/notes</label><textarea name="reason" required></textarea>
       <button class="hr-btn" type="submit">Start checklist</button>
     </form>"""
     return hr_shell("Offboarding", "offboarding", body, user=user)
