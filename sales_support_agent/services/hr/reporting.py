@@ -186,22 +186,59 @@ def export_csv(
                 row.contractor_email: row
                 for row in session.query(HRContractorProfile).all()
             }
+            payment_emails = {row.contractor_email for row in rows}
+            export_rows = [
+                [
+                    row.contractor_email, row.service_start, row.service_end,
+                    row.due_date, row.amount_minor / 100, row.currency, row.status,
+                    row.invoice_reference, row.wise_transfer_reference,
+                    row.approved_by,
+                    profiles.get(row.contractor_email).tax_form_type
+                    if profiles.get(row.contractor_email) else "",
+                    profiles.get(row.contractor_email).tax_form_status
+                    if profiles.get(row.contractor_email) else "",
+                    profiles.get(row.contractor_email).expiration_date
+                    if profiles.get(row.contractor_email) else "",
+                    profiles.get(row.contractor_email).country_code
+                    if profiles.get(row.contractor_email) else "",
+                    profiles.get(row.contractor_email).engagement_start
+                    if profiles.get(row.contractor_email) else "",
+                    profiles.get(row.contractor_email).engagement_end
+                    if profiles.get(row.contractor_email) else "",
+                    profiles.get(row.contractor_email).flat_fee_minor / 100
+                    if profiles.get(row.contractor_email) else "",
+                    profiles.get(row.contractor_email).currency
+                    if profiles.get(row.contractor_email) else "",
+                    profiles.get(row.contractor_email).fee_terms
+                    if profiles.get(row.contractor_email) else "",
+                    profiles.get(row.contractor_email).contract_reference
+                    if profiles.get(row.contractor_email) else "",
+                    profiles.get(row.contractor_email).status
+                    if profiles.get(row.contractor_email) else "",
+                ]
+                for row in rows
+            ]
+            export_rows.extend([
+                [
+                    profile.contractor_email, "", "", "", "", "", "", "", "", "",
+                    profile.tax_form_type, profile.tax_form_status,
+                    profile.expiration_date, profile.country_code,
+                    profile.engagement_start, profile.engagement_end,
+                    profile.flat_fee_minor / 100, profile.currency,
+                    profile.fee_terms, profile.contract_reference, profile.status,
+                ]
+                for profile in profiles.values()
+                if profile.contractor_email not in payment_emails
+            ])
             return _csv(
                 ["contractor_email", "service_start", "service_end", "due_date",
                  "amount", "currency", "status", "invoice_reference",
                  "wise_transfer_reference", "approved_by", "tax_form_type",
-                 "tax_form_status", "tax_form_expiration"],
-                [[row.contractor_email, row.service_start, row.service_end,
-                  row.due_date, row.amount_minor / 100, row.currency, row.status,
-                  row.invoice_reference, row.wise_transfer_reference,
-                  row.approved_by,
-                  profiles.get(row.contractor_email).tax_form_type
-                  if profiles.get(row.contractor_email) else "",
-                  profiles.get(row.contractor_email).tax_form_status
-                  if profiles.get(row.contractor_email) else "",
-                  profiles.get(row.contractor_email).expiration_date
-                  if profiles.get(row.contractor_email) else "",
-                  ] for row in rows],
+                 "tax_form_status", "tax_form_expiration", "country_code",
+                 "engagement_start", "engagement_end", "engagement_flat_fee",
+                 "engagement_currency", "fee_terms", "contract_reference",
+                 "engagement_status"],
+                export_rows,
             )
         if kind == "audit":
             rows = session.query(HRAuditEvent).order_by(HRAuditEvent.created_at).all()

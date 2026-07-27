@@ -753,14 +753,23 @@ async def hr_contractors(request: Request, user: dict = Depends(_pay_prepare_gua
 
 @router.post("/contractors/profile")
 async def hr_contractor_profile_save(
-    contractor_email: str = Form(""), tax_form_type: str = Form("undetermined"),
+    contractor_email: str = Form(""), country_code: str = Form(""),
+    engagement_start: date = Form(...), engagement_end: date | None = Form(None),
+    flat_fee: str = Form(""), currency: str = Form("USD"),
+    fee_terms: str = Form(""), contract_reference: str = Form(""),
+    engagement_status: str = Form("active"),
+    tax_form_type: str = Form("undetermined"),
     tax_form_status: str = Form("missing"), received_date: date | None = Form(None),
     expiration_date: date | None = Form(None),
     wise_recipient_reference: str = Form(""), review_note: str = Form(""),
     user: dict = Depends(_pay_prepare_guard),
 ):
     ok, message = workforce.save_contractor_profile(
-        contractor_email=contractor_email, tax_form_type=tax_form_type,
+        contractor_email=contractor_email, country_code=country_code,
+        engagement_start=engagement_start, engagement_end=engagement_end,
+        flat_fee=flat_fee, currency=currency, fee_terms=fee_terms,
+        contract_reference=contract_reference, engagement_status=engagement_status,
+        tax_form_type=tax_form_type,
         tax_form_status=tax_form_status, received_date=received_date,
         expiration_date=expiration_date,
         wise_recipient_reference=wise_recipient_reference,
@@ -831,10 +840,15 @@ async def hr_offboarding_create(
 @router.post("/offboarding/{checklist_id}")
 async def hr_offboarding_update(
     checklist_id: int, completed_steps: list[str] = Form(default=[]),
+    final_pay_reference: str = Form(""),
+    final_pay_evidence_note: str = Form(""),
     user: dict = Depends(_people_guard),
 ):
     ok, message = workforce.update_offboarding(
-        checklist_id, completed_steps=completed_steps, actor=user.get("email", "")
+        checklist_id, completed_steps=completed_steps,
+        final_pay_reference=final_pay_reference,
+        final_pay_evidence_note=final_pay_evidence_note,
+        actor=user.get("email", ""),
     )
     return RedirectResponse(
         f"/admin/hr/offboarding?{'ok' if ok else 'err'}={message}", status_code=303

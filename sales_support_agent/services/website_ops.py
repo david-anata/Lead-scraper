@@ -1495,6 +1495,36 @@ def _insight_snapshot_cards(page_insights: list[dict[str, Any]]) -> str:
         block_reason = ""
         if item.get("task_block_reason"):
             block_reason = f"<p class='muted'><strong>Task block reason:</strong> {html.escape(str(item.get('task_block_reason', '')))}</p>"
+        aeo = item.get("aeo") if isinstance(item.get("aeo"), dict) else {}
+        aeo_eligibility = str(aeo.get("technical_eligibility", "unknown"))
+        aeo_readiness = str(aeo.get("answer_readiness", "unknown"))
+        aeo_reasons = list(aeo.get("technical_blockers") or []) + list(aeo.get("answer_readiness_issues") or [])
+        simulated_prompts = list(aeo.get("simulated_coverage_prompts") or [])
+        aeo_details = ""
+        if aeo:
+            reason_items = "".join(
+                f"<li>{html.escape(str(reason))}</li>" for reason in aeo_reasons[:5]
+            )
+            prompt_items = "".join(
+                f"<li><strong>{html.escape(str(prompt.get('facet', '')).title())}:</strong> "
+                f"{html.escape(str(prompt.get('prompt', '')))}</li>"
+                for prompt in simulated_prompts[:6]
+            )
+            aeo_details = f"""
+              <div class="mini-grid">
+                {_mini_chip("AEO eligibility", aeo_eligibility.title())}
+                {_mini_chip("Answer readiness", aeo_readiness.replace("-", " ").title())}
+                {_mini_chip("Observed queries", len(list(aeo.get("observed_queries") or [])))}
+                {_mini_chip("Simulated prompts", len(simulated_prompts))}
+              </div>
+              <details>
+                <summary class="text-link">AEO evidence and coverage</summary>
+                {f"<ul class='compact-list'>{reason_items}</ul>" if reason_items else "<p class='muted'>No current eligibility or answer-readiness issues.</p>"}
+                <p class="eyebrow">Simulated coverage prompts</p>
+                <ul class="compact-list">{prompt_items}</ul>
+                <p class="muted">{html.escape(str(aeo.get("method_note", "")))}</p>
+              </details>
+            """
         cards.append(
             f"""
             <article class="insight-card">
@@ -1515,6 +1545,7 @@ def _insight_snapshot_cards(page_insights: list[dict[str, Any]]) -> str:
               <div class="mini-grid">{debug_chips}</div>
               {query_seed}
               {block_reason}
+              {aeo_details}
               {insights}
             </article>
             """

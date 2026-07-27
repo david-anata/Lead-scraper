@@ -20,6 +20,7 @@ from sales_support_agent.services.website_ops_content import (
 )
 from sales_support_agent.services.website_ops_customer_language import collect_customer_questions
 from sales_support_agent.services.website_ops_serp import build_blueprint
+from sales_support_agent.services.website_ops_aeo import build_aeo_assessment
 
 try:
     from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -1239,6 +1240,16 @@ def build_autonomy_overlay(
                 primary_lead_event=config.primary_lead_event,
             )
         )
+        matched_customer_questions = _matching_customer_questions(
+            observation,
+            customer_questions,
+            list(gsc.get("top_queries") or []),
+        )
+        aeo_assessment = build_aeo_assessment(
+            observation,
+            gsc=gsc,
+            customer_questions=matched_customer_questions,
+        )
 
         page_insights.append(
             {
@@ -1260,6 +1271,7 @@ def build_autonomy_overlay(
                 "top_query_count": int(content_debug.get("top_query_count", 0) or 0),
                 "page_has_faq_coverage": bool(content_debug.get("page_has_faq_coverage")),
                 "ga4_trust_status": str(ga4.get("trust_status", ga4_trust_status)),
+                "aeo": aeo_assessment,
             }
         )
 

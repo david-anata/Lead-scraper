@@ -550,9 +550,14 @@ Anata's Utah team. It is intentionally provider-independent:
   money or represent taxes as paid.
 - Manual checks create employee-only pay statements. Tax liabilities remain
   due until payment and filing confirmations are recorded and reconciled.
-- Wise contractor payments are prepared, approved, and reconciled separately
-  from W-2 payroll. The current implementation records Wise evidence but does
-  not call the Wise API or initiate transfers.
+- Contractor records keep country, engagement dates, approved flat-fee terms,
+  currency, contract reference, tax-form status, and an opaque Wise recipient
+  reference. Wise payment obligations are prepared, independently approved,
+  evidenced, and reconciled separately from W-2 payroll. Agent does not store
+  contractor bank credentials, call the Wise API, or initiate transfers.
+- Offboarding preserves the employee and payroll history. Completing the
+  checklist requires a final-pay reference and evidence note before Agent
+  deactivates the employee record or suspends application access.
 - Finance/Plaid is not part of this implementation. No Finance records are
   created or changed by HR.
 
