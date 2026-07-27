@@ -14,6 +14,7 @@ def _run(*, prepared_by: str = "val@anatainc.com", status: str = "prepared") -> 
         "period_end": "2026-08-15",
         "pay_date": "2026-08-20",
         "prepared_by": prepared_by,
+        "required_approver_email": "david@anatainc.com",
         "gross": "3,000.00",
         "net": "2,400.00",
         "taxes": "600.00",
@@ -46,7 +47,18 @@ def test_preparer_cannot_approve_own_version():
         user={"name": "David Narayan", "email": "david@anatainc.com"},
     )
 
-    assert "reviewed by a different signed-in person" in html
+    assert "prepared this payroll cannot approve" in html
+    assert "Approve this exact payroll version" not in html
+
+
+def test_only_configured_final_approver_sees_approval_form():
+    html = render_hr_payroll_approval(
+        _run(),
+        user={"name": "Val", "email": "val@anatainc.com"},
+    )
+
+    assert "Only the configured final approver" in html
+    assert "david@anatainc.com" in html
     assert "Approve this exact payroll version" not in html
 
 

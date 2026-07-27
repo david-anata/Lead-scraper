@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sales_support_agent.models.database import Base
 from sales_support_agent.models.hr import (
     HREmployee,
+    HRCompanyProfile,
     HRPayrollApproval,
     HRPayrollCalculation,
     HRPayrollInput,
@@ -72,6 +73,34 @@ def test_repeated_approval_and_check_actions_are_idempotent():
     with Session(engine) as session:
         assert session.query(HRPayrollApproval).count() == 1
         assert session.query(HRPrintedCheck).count() == 1
+
+
+def test_prepared_payroll_requires_configured_final_approver():
+    engine = _engine()
+    run = _run("pay_requires_david")
+    run.status = "prepared"
+    with Session(engine) as session:
+        session.add(run)
+        session.commit()
+
+    with mock.patch.object(payroll_store, "get_engine", return_value=engine):
+        assert payroll_store.approve_payroll(
+            "pay_requires_david", actor="val@anatainc.com",
+            approval_text="I approve this payroll",
+        ) == (False, "final_approver_not_configured")
+
+    with Session(engine) as session:
+        session.add(HRCompanyProfile(
+            legal_name="Anata LLC",
+            final_approver_email="david@anatainc.com",
+        ))
+        session.commit()
+
+    with mock.patch.object(payroll_store, "get_engine", return_value=engine):
+        assert payroll_store.approve_payroll(
+            "pay_requires_david", actor="val@anatainc.com",
+            approval_text="I approve this payroll",
+        ) == (False, "final_approver_required")
 
 
 def test_provider_handoff_detects_exact_match_and_variance():

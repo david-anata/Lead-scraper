@@ -362,6 +362,7 @@ def _ensure_hr_columns(engine: Any) -> None:
         },
         "hr_company_profiles": {
             "utah_withholding_payment_frequency": "VARCHAR(16) NOT NULL DEFAULT 'unknown'",
+            "final_approver_email": "VARCHAR(255) NOT NULL DEFAULT ''",
         },
         "hr_payroll_inputs": {
             "source_reference": "VARCHAR(255) NOT NULL DEFAULT ''",

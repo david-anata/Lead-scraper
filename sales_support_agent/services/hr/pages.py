@@ -246,6 +246,8 @@ def _flash(flash: Optional[str]) -> str:
         "recurring_input_invalid": "Only deductions and garnishments can carry forward.",
         "payroll_blocked": "Resolve every blocking item before preparing payroll.",
         "approval_attestation_required": "Type the approval statement exactly as shown.",
+        "final_approver_not_configured": "Select the required final payroll approver in HR settings first.",
+        "final_approver_required": "Only the required final payroll approver can approve this version.",
         "payroll_approved": "Payroll approved. No money or tax payment was sent.",
         "payroll_already_approved": "This exact payroll version was already approved.",
         "provider_submitted": "Payroll-service handoff recorded.",
@@ -958,16 +960,28 @@ def render_hr_payroll_approval(run: dict, *, user, flash=None) -> str:
     approver = user.get("name") or user.get("email") or "Signed-in approver"
     approver_email = user.get("email") or ""
     prepared_by = run.get("prepared_by") or "Unknown"
+    required_approver = (run.get("required_approver_email") or "").strip().lower()
     independently_reviewed = (
         bool(approver_email)
         and approver_email.strip().lower() != str(prepared_by).strip().lower()
     )
-    can_approve = run.get("status") == "prepared" and independently_reviewed
-    warning = (
-        "This version is ready for an independent approval."
-        if can_approve else
-        "This payroll cannot be approved here. It must be prepared and reviewed by a different signed-in person."
+    is_required_approver = (
+        bool(required_approver)
+        and approver_email.strip().lower() == required_approver
     )
+    can_approve = (
+        run.get("status") == "prepared"
+        and independently_reviewed
+        and is_required_approver
+    )
+    if not required_approver:
+        warning = "Final approval is blocked until the required approver is selected in HR settings."
+    elif not is_required_approver:
+        warning = f"Only the configured final approver ({required_approver}) may approve this payroll."
+    elif not independently_reviewed:
+        warning = "The person who prepared this payroll cannot approve the same version."
+    else:
+        warning = "This version is ready for the configured final approver."
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">Confirm payroll approval</h1>
@@ -986,6 +1000,7 @@ def render_hr_payroll_approval(run: dict, *, user, flash=None) -> str:
         <div><strong>Employees included</strong><p>{employee_count}</p></div>
         <div><strong>Prepared by</strong><p>{_esc(prepared_by)}</p></div>
         <div><strong>Approver signing now</strong><p>{_esc(approver)}{f'<br><span class="hr-sub">{_esc(approver_email)}</span>' if approver_email and approver_email != approver else ''}</p></div>
+        <div><strong>Required final approver</strong><p>{_esc(required_approver or 'Not configured')}</p></div>
         <div><strong>Calculation/provider status</strong><p>Anata estimate<br><span class="hr-sub">{_esc(provider_name)}</span></p></div>
       </div>
     </section>
@@ -1486,6 +1501,15 @@ def render_hr_settings(settings: dict, company: dict, employees: list, opening_b
           <label>Source and verification note</label><textarea name="source_note" required>{_esc(balance.get('source_note',''))}</textarea>
           <button class="hr-btn" type="submit">Save reviewed opening balance</button>
         </form>{approval_form}</details>"""
+    selected_approver = str(company.get("final_approver_email") or "").lower()
+    active_employee_options = "".join(
+        f'<option value="{_esc(employee["email"])}"'
+        f'{" selected" if employee["email"].lower() == selected_approver else ""}>'
+        f'{_esc(employee["full_name"])} — {_esc(employee["email"])}</option>'
+        for employee in employees
+        if employee.get("employee_type") != "contractor"
+        and employee.get("status", "active") == "active"
+    )
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">HR & payroll settings</h1><p class="hr-sub">The policies currently approved for Anata.</p>
@@ -1525,6 +1549,9 @@ def render_hr_settings(settings: dict, company: dict, employees: list, opening_b
       <div><label>State</label><input name="state" value="UT" readonly></div></div>
       <label>ZIP</label><input name="zip_code" value="{_esc(company.get('zip_code'))}" required>
       <label>Payroll contact email</label><input type="email" name="payroll_contact_email" value="{_esc(company.get('payroll_contact_email'))}" required>
+      <label>Required final payroll approver</label>
+      <p class="hr-help">Only this person can give final approval. The person who prepared the payroll must still be someone else.</p>
+      <select name="final_approver_email" required><option value="">Choose an active employee…</option>{active_employee_options}</select>
       <div class="hr-grid2"><div><label>Utah withholding account last 4</label><input name="utah_withholding_account_last4" value="{_esc(company.get('utah_withholding_account_last4'))}" maxlength="4"></div>
       <div><label>Utah UI account last 4</label><input name="utah_ui_account_last4" value="{_esc(company.get('utah_ui_account_last4'))}" maxlength="4"></div></div>
       <label>Federal deposit schedule confirmed from lookback evidence</label>

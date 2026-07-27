@@ -168,6 +168,7 @@ def get_company_profile() -> dict:
             "ein_last4": row.ein_last4, "address_line1": row.address_line1,
             "address_line2": row.address_line2, "city": row.city, "state": row.state,
             "zip_code": row.zip_code, "payroll_contact_email": row.payroll_contact_email,
+            "final_approver_email": row.final_approver_email,
             "utah_withholding_account_last4": row.utah_withholding_account_last4,
             "utah_ui_account_last4": row.utah_ui_account_last4,
             "federal_deposit_schedule": row.federal_deposit_schedule,
@@ -179,7 +180,8 @@ def get_company_profile() -> dict:
 def save_company_profile(
     *, legal_name: str, trade_name: str, ein_last4: str, address_line1: str,
     address_line2: str, city: str, state: str, zip_code: str,
-    payroll_contact_email: str, utah_withholding_account_last4: str,
+    payroll_contact_email: str, final_approver_email: str,
+    utah_withholding_account_last4: str,
     utah_ui_account_last4: str, federal_deposit_schedule: str,
     utah_withholding_payment_frequency: str,
     source_note: str, actor: str,
@@ -195,7 +197,7 @@ def save_company_profile(
     if (
         not legal_name.strip() or len(digits) != 4 or not address_line1.strip()
         or not city.strip() or state.strip().upper() != "UT" or not zip_code.strip()
-        or "@" not in payroll_contact_email
+        or "@" not in payroll_contact_email or "@" not in final_approver_email
         or federal_deposit_schedule not in {"monthly", "semiweekly"}
         or utah_withholding_payment_frequency not in {"monthly", "quarterly"}
         or not source_note.strip()
@@ -215,6 +217,7 @@ def save_company_profile(
         row.state = "UT"
         row.zip_code = zip_code.strip()
         row.payroll_contact_email = payroll_contact_email.strip().lower()
+        row.final_approver_email = final_approver_email.strip().lower()
         row.utah_withholding_account_last4 = withholding_last4[-4:]
         row.utah_ui_account_last4 = ui_last4[-4:]
         row.federal_deposit_schedule = federal_deposit_schedule
@@ -596,6 +599,11 @@ def _period_context(containing: date) -> tuple:
         readiness["blockers"].append({
             "kind": "company_profile", "severity": "blocker",
             "message": "Employer legal profile is incomplete",
+        })
+    if not company_profile.get("final_approver_email"):
+        readiness["blockers"].append({
+            "kind": "final_approver", "severity": "blocker",
+            "message": "The required final payroll approver is not configured",
         })
     if settings.get("federal_deposit_schedule") not in {"monthly", "semiweekly"}:
         readiness["blockers"].append({
@@ -1032,6 +1040,14 @@ def approve_payroll(run_id: str, *, actor: str, approval_text: str) -> tuple[boo
             return True, "payroll_already_approved"
         if run.status != "prepared":
             return False, "run_not_prepared"
+        company = session.query(HRCompanyProfile).first()
+        required_approver = (
+            company.final_approver_email.strip().lower() if company else ""
+        )
+        if not required_approver:
+            return False, "final_approver_not_configured"
+        if actor.strip().lower() != required_approver:
+            return False, "final_approver_required"
         if run.initiated_by.strip().lower() == actor.strip().lower():
             return False, "self_approval_blocked"
         period, settings, employees, inputs, readiness = _period_context(run.pay_period_start)
@@ -1163,6 +1179,7 @@ def payroll_run_detail(
         handoff = session.query(HRPayrollProviderHandoff).filter_by(
             payroll_run_id=run_id
         ).first()
+        company = session.query(HRCompanyProfile).first()
         display_gross = run.total_gross_cents
         display_net = run.total_net_cents
         display_taxes = run.total_taxes_cents
@@ -1187,6 +1204,9 @@ def payroll_run_detail(
             "id": run.base44_id, "status": run.status,
             "period_start": run.pay_period_start, "period_end": run.pay_period_end,
             "pay_date": run.pay_date, "prepared_by": run.initiated_by,
+            "required_approver_email": (
+                company.final_approver_email if company else ""
+            ),
             "gross": cents_to_dollars(display_gross),
             "net": cents_to_dollars(display_net),
             "taxes": cents_to_dollars(display_taxes),

@@ -122,6 +122,7 @@ class HRCompanyProfile(Base):
     state: Mapped[str] = mapped_column(String(2), default="UT")
     zip_code: Mapped[str] = mapped_column(String(16), default="")
     payroll_contact_email: Mapped[str] = mapped_column(String(255), default="")
+    final_approver_email: Mapped[str] = mapped_column(String(255), default="")
     utah_withholding_account_last4: Mapped[str] = mapped_column(String(4), default="")
     utah_ui_account_last4: Mapped[str] = mapped_column(String(4), default="")
     federal_deposit_schedule: Mapped[str] = mapped_column(String(16), default="unknown")
