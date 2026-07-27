@@ -163,7 +163,11 @@ class WebsiteOpsStorageMiddleware(BaseHTTPMiddleware):
             self._PREFIXES
         ):
             return await call_next(request)
-        settings = request.app.state.settings
+        settings = getattr(
+            request.app.state,
+            "website_ops_settings",
+            request.app.state.settings,
+        )
         engine = request.app.state.session_factory.kw["bind"]
         restore_website_ops_root(engine, Path(settings.website_ops_root))
         response = await call_next(request)

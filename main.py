@@ -839,6 +839,7 @@ def startup() -> None:
     app.state.render_git_commit = RENDER_GIT_COMMIT or "unknown"
     settings = load_settings()
     app.state.settings = settings
+    app.state.website_ops_settings = load_website_ops_settings()
     app.state.admin_dashboard_last_auto_sync_at = None
     app.state.admin_dashboard_last_auto_sync_result = {
         "status": "idle",
@@ -878,7 +879,10 @@ def startup() -> None:
             synchronize_website_ops_cache,
         )
 
-        synchronize_website_ops_cache(settings, _sf.kw["bind"])
+        synchronize_website_ops_cache(
+            app.state.website_ops_settings,
+            _sf.kw["bind"],
+        )
     # Store AdminDashboardSettings so cashflow auth_deps can always find
     # admin_cookie_name even when agent_settings fails to load.
     app.state.admin_dashboard_settings = load_admin_dashboard_settings()
