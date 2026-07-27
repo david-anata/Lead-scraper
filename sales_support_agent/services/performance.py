@@ -123,7 +123,7 @@ class PerformanceMiddleware(BaseHTTPMiddleware):
                 response.headers["Cache-Control"] = _static_cache_policy(request)
             logger.info(
                 "request_performance route=%s method=%s status=%s total_ms=%.1f "
-                "db_ms=%.1f queries=%d response_bytes=%d",
+                "db_ms=%.1f queries=%d response_bytes=%d cf_ray=%s",
                 _route_name(request),
                 request.method,
                 getattr(response, "status_code", 0),
@@ -131,6 +131,7 @@ class PerformanceMiddleware(BaseHTTPMiddleware):
                 collector.query_ms,
                 collector.query_count,
                 _response_bytes(response),
+                str(request.headers.get("cf-ray", "") or "-")[:64],
             )
             return response
         finally:

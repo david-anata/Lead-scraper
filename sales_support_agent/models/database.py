@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -74,6 +75,11 @@ def init_cashflow_db(db_url: str) -> None:
 
 
 def init_database(session_factory: sessionmaker[Session]) -> None:
+    from sales_support_agent.services.job_lease import ensure_job_lease_schema
+    from sales_support_agent.services.website_ops_storage import (
+        ensure_website_ops_storage_schema,
+    )
+
     engine = session_factory.kw.get("bind")
     if engine is None:
         raise RuntimeError("Session factory is missing an engine binding.")
@@ -86,6 +92,8 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
         ensure_finance_trust_schema(engine)
         _backfill_legacy_settlements(engine)
         _repair_legacy_building_event_inquiries(session_factory)
+        ensure_job_lease_schema(engine)
+        ensure_website_ops_storage_schema(engine)
         return
 
     # Production deployments use a persistent Postgres database. Running
@@ -102,11 +110,14 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     _ensure_building_tables(engine)
     _ensure_building_columns(engine)
     _ensure_finance_settlement_tables(engine)
+    _ensure_plaid_environment_column(engine)
     ensure_finance_trust_schema(engine)
     _backfill_legacy_settlements(engine)
     _ensure_hr_tables(engine)
     _ensure_hr_columns(engine)
     _repair_legacy_building_event_inquiries(session_factory)
+    ensure_job_lease_schema(engine)
+    ensure_website_ops_storage_schema(engine)
 
 
 def _repair_legacy_building_event_inquiries(
@@ -360,11 +371,17 @@ def _ensure_hr_columns(engine: Any) -> None:
         },
         "hr_company_profiles": {
             "utah_withholding_payment_frequency": "VARCHAR(16) NOT NULL DEFAULT 'unknown'",
+            "final_approver_email": "VARCHAR(255) NOT NULL DEFAULT ''",
         },
         "hr_payroll_inputs": {
             "source_reference": "VARCHAR(255) NOT NULL DEFAULT ''",
             "recurring": "BOOLEAN NOT NULL DEFAULT FALSE",
             "recurrence_key": "VARCHAR(64) NOT NULL DEFAULT ''",
+        },
+        "hr_printed_checks": {
+            "cleared_at": "TIMESTAMP",
+            "confirmation_reference": "VARCHAR(128) NOT NULL DEFAULT ''",
+            "reconciliation_evidence_note": "TEXT NOT NULL DEFAULT ''",
         },
         "hr_contractor_profiles": {
             "country_code": "VARCHAR(2) NOT NULL DEFAULT ''",
@@ -512,6 +529,49 @@ def _ensure_plaid_account_columns(engine: Any) -> None:
             "UPDATE plaid_accounts SET cash_role='spendable' "
             "WHERE LOWER(COALESCE(subtype, ''))='checking'"
         ))
+
+
+def _ensure_plaid_environment_column(
+    engine: Any, *, current_environment: str | None = None,
+) -> None:
+    """Keep Sandbox, Development, and Production Plaid Items isolated."""
+
+    inspector = inspect(engine)
+    if "plaid_items" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("plaid_items")}
+    if "environment" not in columns:
+        with engine.begin() as connection:
+            # Every Item created before this migration came from the original
+            # Sandbox-only launch. Backfilling it as Sandbox prevents those
+            # balances from becoming Production cash after an environment flip.
+            connection.execute(text(
+                "ALTER TABLE plaid_items "
+                "ADD COLUMN environment VARCHAR(32) NOT NULL DEFAULT 'sandbox'"
+            ))
+    with engine.begin() as connection:
+        connection.execute(text(
+            "UPDATE plaid_items SET environment='sandbox' "
+            "WHERE environment IS NULL OR environment=''"
+        ))
+        environment = str(
+            current_environment
+            or os.getenv("PLAID_ENV", "sandbox")
+            or "sandbox"
+        ).lower()
+        if environment == "production":
+            # Production was approved on 2026-07-23. A real pilot Item was
+            # connected after approval but before the environment column
+            # existed, so the first migration conservatively labeled it as
+            # Sandbox. Items created before approval remain Sandbox history;
+            # post-approval Items are the Production pilot.
+            connection.execute(text("""
+                UPDATE plaid_items
+                SET environment='production'
+                WHERE environment='sandbox' AND created_at >= :approved_at
+            """), {
+                "approved_at": datetime(2026, 7, 23, tzinfo=timezone.utc),
+            })
 
 
 def _backfill_legacy_settlements(engine: Any) -> None:

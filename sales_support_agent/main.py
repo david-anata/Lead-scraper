@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 from threading import Lock
+from time import perf_counter
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -18,8 +20,7 @@ from sales_support_agent.api.hr_router import router as hr_router
 from sales_support_agent.api.hr_jobs_router import router as hr_jobs_router
 from sales_support_agent.api.marketing_router import router as marketing_router
 from sales_support_agent.api.website_ops_jobs_router import router as website_ops_jobs_router
-from sales_support_agent.api.outbound_jobs import install_embedded_outbound_scheduler
-from sales_support_agent.api.website_ops_jobs_router import install_embedded_website_ops_scheduler
+from sales_support_agent.api.outbound_jobs import router as outbound_jobs_router
 from sales_support_agent.api.sales_jobs_router import router as sales_jobs_router
 from sales_support_agent.api.sales_router import router as sales_router
 from sales_support_agent.api.brand_analysis_router import (
@@ -79,15 +80,27 @@ from sales_support_agent.config import load_settings
 from sales_support_agent.models.database import (
     backfill_building_inquiry_assignments,
     create_session_factory,
-    init_cashflow_db,
     init_database,
 )
 
 
-def create_app() -> FastAPI:
-    logging.basicConfig(level=logging.INFO)
-    settings = load_settings()
-    session_factory = create_session_factory(settings.sales_agent_db_url)
+logger = logging.getLogger("agent.lifecycle")
+
+
+def _startup_database_prep_enabled() -> bool:
+    """Keep local SQLite convenient while Render uses the pre-deploy command."""
+
+    return os.getenv("AGENT_PREPARE_DATABASE_ON_STARTUP", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _prepare_database(settings, session_factory) -> None:
+    """Compatibility path for local/test startup; production uses pre-deploy."""
+
     init_database(session_factory)
     configured_building_owner = (
         settings.building_default_lead_owner
@@ -102,16 +115,81 @@ def create_app() -> FastAPI:
         default_owner=configured_building_owner,
         response_sla_hours=settings.building_response_sla_hours,
     )
-    init_cashflow_db(settings.sales_agent_db_url)
-
-    # RBAC: seed the never-lockable super-admin(s).
     try:
         from sales_support_agent.services.access import store as access_store
-        access_store.seed_superadmins(getattr(settings, "rbac_superadmin_emails", ()))
-    except Exception:  # noqa: BLE001 — seeding must never block startup
-        logging.getLogger(__name__).exception("Failed to seed RBAC super-admins")
 
-    app = FastAPI(title="Sales Support Agent")
+        access_store.seed_superadmins(
+            getattr(settings, "rbac_superadmin_emails", ())
+        )
+    except Exception:  # noqa: BLE001 — local seeding must never block startup
+        logger.exception("lifecycle milestone=superadmin_seed_failed")
+
+
+def create_app() -> FastAPI:
+    logging.basicConfig(level=logging.INFO)
+    process_started = perf_counter()
+    commit = os.getenv("RENDER_GIT_COMMIT", "").strip() or "local"
+    logger.info("lifecycle milestone=process_started commit=%s", commit)
+    settings = load_settings()
+    session_factory = create_session_factory(settings.sales_agent_db_url)
+    logger.info(
+        "lifecycle milestone=database_configured commit=%s elapsed_ms=%.1f",
+        commit,
+        (perf_counter() - process_started) * 1000,
+    )
+    if _startup_database_prep_enabled():
+        _prepare_database(settings, session_factory)
+        logger.info(
+            "lifecycle milestone=schema_ready source=startup commit=%s elapsed_ms=%.1f",
+            commit,
+            (perf_counter() - process_started) * 1000,
+        )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        from sales_support_agent.services.website_ops_storage import (
+            database_mirror_enabled,
+            synchronize_website_ops_cache,
+        )
+
+        if database_mirror_enabled():
+            storage_stats = synchronize_website_ops_cache(
+                settings,
+                session_factory.kw["bind"],
+            )
+            logger.info(
+                "lifecycle milestone=website_ops_storage_ready files=%s bytes=%s",
+                storage_stats["files"],
+                storage_stats["bytes"],
+            )
+        app.state.ready = True
+        logger.info(
+            "lifecycle milestone=app_ready commit=%s elapsed_ms=%.1f",
+            commit,
+            (perf_counter() - process_started) * 1000,
+        )
+        try:
+            yield
+        finally:
+            app.state.ready = False
+            logger.info("lifecycle milestone=shutdown_started commit=%s", commit)
+            for name in (
+                "website_ops_scheduler_stop",
+                "outbound_scheduler_stop",
+            ):
+                stop_event = getattr(app.state, name, None)
+                if stop_event is not None:
+                    stop_event.set()
+            app.state.dashboard_sync_executor.shutdown(
+                wait=False,
+                cancel_futures=True,
+            )
+            engine = session_factory.kw.get("bind")
+            if engine is not None:
+                engine.dispose()
+            logger.info("lifecycle milestone=shutdown_complete commit=%s", commit)
+
+    app = FastAPI(title="Sales Support Agent", lifespan=lifespan)
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     brand_static_dir = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),
@@ -131,6 +209,8 @@ def create_app() -> FastAPI:
     # via the preferred code path (agent_settings → admin_dashboard_settings → settings).
     app.state.agent_settings = settings
     app.state.session_factory = session_factory
+    app.state.ready = False
+    app.state.render_git_commit = commit
     app.state.dashboard_sync_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dashboard-sync")
     app.state.dashboard_sync_lock = Lock()
     app.state.dashboard_sync_future = None
@@ -159,8 +239,7 @@ def create_app() -> FastAPI:
     app.include_router(sales_router)
     app.include_router(marketing_router)
     app.include_router(website_ops_jobs_router)
-    install_embedded_website_ops_scheduler(app)
-    install_embedded_outbound_scheduler(app)
+    app.include_router(outbound_jobs_router)
     app.include_router(building_public_router)
     app.include_router(building_internal_router)
     app.include_router(building_crm_public_router)
@@ -187,8 +266,12 @@ def create_app() -> FastAPI:
     from sales_support_agent.services.access.middleware import install_access_middleware
     from sales_support_agent.services.auth_deps import ToolForbidden, render_forbidden_response
     from sales_support_agent.services.performance import install_performance_middleware
+    from sales_support_agent.services.website_ops_storage import (
+        WebsiteOpsStorageMiddleware,
+    )
 
     install_performance_middleware(app, session_factory.kw.get("bind"))
+    app.add_middleware(WebsiteOpsStorageMiddleware)
     install_access_middleware(app)
     app.add_exception_handler(ToolForbidden, render_forbidden_response)
     return app

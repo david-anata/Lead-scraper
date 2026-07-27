@@ -43,6 +43,7 @@ from sales_support_agent.services.hr.pages import (
     render_hr_onboarding,
     render_hr_employee_record_missing,
     render_hr_payroll_control,
+    render_hr_payroll_approval,
     render_hr_payroll_run,
     render_hr_pay_statements,
     render_hr_settings,
@@ -53,6 +54,7 @@ from sales_support_agent.services.hr.pages import (
     render_hr_reports,
     render_hr_policies,
     render_hr_teams,
+    render_hr_team_detail,
     render_hr_time,
 )
 
@@ -141,6 +143,14 @@ def _can_view_compensation(user: dict) -> bool:
     return bool(user.get("is_superadmin") or {
         "hr.payroll", "hr.compensation.view", "hr.compensation.manage",
     }.intersection(permissions))
+
+
+def _can_review_time(user: dict) -> bool:
+    permissions = user.get("permissions") or set()
+    return bool(
+        user.get("is_superadmin")
+        or {"hr.payroll", "hr.time.approve_team"}.intersection(permissions)
+    )
 
 
 def _hide_compensation(employee: dict) -> dict:
@@ -292,11 +302,17 @@ async def employee_update(
     if not employee:
         return RedirectResponse("/admin/hr/employees?err=not_found", status_code=303)
     employment = employee.get("employment") or {}
+    stored_pay_basis = employment.get("pay_basis") or (
+        "fixed_semimonthly" if employee.get("employee_type") == "salaried" else "hourly"
+    )
     prior_compensation = {
-        "employee_type": employee.get("employee_type", ""),
+        "employee_type": (
+            "salaried" if stored_pay_basis == "fixed_semimonthly"
+            else employee.get("employee_type", "hourly")
+        ),
         "hourly_rate_cents": int(employee.get("hourly_rate_cents") or 0),
         "annual_salary_cents": int(employee.get("annual_salary_cents") or 0),
-        "pay_basis": employment.get("pay_basis", ""),
+        "pay_basis": stored_pay_basis,
         "fixed_pay_per_period_cents": int(
             employment.get("fixed_pay_per_period_cents") or 0
         ),
@@ -484,15 +500,62 @@ async def team_create(
     description: str = Form(""),
     user: dict = Depends(_people_guard),
 ):
-    store.create_team(name=name, manager_email=manager_email, description=description)
+    store.create_team(
+        name=name, manager_email=manager_email, description=description,
+        actor=user.get("email", "system"),
+    )
     return RedirectResponse("/admin/hr/teams?ok=team_created", status_code=303)
+
+
+@router.get("/teams/{team_id}", response_class=HTMLResponse)
+async def team_detail(
+    team_id: int, request: Request, user: dict = Depends(_people_guard)
+):
+    team = store.get_team(team_id)
+    if not team:
+        return RedirectResponse("/admin/hr/teams?err=team_not_found", status_code=303)
+    return HTMLResponse(render_hr_team_detail(
+        team, store.list_employees(), user=user, flash=_flash(request)
+    ))
+
+
+@router.post("/teams/{team_id}")
+async def team_update(
+    team_id: int, name: str = Form(""), manager_email: str = Form(""),
+    description: str = Form(""), user: dict = Depends(_people_guard),
+):
+    ok, message = store.update_team(
+        team_id, name=name, manager_email=manager_email,
+        description=description, actor=user.get("email", "system"),
+    )
+    return RedirectResponse(
+        f"/admin/hr/teams/{team_id}?{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
+
+
+@router.post("/teams/{team_id}/members")
+async def team_member_update(
+    team_id: int, employee_id: int = Form(...), action: str = Form("assign"),
+    user: dict = Depends(_people_guard),
+):
+    target_team = None if action == "remove" else team_id
+    ok, message = store.set_employee_team(
+        employee_id, team_id=target_team, actor=user.get("email", "system"),
+        expected_current_team_id=team_id if action == "remove" else None,
+    )
+    return RedirectResponse(
+        f"/admin/hr/teams/{team_id}?{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
 
 
 # --- time and PTO ----------------------------------------------------------
 
 @router.get("/time", response_class=HTMLResponse)
 async def hr_time(
-    request: Request, period_date: date | None = None, user: dict = Depends(_guard)
+    request: Request, period_date: date | None = None, page: int = 1,
+    page_size: int = 10, user: dict = Depends(_guard)
 ):
     email = (user.get("email") or "").strip().lower()
     can_review = bool(
@@ -510,15 +573,27 @@ async def hr_time(
             if item.get("employee_email") in managed
         ]
 
+    scoped_entries = [
+        item for item in scoped(store.list_time_entries(None, limit=500))
+        if period.start_date <= item.get("date") <= period.end_date
+    ]
+    page_size = page_size if page_size in {10, 25} else 10
+    page_count = max(1, (len(scoped_entries) + page_size - 1) // page_size)
+    page = max(1, min(page, page_count))
+    entry_page = scoped_entries[(page - 1) * page_size:page * page_size]
     return HTMLResponse(render_hr_time(
-        scoped(store.list_time_entries(None)), store.pto_summary(email),
+        entry_page, store.pto_summary(email),
         scoped(store.list_pto_requests(None)), store.current_clock(email),
         scoped(store.list_time_corrections(None)),
-        scoped(store.time_review_flags(None)),
+        scoped(store.time_review_flags(
+            None, start_date=period.start_date, end_date=period.end_date
+        )),
         scoped(store.list_timesheet_approvals(
             period.start_date, period.end_date, None
         )),
-        period,
+        period, clock_summary=store.time_clock_summary(email),
+        entry_total=len(scoped_entries), entry_page=page,
+        entry_page_size=page_size, entry_page_count=page_count,
         user=user, flash=_flash(request)))
 
 
@@ -537,12 +612,44 @@ async def hr_time_correction(
     proposed_stop: str = Form(""), reason: str = Form(""),
     user: dict = Depends(_guard),
 ):
-    email = (user.get("email") or "").strip().lower()
+    actor = (user.get("email") or "").strip().lower()
+    entries = store.list_time_entries(None, limit=500)
+    entry = next(
+        (item for item in entries if int(item.get("id") or 0) == time_entry_id),
+        None,
+    )
+    if not entry:
+        return RedirectResponse(
+            "/admin/hr/time?err=correction_not_found", status_code=303
+        )
+    target_email = (entry.get("employee_email") or "").strip().lower()
+    if target_email != actor:
+        if not _can_review_time(user):
+            raise HTTPException(
+                status_code=403, detail="You cannot correct another employee's time."
+            )
+        _require_team_record(user, entries, time_entry_id)
     ok, message = store.request_time_correction(
-        time_entry_id, employee_email=email, proposed_start=proposed_start,
-        proposed_stop=proposed_stop, reason=reason, actor=email,
+        time_entry_id, employee_email=target_email, proposed_start=proposed_start,
+        proposed_stop=proposed_stop, reason=reason, actor=actor,
     )
     return RedirectResponse(f"/admin/hr/time?{'ok' if ok else 'err'}={message}", status_code=303)
+
+
+@router.post("/time/missed-punch")
+async def hr_time_missed_punch(
+    work_date: date = Form(...), proposed_start: str = Form(""),
+    proposed_stop: str = Form(""), reason: str = Form(""),
+    user: dict = Depends(_guard),
+):
+    email = (user.get("email") or "").strip().lower()
+    ok, message = store.request_missed_punch(
+        email, work_date=work_date, proposed_start=proposed_start,
+        proposed_stop=proposed_stop, reason=reason, actor=email,
+    )
+    return RedirectResponse(
+        f"/admin/hr/time?{'ok' if ok else 'err'}={message}", status_code=303
+    )
 
 
 @router.post("/time/corrections/{correction_id}/decision")
@@ -608,6 +715,17 @@ async def hr_pto_decision(request_id: int, decision: str = Form(""),
     ok = store.decide_pto(request_id, decision=decision, actor=actor)
     return RedirectResponse(f"/admin/hr/time?{'ok=updated' if ok else 'err=invalid_request'}",
                             status_code=303)
+
+
+@router.post("/time/pto/{request_id}/withdraw")
+async def hr_pto_withdraw(request_id: int, user: dict = Depends(_guard)):
+    email = (user.get("email") or "").strip().lower()
+    ok, message = store.withdraw_pto(
+        request_id, employee_email=email, actor=email
+    )
+    return RedirectResponse(
+        f"/admin/hr/time?{'ok' if ok else 'err'}={message}", status_code=303
+    )
 
 
 @router.post("/time/pto")
@@ -917,6 +1035,41 @@ async def hr_payroll_approve(
     )
 
 
+@router.post("/payroll/{run_id}/reject")
+async def hr_payroll_reject(
+    run_id: str, period_date: date = Form(...), reason: str = Form(""),
+    user: dict = Depends(_recent_pay_approve_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
+):
+    ok, message = payroll_store.reject_payroll(
+        run_id, actor=user.get("email", ""), reason=reason
+    )
+    return RedirectResponse(
+        f"/admin/hr/payroll?period_date={period_date}&"
+        f"{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
+
+
+@router.get("/payroll/runs/{run_id}/approve", response_class=HTMLResponse)
+async def hr_payroll_approval_review(
+    run_id: str, request: Request, user: dict = Depends(_pay_approve_guard),
+):
+    run = payroll_store.payroll_run_detail(
+        run_id, actor=user.get("email", "")
+    )
+    if not run:
+        return RedirectResponse("/admin/hr/payroll?err=run_not_found", status_code=303)
+    if run["status"] != "prepared":
+        return RedirectResponse(
+            f"/admin/hr/payroll/runs/{run_id}?err=payroll_not_prepared",
+            status_code=303,
+        )
+    return HTMLResponse(
+        render_hr_payroll_approval(run, user=user, flash=_flash(request))
+    )
+
+
 @router.post("/payroll/liabilities/{liability_id}")
 async def hr_payroll_liability_action(
     liability_id: int, period_date: date = Form(...), action: str = Form(""),
@@ -1002,6 +1155,25 @@ async def hr_payroll_issue_check(
     ok, message = payroll_store.issue_printed_check(
         run_id, employee_email=employee_email, check_number=check_number,
         actor=user.get("email", ""),
+    )
+    return RedirectResponse(
+        f"/admin/hr/payroll/runs/{run_id}?{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
+
+
+@router.post("/payroll/runs/{run_id}/checks/confirm")
+async def hr_payroll_confirm_check(
+    run_id: str, employee_email: str = Form(""),
+    confirmation_reference: str = Form(""),
+    evidence_note: str = Form(""),
+    user: dict = Depends(_pay_submit_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
+):
+    ok, message = payroll_store.confirm_printed_check(
+        run_id, employee_email=employee_email,
+        confirmation_reference=confirmation_reference,
+        evidence_note=evidence_note, actor=user.get("email", ""),
     )
     return RedirectResponse(
         f"/admin/hr/payroll/runs/{run_id}?{'ok' if ok else 'err'}={message}",
@@ -1206,6 +1378,7 @@ async def hr_company_profile_save(
     address_line2: str = Form(""), city: str = Form(""),
     state: str = Form("UT"), zip_code: str = Form(""),
     payroll_contact_email: str = Form(""),
+    final_approver_email: str = Form(""),
     utah_withholding_account_last4: str = Form(""),
     utah_ui_account_last4: str = Form(""),
     federal_deposit_schedule: str = Form(""),
@@ -1218,6 +1391,7 @@ async def hr_company_profile_save(
         address_line1=address_line1, address_line2=address_line2,
         city=city, state=state, zip_code=zip_code,
         payroll_contact_email=payroll_contact_email,
+        final_approver_email=final_approver_email,
         utah_withholding_account_last4=utah_withholding_account_last4,
         utah_ui_account_last4=utah_ui_account_last4,
         federal_deposit_schedule=federal_deposit_schedule,

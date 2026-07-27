@@ -122,6 +122,7 @@ class HRCompanyProfile(Base):
     state: Mapped[str] = mapped_column(String(2), default="UT")
     zip_code: Mapped[str] = mapped_column(String(16), default="")
     payroll_contact_email: Mapped[str] = mapped_column(String(255), default="")
+    final_approver_email: Mapped[str] = mapped_column(String(255), default="")
     utah_withholding_account_last4: Mapped[str] = mapped_column(String(4), default="")
     utah_ui_account_last4: Mapped[str] = mapped_column(String(4), default="")
     federal_deposit_schedule: Mapped[str] = mapped_column(String(16), default="unknown")
@@ -265,6 +266,11 @@ class HRPrintedCheck(Base):
     hourly_rate_cents: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|ready|voided
     notes: Mapped[str] = mapped_column(Text, default="")
+    cleared_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    confirmation_reference: Mapped[str] = mapped_column(String(128), default="")
+    reconciliation_evidence_note: Mapped[str] = mapped_column(Text, default="")
 
 
 class HREmployeeHandbook(Base):

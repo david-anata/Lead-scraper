@@ -439,6 +439,193 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("ending in <strong>6789</strong>", page.text)
         self.assertNotIn("123-45-6789", page.text)
         self.assertNotIn("123456789", page.text)
+        self.assertIn("✓ W-4 saved", page.text)
+        self.assertIn("Review or replace my W-4", page.text)
+        self.assertIn("Other income ($)", page.text)
+        self.assertIn("Exempt is uncommon", page.text)
+
+    def test_team_only_edit_does_not_require_pay_change_reason_and_roster_updates(self):
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        team_id = hr_store.create_team(name=f"Building {suffix}", manager_email="val@anatainc.com")
+        employee_id = hr_store.create_employee(
+            email=f"val-{suffix}@anatainc.com", full_name="Val Test",
+            hourly_rate="20", employee_type="hourly",
+        )
+        saved = self._post(
+            f"/admin/hr/employees/{employee_id}",
+            {
+                "full_name": "Val Test", "hr_role": "employee",
+                "employee_type": "hourly", "team_id": str(team_id),
+                "hourly_rate": "20", "annual_salary": "0",
+                "pay_basis": "hourly", "fixed_pay_per_period": "0",
+                "standard_weekly_hours": "40", "status": "active",
+            },
+            self.sa,
+        )
+        self.assertEqual(saved.status_code, 303)
+        team_page = self._get("/admin/hr/teams", self.sa)
+        self.assertIn("Val Test", team_page.text)
+        self.assertIn(f"/admin/hr/employees/{employee_id}", team_page.text)
+        detail = self._get(f"/admin/hr/teams/{team_id}", self.sa)
+        self.assertEqual(detail.status_code, 200)
+        self.assertIn("Team leadership and direct reporting are separate", detail.text)
+        self.assertIn("Val Test", detail.text)
+
+    def test_team_detail_can_update_leader_and_manage_membership(self):
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        team_id = hr_store.create_team(name=f"Ops {suffix}", actor="test")
+        employee_id = hr_store.create_employee(
+            email=f"team-member-{suffix}@anatainc.com", full_name="Team Member"
+        )
+        assigned = self._post(
+            f"/admin/hr/teams/{team_id}/members",
+            {"employee_id": str(employee_id), "action": "assign"}, self.sa,
+        )
+        self.assertIn("ok=team_membership_saved", assigned.headers["location"])
+        updated = self._post(
+            f"/admin/hr/teams/{team_id}",
+            {
+                "name": f"Operations {suffix}",
+                "manager_email": "val@anatainc.com",
+                "description": "Runs day-to-day operations",
+            },
+            self.sa,
+        )
+        self.assertIn("ok=team_updated", updated.headers["location"])
+        team = hr_store.get_team(team_id)
+        self.assertEqual(team["manager_email"], "val@anatainc.com")
+        self.assertEqual(team["members"][0]["id"], employee_id)
+
+        removed = self._post(
+            f"/admin/hr/teams/{team_id}/members",
+            {"employee_id": str(employee_id), "action": "remove"}, self.sa,
+        )
+        self.assertIn("ok=team_membership_saved", removed.headers["location"])
+        self.assertEqual(hr_store.get_team(team_id)["members"], [])
+
+    def test_time_page_explains_period_and_paginates_visible_punches(self):
+        page = self._get("/admin/hr/time?page_size=10", self.sa)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("View pay period", page.text)
+        self.assertIn("does not open or alter payroll", page.text)
+        self.assertIn("Page 1 of", page.text)
+        self.assertIn("Employees see only their own punches", page.text)
+        self.assertIn("Hours this Sunday–Saturday workweek", page.text)
+        self.assertIn("Request missed-day review", page.text)
+
+    def test_missed_day_creates_time_only_after_independent_approval(self):
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        employee_email = f"missed-{suffix}@anatainc.com"
+        reviewer_email = f"reviewer-{suffix}@anatainc.com"
+        hr_store.create_employee(email=employee_email, full_name="Missed Punch")
+        employee_user = access_store.upsert_user(employee_email, "Missed Punch")
+        access_store.set_user_permissions(employee_user, ["hr.access"])
+        reviewer_user = access_store.upsert_user(reviewer_email, "Reviewer")
+        access_store.set_user_permissions(
+            reviewer_user, ["hr.access", "hr.payroll"]
+        )
+        work_date = date(2026, 7, 24)
+        requested = self._post(
+            "/admin/hr/time/missed-punch",
+            {
+                "work_date": str(work_date), "proposed_start": "08:00",
+                "proposed_stop": "16:30", "reason": "Forgot both punches",
+            },
+            _cookie(employee_email),
+        )
+        self.assertIn("ok=correction_requested", requested.headers["location"])
+        self.assertEqual(hr_store.list_time_entries(employee_email), [])
+        correction = hr_store.list_time_corrections(employee_email)[0]
+        self.assertEqual(correction["original"]["missing"], True)
+
+        own = hr_store.decide_time_correction(
+            correction["id"], decision="approved",
+            reviewer_reason="Reviewed schedule", actor=employee_email,
+        )
+        self.assertEqual(own, (False, "self_approval_blocked"))
+        approved = self._post(
+            f"/admin/hr/time/corrections/{correction['id']}/decision",
+            {"decision": "approved", "reviewer_reason": "Confirmed with employee"},
+            _cookie(reviewer_email),
+        )
+        self.assertIn("correction_approved", approved.headers["location"])
+        entries = hr_store.list_time_entries(employee_email)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["date"], work_date)
+        self.assertEqual(entries[0]["hours"], 8.5)
+
+    def test_pto_rejects_weekends_holidays_and_overlaps(self):
+        import uuid
+        email = f"pto-guard-{uuid.uuid4().hex[:8]}@anatainc.com"
+        hr_store.create_employee(email=email, full_name="PTO Guard")
+        hr_store.upsert_employment_profile(
+            email, hire_date=date(2025, 1, 1), pay_basis="fixed_semimonthly",
+            fixed_pay_per_period="1000", actor="test"
+        )
+        weekend = hr_store.create_pto_request(
+            email, start_date=date(2026, 8, 8), end_date=date(2026, 8, 8),
+            hours=8, reason="", actor=email,
+        )
+        holiday = hr_store.create_pto_request(
+            email, start_date=date(2026, 9, 7), end_date=date(2026, 9, 7),
+            hours=8, reason="", actor=email,
+        )
+        self.assertEqual(weekend, (False, "pto_non_workday"))
+        self.assertEqual(holiday, (False, "pto_paid_holiday"))
+
+        spanning_weekend = hr_store.create_pto_request(
+            email, start_date=date(2026, 8, 7), end_date=date(2026, 8, 10),
+            hours=16, reason="Long weekend", actor=email,
+        )
+        self.assertEqual(spanning_weekend, (True, "pto_requested"))
+        request = hr_store.list_pto_requests(email)[0]
+        self.assertEqual(request["working_day_count"], 2)
+        self.assertEqual(request["excluded_day_count"], 2)
+
+        too_many_hours = hr_store.create_pto_request(
+            email, start_date=date(2026, 8, 11), end_date=date(2026, 8, 11),
+            hours=12, reason="", actor=email,
+        )
+        self.assertEqual(too_many_hours, (False, "pto_hours_exceed_workdays"))
+
+    def test_employee_can_withdraw_only_their_own_pending_pto(self):
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        employee_email = f"pto-owner-{suffix}@anatainc.com"
+        outsider_email = f"pto-outsider-{suffix}@anatainc.com"
+        for email in (employee_email, outsider_email):
+            hr_store.create_employee(email=email, full_name=email.split("@")[0])
+            hr_store.upsert_employment_profile(
+                email, hire_date=date(2025, 1, 1),
+                pay_basis="fixed_semimonthly", fixed_pay_per_period="1000",
+                actor="test",
+            )
+            user_id = access_store.upsert_user(email, email.split("@")[0])
+            access_store.set_user_permissions(user_id, ["hr.access"])
+        created = hr_store.create_pto_request(
+            employee_email, start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3), hours=8, reason="Personal",
+            actor=employee_email,
+        )
+        self.assertEqual(created, (True, "pto_requested"))
+        request_id = hr_store.list_pto_requests(employee_email)[0]["id"]
+
+        outsider = self._post(
+            f"/admin/hr/time/pto/{request_id}/withdraw", {},
+            _cookie(outsider_email),
+        )
+        self.assertIn("err=pto_withdraw_not_allowed", outsider.headers["location"])
+        owner = self._post(
+            f"/admin/hr/time/pto/{request_id}/withdraw", {},
+            _cookie(employee_email),
+        )
+        self.assertIn("ok=pto_withdrawn", owner.headers["location"])
+        self.assertEqual(
+            hr_store.list_pto_requests(employee_email)[0]["status"], "withdrawn"
+        )
 
     def test_onboarding_correction_preserves_submission_and_shows_employee_reason(self):
         self._post("/admin/hr/onboarding/profile", {
@@ -479,6 +666,65 @@ class HRSectionTests(unittest.TestCase):
             "decision": "approved", "reviewer_reason": "Reviewed against schedule",
         }, _cookie("val@anatainc.com"))
         self.assertIn("correction_approved", approved.headers["location"])
+
+    def test_authorized_manager_can_propose_only_assigned_time_correction(self):
+        import uuid
+        from datetime import datetime, timezone
+        from sqlalchemy.orm import Session
+        from sales_support_agent.models.database import get_engine
+        from sales_support_agent.models.hr import HRTimeEntry
+
+        suffix = uuid.uuid4().hex[:8]
+        manager = f"manager-correction-{suffix}@anatainc.com"
+        employee = f"assigned-correction-{suffix}@anatainc.com"
+        outsider = f"outside-correction-{suffix}@anatainc.com"
+        for email in (employee, outsider):
+            hr_store.create_employee(email=email, full_name=email.split("@")[0])
+        hr_store.upsert_employment_profile(
+            employee, hire_date=date(2026, 1, 1), manager_email=manager,
+            actor="test",
+        )
+        manager_id = access_store.upsert_user(manager, "Time Manager")
+        access_store.set_user_permissions(
+            manager_id, ["hr.access", "hr.time.approve_team"]
+        )
+        with Session(get_engine()) as session:
+            assigned_entry = HRTimeEntry(
+                employee_email=employee, date=date(2026, 7, 23),
+                start_time="08:00", stop_time="16:00", hours=8,
+                elapsed_seconds=28800, clocked_in_at=datetime.now(timezone.utc),
+            )
+            outside_entry = HRTimeEntry(
+                employee_email=outsider, date=date(2026, 7, 23),
+                start_time="08:00", stop_time="16:00", hours=8,
+                elapsed_seconds=28800, clocked_in_at=datetime.now(timezone.utc),
+            )
+            session.add_all([assigned_entry, outside_entry])
+            session.commit()
+            assigned_id, outside_id = assigned_entry.id, outside_entry.id
+
+        proposed = self._post(
+            f"/admin/hr/time/{assigned_id}/correction",
+            {
+                "proposed_start": "08:15", "proposed_stop": "16:00",
+                "reason": "Manager reviewed the employee note",
+            },
+            _cookie(manager),
+        )
+        self.assertIn("correction_requested", proposed.headers["location"])
+        correction = hr_store.list_time_corrections(employee)[0]
+        self.assertEqual(correction["requested_by"], manager)
+        self.assertEqual(correction["employee_email"], employee)
+
+        blocked = self._post(
+            f"/admin/hr/time/{outside_id}/correction",
+            {
+                "proposed_start": "08:15", "proposed_stop": "16:00",
+                "reason": "Not assigned",
+            },
+            _cookie(manager),
+        )
+        self.assertEqual(blocked.status_code, 403)
 
     def test_reports_include_accountant_registers(self):
         page = self._get("/admin/hr/reports", self.sa)

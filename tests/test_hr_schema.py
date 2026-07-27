@@ -78,6 +78,21 @@ class HRSchemaTests(unittest.TestCase):
         self.assertTrue({
             "final_pay_reference", "final_pay_evidence_note"
         }.issubset(offboarding_columns))
+        company_columns = {
+            row["name"] for row in inspect(db.get_engine()).get_columns(
+                "hr_company_profiles"
+            )
+        }
+        self.assertIn("final_approver_email", company_columns)
+        check_columns = {
+            row["name"] for row in inspect(db.get_engine()).get_columns(
+                "hr_printed_checks"
+            )
+        }
+        self.assertTrue({
+            "cleared_at", "confirmation_reference",
+            "reconciliation_evidence_note",
+        }.issubset(check_columns))
 
     def test_employee_money_in_cents_and_base44_id(self) -> None:
         Sess = db.create_session_factory(os.environ["SALES_AGENT_DB_URL"])

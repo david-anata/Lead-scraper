@@ -3,10 +3,11 @@ services:
     name: sales-support-agent
     runtime: python
     plan: starter
-    autoDeploy: true
+    autoDeployTrigger: checksPass
     buildCommand: pip install -r requirements.txt
+    preDeployCommand: python scripts/predeploy_agent.py
     startCommand: uvicorn sales_support_agent.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
+    healthCheckPath: /health/ready
     disk:
       name: website-ops-data
       mountPath: /var/data
@@ -14,6 +15,14 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.11"
+      - key: AGENT_PREPARE_DATABASE_ON_STARTUP
+        value: "false"
+      - key: WEBSITE_OPS_DATABASE_MIRROR
+        value: "true"
+      - key: WEBSITE_OPS_EMBEDDED_SCHEDULER
+        value: "false"
+      - key: OUTBOUND_EMBEDDED_SCHEDULER
+        value: "false"
       - key: CLICKUP_API_TOKEN
         sync: false
       - key: CLICKUP_API_KEY
@@ -210,5 +219,22 @@ services:
     envVars:
       - key: SALES_SUPPORT_AGENT_URL
         sync: false
+      - key: SALES_AGENT_INTERNAL_API_KEY
+        sync: false
+
+  - type: cron
+    name: agent-outbound-morning
+    runtime: python
+    # Render cron is UTC. Both possible Denver offsets are scheduled; the
+    # endpoint accepts only the local 7 AM invocation.
+    schedule: "0 13,14 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: |
+      curl --fail --silent --show-error --max-time 3500 \
+        -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/outbound-morning/run" \
+        -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY"
+    envVars:
+      - key: SALES_SUPPORT_AGENT_URL
+        value: https://agent.anatainc.com
       - key: SALES_AGENT_INTERNAL_API_KEY
         sync: false

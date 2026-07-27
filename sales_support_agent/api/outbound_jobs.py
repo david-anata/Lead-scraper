@@ -19,13 +19,20 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from datetime import datetime
 from threading import Event, Thread
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI, HTTPException, Request
+
+from sales_support_agent.services.job_lease import (
+    claim_scheduled_job,
+    finish_scheduled_job,
+)
 
 logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/jobs/outbound-morning", tags=["outbound-jobs"])
 
 _TZ = "America/Denver"
 _MARKER = "__morning_run__"             # recipe name used purely as a daily marker
@@ -165,7 +172,7 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
 
 def install_embedded_outbound_scheduler(app: FastAPI) -> None:
     """Run the morning routine in-process, once a day, after 7am Denver."""
-    enabled = os.getenv("OUTBOUND_EMBEDDED_SCHEDULER", "true").strip().lower() in {
+    enabled = os.getenv("OUTBOUND_EMBEDDED_SCHEDULER", "false").strip().lower() in {
         "1", "true", "yes", "on",
     }
     if not enabled:
@@ -199,3 +206,69 @@ def install_embedded_outbound_scheduler(app: FastAPI) -> None:
     app.state.outbound_scheduler_stop = stop_event
     app.state.outbound_scheduler_thread = thread
     thread.start()
+
+
+@router.post("/run")
+def run_scheduled_outbound(request: Request) -> dict:
+    """Render Cron entrypoint for the once-daily outbound morning routine."""
+
+    expected = str(
+        getattr(request.app.state.settings, "internal_api_key", "") or ""
+    ).strip()
+    supplied = request.headers.get("X-Internal-Api-Key", "").strip()
+    if not expected or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Invalid internal API key.")
+
+    now = datetime.now(ZoneInfo(_TZ))
+    if now.hour != _RUN_HOUR:
+        return {
+            "status": "skipped",
+            "message": "Outbound morning routine is waiting for 7:00 AM Denver.",
+            "local_time": now.isoformat(),
+        }
+
+    from sales_support_agent.models.database import get_engine
+
+    engine = get_engine()
+    run_key = _today(now)
+    lease = claim_scheduled_job(
+        engine,
+        job_key="outbound_morning",
+        run_key=run_key,
+        lease_minutes=240,
+    )
+    if lease is None:
+        return {
+            "status": "skipped",
+            "message": "Today's outbound routine is already running or complete.",
+            "run_key": run_key,
+        }
+
+    try:
+        if _already_ran_today(engine, now):
+            result = {
+                "ran": False,
+                "reason": "legacy daily marker already exists",
+            }
+        else:
+            _mark_ran(engine, now)
+            result = run_morning_routine(now=now)
+        finish_scheduled_job(
+            engine,
+            lease,
+            status="succeeded",
+            details=result,
+        )
+        return {"status": "ok", "details": result, "run_key": run_key}
+    except Exception as exc:
+        finish_scheduled_job(
+            engine,
+            lease,
+            status="failed",
+            details={"error": str(exc)},
+        )
+        logger.exception("[outbound-jobs] scheduled run failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Outbound morning routine failed.",
+        ) from exc

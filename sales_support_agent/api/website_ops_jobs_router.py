@@ -26,6 +26,10 @@ from sales_support_agent.services.website_ops_query_intelligence import (
     citation_config,
     load_query_intelligence,
 )
+from sales_support_agent.services.job_lease import (
+    claim_scheduled_job,
+    finish_scheduled_job,
+)
 
 
 router = APIRouter(prefix="/api/jobs/website-ops", tags=["website-ops-jobs"])
@@ -101,7 +105,7 @@ def install_embedded_website_ops_scheduler(app: FastAPI) -> None:
     """Run the 8 AM sweep in-process, with restart catch-up and due-state locking."""
 
     settings = app.state.settings
-    enabled = os.getenv("WEBSITE_OPS_EMBEDDED_SCHEDULER", "true").strip().lower() in {
+    enabled = os.getenv("WEBSITE_OPS_EMBEDDED_SCHEDULER", "false").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -239,7 +243,54 @@ async def run_scheduled_website_ops(request: Request) -> dict:
             "local_time": local_now.isoformat(),
         }
 
-    modes = [requested_mode] if requested_mode != "scheduled" else _scheduled_modes(local_now)
-    results = _run_due_modes(request.app.state.settings, modes, trigger="render_cron")
+    from sales_support_agent.models.database import get_engine
 
-    return {"status": "ok", "details": results}
+    engine = get_engine()
+    run_key = f"{local_now.date().isoformat()}:{requested_mode}"
+    lease = claim_scheduled_job(
+        engine,
+        job_key="website_ops",
+        run_key=run_key,
+        lease_minutes=180,
+    )
+    if lease is None:
+        return {
+            "status": "skipped",
+            "message": "This Website Ops period is already running or complete.",
+            "run_key": run_key,
+        }
+
+    try:
+        modes = (
+            [requested_mode]
+            if requested_mode != "scheduled"
+            else _scheduled_modes(local_now)
+        )
+        results = _run_due_modes(
+            request.app.state.settings,
+            modes,
+            trigger="render_cron",
+        )
+        failed = any(item.get("status") == "failed" for item in results.values())
+        finish_scheduled_job(
+            engine,
+            lease,
+            status="failed" if failed else "succeeded",
+            details=results,
+        )
+        if failed:
+            raise HTTPException(
+                status_code=503,
+                detail="One or more Website Ops modes failed.",
+            )
+        return {"status": "ok", "details": results, "run_key": run_key}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        finish_scheduled_job(
+            engine,
+            lease,
+            status="failed",
+            details={"error": str(exc)},
+        )
+        raise

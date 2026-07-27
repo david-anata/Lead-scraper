@@ -158,7 +158,11 @@ async def plaid_webhook(request: Request, background_tasks: BackgroundTasks):
     error_code = str(error.get("error_code") or "") if isinstance(error, dict) else ""
     if webhook_type == "ITEM" and webhook_code in {"PENDING_DISCONNECT", "PENDING_EXPIRATION"}:
         error_code = webhook_code
-    local_item_id = record_webhook(external_item_id, error_code=error_code) if external_item_id else None
+    local_item_id = record_webhook(
+        external_item_id,
+        error_code=error_code,
+        environment=expected_environment,
+    ) if external_item_id else None
     should_sync = webhook_type == "TRANSACTIONS" or (
         webhook_type == "ITEM" and webhook_code in {"LOGIN_REPAIRED", "NEW_ACCOUNTS_AVAILABLE"}
     )
@@ -412,11 +416,16 @@ async def finance_overview(request: Request, flash: str = ""):
                 stale_connected_item_ids,
                 sync_connected_items,
             )
-            item_ids = await asyncio.to_thread(stale_connected_item_ids, max_age_hours=6)
+            finance_settings = _finance_settings(request)
+            item_ids = await asyncio.to_thread(
+                stale_connected_item_ids,
+                settings=finance_settings,
+                max_age_hours=6,
+            )
             if item_ids:
                 await asyncio.to_thread(
                     sync_connected_items,
-                    settings=_finance_settings(request), item_ids=item_ids,
+                    settings=finance_settings, item_ids=item_ids,
                 )
         except Exception as exc:
             _forecast_logger.warning("[overview] background Plaid refresh failed: %s", exc)
@@ -472,6 +481,7 @@ async def plaid_exchange(request: Request):
             token_secret=settings.plaid_token_secret, actor=actor,
             institution_id=str(body.get("institution_id") or ""),
             display_name=str(body.get("institution_name") or ""),
+            environment=str(settings.plaid_environment or "sandbox"),
         )
         result = await asyncio.to_thread(sync_item, local_item_id, settings=settings, client=client)
     except PlaidError as exc:

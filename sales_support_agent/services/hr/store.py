@@ -888,10 +888,32 @@ def _team_dict(t: HRTeam) -> dict:
 def list_teams() -> list:
     with _session() as s:
         rows = s.query(HRTeam).order_by(HRTeam.name.asc()).all()
-        return [_team_dict(t) for t in rows]
+        teams = []
+        for team in rows:
+            item = _team_dict(team)
+            members = (
+                s.query(HREmployee)
+                .filter(HREmployee.team_id == str(team.id), HREmployee.status == "active")
+                .order_by(HREmployee.full_name, HREmployee.email)
+                .all()
+            )
+            item["members"] = [
+                {
+                    "id": member.id, "full_name": member.full_name or member.email,
+                    "email": member.email,
+                    "title": (
+                        s.query(HREmploymentProfile.title)
+                        .filter_by(employee_email=member.email).scalar() or ""
+                    ),
+                }
+                for member in members
+            ]
+            teams.append(item)
+        return teams
 
 
-def create_team(*, name: str, manager_email: str = "", description: str = "") -> Optional[int]:
+def create_team(*, name: str, manager_email: str = "", description: str = "",
+                actor: str = "system") -> Optional[int]:
     name = (name or "").strip()
     if not name:
         return None
@@ -900,7 +922,70 @@ def create_team(*, name: str, manager_email: str = "", description: str = "") ->
                    description=(description or "").strip())
         s.add(t)
         s.flush()
+        _audit(s, actor, "team.created", "team", t.id, {
+            "name": t.name, "manager_email": t.manager_email,
+        })
         return t.id
+
+
+def get_team(team_id: int) -> Optional[dict]:
+    return next(
+        (team for team in list_teams() if int(team["id"]) == int(team_id)),
+        None,
+    )
+
+
+def update_team(
+    team_id: int, *, name: str, manager_email: str, description: str,
+    actor: str,
+) -> tuple[bool, str]:
+    """Update team-owned facts without silently changing reporting managers."""
+    if not name.strip():
+        return False, "team_invalid"
+    with _session() as session:
+        team = session.get(HRTeam, team_id)
+        if not team:
+            return False, "team_not_found"
+        prior = {
+            "name": team.name, "manager_email": team.manager_email,
+            "description": team.description,
+        }
+        team.name = name.strip()
+        team.manager_email = (manager_email or "").strip().lower()
+        team.description = (description or "").strip()
+        _audit(session, actor, "team.updated", "team", team.id, {
+            "prior": prior, "new": {
+                "name": team.name, "manager_email": team.manager_email,
+                "description": team.description,
+            },
+        })
+        return True, "team_updated"
+
+
+def set_employee_team(
+    employee_id: int, *, team_id: Optional[int], actor: str,
+    expected_current_team_id: Optional[int] = None,
+) -> tuple[bool, str]:
+    """Assign or remove one employee's team with an attributable audit event."""
+    with _session() as session:
+        employee = session.get(HREmployee, employee_id)
+        if not employee:
+            return False, "employee_not_found"
+        if (
+            expected_current_team_id is not None
+            and employee.team_id != str(expected_current_team_id)
+        ):
+            return False, "team_membership_changed"
+        if team_id is not None and not session.get(HRTeam, team_id):
+            return False, "team_not_found"
+        prior_team_id = employee.team_id
+        employee.team_id = str(team_id) if team_id is not None else None
+        employee.updated_at = datetime.now(timezone.utc)
+        _audit(session, actor, "employee.team_changed", "employee", employee.id, {
+            "employee_email": employee.email, "prior_team_id": prior_team_id,
+            "new_team_id": employee.team_id,
+        })
+        return True, "team_membership_saved"
 
 
 # --- dashboard -------------------------------------------------------------
@@ -1068,9 +1153,63 @@ def current_clock(employee_email: str) -> Optional[dict]:
         return ({"id": row.id, "clocked_in_at": row.clocked_in_at} if row else None)
 
 
-def time_review_flags(employee_email: Optional[str] = None) -> list[dict]:
+def time_clock_summary(employee_email: str) -> dict:
+    """Return employee-owned clock context for the current Utah workweek."""
+    email = (employee_email or "").strip().lower()
+    now = datetime.now(timezone.utc)
+    local_now = now.astimezone(ANATA_TIMEZONE)
+    today = local_now.date()
+    week_start = today - timedelta(days=(today.weekday() + 1) % 7)
+    week_end = week_start + timedelta(days=6)
+    with _session() as session:
+        entries = session.query(HRTimeEntry).filter(
+            HRTimeEntry.employee_email == email,
+            HRTimeEntry.date >= week_start,
+            HRTimeEntry.date <= week_end,
+        ).order_by(HRTimeEntry.date.desc(), HRTimeEntry.id.desc()).all()
+        weekly_hours = sum(
+            (
+                float(row.elapsed_seconds) / 3600
+                if row.elapsed_seconds else float(row.hours or 0)
+            )
+            for row in entries if row.stop_time
+        )
+        open_entry = next((row for row in entries if not row.stop_time), None)
+        elapsed_hours = 0.0
+        if open_entry and open_entry.clocked_in_at:
+            started = open_entry.clocked_in_at
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            elapsed_hours = max(0.0, (now - started).total_seconds() / 3600)
+        last_closed = next((row for row in entries if row.stop_time), None)
+        return {
+            "local_now": local_now.strftime("%A, %B %-d at %-I:%M %p")
+            if os.name != "nt" else local_now.strftime("%A, %B %d at %I:%M %p").replace(" 0", " "),
+            "week_start": week_start, "week_end": week_end,
+            "weekly_hours": round(weekly_hours + elapsed_hours, 2),
+            "closed_weekly_hours": round(weekly_hours, 2),
+            "open_elapsed_hours": round(elapsed_hours, 2),
+            "last_shift": ({
+                "date": last_closed.date, "start_time": last_closed.start_time,
+                "stop_time": last_closed.stop_time,
+                "hours": round(
+                    float(last_closed.elapsed_seconds) / 3600
+                    if last_closed.elapsed_seconds else float(last_closed.hours or 0), 2
+                ),
+            } if last_closed else None),
+        }
+
+
+def time_review_flags(
+    employee_email: Optional[str] = None, *, start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> list[dict]:
     """Flag long shifts and 36/40-hour Sunday-Saturday thresholds."""
     entries = list_time_entries(employee_email, limit=500)
+    if start_date:
+        entries = [entry for entry in entries if entry["date"] >= start_date]
+    if end_date:
+        entries = [entry for entry in entries if entry["date"] <= end_date]
     flags: list[dict] = []
     week_totals: dict[tuple[str, date], float] = {}
     for entry in entries:
@@ -1314,6 +1453,53 @@ def request_time_correction(time_entry_id: int, *, employee_email: str,
         return True, "correction_requested"
 
 
+def request_missed_punch(
+    employee_email: str, *, work_date: date, proposed_start: str,
+    proposed_stop: str, reason: str, actor: str,
+) -> tuple[bool, str]:
+    """Request a reviewed time entry when no punch exists for the work date."""
+    email = (employee_email or "").strip().lower()
+    if actor.strip().lower() != email or not reason.strip() or work_date > date.today():
+        return False, "correction_invalid"
+    try:
+        start_value = time.fromisoformat(proposed_start)
+        stop_value = time.fromisoformat(proposed_stop)
+    except ValueError:
+        return False, "correction_invalid"
+    start_at = datetime.combine(work_date, start_value)
+    stop_at = datetime.combine(work_date, stop_value)
+    if stop_at <= start_at or (stop_at - start_at).total_seconds() > 16 * 3600:
+        return False, "correction_invalid"
+    with _session() as session:
+        if session.query(HRTimeEntry).filter_by(
+            employee_email=email, date=work_date
+        ).first():
+            return False, "missed_punch_entry_exists"
+        pending = session.query(HRTimeCorrection).filter(
+            HRTimeCorrection.employee_email == email,
+            HRTimeCorrection.time_entry_id == 0,
+            HRTimeCorrection.status == "requested",
+        ).all()
+        if any((row.proposed_json or {}).get("date") == work_date.isoformat() for row in pending):
+            return False, "correction_pending"
+        proposed_hours = (stop_at - start_at).total_seconds() / 3600
+        row = HRTimeCorrection(
+            time_entry_id=0, employee_email=email,
+            original_json={"date": work_date.isoformat(), "missing": True},
+            proposed_json={
+                "date": work_date.isoformat(), "start_time": proposed_start,
+                "stop_time": proposed_stop, "hours": round(proposed_hours, 4),
+            },
+            reason=reason.strip(), requested_by=email,
+        )
+        session.add(row)
+        session.flush()
+        _audit(session, actor, "time.missed_punch_requested", "time_correction", row.id, {
+            "work_date": work_date.isoformat(),
+        })
+        return True, "correction_requested"
+
+
 def list_time_corrections(employee_email: Optional[str] = None) -> list:
     with _session() as s:
         query = s.query(HRTimeCorrection)
@@ -1331,7 +1517,7 @@ def list_time_corrections(employee_email: Optional[str] = None) -> list:
 
 def decide_time_correction(correction_id: int, *, decision: str,
                            reviewer_reason: str, actor: str) -> tuple[bool, str]:
-    if decision not in {"approved", "denied"}:
+    if decision not in {"approved", "denied"} or not reviewer_reason.strip():
         return False, "correction_invalid"
     with _session() as s:
         row = s.get(HRTimeCorrection, correction_id)
@@ -1339,21 +1525,42 @@ def decide_time_correction(correction_id: int, *, decision: str,
             return False, "correction_not_found"
         if row.requested_by.strip().lower() == actor.strip().lower():
             return False, "self_approval_blocked"
-        entry = s.get(HRTimeEntry, row.time_entry_id)
-        if not entry:
-            return False, "correction_not_found"
+        entry = s.get(HRTimeEntry, row.time_entry_id) if row.time_entry_id else None
         if decision == "approved":
             proposed = row.proposed_json or {}
-            entry.start_time = proposed.get("start_time", entry.start_time)
-            entry.stop_time = proposed.get("stop_time", entry.stop_time)
-            entry.hours = Decimal(str(proposed.get("hours", float(entry.hours or 0))))
-            entry.elapsed_seconds = int(round(float(proposed.get("hours", 0)) * 3600))
-            entry.notes = (
-                f"{entry.notes}\nCorrection approved by {actor}: {reviewer_reason}".strip()
-            )
+            if row.time_entry_id == 0:
+                try:
+                    work_date = date.fromisoformat(proposed.get("date", ""))
+                except ValueError:
+                    return False, "correction_not_found"
+                if s.query(HRTimeEntry).filter_by(
+                    employee_email=row.employee_email, date=work_date
+                ).first():
+                    return False, "missed_punch_entry_exists"
+                entry = HRTimeEntry(
+                    employee_email=row.employee_email, date=work_date,
+                    start_time=proposed.get("start_time", ""),
+                    stop_time=proposed.get("stop_time", ""),
+                    hours=Decimal(str(proposed.get("hours", 0))),
+                    elapsed_seconds=int(round(float(proposed.get("hours", 0)) * 3600)),
+                    notes=f"Missed punch approved by {actor}: {reviewer_reason}".strip(),
+                )
+                s.add(entry)
+                s.flush()
+                row.time_entry_id = entry.id
+            elif entry:
+                entry.start_time = proposed.get("start_time", entry.start_time)
+                entry.stop_time = proposed.get("stop_time", entry.stop_time)
+                entry.hours = Decimal(str(proposed.get("hours", float(entry.hours or 0))))
+                entry.elapsed_seconds = int(round(float(proposed.get("hours", 0)) * 3600))
+                entry.notes = (
+                    f"{entry.notes}\nCorrection approved by {actor}: {reviewer_reason}".strip()
+                )
+            else:
+                return False, "correction_not_found"
             row.final_json = dict(proposed)
             _supersede_open_payrolls(
-                s, actor=actor, effective_start=entry.date or date.today(),
+                s, actor=actor, effective_start=entry.date,
                 reason="approved time correction",
             )
         row.status = decision
@@ -1453,6 +1660,25 @@ def create_pto_request(employee_email: str, *, start_date: date, end_date: date,
                        hours: float, reason: str, actor: str) -> tuple[bool, str]:
     if end_date < start_date or hours <= 0:
         return False, "invalid_request"
+    requested_dates = [
+        start_date + timedelta(days=offset)
+        for offset in range((end_date - start_date).days + 1)
+    ]
+    if start_date.weekday() >= 5 or end_date.weekday() >= 5:
+        return False, "pto_non_workday"
+    holiday_dates = {
+        holiday["observed_date"]
+        for year in range(start_date.year, end_date.year + 1)
+        for holiday in paid_holidays(year)
+    }
+    if start_date in holiday_dates or end_date in holiday_dates:
+        return False, "pto_paid_holiday"
+    working_dates = [
+        day for day in requested_dates
+        if day.weekday() < 5 and day not in holiday_dates
+    ]
+    if not working_dates:
+        return False, "pto_non_workday"
     from sales_support_agent.services.hr.payroll import semimonthly_period
     if (
         semimonthly_period(start_date).start_date
@@ -1466,6 +1692,11 @@ def create_pto_request(employee_email: str, *, start_date: date, end_date: date,
             return False, "pto_setup_required"
         if start_date < employment.pto_eligible_date:
             return False, "pto_not_eligible"
+        normal_daily_hours = min(
+            8.0, max(0.0, float(employment.standard_weekly_hours or 0) / 5)
+        )
+        if normal_daily_hours <= 0 or hours > len(working_dates) * normal_daily_hours:
+            return False, "pto_hours_exceed_workdays"
         summary = _pto_summary_in_session(s, email, employment)
         pending = float(
             s.query(func.coalesce(func.sum(HRPTORequest.hours), 0)).filter(
@@ -1475,11 +1706,22 @@ def create_pto_request(employee_email: str, *, start_date: date, end_date: date,
         )
         if hours > max(0, summary["available"] - pending):
             return False, "pto_insufficient"
+        conflict = s.query(HRPTORequest).filter(
+            HRPTORequest.employee_email == email,
+            HRPTORequest.status.in_(("pending", "approved")),
+            HRPTORequest.start_date <= end_date,
+            HRPTORequest.end_date >= start_date,
+        ).first()
+        if conflict:
+            return False, "pto_conflict"
         row = HRPTORequest(employee_email=email, start_date=start_date, end_date=end_date,
                            hours=Decimal(str(round(hours, 2))), reason=(reason or "").strip())
         s.add(row)
         s.flush()
-        _audit(s, actor, "pto.requested", "pto_request", row.id, {"hours": hours})
+        _audit(s, actor, "pto.requested", "pto_request", row.id, {
+            "hours": hours, "working_days": len(working_dates),
+            "excluded_weekend_or_holiday_days": len(requested_dates) - len(working_dates),
+        })
         return True, "pto_requested"
 
 
@@ -1489,10 +1731,45 @@ def list_pto_requests(employee_email: Optional[str] = None) -> list:
         if employee_email:
             q = q.filter(HRPTORequest.employee_email == employee_email.strip().lower())
         rows = q.order_by(HRPTORequest.created_at.desc()).limit(100).all()
-        return [{"id": r.id, "employee_email": r.employee_email,
-                 "start_date": r.start_date, "end_date": r.end_date,
-                 "hours": float(r.hours), "reason": r.reason, "status": r.status}
-                for r in rows]
+        result = []
+        for row in rows:
+            dates = [
+                row.start_date + timedelta(days=offset)
+                for offset in range((row.end_date - row.start_date).days + 1)
+            ]
+            holidays = {
+                holiday["observed_date"]
+                for year in range(row.start_date.year, row.end_date.year + 1)
+                for holiday in paid_holidays(year)
+            }
+            workdays = [day for day in dates if day.weekday() < 5 and day not in holidays]
+            result.append({
+                "id": row.id, "employee_email": row.employee_email,
+                "start_date": row.start_date, "end_date": row.end_date,
+                "hours": float(row.hours), "reason": row.reason, "status": row.status,
+                "working_day_count": len(workdays),
+                "excluded_day_count": len(dates) - len(workdays),
+            })
+        return result
+
+
+def withdraw_pto(request_id: int, *, employee_email: str, actor: str) -> tuple[bool, str]:
+    """Let an employee withdraw their own still-pending PTO request."""
+    email = (employee_email or "").strip().lower()
+    if not email or actor.strip().lower() != email:
+        return False, "pto_withdraw_not_allowed"
+    with _session() as session:
+        row = session.get(HRPTORequest, request_id)
+        if not row or row.employee_email != email or row.status != "pending":
+            return False, "pto_withdraw_not_allowed"
+        row.status = "withdrawn"
+        row.decided_by = email
+        row.decided_at = datetime.now(timezone.utc)
+        _audit(session, actor, "pto.withdrawn", "pto_request", row.id, {
+            "start_date": str(row.start_date), "end_date": str(row.end_date),
+            "hours": float(row.hours),
+        })
+        return True, "pto_withdrawn"
 
 
 def decide_pto(request_id: int, *, decision: str, actor: str) -> bool:

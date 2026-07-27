@@ -51,6 +51,14 @@ _HR_STYLES = """
   .hr-kicker { font:700 11px Montserrat,Inter,sans-serif; letter-spacing:.06em; text-transform:uppercase; color:#52606d; }
   .hr-stack { display:grid; gap:14px; }
   .hr-inline { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .hr-help { color:#52606d; font-size:13px; line-height:1.5; margin:5px 0 10px; }
+  .hr-saved { background:#e6f4ec; border:1px solid #79b99d; border-radius:14px; padding:18px 20px; margin:0 0 18px; }
+  .hr-saved strong { color:#245f49; }
+  .hr-avatar-row { display:flex; align-items:center; gap:8px; overflow-x:auto; padding:4px 0; max-width:520px; }
+  .hr-person-chip { flex:0 0 auto; display:flex; align-items:center; gap:8px; padding:5px 9px 5px 5px; border:1px solid rgba(43,54,68,.12); border-radius:999px; color:#1c2430; text-decoration:none; background:#fff; }
+  .hr-avatar { width:34px; height:34px; border-radius:50%; background:#e8f3f7; color:#1c5265; display:grid; place-items:center; font:700 12px Montserrat,Inter,sans-serif; border:2px solid #fff; }
+  .hr-person-chip small { display:block; color:#52606d; max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hr-pagination { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:12px 0 28px; }
   .hr-dashboard-action { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:18px 20px; background:#fff; border:1px solid rgba(43,54,68,.1); border-radius:14px; }
   .hr-dashboard-action .hr-sub { margin:0; max-width:720px; }
   .hr-btn-danger { background:#8b3a32; }
@@ -178,6 +186,11 @@ def _flash(flash: Optional[str]) -> str:
         "created": "✓ Employee added.",
         "updated": "✓ Employee saved.",
         "team_created": "✓ Team created.",
+        "team_updated": "Team details saved.",
+        "team_membership_saved": "Team membership saved.",
+        "team_invalid": "Add a team name before saving.",
+        "team_not_found": "That team is no longer available.",
+        "team_membership_changed": "That employee’s team changed before this action. Refresh and review the current team.",
         "exists": "That email already has an employee record.",
         "clocked_in": "Clocked in. Your paid time is running.",
         "clocked_out": "Clocked out. Your time entry was saved.",
@@ -194,6 +207,7 @@ def _flash(flash: Optional[str]) -> str:
         "correction_requested": "Time correction sent for review.",
         "correction_approved": "Time correction approved.",
         "correction_denied": "Time correction denied.",
+        "missed_punch_entry_exists": "A time entry already exists for that date. Use Correct on the existing punch instead.",
         "self_approval_blocked": "The requester cannot approve their own correction.",
         "timesheet_submitted": "Timesheet submitted for independent review.",
         "timesheet_already_approved": "This unchanged timesheet is already approved.",
@@ -210,6 +224,12 @@ def _flash(flash: Optional[str]) -> str:
         "pto_not_eligible": "The requested date is before your PTO eligibility date.",
         "pto_insufficient": "The request exceeds your available PTO balance.",
         "pto_split_period_required": "Submit separate PTO requests on each side of the 15th/16th payroll boundary.",
+        "pto_non_workday": "PTO can only be requested for scheduled weekdays. Remove Saturday or Sunday from the request.",
+        "pto_paid_holiday": "That request includes a paid Anata holiday, so PTO is not needed for that day.",
+        "pto_conflict": "Those dates overlap an existing pending or approved PTO request.",
+        "pto_hours_exceed_workdays": "The requested hours exceed the normal hours available on those working days.",
+        "pto_withdrawn": "Your pending PTO request was withdrawn.",
+        "pto_withdraw_not_allowed": "Only your own pending PTO request can be withdrawn.",
         "pii_secret_missing": "Secure tax storage is not configured. Ask David or Val to finish setup.",
         "invalid_w4": "Review the SSN and W-4 selections.",
         "attestation_required": "You must complete and sign your own attestation.",
@@ -226,7 +246,11 @@ def _flash(flash: Optional[str]) -> str:
         "recurring_input_invalid": "Only deductions and garnishments can carry forward.",
         "payroll_blocked": "Resolve every blocking item before preparing payroll.",
         "approval_attestation_required": "Type the approval statement exactly as shown.",
+        "final_approver_not_configured": "Select the required final payroll approver in HR settings first.",
+        "final_approver_required": "Only the required final payroll approver can approve this version.",
         "payroll_approved": "Payroll approved. No money or tax payment was sent.",
+        "payroll_rejected": "Payroll returned for correction. The rejected version remains in the audit history.",
+        "payroll_rejection_reason_required": "Explain what must be corrected using at least 10 characters.",
         "payroll_already_approved": "This exact payroll version was already approved.",
         "provider_submitted": "Payroll-service handoff recorded.",
         "provider_matched": "Provider totals match Anata's approved estimate.",
@@ -234,6 +258,11 @@ def _flash(flash: Optional[str]) -> str:
         "provider_reference_required": "Enter the provider name and confirmation or run reference.",
         "provider_totals_required": "Enter all four nonnegative provider totals.",
         "check_issued": "Manual check recorded and pay statement created.",
+        "check_confirmed": "Check clearing evidence recorded.",
+        "check_already_confirmed": "This check clearing confirmation was already recorded.",
+        "check_confirmation_required": "Enter the bank or check-clearing confirmation reference.",
+        "check_evidence_required": "Describe the clearing evidence using at least 10 characters.",
+        "check_confirmation_changed": "This check already has a different clearing confirmation. Review it before changing the record.",
         "check_number_used": "That check number is already recorded.",
         "check_already_issued": "That check was already recorded; no duplicate was created.",
         "employee_check_already_issued": "This employee already has a different active check.",
@@ -242,6 +271,7 @@ def _flash(flash: Optional[str]) -> str:
         "void_reason_required": "Enter a void reason and replacement check number.",
         "payroll_closed": "Payroll closed after checks and liabilities reconciled.",
         "checks_not_complete": "Every employee must have one active issued check before closing.",
+        "checks_not_reconciled": "Confirm clearing evidence for every employee check before closing payroll.",
         "liabilities_not_reconciled": "Reconcile every tax payment and filing before closing.",
         "liability_paid": "Tax payment evidence recorded.",
         "liability_filed": "Tax filing evidence recorded.",
@@ -403,6 +433,7 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
     {err}
     <h1 class="hr-h1">{_esc(title)}</h1>
     <p class="hr-sub">Employer-owned identity, employment, classification, and compensation setup.</p>
+    {'' if is_new else '<p><a class="hr-btn hr-btn-light" href="/admin/hr/teams">View team roster</a></p>'}
     <form class="hr-form" method="post" action="{action}">
       <div class="hr-grid2">
         <div><label>Email *</label>{email_field}</div>
@@ -459,7 +490,9 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
     </form>
     <form class="hr-form" method="post" action="/admin/hr/employees/{e["id"]}/onboarding-review" style="margin-top:18px">
       <div class="hr-kicker">Employer I-9 review</div>
-      <p>Review acceptable documents directly. Do not ask the employee to email identity documents.</p>
+      <p><strong>Your job:</strong> After the employee completes Section 1, examine the acceptable original documents they choose and complete the employer section within the federal deadline. Do not tell the employee which document to present.</p>
+      <div class="hr-callout warn"><p>Do not ask the employee to email identity documents and do not upload copies here. Record only the document category and the date you completed the review. If a document has an expiration date that requires follow-up, record it below.</p></div>
+      <p><a href="https://www.uscis.gov/i-9-central/form-i-9-acceptable-documents" target="_blank" rel="noopener">See USCIS acceptable documents and employer instructions</a>.</p>
       <label>Document type/category</label><input name="i9_document_type" required placeholder="List A, or List B + List C">
       <div class="hr-grid2"><div><label>Verified date</label><input type="date" name="i9_verified_date" required></div>
       <div><label>Expiration date, if applicable</label><input type="date" name="i9_expiration_date"></div></div>
@@ -476,19 +509,32 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
 
 
 def render_hr_teams(teams: list, *, user, flash=None) -> str:
+    def member_cell(team: dict) -> str:
+        members = team.get("members") or []
+        if not members:
+            return '<span class="hr-sub">No one assigned yet</span>'
+        return '<div class="hr-avatar-row">' + "".join(
+            f'<a class="hr-person-chip" href="/admin/hr/employees/{m["id"]}" '
+            f'title="{_esc(m["full_name"])} — {_esc(m.get("title") or "No title set")}" '
+            f'aria-label="Edit {_esc(m["full_name"])}"><span class="hr-avatar">{_esc("".join(part[0] for part in m["full_name"].split()[:2]).upper())}</span>'
+            f'<span><strong>{_esc(m["full_name"])}</strong><small>{_esc(m.get("title") or "No title set")}</small></span></a>'
+            for m in members
+        ) + "</div>"
     rows = "".join(
-        f"""<tr><td style="font-weight:600">{_esc(t['name'])}</td>
+        f"""<tr><td style="font-weight:600"><a href="/admin/hr/teams/{t['id']}">{_esc(t['name'])}</a></td>
             <td class="hr-sub" style="margin:0">{_esc(t['manager_email'] or '—')}</td>
+            <td>{member_cell(t)}<div class="hr-help">{len(t.get("members") or [])} active member(s)</div></td>
             <td>{_esc(t['description'] or '')}</td></tr>"""
         for t in teams)
     if not rows:
-        rows = '<tr><td colspan="3" class="hr-empty">No teams yet.</td></tr>'
+        rows = '<tr><td colspan="4" class="hr-empty">No teams yet.</td></tr>'
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">Teams</h1>
-    <p class="hr-sub">Departments / teams employees belong to.</p>
+    <p class="hr-sub">Create the group here, then assign people from their employee record. A manager can lead the team and each employee can also have a direct manager.</p>
+    <div class="hr-callout"><strong>How teams work</strong><p>1. Add the team below. 2. Enter the team manager's work email. 3. Open a team member below—or go to Employees—to assign their Team and Manager. Changes appear here after the employee record is saved.</p><a class="hr-btn hr-btn-light" href="/admin/hr/employees">Open employees</a></div>
     <table class="hr-tbl" style="margin-bottom:24px">
-      <thead><tr><th>Team</th><th>Manager</th><th>Description</th></tr></thead>
+      <thead><tr><th>Team</th><th>Manager</th><th>People</th><th>Description</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>
     <form class="hr-form" method="post" action="/admin/hr/teams" style="max-width:560px">
@@ -500,6 +546,64 @@ def render_hr_teams(teams: list, *, user, flash=None) -> str:
     </form>
     """
     return hr_shell("Teams", "teams", body, user=user)
+
+
+def render_hr_team_detail(team: dict, employees: list, *, user, flash=None) -> str:
+    members = team.get("members") or []
+    member_ids = {int(member["id"]) for member in members}
+    direct_managers = {
+        int(employee["id"]): (
+            (employee.get("employment") or {}).get("manager_email")
+            or "No direct manager set"
+        )
+        for employee in employees
+    }
+    member_rows = "".join(
+        f"""<tr><td><a href="/admin/hr/employees/{member['id']}">{_esc(member['full_name'])}</a>
+        <div class="hr-help">{_esc(member['email'])}</div></td>
+        <td>{_esc(member.get('title') or 'No title set')}</td>
+        <td>{_esc(direct_managers.get(int(member['id']), 'No direct manager set'))}</td>
+        <td><form method="post" action="/admin/hr/teams/{team['id']}/members">
+        <input type="hidden" name="employee_id" value="{member['id']}">
+        <button class="hr-btn hr-btn-light" name="action" value="remove">Remove from team</button></form></td></tr>"""
+        for member in members
+    ) or '<tr><td colspan="4" class="hr-empty">No one is assigned to this team yet.</td></tr>'
+    employee_options = "".join(
+        f'<option value="{employee["id"]}">{_esc(employee.get("full_name") or employee["email"])} — {_esc(employee["email"])}</option>'
+        for employee in employees
+        if employee.get("status") == "active" and int(employee["id"]) not in member_ids
+    )
+    add_form = (
+        f"""<form class="hr-form" method="post" action="/admin/hr/teams/{team['id']}/members">
+        <div class="hr-kicker">Add a person</div>
+        <label for="team-employee">Active employee</label>
+        <select id="team-employee" name="employee_id" required>{employee_options}</select>
+        <div class="hr-actions"><button class="hr-btn" name="action" value="assign">Add to this team</button></div>
+        </form>"""
+        if employee_options else
+        '<div class="hr-callout">Every active employee is already assigned to this team.</div>'
+    )
+    body = f"""
+    {_flash(flash)}
+    <p><a href="/admin/hr/teams">← All teams</a></p>
+    <div class="hr-row-head"><div><h1 class="hr-h1">{_esc(team['name'])}</h1>
+    <p class="hr-sub" style="margin:0">{len(members)} active member(s)</p></div>
+    <a class="hr-btn hr-btn-light" href="/admin/hr/employees">Open employee directory</a></div>
+    <div class="hr-callout"><strong>Team leadership and direct reporting are separate.</strong>
+    <p>The team manager leads this group. Each employee’s direct manager is set on their employee record and controls manager-scoped time review. Changing one does not silently change the other.</p></div>
+    <form class="hr-form" method="post" action="/admin/hr/teams/{team['id']}">
+      <div class="hr-kicker">Team details</div>
+      <label for="team-name">Team name</label><input id="team-name" name="name" required value="{_esc(team['name'])}">
+      <label for="team-manager">Team manager email</label><input id="team-manager" type="email" name="manager_email" value="{_esc(team.get('manager_email'))}">
+      <label for="team-description">What this team does</label><textarea id="team-description" name="description">{_esc(team.get('description'))}</textarea>
+      <div class="hr-actions"><button class="hr-btn" type="submit">Save team details</button></div>
+    </form>
+    <h2 style="margin-top:28px">People on this team</h2>
+    <table class="hr-tbl"><thead><tr><th>Person</th><th>Title</th><th>Direct manager</th><th>Action</th></tr></thead>
+    <tbody>{member_rows}</tbody></table>
+    <div style="margin-top:24px">{add_form}</div>
+    """
+    return hr_shell(f"{team['name']} team", "teams", body, user=user)
 
 
 def render_hr_coming_soon(active: str, title: str, blurb: str, *, user) -> str:
@@ -517,8 +621,12 @@ def render_hr_coming_soon(active: str, title: str, blurb: str, *, user) -> str:
 def render_hr_time(
     entries: list, pto: dict, pto_requests: list, current: Optional[dict],
     corrections: list, review_flags: list, timesheets: list, period,
+    entry_total: int = 0, entry_page: int = 1, entry_page_size: int = 10,
+    entry_page_count: int = 1,
+    clock_summary: Optional[dict] = None,
     *, user, flash=None
 ) -> str:
+    clock_summary = clock_summary or {}
     punch_action = "out" if current else "in"
     punch_label = "Clock out" if current else "Clock in"
     review_permissions = (user or {}).get("permissions") or set()
@@ -531,14 +639,16 @@ def render_hr_time(
       <td>{f'<details><summary>Correct</summary><form method="post" action="/admin/hr/time/{r["id"]}/correction"><label>Correct start</label><input type="time" name="proposed_start" value="{_esc(r["start_time"])}" required><label>Correct end</label><input type="time" name="proposed_stop" value="{_esc(r["stop_time"])}" required><label>Reason</label><input name="reason" required maxlength="500"><button class="hr-btn" type="submit">Request correction</button></form></details>' if not r['is_open'] else 'Close the shift first'}</td></tr>""" for r in entries)
     if not rows:
         rows = '<tr><td colspan="6" class="hr-empty">No time recorded yet.</td></tr>'
-    requests = "".join(f"""<tr><td>{_esc(r['employee_email'])}</td><td>{_esc(r['start_date'])}–{_esc(r['end_date'])}</td>
-      <td>{r['hours']:.2f}</td><td>{_esc(r['status'])}</td><td>{_esc(r['reason'] or '—')}</td><td>
-      {f'<form class="hr-inline" method="post" action="/admin/hr/time/pto/{r["id"]}/decision"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and r['status'] == 'pending' else '—'}</td></tr>""" for r in pto_requests)
+    viewer_email = ((user or {}).get("email") or "").strip().lower()
+    requests = "".join(f"""<tr><td>{_esc(r['employee_email'])}</td><td>{_esc(r['start_date'])}–{_esc(r['end_date'])}
+      <div class="hr-help">{r.get('working_day_count', 0)} working day(s){f"; {r.get('excluded_day_count')} weekend/holiday day(s) ignored" if r.get('excluded_day_count') else ""}</div></td>
+      <td>{r['hours']:.2f}</td><td>{_esc(r['status'].title())}</td><td>{_esc(r['reason'] or '—')}</td><td>
+      {f'<form class="hr-inline" method="post" action="/admin/hr/time/pto/{r["id"]}/decision"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and r['status'] == 'pending' and r['employee_email'] != viewer_email else f'<form method="post" action="/admin/hr/time/pto/{r["id"]}/withdraw"><button class="hr-btn hr-btn-light" type="submit">Withdraw request</button></form>' if r['status'] == 'pending' and r['employee_email'] == viewer_email else '—'}</td></tr>""" for r in pto_requests)
     if not requests:
         requests = '<tr><td colspan="6" class="hr-empty">No PTO requests yet.</td></tr>'
     correction_rows = "".join(f"""<tr><td>{_esc(c['employee_email'])}</td><td>{_esc(c['original'].get('start_time'))}–{_esc(c['original'].get('stop_time'))}</td>
       <td>{_esc(c['proposed'].get('start_time'))}–{_esc(c['proposed'].get('stop_time'))}</td><td>{_esc(c['reason'])}</td><td>{_esc(c['status'])}</td>
-      <td>{f'<form class="hr-inline" method="post" action="/admin/hr/time/corrections/{c["id"]}/decision"><input name="reviewer_reason" placeholder="Review note"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and c['status'] == 'requested' else '—'}</td></tr>""" for c in corrections)
+      <td>{f'<form class="hr-inline" method="post" action="/admin/hr/time/corrections/{c["id"]}/decision"><input name="reviewer_reason" placeholder="Required review note" required><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and c['status'] == 'requested' else '—'}</td></tr>""" for c in corrections)
     if not correction_rows:
         correction_rows = '<tr><td colspan="6" class="hr-empty">No time corrections.</td></tr>'
     timesheet_rows = "".join(
@@ -549,25 +659,47 @@ def render_hr_time(
         for item in timesheets
     ) or '<tr><td colspan="5" class="hr-empty">No timesheets submitted for this period.</td></tr>'
     flags_html = (
-        '<div class="hr-callout warn"><div class="hr-kicker">Time review</div><ul>'
+        '<div class="hr-callout warn"><div class="hr-kicker">Time needing attention</div>'
+        '<p>These are review flags, not automatic payroll changes.</p>'
+        '<table class="hr-tbl"><thead><tr><th>Employee</th><th>Issue</th><th>Level</th></tr></thead><tbody>'
         + "".join(
-            f"<li>{_esc(flag.get('employee_email'))}: {_esc(flag.get('message'))}</li>"
+            f"<tr><td>{_esc(flag.get('employee_email'))}</td>"
+            f"<td>{_esc(flag.get('message'))}</td>"
+            f"<td>{_esc(flag.get('severity', 'review').title())}</td></tr>"
             for flag in review_flags
-        ) + "</ul></div>"
+        ) + "</tbody></table></div>"
     ) if review_flags else ""
+    previous_link = (
+        f'<a class="hr-btn hr-btn-light" href="/admin/hr/time?period_date={_esc(period.start_date)}&page={entry_page - 1}&page_size={entry_page_size}">Previous</a>'
+        if entry_page > 1 else ""
+    )
+    next_link = (
+        f'<a class="hr-btn hr-btn-light" href="/admin/hr/time?period_date={_esc(period.start_date)}&page={entry_page + 1}&page_size={entry_page_size}">Next</a>'
+        if entry_page < entry_page_count else ""
+    )
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">Time & PTO</h1>
-    <p class="hr-sub">Simple daily punches. Paid breaks stay inside the workday; no location is collected.</p>
+    <p class="hr-sub">Employees see only their own punches and requests. Authorized HR and time reviewers see the employees assigned to them.</p>
     <form class="hr-inline" method="get" action="/admin/hr/time">
       <label for="time-period">Choose a date inside the pay period</label>
       <input id="time-period" type="date" name="period_date" value="{_esc(period.start_date)}">
-      <button class="hr-btn hr-btn-light" type="submit">Open period</button>
+      <button class="hr-btn hr-btn-light" type="submit">View pay period</button>
     </form>
+    <div class="hr-callout"><div class="hr-kicker">Pay period in view</div>
+      <p><strong>{_esc(period.start_date)} through {_esc(period.end_date)}</strong>. Choosing a date changes the punches, timesheet, and review period shown below; it does not open or alter payroll.</p>
+    </div>
     <div class="hr-callout"><div class="hr-kicker">Your time clock</div>
-      <p>{'Clocked in. Your time is running.' if current else 'You are currently clocked out.'}</p>
+      <p><strong>{_esc(clock_summary.get('local_now'))}</strong></p>
+      <p>{'Clocked in. Your time is running.' if current else 'You are currently clocked out.'}
+      {' Current shift: ' + format(clock_summary.get('open_elapsed_hours', 0), '.2f') + ' hours.' if current else ''}</p>
       <form method="post" action="/admin/hr/time/clock"><input type="hidden" name="action" value="{punch_action}">
         <button class="hr-btn" type="submit">{punch_label}</button></form></div>
+    <div class="hr-cards">
+      <div class="hr-card"><div class="n">{clock_summary.get('weekly_hours', 0):.2f}</div><div class="l">Hours this Sunday–Saturday workweek</div></div>
+      <div class="hr-card"><div class="n">{_esc((clock_summary.get('last_shift') or {}).get('hours', '—'))}</div><div class="l">Last completed shift hours</div></div>
+      <div class="hr-card"><div class="n">{_esc(clock_summary.get('week_start'))}</div><div class="l">Current workweek begins</div></div>
+    </div>
     {flags_html}
     <div class="hr-cards">
       <div class="hr-card"><div class="n">{pto.get('available',0):.2f}</div><div class="l">PTO hours available</div></div>
@@ -575,8 +707,20 @@ def render_hr_time(
       <div class="hr-card"><div class="n">{pto.get('used',0):.2f}</div><div class="l">PTO hours used</div></div>
     </div>
     <p class="hr-sub">{'PTO is available for requests.' if pto.get('eligible') else f'PTO becomes usable on {_esc(pto.get("eligible_date") or "the configured eligibility date")}.'}</p>
-    <h2>Recent punches</h2><table class="hr-tbl"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Employee</th><th>Correction</th></tr></thead><tbody>{rows}</tbody></table>
+    <div class="hr-row-head"><div><h2>Recent punches</h2><p class="hr-sub" style="margin:0">Showing {len(entries)} of {entry_total} visible punch(es)</p></div>
+      <form class="hr-inline" method="get" action="/admin/hr/time"><input type="hidden" name="period_date" value="{_esc(period.start_date)}"><label for="punch-page-size">Rows</label><select id="punch-page-size" name="page_size"><option value="10"{' selected' if entry_page_size == 10 else ''}>10</option><option value="25"{' selected' if entry_page_size == 25 else ''}>25</option></select><button class="hr-btn hr-btn-light" type="submit">Apply</button></form></div>
+    <table class="hr-tbl"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Employee</th><th>Correction</th></tr></thead><tbody>{rows}</tbody></table>
+    <div class="hr-pagination"><span>Page {entry_page} of {entry_page_count}</span><div class="hr-inline">{previous_link}{next_link}</div></div>
     <h2 style="margin-top:28px">Time corrections</h2><table class="hr-tbl"><thead><tr><th>Employee</th><th>Original</th><th>Requested</th><th>Reason</th><th>Status</th><th>Decision</th></tr></thead><tbody>{correction_rows}</tbody></table>
+    <h2 style="margin-top:28px">Missed an entire workday?</h2>
+    <p class="hr-sub">Use this only when no punch exists for the date. Nothing is added to paid time until another authorized person reviews and approves it.</p>
+    <form class="hr-form" method="post" action="/admin/hr/time/missed-punch">
+      <label for="missed-date">Work date</label><input id="missed-date" type="date" name="work_date" required>
+      <div class="hr-grid2"><div><label for="missed-start">Requested start</label><input id="missed-start" type="time" name="proposed_start" required></div>
+      <div><label for="missed-stop">Requested end</label><input id="missed-stop" type="time" name="proposed_stop" required></div></div>
+      <label for="missed-reason">What happened?</label><textarea id="missed-reason" name="reason" required maxlength="500" placeholder="For example: I forgot to clock in and out."></textarea>
+      <div class="hr-actions"><button class="hr-btn hr-btn-light" type="submit">Request missed-day review</button></div>
+    </form>
     <h2 style="margin-top:28px">Timesheet approval</h2>
     <p class="hr-sub">Period {_esc(period.start_date)}–{_esc(period.end_date)}. Hourly payroll remains blocked until the employee submits and another authorized person approves an unchanged timesheet.</p>
     <form class="hr-form" method="post" action="/admin/hr/time/timesheets/submit">
@@ -592,6 +736,7 @@ def render_hr_time(
       <div><label for="pto-end">End date</label><input id="pto-end" type="date" name="end_date" required></div></div>
       <label for="pto-hours">Hours requested</label><input id="pto-hours" type="number" min="0.25" max="40" step="0.25" name="hours" required>
       <label for="pto-reason">Note (optional)</label><input id="pto-reason" name="reason" maxlength="500">
+      <p class="hr-help">Start and end on scheduled weekdays. Weekends and observed paid holidays inside a longer range are automatically ignored and do not use PTO. The system also blocks overlaps, unavailable hours, and requests that cross a payroll boundary.</p>
       <div class="hr-actions"><button class="hr-btn" type="submit">Send request</button></div></form>
     <h2 style="margin-top:28px">PTO requests</h2><table class="hr-tbl"><thead><tr><th>Employee</th><th>Dates</th><th>Hours</th><th>Status</th><th>Note</th><th>Decision</th></tr></thead><tbody>{requests}</tbody></table>
     """
@@ -640,6 +785,16 @@ def render_hr_onboarding(
         <p>Update the relevant form below. Your previous signed submission remains in the audit history.</p></div>'''
         if onboarding.get("status") == "correction_requested" else ""
     )
+    w4_saved_state = ""
+    w4_open = " open"
+    if onboarding.get("w4_complete") and tax_election:
+        w4_open = ""
+        w4_saved_state = f"""
+        <div class="hr-saved" role="status">
+          <strong>✓ W-4 saved</strong>
+          <p>Your signed election is securely on file, effective {_esc(tax_election.get("effective_date"))}, using the SSN ending in {_esc(tax_election.get("ssn_last4"))}. The full SSN is intentionally never displayed again.</p>
+          <p>Open “Review or replace my W-4” below only when your tax choices change. Saving creates a new signed version and keeps the earlier version in the audit history.</p>
+        </div>"""
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">Your Anata onboarding</h1>
@@ -664,7 +819,10 @@ def render_hr_onboarding(
       <label>Emergency email (optional)</label><input type="email" name="emergency_email" value="{_esc(onboarding.get('emergency_contact_email'))}">
       <div class="hr-actions"><button class="hr-btn" type="submit">Save personal information</button></div>
     </form>
-    <form class="hr-form" method="post" action="/admin/hr/onboarding/w4" style="margin-top:18px">
+    {w4_saved_state}
+    <details{w4_open} style="margin-top:18px">
+      <summary class="hr-btn hr-btn-light">{'Review or replace my W-4' if onboarding.get('w4_complete') else 'Complete my W-4'}</summary>
+    <form class="hr-form" method="post" action="/admin/hr/onboarding/w4" style="margin-top:12px">
       <div class="hr-kicker">Federal W-4</div>
       <p>We prefill facts already in your profile and, for a correction, your current elections. Agent never chooses a tax election for you.</p>
       <div class="hr-callout"><div class="hr-kicker">Prefilled employee information</div>
@@ -681,16 +839,27 @@ def render_hr_onboarding(
         <option value="head_household"{selected("head_household")}>Head of household</option>
       </select>
       <label><input type="checkbox" name="two_jobs" value="true" style="width:auto"{checked(tax_election.get("two_jobs"))}> Multiple jobs or spouse works</label>
-      <div class="hr-grid2"><div><label>Dependent credit ($)</label><input name="dependents_credit" inputmode="decimal" value="{_esc(tax_election.get('dependents_credit', '0.00'))}"></div><div><label>Other income ($)</label><input name="other_income" inputmode="decimal" value="{_esc(tax_election.get('other_income', '0.00'))}"></div></div>
-      <div class="hr-grid2"><div><label>Deductions ($)</label><input name="deductions" inputmode="decimal" value="{_esc(tax_election.get('deductions', '0.00'))}"></div><div><label>Extra withholding per check ($)</label><input name="extra_withholding" inputmode="decimal" value="{_esc(tax_election.get('extra_withholding', '0.00'))}"></div></div>
-      <label><input type="checkbox" name="exempt" value="true" style="width:auto"{checked(tax_election.get("exempt_from_federal_withholding"))}> Exempt from federal withholding (choose only if you meet both IRS conditions shown on the official 2026 Form W-4)</label>
-      <p><a href="https://www.irs.gov/pub/irs-pdf/fw4.pdf" target="_blank" rel="noopener">Review the official Form W-4 instructions and worksheets</a>. Agent does not choose an election for you.</p>
+      <p class="hr-help">Use this when you hold more than one job at the same time, or you are married filing jointly and your spouse also works. The IRS worksheet helps you decide whether to check it.</p>
+      <div class="hr-grid2"><div><label>Dependent credit ($)</label><p class="hr-help">The annual credit from W-4 Step 3—not the number of dependents. Follow the IRS age and income instructions.</p><input name="dependents_credit" inputmode="decimal" value="{_esc(tax_election.get('dependents_credit', '0.00'))}"></div><div><label>Other income ($)</label><p class="hr-help">Annual income that will not already have tax withheld, such as interest or retirement income. Do not include wages from another job here.</p><input name="other_income" inputmode="decimal" value="{_esc(tax_election.get('other_income', '0.00'))}"></div></div>
+      <div class="hr-grid2"><div><label>Deductions ($)</label><p class="hr-help">Use the W-4 Deductions Worksheet. Enter an annual amount only if your deductions exceed the standard deduction; otherwise leave zero.</p><input name="deductions" inputmode="decimal" value="{_esc(tax_election.get('deductions', '0.00'))}"></div><div><label>Extra withholding per check ($)</label><p class="hr-help">An optional additional dollar amount to withhold from every paycheck.</p><input name="extra_withholding" inputmode="decimal" value="{_esc(tax_election.get('extra_withholding', '0.00'))}"></div></div>
+      <label><input type="checkbox" name="exempt" value="true" style="width:auto"{checked(tax_election.get("exempt_from_federal_withholding"))}> Claim exemption from federal income-tax withholding</label>
+      <div class="hr-callout warn"><strong>Exempt is uncommon.</strong><p>Choose this only if you owed no federal income tax last year and expect to owe none this year. It does not stop Social Security or Medicare tax. An exempt W-4 generally must be renewed each year. If you are unsure, leave it unchecked and use the IRS estimator or ask a tax professional.</p></div>
+      <p><a href="https://www.irs.gov/pub/irs-pdf/fw4.pdf" target="_blank" rel="noopener">Open the official Form W-4 instructions and worksheets</a> or <a href="https://www.irs.gov/individuals/tax-withholding-estimator" target="_blank" rel="noopener">use the IRS withholding estimator</a>. Anata explains the fields but does not choose an election for you.</p>
       <label><input type="checkbox" name="attested" value="true" required style="width:auto"> Under penalties of perjury, I declare that this certificate, to the best of my knowledge and belief, is true, correct, and complete.</label>
       <div class="hr-actions"><button class="hr-btn" type="submit">Sign and save W-4</button></div>
     </form>
+    </details>
     <form class="hr-form" method="post" action="/admin/hr/onboarding/attestations" style="margin-top:18px">
       <div class="hr-kicker">Employee attestations</div>
-      <p><a href="https://www.uscis.gov/i-9" target="_blank" rel="noopener">Use the official USCIS Form I-9 and instructions</a>. Complete Section 1 no later than your first day of work. Agent does not choose your citizenship/immigration status or retain identity-document images.</p>
+      <h2>What the I-9 is</h2>
+      <p>The I-9 is the federal form every U.S. employer uses to confirm a new employee's identity and permission to work. It is separate from taxes and payroll.</p>
+      <ol>
+        <li><strong>Employee:</strong> Complete Section 1 of the official I-9 by your first workday.</li>
+        <li><strong>Employee:</strong> Choose which acceptable original documents to show. Anata cannot require a specific document.</li>
+        <li><strong>David or Val:</strong> Examine the documents in person or through an allowed federal remote procedure, then complete the employer section within the required timeframe.</li>
+      </ol>
+      <div class="hr-callout warn"><strong>Protect your identity documents.</strong><p>Do not email or upload passport, license, Social Security card, or other I-9 document images into Agent. Show them directly to David or Val. Agent records that the review happened, not copies of the documents.</p></div>
+      <p><a href="https://www.uscis.gov/i-9" target="_blank" rel="noopener">Open the official USCIS Form I-9, instructions, and acceptable-document list</a>.</p>
       <label><input type="checkbox" name="i9_attested" value="true" required style="width:auto"> I completed Section 1 of the official Form I-9 and will present acceptable documents directly to David or Val; I will not email identity documents.</label>
       <label><input type="checkbox" name="policies_attested" value="true" required style="width:auto"> I received and acknowledge the timekeeping, overtime, PTO, holiday, payroll, and privacy policies.</label>
       <div class="hr-actions"><button class="hr-btn" type="submit">Save attestations</button></div>
@@ -724,7 +893,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         <td>${_esc(run['taxes'])}</td><td>${_esc(run.get('deductions'))}</td><td>${_esc(run['net'])}</td><td>${_esc(run['cash_impact'])}</td>
         <td>{run['employee_count']}</td><td>{_esc(run['initiated_by'])}</td>
         <td><a href="/admin/hr/payroll/runs/{_esc(run['id'])}">Review details</a>
-        {f'<form method="post" action="/admin/hr/payroll/{run["id"]}/approve"><label>Type exactly: I approve this payroll</label><input name="approval_text" required autocomplete="off"><input type="hidden" name="period_date" value="{period.start_date}"><button class="hr-btn" type="submit">Approve prepared payroll</button></form>' if run["status"] == "prepared" else ''}</td></tr>"""
+        {f'<br><a class="hr-btn" href="/admin/hr/payroll/runs/{_esc(run["id"])}/approve">Review and approve</a>' if run["status"] == "prepared" else ''}</td></tr>"""
         for run in control["runs"]
     ) or '<tr><td colspan="10" class="hr-empty">No prepared versions for this period.</td></tr>'
     liability_rows = "".join(
@@ -791,6 +960,94 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     return hr_shell("Payroll", "payroll", body, user=user)
 
 
+def render_hr_payroll_approval(run: dict, *, user, flash=None) -> str:
+    """Render the deliberate final checkpoint before a payroll version is approved."""
+    handoff = run.get("provider_handoff") or {}
+    provider_name = handoff.get("provider_name") or "No authoritative payroll provider connected"
+    employee_count = len(run.get("calculations") or [])
+    approver = user.get("name") or user.get("email") or "Signed-in approver"
+    approver_email = user.get("email") or ""
+    prepared_by = run.get("prepared_by") or "Unknown"
+    required_approver = (run.get("required_approver_email") or "").strip().lower()
+    independently_reviewed = (
+        bool(approver_email)
+        and approver_email.strip().lower() != str(prepared_by).strip().lower()
+    )
+    is_required_approver = (
+        bool(required_approver)
+        and approver_email.strip().lower() == required_approver
+    )
+    can_approve = (
+        run.get("status") == "prepared"
+        and independently_reviewed
+        and is_required_approver
+    )
+    if not required_approver:
+        warning = "Final approval is blocked until the required approver is selected in HR settings."
+    elif not is_required_approver:
+        warning = f"Only the configured final approver ({required_approver}) may approve this payroll."
+    elif not independently_reviewed:
+        warning = "The person who prepared this payroll cannot approve the same version."
+    else:
+        warning = "This version is ready for the configured final approver."
+    body = f"""
+    {_flash(flash)}
+    <h1 class="hr-h1">Confirm payroll approval</h1>
+    <p class="hr-sub">This is the final internal approval for one frozen payroll version. Review every item before signing.</p>
+    <div class="hr-callout {'ok' if can_approve else 'warn'}">
+      <div class="hr-kicker">Approval status</div>
+      <h2>{_esc(warning)}</h2>
+      <p>Approval records your decision and creates Anata's liability schedule. It does <strong>not</strong> transfer wages, debit the bank, pay taxes, or file tax returns.</p>
+    </div>
+    <section class="hr-card">
+      <div class="hr-kicker">Exact version</div>
+      <h2>{_esc(run['id'])}</h2>
+      <div class="hr-grid2">
+        <div><strong>Pay period</strong><p>{_esc(run['period_start'])}–{_esc(run['period_end'])}</p></div>
+        <div><strong>Pay date</strong><p>{_esc(run['pay_date'])}</p></div>
+        <div><strong>Employees included</strong><p>{employee_count}</p></div>
+        <div><strong>Prepared by</strong><p>{_esc(prepared_by)}</p></div>
+        <div><strong>Approver signing now</strong><p>{_esc(approver)}{f'<br><span class="hr-sub">{_esc(approver_email)}</span>' if approver_email and approver_email != approver else ''}</p></div>
+        <div><strong>Required final approver</strong><p>{_esc(required_approver or 'Not configured')}</p></div>
+        <div><strong>Calculation/provider status</strong><p>Anata estimate<br><span class="hr-sub">{_esc(provider_name)}</span></p></div>
+      </div>
+    </section>
+    <div class="hr-cards">
+      <div class="hr-card"><div class="n">${_esc(run['gross'])}</div><div class="l">Estimated gross wages</div></div>
+      <div class="hr-card"><div class="n">${_esc(run['net'])}</div><div class="l">Estimated employee pay</div></div>
+      <div class="hr-card"><div class="n">${_esc(run['taxes'])}</div><div class="l">Estimated tax liability</div></div>
+      <div class="hr-card"><div class="n">${_esc(run['deductions'])}</div><div class="l">Other deduction liability</div></div>
+      <div class="hr-card"><div class="n">${_esc(run['cash_impact'])}</div><div class="l">Estimated employer cash impact</div></div>
+    </div>
+    <div class="hr-callout warn">
+      <strong>Authoritative comparison is still pending.</strong>
+      <p>Anata's calculations help prepare and review payroll. Final wage, withholding, filing, and payment records become authoritative only after they are matched to the service or documented process responsible for those actions.</p>
+    </div>
+    <div class="hr-actions">
+      <a class="hr-btn hr-btn-light" href="/admin/hr/payroll/runs/{_esc(run['id'])}">Review employee-by-employee details</a>
+      <a class="hr-btn hr-btn-light" href="/admin/hr/payroll?period_date={_esc(run['period_start'])}">Cancel and return</a>
+    </div>
+    {f'''
+    <form class="hr-form" method="post" action="/admin/hr/payroll/{_esc(run["id"])}/approve">
+      <input type="hidden" name="period_date" value="{_esc(run['period_start'])}">
+      <label for="approval-text">Type exactly: <strong>I approve this payroll</strong></label>
+      <p class="hr-help">Your name, the frozen version, totals, and time of approval will be kept in the audit record.</p>
+      <input id="approval-text" name="approval_text" required autocomplete="off" spellcheck="false">
+      <label><input type="checkbox" required style="width:auto"> I reviewed the employee detail, pay date, estimated cash impact, liabilities, and warnings above.</label>
+      <button class="hr-btn" type="submit">Approve this exact payroll version</button>
+    </form>
+    <form class="hr-form" method="post" action="/admin/hr/payroll/{_esc(run["id"])}/reject" style="margin-top:18px">
+      <input type="hidden" name="period_date" value="{_esc(run['period_start'])}">
+      <div class="hr-kicker">Return for correction</div>
+      <label for="rejection-reason">What must be corrected?</label>
+      <p class="hr-help">The frozen version will remain in the audit history. Val or David can correct the inputs and prepare a new version.</p>
+      <textarea id="rejection-reason" name="reason" required minlength="10" maxlength="1000"></textarea>
+      <button class="hr-btn hr-btn-danger" type="submit">Reject this version</button>
+    </form>''' if can_approve else ''}
+    """
+    return hr_shell("Confirm payroll approval", "payroll", body, user=user)
+
+
 def render_hr_payroll_run(run: dict, *, user, employee_view=False, flash=None) -> str:
     def money(cents):
         return f"{int(cents or 0) / 100:,.2f}"
@@ -799,20 +1056,32 @@ def render_hr_payroll_run(run: dict, *, user, employee_view=False, flash=None) -
         inputs, results = calculation["inputs"], calculation["results"]
         check_action = "—"
         if not employee_view and run["status"] in {"approved", "checks_issued"}:
-            check_action = (
-                f'''<div>Check {_esc(calculation['check_number'])}</div>
+            if calculation["check_number"]:
+                confirmation = (
+                    f'''<div class="hr-callout ok"><strong>Clearing confirmed</strong>
+                    <p>{_esc(calculation.get("check_confirmation_reference"))}</p>
+                    <p class="hr-sub">{_esc(calculation.get("check_evidence_note"))}</p></div>'''
+                    if calculation.get("check_status") == "confirmed" else
+                    f'''<details><summary>Confirm check cleared</summary>
+                    <form class="hr-form" method="post" action="/admin/hr/payroll/runs/{_esc(run["id"])}/checks/confirm">
+                    <input type="hidden" name="employee_email" value="{_esc(calculation["employee_email"])}">
+                    <label>Bank or clearing reference</label><input name="confirmation_reference" required maxlength="128">
+                    <label>Evidence reviewed</label><textarea name="evidence_note" required minlength="10" maxlength="1000" placeholder="For example: cleared in the bank account on August 21."></textarea>
+                    <button class="hr-btn" type="submit">Record clearing confirmation</button></form></details>'''
+                )
+                check_action = f'''<div>Check {_esc(calculation['check_number'])} · {_esc(calculation.get('check_status'))}</div>
+                {confirmation}
                 <details><summary>Void and reissue</summary>
                 <form class="hr-form" method="post" action="/admin/hr/payroll/runs/{_esc(run["id"])}/checks/reissue">
                 <input type="hidden" name="employee_email" value="{_esc(calculation["employee_email"])}">
                 <label>Reason</label><input name="reason" required>
                 <label>New check number</label><input name="new_check_number" required>
                 <button class="hr-btn hr-btn-danger" type="submit">Void and record replacement</button></form></details>'''
-                if calculation["check_number"] else
-                f'''<form class="hr-inline" method="post" action="/admin/hr/payroll/runs/{_esc(run["id"])}/checks">
+            else:
+                check_action = f'''<form class="hr-inline" method="post" action="/admin/hr/payroll/runs/{_esc(run["id"])}/checks">
                 <input type="hidden" name="employee_email" value="{_esc(calculation["employee_email"])}">
                 <label>Check number</label><input name="check_number" required>
                 <button class="hr-btn" type="submit">Record issued check</button></form>'''
-            )
         rows += f"""<tr><td>{_esc(calculation['employee_email'])}</td>
         <td>{_esc(inputs.get('regular_hours','0'))}</td><td>{_esc(inputs.get('overtime_hours','0'))}</td>
         <td>{_esc(inputs.get('holiday_hours','0'))}</td><td>{_esc(inputs.get('pto_hours','0'))}</td>
@@ -1260,6 +1529,15 @@ def render_hr_settings(settings: dict, company: dict, employees: list, opening_b
           <label>Source and verification note</label><textarea name="source_note" required>{_esc(balance.get('source_note',''))}</textarea>
           <button class="hr-btn" type="submit">Save reviewed opening balance</button>
         </form>{approval_form}</details>"""
+    selected_approver = str(company.get("final_approver_email") or "").lower()
+    active_employee_options = "".join(
+        f'<option value="{_esc(employee["email"])}"'
+        f'{" selected" if employee["email"].lower() == selected_approver else ""}>'
+        f'{_esc(employee["full_name"])} — {_esc(employee["email"])}</option>'
+        for employee in employees
+        if employee.get("employee_type") != "contractor"
+        and employee.get("status", "active") == "active"
+    )
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">HR & payroll settings</h1><p class="hr-sub">The policies currently approved for Anata.</p>
@@ -1299,6 +1577,9 @@ def render_hr_settings(settings: dict, company: dict, employees: list, opening_b
       <div><label>State</label><input name="state" value="UT" readonly></div></div>
       <label>ZIP</label><input name="zip_code" value="{_esc(company.get('zip_code'))}" required>
       <label>Payroll contact email</label><input type="email" name="payroll_contact_email" value="{_esc(company.get('payroll_contact_email'))}" required>
+      <label>Required final payroll approver</label>
+      <p class="hr-help">Only this person can give final approval. The person who prepared the payroll must still be someone else.</p>
+      <select name="final_approver_email" required><option value="">Choose an active employee…</option>{active_employee_options}</select>
       <div class="hr-grid2"><div><label>Utah withholding account last 4</label><input name="utah_withholding_account_last4" value="{_esc(company.get('utah_withholding_account_last4'))}" maxlength="4"></div>
       <div><label>Utah UI account last 4</label><input name="utah_ui_account_last4" value="{_esc(company.get('utah_ui_account_last4'))}" maxlength="4"></div></div>
       <label>Federal deposit schedule confirmed from lookback evidence</label>

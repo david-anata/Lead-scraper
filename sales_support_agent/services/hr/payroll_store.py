@@ -168,6 +168,7 @@ def get_company_profile() -> dict:
             "ein_last4": row.ein_last4, "address_line1": row.address_line1,
             "address_line2": row.address_line2, "city": row.city, "state": row.state,
             "zip_code": row.zip_code, "payroll_contact_email": row.payroll_contact_email,
+            "final_approver_email": row.final_approver_email,
             "utah_withholding_account_last4": row.utah_withholding_account_last4,
             "utah_ui_account_last4": row.utah_ui_account_last4,
             "federal_deposit_schedule": row.federal_deposit_schedule,
@@ -179,7 +180,8 @@ def get_company_profile() -> dict:
 def save_company_profile(
     *, legal_name: str, trade_name: str, ein_last4: str, address_line1: str,
     address_line2: str, city: str, state: str, zip_code: str,
-    payroll_contact_email: str, utah_withholding_account_last4: str,
+    payroll_contact_email: str, final_approver_email: str,
+    utah_withholding_account_last4: str,
     utah_ui_account_last4: str, federal_deposit_schedule: str,
     utah_withholding_payment_frequency: str,
     source_note: str, actor: str,
@@ -195,7 +197,7 @@ def save_company_profile(
     if (
         not legal_name.strip() or len(digits) != 4 or not address_line1.strip()
         or not city.strip() or state.strip().upper() != "UT" or not zip_code.strip()
-        or "@" not in payroll_contact_email
+        or "@" not in payroll_contact_email or "@" not in final_approver_email
         or federal_deposit_schedule not in {"monthly", "semiweekly"}
         or utah_withholding_payment_frequency not in {"monthly", "quarterly"}
         or not source_note.strip()
@@ -215,6 +217,7 @@ def save_company_profile(
         row.state = "UT"
         row.zip_code = zip_code.strip()
         row.payroll_contact_email = payroll_contact_email.strip().lower()
+        row.final_approver_email = final_approver_email.strip().lower()
         row.utah_withholding_account_last4 = withholding_last4[-4:]
         row.utah_ui_account_last4 = ui_last4[-4:]
         row.federal_deposit_schedule = federal_deposit_schedule
@@ -596,6 +599,11 @@ def _period_context(containing: date) -> tuple:
         readiness["blockers"].append({
             "kind": "company_profile", "severity": "blocker",
             "message": "Employer legal profile is incomplete",
+        })
+    if not company_profile.get("final_approver_email"):
+        readiness["blockers"].append({
+            "kind": "final_approver", "severity": "blocker",
+            "message": "The required final payroll approver is not configured",
         })
     if settings.get("federal_deposit_schedule") not in {"monthly", "semiweekly"}:
         readiness["blockers"].append({
@@ -1032,6 +1040,14 @@ def approve_payroll(run_id: str, *, actor: str, approval_text: str) -> tuple[boo
             return True, "payroll_already_approved"
         if run.status != "prepared":
             return False, "run_not_prepared"
+        company = session.query(HRCompanyProfile).first()
+        required_approver = (
+            company.final_approver_email.strip().lower() if company else ""
+        )
+        if not required_approver:
+            return False, "final_approver_not_configured"
+        if actor.strip().lower() != required_approver:
+            return False, "final_approver_required"
         if run.initiated_by.strip().lower() == actor.strip().lower():
             return False, "self_approval_blocked"
         period, settings, employees, inputs, readiness = _period_context(run.pay_period_start)
@@ -1132,6 +1148,34 @@ def approve_payroll(run_id: str, *, actor: str, approval_text: str) -> tuple[boo
         return True, "payroll_approved"
 
 
+def reject_payroll(run_id: str, *, actor: str, reason: str) -> tuple[bool, str]:
+    """Reject one prepared version without altering its frozen evidence."""
+    clean_reason = reason.strip()
+    if len(clean_reason) < 10:
+        return False, "payroll_rejection_reason_required"
+    with _session() as session:
+        run = session.query(HRPayrollRun).filter_by(base44_id=run_id).first()
+        if not run or run.status != "prepared":
+            return False, "run_not_prepared"
+        company = session.query(HRCompanyProfile).first()
+        required_approver = (
+            company.final_approver_email.strip().lower() if company else ""
+        )
+        if not required_approver:
+            return False, "final_approver_not_configured"
+        actor_email = actor.strip().lower()
+        if actor_email != required_approver:
+            return False, "final_approver_required"
+        if run.initiated_by.strip().lower() == actor_email:
+            return False, "self_approval_blocked"
+        run.status = "rejected"
+        _audit(session, actor_email, "payroll.rejected", "payroll_run", run_id, {
+            "reason": clean_reason,
+            "prepared_by": run.initiated_by,
+        })
+        return True, "payroll_rejected"
+
+
 def payroll_run_detail(
     run_id: str, *, employee_email: str | None = None, actor: str | None = None
 ) -> dict | None:
@@ -1163,6 +1207,7 @@ def payroll_run_detail(
         handoff = session.query(HRPayrollProviderHandoff).filter_by(
             payroll_run_id=run_id
         ).first()
+        company = session.query(HRCompanyProfile).first()
         display_gross = run.total_gross_cents
         display_net = run.total_net_cents
         display_taxes = run.total_taxes_cents
@@ -1187,6 +1232,9 @@ def payroll_run_detail(
             "id": run.base44_id, "status": run.status,
             "period_start": run.pay_period_start, "period_end": run.pay_period_end,
             "pay_date": run.pay_date, "prepared_by": run.initiated_by,
+            "required_approver_email": (
+                company.final_approver_email if company else ""
+            ),
             "gross": cents_to_dollars(display_gross),
             "net": cents_to_dollars(display_net),
             "taxes": cents_to_dollars(display_taxes),
@@ -1207,6 +1255,14 @@ def payroll_run_detail(
                 if checks.get(row.employee_email) else "",
                 "check_status": checks.get(row.employee_email).status
                 if checks.get(row.employee_email) else "",
+                "check_confirmation_reference": (
+                    checks.get(row.employee_email).confirmation_reference
+                    if checks.get(row.employee_email) else ""
+                ),
+                "check_evidence_note": (
+                    checks.get(row.employee_email).reconciliation_evidence_note
+                    if checks.get(row.employee_email) else ""
+                ),
             } for row in calculations],
         }
 
@@ -1291,8 +1347,9 @@ def employee_pay_statements(employee_email: str) -> list[dict]:
     email = (employee_email or "").strip().lower()
     with _session() as session:
         run_ids = [
-            row[0] for row in session.query(HRPrintedCheck.payroll_run_id).filter_by(
-                employee_email=email, status="ready"
+            row[0] for row in session.query(HRPrintedCheck.payroll_run_id).filter(
+                HRPrintedCheck.employee_email == email,
+                HRPrintedCheck.status.in_(("ready", "confirmed")),
             ).all()
         ]
         if not run_ids:
@@ -1380,8 +1437,9 @@ def issue_printed_check(run_id: str, *, employee_email: str, check_number: str,
             notes=f"Check {check_number.strip()}",
         ))
         session.flush()
-        issued_count = session.query(func.count(HRPrintedCheck.id)).filter_by(
-            payroll_run_id=run_id
+        issued_count = session.query(func.count(HRPrintedCheck.id)).filter(
+            HRPrintedCheck.payroll_run_id == run_id,
+            HRPrintedCheck.status != "voided",
         ).scalar() or 0
         if issued_count >= run.employee_count:
             run.status = "checks_issued"
@@ -1389,6 +1447,47 @@ def issue_printed_check(run_id: str, *, employee_email: str, check_number: str,
             "run_id": run_id, "employee_email": email, "check_number": check_number.strip(),
         })
         return True, "check_issued"
+
+
+def confirm_printed_check(
+    run_id: str, *, employee_email: str, confirmation_reference: str,
+    evidence_note: str, actor: str,
+) -> tuple[bool, str]:
+    """Record independent evidence that an issued manual check cleared."""
+    email = (employee_email or "").strip().lower()
+    reference = confirmation_reference.strip()
+    note = evidence_note.strip()
+    if not reference:
+        return False, "check_confirmation_required"
+    if len(note) < 10:
+        return False, "check_evidence_required"
+    with _session() as session:
+        check = session.query(HRPrintedCheck).filter(
+            HRPrintedCheck.payroll_run_id == run_id,
+            HRPrintedCheck.employee_email == email,
+            HRPrintedCheck.status != "voided",
+        ).first()
+        if not check:
+            return False, "check_not_found"
+        if check.status == "confirmed":
+            if check.confirmation_reference == reference:
+                return True, "check_already_confirmed"
+            return False, "check_confirmation_changed"
+        if check.status != "ready":
+            return False, "check_not_issued"
+        check.status = "confirmed"
+        check.cleared_at = datetime.now(timezone.utc)
+        check.confirmation_reference = reference
+        check.reconciliation_evidence_note = note
+        check.notes = (
+            f"{check.notes}\nClearing confirmed by {actor}: {reference}."
+        ).strip()
+        _audit(session, actor, "payroll.check_confirmed", "printed_check", check.id, {
+            "run_id": run_id,
+            "employee_email": email,
+            "confirmation_reference": reference,
+        })
+        return True, "check_confirmed"
 
 
 def void_and_reissue_check(
@@ -1449,7 +1548,7 @@ def void_and_reissue_check(
         session.flush()
         active_checks = session.query(func.count(HRPrintedCheck.id)).filter(
             HRPrintedCheck.payroll_run_id == run_id,
-            HRPrintedCheck.status == "ready",
+            HRPrintedCheck.status != "voided",
         ).scalar() or 0
         if active_checks >= run.employee_count:
             run.status = "checks_issued"
@@ -1466,12 +1565,12 @@ def close_payroll_run(run_id: str, *, actor: str) -> tuple[bool, str]:
         run = session.query(HRPayrollRun).filter_by(base44_id=run_id).first()
         if not run or run.status != "checks_issued":
             return False, "checks_not_complete"
-        active_checks = session.query(func.count(HRPrintedCheck.id)).filter(
+        confirmed_checks = session.query(func.count(HRPrintedCheck.id)).filter(
             HRPrintedCheck.payroll_run_id == run_id,
-            HRPrintedCheck.status == "ready",
+            HRPrintedCheck.status == "confirmed",
         ).scalar() or 0
-        if active_checks != run.employee_count:
-            return False, "checks_not_complete"
+        if confirmed_checks != run.employee_count:
+            return False, "checks_not_reconciled"
         liabilities = session.query(HRTaxLiability).filter_by(
             payroll_run_id=run_id
         ).all()

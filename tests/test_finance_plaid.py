@@ -8,7 +8,11 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import ec
 from sqlalchemy import text
 
-from sales_support_agent.models.database import create_session_factory, init_database
+from sales_support_agent.models.database import (
+    _ensure_plaid_environment_column,
+    create_session_factory,
+    init_database,
+)
 from sales_support_agent.services.cashflow.plaid import (
     PlaidClient, PlaidError, _WEBHOOK_KEY_CACHE, _cents, disconnect_item, store_item,
     verify_webhook,
@@ -100,6 +104,100 @@ def test_store_item_supplies_required_status_fields():
             {"id": local_id},
         ).one()
     assert tuple(row) == ("connected", "", "")
+
+
+def test_connection_summary_hides_items_from_other_environment():
+    factory = create_session_factory("sqlite:///:memory:")
+    init_database(factory)
+    store_item(
+        item_id="sandbox-only-item",
+        access_token="sandbox-access-token",
+        token_secret="test-token-secret",
+        actor="qa@example.com",
+        environment="sandbox",
+    )
+
+    summary = __import__(
+        "sales_support_agent.services.cashflow.plaid",
+        fromlist=["connection_summary"],
+    ).connection_summary(
+        settings=_settings(
+            plaid_environment="production",
+            plaid_token_secret="test-token-secret",
+        )
+    )
+
+    assert summary["environment"] == "production"
+    assert summary["items"] == []
+    assert summary["connected_count"] == 0
+
+
+def test_sync_rejects_item_from_other_environment():
+    factory = create_session_factory("sqlite:///:memory:")
+    init_database(factory)
+    local_id = store_item(
+        item_id="sandbox-sync-item",
+        access_token="sandbox-access-token",
+        token_secret="test-token-secret",
+        actor="qa@example.com",
+        environment="sandbox",
+    )
+    plaid = __import__(
+        "sales_support_agent.services.cashflow.plaid",
+        fromlist=["sync_item"],
+    )
+
+    with pytest.raises(PlaidError) as error:
+        plaid.sync_item(
+            local_id,
+            settings=_settings(
+                plaid_environment="production",
+                plaid_token_secret="test-token-secret",
+            ),
+        )
+
+    assert error.value.code == "environment_mismatch"
+
+
+def test_production_cutover_promotes_only_post_approval_legacy_items():
+    factory = create_session_factory("sqlite:///:memory:")
+    init_database(factory)
+    finance_engine = factory.kw["bind"]
+    old_id = store_item(
+        item_id="sandbox-before-approval",
+        access_token="sandbox-access-token",
+        token_secret="test-token-secret",
+        actor="qa@example.com",
+        environment="sandbox",
+    )
+    pilot_id = store_item(
+        item_id="pilot-after-approval",
+        access_token="production-access-token",
+        token_secret="test-token-secret",
+        actor="qa@example.com",
+        environment="sandbox",
+    )
+    with finance_engine.begin() as connection:
+        connection.execute(
+            text("UPDATE plaid_items SET created_at=:created_at WHERE id=:id"),
+            {"id": old_id, "created_at": datetime(2026, 7, 22, tzinfo=timezone.utc)},
+        )
+        connection.execute(
+            text("UPDATE plaid_items SET created_at=:created_at WHERE id=:id"),
+            {"id": pilot_id, "created_at": datetime(2026, 7, 24, tzinfo=timezone.utc)},
+        )
+
+    _ensure_plaid_environment_column(
+        finance_engine,
+        current_environment="production",
+    )
+
+    with finance_engine.connect() as connection:
+        environments = dict(connection.execute(text(
+            "SELECT external_item_id, environment FROM plaid_items"
+        )).fetchall())
+    assert environments["sandbox-before-approval"] == "sandbox"
+    assert environments["pilot-after-approval"] == "production"
 
 
 def test_disconnect_revokes_item_destroys_token_and_records_audit():

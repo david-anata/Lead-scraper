@@ -168,9 +168,21 @@ def local_item_id_for_external(external_item_id: str) -> str | None:
     return str(row._mapping["id"]) if row else None
 
 
-def record_webhook(external_item_id: str, *, error_code: str = "") -> str | None:
+def record_webhook(
+    external_item_id: str, *, error_code: str = "", environment: str = "",
+) -> str | None:
     """Record item state quickly; the receiver schedules heavier sync work."""
-    local_id = local_item_id_for_external(external_item_id)
+    with get_engine().connect() as connection:
+        row = connection.execute(text("""
+            SELECT id FROM plaid_items
+            WHERE external_item_id=:external_id
+              AND disconnected_at IS NULL
+              AND (:environment='' OR environment=:environment)
+        """), {
+            "external_id": external_item_id,
+            "environment": environment,
+        }).fetchone()
+    local_id = str(row._mapping["id"]) if row else None
     if not local_id:
         return None
     now = datetime.now(timezone.utc)
@@ -194,29 +206,32 @@ def _cents(value: Any) -> int | None:
 
 def store_item(
     *, item_id: str, access_token: str, token_secret: str, actor: str,
-    institution_id: str = "", display_name: str = "",
+    institution_id: str = "", display_name: str = "", environment: str = "sandbox",
 ) -> str:
     if not token_secret:
         raise PlaidError("PLAID_TOKEN_SECRET is required", code="token_secret_missing")
-    local_id = str(uuid5(NAMESPACE_URL, f"plaid-item:{item_id}"))
+    environment = str(environment or "sandbox").lower()
+    if environment not in PLAID_BASE_URLS:
+        raise PlaidError("Plaid environment is invalid", code="environment_invalid")
+    local_id = str(uuid5(NAMESPACE_URL, f"plaid-item:{environment}:{item_id}"))
     now = datetime.now(timezone.utc)
     sealed = seal_token(token_secret, access_token)
     with get_engine().begin() as connection:
         connection.execute(text("""
             INSERT INTO plaid_items (
-                id, scope_key, external_item_id, institution_id, display_name,
+                id, scope_key, environment, external_item_id, institution_id, display_name,
                 sealed_access_token, status, last_error_code, transactions_cursor,
                 created_by, created_at, updated_at
             ) VALUES (
-                :id, 'default', :external_id, :institution_id, :display_name,
+                :id, 'default', :environment, :external_id, :institution_id, :display_name,
                 :token, 'connected', '', '', :actor, :now, :now
             )
             ON CONFLICT(external_item_id) DO UPDATE SET
-                institution_id=:institution_id, display_name=:display_name,
+                environment=:environment, institution_id=:institution_id, display_name=:display_name,
                 sealed_access_token=:token, status='connected', last_error_code='',
                 disconnected_at=NULL, updated_at=:now
         """), {
-            "id": local_id, "external_id": item_id, "institution_id": institution_id,
+            "id": local_id, "environment": environment, "external_id": item_id, "institution_id": institution_id,
             "display_name": display_name, "token": sealed, "actor": actor or "system", "now": now,
         })
         connection.execute(text("""
@@ -238,10 +253,22 @@ def _item_row(local_item_id: str) -> dict[str, Any]:
     return dict(row._mapping)
 
 
+def _require_item_environment(item: Mapping[str, Any], settings: Any) -> str:
+    expected = str(getattr(settings, "plaid_environment", "sandbox") or "sandbox").lower()
+    actual = str(item.get("environment") or "sandbox").lower()
+    if actual != expected:
+        raise PlaidError(
+            "This bank connection belongs to a different Plaid environment",
+            code="environment_mismatch",
+        )
+    return expected
+
+
 def connection_summary(*, settings: Any) -> dict[str, Any]:
     """Return a token-free view model for the Finance Source Center."""
     configured = bool(settings.plaid_client_id and settings.plaid_secret and settings.plaid_token_secret)
     items: list[dict[str, Any]] = []
+    environment = str(settings.plaid_environment or "sandbox").lower()
     try:
         with get_engine().connect() as connection:
             rows = connection.execute(text("""
@@ -252,11 +279,11 @@ def connection_summary(*, settings: Any) -> dict[str, Any]:
                 FROM plaid_items AS item
                 LEFT JOIN plaid_accounts AS account
                   ON account.plaid_item_id=item.id AND account.active=TRUE
-                WHERE item.disconnected_at IS NULL
+                WHERE item.disconnected_at IS NULL AND item.environment=:environment
                 GROUP BY item.id, item.display_name, item.status,
                          item.last_success_at, item.last_webhook_at, item.last_error_code
                 ORDER BY item.created_at
-            """)).fetchall()
+            """), {"environment": environment}).fetchall()
         items = [dict(row._mapping) for row in rows]
     except Exception:
         # A pre-migration boot should render setup, not crash Finance.
@@ -272,7 +299,7 @@ def connection_summary(*, settings: Any) -> dict[str, Any]:
     last_successes = [item.get("last_success_at") for item in items if item.get("last_success_at")]
     return {
         "configured": configured,
-        "environment": str(settings.plaid_environment or "sandbox"),
+        "environment": environment,
         "items": items,
         "connected_count": connected,
         "account_count": sum(int(item.get("account_count") or 0) for item in items),
@@ -287,6 +314,7 @@ def create_update_link_token(
 ) -> str:
     """Create a short-lived Link token that repairs one existing Item."""
     item = _item_row(local_item_id)
+    _require_item_environment(item, settings)
     access_token = unseal_token(settings.plaid_token_secret, str(item["sealed_access_token"]))
     return (client or PlaidClient(settings)).create_link_token(
         client_user_id=client_user_id, access_token=access_token,
@@ -324,6 +352,7 @@ def disconnect_item(
     The audit event records when Plaid did not confirm the removal.
     """
     item = _item_row(local_item_id)
+    _require_item_environment(item, settings)
     if item.get("disconnected_at") or not item.get("sealed_access_token"):
         return
     api = client or PlaidClient(settings)
@@ -405,16 +434,20 @@ def disconnect_item(
     )
 
 
-def stale_connected_item_ids(*, max_age_hours: int = 6) -> list[str]:
+def stale_connected_item_ids(*, settings: Any, max_age_hours: int = 6) -> list[str]:
     """Return connected Items whose last successful refresh is old or missing."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
     with get_engine().connect() as connection:
         rows = connection.execute(text("""
             SELECT id FROM plaid_items
             WHERE disconnected_at IS NULL AND status='connected'
+              AND environment=:environment
               AND (last_success_at IS NULL OR last_success_at < :cutoff)
             ORDER BY created_at
-        """), {"cutoff": cutoff}).fetchall()
+        """), {
+            "cutoff": cutoff,
+            "environment": str(settings.plaid_environment or "sandbox").lower(),
+        }).fetchall()
     return [str(row._mapping["id"]) for row in rows]
 
 
@@ -425,8 +458,11 @@ def sync_connected_items(*, settings: Any, item_ids: list[str] | None = None) ->
             rows = connection.execute(text("""
                 SELECT id FROM plaid_items
                 WHERE disconnected_at IS NULL AND status='connected'
+                  AND environment=:environment
                 ORDER BY created_at
-            """)).fetchall()
+            """), {
+                "environment": str(settings.plaid_environment or "sandbox").lower(),
+            }).fetchall()
         item_ids = [str(row._mapping["id"]) for row in rows]
     result: dict[str, Any] = {"refreshed": 0, "failed": 0, "items": []}
     client = PlaidClient(settings)
@@ -448,6 +484,7 @@ def sync_connected_items(*, settings: Any, item_ids: list[str] | None = None) ->
 def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None = None) -> dict[str, int]:
     """Synchronize accounts and transactions idempotently into canonical Finance."""
     item = _item_row(local_item_id)
+    _require_item_environment(item, settings)
     access_token = unseal_token(settings.plaid_token_secret, str(item["sealed_access_token"]))
     api = client or PlaidClient(settings)
     now = datetime.now(timezone.utc)
