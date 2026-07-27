@@ -637,7 +637,7 @@ class BuildingCrmCampaignTests(unittest.TestCase):
                     "rate_plan_id": "office-pilot-v1",
                     "version": "1",
                     "name": "Pilot office monthly",
-                    "status": "approved",
+                    "status": "in_review",
                     "currency": "USD",
                     "unit_amount_cents": "125000",
                     "public_price_display": "From $1,250/month",
@@ -649,11 +649,27 @@ class BuildingCrmCampaignTests(unittest.TestCase):
                     "cancellation_policy": "Thirty days written notice.",
                     "included": "Conference access, mail service",
                     "addons_json": "[]",
+                    "tax_status": "review_required",
+                    "tax_rate_percent": "0",
+                    "tax_note": "Tax treatment will be confirmed in the reviewed quote.",
                     "effective_from": "2026-01-01",
                     "effective_until": "",
                 },
             )
             self.assertEqual(rate_plan.status_code, 303, rate_plan.text)
+            rate_plan_approval = self.client.post(
+                "/admin/building/rate-plans/office-pilot-v1/approve",
+                headers=browser_headers,
+                follow_redirects=False,
+                data={
+                    "_csrf_token": token,
+                    "approval_evidence": "Reviewed pricing worksheet 2026-01.",
+                    "confirmation": "APPROVE office-pilot-v1",
+                },
+            )
+            self.assertEqual(
+                rate_plan_approval.status_code, 303, rate_plan_approval.text
+            )
             contact = self.client.post(
                 "/admin/building/contacts",
                 headers=browser_headers,

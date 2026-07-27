@@ -35,6 +35,20 @@ TOOL_CATALOG: tuple[Tool, ...] = (
     Tool("finance", "Finance", "Finance", ("/admin/finances",)),
     Tool("building.manage", "Building operations", "Building", ("/admin/building",)),
     Tool(
+        "building.pricing.manage",
+        "Manage Building pricing drafts",
+        "Building",
+        (),
+        any_of=("building.manage",),
+    ),
+    Tool(
+        "building.pricing.approve",
+        "Approve and retire Building pricing",
+        "Building",
+        (),
+        any_of=("building.manage",),
+    ),
+    Tool(
         "building.content.manage",
         "Building public content",
         "Building",

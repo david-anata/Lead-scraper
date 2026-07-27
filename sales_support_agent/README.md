@@ -200,6 +200,7 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `GET /api/public/building/offerings`
 - `GET /api/public/building/availability`
 - `POST /api/public/building/inquiries`
+- `POST /api/public/building/event-estimates`
 - `POST /api/internal/building/inquiries/{inquiry_id}/retry-hubspot`
 - `GET /admin/building`
 - `GET /api/internal/building/bookings`
@@ -569,6 +570,56 @@ See the implementation and rollout playbook in [`sales_support_agent/TEAM_SOP.md
 For a click-by-click production launch guide using the same stack pattern as the lead builder app, see [`sales_support_agent/LIVE_ROLLOUT_GUIDE.md`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/LIVE_ROLLOUT_GUIDE.md).
 
 For the Amazon-first deck workflow and shared brand package usage, see [`sales_support_agent/docs/amazon_first_sales_deck.md`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/docs/amazon_first_sales_deck.md).
+## Authoritative event estimates
+
+`POST /api/public/building/event-estimates` is the deterministic, non-binding
+calculator used by the Anata Building website. It accepts only a published
+event offering and the single current, effective, approved Agent rate plan. It
+fails closed with `409` when no eligible plan exists or approval evidence is
+missing. Marketing copy is never parsed or used as a price source.
+
+Example request:
+
+```json
+{
+  "offering_id": "arena-events",
+  "units": 4,
+  "attendance": 80,
+  "addons": [{"addon_id": "extra-cleaning", "quantity": 1}]
+}
+```
+
+The response contains `estimate.currency`, `booking_unit`, `billable_units`,
+`attendance`, itemized `line_items`, `subtotal_cents`, nullable
+`estimated_tax_cents`, `estimated_total_cents`, `deposit_cents`, `tax_note`,
+`is_binding: false`, a stable `calculation_fingerprint`, and the approved rate
+plan ID/version/effective dates. Approval evidence itself remains internal.
+
+Pricing operators manage drafts in `/admin/building` with
+`building.pricing.manage`. A draft may be submitted as `in_review`; a separate
+operator with `building.pricing.approve` provides review evidence and types
+`APPROVE {rate_plan_id}`. Approved plans are immutable. Retirement separately
+requires `RETIRE {rate_plan_id}`. The legacy `building.manage` permission
+remains compatible during access migration.
+
+Plans support booking-unit pricing, a minimum unit count, flat/per-guest/
+per-unit add-ons, fixed or percentage deposits, and explicit tax handling:
+
+- `taxable`: calculate the reviewed basis-point rate;
+- `non_taxable`: return zero estimated tax;
+- `review_required`: return `null` tax and the reviewed customer note.
+
+Rollout:
+
+1. Deploy the additive schema and code without entering real rates.
+2. Grant draft and approval permissions to the intended operators.
+3. Create the Arena draft from reviewed commercial terms.
+4. Submit it for review and approve it with evidence; approved effective dates
+   may not overlap.
+5. Verify a non-production offering against the website request contract.
+6. Publish real pricing only after Agent and website results are reviewed
+   together.
+
 # Anata HR and payroll control room
 
 The `/admin/hr` section is a right-sized people and payroll operating system for

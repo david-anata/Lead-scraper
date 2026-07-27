@@ -622,9 +622,18 @@ def render_building_page(
           )}</span></td>
           <td>{_esc(item.get("effective_from"))} – {_esc(item.get("effective_until") or "ongoing")}</td>
           <td>{_badge(str(item.get("status") or "draft"))}<span class="sub">{_esc(item.get("approved_by"))}</span></td>
+          <td>{(
+            f'<form class="inline-send" method="post" action="/admin/building/rate-plans/{_esc(item.get("id"))}/approve"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="approval_evidence" required placeholder="Review ticket or evidence"><input name="confirmation" required placeholder="APPROVE {_esc(item.get("id"))}"><button class="primary secondary--small" type="submit">Approve and lock</button></form>'
+            if item.get("status") == "in_review"
+            else (
+              f'<form class="inline-send" method="post" action="/admin/building/rate-plans/{_esc(item.get("id"))}/retire"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="confirmation" required placeholder="RETIRE {_esc(item.get("id"))}"><button class="secondary secondary--small" type="submit">Retire</button></form>'
+              if item.get("status") == "approved"
+              else '<span class="sub">Edit draft below</span>'
+            )
+          )}</td>
         </tr>"""
         for item in rate_plans
-    ) or '<tr><td colspan="5"><div class="empty"><strong>No reviewed rate plans yet.</strong><br>Create commercial terms before quoting deposits or cancellation rules.</div></td></tr>'
+    ) or '<tr><td colspan="6"><div class="empty"><strong>No reviewed rate plans yet.</strong><br>Create commercial terms before quoting deposits or cancellation rules.</div></td></tr>'
     billing_account_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("account_name"))}</option>'
         for item in billing_accounts
@@ -959,14 +968,14 @@ def render_building_page(
       </section>
       <section class="panel panel--wide">
         <div class="panel-head"><div><h2>Commercial rate plans</h2><p>Version pricing, deposits, included items, and cancellation terms. Approved versions are locked.</p></div><span class="count">{len(rate_plans)} versions</span></div>
-        <div class="table-wrap"><table><thead><tr><th>Plan</th><th>Price</th><th>Deposit</th><th>Effective</th><th>State</th></tr></thead><tbody>{rate_plan_rows}</tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>Plan</th><th>Price</th><th>Deposit</th><th>Effective</th><th>State</th><th>Review action</th></tr></thead><tbody>{rate_plan_rows}</tbody></table></div>
         <form class="form-grid" method="post" action="/admin/building/rate-plans">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="rate-offering">Offering</label><select id="rate-offering" name="offering_id" required><option value="">Choose offering</option>{offering_options}</select></div>
           <div class="field"><label for="rate-id">Stable rate-plan ID</label><input id="rate-id" name="rate_plan_id" required placeholder="arena-events-v1"></div>
           <div class="field"><label for="rate-version">Version</label><input id="rate-version" name="version" type="number" min="1" value="1" required></div>
           <div class="field"><label for="rate-name">Internal name</label><input id="rate-name" name="name" required placeholder="Arena standard"></div>
-          <div class="field"><label for="rate-status">State</label><select id="rate-status" name="status"><option value="draft">Draft</option><option value="approved">Approve and lock</option><option value="retired">Retire existing approved plan</option></select></div>
+          <div class="field"><label for="rate-status">State</label><select id="rate-status" name="status"><option value="draft">Draft</option><option value="in_review">Submit for review</option></select></div>
           <div class="field"><label for="rate-currency">Currency</label><input id="rate-currency" name="currency" value="USD" maxlength="3" required></div>
           <div class="field"><label for="rate-amount">Internal unit price (cents)</label><input id="rate-amount" name="unit_amount_cents" type="number" min="0" value="0" required></div>
           <div class="field"><label for="rate-public-price">Public price wording</label><input id="rate-public-price" name="public_price_display" placeholder="From $2,500/event"></div>
@@ -975,12 +984,15 @@ def render_building_page(
           <div class="field"><label for="rate-deposit-type">Deposit</label><select id="rate-deposit-type" name="deposit_type"><option value="none">None</option><option value="fixed">Fixed amount</option><option value="percent">Percentage</option></select></div>
           <div class="field"><label for="rate-deposit-amount">Fixed deposit (cents)</label><input id="rate-deposit-amount" name="deposit_amount_cents" type="number" min="0" value="0"></div>
           <div class="field"><label for="rate-deposit-percent">Deposit percent</label><input id="rate-deposit-percent" name="deposit_percent" type="number" min="0" max="100" step="0.01" value="0"></div>
+          <div class="field"><label for="rate-tax-status">Tax treatment</label><select id="rate-tax-status" name="tax_status"><option value="review_required">Review required</option><option value="taxable">Taxable</option><option value="non_taxable">Non-taxable</option></select></div>
+          <div class="field"><label for="rate-tax-percent">Tax percent</label><input id="rate-tax-percent" name="tax_rate_percent" type="number" min="0" max="100" step="0.01" value="0"></div>
           <div class="field"><label for="rate-from">Effective from</label><input id="rate-from" name="effective_from" type="date" required></div>
           <div class="field"><label for="rate-until">Effective until</label><input id="rate-until" name="effective_until" type="date"></div>
           <div class="field field--wide"><label for="rate-included">Included items</label><input id="rate-included" name="included" placeholder="Tables, chairs, standard cleaning"></div>
           <div class="field field--wide"><label for="rate-addons">Add-ons (JSON list)</label><textarea id="rate-addons" name="addons_json">[]</textarea></div>
           <div class="field field--wide"><label for="rate-cancellation">Cancellation policy</label><textarea id="rate-cancellation" name="cancellation_policy" placeholder="Required before approval."></textarea></div>
-          <div class="form-actions"><span class="form-note">Approval locks the commercial terms. Create a new version for later changes.</span><button class="primary" type="submit">Save rate plan</button></div>
+          <div class="field field--wide"><label for="rate-tax-note">Customer tax note</label><textarea id="rate-tax-note" name="tax_note" placeholder="State whether tax is included, calculated, or pending review. Required before approval."></textarea></div>
+          <div class="form-actions"><span class="form-note">Submit for review here. A pricing approver must separately provide evidence and type the approval phrase before the plan becomes public.</span><button class="primary" type="submit">Save rate plan</button></div>
         </form>
       </section>
       <section class="panel">

@@ -25,6 +25,7 @@ from sales_support_agent.api.building_router import (
     RatePlanInput,
     SpaceInput,
     SpaceMediaInput,
+    _date_ranges_overlap,
 )
 from sales_support_agent.api.building_booking_router import (
     EVENT_TRANSITIONS,
@@ -2184,11 +2185,18 @@ def save_rate_plan_from_control_room(
     cancellation_policy: str = Form(""),
     included: str = Form(""),
     addons_json: str = Form("[]"),
+    tax_status: str = Form("review_required"),
+    tax_rate_percent: float = Form(0),
+    tax_note: str = Form(""),
     effective_from: date = Form(...),
     effective_until: date | None = Form(None),
-    user: dict = Depends(require_tool("building.manage")),
+    user: dict = Depends(require_tool("building.pricing.manage")),
 ) -> RedirectResponse:
     actor = user.get("email") or "building-operator"
+    if status not in {"draft", "in_review"}:
+        return _building_redirect(
+            error="Save the plan as draft or in review; approval is a separate action."
+        )
     try:
         addons = json.loads(addons_json or "[]")
         if not isinstance(addons, list):
@@ -2209,6 +2217,9 @@ def save_rate_plan_from_control_room(
             cancellation_policy=cancellation_policy.strip(),
             included=[item.strip() for item in included.split(",") if item.strip()],
             addons=addons,
+            tax_status=tax_status,
+            tax_rate_bps=round(tax_rate_percent * 100),
+            tax_note=tax_note.strip(),
             effective_from=effective_from,
             effective_until=effective_until,
             approved_by=actor if status == "approved" else "",
@@ -2233,18 +2244,6 @@ def save_rate_plan_from_control_room(
         if row is not None and row.offering_id != offering_id:
             return _building_redirect(error="Rate plan belongs to another offering.")
         if row is not None and row.status in {"approved", "retired"}:
-            if row.status == "approved" and payload.status == "retired":
-                row.status = "retired"
-                row.updated_at = _now()
-                session.add(BuildingAuditEvent(
-                    entity_type="rate_plan",
-                    entity_id=row.id,
-                    action="retired_from_control_room",
-                    actor=actor,
-                    before_json=before,
-                    after_json={"status": "retired"},
-                ))
-                return _building_redirect(notice=f"{row.name} retired.")
             return _building_redirect(
                 error="Approved or retired terms are locked; create a new version."
             )
@@ -2257,18 +2256,6 @@ def save_rate_plan_from_control_room(
         ).scalar_one_or_none()
         if conflict is not None:
             return _building_redirect(error="That version already exists.")
-        if payload.status == "approved":
-            current = session.execute(
-                select(BuildingRatePlan).where(
-                    BuildingRatePlan.offering_id == offering_id,
-                    BuildingRatePlan.status == "approved",
-                    BuildingRatePlan.id != payload.id,
-                )
-            ).scalar_one_or_none()
-            if current is not None:
-                return _building_redirect(
-                    error="Retire the current approved rate plan first."
-                )
         if row is None:
             row = BuildingRatePlan(
                 id=payload.id,
@@ -2293,21 +2280,21 @@ def save_rate_plan_from_control_room(
             "cancellation_policy": payload.cancellation_policy,
             "included_json": payload.included,
             "addons_json": payload.addons,
+            "tax_status": payload.tax_status,
+            "tax_rate_bps": payload.tax_rate_bps,
+            "tax_note": payload.tax_note,
             "effective_from": payload.effective_from,
             "effective_until": payload.effective_until,
             "updated_at": _now(),
         }.items():
             setattr(row, key, value)
-        if payload.status == "approved":
-            row.approved_by = actor
-            row.approved_at = _now()
         session.add(row)
         session.add(BuildingAuditEvent(
             entity_type="rate_plan",
             entity_id=row.id,
             action=(
-                "approved_from_control_room"
-                if payload.status == "approved"
+                "submitted_for_review_from_control_room"
+                if payload.status == "in_review"
                 else "draft_saved_from_control_room"
             ),
             actor=actor,
@@ -2322,6 +2309,130 @@ def save_rate_plan_from_control_room(
             },
         ))
     return _building_redirect(notice=f"{payload.name} saved as {payload.status}.")
+
+
+@admin_router.post(
+    "/rate-plans/{rate_plan_id}/approve",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def approve_rate_plan_from_control_room(
+    rate_plan_id: str,
+    request: Request,
+    approval_evidence: str = Form(...),
+    confirmation: str = Form(...),
+    user: dict = Depends(require_tool("building.pricing.approve")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-pricing-approver"
+    if confirmation.strip() != f"APPROVE {rate_plan_id}":
+        return _building_redirect(error=f"Type APPROVE {rate_plan_id} to approve.")
+    if len(approval_evidence.strip()) < 5:
+        return _building_redirect(error="Approval requires evidence or a review reference.")
+    with session_scope(request.app.state.session_factory) as session:
+        row = session.get(BuildingRatePlan, rate_plan_id)
+        if row is None:
+            return _building_redirect(error="Rate plan not found.")
+        if row.status != "in_review":
+            return _building_redirect(error="Only an in-review rate plan may be approved.")
+        overlapping = session.execute(
+            select(BuildingRatePlan).where(
+                BuildingRatePlan.offering_id == row.offering_id,
+                BuildingRatePlan.status == "approved",
+                BuildingRatePlan.id != row.id,
+            )
+        ).scalars().all()
+        if any(
+            _date_ranges_overlap(
+                row.effective_from,
+                row.effective_until,
+                item.effective_from,
+                item.effective_until,
+            )
+            for item in overlapping
+        ):
+            return _building_redirect(
+                error="Approved rate-plan effective dates may not overlap."
+            )
+        try:
+            RatePlanInput(
+                id=row.id,
+                version=row.version,
+                name=row.name,
+                status="approved",
+                currency=row.currency,
+                unit_amount_cents=row.unit_amount_cents,
+                public_price_display=row.public_price_display,
+                booking_unit=row.booking_unit,
+                minimum_units=row.minimum_units,
+                deposit_type=row.deposit_type,
+                deposit_amount_cents=row.deposit_amount_cents,
+                deposit_percent_bps=row.deposit_percent_bps,
+                cancellation_policy=row.cancellation_policy,
+                included=list(row.included_json or []),
+                addons=list(row.addons_json or []),
+                tax_status=row.tax_status,
+                tax_rate_bps=row.tax_rate_bps,
+                tax_note=row.tax_note,
+                approval_evidence=approval_evidence.strip(),
+                effective_from=row.effective_from,
+                effective_until=row.effective_until,
+                approved_by=actor,
+                actor=actor,
+            )
+        except ValidationError as exc:
+            return _building_redirect(error=exc.errors()[0].get("msg", "Invalid rate plan."))
+        before = {"status": row.status}
+        row.status = "approved"
+        row.approved_by = actor
+        row.approved_at = _now()
+        row.approval_evidence = approval_evidence.strip()
+        row.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="rate_plan",
+            entity_id=row.id,
+            action="approved_from_control_room",
+            actor=actor,
+            before_json=before,
+            after_json={
+                "status": "approved",
+                "version": row.version,
+                "approval_evidence": row.approval_evidence,
+            },
+        ))
+    return _building_redirect(notice=f"{rate_plan_id} approved and locked.")
+
+
+@admin_router.post(
+    "/rate-plans/{rate_plan_id}/retire",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def retire_rate_plan_from_control_room(
+    rate_plan_id: str,
+    request: Request,
+    confirmation: str = Form(...),
+    user: dict = Depends(require_tool("building.pricing.approve")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-pricing-approver"
+    if confirmation.strip() != f"RETIRE {rate_plan_id}":
+        return _building_redirect(error=f"Type RETIRE {rate_plan_id} to retire.")
+    with session_scope(request.app.state.session_factory) as session:
+        row = session.get(BuildingRatePlan, rate_plan_id)
+        if row is None:
+            return _building_redirect(error="Rate plan not found.")
+        if row.status != "approved":
+            return _building_redirect(error="Only an approved rate plan may be retired.")
+        row.status = "retired"
+        row.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="rate_plan",
+            entity_id=row.id,
+            action="retired_from_control_room",
+            actor=actor,
+            before_json={"status": "approved"},
+            after_json={"status": "retired"},
+        ))
+    return _building_redirect(notice=f"{rate_plan_id} retired.")
 
 
 @admin_router.post(

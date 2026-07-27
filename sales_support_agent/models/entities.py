@@ -1534,6 +1534,12 @@ class BuildingRatePlan(Base):
     cancellation_policy: Mapped[str] = mapped_column(Text, default="")
     included_json: Mapped[list] = mapped_column(JSON, default=list)
     addons_json: Mapped[list] = mapped_column(JSON, default=list)
+    tax_status: Mapped[str] = mapped_column(
+        String(32), default="review_required", index=True
+    )
+    tax_rate_bps: Mapped[int] = mapped_column(Integer, default=0)
+    tax_note: Mapped[str] = mapped_column(Text, default="")
+    approval_evidence: Mapped[str] = mapped_column(Text, default="")
     effective_from: Mapped[date] = mapped_column(Date, index=True)
     effective_until: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
     approved_by: Mapped[str] = mapped_column(String(255), default="")
