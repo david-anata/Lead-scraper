@@ -45,6 +45,22 @@ def test_render_blueprint_uses_truthful_readiness_and_predeploy() -> None:
     assert "OUTBOUND_EMBEDDED_SCHEDULER" in blueprint
 
 
+def test_root_production_app_exposes_reliability_probes() -> None:
+    import main as production_main
+
+    paths = {
+        route.path
+        for route in production_main.app.routes
+        if hasattr(route, "path")
+    }
+    assert {
+        "/health",
+        "/health/live",
+        "/health/ready",
+        "/health/storage",
+    } <= paths
+
+
 def test_production_mode_skips_schema_and_backfill_during_app_construction(
     tmp_path: Path,
 ) -> None:

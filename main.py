@@ -203,8 +203,10 @@ try:
     from sales_support_agent.services.access.middleware import install_access_middleware  # noqa: E402
     from sales_support_agent.services.auth_deps import ToolForbidden, render_forbidden_response  # noqa: E402
     from sales_support_agent.services.performance import install_performance_middleware  # noqa: E402
+    from sales_support_agent.services.website_ops_storage import WebsiteOpsStorageMiddleware  # noqa: E402
     install_performance_middleware(app)
     install_access_middleware(app)
+    app.add_middleware(WebsiteOpsStorageMiddleware)
     app.add_exception_handler(ToolForbidden, render_forbidden_response)
 except Exception as _e:  # noqa: BLE001
     logger.warning("Could not install RBAC middleware: %s", _e)
@@ -833,6 +835,8 @@ def validate_settings_on_startup(settings: Settings) -> None:
 @app.on_event("startup")
 def startup() -> None:
     configure_logging()
+    app.state.ready = False
+    app.state.render_git_commit = RENDER_GIT_COMMIT or "unknown"
     settings = load_settings()
     app.state.settings = settings
     app.state.admin_dashboard_last_auto_sync_at = None
@@ -856,9 +860,25 @@ def startup() -> None:
         _runtime.mkdir(parents=True, exist_ok=True)
         _cf_db_url = f"sqlite:///{_runtime / 'sales_support_agent.sqlite3'}"
     _sf = create_session_factory(_cf_db_url)
-    init_database(_sf)
-    init_cashflow_db(_cf_db_url)
+    prepare_database_on_startup = os.getenv(
+        "AGENT_PREPARE_DATABASE_ON_STARTUP",
+        "true",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if prepare_database_on_startup:
+        init_database(_sf)
+        init_cashflow_db(_cf_db_url)
     app.state.session_factory = _sf  # required by sales_router and cashflow_router
+    if os.getenv("WEBSITE_OPS_DATABASE_MIRROR", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        from sales_support_agent.services.website_ops_storage import (
+            synchronize_website_ops_cache,
+        )
+
+        synchronize_website_ops_cache(settings, _sf.kw["bind"])
     # Store AdminDashboardSettings so cashflow auth_deps can always find
     # admin_cookie_name even when agent_settings fails to load.
     app.state.admin_dashboard_settings = load_admin_dashboard_settings()
@@ -890,6 +910,7 @@ def startup() -> None:
         GITHUB_STATE_REPO or "n/a",
         GITHUB_STATE_BRANCH,
     )
+    app.state.ready = True
 
 
 def _admin_cookie_options(request: Request, admin_settings: AdminDashboardSettings) -> dict[str, Any]:
@@ -5056,6 +5077,75 @@ def api_status() -> dict[str, str]:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/health/live")
+def health_live() -> dict[str, str]:
+    """Process-only liveness probe with no database or external calls."""
+
+    return {
+        "status": "live",
+        "render_git_commit": RENDER_GIT_COMMIT or "unknown",
+    }
+
+
+@app.get("/health/ready")
+def health_ready(request: Request) -> JSONResponse:
+    """Fail closed until startup completes and PostgreSQL answers one query."""
+
+    commit = RENDER_GIT_COMMIT or "unknown"
+    if not bool(getattr(request.app.state, "ready", False)):
+        return JSONResponse(
+            {
+                "status": "not_ready",
+                "render_git_commit": commit,
+                "reason": "application_initializing",
+            },
+            status_code=503,
+        )
+    try:
+        from sqlalchemy import text as sql_text
+
+        with request.app.state.session_factory() as session:
+            session.execute(sql_text("SELECT 1"))
+    except Exception:  # noqa: BLE001
+        logger.exception("readiness status=failed commit=%s", commit)
+        return JSONResponse(
+            {
+                "status": "not_ready",
+                "render_git_commit": commit,
+                "reason": "database_unavailable",
+            },
+            status_code=503,
+        )
+    return JSONResponse(
+        {"status": "ready", "render_git_commit": commit}
+    )
+
+
+@app.get("/health/storage")
+def health_storage(request: Request) -> JSONResponse:
+    """Non-sensitive proof that Website Ops files are durable in PostgreSQL."""
+
+    from sales_support_agent.services.website_ops_storage import (
+        database_mirror_enabled,
+        website_ops_storage_status,
+    )
+
+    if not database_mirror_enabled():
+        return JSONResponse(
+            {"status": "disabled", "files": 0, "bytes": 0}
+        )
+    try:
+        payload = website_ops_storage_status(
+            request.app.state.session_factory.kw["bind"]
+        )
+    except Exception:  # noqa: BLE001
+        return JSONResponse(
+            {"status": "unavailable", "files": 0, "bytes": 0},
+            status_code=503,
+        )
+    return JSONResponse({"status": "ready", **payload})
 
 
 @app.post("/run-lead-build", response_model=None)
