@@ -56,6 +56,15 @@ class BuildingBookingTests(unittest.TestCase):
                 "space_type": "event",
                 "capacity": 120,
                 "status": "available",
+                "public_description": "A flexible event venue.",
+                "media": [{
+                    "id": "arena-card",
+                    "src": "/media/arena.webp",
+                    "kind": "image",
+                    "alt": "Open event floor in The Arena",
+                    "placement": "card",
+                    "approved": True,
+                }],
                 "is_public": True,
             },
         )
@@ -82,6 +91,8 @@ class BuildingBookingTests(unittest.TestCase):
                 "name": "Arena events",
                 "offering_type": "event",
                 "space_id": "arena",
+                "public_description": "Host an event in The Arena.",
+                "price_display": "From $2,500",
                 "is_published": True,
             },
         )

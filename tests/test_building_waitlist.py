@@ -57,6 +57,15 @@ class BuildingWaitlistTests(unittest.TestCase):
                 "name": "Waitlist Office",
                 "space_type": "private_office",
                 "status": "turnover",
+                "public_description": "A private office opening soon.",
+                "media": [{
+                    "id": "waitlist-office-card",
+                    "src": "/media/waitlist-office.webp",
+                    "kind": "image",
+                    "alt": "Private office opening soon",
+                    "placement": "card",
+                    "approved": True,
+                }],
                 "is_public": True,
             },
         )
@@ -71,6 +80,8 @@ class BuildingWaitlistTests(unittest.TestCase):
                 "name": "Waitlist Office",
                 "offering_type": "private_office",
                 "space_id": "waitlist-office",
+                "public_description": "Join the waitlist for this private office.",
+                "price_display": "Contact us for pricing",
                 "is_published": True,
             },
         )
