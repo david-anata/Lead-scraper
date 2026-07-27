@@ -1089,9 +1089,16 @@ def current_clock(employee_email: str) -> Optional[dict]:
         return ({"id": row.id, "clocked_in_at": row.clocked_in_at} if row else None)
 
 
-def time_review_flags(employee_email: Optional[str] = None) -> list[dict]:
+def time_review_flags(
+    employee_email: Optional[str] = None, *, start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> list[dict]:
     """Flag long shifts and 36/40-hour Sunday-Saturday thresholds."""
     entries = list_time_entries(employee_email, limit=500)
+    if start_date:
+        entries = [entry for entry in entries if entry["date"] >= start_date]
+    if end_date:
+        entries = [entry for entry in entries if entry["date"] <= end_date]
     flags: list[dict] = []
     week_totals: dict[tuple[str, date], float] = {}
     for entry in entries:

@@ -529,7 +529,9 @@ async def hr_time(
         entry_page, store.pto_summary(email),
         scoped(store.list_pto_requests(None)), store.current_clock(email),
         scoped(store.list_time_corrections(None)),
-        scoped(store.time_review_flags(None)),
+        scoped(store.time_review_flags(
+            None, start_date=period.start_date, end_date=period.end_date
+        )),
         scoped(store.list_timesheet_approvals(
             period.start_date, period.end_date, None
         )),
