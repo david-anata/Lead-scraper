@@ -4,10 +4,18 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import logging
+from pathlib import Path
+import sys
 import time
 from typing import Iterator
 
 from sqlalchemy import text
+
+# Render invokes this file directly, which otherwise places ``scripts/`` rather
+# than the repository root on Python's import path.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from sales_support_agent.config import load_settings
 from sales_support_agent.models.database import (
