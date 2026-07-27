@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -515,7 +516,9 @@ def _ensure_plaid_account_columns(engine: Any) -> None:
         ))
 
 
-def _ensure_plaid_environment_column(engine: Any) -> None:
+def _ensure_plaid_environment_column(
+    engine: Any, *, current_environment: str | None = None,
+) -> None:
     """Keep Sandbox, Development, and Production Plaid Items isolated."""
 
     inspector = inspect(engine)
@@ -536,6 +539,24 @@ def _ensure_plaid_environment_column(engine: Any) -> None:
             "UPDATE plaid_items SET environment='sandbox' "
             "WHERE environment IS NULL OR environment=''"
         ))
+        environment = str(
+            current_environment
+            or os.getenv("PLAID_ENV", "sandbox")
+            or "sandbox"
+        ).lower()
+        if environment == "production":
+            # Production was approved on 2026-07-23. A real pilot Item was
+            # connected after approval but before the environment column
+            # existed, so the first migration conservatively labeled it as
+            # Sandbox. Items created before approval remain Sandbox history;
+            # post-approval Items are the Production pilot.
+            connection.execute(text("""
+                UPDATE plaid_items
+                SET environment='production'
+                WHERE environment='sandbox' AND created_at >= :approved_at
+            """), {
+                "approved_at": datetime(2026, 7, 23, tzinfo=timezone.utc),
+            })
 
 
 def _backfill_legacy_settlements(engine: Any) -> None:
