@@ -98,6 +98,16 @@ services:
         value: david@anatainc.com
       - key: WEBSITE_OPS_EMAIL_FROM
         value: Anata Agent <noreply@anatainc.com>
+      - key: WEBSITE_OPS_GITHUB_TOKEN
+        sync: false
+      - key: WEBSITE_OPS_GITHUB_REPOSITORY
+        value: david-anata/anata-website
+      - key: WEBSITE_OPS_GITHUB_BRANCH
+        value: main
+      - key: WEBSITE_OPS_DEPLOY_VERIFY_TIMEOUT_SECONDS
+        value: "300"
+      - key: WEBSITE_OPS_DEPLOY_VERIFY_POLL_SECONDS
+        value: "15"
       - key: CANVA_CLIENT_ID
         sync: false
       - key: CANVA_CLIENT_SECRET
