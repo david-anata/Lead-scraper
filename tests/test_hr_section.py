@@ -630,6 +630,65 @@ class HRSectionTests(unittest.TestCase):
         }, _cookie("val@anatainc.com"))
         self.assertIn("correction_approved", approved.headers["location"])
 
+    def test_authorized_manager_can_propose_only_assigned_time_correction(self):
+        import uuid
+        from datetime import datetime, timezone
+        from sqlalchemy.orm import Session
+        from sales_support_agent.models.database import get_engine
+        from sales_support_agent.models.hr import HRTimeEntry
+
+        suffix = uuid.uuid4().hex[:8]
+        manager = f"manager-correction-{suffix}@anatainc.com"
+        employee = f"assigned-correction-{suffix}@anatainc.com"
+        outsider = f"outside-correction-{suffix}@anatainc.com"
+        for email in (employee, outsider):
+            hr_store.create_employee(email=email, full_name=email.split("@")[0])
+        hr_store.upsert_employment_profile(
+            employee, hire_date=date(2026, 1, 1), manager_email=manager,
+            actor="test",
+        )
+        manager_id = access_store.upsert_user(manager, "Time Manager")
+        access_store.set_user_permissions(
+            manager_id, ["hr.access", "hr.time.approve_team"]
+        )
+        with Session(get_engine()) as session:
+            assigned_entry = HRTimeEntry(
+                employee_email=employee, date=date(2026, 7, 23),
+                start_time="08:00", stop_time="16:00", hours=8,
+                elapsed_seconds=28800, clocked_in_at=datetime.now(timezone.utc),
+            )
+            outside_entry = HRTimeEntry(
+                employee_email=outsider, date=date(2026, 7, 23),
+                start_time="08:00", stop_time="16:00", hours=8,
+                elapsed_seconds=28800, clocked_in_at=datetime.now(timezone.utc),
+            )
+            session.add_all([assigned_entry, outside_entry])
+            session.commit()
+            assigned_id, outside_id = assigned_entry.id, outside_entry.id
+
+        proposed = self._post(
+            f"/admin/hr/time/{assigned_id}/correction",
+            {
+                "proposed_start": "08:15", "proposed_stop": "16:00",
+                "reason": "Manager reviewed the employee note",
+            },
+            _cookie(manager),
+        )
+        self.assertIn("correction_requested", proposed.headers["location"])
+        correction = hr_store.list_time_corrections(employee)[0]
+        self.assertEqual(correction["requested_by"], manager)
+        self.assertEqual(correction["employee_email"], employee)
+
+        blocked = self._post(
+            f"/admin/hr/time/{outside_id}/correction",
+            {
+                "proposed_start": "08:15", "proposed_stop": "16:00",
+                "reason": "Not assigned",
+            },
+            _cookie(manager),
+        )
+        self.assertEqual(blocked.status_code, 403)
+
     def test_reports_include_accountant_registers(self):
         page = self._get("/admin/hr/reports", self.sa)
         self.assertEqual(page.status_code, 200)

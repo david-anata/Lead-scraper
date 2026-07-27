@@ -143,6 +143,14 @@ def _can_view_compensation(user: dict) -> bool:
     }.intersection(permissions))
 
 
+def _can_review_time(user: dict) -> bool:
+    permissions = user.get("permissions") or set()
+    return bool(
+        user.get("is_superadmin")
+        or {"hr.payroll", "hr.time.approve_team"}.intersection(permissions)
+    )
+
+
 def _hide_compensation(employee: dict) -> dict:
     safe = dict(employee)
     safe.pop("hourly_rate", None)
@@ -556,10 +564,26 @@ async def hr_time_correction(
     proposed_stop: str = Form(""), reason: str = Form(""),
     user: dict = Depends(_guard),
 ):
-    email = (user.get("email") or "").strip().lower()
+    actor = (user.get("email") or "").strip().lower()
+    entries = store.list_time_entries(None, limit=500)
+    entry = next(
+        (item for item in entries if int(item.get("id") or 0) == time_entry_id),
+        None,
+    )
+    if not entry:
+        return RedirectResponse(
+            "/admin/hr/time?err=correction_not_found", status_code=303
+        )
+    target_email = (entry.get("employee_email") or "").strip().lower()
+    if target_email != actor:
+        if not _can_review_time(user):
+            raise HTTPException(
+                status_code=403, detail="You cannot correct another employee's time."
+            )
+        _require_team_record(user, entries, time_entry_id)
     ok, message = store.request_time_correction(
-        time_entry_id, employee_email=email, proposed_start=proposed_start,
-        proposed_stop=proposed_stop, reason=reason, actor=email,
+        time_entry_id, employee_email=target_email, proposed_start=proposed_start,
+        proposed_stop=proposed_stop, reason=reason, actor=actor,
     )
     return RedirectResponse(f"/admin/hr/time?{'ok' if ok else 'err'}={message}", status_code=303)
 
