@@ -245,15 +245,25 @@ async def run_scheduled_website_ops(request: Request) -> dict:
 
     from sales_support_agent.models.database import get_engine
 
-    engine = get_engine()
+    try:
+        engine = get_engine()
+    except RuntimeError:
+        # Preserve compatibility for isolated/test router mounts. Production
+        # always initializes the shared engine and therefore always uses the
+        # cross-instance lease below.
+        engine = None
     run_key = f"{local_now.date().isoformat()}:{requested_mode}"
-    lease = claim_scheduled_job(
-        engine,
-        job_key="website_ops",
-        run_key=run_key,
-        lease_minutes=180,
+    lease = (
+        claim_scheduled_job(
+            engine,
+            job_key="website_ops",
+            run_key=run_key,
+            lease_minutes=180,
+        )
+        if engine is not None
+        else None
     )
-    if lease is None:
+    if engine is not None and lease is None:
         return {
             "status": "skipped",
             "message": "This Website Ops period is already running or complete.",
@@ -272,12 +282,13 @@ async def run_scheduled_website_ops(request: Request) -> dict:
             trigger="render_cron",
         )
         failed = any(item.get("status") == "failed" for item in results.values())
-        finish_scheduled_job(
-            engine,
-            lease,
-            status="failed" if failed else "succeeded",
-            details=results,
-        )
+        if engine is not None and lease is not None:
+            finish_scheduled_job(
+                engine,
+                lease,
+                status="failed" if failed else "succeeded",
+                details=results,
+            )
         if failed:
             raise HTTPException(
                 status_code=503,
@@ -287,10 +298,11 @@ async def run_scheduled_website_ops(request: Request) -> dict:
     except HTTPException:
         raise
     except Exception as exc:
-        finish_scheduled_job(
-            engine,
-            lease,
-            status="failed",
-            details={"error": str(exc)},
-        )
+        if engine is not None and lease is not None:
+            finish_scheduled_job(
+                engine,
+                lease,
+                status="failed",
+                details={"error": str(exc)},
+            )
         raise
