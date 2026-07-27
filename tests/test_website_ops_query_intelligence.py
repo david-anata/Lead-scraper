@@ -69,6 +69,63 @@ def test_two_independent_signals_validate_one_owner() -> None:
     assert clusters[0]["ownership_status"] == "assigned"
 
 
+def test_search_operator_query_is_audited_but_cannot_validate() -> None:
+    page = _page()
+    page["aeo"]["observed_queries"] = [
+        {
+            "query": '"amazon ppc" -site:reddit.com -site:youtube.com',
+            "clicks": 0,
+            "impressions": 2,
+            "source": "observed",
+        }
+    ]
+    records = collect_query_observations([page])
+    operator_record = next(
+        item for item in records if item["evidence_class"] == "observed_search"
+    )
+    clusters = build_clusters(records, [page])
+
+    assert operator_record["quality_status"] == "quarantined"
+    assert operator_record["raw_query"].startswith('"amazon ppc"')
+    assert not any(item["validation_status"] == "validated" for item in clusters)
+    quarantined = next(
+        item for item in clusters if item["quality_status"] == "quarantined"
+    )
+    assert quarantined["observed_impressions"] == 0
+    assert "Search-operator query" in quarantined["quality_reasons"][0]
+
+
+def test_brand_lookalike_observation_does_not_validate_anata_prompt() -> None:
+    page = {
+        "page_url": "https://anatainc.com/careers",
+        "page_title": "Careers | Anata",
+        "aeo": {
+            "answer_readiness": "ready",
+            "observed_queries": [
+                {
+                    "query": "anaconda careers",
+                    "clicks": 0,
+                    "impressions": 8,
+                    "source": "observed",
+                }
+            ],
+            "observed_customer_questions": [],
+            "simulated_coverage_prompts": [
+                {
+                    "facet": "brand",
+                    "prompt": "What is Anata careers?",
+                    "source": "simulated",
+                }
+            ],
+        },
+    }
+    records = collect_query_observations([page])
+    clusters = build_clusters(records, [page])
+
+    assert len({item["cluster_id"] for item in records}) == 2
+    assert not any(item["validation_status"] == "validated" for item in clusters)
+
+
 def test_observed_overlap_creates_cannibalization_conflict() -> None:
     primary = _page(impressions=42)
     competing = _page(
