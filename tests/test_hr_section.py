@@ -439,6 +439,60 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("ending in <strong>6789</strong>", page.text)
         self.assertNotIn("123-45-6789", page.text)
         self.assertNotIn("123456789", page.text)
+        self.assertIn("✓ W-4 saved", page.text)
+        self.assertIn("Review or replace my W-4", page.text)
+        self.assertIn("Other income ($)", page.text)
+        self.assertIn("Exempt is uncommon", page.text)
+
+    def test_team_only_edit_does_not_require_pay_change_reason_and_roster_updates(self):
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        team_id = hr_store.create_team(name=f"Building {suffix}", manager_email="val@anatainc.com")
+        employee_id = hr_store.create_employee(
+            email=f"val-{suffix}@anatainc.com", full_name="Val Test",
+            hourly_rate="20", employee_type="hourly",
+        )
+        saved = self._post(
+            f"/admin/hr/employees/{employee_id}",
+            {
+                "full_name": "Val Test", "hr_role": "employee",
+                "employee_type": "hourly", "team_id": str(team_id),
+                "hourly_rate": "20", "annual_salary": "0",
+                "pay_basis": "hourly", "fixed_pay_per_period": "0",
+                "standard_weekly_hours": "40", "status": "active",
+            },
+            self.sa,
+        )
+        self.assertEqual(saved.status_code, 303)
+        team_page = self._get("/admin/hr/teams", self.sa)
+        self.assertIn("Val Test", team_page.text)
+        self.assertIn(f"/admin/hr/employees/{employee_id}", team_page.text)
+
+    def test_time_page_explains_period_and_paginates_visible_punches(self):
+        page = self._get("/admin/hr/time?page_size=10", self.sa)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("View pay period", page.text)
+        self.assertIn("does not open or alter payroll", page.text)
+        self.assertIn("Page 1 of", page.text)
+        self.assertIn("Employees see only their own punches", page.text)
+
+    def test_pto_rejects_weekends_holidays_and_overlaps(self):
+        import uuid
+        email = f"pto-guard-{uuid.uuid4().hex[:8]}@anatainc.com"
+        hr_store.create_employee(email=email, full_name="PTO Guard")
+        hr_store.upsert_employment_profile(
+            email, hire_date=date(2025, 1, 1), actor="test"
+        )
+        weekend = hr_store.create_pto_request(
+            email, start_date=date(2026, 8, 8), end_date=date(2026, 8, 8),
+            hours=8, reason="", actor=email,
+        )
+        holiday = hr_store.create_pto_request(
+            email, start_date=date(2026, 9, 7), end_date=date(2026, 9, 7),
+            hours=8, reason="", actor=email,
+        )
+        self.assertEqual(weekend, (False, "pto_non_workday"))
+        self.assertEqual(holiday, (False, "pto_paid_holiday"))
 
     def test_onboarding_correction_preserves_submission_and_shows_employee_reason(self):
         self._post("/admin/hr/onboarding/profile", {

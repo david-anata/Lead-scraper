@@ -888,7 +888,28 @@ def _team_dict(t: HRTeam) -> dict:
 def list_teams() -> list:
     with _session() as s:
         rows = s.query(HRTeam).order_by(HRTeam.name.asc()).all()
-        return [_team_dict(t) for t in rows]
+        teams = []
+        for team in rows:
+            item = _team_dict(team)
+            members = (
+                s.query(HREmployee)
+                .filter(HREmployee.team_id == str(team.id), HREmployee.status == "active")
+                .order_by(HREmployee.full_name, HREmployee.email)
+                .all()
+            )
+            item["members"] = [
+                {
+                    "id": member.id, "full_name": member.full_name or member.email,
+                    "email": member.email,
+                    "title": (
+                        s.query(HREmploymentProfile.title)
+                        .filter_by(employee_email=member.email).scalar() or ""
+                    ),
+                }
+                for member in members
+            ]
+            teams.append(item)
+        return teams
 
 
 def create_team(*, name: str, manager_email: str = "", description: str = "") -> Optional[int]:
@@ -1453,6 +1474,19 @@ def create_pto_request(employee_email: str, *, start_date: date, end_date: date,
                        hours: float, reason: str, actor: str) -> tuple[bool, str]:
     if end_date < start_date or hours <= 0:
         return False, "invalid_request"
+    requested_dates = [
+        start_date + timedelta(days=offset)
+        for offset in range((end_date - start_date).days + 1)
+    ]
+    if any(day.weekday() >= 5 for day in requested_dates):
+        return False, "pto_non_workday"
+    holiday_dates = {
+        holiday["observed_date"]
+        for year in range(start_date.year, end_date.year + 1)
+        for holiday in paid_holidays(year)
+    }
+    if any(day in holiday_dates for day in requested_dates):
+        return False, "pto_paid_holiday"
     from sales_support_agent.services.hr.payroll import semimonthly_period
     if (
         semimonthly_period(start_date).start_date
@@ -1475,6 +1509,14 @@ def create_pto_request(employee_email: str, *, start_date: date, end_date: date,
         )
         if hours > max(0, summary["available"] - pending):
             return False, "pto_insufficient"
+        conflict = s.query(HRPTORequest).filter(
+            HRPTORequest.employee_email == email,
+            HRPTORequest.status.in_(("pending", "approved")),
+            HRPTORequest.start_date <= end_date,
+            HRPTORequest.end_date >= start_date,
+        ).first()
+        if conflict:
+            return False, "pto_conflict"
         row = HRPTORequest(employee_email=email, start_date=start_date, end_date=end_date,
                            hours=Decimal(str(round(hours, 2))), reason=(reason or "").strip())
         s.add(row)

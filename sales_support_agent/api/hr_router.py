@@ -292,11 +292,17 @@ async def employee_update(
     if not employee:
         return RedirectResponse("/admin/hr/employees?err=not_found", status_code=303)
     employment = employee.get("employment") or {}
+    stored_pay_basis = employment.get("pay_basis") or (
+        "fixed_semimonthly" if employee.get("employee_type") == "salaried" else "hourly"
+    )
     prior_compensation = {
-        "employee_type": employee.get("employee_type", ""),
+        "employee_type": (
+            "salaried" if stored_pay_basis == "fixed_semimonthly"
+            else employee.get("employee_type", "hourly")
+        ),
         "hourly_rate_cents": int(employee.get("hourly_rate_cents") or 0),
         "annual_salary_cents": int(employee.get("annual_salary_cents") or 0),
-        "pay_basis": employment.get("pay_basis", ""),
+        "pay_basis": stored_pay_basis,
         "fixed_pay_per_period_cents": int(
             employment.get("fixed_pay_per_period_cents") or 0
         ),
@@ -492,7 +498,8 @@ async def team_create(
 
 @router.get("/time", response_class=HTMLResponse)
 async def hr_time(
-    request: Request, period_date: date | None = None, user: dict = Depends(_guard)
+    request: Request, period_date: date | None = None, page: int = 1,
+    page_size: int = 10, user: dict = Depends(_guard)
 ):
     email = (user.get("email") or "").strip().lower()
     can_review = bool(
@@ -510,15 +517,24 @@ async def hr_time(
             if item.get("employee_email") in managed
         ]
 
+    scoped_entries = [
+        item for item in scoped(store.list_time_entries(None, limit=500))
+        if period.start_date <= item.get("date") <= period.end_date
+    ]
+    page_size = page_size if page_size in {10, 25} else 10
+    page_count = max(1, (len(scoped_entries) + page_size - 1) // page_size)
+    page = max(1, min(page, page_count))
+    entry_page = scoped_entries[(page - 1) * page_size:page * page_size]
     return HTMLResponse(render_hr_time(
-        scoped(store.list_time_entries(None)), store.pto_summary(email),
+        entry_page, store.pto_summary(email),
         scoped(store.list_pto_requests(None)), store.current_clock(email),
         scoped(store.list_time_corrections(None)),
         scoped(store.time_review_flags(None)),
         scoped(store.list_timesheet_approvals(
             period.start_date, period.end_date, None
         )),
-        period,
+        period, entry_total=len(scoped_entries), entry_page=page,
+        entry_page_size=page_size, entry_page_count=page_count,
         user=user, flash=_flash(request)))
 
 

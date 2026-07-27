@@ -51,6 +51,14 @@ _HR_STYLES = """
   .hr-kicker { font:700 11px Montserrat,Inter,sans-serif; letter-spacing:.06em; text-transform:uppercase; color:#52606d; }
   .hr-stack { display:grid; gap:14px; }
   .hr-inline { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .hr-help { color:#52606d; font-size:13px; line-height:1.5; margin:5px 0 10px; }
+  .hr-saved { background:#e6f4ec; border:1px solid #79b99d; border-radius:14px; padding:18px 20px; margin:0 0 18px; }
+  .hr-saved strong { color:#245f49; }
+  .hr-avatar-row { display:flex; align-items:center; gap:8px; overflow-x:auto; padding:4px 0; max-width:520px; }
+  .hr-person-chip { flex:0 0 auto; display:flex; align-items:center; gap:8px; padding:5px 9px 5px 5px; border:1px solid rgba(43,54,68,.12); border-radius:999px; color:#1c2430; text-decoration:none; background:#fff; }
+  .hr-avatar { width:34px; height:34px; border-radius:50%; background:#e8f3f7; color:#1c5265; display:grid; place-items:center; font:700 12px Montserrat,Inter,sans-serif; border:2px solid #fff; }
+  .hr-person-chip small { display:block; color:#52606d; max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hr-pagination { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:12px 0 28px; }
   .hr-dashboard-action { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:18px 20px; background:#fff; border:1px solid rgba(43,54,68,.1); border-radius:14px; }
   .hr-dashboard-action .hr-sub { margin:0; max-width:720px; }
   .hr-btn-danger { background:#8b3a32; }
@@ -210,6 +218,9 @@ def _flash(flash: Optional[str]) -> str:
         "pto_not_eligible": "The requested date is before your PTO eligibility date.",
         "pto_insufficient": "The request exceeds your available PTO balance.",
         "pto_split_period_required": "Submit separate PTO requests on each side of the 15th/16th payroll boundary.",
+        "pto_non_workday": "PTO can only be requested for scheduled weekdays. Remove Saturday or Sunday from the request.",
+        "pto_paid_holiday": "That request includes a paid Anata holiday, so PTO is not needed for that day.",
+        "pto_conflict": "Those dates overlap an existing pending or approved PTO request.",
         "pii_secret_missing": "Secure tax storage is not configured. Ask David or Val to finish setup.",
         "invalid_w4": "Review the SSN and W-4 selections.",
         "attestation_required": "You must complete and sign your own attestation.",
@@ -403,6 +414,7 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
     {err}
     <h1 class="hr-h1">{_esc(title)}</h1>
     <p class="hr-sub">Employer-owned identity, employment, classification, and compensation setup.</p>
+    {'' if is_new else '<p><a class="hr-btn hr-btn-light" href="/admin/hr/teams">View team roster</a></p>'}
     <form class="hr-form" method="post" action="{action}">
       <div class="hr-grid2">
         <div><label>Email *</label>{email_field}</div>
@@ -459,7 +471,9 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
     </form>
     <form class="hr-form" method="post" action="/admin/hr/employees/{e["id"]}/onboarding-review" style="margin-top:18px">
       <div class="hr-kicker">Employer I-9 review</div>
-      <p>Review acceptable documents directly. Do not ask the employee to email identity documents.</p>
+      <p><strong>Your job:</strong> After the employee completes Section 1, examine the acceptable original documents they choose and complete the employer section within the federal deadline. Do not tell the employee which document to present.</p>
+      <div class="hr-callout warn"><p>Do not ask the employee to email identity documents and do not upload copies here. Record only the document category and the date you completed the review. If a document has an expiration date that requires follow-up, record it below.</p></div>
+      <p><a href="https://www.uscis.gov/i-9-central/form-i-9-acceptable-documents" target="_blank" rel="noopener">See USCIS acceptable documents and employer instructions</a>.</p>
       <label>Document type/category</label><input name="i9_document_type" required placeholder="List A, or List B + List C">
       <div class="hr-grid2"><div><label>Verified date</label><input type="date" name="i9_verified_date" required></div>
       <div><label>Expiration date, if applicable</label><input type="date" name="i9_expiration_date"></div></div>
@@ -476,19 +490,32 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
 
 
 def render_hr_teams(teams: list, *, user, flash=None) -> str:
+    def member_cell(team: dict) -> str:
+        members = team.get("members") or []
+        if not members:
+            return '<span class="hr-sub">No one assigned yet</span>'
+        return '<div class="hr-avatar-row">' + "".join(
+            f'<a class="hr-person-chip" href="/admin/hr/employees/{m["id"]}" '
+            f'title="{_esc(m["full_name"])} — {_esc(m.get("title") or "No title set")}" '
+            f'aria-label="Edit {_esc(m["full_name"])}"><span class="hr-avatar">{_esc("".join(part[0] for part in m["full_name"].split()[:2]).upper())}</span>'
+            f'<span><strong>{_esc(m["full_name"])}</strong><small>{_esc(m.get("title") or "No title set")}</small></span></a>'
+            for m in members
+        ) + "</div>"
     rows = "".join(
         f"""<tr><td style="font-weight:600">{_esc(t['name'])}</td>
             <td class="hr-sub" style="margin:0">{_esc(t['manager_email'] or '—')}</td>
+            <td>{member_cell(t)}<div class="hr-help">{len(t.get("members") or [])} active member(s)</div></td>
             <td>{_esc(t['description'] or '')}</td></tr>"""
         for t in teams)
     if not rows:
-        rows = '<tr><td colspan="3" class="hr-empty">No teams yet.</td></tr>'
+        rows = '<tr><td colspan="4" class="hr-empty">No teams yet.</td></tr>'
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">Teams</h1>
-    <p class="hr-sub">Departments / teams employees belong to.</p>
+    <p class="hr-sub">Create the group here, then assign people from their employee record. A manager can lead the team and each employee can also have a direct manager.</p>
+    <div class="hr-callout"><strong>How teams work</strong><p>1. Add the team below. 2. Enter the team manager's work email. 3. Open a team member below—or go to Employees—to assign their Team and Manager. Changes appear here after the employee record is saved.</p><a class="hr-btn hr-btn-light" href="/admin/hr/employees">Open employees</a></div>
     <table class="hr-tbl" style="margin-bottom:24px">
-      <thead><tr><th>Team</th><th>Manager</th><th>Description</th></tr></thead>
+      <thead><tr><th>Team</th><th>Manager</th><th>People</th><th>Description</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>
     <form class="hr-form" method="post" action="/admin/hr/teams" style="max-width:560px">
@@ -517,6 +544,8 @@ def render_hr_coming_soon(active: str, title: str, blurb: str, *, user) -> str:
 def render_hr_time(
     entries: list, pto: dict, pto_requests: list, current: Optional[dict],
     corrections: list, review_flags: list, timesheets: list, period,
+    entry_total: int = 0, entry_page: int = 1, entry_page_size: int = 10,
+    entry_page_count: int = 1,
     *, user, flash=None
 ) -> str:
     punch_action = "out" if current else "in"
@@ -549,21 +578,36 @@ def render_hr_time(
         for item in timesheets
     ) or '<tr><td colspan="5" class="hr-empty">No timesheets submitted for this period.</td></tr>'
     flags_html = (
-        '<div class="hr-callout warn"><div class="hr-kicker">Time review</div><ul>'
+        '<div class="hr-callout warn"><div class="hr-kicker">Time needing attention</div>'
+        '<p>These are review flags, not automatic payroll changes.</p>'
+        '<table class="hr-tbl"><thead><tr><th>Employee</th><th>Issue</th><th>Level</th></tr></thead><tbody>'
         + "".join(
-            f"<li>{_esc(flag.get('employee_email'))}: {_esc(flag.get('message'))}</li>"
+            f"<tr><td>{_esc(flag.get('employee_email'))}</td>"
+            f"<td>{_esc(flag.get('message'))}</td>"
+            f"<td>{_esc(flag.get('severity', 'review').title())}</td></tr>"
             for flag in review_flags
-        ) + "</ul></div>"
+        ) + "</tbody></table></div>"
     ) if review_flags else ""
+    previous_link = (
+        f'<a class="hr-btn hr-btn-light" href="/admin/hr/time?period_date={_esc(period.start_date)}&page={entry_page - 1}&page_size={entry_page_size}">Previous</a>'
+        if entry_page > 1 else ""
+    )
+    next_link = (
+        f'<a class="hr-btn hr-btn-light" href="/admin/hr/time?period_date={_esc(period.start_date)}&page={entry_page + 1}&page_size={entry_page_size}">Next</a>'
+        if entry_page < entry_page_count else ""
+    )
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">Time & PTO</h1>
-    <p class="hr-sub">Simple daily punches. Paid breaks stay inside the workday; no location is collected.</p>
+    <p class="hr-sub">Employees see only their own punches and requests. Authorized HR and time reviewers see the employees assigned to them.</p>
     <form class="hr-inline" method="get" action="/admin/hr/time">
       <label for="time-period">Choose a date inside the pay period</label>
       <input id="time-period" type="date" name="period_date" value="{_esc(period.start_date)}">
-      <button class="hr-btn hr-btn-light" type="submit">Open period</button>
+      <button class="hr-btn hr-btn-light" type="submit">View pay period</button>
     </form>
+    <div class="hr-callout"><div class="hr-kicker">Pay period in view</div>
+      <p><strong>{_esc(period.start_date)} through {_esc(period.end_date)}</strong>. Choosing a date changes the punches, timesheet, and review period shown below; it does not open or alter payroll.</p>
+    </div>
     <div class="hr-callout"><div class="hr-kicker">Your time clock</div>
       <p>{'Clocked in. Your time is running.' if current else 'You are currently clocked out.'}</p>
       <form method="post" action="/admin/hr/time/clock"><input type="hidden" name="action" value="{punch_action}">
@@ -575,7 +619,10 @@ def render_hr_time(
       <div class="hr-card"><div class="n">{pto.get('used',0):.2f}</div><div class="l">PTO hours used</div></div>
     </div>
     <p class="hr-sub">{'PTO is available for requests.' if pto.get('eligible') else f'PTO becomes usable on {_esc(pto.get("eligible_date") or "the configured eligibility date")}.'}</p>
-    <h2>Recent punches</h2><table class="hr-tbl"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Employee</th><th>Correction</th></tr></thead><tbody>{rows}</tbody></table>
+    <div class="hr-row-head"><div><h2>Recent punches</h2><p class="hr-sub" style="margin:0">Showing {len(entries)} of {entry_total} visible punch(es)</p></div>
+      <form class="hr-inline" method="get" action="/admin/hr/time"><input type="hidden" name="period_date" value="{_esc(period.start_date)}"><label for="punch-page-size">Rows</label><select id="punch-page-size" name="page_size"><option value="10"{' selected' if entry_page_size == 10 else ''}>10</option><option value="25"{' selected' if entry_page_size == 25 else ''}>25</option></select><button class="hr-btn hr-btn-light" type="submit">Apply</button></form></div>
+    <table class="hr-tbl"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Employee</th><th>Correction</th></tr></thead><tbody>{rows}</tbody></table>
+    <div class="hr-pagination"><span>Page {entry_page} of {entry_page_count}</span><div class="hr-inline">{previous_link}{next_link}</div></div>
     <h2 style="margin-top:28px">Time corrections</h2><table class="hr-tbl"><thead><tr><th>Employee</th><th>Original</th><th>Requested</th><th>Reason</th><th>Status</th><th>Decision</th></tr></thead><tbody>{correction_rows}</tbody></table>
     <h2 style="margin-top:28px">Timesheet approval</h2>
     <p class="hr-sub">Period {_esc(period.start_date)}–{_esc(period.end_date)}. Hourly payroll remains blocked until the employee submits and another authorized person approves an unchanged timesheet.</p>
@@ -592,6 +639,7 @@ def render_hr_time(
       <div><label for="pto-end">End date</label><input id="pto-end" type="date" name="end_date" required></div></div>
       <label for="pto-hours">Hours requested</label><input id="pto-hours" type="number" min="0.25" max="40" step="0.25" name="hours" required>
       <label for="pto-reason">Note (optional)</label><input id="pto-reason" name="reason" maxlength="500">
+      <p class="hr-help">Request only scheduled weekdays. The system blocks weekends, observed paid holidays, overlapping requests, unavailable hours, and requests that cross a payroll boundary.</p>
       <div class="hr-actions"><button class="hr-btn" type="submit">Send request</button></div></form>
     <h2 style="margin-top:28px">PTO requests</h2><table class="hr-tbl"><thead><tr><th>Employee</th><th>Dates</th><th>Hours</th><th>Status</th><th>Note</th><th>Decision</th></tr></thead><tbody>{requests}</tbody></table>
     """
@@ -640,6 +688,16 @@ def render_hr_onboarding(
         <p>Update the relevant form below. Your previous signed submission remains in the audit history.</p></div>'''
         if onboarding.get("status") == "correction_requested" else ""
     )
+    w4_saved_state = ""
+    w4_open = " open"
+    if onboarding.get("w4_complete") and tax_election:
+        w4_open = ""
+        w4_saved_state = f"""
+        <div class="hr-saved" role="status">
+          <strong>✓ W-4 saved</strong>
+          <p>Your signed election is securely on file, effective {_esc(tax_election.get("effective_date"))}, using the SSN ending in {_esc(tax_election.get("ssn_last4"))}. The full SSN is intentionally never displayed again.</p>
+          <p>Open “Review or replace my W-4” below only when your tax choices change. Saving creates a new signed version and keeps the earlier version in the audit history.</p>
+        </div>"""
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">Your Anata onboarding</h1>
@@ -664,7 +722,10 @@ def render_hr_onboarding(
       <label>Emergency email (optional)</label><input type="email" name="emergency_email" value="{_esc(onboarding.get('emergency_contact_email'))}">
       <div class="hr-actions"><button class="hr-btn" type="submit">Save personal information</button></div>
     </form>
-    <form class="hr-form" method="post" action="/admin/hr/onboarding/w4" style="margin-top:18px">
+    {w4_saved_state}
+    <details{w4_open} style="margin-top:18px">
+      <summary class="hr-btn hr-btn-light">{'Review or replace my W-4' if onboarding.get('w4_complete') else 'Complete my W-4'}</summary>
+    <form class="hr-form" method="post" action="/admin/hr/onboarding/w4" style="margin-top:12px">
       <div class="hr-kicker">Federal W-4</div>
       <p>We prefill facts already in your profile and, for a correction, your current elections. Agent never chooses a tax election for you.</p>
       <div class="hr-callout"><div class="hr-kicker">Prefilled employee information</div>
@@ -681,16 +742,27 @@ def render_hr_onboarding(
         <option value="head_household"{selected("head_household")}>Head of household</option>
       </select>
       <label><input type="checkbox" name="two_jobs" value="true" style="width:auto"{checked(tax_election.get("two_jobs"))}> Multiple jobs or spouse works</label>
-      <div class="hr-grid2"><div><label>Dependent credit ($)</label><input name="dependents_credit" inputmode="decimal" value="{_esc(tax_election.get('dependents_credit', '0.00'))}"></div><div><label>Other income ($)</label><input name="other_income" inputmode="decimal" value="{_esc(tax_election.get('other_income', '0.00'))}"></div></div>
-      <div class="hr-grid2"><div><label>Deductions ($)</label><input name="deductions" inputmode="decimal" value="{_esc(tax_election.get('deductions', '0.00'))}"></div><div><label>Extra withholding per check ($)</label><input name="extra_withholding" inputmode="decimal" value="{_esc(tax_election.get('extra_withholding', '0.00'))}"></div></div>
-      <label><input type="checkbox" name="exempt" value="true" style="width:auto"{checked(tax_election.get("exempt_from_federal_withholding"))}> Exempt from federal withholding (choose only if you meet both IRS conditions shown on the official 2026 Form W-4)</label>
-      <p><a href="https://www.irs.gov/pub/irs-pdf/fw4.pdf" target="_blank" rel="noopener">Review the official Form W-4 instructions and worksheets</a>. Agent does not choose an election for you.</p>
+      <p class="hr-help">Use this when you hold more than one job at the same time, or you are married filing jointly and your spouse also works. The IRS worksheet helps you decide whether to check it.</p>
+      <div class="hr-grid2"><div><label>Dependent credit ($)</label><p class="hr-help">The annual credit from W-4 Step 3—not the number of dependents. Follow the IRS age and income instructions.</p><input name="dependents_credit" inputmode="decimal" value="{_esc(tax_election.get('dependents_credit', '0.00'))}"></div><div><label>Other income ($)</label><p class="hr-help">Annual income that will not already have tax withheld, such as interest or retirement income. Do not include wages from another job here.</p><input name="other_income" inputmode="decimal" value="{_esc(tax_election.get('other_income', '0.00'))}"></div></div>
+      <div class="hr-grid2"><div><label>Deductions ($)</label><p class="hr-help">Use the W-4 Deductions Worksheet. Enter an annual amount only if your deductions exceed the standard deduction; otherwise leave zero.</p><input name="deductions" inputmode="decimal" value="{_esc(tax_election.get('deductions', '0.00'))}"></div><div><label>Extra withholding per check ($)</label><p class="hr-help">An optional additional dollar amount to withhold from every paycheck.</p><input name="extra_withholding" inputmode="decimal" value="{_esc(tax_election.get('extra_withholding', '0.00'))}"></div></div>
+      <label><input type="checkbox" name="exempt" value="true" style="width:auto"{checked(tax_election.get("exempt_from_federal_withholding"))}> Claim exemption from federal income-tax withholding</label>
+      <div class="hr-callout warn"><strong>Exempt is uncommon.</strong><p>Choose this only if you owed no federal income tax last year and expect to owe none this year. It does not stop Social Security or Medicare tax. An exempt W-4 generally must be renewed each year. If you are unsure, leave it unchecked and use the IRS estimator or ask a tax professional.</p></div>
+      <p><a href="https://www.irs.gov/pub/irs-pdf/fw4.pdf" target="_blank" rel="noopener">Open the official Form W-4 instructions and worksheets</a> or <a href="https://www.irs.gov/individuals/tax-withholding-estimator" target="_blank" rel="noopener">use the IRS withholding estimator</a>. Anata explains the fields but does not choose an election for you.</p>
       <label><input type="checkbox" name="attested" value="true" required style="width:auto"> Under penalties of perjury, I declare that this certificate, to the best of my knowledge and belief, is true, correct, and complete.</label>
       <div class="hr-actions"><button class="hr-btn" type="submit">Sign and save W-4</button></div>
     </form>
+    </details>
     <form class="hr-form" method="post" action="/admin/hr/onboarding/attestations" style="margin-top:18px">
       <div class="hr-kicker">Employee attestations</div>
-      <p><a href="https://www.uscis.gov/i-9" target="_blank" rel="noopener">Use the official USCIS Form I-9 and instructions</a>. Complete Section 1 no later than your first day of work. Agent does not choose your citizenship/immigration status or retain identity-document images.</p>
+      <h2>What the I-9 is</h2>
+      <p>The I-9 is the federal form every U.S. employer uses to confirm a new employee's identity and permission to work. It is separate from taxes and payroll.</p>
+      <ol>
+        <li><strong>Employee:</strong> Complete Section 1 of the official I-9 by your first workday.</li>
+        <li><strong>Employee:</strong> Choose which acceptable original documents to show. Anata cannot require a specific document.</li>
+        <li><strong>David or Val:</strong> Examine the documents in person or through an allowed federal remote procedure, then complete the employer section within the required timeframe.</li>
+      </ol>
+      <div class="hr-callout warn"><strong>Protect your identity documents.</strong><p>Do not email or upload passport, license, Social Security card, or other I-9 document images into Agent. Show them directly to David or Val. Agent records that the review happened, not copies of the documents.</p></div>
+      <p><a href="https://www.uscis.gov/i-9" target="_blank" rel="noopener">Open the official USCIS Form I-9, instructions, and acceptable-document list</a>.</p>
       <label><input type="checkbox" name="i9_attested" value="true" required style="width:auto"> I completed Section 1 of the official Form I-9 and will present acceptable documents directly to David or Val; I will not email identity documents.</label>
       <label><input type="checkbox" name="policies_attested" value="true" required style="width:auto"> I received and acknowledge the timekeeping, overtime, PTO, holiday, payroll, and privacy policies.</label>
       <div class="hr-actions"><button class="hr-btn" type="submit">Save attestations</button></div>
