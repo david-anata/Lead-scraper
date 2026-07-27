@@ -412,8 +412,14 @@ def apply_amazon(lead: dict[str, Any], amazon: Optional[dict[str, Any]]) -> dict
     # The bucketed facts Clay writes the real sentence from. Our reason above is
     # only the fallback for when Clay's column has not run.
     try:
+        import json as _json
+
         from outbound_amazon import clay_facts
-        lead.update(clay_facts(amazon))
+        facts = clay_facts(amazon)
+        lead.update(facts)
+        # Also as one blob, because this lead gets stored and re-read later and
+        # the facts have to survive that round trip to reach Clay at all.
+        lead["amazon_facts"] = _json.dumps(facts)
     except Exception:  # noqa: BLE001 — a missing fact must not lose the lead
         logger.warning("[outbound] could not build Clay facts for %s", lead.get("domain"))
     return lead

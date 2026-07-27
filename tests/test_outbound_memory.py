@@ -280,3 +280,63 @@ class AmazonScanStorageTests(unittest.TestCase):
         m.update_amazon_finding(e, "rho.com", self._finding(checked_at=old))
         self.assertEqual([l["domain"] for l in m.leads_needing_amazon(e, limit=3, max_age_days=7)],
                          ["rho.com"])
+
+
+class FactsReachTheClayFileTests(unittest.TestCase):
+    """The scan writes findings to our records; the file we hand Clay is built
+    from those records. Twice now the two halves have been built and not joined,
+    and both times everything looked fine because the columns existed and were
+    simply empty.
+    """
+
+    def _e(self):
+        return create_engine("sqlite://", future=True)
+
+    def _amazon(self):
+        return {"reason": "There are a handful of other sellers on your NAD+ listing. All authorized?",
+                "confidence": "high", "marketplace": "amazon.com",
+                "checked_at": "2026-07-27T15:54:00+00:00", "skipped_reason": "",
+                "findings": {"absent": False, "sponsored_competitors": ["Cata-Kor", "Toniiq"],
+                             "listings": [{"title": "Rho Nutrition Liposomal NAD+",
+                                           "brand_price": 50.18, "cheapest": 48.0,
+                                           "sellers_unknown": 18}]}}
+
+    def _stored_lead(self):
+        e = self._e()
+        m.record_leads(e, [{"domain": "rho.com", "brand": "Rho", "tier": "A", "score": 16}])
+        m.update_amazon_finding(e, "rho.com", self._amazon())
+        return m.load_leads(e)[0]
+
+    def test_a_scanned_finding_survives_being_stored_and_read_back(self):
+        lead = self._stored_lead()
+        self.assertEqual(lead.get("amz_situation"), "undercut")
+        self.assertEqual(lead.get("amz_sellers_band"), "a lot of other sellers")
+
+    def test_the_facts_actually_land_in_the_csv_clay_imports(self):
+        """The end of the chain. Empty columns here mean Clay has nothing to
+        write an opening line from and every lead gets the fallback."""
+        import csv as _csv
+        import io as _io
+
+        import outbound_pipeline as op
+        row = list(_csv.DictReader(_io.StringIO(op.leads_to_csv([self._stored_lead()]))))[0]
+        self.assertEqual(row["amz_situation"], "undercut")
+        self.assertEqual(row["amz_product"], "Rho Nutrition Liposomal NAD+")
+        self.assertTrue(row["amz_undercut"])
+
+    def test_no_figure_survives_the_round_trip_either(self):
+        """Bucketing is worthless if a raw number sneaks back in on the way out."""
+        import csv as _csv
+        import io as _io
+
+        import outbound_pipeline as op
+        row = list(_csv.DictReader(_io.StringIO(op.leads_to_csv([self._stored_lead()]))))[0]
+        for key, value in row.items():
+            if key.startswith("amz_") and key != "amz_marketplace":
+                self.assertFalse(any(ch.isdigit() for ch in str(value)),
+                                 f"{key} leaked a figure into the Clay file: {value!r}")
+
+    def test_a_lead_never_scanned_carries_no_facts(self):
+        e = self._e()
+        m.record_leads(e, [{"domain": "new.com", "brand": "New", "tier": "A"}])
+        self.assertFalse(m.load_leads(e)[0].get("amz_situation"))

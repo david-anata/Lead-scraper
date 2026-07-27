@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS {_TABLE} (
     revenue_cents BIGINT,
     categories TEXT,
     config_version INTEGER,
+    amazon_facts TEXT,
     amazon_confidence TEXT,
     amazon_marketplace TEXT,
     amazon_checked_at TEXT,
@@ -57,7 +58,7 @@ _CORE_LEAD_COLS = ("domain", "source", "tier", "signals", "brand", "niche", "cou
                    "score", "reason", "recipe", "revenue_cents", "categories", "config_version")
 # What the Amazon check found, and how old the finding is. Stored here because
 # a finding we cannot reproduce later is a finding we have lost.
-_AMAZON_LEAD_COLS = ("amazon_confidence", "amazon_marketplace", "amazon_checked_at",
+_AMAZON_LEAD_COLS = ("amazon_facts", "amazon_confidence", "amazon_marketplace", "amazon_checked_at",
                      "amazon_absent", "amazon_sellers_unknown", "amazon_skipped_reason")
 _LEAD_COLS = _CORE_LEAD_COLS + _AMAZON_LEAD_COLS
 
@@ -94,6 +95,7 @@ _ALTERS = (
     f"ALTER TABLE {_TABLE} ADD COLUMN revenue_cents BIGINT",
     f"ALTER TABLE {_TABLE} ADD COLUMN categories TEXT",
     f"ALTER TABLE {_TABLE} ADD COLUMN config_version INTEGER",
+    f"ALTER TABLE {_TABLE} ADD COLUMN amazon_facts TEXT",
     f"ALTER TABLE {_TABLE} ADD COLUMN amazon_confidence TEXT",
     f"ALTER TABLE {_TABLE} ADD COLUMN amazon_marketplace TEXT",
     f"ALTER TABLE {_TABLE} ADD COLUMN amazon_checked_at TEXT",
@@ -190,7 +192,20 @@ def _amazon_values(lead: dict[str, Any]) -> dict[str, Any]:
                 return candidate
         return None
 
+    # The bucketed facts Clay writes from, kept as one blob so adding a fact
+    # later needs no migration and the export cannot drift from the scan.
+    facts = lead.get("amazon_facts")
+    if not facts and nested:
+        try:
+            from outbound_amazon import clay_facts
+            facts = json.dumps(clay_facts(nested))
+        except Exception:  # noqa: BLE001
+            facts = ""
+    if isinstance(facts, dict):
+        facts = json.dumps(facts)
+
     return {
+        "amazon_facts": _text(facts),
         "amazon_confidence": _text(pick("amazon_confidence", nested.get("confidence"))),
         "amazon_marketplace": _text(pick("amazon_marketplace", nested.get("marketplace"))),
         "amazon_checked_at": _text(pick("amazon_checked_at", nested.get("checked_at"))),
@@ -450,6 +465,13 @@ def load_leads(engine, limit: int = 500) -> list[dict[str, Any]]:
             d["amazon_absent"] = bool(_flag(d.get("amazon_absent")))
             d["amazon_sellers_unknown"] = _whole(d.get("amazon_sellers_unknown"))
             d["amazon_skipped_reason"] = _text(d.get("amazon_skipped_reason"))
+            # Flatten the facts blob back onto the lead so leads_to_csv finds the
+            # amz_* columns exactly where a freshly built lead would have them.
+            try:
+                for key, val in (json.loads(d.get("amazon_facts") or "{}") or {}).items():
+                    d[key] = val
+            except (ValueError, TypeError):
+                pass
             d["first_seen_at"] = r[-1]
             out.append(d)
         return out
@@ -460,6 +482,7 @@ def load_leads(engine, limit: int = 500) -> list[dict[str, Any]]:
 
 _UPDATE_AMAZON_SQL = (
     f"UPDATE {_TABLE} SET "
+    "amazon_facts = :amazon_facts, "
     "amazon_confidence = :amazon_confidence, "
     "amazon_marketplace = :amazon_marketplace, "
     "amazon_checked_at = :amazon_checked_at, "

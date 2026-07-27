@@ -234,15 +234,41 @@ def outbound_brands_page(request: Request) -> Response:
 
 
 @router.get("/admin/api/outbound/brands.csv", response_class=Response)
-def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "") -> Response:
-    """Pull ICP-matched brands from StoreLeads and return them as a CSV to import
-    into Clay. Sends nothing. Dedup state is not yet shared with this service, so
-    a brand may appear across runs until that is wired; the CSV is a preview only.
+def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "",
+                        scanned: int = 0) -> Response:
+    """Brands as a CSV to import into Clay. Sends nothing.
+
+    Two sources, and the difference matters.
+
+    Default: pull fresh brands from StoreLeads. Fast, but a brand sourced this
+    second has not been near Amazon, so every amz_* column is empty and Clay has
+    nothing to write an opening line from.
+
+    scanned=1: export the brands we already hold that have been through the
+    Amazon check. This is the one to hand Clay. Without it the scan writes its
+    findings to our own records and they never reach the file, which is exactly
+    what happened the first time this ran.
     """
     import outbound_pipeline as _op
     import outbound_recipes as _rx
     from sales_support_agent.models.database import get_engine
     from sales_support_agent.services import outbound_memory
+
+    if scanned:
+        try:
+            engine = get_engine()
+        except Exception:  # noqa: BLE001
+            engine = None
+        held = outbound_memory.load_leads(engine, limit=2000) if engine is not None else []
+        ready = [l for l in held if str(l.get("amazon_checked_at") or "").strip()
+                 and not str(l.get("amazon_skipped_reason") or "").strip()]
+        ready.sort(key=lambda l: -int(l.get("score") or 0))
+        ready = ready[:max(1, min(int(max_new or 100), 2000))]
+        body = _op.leads_to_csv(ready)
+        return Response(
+            content=body, media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="anata_scanned_brands.csv"'},
+        )
 
     # Validate the request before the environment, so a typo'd recipe always
     # reports as a typo rather than as a missing key.
