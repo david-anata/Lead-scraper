@@ -384,6 +384,51 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertIn("sdr-support-agent", html)
             self.assertIn("codex-website-ops@sdr-support-agent.iam.gserviceaccount.com", html)
 
+    def test_dashboard_fails_closed_for_legacy_unavailable_analytics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            reports_dir = settings.website_ops_root / "reports" / "daily"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            (reports_dir / "2026-07-27-report.md").write_text("# Report\n")
+            (reports_dir / "2026-07-27-report.json").write_text(
+                json.dumps(
+                    {
+                        "title": "Legacy report",
+                        "status": "healthy",
+                        "pages_reviewed": 1,
+                        "page_insights": [
+                            {
+                                "page_url": "https://anatainc.com/",
+                                "page_title": "Anata",
+                                "score": 92,
+                                "bucket": "build",
+                                "search_console": {},
+                                "ga4": {},
+                                "task_block_reason": "Impressions below 25.",
+                            }
+                        ],
+                        "customer_questions": [
+                            {
+                                "question": "private unrelated question?",
+                                "source": "gmail",
+                            }
+                        ],
+                        "analytics_status": {
+                            "search_console": False,
+                            "ga4": False,
+                            "notes": ["Search Console unavailable", "GA4 unavailable"],
+                        },
+                    }
+                )
+            )
+            html = render_dashboard_page(settings)
+            self.assertIn("Score Unavailable", html)
+            self.assertIn("Ranking operations", html)
+            self.assertIn("blocked", html)
+            self.assertIn("Gmail-derived questions are quarantined", html)
+            self.assertNotIn("private unrelated question", html)
+            self.assertNotIn("<a href=\"/admin/website-ops/reports/latest\"", html)
+
     def test_review_feedback_round_trip_saves_execution_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir))
