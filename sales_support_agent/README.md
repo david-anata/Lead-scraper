@@ -213,6 +213,11 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `GET /api/internal/building/billing/qbo-export`
 - `PUT /api/internal/building/billing/invoices/{invoice_id}/accounting-link`
 - `POST /api/integrations/stripe/webhook`
+- `GET /api/public/building/content`
+- `GET /api/internal/building/content`
+- `PUT /api/internal/building/content/{kind}/{record_id}`
+- `POST /api/internal/building/content/{kind}/{record_id}/review`
+- `GET /api/internal/building/offerings/{offering_id}/publication-readiness`
 
 Protected POST routes accept `X-Internal-Api-Key` when `SALES_AGENT_INTERNAL_API_KEY` is configured.
 
@@ -259,6 +264,38 @@ type `INVOICE {schedule_id}` and is still blocked when the schedule is not yet
 due, has not been approved, or Stripe is not configured.
 Browser writes are same-origin and session-token protected; consequential
 changes retain the signed-in operator in the audit trail.
+
+### Building public content and publication readiness
+
+`/admin/building/content` is the review workspace for lifestyle media, tenant
+logos, and testimonials/reviews. Content starts as a draft and moves through
+`needs_review` before approval. Approval requires a current review-expiry date,
+source evidence, consent evidence, safe public URLs where applicable, accessible
+alt text for visual assets, and complete public attribution for testimonials.
+Approved records are locked until an operator deliberately returns them to
+review; retiring a record removes it from public projection without erasing its
+history.
+
+`GET /api/public/building/content` exposes only approved, unexpired allow-listed
+fields. It never returns evidence references, consent records, internal notes,
+reviewer identity, or draft/rejected content. Public fields containing Boom or
+private-benefit language are rejected and are also filtered defensively at
+projection time.
+
+Publishing an offering now runs deterministic readiness checks. A publish is
+blocked unless it has public description and conversion wording, a linked
+public space with description and a reviewed availability state, at least one
+approved accessible room asset, and either reviewed public pricing or a current
+approved rate plan. Use
+`GET /api/internal/building/offerings/{offering_id}/publication-readiness` to
+show the exact blockers before attempting publication. Existing public catalog
+response shapes remain unchanged.
+
+The narrow `building.content.manage` permission controls the content workspace,
+while `building.publish` represents publication authority for subsequent
+publication-bundle work. The legacy `building.manage` grant remains compatible
+during the permission transition. Every content create, edit, and review-state
+change writes a Building audit event.
 
 Approved holds and confirmed reservations enter a durable calendar projection
 queue. Agent remains the booking source of truth: a Google Calendar edit or

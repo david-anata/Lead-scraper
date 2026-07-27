@@ -20,6 +20,9 @@ from sales_support_agent.services.building_analytics import (
     build_attribution,
     build_building_analytics,
 )
+from sales_support_agent.services.building_content import (
+    offering_publication_readiness,
+)
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
@@ -1040,12 +1043,22 @@ def upsert_offering(
             "booking_unit": payload.booking_unit,
             "call_to_action": payload.call_to_action,
             "features_json": payload.features,
-            "is_published": payload.is_published,
             "updated_at": _now(),
         }.items():
             setattr(row, key, value)
         session.add(row)
         session.flush()
+        if payload.is_published:
+            blockers = offering_publication_readiness(session, row)
+            if blockers:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": "Offering is not ready to publish.",
+                        "blockers": blockers,
+                    },
+                )
+        row.is_published = payload.is_published
         session.add(BuildingAuditEvent(
             entity_type="offering", entity_id=row.id, action="upserted",
             actor="internal-api", before_json=before,
@@ -1053,6 +1066,26 @@ def upsert_offering(
         ))
         space = session.get(BuildingSpace, row.space_id) if row.space_id else None
         return {"ok": True, "offering": _offering_public_payload(row, space)}
+
+
+@internal_router.get("/offerings/{offering_id}/publication-readiness")
+def get_offering_publication_readiness(
+    offering_id: str,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        offering = session.get(BuildingOffering, offering_id)
+        if offering is None:
+            raise HTTPException(status_code=404, detail="Offering not found.")
+        blockers = offering_publication_readiness(session, offering)
+        return {
+            "offering_id": offering.id,
+            "ready": not blockers,
+            "blockers": blockers,
+            "checked_at": _now().isoformat(),
+        }
 
 
 def _rate_plan_internal_payload(row: BuildingRatePlan) -> dict[str, Any]:
