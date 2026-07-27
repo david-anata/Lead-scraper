@@ -45,6 +45,17 @@ def test_render_blueprint_uses_truthful_readiness_and_predeploy() -> None:
     assert "OUTBOUND_EMBEDDED_SCHEDULER" in blueprint
 
 
+def test_render_crons_strip_accidental_whitespace_from_internal_key() -> None:
+    blueprint = Path("render.yaml").read_text(encoding="utf-8")
+    raw_header = 'X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY'
+    normalized_header = (
+        'X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")'
+    )
+
+    assert raw_header not in blueprint
+    assert blueprint.count(normalized_header) == 8
+
+
 def test_root_production_app_exposes_reliability_probes() -> None:
     import main as production_main
 
