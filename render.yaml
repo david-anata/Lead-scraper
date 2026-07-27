@@ -3,15 +3,12 @@ services:
     name: sales-support-agent
     runtime: python
     plan: starter
+    numInstances: 2
     autoDeployTrigger: checksPass
     buildCommand: pip install -r requirements.txt
     preDeployCommand: python scripts/predeploy_agent.py
     startCommand: uvicorn sales_support_agent.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health/ready
-    disk:
-      name: website-ops-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.11"
@@ -106,7 +103,7 @@ services:
       - key: WEBSITE_OPS_EXECUTE_APPROVED
         value: "true"
       - key: WEBSITE_OPS_ROOT
-        value: /var/data/website_ops
+        value: runtime/website_ops
       - key: WEBSITE_OPS_SITEMAP_URL
         value: https://anatainc.com/sitemap.xml
       - key: WEBSITE_OPS_ALLOWED_HOST
