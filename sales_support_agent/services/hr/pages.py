@@ -258,6 +258,11 @@ def _flash(flash: Optional[str]) -> str:
         "provider_reference_required": "Enter the provider name and confirmation or run reference.",
         "provider_totals_required": "Enter all four nonnegative provider totals.",
         "check_issued": "Manual check recorded and pay statement created.",
+        "check_confirmed": "Check clearing evidence recorded.",
+        "check_already_confirmed": "This check clearing confirmation was already recorded.",
+        "check_confirmation_required": "Enter the bank or check-clearing confirmation reference.",
+        "check_evidence_required": "Describe the clearing evidence using at least 10 characters.",
+        "check_confirmation_changed": "This check already has a different clearing confirmation. Review it before changing the record.",
         "check_number_used": "That check number is already recorded.",
         "check_already_issued": "That check was already recorded; no duplicate was created.",
         "employee_check_already_issued": "This employee already has a different active check.",
@@ -266,6 +271,7 @@ def _flash(flash: Optional[str]) -> str:
         "void_reason_required": "Enter a void reason and replacement check number.",
         "payroll_closed": "Payroll closed after checks and liabilities reconciled.",
         "checks_not_complete": "Every employee must have one active issued check before closing.",
+        "checks_not_reconciled": "Confirm clearing evidence for every employee check before closing payroll.",
         "liabilities_not_reconciled": "Reconcile every tax payment and filing before closing.",
         "liability_paid": "Tax payment evidence recorded.",
         "liability_filed": "Tax filing evidence recorded.",
@@ -1050,20 +1056,32 @@ def render_hr_payroll_run(run: dict, *, user, employee_view=False, flash=None) -
         inputs, results = calculation["inputs"], calculation["results"]
         check_action = "—"
         if not employee_view and run["status"] in {"approved", "checks_issued"}:
-            check_action = (
-                f'''<div>Check {_esc(calculation['check_number'])}</div>
+            if calculation["check_number"]:
+                confirmation = (
+                    f'''<div class="hr-callout ok"><strong>Clearing confirmed</strong>
+                    <p>{_esc(calculation.get("check_confirmation_reference"))}</p>
+                    <p class="hr-sub">{_esc(calculation.get("check_evidence_note"))}</p></div>'''
+                    if calculation.get("check_status") == "confirmed" else
+                    f'''<details><summary>Confirm check cleared</summary>
+                    <form class="hr-form" method="post" action="/admin/hr/payroll/runs/{_esc(run["id"])}/checks/confirm">
+                    <input type="hidden" name="employee_email" value="{_esc(calculation["employee_email"])}">
+                    <label>Bank or clearing reference</label><input name="confirmation_reference" required maxlength="128">
+                    <label>Evidence reviewed</label><textarea name="evidence_note" required minlength="10" maxlength="1000" placeholder="For example: cleared in the bank account on August 21."></textarea>
+                    <button class="hr-btn" type="submit">Record clearing confirmation</button></form></details>'''
+                )
+                check_action = f'''<div>Check {_esc(calculation['check_number'])} · {_esc(calculation.get('check_status'))}</div>
+                {confirmation}
                 <details><summary>Void and reissue</summary>
                 <form class="hr-form" method="post" action="/admin/hr/payroll/runs/{_esc(run["id"])}/checks/reissue">
                 <input type="hidden" name="employee_email" value="{_esc(calculation["employee_email"])}">
                 <label>Reason</label><input name="reason" required>
                 <label>New check number</label><input name="new_check_number" required>
                 <button class="hr-btn hr-btn-danger" type="submit">Void and record replacement</button></form></details>'''
-                if calculation["check_number"] else
-                f'''<form class="hr-inline" method="post" action="/admin/hr/payroll/runs/{_esc(run["id"])}/checks">
+            else:
+                check_action = f'''<form class="hr-inline" method="post" action="/admin/hr/payroll/runs/{_esc(run["id"])}/checks">
                 <input type="hidden" name="employee_email" value="{_esc(calculation["employee_email"])}">
                 <label>Check number</label><input name="check_number" required>
                 <button class="hr-btn" type="submit">Record issued check</button></form>'''
-            )
         rows += f"""<tr><td>{_esc(calculation['employee_email'])}</td>
         <td>{_esc(inputs.get('regular_hours','0'))}</td><td>{_esc(inputs.get('overtime_hours','0'))}</td>
         <td>{_esc(inputs.get('holiday_hours','0'))}</td><td>{_esc(inputs.get('pto_hours','0'))}</td>

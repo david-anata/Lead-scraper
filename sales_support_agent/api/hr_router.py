@@ -1162,6 +1162,25 @@ async def hr_payroll_issue_check(
     )
 
 
+@router.post("/payroll/runs/{run_id}/checks/confirm")
+async def hr_payroll_confirm_check(
+    run_id: str, employee_email: str = Form(""),
+    confirmation_reference: str = Form(""),
+    evidence_note: str = Form(""),
+    user: dict = Depends(_pay_submit_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
+):
+    ok, message = payroll_store.confirm_printed_check(
+        run_id, employee_email=employee_email,
+        confirmation_reference=confirmation_reference,
+        evidence_note=evidence_note, actor=user.get("email", ""),
+    )
+    return RedirectResponse(
+        f"/admin/hr/payroll/runs/{run_id}?{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
+
+
 @router.post("/payroll/runs/{run_id}/checks/reissue")
 async def hr_payroll_reissue_check(
     run_id: str, employee_email: str = Form(""), reason: str = Form(""),

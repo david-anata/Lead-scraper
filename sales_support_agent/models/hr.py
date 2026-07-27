@@ -266,6 +266,11 @@ class HRPrintedCheck(Base):
     hourly_rate_cents: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|ready|voided
     notes: Mapped[str] = mapped_column(Text, default="")
+    cleared_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    confirmation_reference: Mapped[str] = mapped_column(String(128), default="")
+    reconciliation_evidence_note: Mapped[str] = mapped_column(Text, default="")
 
 
 class HREmployeeHandbook(Base):

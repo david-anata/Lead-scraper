@@ -369,6 +369,11 @@ def _ensure_hr_columns(engine: Any) -> None:
             "recurring": "BOOLEAN NOT NULL DEFAULT FALSE",
             "recurrence_key": "VARCHAR(64) NOT NULL DEFAULT ''",
         },
+        "hr_printed_checks": {
+            "cleared_at": "TIMESTAMP",
+            "confirmation_reference": "VARCHAR(128) NOT NULL DEFAULT ''",
+            "reconciliation_evidence_note": "TEXT NOT NULL DEFAULT ''",
+        },
         "hr_contractor_profiles": {
             "country_code": "VARCHAR(2) NOT NULL DEFAULT ''",
             "engagement_start": "DATE",

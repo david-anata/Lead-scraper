@@ -136,6 +136,48 @@ def test_required_approver_can_reject_frozen_version_with_reason():
         ).one().status == "rejected"
 
 
+def test_check_must_be_confirmed_before_payroll_can_close():
+    engine = _engine()
+    run = _run("pay_check_reconciliation")
+    run.status = "checks_issued"
+    with Session(engine) as session:
+        session.add_all([
+            run,
+            _check("pay_check_reconciliation", "2001"),
+        ])
+        session.commit()
+
+    with mock.patch.object(payroll_store, "get_engine", return_value=engine):
+        assert payroll_store.close_payroll_run(
+            "pay_check_reconciliation", actor="val@anatainc.com",
+        ) == (False, "checks_not_reconciled")
+        assert payroll_store.confirm_printed_check(
+            "pay_check_reconciliation",
+            employee_email="employee@anatainc.com",
+            confirmation_reference="bank-cleared-2001",
+            evidence_note="Cleared in the operating account on payday.",
+            actor="val@anatainc.com",
+        ) == (True, "check_confirmed")
+        assert payroll_store.confirm_printed_check(
+            "pay_check_reconciliation",
+            employee_email="employee@anatainc.com",
+            confirmation_reference="bank-cleared-2001",
+            evidence_note="Cleared in the operating account on payday.",
+            actor="val@anatainc.com",
+        ) == (True, "check_already_confirmed")
+        assert payroll_store.close_payroll_run(
+            "pay_check_reconciliation", actor="val@anatainc.com",
+        ) == (True, "payroll_closed")
+
+    with Session(engine) as session:
+        check = session.query(HRPrintedCheck).filter_by(
+            payroll_run_id="pay_check_reconciliation"
+        ).one()
+        assert check.status == "confirmed"
+        assert check.cleared_at is not None
+        assert check.confirmation_reference == "bank-cleared-2001"
+
+
 def test_provider_handoff_detects_exact_match_and_variance():
     engine = _engine()
     run = _run()
