@@ -30,7 +30,9 @@ from sales_support_agent.services.cashflow.obligations import list_obligations
 from sales_support_agent.services.cashflow.smart_cfo import load_smart_cfo_analysis
 
 
-def _resolve_current_balance(rows: list[dict[str, Any]]) -> tuple[int, str, str]:
+def _resolve_current_balance(
+    rows: list[dict[str, Any]], *, plaid_environment: str = "sandbox",
+) -> tuple[int, str, str]:
     """Resolve one canonical current balance for cards, forecasts, and charts."""
     balance_cents = 0
     balance_as_of = ""
@@ -65,9 +67,12 @@ def _resolve_current_balance(rows: list[dict[str, Any]]) -> tuple[int, str, str]
                     SUM(COALESCE(available_balance_cents, current_balance_cents, 0)) AS balance_cents,
                     MAX(balance_as_of) AS balance_as_of,
                     COUNT(*) AS account_count
-                FROM plaid_accounts
-                WHERE active=TRUE
-            """)).fetchone()
+                FROM plaid_accounts AS account
+                JOIN plaid_items AS item ON item.id=account.plaid_item_id
+                WHERE account.active=TRUE
+                  AND item.disconnected_at IS NULL
+                  AND item.environment=:environment
+            """), {"environment": str(plaid_environment or "sandbox").lower()}).fetchone()
         if plaid_row and int(plaid_row._mapping.get("account_count") or 0) > 0:
             plaid_as_of = str(plaid_row._mapping.get("balance_as_of") or "")[:10]
             try:
@@ -3070,7 +3075,10 @@ async def render_cashflow_overview_page(
     # ledger. A smaller UI-only limit can hide a trust blocker from the page.
     rows = list_obligations(limit=10_000)
     rows, settlement_annotations = _load_settlement_context(rows)
-    balance_cents, balance_as_of, balance_source = _resolve_current_balance(rows)
+    balance_cents, balance_as_of, balance_source = _resolve_current_balance(
+        rows,
+        plaid_environment=str(getattr(settings, "plaid_environment", "sandbox") or "sandbox"),
+    )
     try:
         income_decisions, source_connections = _load_finance_control_inputs(settings)
     except (ImportError, AttributeError):

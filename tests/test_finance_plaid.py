@@ -102,6 +102,59 @@ def test_store_item_supplies_required_status_fields():
     assert tuple(row) == ("connected", "", "")
 
 
+def test_connection_summary_hides_items_from_other_environment():
+    factory = create_session_factory("sqlite:///:memory:")
+    init_database(factory)
+    store_item(
+        item_id="sandbox-only-item",
+        access_token="sandbox-access-token",
+        token_secret="test-token-secret",
+        actor="qa@example.com",
+        environment="sandbox",
+    )
+
+    summary = __import__(
+        "sales_support_agent.services.cashflow.plaid",
+        fromlist=["connection_summary"],
+    ).connection_summary(
+        settings=_settings(
+            plaid_environment="production",
+            plaid_token_secret="test-token-secret",
+        )
+    )
+
+    assert summary["environment"] == "production"
+    assert summary["items"] == []
+    assert summary["connected_count"] == 0
+
+
+def test_sync_rejects_item_from_other_environment():
+    factory = create_session_factory("sqlite:///:memory:")
+    init_database(factory)
+    local_id = store_item(
+        item_id="sandbox-sync-item",
+        access_token="sandbox-access-token",
+        token_secret="test-token-secret",
+        actor="qa@example.com",
+        environment="sandbox",
+    )
+    plaid = __import__(
+        "sales_support_agent.services.cashflow.plaid",
+        fromlist=["sync_item"],
+    )
+
+    with pytest.raises(PlaidError) as error:
+        plaid.sync_item(
+            local_id,
+            settings=_settings(
+                plaid_environment="production",
+                plaid_token_secret="test-token-secret",
+            ),
+        )
+
+    assert error.value.code == "environment_mismatch"
+
+
 def test_disconnect_revokes_item_destroys_token_and_records_audit():
     factory = create_session_factory("sqlite:///:memory:")
     init_database(factory)

@@ -102,6 +102,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     _ensure_building_tables(engine)
     _ensure_building_columns(engine)
     _ensure_finance_settlement_tables(engine)
+    _ensure_plaid_environment_column(engine)
     ensure_finance_trust_schema(engine)
     _backfill_legacy_settlements(engine)
     _ensure_hr_tables(engine)
@@ -511,6 +512,29 @@ def _ensure_plaid_account_columns(engine: Any) -> None:
         connection.execute(text(
             "UPDATE plaid_accounts SET cash_role='spendable' "
             "WHERE LOWER(COALESCE(subtype, ''))='checking'"
+        ))
+
+
+def _ensure_plaid_environment_column(engine: Any) -> None:
+    """Keep Sandbox, Development, and Production Plaid Items isolated."""
+
+    inspector = inspect(engine)
+    if "plaid_items" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("plaid_items")}
+    if "environment" not in columns:
+        with engine.begin() as connection:
+            # Every Item created before this migration came from the original
+            # Sandbox-only launch. Backfilling it as Sandbox prevents those
+            # balances from becoming Production cash after an environment flip.
+            connection.execute(text(
+                "ALTER TABLE plaid_items "
+                "ADD COLUMN environment VARCHAR(32) NOT NULL DEFAULT 'sandbox'"
+            ))
+    with engine.begin() as connection:
+        connection.execute(text(
+            "UPDATE plaid_items SET environment='sandbox' "
+            "WHERE environment IS NULL OR environment=''"
         ))
 
 

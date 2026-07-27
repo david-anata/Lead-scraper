@@ -644,6 +644,7 @@ class PlaidItem(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    environment: Mapped[str] = mapped_column(String(32), default="sandbox", index=True)
     external_item_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     institution_id: Mapped[str] = mapped_column(String(255), default="", index=True)
     display_name: Mapped[str] = mapped_column(String(255), default="")
