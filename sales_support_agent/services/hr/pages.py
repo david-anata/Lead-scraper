@@ -186,6 +186,11 @@ def _flash(flash: Optional[str]) -> str:
         "created": "✓ Employee added.",
         "updated": "✓ Employee saved.",
         "team_created": "✓ Team created.",
+        "team_updated": "Team details saved.",
+        "team_membership_saved": "Team membership saved.",
+        "team_invalid": "Add a team name before saving.",
+        "team_not_found": "That team is no longer available.",
+        "team_membership_changed": "That employee’s team changed before this action. Refresh and review the current team.",
         "exists": "That email already has an employee record.",
         "clocked_in": "Clocked in. Your paid time is running.",
         "clocked_out": "Clocked out. Your time entry was saved.",
@@ -506,7 +511,7 @@ def render_hr_teams(teams: list, *, user, flash=None) -> str:
             for m in members
         ) + "</div>"
     rows = "".join(
-        f"""<tr><td style="font-weight:600">{_esc(t['name'])}</td>
+        f"""<tr><td style="font-weight:600"><a href="/admin/hr/teams/{t['id']}">{_esc(t['name'])}</a></td>
             <td class="hr-sub" style="margin:0">{_esc(t['manager_email'] or '—')}</td>
             <td>{member_cell(t)}<div class="hr-help">{len(t.get("members") or [])} active member(s)</div></td>
             <td>{_esc(t['description'] or '')}</td></tr>"""
@@ -531,6 +536,64 @@ def render_hr_teams(teams: list, *, user, flash=None) -> str:
     </form>
     """
     return hr_shell("Teams", "teams", body, user=user)
+
+
+def render_hr_team_detail(team: dict, employees: list, *, user, flash=None) -> str:
+    members = team.get("members") or []
+    member_ids = {int(member["id"]) for member in members}
+    direct_managers = {
+        int(employee["id"]): (
+            (employee.get("employment") or {}).get("manager_email")
+            or "No direct manager set"
+        )
+        for employee in employees
+    }
+    member_rows = "".join(
+        f"""<tr><td><a href="/admin/hr/employees/{member['id']}">{_esc(member['full_name'])}</a>
+        <div class="hr-help">{_esc(member['email'])}</div></td>
+        <td>{_esc(member.get('title') or 'No title set')}</td>
+        <td>{_esc(direct_managers.get(int(member['id']), 'No direct manager set'))}</td>
+        <td><form method="post" action="/admin/hr/teams/{team['id']}/members">
+        <input type="hidden" name="employee_id" value="{member['id']}">
+        <button class="hr-btn hr-btn-light" name="action" value="remove">Remove from team</button></form></td></tr>"""
+        for member in members
+    ) or '<tr><td colspan="4" class="hr-empty">No one is assigned to this team yet.</td></tr>'
+    employee_options = "".join(
+        f'<option value="{employee["id"]}">{_esc(employee.get("full_name") or employee["email"])} — {_esc(employee["email"])}</option>'
+        for employee in employees
+        if employee.get("status") == "active" and int(employee["id"]) not in member_ids
+    )
+    add_form = (
+        f"""<form class="hr-form" method="post" action="/admin/hr/teams/{team['id']}/members">
+        <div class="hr-kicker">Add a person</div>
+        <label for="team-employee">Active employee</label>
+        <select id="team-employee" name="employee_id" required>{employee_options}</select>
+        <div class="hr-actions"><button class="hr-btn" name="action" value="assign">Add to this team</button></div>
+        </form>"""
+        if employee_options else
+        '<div class="hr-callout">Every active employee is already assigned to this team.</div>'
+    )
+    body = f"""
+    {_flash(flash)}
+    <p><a href="/admin/hr/teams">← All teams</a></p>
+    <div class="hr-row-head"><div><h1 class="hr-h1">{_esc(team['name'])}</h1>
+    <p class="hr-sub" style="margin:0">{len(members)} active member(s)</p></div>
+    <a class="hr-btn hr-btn-light" href="/admin/hr/employees">Open employee directory</a></div>
+    <div class="hr-callout"><strong>Team leadership and direct reporting are separate.</strong>
+    <p>The team manager leads this group. Each employee’s direct manager is set on their employee record and controls manager-scoped time review. Changing one does not silently change the other.</p></div>
+    <form class="hr-form" method="post" action="/admin/hr/teams/{team['id']}">
+      <div class="hr-kicker">Team details</div>
+      <label for="team-name">Team name</label><input id="team-name" name="name" required value="{_esc(team['name'])}">
+      <label for="team-manager">Team manager email</label><input id="team-manager" type="email" name="manager_email" value="{_esc(team.get('manager_email'))}">
+      <label for="team-description">What this team does</label><textarea id="team-description" name="description">{_esc(team.get('description'))}</textarea>
+      <div class="hr-actions"><button class="hr-btn" type="submit">Save team details</button></div>
+    </form>
+    <h2 style="margin-top:28px">People on this team</h2>
+    <table class="hr-tbl"><thead><tr><th>Person</th><th>Title</th><th>Direct manager</th><th>Action</th></tr></thead>
+    <tbody>{member_rows}</tbody></table>
+    <div style="margin-top:24px">{add_form}</div>
+    """
+    return hr_shell(f"{team['name']} team", "teams", body, user=user)
 
 
 def render_hr_coming_soon(active: str, title: str, blurb: str, *, user) -> str:

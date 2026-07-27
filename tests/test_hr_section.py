@@ -467,6 +467,43 @@ class HRSectionTests(unittest.TestCase):
         team_page = self._get("/admin/hr/teams", self.sa)
         self.assertIn("Val Test", team_page.text)
         self.assertIn(f"/admin/hr/employees/{employee_id}", team_page.text)
+        detail = self._get(f"/admin/hr/teams/{team_id}", self.sa)
+        self.assertEqual(detail.status_code, 200)
+        self.assertIn("Team leadership and direct reporting are separate", detail.text)
+        self.assertIn("Val Test", detail.text)
+
+    def test_team_detail_can_update_leader_and_manage_membership(self):
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        team_id = hr_store.create_team(name=f"Ops {suffix}", actor="test")
+        employee_id = hr_store.create_employee(
+            email=f"team-member-{suffix}@anatainc.com", full_name="Team Member"
+        )
+        assigned = self._post(
+            f"/admin/hr/teams/{team_id}/members",
+            {"employee_id": str(employee_id), "action": "assign"}, self.sa,
+        )
+        self.assertIn("ok=team_membership_saved", assigned.headers["location"])
+        updated = self._post(
+            f"/admin/hr/teams/{team_id}",
+            {
+                "name": f"Operations {suffix}",
+                "manager_email": "val@anatainc.com",
+                "description": "Runs day-to-day operations",
+            },
+            self.sa,
+        )
+        self.assertIn("ok=team_updated", updated.headers["location"])
+        team = hr_store.get_team(team_id)
+        self.assertEqual(team["manager_email"], "val@anatainc.com")
+        self.assertEqual(team["members"][0]["id"], employee_id)
+
+        removed = self._post(
+            f"/admin/hr/teams/{team_id}/members",
+            {"employee_id": str(employee_id), "action": "remove"}, self.sa,
+        )
+        self.assertIn("ok=team_membership_saved", removed.headers["location"])
+        self.assertEqual(hr_store.get_team(team_id)["members"], [])
 
     def test_time_page_explains_period_and_paginates_visible_punches(self):
         page = self._get("/admin/hr/time?page_size=10", self.sa)

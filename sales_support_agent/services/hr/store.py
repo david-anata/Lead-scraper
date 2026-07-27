@@ -912,7 +912,8 @@ def list_teams() -> list:
         return teams
 
 
-def create_team(*, name: str, manager_email: str = "", description: str = "") -> Optional[int]:
+def create_team(*, name: str, manager_email: str = "", description: str = "",
+                actor: str = "system") -> Optional[int]:
     name = (name or "").strip()
     if not name:
         return None
@@ -921,7 +922,70 @@ def create_team(*, name: str, manager_email: str = "", description: str = "") ->
                    description=(description or "").strip())
         s.add(t)
         s.flush()
+        _audit(s, actor, "team.created", "team", t.id, {
+            "name": t.name, "manager_email": t.manager_email,
+        })
         return t.id
+
+
+def get_team(team_id: int) -> Optional[dict]:
+    return next(
+        (team for team in list_teams() if int(team["id"]) == int(team_id)),
+        None,
+    )
+
+
+def update_team(
+    team_id: int, *, name: str, manager_email: str, description: str,
+    actor: str,
+) -> tuple[bool, str]:
+    """Update team-owned facts without silently changing reporting managers."""
+    if not name.strip():
+        return False, "team_invalid"
+    with _session() as session:
+        team = session.get(HRTeam, team_id)
+        if not team:
+            return False, "team_not_found"
+        prior = {
+            "name": team.name, "manager_email": team.manager_email,
+            "description": team.description,
+        }
+        team.name = name.strip()
+        team.manager_email = (manager_email or "").strip().lower()
+        team.description = (description or "").strip()
+        _audit(session, actor, "team.updated", "team", team.id, {
+            "prior": prior, "new": {
+                "name": team.name, "manager_email": team.manager_email,
+                "description": team.description,
+            },
+        })
+        return True, "team_updated"
+
+
+def set_employee_team(
+    employee_id: int, *, team_id: Optional[int], actor: str,
+    expected_current_team_id: Optional[int] = None,
+) -> tuple[bool, str]:
+    """Assign or remove one employee's team with an attributable audit event."""
+    with _session() as session:
+        employee = session.get(HREmployee, employee_id)
+        if not employee:
+            return False, "employee_not_found"
+        if (
+            expected_current_team_id is not None
+            and employee.team_id != str(expected_current_team_id)
+        ):
+            return False, "team_membership_changed"
+        if team_id is not None and not session.get(HRTeam, team_id):
+            return False, "team_not_found"
+        prior_team_id = employee.team_id
+        employee.team_id = str(team_id) if team_id is not None else None
+        employee.updated_at = datetime.now(timezone.utc)
+        _audit(session, actor, "employee.team_changed", "employee", employee.id, {
+            "employee_email": employee.email, "prior_team_id": prior_team_id,
+            "new_team_id": employee.team_id,
+        })
+        return True, "team_membership_saved"
 
 
 # --- dashboard -------------------------------------------------------------

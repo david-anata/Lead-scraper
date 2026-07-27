@@ -53,6 +53,7 @@ from sales_support_agent.services.hr.pages import (
     render_hr_reports,
     render_hr_policies,
     render_hr_teams,
+    render_hr_team_detail,
     render_hr_time,
 )
 
@@ -498,8 +499,54 @@ async def team_create(
     description: str = Form(""),
     user: dict = Depends(_people_guard),
 ):
-    store.create_team(name=name, manager_email=manager_email, description=description)
+    store.create_team(
+        name=name, manager_email=manager_email, description=description,
+        actor=user.get("email", "system"),
+    )
     return RedirectResponse("/admin/hr/teams?ok=team_created", status_code=303)
+
+
+@router.get("/teams/{team_id}", response_class=HTMLResponse)
+async def team_detail(
+    team_id: int, request: Request, user: dict = Depends(_people_guard)
+):
+    team = store.get_team(team_id)
+    if not team:
+        return RedirectResponse("/admin/hr/teams?err=team_not_found", status_code=303)
+    return HTMLResponse(render_hr_team_detail(
+        team, store.list_employees(), user=user, flash=_flash(request)
+    ))
+
+
+@router.post("/teams/{team_id}")
+async def team_update(
+    team_id: int, name: str = Form(""), manager_email: str = Form(""),
+    description: str = Form(""), user: dict = Depends(_people_guard),
+):
+    ok, message = store.update_team(
+        team_id, name=name, manager_email=manager_email,
+        description=description, actor=user.get("email", "system"),
+    )
+    return RedirectResponse(
+        f"/admin/hr/teams/{team_id}?{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
+
+
+@router.post("/teams/{team_id}/members")
+async def team_member_update(
+    team_id: int, employee_id: int = Form(...), action: str = Form("assign"),
+    user: dict = Depends(_people_guard),
+):
+    target_team = None if action == "remove" else team_id
+    ok, message = store.set_employee_team(
+        employee_id, team_id=target_team, actor=user.get("email", "system"),
+        expected_current_team_id=team_id if action == "remove" else None,
+    )
+    return RedirectResponse(
+        f"/admin/hr/teams/{team_id}?{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
 
 
 # --- time and PTO ----------------------------------------------------------
