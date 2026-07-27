@@ -39,7 +39,7 @@ def test_render_blueprint_uses_truthful_readiness_and_predeploy() -> None:
     blueprint = Path("render.yaml").read_text(encoding="utf-8")
     assert "healthCheckPath: /health/ready" in blueprint
     assert "preDeployCommand: python scripts/predeploy_agent.py" in blueprint
-    assert "autoDeployTrigger: checksPass" in blueprint
+    assert "autoDeployTrigger: commit" in blueprint
     assert "AGENT_PREPARE_DATABASE_ON_STARTUP" in blueprint
     assert "WEBSITE_OPS_EMBEDDED_SCHEDULER" in blueprint
     assert "OUTBOUND_EMBEDDED_SCHEDULER" in blueprint
