@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 import requests
 
 
-METHODOLOGY_VERSION = "query-intelligence-v1"
+METHODOLOGY_VERSION = "query-intelligence-v2"
 PROMPT_TEMPLATE_VERSION = "commercial-citation-v1"
 EVIDENCE_CLASSES = {
     "simulated",

@@ -20,29 +20,110 @@ COMMERCIAL_FACETS = (
     ("next-step", "What is the next step for evaluating {topic}?"),
 )
 
+INFORMATIONAL_FACETS = (
+    ("definition", "What is {topic}?"),
+    ("process", "How does {topic} work?"),
+    ("decision", "When should a business use {topic}?"),
+    ("risk", "What mistakes should a business avoid with {topic}?"),
+)
+
+TOOL_FACETS = (
+    ("purpose", "What does the {topic} help calculate?"),
+    ("inputs", "What inputs does the {topic} require?"),
+    ("process", "How do you use the {topic}?"),
+    ("interpretation", "How should a business interpret the {topic} results?"),
+)
+
+NAVIGATIONAL_FACETS = (
+    ("brand", "What is {topic}?"),
+    ("next-step", "How do I find {topic}?"),
+)
+
 
 def _normalize(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def _slug_phrase(value: str) -> str:
+    phrase = value.replace("-", " ").replace("_", " ").strip().title()
+    for source, replacement in (
+        ("Ppc", "PPC"),
+        ("Fba", "FBA"),
+        ("Asin", "ASIN"),
+        ("Seo", "SEO"),
+        ("Ga4", "GA4"),
+        ("3Pl", "3PL"),
+        ("B2B", "B2B"),
+    ):
+        phrase = re.sub(rf"\b{source}\b", replacement, phrase)
+    return phrase
+
+
 def _topic(observation: Mapping[str, Any]) -> str:
+    path = urlparse(_normalize(observation.get("url"))).path.rstrip("/")
+    segments = [segment for segment in path.split("/") if segment]
+    if segments:
+        section = segments[0].lower()
+        leaf = _slug_phrase(segments[-1])
+        if section == "services":
+            return leaf
+        if section == "platform":
+            parent = _slug_phrase(segments[-2]) if len(segments) > 2 else ""
+            return f"{parent} {leaf}".strip()
+        if section == "tools":
+            return leaf
+        if section == "guides":
+            return "Ecommerce and Amazon guides" if len(segments) == 1 else f"{leaf} guide"
+        if section == "blog":
+            return "Ecommerce operations insights" if len(segments) == 1 else leaf
+        if section == "case-studies":
+            return "Ecommerce case studies" if len(segments) == 1 else f"{leaf} case study"
+        if section == "glossary":
+            return "Ecommerce glossary"
+        if section == "about":
+            return "Anata ecommerce operations company"
+        if section == "careers":
+            return "Anata careers"
+        if section == "contact":
+            return "Anata contact information"
+        return leaf
+    title = _normalize(observation.get("title"))
+    if title:
+        cleaned_title = re.sub(
+            r"\s*[|–-]\s*Anata(?: Inc\.?)?\s*$",
+            "",
+            title,
+            flags=re.IGNORECASE,
+        ).strip()
+        if cleaned_title and cleaned_title.lower() not in {"anata", "anata inc.", "anata inc"}:
+            return cleaned_title
     headings = observation.get("h1") or []
     if headings:
         heading = _normalize(headings[0])
         if heading:
             return heading
-    title = _normalize(observation.get("title"))
-    if title:
-        return re.sub(r"\s*[|–-]\s*Anata(?: Inc\.?)?\s*$", "", title, flags=re.IGNORECASE)
-    path = urlparse(_normalize(observation.get("url"))).path.rstrip("/").split("/")[-1]
-    return path.replace("-", " ").strip().title() or "this page"
+    return "Anata ecommerce operations"
+
+
+def _facet_templates(observation: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    path = urlparse(_normalize(observation.get("url"))).path.rstrip("/")
+    section = next((segment.lower() for segment in path.split("/") if segment), "")
+    if section in {"services", "platform", "solutions"}:
+        return COMMERCIAL_FACETS
+    if section == "tools":
+        return TOOL_FACETS
+    if section in {"guides", "blog", "case-studies", "glossary", "resources"}:
+        return INFORMATIONAL_FACETS
+    if section in {"about", "careers", "contact", "privacy", "terms"}:
+        return NAVIGATIONAL_FACETS
+    return COMMERCIAL_FACETS
 
 
 def simulated_fanout(observation: Mapping[str, Any]) -> list[dict[str, str]]:
     topic = _topic(observation)
     return [
         {"facet": facet, "prompt": template.format(topic=topic), "source": "simulated"}
-        for facet, template in COMMERCIAL_FACETS
+        for facet, template in _facet_templates(observation)
     ]
 
 

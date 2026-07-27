@@ -10,6 +10,50 @@ def test_fanout_is_always_labeled_simulated() -> None:
     assert {item["facet"] for item in prompts} >= {"comparison", "proof", "risk"}
 
 
+def test_service_fanout_uses_url_intent_instead_of_marketing_tagline() -> None:
+    prompts = simulated_fanout(
+        {
+            "url": "https://anatainc.com/services/amazon-advertising",
+            "h1": ["Every Amazon ad dollar, working toward one plan."],
+            "title": "Amazon Advertising | Anata Inc.",
+        }
+    )
+
+    assert {item["facet"] for item in prompts} >= {"comparison", "proof", "risk"}
+    assert all("Amazon Advertising" in item["prompt"] for item in prompts)
+    assert all("Every Amazon ad dollar" not in item["prompt"] for item in prompts)
+
+
+def test_tool_fanout_uses_task_specific_questions() -> None:
+    prompts = simulated_fanout(
+        {
+            "url": "https://anatainc.com/tools/amazon-profit-calculator",
+            "h1": ["Know the margin before you make the move."],
+        }
+    )
+
+    assert {item["facet"] for item in prompts} == {
+        "purpose",
+        "inputs",
+        "process",
+        "interpretation",
+    }
+    assert prompts[0]["prompt"] == "What does the Amazon Profit Calculator help calculate?"
+
+
+def test_company_fanout_is_limited_and_navigational() -> None:
+    prompts = simulated_fanout(
+        {
+            "url": "https://anatainc.com/about",
+            "h1": ["An operations company that runs the store."],
+        }
+    )
+
+    assert len(prompts) == 2
+    assert {item["facet"] for item in prompts} == {"brand", "next-step"}
+    assert all("Anata ecommerce operations company" in item["prompt"] for item in prompts)
+
+
 def test_assessment_keeps_observed_and_simulated_evidence_separate() -> None:
     result = build_aeo_assessment(
         {
