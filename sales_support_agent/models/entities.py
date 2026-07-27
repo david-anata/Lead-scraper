@@ -1616,6 +1616,75 @@ class BuildingAuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
 
 
+class BuildingLifestyleMedia(Base):
+    """Reviewed lifestyle media that is not owned by one physical room."""
+
+    __tablename__ = "building_lifestyle_media"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(String(255))
+    media_url: Mapped[str] = mapped_column(String(1024))
+    media_kind: Mapped[str] = mapped_column(String(32), default="image")
+    alt_text: Mapped[str] = mapped_column(String(512))
+    caption: Mapped[str] = mapped_column(Text, default="")
+    placement: Mapped[str] = mapped_column(String(64), default="gallery", index=True)
+    source_reference: Mapped[str] = mapped_column(String(1024))
+    consent_reference: Mapped[str] = mapped_column(String(1024))
+    review_expires_on: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    internal_notes: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingTenantLogo(Base):
+    """Permissioned tenant logo placement for the public Building site."""
+
+    __tablename__ = "building_tenant_logos"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_name: Mapped[str] = mapped_column(String(255))
+    asset_url: Mapped[str] = mapped_column(String(1024))
+    alt_text: Mapped[str] = mapped_column(String(512))
+    destination_url: Mapped[str] = mapped_column(String(1024), default="")
+    source_reference: Mapped[str] = mapped_column(String(1024))
+    consent_reference: Mapped[str] = mapped_column(String(1024))
+    review_expires_on: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    internal_notes: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingTestimonial(Base):
+    """Reviewed testimonial or review with explicit publication consent."""
+
+    __tablename__ = "building_testimonials"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    quote: Mapped[str] = mapped_column(Text)
+    attribution_name: Mapped[str] = mapped_column(String(255))
+    attribution_title: Mapped[str] = mapped_column(String(255), default="")
+    attribution_company: Mapped[str] = mapped_column(String(255), default="")
+    rating: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    source_reference: Mapped[str] = mapped_column(String(1024))
+    consent_reference: Mapped[str] = mapped_column(String(1024))
+    review_expires_on: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    internal_notes: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class BuildingContact(Base):
     __tablename__ = "building_contacts"
 
