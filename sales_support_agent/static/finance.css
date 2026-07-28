@@ -1581,6 +1581,7 @@ input:focus, select:focus, textarea:focus {
 .bill-review-dialog label{display:grid;gap:5px;margin:12px 0}
 .bill-preview{padding:12px;border-radius:10px;background:#f5f8fa;margin:12px 0}
 .bill-activity ol{display:grid;gap:10px;padding-left:22px}
+.bill-activity li .btn{margin:6px 0 0 8px;padding:5px 9px}
 .bill-combine-dialog::backdrop{background:rgba(24,34,48,.42)}
 .bill-combine-dialog label{display:grid;gap:5px;margin:12px 0}
 @media (max-width:900px){.bill-table-wrap{max-height:none}.bill-row-actions form{flex-wrap:wrap}.bill-bulk-bar{position:static}}
