@@ -32,6 +32,19 @@ space tour” on David’s primary calendar, no Arena event, and no calendar-lis
 evidence establishing a dedicated event calendar. Readiness requires a verified
 calendar ID, owner, and service-account access.
 
+The control room keeps unresolved evidence visible instead of presenting a
+recommendation as an approved decision. Payment evidence is explicitly
+conflicting: one supplied policy says card-only, while an earlier owner answer
+allowed ACH/check with seven additional clearing days. Both agree that cleared
+funds are required before a date is held. The register requires the owner to
+choose the final method rather than silently preferring either statement.
+
+The other unresolved rows show the strongest known evidence and one exact next
+action for cancellation/transfer wording, included setup and teardown windows,
+overtime evidence limits, accountant-reviewed tax treatment, reusable agreement
+approval, dedicated-calendar verification, outbound sender ownership, and the
+launch effective date.
+
 For reconciled Arena rate plans, approval additionally requires the commercial
 decision subset: cancellation, tax, setup, teardown, overtime, and effective
 date. Agreement, payment, calendar, and sender decisions remain separate launch
