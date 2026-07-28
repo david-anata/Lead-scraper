@@ -493,7 +493,12 @@ def _contact_payload(
             preference.marketing_changed_at.isoformat() if preference else None
         ),
         "operational_allowed": (
-            preference.transactional_allowed if preference else True
+            bool(
+                preference
+                and preference.transactional_allowed
+                and str(preference.operational_source or "").strip()
+                and str(preference.operational_evidence_reference or "").strip()
+            )
         ),
         "operational_source": preference.operational_source if preference else "",
         "operational_evidence_reference": (
@@ -695,10 +700,17 @@ def _resolve_segment(
             if suppression_scopes.get(contact.email) in {"marketing", "all"}:
                 exclusions.append("email is suppressed for marketing")
         else:
-            if preference is not None and not preference.transactional_allowed:
+            if preference is None:
+                exclusions.append("operational contact authority is not documented")
+            elif not preference.transactional_allowed:
                 exclusions.append("required operational email is disabled")
+            elif not (
+                str(preference.operational_source or "").strip()
+                and str(preference.operational_evidence_reference or "").strip()
+            ):
+                exclusions.append("operational contact authority evidence is incomplete")
             else:
-                reasons.append("required operational email is allowed")
+                reasons.append("required operational email authority is documented")
             if suppression_scopes.get(contact.email) == "all":
                 exclusions.append("all email is suppressed")
         resolved.append(
@@ -2106,7 +2118,7 @@ def approve_campaign(
                     else None
                 ),
                 "operational_allowed": (
-                    preference.transactional_allowed if preference else True
+                    preference.transactional_allowed if preference else False
                 ),
                 "operational_source": (
                     preference.operational_source if preference else ""
@@ -3892,7 +3904,7 @@ def approve_campaign_from_control_room(
                     preference.marketing_source if preference else ""
                 ),
                 "operational_allowed": (
-                    preference.transactional_allowed if preference else True
+                    preference.transactional_allowed if preference else False
                 ),
                 "operational_source": (
                     preference.operational_source if preference else ""

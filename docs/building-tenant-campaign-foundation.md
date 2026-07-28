@@ -15,6 +15,9 @@ import contacts, change consent, schedule messages, or call an email provider.
 Relationships may now reference a billing account. Operational-contact
 authority records its source, evidence reference, and timestamp separately from
 marketing consent. Changing either one never changes the other.
+Legacy or partially migrated contacts without both an operational source and
+evidence reference are excluded from operational audiences until staff records
+that authority explicitly.
 
 ## Canonical audiences
 

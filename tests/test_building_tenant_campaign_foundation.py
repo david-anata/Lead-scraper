@@ -94,6 +94,19 @@ class TenantCampaignFoundationTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
 
+    def operational(self, contact_id: str) -> None:
+        response = self.client.put(
+            f"/api/internal/building/crm/contacts/{contact_id}/operational-preference",
+            headers=self.headers,
+            json={
+                "transactional_allowed": True,
+                "source": "documented-tenant-operations",
+                "evidence_reference": f"lease:{contact_id}",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
     def test_canonical_segments_are_empty_safe_and_distinguish_prospects(self) -> None:
         bootstrap = self.client.post(
             "/api/internal/building/crm/segments/bootstrap", headers=self.headers
@@ -192,6 +205,19 @@ class TenantCampaignFoundationTests(unittest.TestCase):
             },
         )
         self.assertEqual(segment.status_code, 200, segment.text)
+        legacy_preview = self.client.get(
+            "/api/internal/building/crm/segments/tenant-ops/preview",
+            headers=self.headers,
+        )
+        self.assertEqual(legacy_preview.status_code, 200, legacy_preview.text)
+        tenant_row = next(
+            row
+            for row in legacy_preview.json()["contacts"]
+            if row["contact_id"] == "tenant-one"
+        )
+        self.assertFalse(tenant_row["included"])
+        self.assertIn("authority evidence is incomplete", tenant_row["reason"])
+        self.operational("tenant-one")
         draft_payload = {
             "id": "ops-1",
             "name": "Operations notice",
