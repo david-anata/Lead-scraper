@@ -2444,6 +2444,29 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
           <p class="muted">When eligible, Agent generates one bounded, cited article; checks intent ownership, factual sourcing, repository build, deployment, rendered production, and rollback; then records the result in the action ledger and daily email.</p>
           <a class="text-link" href="/admin/website-ops/queries">Inspect the evidence and canonical owner map</a>
         </section>
+        <section class="grid-2">
+          <div class="card stack">
+            <p class="eyebrow">Authority growth</p>
+            <h2>Earn citations. Never manufacture links.</h2>
+            <p class="lead-sm">Agent monitors answer-engine citations and promotes only original, source-backed assets. Automated link creation, paid ranking links, excessive exchanges, and scaled guest-post outreach remain prohibited.</p>
+            <div class="summary-grid">
+              {_summary_chip("Cited clusters", query_summary.get("cited_clusters", 0), tone="good" if query_summary.get("cited_clusters") else "neutral")}
+              {_summary_chip("Citation gains", query_summary.get("citation_gains", 0), tone="good" if query_summary.get("citation_gains") else "neutral")}
+              {_summary_chip("Citation losses", query_summary.get("citation_losses", 0), tone="warn" if query_summary.get("citation_losses") else "neutral")}
+              {_summary_chip("Outreach policy", "Relevant and evidence-led", tone="good")}
+            </div>
+          </div>
+          <div class="card stack">
+            <p class="eyebrow">Outcome learning</p>
+            <h2>Measure movement without claiming causation.</h2>
+            <p class="lead-sm">Agent records comparable Search Console and GA4 observations after changes. Movement is labeled as an association until the evidence supports a stronger conclusion.</p>
+            <div class="summary-grid">
+              {_summary_chip("Observed pages", query_summary.get("observed_outcome_pages", 0), tone="neutral")}
+              {_summary_chip("Associated lead growth", query_summary.get("pages_with_associated_lead_growth", 0), tone="good" if query_summary.get("pages_with_associated_lead_growth") else "neutral")}
+              {_summary_chip("Lead-event trust", str(analytics_status.get("ga4_trust_status", "unavailable")).title(), tone="good" if analytics_status.get("ga4_trust_status") == "trusted" else "warn")}
+            </div>
+          </div>
+        </section>
         <section class="stats">
           {_dashboard_stat_card("Reports", len(reports), "Daily, weekly, monthly", "/admin/website-ops/reports")}
           {_dashboard_stat_card("Validated Queries", query_summary.get('validated_clusters', 0), "One page, one intent", "/admin/website-ops/queries?status=validated")}
@@ -2855,6 +2878,27 @@ def render_query_map_page(
             {_summary_chip("Execution", "Autopush after validation", tone="good")}
           </div>
           <p class="muted">Cycles are counted by distinct ISO week, not by number of button presses. This prevents duplicate runs from manufacturing confidence.</p>
+        </section>
+        <section class="grid-2">
+          <div class="card stack">
+            <p class="eyebrow">Authority signals</p>
+            <h2>Earned citation monitoring</h2>
+            <div class="summary-grid">
+              {_summary_chip("Cited clusters", summary.get("cited_clusters", 0), tone="good" if summary.get("cited_clusters") else "neutral")}
+              {_summary_chip("Citation gains", summary.get("citation_gains", 0), tone="good" if summary.get("citation_gains") else "neutral")}
+              {_summary_chip("Citation losses", summary.get("citation_losses", 0), tone="warn" if summary.get("citation_losses") else "neutral")}
+            </div>
+            <p class="muted">Outreach can promote a verified original asset to a relevant editorial audience. It cannot buy, exchange, or automatically create ranking links.</p>
+          </div>
+          <div class="card stack">
+            <p class="eyebrow">Learning loop</p>
+            <h2>Observed business outcomes</h2>
+            <div class="summary-grid">
+              {_summary_chip("Observed pages", summary.get("observed_outcome_pages", 0), tone="neutral")}
+              {_summary_chip("Associated lead growth", summary.get("pages_with_associated_lead_growth", 0), tone="good" if summary.get("pages_with_associated_lead_growth") else "neutral")}
+            </div>
+            <p class="muted">Before-and-after movement is association-only. Agent does not attribute a ranking or lead change to one publication without stronger evidence.</p>
+          </div>
         </section>
         <section class="card stack">
           <div class="section-heading"><div class="stack"><h2>Canonical intent owners</h2><p class="lead-sm">Every public canonical route declares one primary intent. “Unobserved” means Search Console has not supplied demand evidence yet, not that the page should be deleted or rewritten.</p></div><span class="status-pill status-neutral">{html.escape(str(intent_coverage.get("status", "unavailable")).title())}</span></div>
