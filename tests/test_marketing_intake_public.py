@@ -158,13 +158,22 @@ class MarketingIntakeTests(unittest.TestCase):
         data = self._create()
         self.assertIn("intake_id", data)
         self.assertTrue(data["token"])
+        self.assertEqual(data["kind"], "asin")
         self.assertEqual(data["brand_name"], "TestBrand")
         self.assertEqual(data["product_title"], "Test Product")
         self.assertNotIn("dtc_domain", data)
 
     def test_store_create_returns_dtc_domain(self) -> None:
         data = self._create(kind="store", identifier="testbrand.com")
+        self.assertEqual(data["kind"], "store")
         self.assertEqual(data["dtc_domain"], "testbrand.com")
+        status = self.client.get(
+            f"/api/public/marketing/intake/{data['intake_id']}",
+            params={"token": data["token"]},
+            headers=HEADERS,
+        ).json()
+        self.assertEqual(status["kind"], "store")
+        self.assertEqual(status["dtc_domain"], "testbrand.com")
 
     def test_needs_stored_and_filtered(self) -> None:
         data = self._create()
@@ -236,7 +245,9 @@ class MarketingIntakeTests(unittest.TestCase):
             json={"token": data["token"], "needs": ["analytics", "advertising"]},
             headers=HEADERS,
         )
-        with mock.patch.object(M, "_run_analysis_and_deliver") as deliver:
+        with mock.patch.object(
+            M, "_send_internal_lead_email", return_value=True
+        ), mock.patch.object(M, "_run_analysis_and_deliver") as deliver:
             resp = self.client.post(
                 f"/api/public/marketing/intake/{data['intake_id']}/unlock",
                 json={"token": data["token"], "email": "gate@example.com"},
@@ -251,7 +262,9 @@ class MarketingIntakeTests(unittest.TestCase):
 
         # Same email, same UTC day, a fresh intake → 429 daily_limit.
         second = self._create()
-        with mock.patch.object(M, "_run_analysis_and_deliver"):
+        with mock.patch.object(
+            M, "_send_internal_lead_email", return_value=True
+        ), mock.patch.object(M, "_run_analysis_and_deliver"):
             resp2 = self.client.post(
                 f"/api/public/marketing/intake/{second['intake_id']}/unlock",
                 json={"token": second["token"], "email": "gate@example.com"},
@@ -262,7 +275,9 @@ class MarketingIntakeTests(unittest.TestCase):
 
     def test_store_unlock_uses_store_delivery(self) -> None:
         data = self._create(kind="store", identifier="testbrand.com")
-        with mock.patch.object(M, "_deliver_store_unlock") as deliver:
+        with mock.patch.object(
+            M, "_send_internal_lead_email", return_value=True
+        ), mock.patch.object(M, "_deliver_store_unlock") as deliver:
             resp = self.client.post(
                 f"/api/public/marketing/intake/{data['intake_id']}/unlock",
                 json={"token": data["token"], "email": "store@example.com"},
@@ -291,7 +306,9 @@ class MarketingIntakeTests(unittest.TestCase):
             "next_step": "Book my review",
             "ignored": "must not persist",
         }
-        with mock.patch.object(M, "_run_analysis_and_deliver") as deliver:
+        with mock.patch.object(
+            M, "_send_internal_lead_email", return_value=True
+        ), mock.patch.object(M, "_run_analysis_and_deliver") as deliver:
             response = self.client.post(
                 f"/api/public/marketing/intake/{data['intake_id']}/unlock",
                 json={"token": data["token"], "email": "qualified@example.com", "qualification": qualification},
@@ -305,6 +322,65 @@ class MarketingIntakeTests(unittest.TestCase):
         with app.state.session_factory() as session:
             run = session.get(M.AutomationRun, int(data["intake_id"]))
             self.assertEqual(run.metadata_json["qualification"]["company"], "Anata")
+            self.assertEqual(run.summary_json["internal_lead_email"], "delivered")
+
+    def test_unlock_does_not_claim_success_when_every_handoff_fails(self) -> None:
+        data = self._create()
+        with mock.patch.object(
+            M, "_send_unlock_ack_email", return_value=False
+        ), mock.patch.object(
+            M, "_send_internal_lead_email", return_value=False
+        ), mock.patch.object(
+            M, "_record_hubspot_lead", return_value=False
+        ), mock.patch.object(M, "_run_analysis_and_deliver"):
+            response = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/unlock",
+                json={"token": data["token"], "email": "lost@example.com"},
+                headers=HEADERS,
+            )
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertEqual(response.json()["status"], "delivery_unavailable")
+
+    def test_booking_confirmation_updates_hubspot_once(self) -> None:
+        data = self._create()
+        with mock.patch.object(
+            M, "_send_internal_lead_email", return_value=True
+        ), mock.patch.object(M, "_run_analysis_and_deliver"):
+            unlocked = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/unlock",
+                json={
+                    "token": data["token"],
+                    "email": "booked@example.com",
+                    "qualification": {"company": "TestBrand"},
+                },
+                headers=HEADERS,
+            )
+        self.assertEqual(unlocked.status_code, 202, unlocked.text)
+        with mock.patch.object(
+            M,
+            "_record_hubspot_booking",
+            return_value=(True, "deal-123"),
+        ) as record:
+            first = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/booked",
+                json={
+                    "token": data["token"],
+                    "source": "diagnostic-report-unlocked",
+                },
+                headers=HEADERS,
+            )
+            second = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/booked",
+                json={
+                    "token": data["token"],
+                    "source": "diagnostic-report-unlocked",
+                },
+                headers=HEADERS,
+            )
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertFalse(first.json()["duplicate"])
+        self.assertTrue(second.json()["duplicate"])
+        record.assert_called_once()
 
     def test_qualified_contact_fields_sync_to_hubspot(self) -> None:
         client = mock.Mock()

@@ -160,7 +160,14 @@ def _normalize_amazon_asin(raw: Any) -> str:
     return ""
 
 
-def _send_result_email(settings, *, email: str, asin: str, view_url: str) -> bool:
+def _send_result_email(
+    settings,
+    *,
+    email: str,
+    asin: str,
+    view_url: str,
+    intake_run_id: int = 0,
+) -> bool:
     client = ResendClient(settings)
     if not client.is_configured():
         logger.warning("[marketing_intake] Resend not configured; skipping result email to %s", email)
@@ -184,8 +191,129 @@ def _send_result_email(settings, *, email: str, asin: str, view_url: str) -> boo
         to=email,
         subject="Your Anata product analysis is ready",
         text="\n".join(lines),
+        idempotency_key=(
+            f"marketing-intake-{intake_run_id}-result"
+            if intake_run_id
+            else ""
+        ),
     )
     return True
+
+
+def _send_unlock_ack_email(
+    settings,
+    *,
+    email: str,
+    display_name: str,
+    kind: str,
+    intake_run_id: int,
+) -> bool:
+    """Confirm receipt before the expensive analysis starts.
+
+    This is intentionally separate from the final report email. A deck build
+    can fail or outlive a web worker, but a valid request must never disappear
+    without a prospect acknowledgement.
+    """
+    client = ResendClient(settings)
+    if not client.is_configured():
+        logger.warning(
+            "[marketing_intake] Resend not configured; skipping acknowledgement to %s",
+            email,
+        )
+        return False
+    label = display_name or ("your product" if kind == "asin" else "your store")
+    booking_url = str(getattr(settings, "marketing_booking_url", "") or "").strip()
+    lines = [
+        "Hi,",
+        "",
+        f"We received your Anata analysis request for {label}.",
+        "We are building the complete report now and will email you again when it is ready.",
+        "",
+    ]
+    if booking_url:
+        lines += [
+            "You can also choose a time to review it with our team:",
+            booking_url,
+            "",
+        ]
+    lines += ["Anata"]
+    client.send_message(
+        to=email,
+        subject="We received your Anata analysis request",
+        text="\n".join(lines),
+        idempotency_key=f"marketing-intake-{intake_run_id}-ack",
+    )
+    return True
+
+
+def _lead_notification_recipients() -> list[str]:
+    configured = os.getenv("MARKETING_LEAD_EMAIL_TO", "").strip()
+    values = configured.split(",") if configured else ["david@anatainc.com"]
+    return [value.strip().lower() for value in values if value.strip()]
+
+
+def _send_internal_lead_email(
+    settings,
+    *,
+    email: str,
+    kind: str,
+    identifier: str,
+    brand_name: str,
+    source: str,
+    needs: list[str],
+    qualification: Optional[dict[str, str]],
+    intake_run_id: int,
+) -> bool:
+    """Send the internal new-lead alert independently of report generation."""
+    client = ResendClient(settings)
+    recipients = _lead_notification_recipients()
+    if not recipients or not client.is_configured():
+        logger.warning(
+            "[marketing_intake] internal lead email is not configured for intake %s",
+            intake_run_id,
+        )
+        return False
+    qualification = qualification or {}
+    lines = [
+        "New Anata website analysis request",
+        "",
+        f"Intake: {intake_run_id}",
+        f"Name: {qualification.get('name', '') or 'Not provided'}",
+        f"Company: {qualification.get('company', '') or brand_name or 'Not provided'}",
+        f"Phone: {qualification.get('phone', '') or 'Not provided'}",
+        f"Email: {email}",
+        f"Type: {'Amazon ASIN' if kind == 'asin' else 'Store website'}",
+        f"Submitted: {identifier or 'Not available'}",
+        f"Needs: {', '.join(needs) if needs else 'Not selected'}",
+        f"Source: {source or 'anatainc.com'}",
+    ]
+    client.send_message(
+        to=recipients,
+        subject=f"New website analysis lead: {qualification.get('company') or brand_name or email}",
+        text="\n".join(lines),
+        reply_to=email,
+        idempotency_key=f"marketing-intake-{intake_run_id}-lead",
+    )
+    return True
+
+
+def _write_intake_delivery_state(
+    app,
+    intake_run_id: int,
+    **state: str,
+) -> None:
+    try:
+        with session_scope(app.state.session_factory) as session:
+            run = session.get(AutomationRun, intake_run_id)
+            if run is None:
+                return
+            run.summary_json = {**(run.summary_json or {}), **state}
+            session.add(run)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[marketing_intake] failed to write delivery state for intake %s",
+            intake_run_id,
+        )
 
 
 def _record_hubspot_lead(
@@ -230,11 +358,10 @@ def _record_hubspot_lead(
         if needs and "advertising" in needs
         else "Strategy Audit requested from the marketing site."
     )
-    note_body = request_label + (
-        f"<br>ASIN: {asin}"
-        f"<br>Deck: {view_url}"
-        f"<br>Source: {source or 'anatainc.com'}"
-    )
+    note_body = request_label + f"<br>ASIN: {asin}"
+    if view_url:
+        note_body += f"<br>Deck: {view_url}"
+    note_body += f"<br>Source: {source or 'anatainc.com'}"
     if needs:
         note_body += f"<br>Needs: {', '.join(needs)}"
     for key in ("company", "phone", "storefront", "revenue_range", "challenge", "next_step", "audit_run_id"):
@@ -326,7 +453,13 @@ def _run_analysis_and_deliver(
 
     email_delivered = False
     try:
-        email_delivered = _send_result_email(settings, email=email, asin=asin, view_url=view_url)
+        email_delivered = _send_result_email(
+            settings,
+            email=email,
+            asin=asin,
+            view_url=view_url,
+            intake_run_id=intake_run_id,
+        )
     except Exception:  # noqa: BLE001
         logger.exception("[marketing_intake] result email failed for %s", email)
     hubspot_recorded = False
@@ -349,7 +482,14 @@ def _run_analysis_and_deliver(
                 run.summary_json = {
                     **(run.summary_json or {}),
                     "email_delivery": "delivered" if email_delivered else "failed",
-                    "hubspot_handoff": "recorded" if hubspot_recorded else "failed",
+                    "hubspot_handoff": (
+                        "recorded"
+                        if hubspot_recorded
+                        else (run.summary_json or {}).get(
+                            "hubspot_handoff",
+                            "failed",
+                        )
+                    ),
                 }
                 session.add(run)
     except Exception:  # noqa: BLE001
@@ -694,12 +834,19 @@ def _load_site_intake(session, intake_id: int, token: str):
     return run, None
 
 
-def _send_store_ack_email(settings, *, email: str, brand_name: str, domain: str) -> None:
+def _send_store_ack_email(
+    settings,
+    *,
+    email: str,
+    brand_name: str,
+    domain: str,
+    intake_run_id: int = 0,
+) -> bool:
     """Store-only unlock: no deck, acknowledge the page and point to booking."""
     client = ResendClient(settings)
     if not client.is_configured():
         logger.warning("[marketing_intake] Resend not configured; skipping store ack email to %s", email)
-        return
+        return False
     booking_url = str(getattr(settings, "marketing_booking_url", "") or "").strip()
     display = brand_name or domain
     lines = [
@@ -719,14 +866,29 @@ def _send_store_ack_email(settings, *, email: str, brand_name: str, domain: str)
         to=email,
         subject="Your Anata brand page is on its way",
         text="\n".join(lines),
+        idempotency_key=(
+            f"marketing-intake-{intake_run_id}-ack"
+            if intake_run_id
+            else ""
+        ),
     )
+    return True
 
 
-def _record_store_hubspot_lead(settings, *, email: str, domain: str, needs: list[str], source: str, qualification: Optional[dict[str, str]] = None) -> None:
+def _record_store_hubspot_lead(
+    settings,
+    *,
+    email: str,
+    domain: str,
+    needs: list[str],
+    source: str,
+    qualification: Optional[dict[str, str]] = None,
+    view_url: str = "",
+) -> bool:
     client = HubSpotClient(settings)
     if not client.is_configured:
         logger.warning("[marketing_intake] HubSpot not configured; skipping contact for %s", email)
-        return
+        return False
     contact_id = ""
     try:
         qualification = qualification or {}
@@ -744,9 +906,9 @@ def _record_store_hubspot_lead(settings, *, email: str, domain: str, needs: list
             contact_id = match.group(1)
         else:
             logger.warning("[marketing_intake] HubSpot create_contact failed for %s: %s", email, exc)
-            return
+            return False
     if not contact_id:
-        return
+        return False
     contact_updates = {key: value for key, value in properties.items() if key != "email"}
     if contact_updates:
         try:
@@ -760,6 +922,8 @@ def _record_store_hubspot_lead(settings, *, email: str, domain: str, needs: list
     )
     if needs:
         note_body += f"<br>Needs: {', '.join(needs)}"
+    if view_url:
+        note_body += f"<br>Deck: {view_url}"
     for key in ("company", "phone", "storefront", "revenue_range", "challenge", "next_step"):
         if qualification and qualification.get(key):
             note_body += f"<br>{key.replace('_', ' ').title()}: {escape(qualification[key])}"
@@ -767,14 +931,97 @@ def _record_store_hubspot_lead(settings, *, email: str, domain: str, needs: list
         client.create_contact_note(contact_id=contact_id, body=note_body)
     except Exception as exc:  # noqa: BLE001 — the contact itself is the critical write
         logger.warning("[marketing_intake] HubSpot note failed for contact %s: %s", contact_id, exc)
+        return False
+    return True
 
 
-def _send_store_deck_email(settings, *, email: str, brand_name: str, domain: str, view_url: str) -> None:
+def _record_hubspot_booking(
+    settings,
+    *,
+    email: str,
+    brand_name: str,
+    source: str,
+    qualification: Optional[dict[str, str]] = None,
+) -> tuple[bool, str]:
+    """Advance or create the strategy deal when the embedded calendar confirms.
+
+    The browser only reports a trusted HubSpot `meetingBookSucceeded` event.
+    Contact identity comes from the already-tokenized intake, never from the
+    cross-origin iframe message.
+    """
+    client = HubSpotClient(settings)
+    if not client.is_configured:
+        logger.warning("[marketing_intake] HubSpot not configured; booking was not recorded")
+        return False, ""
+    contact = client.find_contact_by_email(email)
+    contact_id = str((contact or {}).get("id", "") or "")
+    if not contact_id:
+        logger.warning("[marketing_intake] no HubSpot contact found for booked email %s", email)
+        return False, ""
+
+    qualification = qualification or {}
+    company = qualification.get("company") or brand_name or email.split("@", 1)[0]
+    stage = (
+        os.getenv("HUBSPOT_BOOKED_DEAL_STAGE", "").strip()
+        or os.getenv("HUBSPOT_DEFAULT_DEAL_STAGE", "").strip()
+        or "appointmentscheduled"
+    )
+    deal_ids = client.list_associations("contacts", contact_id, "deals")
+    deal_id = str(deal_ids[0] if deal_ids else "")
+    if deal_id:
+        client.update_deal(deal_id, {"dealstage": stage})
+    else:
+        pipeline = (
+            str(getattr(settings, "hubspot_sales_pipeline_id", "") or "").strip()
+            or os.getenv("HUBSPOT_DEFAULT_DEAL_PIPELINE", "").strip()
+            or "default"
+        )
+        created = client.create_deal(
+            {
+                "dealname": f"{company} - Strategy Audit",
+                "pipeline": pipeline,
+                "dealstage": stage,
+            },
+            associations=[
+                {
+                    "to": {"id": contact_id},
+                    "types": [
+                        {
+                            "associationCategory": "HUBSPOT_DEFINED",
+                            "associationTypeId": 3,
+                        }
+                    ],
+                }
+            ],
+        )
+        deal_id = str((created or {}).get("id", "") or "")
+    if not deal_id:
+        return False, ""
+
+    note = (
+        "Strategy call booked from the embedded Anata calendar."
+        f"<br>Source: {escape(source or 'diagnostic-report-unlocked')}"
+        f"<br>Contact: {escape(email)}"
+    )
+    client.create_note(deal_id=deal_id, body=note)
+    client.create_contact_note(contact_id=contact_id, body=note)
+    return True, deal_id
+
+
+def _send_store_deck_email(
+    settings,
+    *,
+    email: str,
+    brand_name: str,
+    domain: str,
+    view_url: str,
+    intake_run_id: int = 0,
+) -> bool:
     """Store deck ready: email the tokenized deck URL plus the booking line."""
     client = ResendClient(settings)
     if not client.is_configured():
         logger.warning("[marketing_intake] Resend not configured; skipping store deck email to %s", email)
-        return
+        return False
     booking_url = str(getattr(settings, "marketing_booking_url", "") or "").strip()
     display = brand_name or domain
     lines = [
@@ -795,7 +1042,13 @@ def _send_store_deck_email(settings, *, email: str, brand_name: str, domain: str
         to=email,
         subject="Your Anata Strategy Audit is ready",
         text="\n".join(lines),
+        idempotency_key=(
+            f"marketing-intake-{intake_run_id}-result"
+            if intake_run_id
+            else ""
+        ),
     )
+    return True
 
 
 def _deliver_store_unlock(app, *, intake_run_id: int, email: str, domain: str, brand_name: str, needs: list[str], source: str, qualification: Optional[dict[str, str]] = None) -> None:
@@ -830,15 +1083,31 @@ def _deliver_store_unlock(app, *, intake_run_id: int, email: str, domain: str, b
         except Exception as exc:  # noqa: BLE001 - fall back to the ack email
             logger.error("[marketing_intake] store deck generation failed for %s: %s", domain, exc, exc_info=True)
 
+    email_delivered = False
     try:
         if view_url:
-            _send_store_deck_email(settings, email=email, brand_name=brand_name, domain=domain, view_url=view_url)
-        else:
-            _send_store_ack_email(settings, email=email, brand_name=brand_name, domain=domain)
+            email_delivered = _send_store_deck_email(
+                settings,
+                email=email,
+                brand_name=brand_name,
+                domain=domain,
+                view_url=view_url,
+                intake_run_id=intake_run_id,
+            )
     except Exception:  # noqa: BLE001
         logger.exception("[marketing_intake] store email failed for %s", email)
+    hubspot_recorded = False
     try:
-        _record_store_hubspot_lead(settings, email=email, domain=domain, needs=needs, source=source, qualification=qualification)
+        if view_url:
+            hubspot_recorded = _record_store_hubspot_lead(
+                settings,
+                email=email,
+                domain=domain,
+                needs=needs,
+                source=source,
+                qualification=qualification,
+                view_url=view_url,
+            )
     except Exception:  # noqa: BLE001
         logger.exception("[marketing_intake] store HubSpot lead recording failed for %s", email)
     try:
@@ -850,8 +1119,18 @@ def _deliver_store_unlock(app, *, intake_run_id: int, email: str, domain: str, b
                     status="success",
                     summary={
                         **(run.summary_json or {}),
-                        "delivered": "store_deck" if view_url else "store_ack",
+                        "delivered": "store_deck" if view_url else "store_ack_only",
                         "view_url": view_url,
+                        "email_delivery": (
+                            "delivered"
+                            if email_delivered
+                            else (run.summary_json or {}).get("email_delivery", "failed")
+                        ),
+                        "hubspot_handoff": (
+                            "recorded"
+                            if hubspot_recorded
+                            else (run.summary_json or {}).get("hubspot_handoff", "failed")
+                        ),
                     },
                 )
     except Exception:  # noqa: BLE001
@@ -912,6 +1191,7 @@ async def marketing_site_intake_create(
     payload: dict[str, Any] = {
         "intake_id": intake_id,
         "token": token,
+        "kind": kind,
         "brand_name": identity.get("brand_name", ""),
         "product_title": identity.get("product_title", ""),
         "product_image": identity.get("product_image", ""),
@@ -1143,6 +1423,76 @@ async def marketing_site_intake_unlock(
         session.add(run)
         run_id = run.id
 
+    acknowledgement_sent = False
+    internal_lead_sent = False
+    hubspot_recorded = False
+    display_name = brand_name or asin or domain
+    try:
+        acknowledgement_sent = _send_unlock_ack_email(
+            request.app.state.settings,
+            email=email,
+            display_name=display_name,
+            kind=kind,
+            intake_run_id=run_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[marketing_intake] acknowledgement email failed for intake %s",
+            run_id,
+        )
+    try:
+        internal_lead_sent = _send_internal_lead_email(
+            request.app.state.settings,
+            email=email,
+            kind=kind,
+            identifier=asin or domain,
+            brand_name=brand_name,
+            source=source,
+            needs=needs,
+            qualification=qualification,
+            intake_run_id=run_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[marketing_intake] internal lead email failed for intake %s",
+            run_id,
+        )
+    try:
+        if kind == "asin" and asin:
+            hubspot_recorded = _record_hubspot_lead(
+                request.app.state.settings,
+                email=email,
+                asin=asin,
+                view_url="",
+                source=source,
+                needs=needs,
+                qualification=qualification,
+            )
+        else:
+            hubspot_recorded = _record_store_hubspot_lead(
+                request.app.state.settings,
+                email=email,
+                domain=domain,
+                needs=needs,
+                source=source,
+                qualification=qualification,
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[marketing_intake] immediate HubSpot handoff failed for intake %s",
+            run_id,
+        )
+
+    _write_intake_delivery_state(
+        request.app,
+        run_id,
+        acknowledgement_email=(
+            "delivered" if acknowledgement_sent else "failed"
+        ),
+        internal_lead_email=("delivered" if internal_lead_sent else "failed"),
+        hubspot_handoff=("recorded" if hubspot_recorded else "failed"),
+    )
+
     if kind == "asin" and asin:
         background_tasks.add_task(
             _run_analysis_and_deliver,
@@ -1168,15 +1518,116 @@ async def marketing_site_intake_unlock(
             qualification=qualification,
         )
 
-    return JSONResponse(
-        status_code=202,
-        content={
-            "status": "building",
-            "closers": {
-                "software": "analytics" in needs,
-                "services": bool(set(needs) & _SERVICES_NEEDS),
-            },
+    captured = internal_lead_sent or hubspot_recorded
+    response_content = {
+        "status": "building" if captured else "delivery_unavailable",
+        "delivery": {
+            "acknowledgement": acknowledgement_sent,
+            "internal_notification": internal_lead_sent,
+            "hubspot": hubspot_recorded,
         },
+        "closers": {
+            "software": "analytics" in needs,
+            "services": bool(set(needs) & _SERVICES_NEEDS),
+        },
+    }
+    if not captured:
+        response_content["detail"] = (
+            "We could not confirm the internal handoff. Please try again."
+        )
+    return JSONResponse(
+        status_code=202 if captured else 503,
+        content=response_content,
+    )
+
+
+@router.post("/intake/{intake_id}/booked")
+async def marketing_site_intake_booked(
+    intake_id: int,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> JSONResponse:
+    """Record a confirmed HubSpot Meetings booking against the captured lead."""
+    denied = _enforce_marketing_intake_key(request, x_internal_api_key)
+    if denied is not None:
+        return denied
+    try:
+        body: dict[str, Any] = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Request body must be valid JSON."},
+        )
+    if not isinstance(body, dict):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Request body must be a JSON object."},
+        )
+
+    with session_scope(request.app.state.session_factory) as session:
+        run, error = _load_site_intake(
+            session,
+            intake_id,
+            str(body.get("token", "") or ""),
+        )
+        if error is not None:
+            return error
+        summary = dict(run.summary_json or {})
+        metadata = dict(run.metadata_json or {})
+        if summary.get("booking_handoff") == "recorded":
+            return JSONResponse(
+                content={
+                    "status": "recorded",
+                    "deal_id": str(summary.get("booking_deal_id", "") or ""),
+                    "duplicate": True,
+                }
+            )
+        email = str(metadata.get("email", "") or "").strip().lower()
+        brand_name = str(summary.get("brand_name", "") or "")
+        source = str(body.get("source", "") or metadata.get("source", "") or "")
+        qualification = _sanitize_qualification(metadata.get("qualification"))
+
+    if not email:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "The intake has no captured contact email."},
+        )
+
+    try:
+        recorded, deal_id = _record_hubspot_booking(
+            request.app.state.settings,
+            email=email,
+            brand_name=brand_name,
+            source=source,
+            qualification=qualification,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[marketing_intake] booking handoff failed for intake %s",
+            intake_id,
+        )
+        recorded, deal_id = False, ""
+
+    if not recorded:
+        _write_intake_delivery_state(
+            request.app,
+            intake_id,
+            booking_handoff="failed",
+        )
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "The HubSpot booking handoff did not complete."},
+        )
+
+    _write_intake_delivery_state(
+        request.app,
+        intake_id,
+        booking_handoff="recorded",
+        booking_deal_id=deal_id,
+        booking_recorded_at=datetime.now(timezone.utc).isoformat(),
+    )
+    return JSONResponse(
+        content={"status": "recorded", "deal_id": deal_id, "duplicate": False}
     )
 
 
@@ -1199,6 +1650,12 @@ def marketing_site_intake_status(
         return JSONResponse(
             content={
                 "status": run.status,
+                "kind": str(summary.get("kind", "") or ""),
+                "dtc_domain": (
+                    str(summary.get("domain", "") or "")
+                    if str(summary.get("kind", "") or "") == "store"
+                    else ""
+                ),
                 "brand_name": str(summary.get("brand_name", "") or ""),
                 "product_title": str(summary.get("product_title", "") or ""),
                 "product_image": str(summary.get("product_image", "") or ""),
