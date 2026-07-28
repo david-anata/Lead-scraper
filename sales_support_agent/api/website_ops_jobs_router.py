@@ -36,6 +36,7 @@ from sales_support_agent.services.job_lease import (
 
 router = APIRouter(prefix="/api/jobs/website-ops", tags=["website-ops-jobs"])
 logger = logging.getLogger(__name__)
+WEBSITE_OPS_PULSE_HOURS = (8, 13, 18)
 
 
 def _require_internal_key(request: Request) -> None:
@@ -60,10 +61,17 @@ def _run_due_modes(
     *,
     trigger: str,
     force: bool = False,
+    pulse_slot: str = "",
 ) -> dict[str, dict]:
     results: dict[str, dict] = {}
     for mode in modes:
-        if not force and not website_ops_run_is_due(settings, mode):
+        current_state = get_website_ops_run_state(settings, mode)
+        repeated_daily_pulse = (
+            mode == "daily"
+            and bool(pulse_slot)
+            and current_state.get("last_pulse_slot") != pulse_slot
+        )
+        if not force and not repeated_daily_pulse and not website_ops_run_is_due(settings, mode):
             results[mode] = {"status": "skipped", "message": "Already completed for this period."}
             continue
         now = datetime.now(ZoneInfo("UTC"))
@@ -77,6 +85,7 @@ def _run_due_modes(
                 "trigger": trigger,
                 "last_started_at": now.isoformat(),
                 "last_error": "",
+                "last_pulse_slot": pulse_slot if mode == "daily" else "",
             },
         )
         max_attempts = max(
@@ -169,12 +178,13 @@ def install_embedded_website_ops_scheduler(app: FastAPI) -> None:
     def worker() -> None:
         while not stop_event.is_set():
             local_now = datetime.now(ZoneInfo("America/Denver"))
-            if local_now.hour >= 8:
+            if local_now.hour in WEBSITE_OPS_PULSE_HOURS and local_now.minute < 5:
                 try:
                     _run_due_modes(
                         settings,
                         _scheduled_modes(local_now),
                         trigger="embedded_scheduler",
+                        pulse_slot=f"{local_now.date().isoformat()}:{local_now.hour:02d}",
                     )
                 except Exception:  # noqa: BLE001
                     logger.exception("Embedded Website Ops scheduler failed.")
@@ -276,6 +286,7 @@ def website_ops_runtime_health(request: Request) -> dict:
         "schedule": {
             "timezone": "America/Denver",
             "hour": 8,
+            "hours": list(WEBSITE_OPS_PULSE_HOURS),
             "trigger_path": "/api/jobs/website-ops/run",
         },
         "checks": checks,
@@ -302,10 +313,10 @@ async def run_scheduled_website_ops(request: Request) -> dict:
         raise HTTPException(status_code=400, detail="Unsupported run mode.")
 
     local_now = datetime.now(ZoneInfo("America/Denver"))
-    if requested_mode == "scheduled" and local_now.hour != 8:
+    if requested_mode == "scheduled" and local_now.hour not in WEBSITE_OPS_PULSE_HOURS:
         return {
             "status": "skipped",
-            "message": "Website Ops scheduler is waiting for 8:00 AM America/Denver.",
+            "message": "Website Ops scheduler is waiting for the 8 AM, 1 PM, or 6 PM America/Denver pulse.",
             "local_time": local_now.isoformat(),
         }
 
@@ -318,7 +329,12 @@ async def run_scheduled_website_ops(request: Request) -> dict:
         # always initializes the shared engine and therefore always uses the
         # cross-instance lease below.
         engine = None
-    run_key = f"{local_now.date().isoformat()}:{requested_mode}"
+    pulse_slot = (
+        f"{local_now.date().isoformat()}:{local_now.hour:02d}"
+        if requested_mode == "scheduled"
+        else ""
+    )
+    run_key = f"{local_now.date().isoformat()}:{requested_mode}:{pulse_slot}"
     lease = (
         claim_scheduled_job(
             engine,
@@ -347,6 +363,7 @@ async def run_scheduled_website_ops(request: Request) -> dict:
             modes,
             trigger="internal_force" if force else "render_cron",
             force=force,
+            pulse_slot=pulse_slot,
         )
         failed = any(item.get("status") == "failed" for item in results.values())
         if engine is not None and lease is not None:

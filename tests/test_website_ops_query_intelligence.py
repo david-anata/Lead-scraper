@@ -28,7 +28,35 @@ def test_weekly_cycles_count_distinct_iso_weeks_not_run_dates() -> None:
     assert _weekly_cycles(observations) == 2
 
 
-def test_article_pipeline_explains_cycle_and_source_gates() -> None:
+def test_answer_engine_research_can_validate_an_informational_hypothesis() -> None:
+    records = [
+        {
+            "cluster_id": "how-amazon-dsp-works",
+            "raw_query": "how does amazon dsp work",
+            "page_url": "https://anatainc.com/services/amazon-dsp-advertising",
+            "evidence_class": "simulated_query",
+            "quality_status": "eligible",
+        }
+    ]
+    clusters = build_clusters(
+        records,
+        [],
+        [
+            {
+                "cluster_id": "how-amazon-dsp-works",
+                "status": "cited",
+                "cited_urls": [
+                    {"url": "https://advertising.amazon.com/library/guides"}
+                ],
+            }
+        ],
+    )
+
+    assert clusters[0]["validation_status"] == "validated"
+    assert "observed_answer_engine" in clusters[0]["evidence_classes"]
+
+
+def test_article_pipeline_uses_source_gate_without_week_delay() -> None:
     cluster = {
         "validation_status": "validated",
         "quality_status": "eligible",
@@ -47,7 +75,8 @@ def test_article_pipeline_explains_cycle_and_source_gates() -> None:
     waiting = _article_pipeline_state([cluster], weekly_validation_cycles=1)
     eligible = _article_pipeline_state([cluster], weekly_validation_cycles=2)
 
-    assert waiting["status"] == "waiting_for_distinct_week"
+    assert waiting["status"] == "eligible"
+    assert waiting["cycles_required"] == 0
     assert waiting["source_qualified_candidates"] == 1
     assert eligible["status"] == "eligible"
 

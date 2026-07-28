@@ -9,7 +9,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
 
-WEEKLY_ARTICLE_BUDGET = 1
+DAILY_ARTICLE_BUDGET = 1
 
 
 def _clean(value: Any) -> str:
@@ -93,11 +93,6 @@ def build_content_strategy(
             next_operation = "Find and verify at least two authoritative external sources."
             earliest = ""
             content_type = "New article"
-        elif article_gap and cycles < 2:
-            stage = "scheduled"
-            next_operation = "Revalidate in the next distinct ISO week, then generate the article."
-            earliest = _next_iso_week(today).isoformat()
-            content_type = "New article"
         elif article_gap:
             stage = "ready"
             next_operation = "Generate, validate, publish, production-check, and schedule measurement."
@@ -131,7 +126,7 @@ def build_content_strategy(
                 "priority": priority,
                 "source_count": source_count,
                 "cycles_completed": cycles,
-                "cycles_required": 2 if article_gap else 0,
+                "cycles_required": 0,
                 "earliest_publish_date": earliest,
                 "next_operation": next_operation,
                 "internal_link_plan": (
@@ -160,12 +155,13 @@ def build_content_strategy(
         ),
         "operating_rules": [
             "Improve an existing intent owner before creating a new URL.",
-            "Publish at most one new article per week until four clean production cycles complete.",
-            "Every article needs two authoritative sources, two distinct weekly evidence cycles, and a unique informational intent.",
+            "Publish at most one new article per day; use the other pulses for research, improvements, and verification.",
+            "Every article needs two authoritative sources, two independent evidence classes including an observed signal, and a unique informational intent.",
             "Every article ships with internal links, canonical metadata, Article schema, production verification, rollback, and measurement.",
             "No invented facts, clients, results, prices, rankings, search volume, or keyword difficulty.",
         ],
-        "weekly_article_budget": WEEKLY_ARTICLE_BUDGET,
+        "daily_article_budget": DAILY_ARTICLE_BUDGET,
+        "weekly_article_budget": 7,
         "summary": {
             "total_briefs": len(briefs),
             "ready_to_publish": by_stage.get("ready", 0),

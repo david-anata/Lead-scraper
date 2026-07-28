@@ -601,6 +601,8 @@ def build_clusters(
         validation_evidence_classes = sorted(
             {_clean(item.get("evidence_class")) for item in eligible_items}
         )
+        if citation and citation.get("status") in {"cited", "mentioned", "no-citation"}:
+            validation_evidence_classes.append("observed_answer_engine")
         independent_signals = {
             "search" if value == "observed_search" else
             "customer" if value == "observed_customer" else
@@ -911,16 +913,20 @@ def run_citation_harness(
     requester: Callable[..., Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     config = citation_config(settings)
-    # Daily citation research keeps source briefs moving. Publication still
-    # requires evidence from two distinct ISO weeks, so a faster research
-    # cadence cannot weaken the editorial gate.
+    # Every pulse advances both validated demand and promising informational
+    # hypotheses. A hypothesis can become publishable only after retrieved
+    # answer-engine evidence provides an independent observed signal.
     if run_mode not in {"daily", "weekly", "monthly"}:
         return []
     eligible = [
         item
         for item in clusters
-        if item.get("validation_status") == "validated"
-        and item.get("ownership_status") == "assigned"
+        if item.get("ownership_status") == "assigned"
+        and item.get("quality_status", "eligible") == "eligible"
+        and (
+            item.get("validation_status") == "validated"
+            or item.get("intent") == "informational"
+        )
     ][: config.max_clusters]
     if not config.enabled or not config.api_key:
         return [
@@ -1156,13 +1162,7 @@ def _article_pipeline_state(
         if len(external_sources) >= 2:
             source_qualified += 1
 
-    if weekly_validation_cycles < 2:
-        status = "waiting_for_distinct_week"
-        message = (
-            f"{weekly_validation_cycles} of 2 distinct ISO-week evidence cycles complete. "
-            "The scheduler will collect the next comparable cycle automatically."
-        )
-    elif source_qualified:
+    if source_qualified:
         status = "eligible"
         message = (
             f"{source_qualified} source-qualified article candidate(s) can enter "
@@ -1182,7 +1182,7 @@ def _article_pipeline_state(
     return {
         "status": status,
         "cycles_completed": weekly_validation_cycles,
-        "cycles_required": 2,
+        "cycles_required": 0,
         "validated_informational_gaps": validated_informational,
         "source_qualified_candidates": source_qualified,
         "message": message,

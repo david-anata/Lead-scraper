@@ -6,6 +6,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlparse
 
@@ -92,8 +93,6 @@ def _request_article(*, settings: Any, prompt: str) -> dict[str, Any]:
 
 
 def _eligible_cluster(query_intelligence: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    if int(dict(query_intelligence.get("summary") or {}).get("weekly_validation_cycles", 0) or 0) < 2:
-        return None
     for cluster in query_intelligence.get("clusters", []) or []:
         citation = dict(cluster.get("citation") or {})
         owner_path = urlparse(_clean(cluster.get("owner_url"))).path
@@ -118,13 +117,39 @@ def _eligible_cluster(query_intelligence: Mapping[str, Any]) -> Mapping[str, Any
     return None
 
 
+def _claim_daily_article_slot(settings: Any, cluster_id: str) -> bool:
+    """Reserve the single daily generation slot before spending or publishing."""
+
+    configured_root = getattr(settings, "website_ops_root", None)
+    if configured_root is None:
+        return True
+    root = Path(configured_root) / "content-strategy" / "article-generation"
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / f"{datetime.now(timezone.utc).date().isoformat()}.json"
+    if target.exists():
+        return False
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "cluster_id": cluster_id,
+                "claimed_at": datetime.now(timezone.utc).isoformat(),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    temporary.replace(target)
+    return True
+
+
 def build_article_action(
     *,
     settings: Any,
     query_intelligence: Mapping[str, Any],
     requester: Callable[..., Mapping[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """Create one bounded article action from a repeatedly validated content gap."""
+    """Create one bounded daily article action from a validated content gap."""
 
     if os.getenv("WEBSITE_OPS_ARTICLE_GENERATION_ENABLED", "true").lower() not in {
         "1",
@@ -135,6 +160,8 @@ def build_article_action(
         return None
     cluster = _eligible_cluster(query_intelligence)
     if not cluster:
+        return None
+    if not _claim_daily_article_slot(settings, _clean(cluster.get("cluster_id"))):
         return None
     citations = [
         {"title": _clean(item.get("title")), "url": _clean(item.get("url"))}
@@ -233,7 +260,7 @@ Include at least three substantive sections and two distinct authoritative sourc
             + ", ".join(_clean(value).replace("_", " ") for value in cluster.get("evidence_classes", []) or [])
             + ".",
             f"Observed authoritative sources: {len(citations)}.",
-            "At least two comparable weekly validation cycles completed.",
+            "The cluster has at least two independent evidence classes, including an observed signal.",
         ],
         "confidence_basis": [
             "The intent is informational and is currently landing on a commercial route.",

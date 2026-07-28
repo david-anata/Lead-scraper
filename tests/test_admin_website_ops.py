@@ -368,7 +368,7 @@ example
             self.assertIn("Repair Google connections", html)
             self.assertNotIn('action="/admin/api/website-ops/run"', html)
             self.assertIn("/admin/api/website-ops/feedback", html)
-            self.assertIn("8:00 AM America/Denver", html)
+            self.assertIn("8:00 AM, 1:00 PM, and 6:00 PM America/Denver", html)
 
     def test_query_map_renders_evidence_ownership_and_shadow_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1523,7 +1523,7 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
         self.assertEqual(action["execution_eligibility"], "auto_execute")
         validate_generated_article(action)
         intelligence["summary"] = {"weekly_validation_cycles": 1}
-        self.assertIsNone(
+        self.assertIsNotNone(
             build_article_action(
                 settings=settings,
                 query_intelligence=intelligence,

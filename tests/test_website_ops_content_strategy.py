@@ -45,7 +45,7 @@ def _intelligence(*, cycles: int = 1, sources: int = 2) -> dict:
     }
 
 
-def test_strategy_schedules_source_qualified_article_for_next_week() -> None:
+def test_strategy_marks_source_qualified_article_ready_now() -> None:
     strategy = build_content_strategy(
         _intelligence(cycles=1, sources=2),
         today=date(2026, 7, 28),
@@ -54,10 +54,10 @@ def test_strategy_schedules_source_qualified_article_for_next_week() -> None:
     article = next(
         item for item in strategy["briefs"] if item["content_type"] == "New article"
     )
-    assert article["stage"] == "scheduled"
-    assert article["earliest_publish_date"] == "2026-08-03"
-    assert strategy["weekly_article_budget"] == 1
-    assert strategy["summary"]["scheduled_for_validation"] == 1
+    assert article["stage"] == "ready"
+    assert article["earliest_publish_date"] == "2026-07-28"
+    assert strategy["daily_article_budget"] == 1
+    assert strategy["summary"]["ready_to_publish"] == 1
 
 
 def test_strategy_marks_two_week_article_ready() -> None:
@@ -103,9 +103,9 @@ def test_strategy_persists_and_page_exposes_the_operating_program(
     )
 
     assert "Content strategy and publishing program" in page
-    assert "This week’s operating plan" in page
-    assert "1 article / week" in page
+    assert "Today’s operating plan" in page
+    assert "1 article / day maximum" in page
     assert "how to structure an amazon ppc account" in page
-    assert "Revalidate in the next distinct ISO week" in page
-    assert "/admin/website-ops/strategy?stage=scheduled" in page
+    assert "Generate, validate, publish" in page
+    assert "/admin/website-ops/strategy?stage=ready" in page
     assert "Showing 2 of 2 briefs" in page
