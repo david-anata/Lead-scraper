@@ -14,6 +14,14 @@ from sales_support_agent.services.website_ops_program import (
 
 
 class WebsiteOpsProgramTests(unittest.TestCase):
+    def test_production_router_registers_indexing_control_room(self) -> None:
+        from sales_support_agent.api.router import router
+
+        self.assertIn(
+            "/admin/website-ops/indexing",
+            {route.path for route in router.routes},
+        )
+
     def test_wordpress_system_pattern_is_an_intentional_403(self) -> None:
         record = classify_indexing_record(
             {
@@ -146,4 +154,3 @@ class WebsiteOpsProgramTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

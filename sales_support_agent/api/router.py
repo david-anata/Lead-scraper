@@ -103,6 +103,7 @@ from sales_support_agent.services.website_ops import (
     latest_report_entry,
     render_dashboard_page as render_website_ops_dashboard_page,
     render_feedback_detail_page,
+    render_indexing_page,
     render_query_map_page,
     render_queue_page as render_website_ops_queue_page,
     render_report_page,
@@ -1174,6 +1175,19 @@ def admin_website_ops_queue(request: Request, status: str = "") -> Response:
     if not _is_admin_authenticated(request):
         return RedirectResponse(url="/admin/login", status_code=302)
     return HTMLResponse(render_website_ops_queue_page(request.app.state.settings, status_filter=status))
+
+
+@router.get("/admin/website-ops/indexing", response_class=HTMLResponse)
+def admin_website_ops_indexing(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(
+        render_indexing_page(
+            request.app.state.settings,
+            user=_get_request_user(request),
+        )
+    )
 
 
 @router.get("/admin/website-ops/queries", response_class=HTMLResponse)
