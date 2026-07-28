@@ -56,6 +56,26 @@ def test_answer_engine_research_can_validate_an_informational_hypothesis() -> No
     assert "observed_answer_engine" in clusters[0]["evidence_classes"]
 
 
+def test_simulated_search_operator_prompt_is_quarantined() -> None:
+    records = collect_query_observations(
+        [
+            {
+                "page_url": "https://anatainc.com/services/tiktok-shop-management",
+                "aeo": {
+                    "simulated_coverage_prompts": [
+                        {
+                            "prompt": '"tiktok shop" -site:reddit.com -site:youtube.com',
+                            "facet": "research",
+                        }
+                    ]
+                },
+            }
+        ]
+    )
+
+    assert records[0]["quality_status"] == "quarantined"
+
+
 def test_article_pipeline_uses_source_gate_without_week_delay() -> None:
     cluster = {
         "validation_status": "validated",

@@ -1530,6 +1530,16 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
                 requester=requester,
             )
         )
+        intelligence["clusters"][0]["label"] = (
+            '"amazon ppc" -site:reddit.com -site:youtube.com'
+        )
+        self.assertIsNone(
+            build_article_action(
+                settings=settings,
+                query_intelligence=intelligence,
+                requester=requester,
+            )
+        )
 
     def test_github_metadata_validation_requires_reason_evidence_and_safe_lengths(self) -> None:
         record = {
