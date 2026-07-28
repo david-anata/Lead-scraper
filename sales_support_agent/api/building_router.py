@@ -414,6 +414,9 @@ class RatePlanInput(BaseModel):
     cancellation_policy: str = Field(default="", max_length=4000)
     included: list[str] = Field(default_factory=list)
     addons: list[dict[str, Any]] = Field(default_factory=list)
+    commercial_terms: dict[str, Any] = Field(default_factory=dict)
+    source_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    conflicts: list[dict[str, Any]] = Field(default_factory=list)
     tax_status: Literal["review_required", "taxable", "non_taxable"] = (
         "review_required"
     )
@@ -463,6 +466,15 @@ class RatePlanInput(BaseModel):
         if self.tax_status != "taxable" and self.tax_rate_bps:
             raise ValueError("Only taxable rate plans may carry a tax rate.")
         if self.status == "approved":
+            if any(
+                bool(item.get("blocks_rate_plan_approval"))
+                and str(item.get("status") or "unresolved")
+                not in set(item.get("approval_resolution_statuses") or [])
+                for item in self.conflicts
+            ):
+                raise ValueError(
+                    "Resolve blocking source conflicts before approving this rate plan."
+                )
             if self.unit_amount_cents <= 0:
                 raise ValueError("An approved rate plan requires a positive unit price.")
             if not self.public_price_display.strip():
@@ -1184,6 +1196,9 @@ def _rate_plan_internal_payload(row: BuildingRatePlan) -> dict[str, Any]:
         "tax_rate_bps": row.tax_rate_bps,
         "tax_note": row.tax_note,
         "approval_evidence": row.approval_evidence,
+        "commercial_terms": dict(row.commercial_terms_json or {}),
+        "source_evidence": list(row.source_evidence_json or []),
+        "conflicts": list(row.conflicts_json or []),
         "approved_by": row.approved_by,
         "approved_at": row.approved_at.isoformat() if row.approved_at else None,
         "created_by": row.created_by,
@@ -1245,6 +1260,23 @@ def upsert_rate_plan(
                 status_code=409,
                 detail="Approved or retired rate-plan terms are immutable; create a new version.",
             )
+        if row is not None:
+            if row.commercial_terms_json and not payload.commercial_terms:
+                payload.commercial_terms = dict(row.commercial_terms_json)
+            if row.source_evidence_json and not payload.source_evidence:
+                payload.source_evidence = list(row.source_evidence_json)
+            if row.conflicts_json and not payload.conflicts:
+                payload.conflicts = list(row.conflicts_json)
+        if payload.status == "approved" and any(
+            bool(item.get("blocks_rate_plan_approval"))
+            and str(item.get("status") or "unresolved")
+            not in set(item.get("approval_resolution_statuses") or [])
+            for item in payload.conflicts
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Resolve blocking source conflicts before approving this rate plan.",
+            )
         version_conflict = session.execute(
             select(BuildingRatePlan).where(
                 BuildingRatePlan.offering_id == offering_id,
@@ -1302,6 +1334,9 @@ def upsert_rate_plan(
             "cancellation_policy": payload.cancellation_policy.strip(),
             "included_json": payload.included,
             "addons_json": payload.addons,
+            "commercial_terms_json": payload.commercial_terms,
+            "source_evidence_json": payload.source_evidence,
+            "conflicts_json": payload.conflicts,
             "tax_status": payload.tax_status,
             "tax_rate_bps": payload.tax_rate_bps,
             "tax_note": payload.tax_note.strip(),

@@ -969,6 +969,9 @@ def create_event_review(
             "cancellation_policy": plan.cancellation_policy,
             "included": list(plan.included_json or []),
             "addons": list(plan.addons_json or []),
+            "commercial_terms": dict(plan.commercial_terms_json or {}),
+            "source_evidence": list(plan.source_evidence_json or []),
+            "conflicts": list(plan.conflicts_json or []),
             "tax_status": plan.tax_status,
             "tax_rate_bps": plan.tax_rate_bps,
             "tax_note": plan.tax_note,
@@ -2097,6 +2100,13 @@ def record_proposal(
                     "cancellation_policy": selected_rate_plan.cancellation_policy,
                     "included": list(selected_rate_plan.included_json or []),
                     "addons": list(selected_rate_plan.addons_json or []),
+                    "commercial_terms": dict(
+                        selected_rate_plan.commercial_terms_json or {}
+                    ),
+                    "source_evidence": list(
+                        selected_rate_plan.source_evidence_json or []
+                    ),
+                    "conflicts": list(selected_rate_plan.conflicts_json or []),
                     "effective_from": selected_rate_plan.effective_from.isoformat(),
                     "effective_until": (
                         selected_rate_plan.effective_until.isoformat()

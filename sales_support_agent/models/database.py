@@ -305,6 +305,9 @@ def _ensure_building_columns(engine: Any) -> None:
             "tax_rate_bps": "INTEGER NOT NULL DEFAULT 0",
             "tax_note": "TEXT NOT NULL DEFAULT ''",
             "approval_evidence": "TEXT NOT NULL DEFAULT ''",
+            "commercial_terms_json": "JSON NOT NULL DEFAULT '{}'",
+            "source_evidence_json": "JSON NOT NULL DEFAULT '[]'",
+            "conflicts_json": "JSON NOT NULL DEFAULT '[]'",
         },
         "building_proposals": {
             "rate_plan_id": "VARCHAR(64) NOT NULL DEFAULT ''",

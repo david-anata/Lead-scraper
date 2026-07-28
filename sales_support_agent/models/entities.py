@@ -1534,6 +1534,9 @@ class BuildingRatePlan(Base):
     cancellation_policy: Mapped[str] = mapped_column(Text, default="")
     included_json: Mapped[list] = mapped_column(JSON, default=list)
     addons_json: Mapped[list] = mapped_column(JSON, default=list)
+    commercial_terms_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_evidence_json: Mapped[list] = mapped_column(JSON, default=list)
+    conflicts_json: Mapped[list] = mapped_column(JSON, default=list)
     tax_status: Mapped[str] = mapped_column(
         String(32), default="review_required", index=True
     )
