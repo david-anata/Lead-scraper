@@ -103,6 +103,7 @@ from sales_support_agent.services.website_ops import (
     latest_report_entry,
     render_dashboard_page as render_website_ops_dashboard_page,
     render_feedback_detail_page,
+    render_candidates_page,
     render_indexing_page,
     render_query_map_page,
     render_queue_page as render_website_ops_queue_page,
@@ -1238,6 +1239,25 @@ def admin_website_ops_queries(request: Request, status: str = "") -> Response:
         render_query_map_page(
             request.app.state.settings,
             status_filter=(status or "").strip().lower(),
+            user=_get_request_user(request),
+        )
+    )
+
+
+@router.get("/admin/website-ops/candidates", response_class=HTMLResponse)
+def admin_website_ops_candidates(
+    request: Request,
+    state: str = "",
+    lane: str = "",
+) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(
+        render_candidates_page(
+            request.app.state.settings,
+            state_filter=(state or "").strip().lower(),
+            lane_filter=(lane or "").strip().lower(),
             user=_get_request_user(request),
         )
     )
