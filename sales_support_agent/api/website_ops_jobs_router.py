@@ -13,9 +13,11 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 
 from sales_support_agent.services.website_ops import (
+    get_website_ops_run_state,
     load_website_ops_run_state,
     run_website_ops,
     send_website_ops_failure_email,
+    website_ops_operating_state,
     website_ops_run_is_due,
     write_website_ops_run_state,
 )
@@ -71,20 +73,51 @@ def _run_due_modes(settings: Any, modes: list[str], *, trigger: str) -> dict[str
                 "last_error": "",
             },
         )
-        try:
-            result = run_website_ops(settings, mode=mode)
-        except Exception as exc:  # noqa: BLE001
+        max_attempts = max(
+            1,
+            min(int(os.getenv("WEBSITE_OPS_RUN_MAX_ATTEMPTS", "3") or "3"), 5),
+        )
+        result = None
+        final_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            write_website_ops_run_state(
+                settings,
+                mode,
+                {
+                    "attempt_count": str(attempt),
+                    "recovery_status": "retrying" if attempt > 1 else "primary",
+                },
+            )
+            try:
+                result = run_website_ops(settings, mode=mode)
+                final_error = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                final_error = exc
+                logger.exception(
+                    "Website Ops %s attempt %s/%s failed.",
+                    mode,
+                    attempt,
+                    max_attempts,
+                )
+        if final_error is not None or result is None:
+            message = str(final_error or "Website Ops run did not return a result.")
             write_website_ops_run_state(
                 settings,
                 mode,
                 {
                     "status": "failed",
                     "last_completed_at": datetime.now(ZoneInfo("UTC")).isoformat(),
-                    "last_error": str(exc),
+                    "last_error": message,
+                    "recovery_status": "exhausted",
                 },
             )
-            send_website_ops_failure_email(settings, mode=mode, error=str(exc))
-            results[mode] = {"status": "failed", "message": str(exc)}
+            send_website_ops_failure_email(settings, mode=mode, error=message)
+            results[mode] = {
+                "status": "failed",
+                "message": message,
+                "attempts": max_attempts,
+            }
             continue
         completed_at = datetime.now(ZoneInfo("UTC"))
         write_website_ops_run_state(
@@ -95,9 +128,18 @@ def _run_due_modes(settings: Any, modes: list[str], *, trigger: str) -> dict[str
                 "last_completed_at": completed_at.isoformat(),
                 "last_successful_date": completed_at.date().isoformat(),
                 "last_error": "",
+                "recovery_status": "recovered"
+                if int(get_website_ops_run_state(settings, mode).get("attempt_count", "1") or "1") > 1
+                else "not_needed",
             },
         )
-        results[mode] = {"status": "succeeded", "message": result.message}
+        results[mode] = {
+            "status": "succeeded",
+            "message": result.message,
+            "attempts": int(
+                get_website_ops_run_state(settings, mode).get("attempt_count", "1") or "1"
+            ),
+        }
     return results
 
 
@@ -161,13 +203,16 @@ def website_ops_runtime_health(request: Request) -> dict:
         ),
     }
     analytics_readiness = analytics_configuration_status(settings)
+    operating_state = website_ops_operating_state(settings)
     checks["search_console_configuration"] = bool(
         analytics_readiness["checks"]["google_service_account"]
         and analytics_readiness["checks"]["search_console_property"]
+        and operating_state["search_console"] == "ready"
     )
     checks["ga4_configuration"] = bool(
         analytics_readiness["checks"]["google_service_account"]
         and analytics_readiness["checks"]["ga4_property"]
+        and operating_state["ga4"] == "ready"
     )
     citation_readiness = citation_config(settings)
     checks["citation_testing"] = bool(
@@ -206,12 +251,17 @@ def website_ops_runtime_health(request: Request) -> dict:
                 )
             )
             else "blocked",
-            "decision_data": analytics_readiness["status"],
+            "decision_data": operating_state["decision_data"],
             "publishing": "ready" if checks["github_autopush"] else "blocked",
             "query_intelligence": str(query_intelligence.get("status", "not-run")),
             "citation_testing": "ready" if checks["citation_testing"] else "blocked",
         },
-        "blockers": analytics_readiness["blockers"]
+        "blockers": operating_state["blockers"]
+        + [
+            item.get("message", "")
+            for item in analytics_readiness["blockers"]
+            if item.get("message")
+        ]
         + (
             []
             if checks["citation_testing"]
@@ -225,6 +275,11 @@ def website_ops_runtime_health(request: Request) -> dict:
         "checks": checks,
         "runs": sanitized_runs,
         "state_updated_at": str(state.get("updated_at", "") or ""),
+        "evidence": {
+            "generated_at": operating_state["evidence_generated_at"],
+            "age_hours": operating_state["evidence_age_hours"],
+        },
+        "user_todo": operating_state["support_requests"],
     }
 
 
