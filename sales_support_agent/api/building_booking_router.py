@@ -1055,9 +1055,11 @@ def prepare_customer_status_access(
             contact_id=contact.id,
             expires_at=expires_at,
         )
+        public_base_url = str(
+            request.app.state.settings.building_public_base_url
+        ).rstrip("/")
         status_url = (
-            f"{str(request.base_url).rstrip('/')}"
-            f"/api/public/building/bookings/status?token={token}"
+            f"{public_base_url}/event-status?token={token}"
         )
         session.add(BuildingAuditEvent(
             entity_type="reservation",

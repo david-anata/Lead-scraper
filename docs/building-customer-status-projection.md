@@ -8,9 +8,10 @@ existing truth through a signed, expiring, read-only contract for the website.
 ## Routes
 
 - `POST /api/internal/building/bookings/{reservation_id}/customer-status-access`
-  prepares an access URL. It requires the internal API key, an active linked
-  contact, an expiry of 1–90 days, and records an audit event. It never sends the
-  URL.
+  prepares an access URL at
+  `{BUILDING_PUBLIC_BASE_URL}/event-status?token=...`. It requires the internal
+  API key, an active linked contact, an expiry of 1–90 days, and records an audit
+  event. It never sends the URL.
 - `GET /api/public/building/bookings/status?token=...` returns the current
   redacted projection. No internal key is required because the signed URL is the
   bearer credential.

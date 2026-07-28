@@ -50,6 +50,7 @@ class BuildingCustomerStatusTests(unittest.TestCase):
             app.state.settings,
             internal_api_key="status-internal-key",
             building_campaign_token_secret="status-token-secret",
+            building_public_base_url="https://anatabuilding.com",
         )
         cls.factory = factory
         cls.client = TestClient(app)
@@ -138,7 +139,12 @@ class BuildingCustomerStatusTests(unittest.TestCase):
         )
         self.assertEqual(prepared.status_code, 200, prepared.text)
         self.assertFalse(prepared.json()["sent"])
-        token = parse_qs(urlparse(prepared.json()["status_url"]).query)["token"][0]
+        status_url = urlparse(prepared.json()["status_url"])
+        self.assertEqual(status_url.scheme, "https")
+        self.assertEqual(status_url.netloc, "anatabuilding.com")
+        self.assertEqual(status_url.path, "/event-status")
+        self.assertNotIn("/api/public/", prepared.json()["status_url"])
+        token = parse_qs(status_url.query)["token"][0]
         status = self.client.get(
             "/api/public/building/bookings/status", params={"token": token}
         )
