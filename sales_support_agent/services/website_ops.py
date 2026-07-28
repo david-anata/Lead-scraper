@@ -861,7 +861,11 @@ def _sync_action_queue_feedback(
             "execution_reason": str(item.get("execution_reason", "")).strip(),
         }
         existing = existing_by_key.get(automation_key)
-        if existing and existing.get("status") in {"done", "rejected"} and str(existing.get("source_report_date", "")).strip() not in {"", report_date}:
+        if existing and existing.get("status") == "rejected":
+            # A rejection is a durable editorial decision for this exact automation key.
+            # A materially different recommendation will receive a different key.
+            continue
+        if existing and existing.get("status") == "done" and str(existing.get("source_report_date", "")).strip() not in {"", report_date}:
             reopened_payload = dict(base_payload)
             reopened_payload["reopened_from_feedback_id"] = existing.get("feedback_id") or Path(str(existing.get("_path", ""))).stem
             reopened_payload["reopened_reason"] = "recommendation_reappeared"
