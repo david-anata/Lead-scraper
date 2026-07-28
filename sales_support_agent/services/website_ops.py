@@ -1983,7 +1983,9 @@ def _page_shell(title: str, body: str) -> str:
         .shell {{ width: auto; min-width: 0; display: block; padding: 24px 12px 48px; }}
         .shell > * {{ min-width: 0; }}
         .shell > * + * {{ margin-top: 20px; }}
-        .row-actions {{ display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; }}
+        .card.stack {{ display: block; }}
+        .card.stack > * + * {{ margin-top: 12px; }}
+        .row-actions {{ display: grid; grid-template-columns: minmax(0, 1fr); }}
         .row-actions > * {{ min-width: 0; }}
         input[type="file"] {{ max-width: 100%; }}
         .help-copy {{ right: auto; left: 0; width: min(300px, 70vw); }}
