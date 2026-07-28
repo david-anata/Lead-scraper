@@ -54,10 +54,16 @@ def _scheduled_modes(local_now: datetime) -> list[str]:
     return modes
 
 
-def _run_due_modes(settings: Any, modes: list[str], *, trigger: str) -> dict[str, dict]:
+def _run_due_modes(
+    settings: Any,
+    modes: list[str],
+    *,
+    trigger: str,
+    force: bool = False,
+) -> dict[str, dict]:
     results: dict[str, dict] = {}
     for mode in modes:
-        if not website_ops_run_is_due(settings, mode):
+        if not force and not website_ops_run_is_due(settings, mode):
             results[mode] = {"status": "skipped", "message": "Already completed for this period."}
             continue
         now = datetime.now(ZoneInfo("UTC"))
@@ -291,6 +297,7 @@ async def run_scheduled_website_ops(request: Request) -> dict:
     except ValueError:
         payload = {}
     requested_mode = str(payload.get("mode", "scheduled") or "scheduled").strip().lower()
+    force = payload.get("force") is True
     if requested_mode not in {"scheduled", "daily", "weekly", "monthly"}:
         raise HTTPException(status_code=400, detail="Unsupported run mode.")
 
@@ -338,7 +345,8 @@ async def run_scheduled_website_ops(request: Request) -> dict:
         results = _run_due_modes(
             request.app.state.settings,
             modes,
-            trigger="render_cron",
+            trigger="internal_force" if force else "render_cron",
+            force=force,
         )
         failed = any(item.get("status") == "failed" for item in results.values())
         if engine is not None and lease is not None:

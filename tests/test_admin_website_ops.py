@@ -347,7 +347,7 @@ example
                 response = client.post(
                     "/api/jobs/website-ops/run",
                     headers={"X-Internal-Api-Key": "test-internal-key"},
-                    json={"mode": "daily"},
+                    json={"mode": "daily", "force": True},
                 )
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["details"]["daily"]["status"], "succeeded")
