@@ -136,7 +136,7 @@ def render_customer_status_link_result(
 </head>
 <body class="app app--operator">
   {nav}
-  <main id="agent-main-content" class="status-shell">
+  <main id="agent-main-content" class="status-shell" tabindex="-1">
     <section class="status-card" aria-labelledby="status-link-title">
       <div class="eyebrow">Building operations</div>
       <h1 id="status-link-title">Customer status link prepared</h1>
@@ -1226,7 +1226,7 @@ def render_building_page(
 </head>
 <body class="app app--operator">
   {nav}
-  <main id="agent-main-content" class="shell app-container app-page">
+  <main id="agent-main-content" class="shell app-container app-page" tabindex="-1">
     {flash}
     <header class="page-head">
       <div>

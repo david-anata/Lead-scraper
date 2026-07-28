@@ -556,6 +556,10 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         self.assertIn("No collection cases.", body)
         self.assertEqual(body.count('id="agent-main-content"'), 1)
         self.assertIn(
+            'id="agent-main-content" class="shell app-container app-page" tabindex="-1"',
+            body,
+        )
+        self.assertIn(
             'class="agent-skip-link" href="#agent-main-content"',
             body,
         )
