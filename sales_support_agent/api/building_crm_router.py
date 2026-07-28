@@ -2884,6 +2884,266 @@ def save_rate_plan_from_control_room(
 
 
 @admin_router.post(
+    "/rate-plans/arena-commercial-baseline",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def prepare_arena_commercial_baseline(
+    request: Request,
+    offering_id: str = Form(...),
+    effective_from: date = Form(...),
+    confirmation: str = Form(...),
+    user: dict = Depends(require_tool("building.pricing.manage")),
+) -> RedirectResponse:
+    """Create a reviewable Arena draft from verified, conflicting evidence."""
+
+    actor = user.get("email") or "building-pricing-operator"
+    if confirmation.strip() != "PREPARE ARENA DRAFT":
+        return _building_redirect(error="Type PREPARE ARENA DRAFT to continue.")
+    with session_scope(request.app.state.session_factory) as session:
+        offering = session.get(BuildingOffering, offering_id.strip())
+        if offering is None or offering.offering_type != "event":
+            return _building_redirect(error="Choose an existing event offering.")
+        space = session.get(BuildingSpace, offering.space_id) if offering.space_id else None
+        if space is None or space.name.strip().casefold() != "the arena":
+            return _building_redirect(
+                error="The selected event offering must be linked to The Arena."
+            )
+        existing = session.execute(
+            select(BuildingRatePlan)
+            .where(BuildingRatePlan.offering_id == offering.id)
+            .order_by(BuildingRatePlan.version.desc())
+        ).scalars().all()
+        version = (existing[0].version if existing else 0) + 1
+        rate_plan_id = f"{offering.id}-commercial-baseline-v{version}"
+        if session.get(BuildingRatePlan, rate_plan_id) is not None:
+            return _building_redirect(
+                error="That reconciliation draft already exists; review it below."
+            )
+        row = BuildingRatePlan(
+            id=rate_plan_id,
+            offering_id=offering.id,
+            version=version,
+            name="Arena verified commercial baseline",
+            status="draft",
+            currency="USD",
+            unit_amount_cents=17500,
+            public_price_display="$175/hour · 6-hour minimum",
+            booking_unit="hour",
+            minimum_units=6,
+            deposit_type="percent",
+            deposit_percent_bps=5000,
+            cancellation_policy="",
+            included_json=[],
+            addons_json=[
+                {
+                    "id": "cleaning",
+                    "name": "Required cleaning fee",
+                    "pricing_mode": "flat",
+                    "amount_cents": 25000,
+                },
+            ],
+            commercial_terms_json={
+                "venue_square_feet": 6000,
+                "maximum_public_capacity": 200,
+                "minimum_base_amount_cents": 105000,
+                "deposit_holds_date": True,
+                "balance_due_days_before_event": 15,
+                "setup_teardown": {
+                    "treatment": "add_on",
+                    "price_status": "operator_input_required",
+                },
+                "overtime": {
+                    "booking_unit": "hour",
+                    "price_status": "operator_input_required",
+                    "warning": "The listing copy says hourly but does not establish an approved numeric overtime rate.",
+                },
+                "legal_template_status": "provider_neutral_template_required",
+            },
+            source_evidence_json=[
+                {
+                    "source": "Anata Event Center Listing Copy Pack",
+                    "classification": "verified_commercial_baseline",
+                    "terms": [
+                        "6000_square_feet",
+                        "capacity_200",
+                        "175_per_hour",
+                        "6_hour_minimum",
+                        "250_cleaning",
+                        "50_percent_deposit",
+                        "setup_teardown_addons",
+                        "overtime_hourly",
+                    ],
+                },
+                {
+                    "source": "Current event agreement Google Doc",
+                    "classification": "corroborating_terms_not_reusable_template",
+                    "terms": [
+                        "50_percent_deposit",
+                        "250_cleaning",
+                        "balance_due_15_days_before",
+                    ],
+                    "warning": "Dated Vivint-specific 2025 agreement; not approved as a reusable legal template.",
+                },
+                {
+                    "source": "TidyCal/Calendar copy",
+                    "classification": "stale_conflicting_provider_copy",
+                    "terms": [
+                        "70_percent_deposit",
+                        "30_percent_due_48_hours_before",
+                        "placeholder_payment_link",
+                    ],
+                },
+            ],
+            conflicts_json=[
+                {
+                    "id": "tidycal-deposit",
+                    "summary": "TidyCal says 70% deposit; verified baseline says 50%.",
+                    "status": "unresolved",
+                    "blocks_rate_plan_approval": True,
+                    "allowed_resolution_statuses": [
+                        "reconciled_in_agent",
+                        "accepted_exception",
+                        "provider_remediated",
+                    ],
+                    "approval_resolution_statuses": [
+                        "accepted_exception",
+                        "provider_remediated",
+                    ],
+                },
+                {
+                    "id": "tidycal-balance",
+                    "summary": "TidyCal says 30% due 48 hours before; agreement evidence says balance due 15 days before.",
+                    "status": "unresolved",
+                    "blocks_rate_plan_approval": True,
+                    "allowed_resolution_statuses": [
+                        "reconciled_in_agent",
+                        "accepted_exception",
+                        "provider_remediated",
+                    ],
+                    "approval_resolution_statuses": [
+                        "accepted_exception",
+                        "provider_remediated",
+                    ],
+                },
+                {
+                    "id": "tidycal-payment-link",
+                    "summary": "TidyCal contains a placeholder payment link.",
+                    "status": "unresolved",
+                    "blocks_rate_plan_approval": True,
+                    "allowed_resolution_statuses": [
+                        "reconciled_in_agent",
+                        "provider_remediated",
+                    ],
+                    "approval_resolution_statuses": ["provider_remediated"],
+                },
+                {
+                    "id": "vivint-template",
+                    "summary": "The dated Vivint-specific 2025 agreement is evidence only, not a reusable legal template.",
+                    "status": "requires_legal_template",
+                    "blocks_rate_plan_approval": False,
+                },
+                {
+                    "id": "setup-teardown-price",
+                    "summary": "Setup and teardown are add-ons, but their prices still require operator input.",
+                    "status": "operator_input_required",
+                    "blocks_rate_plan_approval": False,
+                },
+            ],
+            tax_status="review_required",
+            tax_rate_bps=0,
+            tax_note="Tax treatment requires operator review before approval.",
+            effective_from=effective_from,
+            created_by=actor,
+            updated_at=_now(),
+        )
+        session.add(row)
+        session.add(BuildingAuditEvent(
+            entity_type="rate_plan",
+            entity_id=row.id,
+            action="commercial_baseline_draft_prepared",
+            actor=actor,
+            after_json={
+                "offering_id": offering.id,
+                "version": version,
+                "status": "draft",
+                "source_count": len(row.source_evidence_json),
+                "conflict_count": len(row.conflicts_json),
+                "provider_write": False,
+            },
+        ))
+    return _building_redirect(
+        notice=f"{rate_plan_id} prepared as a draft. No terms were approved or published."
+    )
+
+
+@admin_router.post(
+    "/rate-plans/{rate_plan_id}/reconcile-source-conflicts",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def reconcile_rate_plan_source_conflicts(
+    rate_plan_id: str,
+    request: Request,
+    conflict_id: str = Form(...),
+    resolution_status: str = Form(...),
+    resolution_note: str = Form(...),
+    confirmation: str = Form(...),
+    user: dict = Depends(require_tool("building.pricing.manage")),
+) -> RedirectResponse:
+    """Acknowledge stale-source conflicts without writing to those providers."""
+
+    actor = user.get("email") or "building-pricing-operator"
+    if confirmation.strip() != f"RECONCILE {rate_plan_id}":
+        return _building_redirect(error=f"Type RECONCILE {rate_plan_id} to continue.")
+    if len(resolution_note.strip()) < 10:
+        return _building_redirect(error="Add a specific reconciliation note.")
+    with session_scope(request.app.state.session_factory) as session:
+        row = session.get(BuildingRatePlan, rate_plan_id)
+        if row is None:
+            return _building_redirect(error="Rate plan not found.")
+        if row.status not in {"draft", "in_review"}:
+            return _building_redirect(error="Only a draft or in-review plan may be reconciled.")
+        before = list(row.conflicts_json or [])
+        conflicts = []
+        matched = False
+        for raw in before:
+            item = dict(raw)
+            if item.get("id") == conflict_id.strip():
+                matched = True
+                allowed = set(item.get("allowed_resolution_statuses") or [])
+                if resolution_status.strip() not in allowed:
+                    return _building_redirect(
+                        error="That disposition is not valid for this conflict."
+                    )
+                item["status"] = resolution_status.strip()
+                item["resolution_note"] = resolution_note.strip()
+                item["resolved_by"] = actor
+                item["resolved_at"] = _now().isoformat()
+            conflicts.append(item)
+        if not matched:
+            return _building_redirect(error="Source conflict not found.")
+        row.conflicts_json = conflicts
+        row.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="rate_plan",
+            entity_id=row.id,
+            action="source_conflicts_reconciled",
+            actor=actor,
+            before_json={"conflicts": before},
+            after_json={
+                "conflicts": conflicts,
+                "conflict_id": conflict_id.strip(),
+                "resolution_status": resolution_status.strip(),
+                "provider_write": False,
+            },
+        ))
+    return _building_redirect(
+        notice="Source conflicts reconciled in Agent only. No provider copy was changed."
+    )
+
+
+@admin_router.post(
     "/rate-plans/{rate_plan_id}/approve",
     dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
@@ -2942,6 +3202,9 @@ def approve_rate_plan_from_control_room(
                 cancellation_policy=row.cancellation_policy,
                 included=list(row.included_json or []),
                 addons=list(row.addons_json or []),
+                commercial_terms=dict(row.commercial_terms_json or {}),
+                source_evidence=list(row.source_evidence_json or []),
+                conflicts=list(row.conflicts_json or []),
                 tax_status=row.tax_status,
                 tax_rate_bps=row.tax_rate_bps,
                 tax_note=row.tax_note,
@@ -4529,6 +4792,12 @@ def building_control_room(
                     "deposit_amount_cents": item.deposit_amount_cents,
                     "deposit_percent_bps": item.deposit_percent_bps,
                     "cancellation_policy": item.cancellation_policy,
+                    "addons": list(item.addons_json or []),
+                    "commercial_terms": dict(item.commercial_terms_json or {}),
+                    "source_evidence": list(item.source_evidence_json or []),
+                    "conflicts": list(item.conflicts_json or []),
+                    "tax_status": item.tax_status,
+                    "tax_note": item.tax_note,
                     "effective_from": item.effective_from.isoformat(),
                     "effective_until": (
                         item.effective_until.isoformat()

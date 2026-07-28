@@ -743,6 +743,11 @@ def render_building_page(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name") or item.get("id"))}</option>'
         for item in offerings
     )
+    event_offering_options = "".join(
+        f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name") or item.get("id"))}</option>'
+        for item in offerings
+        if item.get("offering_type") == "event"
+    )
     qualified_event_inquiry_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))} · {_esc(item.get("preferred_date") or "date not set")}</option>'
         for item in inquiries
@@ -758,6 +763,61 @@ def render_building_page(
         str(item.get("id") or ""): str(item.get("name") or item.get("id") or "")
         for item in offerings
     }
+    def rate_plan_evidence(item: dict[str, Any]) -> str:
+        sources = list(item.get("source_evidence") or [])
+        conflicts = list(item.get("conflicts") or [])
+        if not sources and not conflicts:
+            return '<span class="sub">No reconciliation evidence attached.</span>'
+        conflict_items = "".join(
+            f'<li><strong>{_esc(conflict.get("summary"))}</strong> {_badge(str(conflict.get("status") or "unresolved"))}</li>'
+            for conflict in conflicts
+        )
+        source_items = "".join(
+            f'<li>{_esc(source.get("source"))}<span class="sub">{_esc(source.get("classification"))}</span></li>'
+            for source in sources
+        )
+        return (
+            '<details class="row-actions"><summary>Evidence and conflicts</summary>'
+            f'<strong>Sources</strong><ul>{source_items}</ul>'
+            f'<strong>Flags</strong><ul>{conflict_items}</ul></details>'
+        )
+
+    def rate_plan_reconciliation_action(item: dict[str, Any]) -> str:
+        if item.get("status") not in {"draft", "in_review"}:
+            return ""
+        forms = []
+        for conflict in list(item.get("conflicts") or []):
+            if not conflict.get("blocks_rate_plan_approval"):
+                continue
+            approval_statuses = set(
+                conflict.get("approval_resolution_statuses") or []
+            )
+            if conflict.get("status") in approval_statuses:
+                continue
+            options = "".join(
+                f'<option value="{_esc(status)}">{_esc(str(status).replace("_", " ").title())}</option>'
+                for status in list(conflict.get("allowed_resolution_statuses") or [])
+            )
+            forms.append(f'''<form class="inline-send" method="post" action="/admin/building/rate-plans/{_esc(item.get("id"))}/reconcile-source-conflicts">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <input type="hidden" name="conflict_id" value="{_esc(conflict.get("id"))}">
+          <strong>{_esc(conflict.get("summary"))}</strong>
+          <select name="resolution_status" required><option value="">Choose disposition</option>{options}</select>
+          <input name="resolution_note" required minlength="10" placeholder="Decision or remediation evidence">
+          <input name="confirmation" required placeholder="RECONCILE {_esc(item.get("id"))}">
+          <button class="secondary secondary--small" type="submit">Record this disposition</button>
+          <span class="sub">Agent records the selected conflict only. “Reconciled in Agent” remains blocking; provider remediation must have occurred outside this action.</span>
+        </form>''')
+        return "".join(forms)
+
+    def rate_plan_has_blocking_conflicts(item: dict[str, Any]) -> bool:
+        return any(
+            conflict.get("blocks_rate_plan_approval")
+            and conflict.get("status")
+            not in set(conflict.get("approval_resolution_statuses") or [])
+            for conflict in list(item.get("conflicts") or [])
+        )
+
     rate_plan_rows = "".join(
         f"""<tr>
           <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(offering_names.get(str(item.get("offering_id") or ""), item.get("offering_id")))} · v{_esc(item.get("version"))}</span></td>
@@ -773,18 +833,24 @@ def render_building_page(
           )}</span></td>
           <td>{_esc(item.get("effective_from"))} – {_esc(item.get("effective_until") or "ongoing")}</td>
           <td>{_badge(str(item.get("status") or "draft"))}<span class="sub">{_esc(item.get("approved_by"))}</span></td>
-          <td>{(
+          <td>{rate_plan_evidence(item)}</td>
+          <td>{rate_plan_reconciliation_action(item)}{(
             f'<form class="inline-send" method="post" action="/admin/building/rate-plans/{_esc(item.get("id"))}/approve"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="approval_evidence" required placeholder="Review ticket or evidence"><input name="confirmation" required placeholder="APPROVE {_esc(item.get("id"))}"><button class="primary secondary--small" type="submit">Approve and lock</button></form>'
             if item.get("status") == "in_review"
+            and not rate_plan_has_blocking_conflicts(item)
             else (
               f'<form class="inline-send" method="post" action="/admin/building/rate-plans/{_esc(item.get("id"))}/retire"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="confirmation" required placeholder="RETIRE {_esc(item.get("id"))}"><button class="secondary secondary--small" type="submit">Retire</button></form>'
               if item.get("status") == "approved"
-              else '<span class="sub">Edit draft below</span>'
+              else (
+                '<span class="sub">Resolve each blocking source conflict before approval.</span>'
+                if item.get("status") == "in_review"
+                else '<span class="sub">Edit draft below</span>'
+              )
             )
           )}</td>
         </tr>"""
         for item in rate_plans
-    ) or '<tr><td colspan="6"><div class="empty"><strong>No reviewed rate plans yet.</strong><br>Create commercial terms before quoting deposits or cancellation rules.</div></td></tr>'
+    ) or '<tr><td colspan="7"><div class="empty"><strong>No reviewed rate plans yet.</strong><br>Create commercial terms before quoting deposits or cancellation rules.</div></td></tr>'
     billing_account_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("account_name"))}</option>'
         for item in billing_accounts
@@ -1119,7 +1185,19 @@ def render_building_page(
       </section>
       <section class="panel panel--wide">
         <div class="panel-head"><div><h2>Commercial rate plans</h2><p>Version pricing, deposits, included items, and cancellation terms. Approved versions are locked.</p></div><span class="count">{len(rate_plans)} versions</span></div>
-        <div class="table-wrap"><table><thead><tr><th>Plan</th><th>Price</th><th>Deposit</th><th>Effective</th><th>State</th><th>Review action</th></tr></thead><tbody>{rate_plan_rows}</tbody></table></div>
+        <div class="alert alert--warning">
+          <strong>Arena commercial evidence needs reconciliation.</strong>
+          <p>Verified listing baseline: 6,000 sq ft, capacity 200, $175/hour, six-hour minimum ($1,050), $250 cleaning, 50% deposit, and balance due 15 days before the event. Setup, teardown, overtime pricing, tax, and reusable legal language still require governed decisions.</p>
+          <p>TidyCal currently conflicts with a 70% deposit, 30% due 48 hours before, and a placeholder payment link. The dated Vivint-specific 2025 agreement corroborates some terms but is not a reusable legal template.</p>
+          <form class="form-grid" method="post" action="/admin/building/rate-plans/arena-commercial-baseline">
+            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+            <div class="field"><label for="arena-draft-offering">Arena event offering</label><select id="arena-draft-offering" name="offering_id" required><option value="">Choose event offering</option>{event_offering_options}</select></div>
+            <div class="field"><label for="arena-draft-effective">Proposed effective date</label><input id="arena-draft-effective" name="effective_from" type="date" required></div>
+            <div class="field"><label for="arena-draft-confirmation">Typed confirmation</label><input id="arena-draft-confirmation" name="confirmation" required placeholder="PREPARE ARENA DRAFT"></div>
+            <div class="form-actions"><span class="form-note">Creates a draft only. It does not approve, publish, send, charge, change TidyCal, or write Calendar.</span><button class="secondary" type="submit">Prepare reviewable draft</button></div>
+          </form>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Plan</th><th>Price</th><th>Deposit</th><th>Effective</th><th>State</th><th>Evidence</th><th>Review action</th></tr></thead><tbody>{rate_plan_rows}</tbody></table></div>
         <form class="form-grid" method="post" action="/admin/building/rate-plans">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="rate-offering">Offering</label><select id="rate-offering" name="offering_id" required><option value="">Choose offering</option>{offering_options}</select></div>
