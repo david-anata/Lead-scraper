@@ -2029,13 +2029,29 @@ class BuildingCalendarProjection(Base):
     desired_action: Mapped[str] = mapped_column(String(16), default="upsert", index=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     provider_event_id: Mapped[str] = mapped_column(String(255), default="")
+    target_calendar_id: Mapped[str] = mapped_column(String(255), default="")
+    operation_key: Mapped[str] = mapped_column(String(128), default="", index=True)
+    payload_checksum: Mapped[str] = mapped_column(String(64), default="")
     payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    claim_token: Mapped[str] = mapped_column(String(64), default="", index=True)
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    next_attempt_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     last_error: Mapped[str] = mapped_column(Text, default="")
     last_attempt_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     synced_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reconciled_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

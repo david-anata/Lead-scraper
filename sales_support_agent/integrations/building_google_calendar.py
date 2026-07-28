@@ -5,10 +5,27 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from typing import Any
+from typing import Any, Protocol
 
 
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar"
+UNSAFE_CALENDAR_IDS = {"primary"}
+
+
+class BuildingCalendarAdapter(Protocol):
+    """Provider-neutral delivery boundary for Building calendar projections."""
+
+    provider: str
+    target_calendar_id: str
+    configured: bool
+    readiness_error: str
+
+    def upsert_event(
+        self, *, reservation_id: str, payload: dict[str, Any],
+        provider_event_id: str = "",
+    ) -> str: ...
+
+    def delete_event(self, provider_event_id: str) -> None: ...
 
 
 def deterministic_event_id(reservation_id: str) -> str:
@@ -20,6 +37,8 @@ def deterministic_event_id(reservation_id: str) -> str:
 
 class BuildingGoogleCalendarClient:
     """Small authenticated client that only manages the configured building calendar."""
+
+    provider = "google_calendar"
 
     def __init__(
         self,
@@ -45,8 +64,22 @@ class BuildingGoogleCalendarClient:
         self._session: Any | None = None
 
     @property
+    def target_calendar_id(self) -> str:
+        return self.calendar_id
+
+    @property
+    def readiness_error(self) -> str:
+        if not self.calendar_id:
+            return "Dedicated Building calendar ID is missing."
+        if self.calendar_id.lower() in UNSAFE_CALENDAR_IDS:
+            return "The primary calendar alias is prohibited; configure a dedicated calendar ID."
+        if not self.service_account_json:
+            return "Google Calendar service-account credentials are missing."
+        return ""
+
+    @property
     def configured(self) -> bool:
-        return bool(self.calendar_id and self.service_account_json)
+        return not self.readiness_error
 
     def _authorized_session(self) -> Any:
         if not self.configured:

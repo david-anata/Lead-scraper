@@ -4,6 +4,7 @@ import dataclasses
 import os
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -31,6 +32,9 @@ except ModuleNotFoundError as exc:
 
 class FakeCalendarClient:
     configured = True
+    provider = "google_calendar"
+    target_calendar_id = "dedicated-events@example.com"
+    readiness_error = ""
 
     def __init__(self) -> None:
         self.upserts: list[tuple[str, dict, str]] = []
@@ -157,7 +161,8 @@ class BuildingCalendarTests(unittest.TestCase):
                 "/api/internal/building/calendar/sync",
                 headers=self.headers,
                 json={
-                    "execute": True,
+                "execute": True,
+                "dry_run": False,
                     "actor": "calendar-operator@example.com",
                 },
             )
@@ -172,17 +177,38 @@ class BuildingCalendarTests(unittest.TestCase):
         with patch(
             "sales_support_agent.api.building_calendar_router.BuildingGoogleCalendarClient",
             return_value=fake,
+        ), mock.patch.dict(
+            os.environ, {"BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED": "true"}
         ):
             synced = self.client.post(
                 "/api/internal/building/calendar/sync",
                 headers=self.headers,
                 json={
                     "execute": True,
+                    "dry_run": False,
                     "actor": "calendar-operator@example.com",
                 },
             )
         self.assertEqual(synced.status_code, 200, synced.text)
         self.assertEqual(synced.json()["synced_count"], 1)
+        self.assertEqual(len(fake.upserts), 1)
+        with patch(
+            "sales_support_agent.api.building_calendar_router.BuildingGoogleCalendarClient",
+            return_value=fake,
+        ), mock.patch.dict(
+            os.environ, {"BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED": "true"}
+        ):
+            duplicate = self.client.post(
+                "/api/internal/building/calendar/sync",
+                headers=self.headers,
+                json={
+                    "execute": True,
+                    "dry_run": False,
+                    "actor": "calendar-operator@example.com",
+                },
+            )
+        self.assertEqual(duplicate.status_code, 200, duplicate.text)
+        self.assertEqual(duplicate.json()["synced_count"], 0)
         self.assertEqual(len(fake.upserts), 1)
         with self.factory() as session:
             projection = session.query(BuildingCalendarProjection).one()
@@ -200,12 +226,15 @@ class BuildingCalendarTests(unittest.TestCase):
         with patch(
             "sales_support_agent.api.building_calendar_router.BuildingGoogleCalendarClient",
             return_value=fake,
+        ), mock.patch.dict(
+            os.environ, {"BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED": "true"}
         ):
             deleted = self.client.post(
                 "/api/internal/building/calendar/sync",
                 headers=self.headers,
                 json={
                     "execute": True,
+                    "dry_run": False,
                     "actor": "calendar-operator@example.com",
                 },
             )
@@ -214,6 +243,138 @@ class BuildingCalendarTests(unittest.TestCase):
         with self.factory() as session:
             reservation = session.get(BuildingReservation, "calendar-event")
             self.assertEqual(reservation.calendar_event_id, "")
+
+    def test_04_default_is_dry_run_and_dedicated_calendar_is_required(self) -> None:
+        fake = FakeCalendarClient()
+        with patch(
+            "sales_support_agent.api.building_calendar_router.BuildingGoogleCalendarClient",
+            return_value=fake,
+        ), patch.object(fake, "upsert_event") as upsert:
+            response = self.client.post(
+                "/api/internal/building/calendar/sync",
+                headers=self.headers,
+                json={
+                    "execute": True,
+                    "actor": "calendar-operator@example.com",
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["dry_run"])
+        upsert.assert_not_called()
+
+        from sales_support_agent.integrations.building_google_calendar import (
+            BuildingGoogleCalendarClient,
+        )
+        primary = BuildingGoogleCalendarClient(
+            calendar_id="primary", service_account_json="{}"
+        )
+        self.assertFalse(primary.configured)
+        self.assertIn("primary calendar alias is prohibited", primary.readiness_error)
+
+    def test_05_write_gate_fails_closed_without_provider_call(self) -> None:
+        fake = FakeCalendarClient()
+        with patch(
+            "sales_support_agent.api.building_calendar_router.BuildingGoogleCalendarClient",
+            return_value=fake,
+        ), patch.object(fake, "upsert_event") as upsert, mock.patch.dict(
+            os.environ, {"BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED": "false"}
+        ):
+            response = self.client.post(
+                "/api/internal/building/calendar/sync",
+                headers=self.headers,
+                json={
+                    "execute": True,
+                    "dry_run": False,
+                    "actor": "calendar-operator@example.com",
+                },
+            )
+        self.assertEqual(response.status_code, 503, response.text)
+        upsert.assert_not_called()
+
+    def test_06_errors_back_off_and_retry_without_duplicate_insert(self) -> None:
+        with self.factory() as session:
+            projection = session.query(BuildingCalendarProjection).one()
+            projection.desired_action = "upsert"
+            projection.status = "pending"
+            projection.provider_event_id = "stable-event-1"
+            projection.target_calendar_id = "dedicated-events@example.com"
+            session.commit()
+
+        fake = FakeCalendarClient()
+        fake.upsert_event = mock.Mock(side_effect=RuntimeError("temporary outage"))
+        with patch(
+            "sales_support_agent.api.building_calendar_router.BuildingGoogleCalendarClient",
+            return_value=fake,
+        ), mock.patch.dict(
+            os.environ, {"BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED": "true"}
+        ):
+            failed = self.client.post(
+                "/api/internal/building/calendar/sync",
+                headers=self.headers,
+                json={
+                    "execute": True,
+                    "dry_run": False,
+                    "actor": "calendar-operator@example.com",
+                },
+            )
+        self.assertEqual(failed.status_code, 200, failed.text)
+        self.assertEqual(failed.json()["failed_count"], 1)
+        with self.factory() as session:
+            projection = session.query(BuildingCalendarProjection).one()
+            self.assertEqual(projection.status, "error")
+            self.assertIsNotNone(projection.next_attempt_at)
+            projection.next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            session.commit()
+
+        fake.upsert_event = mock.Mock(return_value="stable-event-1")
+        with patch(
+            "sales_support_agent.api.building_calendar_router.BuildingGoogleCalendarClient",
+            return_value=fake,
+        ), mock.patch.dict(
+            os.environ, {"BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED": "true"}
+        ):
+            retried = self.client.post(
+                "/api/internal/building/calendar/sync",
+                headers=self.headers,
+                json={
+                    "execute": True,
+                    "dry_run": False,
+                    "actor": "calendar-operator@example.com",
+                },
+            )
+        self.assertEqual(retried.status_code, 200, retried.text)
+        self.assertEqual(retried.json()["synced_count"], 1)
+        fake.upsert_event.assert_called_once()
+        self.assertEqual(
+            fake.upsert_event.call_args.kwargs["provider_event_id"],
+            "stable-event-1",
+        )
+
+    def test_07_mixed_target_calendar_fails_before_delivery(self) -> None:
+        with self.factory() as session:
+            projection = session.query(BuildingCalendarProjection).one()
+            projection.status = "pending"
+            projection.next_attempt_at = None
+            projection.target_calendar_id = "other-calendar@example.com"
+            session.commit()
+        fake = FakeCalendarClient()
+        with patch(
+            "sales_support_agent.api.building_calendar_router.BuildingGoogleCalendarClient",
+            return_value=fake,
+        ), patch.object(fake, "upsert_event") as upsert, mock.patch.dict(
+            os.environ, {"BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED": "true"}
+        ):
+            response = self.client.post(
+                "/api/internal/building/calendar/sync",
+                headers=self.headers,
+                json={
+                    "execute": True,
+                    "dry_run": False,
+                    "actor": "calendar-operator@example.com",
+                },
+            )
+        self.assertEqual(response.status_code, 409, response.text)
+        upsert.assert_not_called()
 
 
 if __name__ == "__main__":

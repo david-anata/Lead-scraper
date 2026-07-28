@@ -734,12 +734,13 @@ def sync_calendar_from_control_room(
     confirmation: str = Form(...),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
-    if confirmation.strip() != "SYNC CALENDAR":
-        return _redirect(error="Type SYNC CALENDAR to update Google Calendar.")
+    if confirmation.strip() != "PREVIEW CALENDAR":
+        return _redirect(error="Type PREVIEW CALENDAR to inspect the projection queue.")
     try:
         result = sync_calendar_projections(
             CalendarSyncInput(
                 execute=True,
+                dry_run=True,
                 max_items=25,
                 actor=_actor(user),
             ),
@@ -748,15 +749,11 @@ def sync_calendar_from_control_room(
         )
     except HTTPException as exc:
         return _redirect(error=str(exc.detail))
-    if result.get("failed_count"):
-        return _redirect(
-            error=(
-                f"{result.get('failed_count')} calendar item(s) need retry; "
-                "review the calendar projection queue."
-            )
-        )
     return _redirect(
-        notice=f"{result.get('synced_count', 0)} calendar item(s) synchronized."
+        notice=(
+            f"Calendar dry run: {result.get('pending_count', 0)} pending item(s). "
+            "No external calendar was changed."
+        )
     )
 
 

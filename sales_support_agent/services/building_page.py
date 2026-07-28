@@ -1182,11 +1182,11 @@ def render_building_page(
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
       <section class="panel panel--wide">
         <div class="panel-head">
-          <div><h2>Calendar projection</h2><p>Agent remains authoritative. Approved holds and bookings are queued for Google Calendar; calendar edits never change a booking.</p></div>
+          <div><h2>Calendar projection</h2><p>Agent remains authoritative. This control previews the dedicated calendar queue in dry-run mode; it never changes Google Calendar.</p></div>
           <form class="inline-send" method="post" action="/admin/building/calendar/sync">
             <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-            <input aria-label="Calendar sync confirmation" name="confirmation" required placeholder="SYNC CALENDAR">
-            <button class="secondary secondary--small" type="submit">Sync pending</button>
+            <input aria-label="Calendar preview confirmation" name="confirmation" required placeholder="PREVIEW CALENDAR">
+            <button class="secondary secondary--small" type="submit">Preview pending</button>
           </form>
         </div>
         <div class="table-wrap"><table><thead><tr><th>Booking</th><th>Desired action</th><th>Sync state</th><th>Google event</th><th>Updated</th></tr></thead><tbody>{calendar_projection_rows}</tbody></table></div>
