@@ -26,6 +26,9 @@ from sales_support_agent.services.website_ops_program import (
     build_program_plan,
     load_indexing_inventory,
 )
+from sales_support_agent.services.website_ops_screaming_frog import (
+    load_crawl_inventory,
+)
 from sales_support_agent.services.website_ops_github import (
     CONTENT_ACTION_TYPES,
     METADATA_ACTION_TYPES,
@@ -2470,9 +2473,22 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     return _page_shell("agent | Website Ops", body)
 
 
-def render_indexing_page(settings: Settings, *, user: dict | None = None) -> str:
+def render_indexing_page(
+    settings: Settings,
+    *,
+    user: dict | None = None,
+    import_message: str = "",
+    import_error: str = "",
+) -> str:
     inventory = load_indexing_inventory(settings.website_ops_root)
+    crawl_inventory = load_crawl_inventory(settings.website_ops_root)
     summary = dict(inventory.get("summary") or {})
+    crawl_summary = dict(crawl_inventory.get("summary") or {})
+    imports = [
+        dict(item)
+        for item in list(crawl_inventory.get("imports") or [])
+        if isinstance(item, Mapping)
+    ]
     records = [dict(item) for item in list(inventory.get("records") or []) if isinstance(item, Mapping)]
     reason_counts = dict(summary.get("reason_counts") or {})
     reason_cards = "".join(
@@ -2502,6 +2518,8 @@ def render_indexing_page(settings: Settings, *, user: dict | None = None) -> str
     body = f"""
       {_nav("website_ops", website_ops_section="indexing", user=user)}
       <main id="agent-main-content" class="shell app-container app-page">
+        {f'<div class="alert alert--success">{html.escape(import_message)}</div>' if import_message else ''}
+        {f'<div class="alert alert--error">{html.escape(import_error)}</div>' if import_error else ''}
         <section class="card stack">
           <p class="eyebrow">Website Ops indexing</p>
           <h1>Every known URL gets a desired search state.</h1>
@@ -2514,10 +2532,32 @@ def render_indexing_page(settings: Settings, *, user: dict | None = None) -> str
             <a class="btn btn--ghost" href="/admin/website-ops">Return to Overview</a>
           </div>
         </section>
+        <section class="card stack">
+          <div class="row-actions">
+            <div class="stack">
+              <h2>Import crawl evidence</h2>
+              <p class="lead-sm">Upload each Screaming Frog ZIP. Agent merges recognized reports, separates production from Vercel, and keeps every crawler warning unverified until rendered-page and repository checks agree.</p>
+            </div>
+            <span class="status-pill status-neutral">{len(imports)} imports</span>
+          </div>
+          <form action="/admin/website-ops/indexing" method="post" enctype="multipart/form-data" class="stack">
+            <label for="crawl-report">Screaming Frog ZIP export</label>
+            <input id="crawl-report" name="report" type="file" accept=".zip,application/zip" required>
+            <div class="button-row">
+              <button type="submit">Import crawl evidence</button>
+              <span class="muted">Maximum 10 MB per archive.</span>
+            </div>
+          </form>
+        </section>
         <section class="stats">
           {_dashboard_stat_card("Known URLs", summary.get("known_urls", 0), "Imported indexing evidence", "/admin/website-ops/indexing")}
           {_dashboard_stat_card("Needs Action", summary.get("needs_action", 0), "Improve, consolidate, or investigate", "/admin/website-ops/indexing")}
           {_dashboard_stat_card("Intentional", summary.get("intentional_exclusions", 0), "Protected or deliberately excluded", "/admin/website-ops/indexing")}
+        </section>
+        <section class="stats">
+          {_dashboard_stat_card("Production Crawl", crawl_summary.get("production_urls", 0), "anatainc.com URLs only", "/admin/website-ops/indexing")}
+          {_dashboard_stat_card("Vercel Sandbox", crawl_summary.get("sandbox_urls", 0), "Kept separate from production", "/admin/website-ops/indexing")}
+          {_dashboard_stat_card("Crawler Warnings", crawl_summary.get("urls_with_warnings", 0), "Evidence awaiting verification", "/admin/website-ops/indexing")}
         </section>
         <section class="card stack">
           <h2>Reason groups</h2>

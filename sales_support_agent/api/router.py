@@ -10,7 +10,7 @@ from typing import Optional
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import re
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote_plus
 import traceback
 from html import escape
 
@@ -113,6 +113,11 @@ from sales_support_agent.services.website_ops import (
     save_feedback_record,
     website_ops_run_is_due,
     write_website_ops_run_state,
+)
+from sales_support_agent.services.website_ops_screaming_frog import (
+    MAX_UPLOAD_BYTES as MAX_SCREAMING_FROG_UPLOAD_BYTES,
+    ScreamingFrogImportError,
+    import_screaming_frog_zip,
 )
 from sales_support_agent.config import is_active_pipeline_status, normalize_status_key
 from sales_support_agent.services.auth_deps import (
@@ -1186,7 +1191,41 @@ def admin_website_ops_indexing(request: Request) -> Response:
         render_indexing_page(
             request.app.state.settings,
             user=_get_request_user(request),
+            import_message=str(request.query_params.get("message", "")).strip(),
+            import_error=str(request.query_params.get("error", "")).strip(),
         )
+    )
+
+
+@router.post("/admin/website-ops/indexing", response_class=HTMLResponse)
+async def admin_website_ops_indexing_import(
+    request: Request,
+    report: UploadFile = File(...),
+) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    payload = await report.read(MAX_SCREAMING_FROG_UPLOAD_BYTES + 1)
+    try:
+        inventory = import_screaming_frog_zip(
+            filename=str(report.filename or "screaming-frog.zip"),
+            payload=payload,
+            root=Path(request.app.state.settings.website_ops_root),
+        )
+    except ScreamingFrogImportError as exc:
+        return RedirectResponse(
+            url=f"/admin/website-ops/indexing?error={quote_plus(str(exc))}",
+            status_code=303,
+        )
+    summary = dict(inventory.get("summary") or {})
+    message = (
+        f"Imported {summary.get('production_urls', 0)} production URLs, "
+        f"{summary.get('sandbox_urls', 0)} sandbox URLs, and "
+        f"{summary.get('urls_with_warnings', 0)} URLs with crawler warnings."
+    )
+    return RedirectResponse(
+        url=f"/admin/website-ops/indexing?message={quote_plus(message)}",
+        status_code=303,
     )
 
 
