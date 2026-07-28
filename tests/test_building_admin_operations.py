@@ -185,6 +185,7 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             )
             self.assertEqual(len(completion), 2)
             self.assertFalse(completion[-1].after_json["created_space"])
+            self.assertFalse(completion[-1].after_json["updated_space"])
             self.assertFalse(completion[-1].after_json["created_offering"])
             self.assertFalse(completion[-1].after_json["published"])
             self.assertFalse(completion[-1].after_json["external_write"])
@@ -201,6 +202,32 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             space = session.get(BuildingSpace, "arena")
             self.assertEqual(space.slug, "conflicting-arena")
             space.slug = "arena"
+
+    def test_00b_prepare_verified_arena_catalog_reconciles_zero_capacity_placeholder(
+        self,
+    ) -> None:
+        with self.factory.begin() as session:
+            space = session.get(BuildingSpace, "arena")
+            space.capacity = 0
+        prepared = self._post(
+            "/admin/building/catalog/arena/prepare",
+            {"confirmation": "PREPARE ARENA CATALOG"},
+        )
+        self._assert_notice(prepared)
+        with self.factory() as session:
+            space = session.get(BuildingSpace, "arena")
+            self.assertEqual(space.capacity, 200)
+            reconciled = (
+                session.query(BuildingAuditEvent)
+                .filter(
+                    BuildingAuditEvent.action
+                    == "verified_arena_catalog_reconciled"
+                )
+                .all()
+            )
+            self.assertEqual(len(reconciled), 1)
+            self.assertEqual(reconciled[0].before_json["capacity"], 0)
+            self.assertEqual(reconciled[0].after_json["capacity"], 200)
 
     def test_00_assisted_lead_preserves_source_consent_and_deduplication(self) -> None:
         missing_reference = self._post(

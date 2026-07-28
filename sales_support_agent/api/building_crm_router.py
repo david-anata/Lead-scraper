@@ -134,10 +134,12 @@ def _prepare_verified_arena_catalog(session, *, actor: str) -> dict[str, bool]:
 
     space = session.get(BuildingSpace, ARENA_SPACE_ID)
     created_space = space is None
+    updated_space = False
     if space is not None and (
         space.slug != ARENA_SPACE_ID
         or space.name.strip().casefold() != "the arena"
         or space.space_type != "event"
+        or space.capacity not in {0, 200}
     ):
         raise ValueError(
             "The existing arena space conflicts with the verified catalog identity; review it manually."
@@ -183,6 +185,37 @@ def _prepare_verified_arena_catalog(session, *, actor: str) -> dict[str, bool]:
                 },
             )
         )
+    elif space.capacity == 0:
+        before = {
+            "capacity": space.capacity,
+            "status": space.status,
+            "is_public": space.is_public,
+        }
+        space.capacity = 200
+        space.floor = space.floor or "2nd floor"
+        space.internal_notes = (
+            "Prepared from the approved Listing Copy Pack baseline. "
+            "Maximum public capacity 200. Existing publication and "
+            "availability state preserved."
+        )
+        space.updated_at = _now()
+        session.add(space)
+        session.add(
+            BuildingAuditEvent(
+                entity_type="space",
+                entity_id=space.id,
+                action="verified_arena_catalog_reconciled",
+                actor=actor,
+                before_json=before,
+                after_json={
+                    "capacity": space.capacity,
+                    "status": space.status,
+                    "is_public": space.is_public,
+                    "source": "approved_listing_copy_pack",
+                },
+            )
+        )
+        updated_space = True
 
     offering = session.get(BuildingOffering, ARENA_OFFERING_ID)
     created_offering = offering is None
@@ -238,6 +271,7 @@ def _prepare_verified_arena_catalog(session, *, actor: str) -> dict[str, bool]:
             actor=actor,
             after_json={
                 "created_space": created_space,
+                "updated_space": updated_space,
                 "created_offering": created_offering,
                 "published": False,
                 "availability_claimed": False,
@@ -248,6 +282,7 @@ def _prepare_verified_arena_catalog(session, *, actor: str) -> dict[str, bool]:
     )
     return {
         "created_space": created_space,
+        "updated_space": updated_space,
         "created_offering": created_offering,
     }
 
@@ -2624,7 +2659,11 @@ def prepare_verified_arena_catalog_from_control_room(
             result = _prepare_verified_arena_catalog(session, actor=actor)
     except ValueError as exc:
         return _building_redirect(error=str(exc))
-    if not result["created_space"] and not result["created_offering"]:
+    if (
+        not result["created_space"]
+        and not result["updated_space"]
+        and not result["created_offering"]
+    ):
         return _building_redirect(
             notice="The verified Arena catalog is already prepared; no records changed."
         )
