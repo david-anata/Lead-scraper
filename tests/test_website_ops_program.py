@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import io
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from sales_support_agent.services.website_ops_program import (
@@ -11,9 +13,22 @@ from sales_support_agent.services.website_ops_program import (
     classify_indexing_record,
     load_indexing_inventory,
 )
+from sales_support_agent.services.website_ops_screaming_frog import (
+    ScreamingFrogImportError,
+    import_screaming_frog_zip,
+    load_crawl_inventory,
+)
 
 
 class WebsiteOpsProgramTests(unittest.TestCase):
+    @staticmethod
+    def _crawl_zip(files: dict[str, str]) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name, content in files.items():
+                archive.writestr(name, content)
+        return buffer.getvalue()
+
     def test_production_router_registers_indexing_control_room(self) -> None:
         from sales_support_agent.api.router import router
 
@@ -21,6 +36,14 @@ class WebsiteOpsProgramTests(unittest.TestCase):
             "/admin/website-ops/indexing",
             {route.path for route in router.routes},
         )
+        methods = {
+            method
+            for route in router.routes
+            if route.path == "/admin/website-ops/indexing"
+            for method in route.methods
+        }
+        self.assertIn("GET", methods)
+        self.assertIn("POST", methods)
 
     def test_wordpress_system_pattern_is_an_intentional_403(self) -> None:
         record = classify_indexing_record(
@@ -122,6 +145,56 @@ class WebsiteOpsProgramTests(unittest.TestCase):
         )
         self.assertEqual(plan["next"][0]["title"], "Validate qualified-lead attribution")
         self.assertTrue(plan["next"][0]["needs_david"])
+
+    def test_screaming_frog_import_separates_hosts_and_preserves_warnings(self) -> None:
+        payload = self._crawl_zip(
+            {
+                "crawl/internal_all.csv": (
+                    "Address,Status Code,Indexability,Title 1,H1-1,Word Count,Crawl Depth\n"
+                    "https://anatainc.com/services/amazon-advertising,200,Indexable,Amazon Ads,Amazon Ads,850,2\n"
+                    "https://branch.vercel.app/services/amazon-advertising,200,Indexable,Preview,Preview,850,2\n"
+                ),
+                "crawl/issues_reports/h1_missing.csv": (
+                    "Address,Issue\n"
+                    "https://anatainc.com/services/amazon-advertising,H1 missing\n"
+                ),
+            }
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            inventory = import_screaming_frog_zip(
+                filename="crawl.zip",
+                payload=payload,
+                root=root,
+            )
+            self.assertEqual(inventory["summary"]["production_urls"], 1)
+            self.assertEqual(inventory["summary"]["sandbox_urls"], 1)
+            self.assertEqual(inventory["summary"]["urls_with_warnings"], 1)
+            production = next(
+                row
+                for row in inventory["records"]
+                if row["environment"] == "production"
+            )
+            self.assertEqual(production["status_code"], 200)
+            self.assertEqual(production["h1"], "Amazon Ads")
+            self.assertEqual(
+                production["warnings"][0]["report"],
+                "h1_missing.csv",
+            )
+            self.assertIn("unverified evidence", inventory["policy"])
+            self.assertEqual(load_crawl_inventory(root)["summary"], inventory["summary"])
+
+    def test_screaming_frog_import_rejects_unsafe_archive_paths(self) -> None:
+        payload = self._crawl_zip(
+            {"../internal_all.csv": "Address\nhttps://anatainc.com/\n"}
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(ScreamingFrogImportError):
+                import_screaming_frog_zip(
+                    filename="crawl.zip",
+                    payload=payload,
+                    root=Path(temp_dir),
+                )
 
     def test_qualified_action_precedes_indexing_backlog(self) -> None:
         plan = build_program_plan(

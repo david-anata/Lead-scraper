@@ -1685,6 +1685,9 @@ export default function Page() {
             self.assertIn("services/fulfillment", html)
             self.assertIn("Blocked Intentionally", html)
             self.assertIn("2 records", html)
+            self.assertIn("Import crawl evidence", html)
+            self.assertIn('type="file"', html)
+            self.assertIn("Production Crawl", html)
 
     def test_run_website_ops_auto_executes_new_high_confidence_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
