@@ -361,7 +361,7 @@ def build_program_plan(
             )
         )
 
-    for action in action_queue[:3]:
+    for action in action_queue:
         items.append(
             ProgramWorkItem(
                 title=str(action.get("section_name") or action.get("action_type") or "Qualified website improvement"),
@@ -493,7 +493,8 @@ def build_program_plan(
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "current": asdict(items[0]),
-        "next": [asdict(item) for item in items[1:5]],
+        "next": [asdict(item) for item in items[1:13]],
+        "total_work_items": len(items),
         "needs_david_count": sum(1 for item in items if item.needs_david),
         "support_requests": david_requests,
     }
