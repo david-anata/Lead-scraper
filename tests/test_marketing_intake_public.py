@@ -12,6 +12,7 @@ import os
 import tempfile
 import unittest
 from unittest import mock
+from sqlalchemy import event
 
 os.environ.setdefault("SALES_AGENT_DB_URL", "sqlite:///" + tempfile.gettempdir() + "/mkt_intake_test.db")
 os.environ.setdefault("MARKETING_SITE_INTAKE_KEY", "test-intake-key")
@@ -174,6 +175,54 @@ class MarketingIntakeTests(unittest.TestCase):
         ]
         self.assertEqual(len(matching), 2)
         self.assertNotIn("a" * 64, str([row.metadata_json for row in matching]))
+
+    def test_analysis_status_lookup_has_fixed_query_count(self) -> None:
+        email = "indexed-status@example.com"
+        asin = "B0INDEXED01"
+        with M.session_scope(app.state.session_factory) as session:
+            run = M.AuditService(session).start_run(
+                M.INTAKE_RUN_TYPE,
+                trigger="test",
+                metadata={"email": email, "asin": asin},
+            )
+            M._bind_analysis_lookup(
+                session,
+                run_id=int(run.id),
+                email=email,
+                asin=asin,
+            )
+            for index in range(100):
+                session.add(
+                    M.AutomationAction(
+                        run_id=int(run.id),
+                        clickup_task_id="",
+                        system="marketing",
+                        action_type=M.ANALYSIS_LOOKUP_ACTION,
+                        dedupe_key=f"marketing-analysis:noise-{index:03d}",
+                        success=True,
+                        error_message="",
+                        before_json={},
+                        after_json={},
+                    )
+                )
+            run_id = int(run.id)
+
+        engine = app.state.session_factory.kw["bind"]
+        statements: list[str] = []
+
+        def count_query(_conn, _cursor, statement, _parameters, _context, _many) -> None:
+            statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", count_query)
+        try:
+            with M.session_scope(app.state.session_factory) as session:
+                resolved = M._latest_intake(session, email=email, asin=asin)
+        finally:
+            event.remove(engine, "before_cursor_execute", count_query)
+
+        self.assertIsNotNone(resolved)
+        self.assertEqual(int(resolved.id), run_id)
+        self.assertLessEqual(len(statements), 1, statements)
 
     def _create(self, kind: str = "asin", identifier: str = "B0TESTASIN1") -> dict:
         with mock.patch.object(

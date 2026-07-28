@@ -29,7 +29,7 @@ from sqlalchemy import select
 from sales_support_agent.integrations.hubspot import HubSpotClient
 from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.models.database import session_scope
-from sales_support_agent.models.entities import AutomationRun
+from sales_support_agent.models.entities import AutomationAction, AutomationRun
 from sales_support_agent.services.audit import AuditService
 from sales_support_agent.services.deck.service import DeckGenerationService
 from sales_support_agent.services.public_request_guard import (
@@ -46,6 +46,10 @@ router = APIRouter(prefix="/api/public/marketing", tags=["marketing-public"])
 # Run type for the intake audit row (separate from the deck_generation run the
 # deck service records itself), so the daily limit and status lookups are cheap.
 INTAKE_RUN_TYPE = "marketing_analysis_intake"
+ANALYSIS_LOOKUP_ACTION = "marketing_analysis_lookup"
+ANALYSIS_LOOKUP_PREFIX = "marketing-analysis:"
+DAILY_EMAIL_ACTION = "marketing_daily_email"
+DAILY_EMAIL_PREFIX = "marketing-daily:"
 
 # Run type for the two-step site intake (identifier → needs → email unlock).
 SITE_INTAKE_RUN_TYPE = "marketing_intake"
@@ -122,22 +126,122 @@ def _daily_gate_enabled() -> bool:
 def _today_intakes_for_email(
     session, email: str, run_types: tuple[str, ...] = (INTAKE_RUN_TYPE, SITE_INTAKE_RUN_TYPE)
 ) -> list[AutomationRun]:
-    """Intake runs started today (UTC) for this email, across both the
-    one-shot analysis flow and the two-step site intake so the one-per-email-
-    per-UTC-day gate is shared. Metadata is JSON, so we filter by email in
-    Python; the date filter keeps the scan tiny."""
+    """Bounded exact lookup for today's shared per-email intake gate."""
     midnight_utc = datetime.combine(datetime.utcnow().date(), dt_time.min)
+    dedupe_key = _daily_email_key(email=email)
+    indexed = session.execute(
+        select(AutomationRun)
+        .join(AutomationAction, AutomationAction.run_id == AutomationRun.id)
+        .where(
+            AutomationAction.dedupe_key == dedupe_key,
+            AutomationAction.action_type == DAILY_EMAIL_ACTION,
+            AutomationAction.success.is_(True),
+            AutomationRun.run_type.in_(run_types),
+        )
+        .order_by(AutomationAction.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if indexed is not None:
+        return [indexed]
+
+    # Bounded compatibility for records created before daily lookup actions.
     rows = session.execute(
-        select(AutomationRun).where(
+        select(AutomationRun)
+        .where(
             AutomationRun.run_type.in_(run_types),
             AutomationRun.started_at >= midnight_utc,
         )
+        .order_by(AutomationRun.id.desc())
+        .limit(100)
     ).scalars().all()
     normalized = email.strip().lower()
-    return [run for run in rows if str((run.metadata_json or {}).get("email", "")).strip().lower() == normalized]
+    matches = [
+        run
+        for run in rows
+        if str((run.metadata_json or {}).get("email", "")).strip().lower()
+        == normalized
+    ]
+    if matches:
+        _bind_daily_email(
+            session,
+            run_id=int(matches[0].id),
+            email=normalized,
+        )
+    return matches
+
+
+def _daily_email_key(*, email: str) -> str:
+    material = (
+        f"{datetime.now(timezone.utc).date().isoformat()}|"
+        f"{email.strip().lower()}"
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return f"{DAILY_EMAIL_PREFIX}{digest}"
+
+
+def _bind_daily_email(session, *, run_id: int, email: str) -> None:
+    session.add(
+        AutomationAction(
+            run_id=run_id,
+            clickup_task_id="",
+            system="marketing",
+            action_type=DAILY_EMAIL_ACTION,
+            dedupe_key=_daily_email_key(email=email),
+            success=True,
+            error_message="",
+            before_json={},
+            after_json={},
+        )
+    )
+
+
+def _analysis_lookup_key(*, email: str, asin: str) -> str:
+    material = f"{email.strip().lower()}|{asin.strip()}"
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return f"{ANALYSIS_LOOKUP_PREFIX}{digest}"
+
+
+def _bind_analysis_lookup(
+    session,
+    *,
+    run_id: int,
+    email: str,
+    asin: str,
+) -> None:
+    session.add(
+        AutomationAction(
+            run_id=run_id,
+            clickup_task_id="",
+            system="marketing",
+            action_type=ANALYSIS_LOOKUP_ACTION,
+            dedupe_key=_analysis_lookup_key(email=email, asin=asin),
+            success=True,
+            error_message="",
+            before_json={},
+            after_json={},
+        )
+    )
 
 
 def _latest_intake(session, *, email: str, asin: str) -> Optional[AutomationRun]:
+    lookup_key = _analysis_lookup_key(email=email, asin=asin)
+    run = session.execute(
+        select(AutomationRun)
+        .join(AutomationAction, AutomationAction.run_id == AutomationRun.id)
+        .where(
+            AutomationAction.dedupe_key == lookup_key,
+            AutomationAction.action_type == ANALYSIS_LOOKUP_ACTION,
+            AutomationAction.success.is_(True),
+            AutomationRun.run_type == INTAKE_RUN_TYPE,
+        )
+        .order_by(AutomationAction.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if run is not None:
+        return run
+
+    # Compatibility for the most recent pre-index records only. All new
+    # analysis requests create an indexed action in the same transaction.
     rows = session.execute(
         select(AutomationRun)
         .where(AutomationRun.run_type == INTAKE_RUN_TYPE)
@@ -146,13 +250,19 @@ def _latest_intake(session, *, email: str, asin: str) -> Optional[AutomationRun]
     ).scalars().all()
     email_norm = email.strip().lower()
     asin_norm = asin.strip()
-    for run in rows:
-        meta = run.metadata_json or {}
+    for legacy_run in rows:
+        meta = legacy_run.metadata_json or {}
         if (
             str(meta.get("email", "")).strip().lower() == email_norm
             and str(meta.get("asin", "")).strip() == asin_norm
         ):
-            return run
+            _bind_analysis_lookup(
+                session,
+                run_id=int(legacy_run.id),
+                email=email_norm,
+                asin=asin_norm,
+            )
+            return legacy_run
     return None
 
 
@@ -544,6 +654,17 @@ async def marketing_analysis_intake(
             metadata={"email": email.lower(), "asin": asin, "source": source},
         )
         intake_run_id = intake_run.id
+        _bind_analysis_lookup(
+            session,
+            run_id=int(intake_run_id),
+            email=email,
+            asin=asin,
+        )
+        _bind_daily_email(
+            session,
+            run_id=int(intake_run_id),
+            email=email,
+        )
 
     background_tasks.add_task(
         _run_analysis_and_deliver,
@@ -619,6 +740,11 @@ async def advertising_audit_intake(
         }
         session.add(intake_run)
         intake_run_id = intake_run.id
+        _bind_daily_email(
+            session,
+            run_id=int(intake_run_id),
+            email=email,
+        )
 
     background_tasks.add_task(
         _run_analysis_and_deliver,
@@ -1690,6 +1816,11 @@ async def marketing_site_intake_unlock(
         }
         session.add(run)
         run_id = run.id
+        _bind_daily_email(
+            session,
+            run_id=int(run_id),
+            email=email,
+        )
 
     acknowledgement_sent = False
     internal_lead_sent = False
