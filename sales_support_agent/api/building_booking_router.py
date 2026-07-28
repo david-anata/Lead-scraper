@@ -219,6 +219,18 @@ class TourInput(BaseModel):
     actor: str = Field(min_length=1, max_length=255)
 
 
+class TourInquiryHandoffInput(BaseModel):
+    inquiry_id: str = Field(min_length=1, max_length=64)
+    offering_id: str = Field(min_length=1, max_length=64)
+    space_id: str = Field(min_length=1, max_length=64)
+    scheduled_at: datetime
+    duration_minutes: int = Field(ge=15, le=240)
+    host: str = Field(min_length=1, max_length=255)
+    meeting_location: str = Field(min_length=1, max_length=255)
+    notes: str = Field(default="", max_length=4000)
+    actor: str = Field(min_length=1, max_length=255)
+
+
 class DepositInput(BaseModel):
     id: str | None = Field(default=None, max_length=64)
     status: str
@@ -1452,6 +1464,333 @@ def _tour_payload(row: BuildingTour) -> dict[str, Any]:
         "completed_at": row.completed_at.isoformat() if row.completed_at else None,
         "cancelled_at": row.cancelled_at.isoformat() if row.cancelled_at else None,
     }
+
+
+def _tour_conflicts(
+    session,
+    *,
+    space_id: str,
+    host: str,
+    starts_at: datetime,
+    ends_at: datetime,
+    tour_id: str = "",
+) -> list[str]:
+    """Return inventory and host conflicts without creating an inventory hold."""
+
+    conflicts = [
+        f"inventory:{row.id}"
+        for row in _active_conflicts(
+            session,
+            space_id=space_id,
+            starts_at=starts_at,
+            ends_at=ends_at,
+        )
+    ]
+    rows = session.execute(
+        select(BuildingTour).where(
+            BuildingTour.status == "scheduled",
+            BuildingTour.host == host,
+            BuildingTour.scheduled_at < ends_at,
+        )
+    ).scalars().all()
+    for row in rows:
+        if tour_id and row.id == tour_id:
+            continue
+        row_start = row.scheduled_at
+        if row_start.tzinfo is None:
+            row_start = row_start.replace(tzinfo=timezone.utc)
+        if row_start + timedelta(minutes=row.duration_minutes) > starts_at:
+            conflicts.append(f"host:{row.id}")
+    return conflicts
+
+
+@router.post("/tour-inquiry-handoffs", status_code=201)
+def create_tour_inquiry_handoff(
+    payload: TourInquiryHandoffInput,
+    request: Request,
+    idempotency_key: str = Header(
+        alias="Idempotency-Key", min_length=8, max_length=128
+    ),
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Atomically convert one eligible inquiry into a scheduled workspace tour."""
+
+    _require_internal_key(request, x_internal_api_key)
+    scheduled_at = payload.scheduled_at
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+    scheduled_at = scheduled_at.astimezone(timezone.utc)
+    if scheduled_at <= _now():
+        raise HTTPException(status_code=422, detail="Tour time must be in the future.")
+    ends_at = scheduled_at + timedelta(minutes=payload.duration_minutes)
+    canonical = {
+        **payload.model_dump(mode="json"),
+        "scheduled_at": scheduled_at.isoformat(),
+        "host": payload.host.strip(),
+        "meeting_location": payload.meeting_location.strip(),
+        "notes": payload.notes.strip(),
+    }
+    request_hash = hashlib.sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    command_type = "tour_inquiry_to_scheduled_tour"
+
+    with session_scope(request.app.state.session_factory) as session:
+        prior = session.execute(
+            select(BuildingEventLifecycleCommand).where(
+                BuildingEventLifecycleCommand.idempotency_key == idempotency_key
+            )
+        ).scalar_one_or_none()
+        if prior is not None:
+            if (
+                prior.command_type != command_type
+                or prior.request_hash != request_hash
+                or prior.inquiry_id != payload.inquiry_id
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="This idempotency key was already used for a different request.",
+                )
+            reservation = session.get(BuildingReservation, prior.reservation_id)
+            tour = session.get(
+                BuildingTour, str((prior.response_json or {}).get("tour_id") or "")
+            )
+            if reservation is None or tour is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The original handoff evidence is incomplete; review it manually.",
+                )
+            return {
+                "ok": True,
+                "replayed": True,
+                "reservation": _reservation_payload(reservation),
+                "tour": _tour_payload(tour),
+                "inventory_hold_created": False,
+            }
+
+        inquiry = session.execute(
+            select(BuildingInquiry)
+            .where(BuildingInquiry.id == payload.inquiry_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if inquiry is None or inquiry.kind != "tour":
+            raise HTTPException(
+                status_code=422,
+                detail="Only an eligible tour inquiry can be scheduled.",
+            )
+        lifecycle = dict((inquiry.payload_json or {}).get("_lifecycle") or {})
+        if str(lifecycle.get("stage") or "new") in {"closed_won", "closed_lost"}:
+            raise HTTPException(status_code=409, detail="This inquiry is already closed.")
+        contact = session.execute(
+            select(BuildingContact).where(BuildingContact.email == inquiry.email)
+        ).scalar_one_or_none()
+        if contact is None or contact.status != "active":
+            raise HTTPException(
+                status_code=409,
+                detail="The linked inquiry contact is unavailable.",
+            )
+        offering = session.get(BuildingOffering, payload.offering_id)
+        space = session.get(BuildingSpace, payload.space_id)
+        if (
+            offering is None
+            or offering.offering_type
+            not in {"private_office", "coworking", "meeting_room", "membership"}
+            or offering.space_id != payload.space_id
+            or space is None
+            or space.space_type
+            not in {"private_office", "coworking", "conference", "amenity"}
+            or space.status not in {"available", "turnover", "occupied"}
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Choose a valid linked workspace offering and space.",
+            )
+
+        reservation = session.execute(
+            select(BuildingReservation).where(
+                BuildingReservation.inquiry_id == inquiry.id,
+                BuildingReservation.kind == "workspace",
+            )
+        ).scalars().first()
+        if reservation is not None and (
+            reservation.contact_id != contact.id
+            or reservation.offering_id != offering.id
+            or reservation.space_id != space.id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="This inquiry is already linked to a different workspace journey.",
+            )
+        tour = None
+        if reservation is not None:
+            tour = session.execute(
+                select(BuildingTour)
+                .where(BuildingTour.reservation_id == reservation.id)
+                .order_by(BuildingTour.created_at.desc())
+            ).scalars().first()
+            if tour is not None:
+                tour_start = tour.scheduled_at
+                if tour_start.tzinfo is None:
+                    tour_start = tour_start.replace(tzinfo=timezone.utc)
+                if not (
+                    tour.status == "scheduled"
+                    and tour_start == scheduled_at
+                    and tour.duration_minutes == payload.duration_minutes
+                    and tour.host == payload.host.strip()
+                    and tour.meeting_location == payload.meeting_location.strip()
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="This inquiry already has different tour evidence.",
+                    )
+
+        conflicts = _tour_conflicts(
+            session,
+            space_id=space.id,
+            host=payload.host.strip(),
+            starts_at=scheduled_at,
+            ends_at=ends_at,
+            tour_id=tour.id if tour else "",
+        )
+        if conflicts:
+            raise HTTPException(
+                status_code=409,
+                detail="The space or host is not available for this tour time.",
+            )
+
+        if reservation is None:
+            reservation = BuildingReservation(
+                id=str(uuid4()),
+                kind="workspace",
+                status="qualified",
+                inquiry_id=inquiry.id,
+                contact_id=contact.id,
+                offering_id=offering.id,
+                space_id=space.id,
+                starts_at=scheduled_at,
+                ends_at=ends_at,
+                deposit_required=False,
+                assigned_owner=payload.host.strip(),
+                requirements_json={
+                    "journey_purpose": "tour",
+                    "tour_inquiry_id": inquiry.id,
+                },
+                source="tour_inquiry_handoff",
+                source_reference=f"inquiry:{inquiry.id}",
+                created_by=payload.actor,
+                updated_at=_now(),
+            )
+            session.add(reservation)
+            session.flush()
+            session.add(BuildingAuditEvent(
+                entity_type="reservation",
+                entity_id=reservation.id,
+                action="created_from_tour_inquiry",
+                actor=payload.actor,
+                after_json={
+                    "inquiry_id": inquiry.id,
+                    "contact_id": contact.id,
+                    "offering_id": offering.id,
+                    "space_id": space.id,
+                    "status": "qualified",
+                    "inventory_hold_created": False,
+                },
+            ))
+        if tour is None:
+            tour = BuildingTour(
+                id=str(uuid4()),
+                reservation_id=reservation.id,
+                scheduled_at=scheduled_at,
+                duration_minutes=payload.duration_minutes,
+                status="scheduled",
+                host=payload.host.strip(),
+                meeting_location=payload.meeting_location.strip(),
+                notes=payload.notes.strip(),
+                created_by=payload.actor,
+                updated_at=_now(),
+            )
+            session.add(tour)
+            session.flush()
+            session.add(BuildingAuditEvent(
+                entity_type="tour",
+                entity_id=tour.id,
+                action="tour_scheduled_from_inquiry",
+                actor=payload.actor,
+                after_json={
+                    "inquiry_id": inquiry.id,
+                    "contact_id": contact.id,
+                    "reservation_id": reservation.id,
+                    "scheduled_at": scheduled_at.isoformat(),
+                    "ends_at": ends_at.isoformat(),
+                    "duration_minutes": tour.duration_minutes,
+                    "host": tour.host,
+                    "meeting_location": tour.meeting_location,
+                    "inventory_hold_created": False,
+                },
+            ))
+
+        before_status = reservation.status
+        if before_status not in {"qualified", "tour_scheduled"}:
+            raise HTTPException(
+                status_code=409,
+                detail="The linked workspace journey cannot be moved to a tour.",
+            )
+        reservation.status = "tour_scheduled"
+        reservation.starts_at = scheduled_at
+        reservation.ends_at = ends_at
+        reservation.assigned_owner = payload.host.strip()
+        reservation.updated_at = _now()
+        inquiry_payload = dict(inquiry.payload_json or {})
+        inquiry_payload["_tour_handoff"] = {
+            "reservation_id": reservation.id,
+            "tour_id": tour.id,
+            "scheduled_at": scheduled_at.isoformat(),
+            "actor": payload.actor,
+        }
+        inquiry.payload_json = inquiry_payload
+        inquiry.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="reservation",
+            entity_id=reservation.id,
+            action="status_changed",
+            actor=payload.actor,
+            before_json={"status": before_status},
+            after_json={
+                "status": "tour_scheduled",
+                "reason": "Governed tour inquiry handoff completed.",
+                "tour_id": tour.id,
+            },
+        ))
+        session.add(BuildingAuditEvent(
+            entity_type="inquiry",
+            entity_id=inquiry.id,
+            action="tour_handoff_completed",
+            actor=payload.actor,
+            after_json={
+                "contact_id": contact.id,
+                "reservation_id": reservation.id,
+                "tour_id": tour.id,
+                "idempotency_key": idempotency_key,
+            },
+        ))
+        session.add(BuildingEventLifecycleCommand(
+            id=str(uuid4()),
+            idempotency_key=idempotency_key,
+            command_type=command_type,
+            request_hash=request_hash,
+            inquiry_id=inquiry.id,
+            reservation_id=reservation.id,
+            response_json={"tour_id": tour.id},
+            actor=payload.actor,
+        ))
+        session.flush()
+        return {
+            "ok": True,
+            "replayed": False,
+            "reservation": _reservation_payload(reservation),
+            "tour": _tour_payload(tour),
+            "inventory_hold_created": False,
+        }
 
 
 @router.get("/{reservation_id}/tours")
