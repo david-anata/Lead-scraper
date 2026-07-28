@@ -151,9 +151,19 @@ def _activity(patterns: Sequence[Mapping[str, Any]]) -> str:
         vendors = ", ".join(
             str(item.get("vendor") or "") for item in payload.get("vendors") or []
         )
+        pattern_reference = str(
+            payload.get("pattern_key") or entry.get("pattern_key") or ""
+        )
         if not vendors:
-            vendors = vendors_by_key.get(
-                str(payload.get("pattern_key") or entry.get("pattern_key") or ""), ""
+            vendors = vendors_by_key.get(pattern_reference, "")
+        legacy_note = ""
+        if not vendors:
+            vendors = (
+                f"Legacy bill {pattern_reference[:8]} (vendor not captured)"
+                if pattern_reference else "Legacy bill (vendor not captured)"
+            )
+            legacy_note = (
+                "Legacy record · previous state, reason, and batch were not captured"
             )
         detail = ""
         if evidence.get("return_on"):
@@ -164,7 +174,7 @@ def _activity(patterns: Sequence[Mapping[str, Any]]) -> str:
             f"{item.get('before', {}).get('decision', 'unreviewed')} → "
             f"{item.get('after', {}).get('decision', action)}"
             for item in payload.get("vendors") or []
-        )
+        ) or legacy_note
         batch_id = str(
             evidence.get("batch_id")
             or (entry["id"] if entry["action_type"] == "bill_queue_batch_recorded" else "")
