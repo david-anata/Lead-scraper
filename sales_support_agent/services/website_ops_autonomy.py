@@ -26,7 +26,10 @@ from sales_support_agent.services.website_ops_article_engine import build_articl
 from sales_support_agent.services.website_ops_query_intelligence import (
     build_query_intelligence,
 )
-from sales_support_agent.services.website_ops_program import build_indexing_inventory
+from sales_support_agent.services.website_ops_program import (
+    build_indexing_inventory,
+    load_indexing_inventory,
+)
 
 try:
     from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -593,7 +596,7 @@ def inspect_search_console_indexing(
                     "siteUrl": config.search_console_property,
                     "languageCode": "en-US",
                 },
-                timeout=30,
+                timeout=12,
             )
         except Exception as exc:
             return None, f"{url}: {type(exc).__name__}"
@@ -630,7 +633,7 @@ def inspect_search_console_indexing(
 
     records: list[dict[str, Any]] = []
     failures: list[str] = []
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {executor.submit(inspect, url): url for url in scoped_urls}
         for future in as_completed(futures):
             record, failure = future.result()
@@ -1494,6 +1497,12 @@ def build_autonomy_overlay(
         inspection = dict(indexing_inventory.get("inspection") or {})
         if int(inspection.get("succeeded", 0) or 0):
             save_search_console_indexing_inventory(settings, indexing_inventory)
+        else:
+            retained_inventory = load_indexing_inventory(
+                Path(settings.website_ops_root)
+            )
+            retained_inventory["inspection"] = inspection
+            save_search_console_indexing_inventory(settings, retained_inventory)
         support_requests.extend(indexing_notes)
 
     for observation in observations:

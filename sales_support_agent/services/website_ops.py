@@ -2630,6 +2630,19 @@ def render_indexing_page(
           {_dashboard_stat_card("Intentional", summary.get("intentional_exclusions", 0), "Protected or deliberately excluded", "/admin/website-ops/indexing")}
           {_dashboard_stat_card("Inspected", inspection.get("succeeded", 0), f"{inspection.get('failed', 0)} API failures", "/admin/website-ops/indexing")}
         </section>
+        {f'''
+        <section class="card stack">
+          <div class="section-heading">
+            <div class="stack">
+              <p class="eyebrow">URL Inspection API</p>
+              <h2>The latest inspection attempt needs attention.</h2>
+              <p class="lead-sm">{html.escape(str(inspection.get("failed", 0)))} of {html.escape(str(inspection.get("attempted", 0)))} canonical URL inspections failed. The last good inventory remains intact and the scheduler will retry.</p>
+            </div>
+            <span class="status-pill status-bad">Failed</span>
+          </div>
+          <ul class="evidence-list">{"".join(f"<li>{html.escape(str(item))}</li>" for item in list(inspection.get("failure_samples") or []))}</ul>
+        </section>
+        ''' if int(inspection.get("failed", 0) or 0) else ""}
         <section class="stats">
           {_dashboard_stat_card("Production Crawl", crawl_summary.get("production_urls", 0), "anatainc.com URLs only", "/admin/website-ops/indexing")}
           {_dashboard_stat_card("Vercel Sandbox", crawl_summary.get("sandbox_urls", 0), "Kept separate from production", "/admin/website-ops/indexing")}
