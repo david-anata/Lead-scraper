@@ -856,22 +856,22 @@ def render_building_page(
         str(item.get("decision_key") or ""): item for item in launch_decisions
     }
     launch_definitions = [
-        ("cancellation_policy", "Cancellation policy", "accepted_policy", "Approved cancellation/refund language"),
-        ("tax_treatment", "Tax treatment and rate", "accepted_policy", "Taxable/non-taxable and reviewed rate"),
-        ("setup_price", "Setup add-on price", "accepted_policy", "Approved price or explicitly included"),
-        ("teardown_price", "Teardown add-on price", "accepted_policy", "Approved price or explicitly included"),
-        ("overtime_rate", "Overtime hourly rate", "accepted_policy", "Approved numeric rate; do not infer $150 or $175"),
-        ("payment_workflow", "Venue payment workflow", "accepted_policy", "Venue card-only; no checks, overpayments, or third-party vendor payments; date held after cleared funds"),
-        ("agreement_template", "Reusable agreement template", "approved_reference", "Approved provider-neutral template ID/version"),
-        ("event_calendar", "Dedicated event calendar", "provider_verified", "Calendar ID, owner, and service-account access"),
-        ("transactional_sender", "Transactional sender and owner", "owner_confirmed", "Verified sender identity and accountable owner"),
-        ("effective_date", "Launch effective date", "accepted_policy", "Approved effective date"),
+        ("cancellation_policy", "Cancellation policy", "accepted_policy", "Approved cancellation/refund language", "Owner stated non-refundable and allowed one transfer with 14 days’ notice into a six-month window; exact legal wording and forfeiture edge cases still need confirmation.", "Confirm the complete sentence that will appear in every quote and agreement."),
+        ("tax_treatment", "Tax treatment and rate", "accepted_policy", "Taxable/non-taxable and reviewed rate", "Owner accepted a Utah recommendation, but no accountant-approved taxable categories or numeric rate are recorded.", "Obtain accountant evidence or explicitly keep tax as quote-review-required."),
+        ("setup_price", "Setup add-on price", "accepted_policy", "Approved price or explicitly included", "Owner allowed two hours before the event without charge; listing evidence describes setup as an add-on.", "Reconcile the included two-hour window with the add-on price beyond it."),
+        ("teardown_price", "Teardown add-on price", "accepted_policy", "Approved price or explicitly included", "Owner allowed two hours after the event without charge; listing evidence describes teardown as an add-on.", "Reconcile the included two-hour window with the add-on price beyond it."),
+        ("overtime_rate", "Overtime hourly rate", "accepted_policy", "Approved numeric premium rate", "Listing evidence says overtime is hourly. $150 appears only in a dated customer-specific agreement; $175 is the standard venue rate, not an approved overtime rate.", "Approve one numeric premium rate; do not infer $150 or $175."),
+        ("payment_workflow", "Venue payment workflow", "accepted_policy", "Approved methods, clearing rule, and hold gate", "Evidence conflicts: one supplied policy says venue card-only with no checks, overpayments, or third-party vendor payments; an earlier owner answer allowed ACH/check with seven additional clearing days. Both require cleared funds before a date is held.", "Choose card-only or card plus ACH/check, then confirm the clearing deadline."),
+        ("agreement_template", "Reusable agreement template", "approved_reference", "Approved provider-neutral template ID/version", "The 2025 Vivint agreement is customer-specific evidence and is not reusable. Dropbox Sign is recommended but not approved.", "Approve a reusable legal template, legal approver, and e-sign provider."),
+        ("event_calendar", "Dedicated event calendar", "provider_verified", "Calendar ID, owner, and service-account access", "Search found one past tour on David’s primary calendar and no evidence of a dedicated Arena calendar.", "Create or identify the dedicated calendar and verify service-account access."),
+        ("transactional_sender", "Transactional sender and owner", "owner_confirmed", "Verified sender identity and accountable owner", "building@anatainc.com was specified for Building Control access; it is not yet confirmed as the outbound customer sender.", "Confirm the From address, reply-to address, and accountable inbox owner."),
+        ("effective_date", "Launch effective date", "accepted_policy", "Approved effective date", "No launch-effective date has been approved.", "Choose the first date on which approved Arena terms may be quoted."),
     ]
     launch_readiness_rows = "".join(
         f"""<tr>
           <td><strong>{_esc(label)}</strong><span class="sub">{_esc(guidance)}</span></td>
           <td>{_badge(str(launch_decision_map.get(key, {}).get("status") or "unresolved"))}<span class="sub">{_esc(launch_decision_map.get(key, {}).get("value") or "No decision recorded")}</span></td>
-          <td><span class="sub">{_esc(launch_decision_map.get(key, {}).get("evidence") or ("Search found only a past primary-calendar tour; dedicated calendar remains unverified." if key == "event_calendar" else "Evidence required."))}</span></td>
+          <td><span class="sub">{_esc(launch_decision_map.get(key, {}).get("evidence") or known_evidence)}</span><span class="sub"><strong>Next:</strong> {_esc(next_action)}</span></td>
           <td><form class="inline-send" method="post" action="/admin/building/launch-readiness/decisions/{_esc(key)}">
             <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
             <select name="offering_id" required><option value="">Arena offering</option>{event_offering_options}</select>
@@ -883,11 +883,11 @@ def render_building_page(
             <span class="sub">Agent audit only. No provider write, send, charge, or calendar change.</span>
           </form></td>
         </tr>"""
-        for key, label, required_status, guidance in launch_definitions
+        for key, label, required_status, guidance, known_evidence, next_action in launch_definitions
     )
     launch_ready_count = sum(
         1
-        for key, _, status, _ in launch_definitions
+        for key, _, status, _, _, _ in launch_definitions
         if launch_decision_map.get(key, {}).get("status") == status
     )
     qualified_event_inquiry_options = "".join(

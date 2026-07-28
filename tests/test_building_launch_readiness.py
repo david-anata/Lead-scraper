@@ -150,6 +150,22 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
     def test_01_page_explains_all_blockers_and_calendar_uncertainty(self) -> None:
         page = self.client.get("/admin/building")
         self.assertIn("Arena launch readiness", page.text)
+        self.assertIn(
+            "Evidence conflicts: one supplied policy says venue card-only with no checks",
+            page.text,
+        )
+        self.assertIn(
+            "allowed ACH/check with seven additional clearing days",
+            page.text,
+        )
+        self.assertIn(
+            "building@anatainc.com was specified for Building Control access",
+            page.text,
+        )
+        self.assertIn(
+            "Approve one numeric premium rate; do not infer $150 or $175.",
+            page.text,
+        )
         self.assertIn("0/10 decided", page.text)
         self.assertIn("no dedicated Arena calendar ID", page.text)
         self.assertIn("Venue payment workflow", page.text)
