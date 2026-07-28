@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from sales_support_agent.models.database import get_engine
 from sales_support_agent.models.entities import (
+    AutomationAction,
     AutomationRun,
     DeckSectionView,
     DeckVisitSession,
@@ -27,6 +28,8 @@ from sales_support_agent.models.entities import (
 logger = logging.getLogger(__name__)
 
 RUN_TYPE = "fulfillment_rate_sheet"
+PUBLIC_CORRELATION_ACTION = "public_correlation"
+PUBLIC_CORRELATION_PREFIX = "fulfillment-public:"
 
 
 @contextmanager
@@ -57,6 +60,56 @@ def create_run(*, trigger: str, metadata: Optional[dict] = None) -> int:
         return int(run.id)
 
 
+def _correlation_dedupe_key(correlation_id: str) -> str:
+    return f"{PUBLIC_CORRELATION_PREFIX}{str(correlation_id or '').strip()}"
+
+
+def _bind_public_correlation_session(
+    session: Session,
+    *,
+    run_id: int,
+    correlation_id: str,
+) -> None:
+    correlation = str(correlation_id or "").strip()
+    if not correlation:
+        return
+    dedupe_key = _correlation_dedupe_key(correlation)
+    action = session.execute(
+        select(AutomationAction)
+        .where(
+            AutomationAction.dedupe_key == dedupe_key,
+            AutomationAction.action_type == PUBLIC_CORRELATION_ACTION,
+        )
+        .order_by(AutomationAction.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if action is None:
+        action = AutomationAction(
+            run_id=run_id,
+            clickup_task_id="",
+            system="fulfillment",
+            action_type=PUBLIC_CORRELATION_ACTION,
+            dedupe_key=dedupe_key,
+            success=True,
+            error_message="",
+            before_json={},
+            after_json={},
+        )
+    else:
+        action.run_id = run_id
+        action.success = True
+    session.add(action)
+
+
+def bind_public_correlation(run_id: int, correlation_id: str) -> None:
+    with _session() as session:
+        _bind_public_correlation_session(
+            session,
+            run_id=run_id,
+            correlation_id=correlation_id,
+        )
+
+
 def save_draft(run_id: int, summary: dict) -> None:
     """Persist a finished generation as a reviewable DRAFT (not yet public)."""
     with _session() as s:
@@ -67,6 +120,11 @@ def save_draft(run_id: int, summary: dict) -> None:
         run.completed_at = datetime.now(timezone.utc)
         run.summary_json = summary
         s.add(run)
+        _bind_public_correlation_session(
+            s,
+            run_id=run_id,
+            correlation_id=str((summary or {}).get("public_correlation_id") or ""),
+        )
 
 
 # Backward-compatible alias: "completing" a generation now lands in draft.
@@ -93,6 +151,11 @@ def publish_run(run_id: int) -> bool:
         run.status = "completed"
         run.summary_json = summary
         s.add(run)
+        _bind_public_correlation_session(
+            s,
+            run_id=run_id,
+            correlation_id=str(summary.get("public_correlation_id") or ""),
+        )
         return True
 
 
@@ -144,18 +207,43 @@ def get_run_by_public_correlation(correlation_id: str) -> Optional[AutomationRun
     if not needle:
         return None
     with _session() as s:
-        runs = (
+        run = s.execute(
+            select(AutomationRun)
+            .join(AutomationAction, AutomationAction.run_id == AutomationRun.id)
+            .where(
+                AutomationAction.dedupe_key == _correlation_dedupe_key(needle),
+                AutomationAction.action_type == PUBLIC_CORRELATION_ACTION,
+                AutomationAction.success.is_(True),
+                AutomationRun.run_type == RUN_TYPE,
+            )
+            .order_by(AutomationAction.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if run is not None:
+            return run
+
+        # Bounded compatibility path for public runs created before indexed
+        # correlation actions were introduced. New and updated runs never use
+        # this path; the fixed cap prevents historical growth from increasing
+        # memory or query cost without bound.
+        legacy_runs = (
             s.execute(
                 select(AutomationRun)
                 .where(AutomationRun.run_type == RUN_TYPE)
-                .order_by(AutomationRun.started_at.desc())
+                .order_by(AutomationRun.id.desc())
+                .limit(100)
             )
             .scalars()
             .all()
         )
-        for run in runs:
-            if str((run.summary_json or {}).get("public_correlation_id") or "") == needle:
-                return run
+        for legacy_run in legacy_runs:
+            if str((legacy_run.summary_json or {}).get("public_correlation_id") or "") == needle:
+                _bind_public_correlation_session(
+                    s,
+                    run_id=int(legacy_run.id),
+                    correlation_id=needle,
+                )
+                return legacy_run
     return None
 
 

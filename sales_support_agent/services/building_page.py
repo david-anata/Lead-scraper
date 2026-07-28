@@ -874,10 +874,10 @@ def render_building_page(
         "teardown_price": "What should extra teardown time cost?",
         "overtime_rate": "What is the hourly overtime rate?",
         "payment_workflow": "Which payment methods will you accept?",
-        "agreement_template": "Which event agreement should the team use?",
-        "event_calendar": "Which calendar owns Arena events?",
+        "agreement_template": "Add the reusable Arena agreement",
+        "event_calendar": "Connect the dedicated Arena calendar",
         "transactional_sender": "Which inbox sends customer updates?",
-        "effective_date": "When may the sales team start using these terms?",
+        "effective_date": "Set the launch date after setup is complete",
     }
     owner_recommendations = {
         "cancellation_policy": "Use the policy you already described: non-refundable, with one approved transfer requested at least 14 days before the event and used within six months.",
@@ -915,8 +915,58 @@ def render_building_page(
         )).get("id")
         or ""
     )
-    launch_readiness_cards = "".join(
-        f"""<article class="decision-card">
+    external_setup_keys = {
+        "agreement_template",
+        "event_calendar",
+        "effective_date",
+    }
+
+    def render_launch_card(
+        index: int,
+        definition: tuple[str, str, str, str, str, str],
+    ) -> str:
+        key, label, required_status, guidance, known_evidence, next_action = definition
+        decision = launch_decision_map.get(key, {})
+        is_answered = decision.get("status") == required_status
+        state_badge = (
+            '<span class="badge badge--ok">Answered</span>'
+            if is_answered
+            else '<span class="badge badge--warn">Setup needed</span>'
+        )
+        primary_label = (
+            "Approved answer" if is_answered else "What remains"
+        )
+        primary_copy = (
+            str(decision.get("value") or "")
+            if is_answered
+            else owner_recommendations[key]
+        )
+        secondary_label = (
+            "You can change this later"
+            if is_answered
+            else (
+                "Outside setup required"
+                if key in external_setup_keys
+                else "What we need from you"
+            )
+        )
+        secondary_copy = (
+            "Open this card only when the approved policy changes. Agent keeps the previous value in its audit history."
+            if is_answered
+            else next_action
+        )
+        action_label = (
+            "Change this approved answer"
+            if is_answered
+            else (
+                "Record completed setup"
+                if key in external_setup_keys
+                else "Answer this question"
+            )
+        )
+        answer_value = _esc(decision.get("value") or "")
+        evidence_value = _esc(decision.get("evidence") or "")
+        return f"""<article class="decision-card{' decision-card--answered' if is_answered else ''}">
           <div class="decision-card__summary">
             <div class="decision-card__number" aria-hidden="true">{index:02d}</div>
             <div class="decision-card__title">
@@ -925,29 +975,32 @@ def render_building_page(
               <span>{_esc(label)}</span>
             </div>
             <div class="decision-card__state">
-              {_badge(str(launch_decision_map.get(key, {}).get("status") or "unresolved"))}
-              <span>{_esc(launch_decision_map.get(key, {}).get("value") or "Decision required")}</span>
+              {state_badge}
+              <span>{"Saved in Agent" if is_answered else "Not yet verifiable"}</span>
             </div>
           </div>
           <div class="decision-card__evidence">
-            <div><span class="evidence-label">Recommended starting point</span><p>{_esc(owner_recommendations[key])}</p></div>
-            <div class="decision-card__next"><span class="evidence-label">What we need from you</span><p>{_esc(next_action)}</p></div>
+            <div><span class="evidence-label">{primary_label}</span><p>{_esc(primary_copy)}</p></div>
+            <div class="decision-card__next"><span class="evidence-label">{secondary_label}</span><p>{_esc(secondary_copy)}</p></div>
           </div>
           <details class="decision-card__action">
-            <summary>Answer this question</summary>
+            <summary>{action_label}</summary>
             <form class="decision-form" method="post" action="/admin/building/launch-readiness/decisions/{_esc(key)}">
               <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
               <input type="hidden" name="decision_status" value="{_esc(required_status)}">
               <input type="hidden" name="offering_id" value="{_esc(decision_offering_id)}">
-              <div class="field field--wide"><label>Your approved answer</label><textarea name="value" required placeholder="Write the exact rule the sales team should follow."></textarea></div>
-              <div class="field field--wide"><label>Who approved this, or where is it documented?</label><input name="evidence" required minlength="8" placeholder="Example: Approved by David on July 28, 2026"></div>
+              <div class="field field--wide"><label>Your approved answer</label><textarea name="value" required placeholder="Write the exact rule the sales team should follow.">{answer_value}</textarea></div>
+              <div class="field field--wide"><label>Who approved this, or where is it documented?</label><input name="evidence" required minlength="8" value="{evidence_value}" placeholder="Example: Approved by David on July 28, 2026"></div>
               <div class="field field--wide"><label>To prevent accidental changes, type: I APPROVE THIS DECISION</label><input name="confirmation" required autocomplete="off" placeholder="I APPROVE THIS DECISION"></div>
-              <details class="technical-details field--wide"><summary>Technical details</summary><p><strong>Stored status:</strong> {_esc(required_status.replace("_", " "))}</p><p><strong>Existing evidence:</strong> {_esc(launch_decision_map.get(key, {}).get("evidence") or known_evidence)}</p></details>
+              <details class="technical-details field--wide"><summary>Technical details</summary><p><strong>Stored status:</strong> {_esc(required_status.replace("_", " "))}</p><p><strong>Existing evidence:</strong> {_esc(decision.get("evidence") or known_evidence)}</p></details>
               <div class="form-actions"><span class="form-note">Saving records the approved rule and audit history. It does not email anyone, charge a card, publish the venue, or change a calendar.</span><button class="primary" type="submit">Save my answer</button></div>
             </form>
           </details>
         </article>"""
-        for index, (key, label, required_status, guidance, known_evidence, next_action) in enumerate(launch_definitions, start=1)
+
+    launch_readiness_cards = "".join(
+        render_launch_card(index, definition)
+        for index, definition in enumerate(launch_definitions, start=1)
     )
     launch_ready_count = sum(
         1
@@ -955,6 +1008,16 @@ def render_building_page(
         if launch_decision_map.get(key, {}).get("status") == status
     )
     launch_remaining_count = len(launch_definitions) - launch_ready_count
+    launch_remaining_names = [
+        {
+            "agreement_template": "reusable agreement",
+            "event_calendar": "dedicated calendar",
+            "effective_date": "effective launch date",
+        }.get(key, label.lower())
+        for key, label, required_status, _, _, _ in launch_definitions
+        if launch_decision_map.get(key, {}).get("status") != required_status
+    ]
+    launch_remaining_summary = ", ".join(launch_remaining_names) or "none"
     launch_progress_percent = int(
         (launch_ready_count / len(launch_definitions)) * 100
     )
@@ -1336,6 +1399,7 @@ def render_building_page(
     .row-actions{{min-width:220px;}} .row-actions summary{{cursor:pointer;font-weight:700;color:#397a9d;}} .row-actions form{{display:grid;gap:7px;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:9px;background:#f8f8f6;}} .row-actions label{{display:grid;gap:4px;}} .row-actions input,.row-actions select{{min-height:34px;padding:7px 8px;font-size:12px;}}
     .decision-list{{display:grid;gap:12px;padding:18px 20px;background:#f8fafb;}}
     .decision-card{{border:1px solid var(--border);border-radius:12px;background:#fff;overflow:hidden;}}
+    .decision-card--answered{{border-color:rgba(24,119,111,.28);}} .decision-card--answered .decision-card__number{{background:#e4f4f1;color:#11665f;}}
     .decision-card__summary{{display:grid;grid-template-columns:42px minmax(220px,.8fr) minmax(180px,.45fr);gap:14px;align-items:center;padding:17px 18px;}}
     .decision-card__number{{display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:#edf5f9;color:#397a9d;font:800 12px "Montserrat",sans-serif;}}
     .decision-card__title strong{{display:block;margin-top:3px;font-size:16px;}} .decision-card__title>span:not(.decision-card__category),.decision-card__state span{{display:block;margin-top:4px;color:rgba(43,54,68,.59);font-size:12px;line-height:1.4;}}
@@ -1473,8 +1537,8 @@ def render_building_page(
         </details>
       </section>
       <section class="panel panel--wide" id="arena-launch-readiness">
-        <div class="panel-head"><div><h2>Finish setting up Arena bookings</h2><p>Answer these ten owner questions once. Agent will use the approved answers consistently across quotes, agreements, payments, and operations.</p></div><span class="count">{launch_ready_count}/10 answered</span></div>
-        <div class="alert alert--warning"><strong>Nothing goes live just by answering.</strong><p>Your answers create the approved operating rules. Publishing, customer messages, payments, agreements, and calendar connections remain separate steps that the system will show after the rules are complete.</p></div>
+        <div class="panel-head"><div><h2>Your Arena decisions and remaining setup</h2><p>Your approved policy answers are already loaded. Change them only when the business rule changes; finish the remaining provider and document setup below.</p></div><span class="count">{launch_ready_count}/10 complete</span></div>
+        <div class="alert alert--warning"><strong>{launch_remaining_count} setup steps still block launch.</strong><p>Still needed: {_esc(launch_remaining_summary)}. No customer message, payment, publication, or calendar write happens from this page.</p></div>
         <div class="decision-list">{launch_readiness_cards}</div>
       </section>
       <section class="panel panel--wide">
