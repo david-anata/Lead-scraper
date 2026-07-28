@@ -472,6 +472,38 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("Team leadership and direct reporting are separate", detail.text)
         self.assertIn("Val Test", detail.text)
 
+    def test_status_only_edit_ignores_hidden_legacy_annual_salary(self):
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        email = f"legacy-owner-{suffix}@anatainc.com"
+        employee_id = hr_store.create_employee(
+            email=email, full_name="Legacy Owner", employee_type="hourly",
+        )
+        hr_store.upsert_employment_profile(
+            email, hire_date=None, pay_basis="hourly",
+            standard_weekly_hours=40, actor="test",
+        )
+        hr_store.update_employee(
+            employee_id, employee_type="salaried",
+            annual_salary="90000", actor="legacy-import",
+        )
+
+        saved = self._post(
+            f"/admin/hr/employees/{employee_id}",
+            {
+                "full_name": "Legacy Owner", "hr_role": "employee",
+                "employee_type": "salaried", "team_id": "",
+                "hourly_rate": "0", "pay_basis": "hourly",
+                "fixed_pay_per_period": "0",
+                "standard_weekly_hours": "40", "status": "inactive",
+            },
+            self.sa,
+        )
+
+        self.assertEqual(saved.status_code, 303)
+        self.assertEqual(hr_store.get_employee(employee_id)["status"], "inactive")
+        self.assertEqual(hr_store.list_compensation_changes(email), [])
+
     def test_team_detail_can_update_leader_and_manage_membership(self):
         import uuid
         suffix = uuid.uuid4().hex[:8]

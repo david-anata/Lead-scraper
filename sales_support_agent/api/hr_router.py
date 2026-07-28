@@ -245,7 +245,7 @@ async def employee_create(
     employee_type: str = Form("hourly"),
     team_id: str = Form(""),
     hourly_rate: str = Form("0"),
-    annual_salary: str = Form("0"),
+    annual_salary: str | None = Form(None),
     phone: str = Form(""),
     status: str = Form("active"),
     user: dict = Depends(_people_comp_guard),
@@ -312,7 +312,6 @@ async def employee_update(
             else employee.get("employee_type", "hourly")
         ),
         "hourly_rate_cents": int(employee.get("hourly_rate_cents") or 0),
-        "annual_salary_cents": int(employee.get("annual_salary_cents") or 0),
         "pay_basis": stored_pay_basis,
         "fixed_pay_per_period_cents": int(
             employment.get("fixed_pay_per_period_cents") or 0
@@ -321,11 +320,33 @@ async def employee_update(
     new_compensation = {
         "employee_type": employee_type,
         "hourly_rate_cents": store.dollars_to_cents(hourly_rate),
-        "annual_salary_cents": store.dollars_to_cents(annual_salary),
         "pay_basis": pay_basis,
         "fixed_pay_per_period_cents": store.dollars_to_cents(fixed_pay_per_period),
     }
     compensation_changed = prior_compensation != new_compensation
+    employment_changed = {
+        "hire_date": employment.get("hire_date"),
+        "title": (employment.get("title") or "").strip(),
+        "manager_email": (employment.get("manager_email") or "").strip().lower(),
+        "classification": employment.get("classification") or "nonexempt",
+        "pay_basis": employment.get("pay_basis") or "hourly",
+        "fixed_pay_per_period_cents": int(
+            employment.get("fixed_pay_per_period_cents") or 0
+        ),
+        "standard_weekly_hours": float(
+            employment.get("standard_weekly_hours") or 40
+        ),
+    } != {
+        "hire_date": hire_date,
+        "title": title.strip(),
+        "manager_email": manager_email.strip().lower(),
+        "classification": classification,
+        "pay_basis": pay_basis,
+        "fixed_pay_per_period_cents": store.dollars_to_cents(
+            fixed_pay_per_period
+        ),
+        "standard_weekly_hours": float(standard_weekly_hours),
+    }
     if compensation_changed and (
         not compensation_effective_date or not compensation_reason.strip()
     ):
@@ -338,15 +359,16 @@ async def employee_update(
         ), status_code=422)
     store.update_employee(emp_id, full_name=full_name, hr_role=hr_role,
                           employee_type=employee_type, team_id=team_id or None,
-                          hourly_rate=hourly_rate, annual_salary=annual_salary,
+                          hourly_rate=hourly_rate,
                           phone=phone, status=status, actor=user.get("email", "system"))
-    store.upsert_employment_profile(
-        employee["email"], hire_date=hire_date, title=title, manager_email=manager_email,
-        classification=classification, pay_basis=pay_basis,
-        fixed_pay_per_period=fixed_pay_per_period,
-        standard_weekly_hours=standard_weekly_hours,
-        standard_period_hours=86.67, actor=user.get("email", "system"),
-    )
+    if employment_changed:
+        store.upsert_employment_profile(
+            employee["email"], hire_date=hire_date, title=title,
+            manager_email=manager_email, classification=classification,
+            pay_basis=pay_basis, fixed_pay_per_period=fixed_pay_per_period,
+            standard_weekly_hours=standard_weekly_hours,
+            standard_period_hours=86.67, actor=user.get("email", "system"),
+        )
     if compensation_changed:
         store.record_compensation_change(
             employee["email"], effective_date=compensation_effective_date,
