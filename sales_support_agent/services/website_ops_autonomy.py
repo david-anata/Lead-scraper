@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote, urlparse
@@ -25,6 +26,7 @@ from sales_support_agent.services.website_ops_article_engine import build_articl
 from sales_support_agent.services.website_ops_query_intelligence import (
     build_query_intelligence,
 )
+from sales_support_agent.services.website_ops_program import build_indexing_inventory
 
 try:
     from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -537,6 +539,133 @@ def fetch_search_console_snapshot(settings: Any, urls: list[str]) -> tuple[dict[
     for value in metrics_by_url.values():
         value["top_queries"] = value["top_queries"][:3]
     return metrics_by_url, []
+
+
+def inspect_search_console_indexing(
+    settings: Any,
+    urls: list[str],
+    *,
+    requester: Any = requests.post,
+) -> tuple[dict[str, Any], list[str]]:
+    """Inspect the canonical marketing inventory through Google's URL Inspection API."""
+
+    config = analytics_config_from_settings(settings)
+    if not config.service_account_json:
+        return build_indexing_inventory([]), [
+            "Search Console URL inspection unavailable: Google credentials are not configured."
+        ]
+    if not config.search_console_property:
+        return build_indexing_inventory([]), [
+            "Search Console URL inspection unavailable: the property is not configured."
+        ]
+    try:
+        token = _google_access_token(
+            config.service_account_json,
+            [SEARCH_CONSOLE_SCOPE],
+        )
+    except Exception as exc:
+        return build_indexing_inventory([]), [
+            f"Search Console URL inspection unavailable: {exc}"
+        ]
+
+    endpoint = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    scoped_urls = sorted(
+        {
+            _normalize_url(url)
+            for url in urls
+            if urlparse(str(url)).scheme == "https"
+            and (urlparse(str(url)).hostname or "").removeprefix("www.")
+            == "anatainc.com"
+        }
+    )
+
+    def inspect(url: str) -> tuple[dict[str, Any] | None, str]:
+        try:
+            response = requester(
+                endpoint,
+                headers=headers,
+                json={
+                    "inspectionUrl": url,
+                    "siteUrl": config.search_console_property,
+                    "languageCode": "en-US",
+                },
+                timeout=30,
+            )
+        except Exception as exc:
+            return None, f"{url}: {type(exc).__name__}"
+        if not response.ok:
+            return None, f"{url}: HTTP {response.status_code}"
+        try:
+            payload = response.json()
+        except ValueError:
+            return None, f"{url}: invalid JSON"
+        result = dict(
+            dict(payload.get("inspectionResult") or {}).get("indexStatusResult")
+            or {}
+        )
+        coverage_state = str(result.get("coverageState", "") or "").strip()
+        verdict = str(result.get("verdict", "") or "").strip()
+        if not coverage_state:
+            coverage_state = (
+                "Submitted and indexed" if verdict.upper() == "PASS" else "Unspecified"
+            )
+        return {
+            "url": url,
+            "reason": coverage_state,
+            "last_crawled": str(result.get("lastCrawlTime", "") or ""),
+            "source": "Google Search Console URL Inspection API",
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "verdict": verdict,
+            "robots_txt_state": str(result.get("robotsTxtState", "") or ""),
+            "indexing_state": str(result.get("indexingState", "") or ""),
+            "page_fetch_state": str(result.get("pageFetchState", "") or ""),
+            "google_canonical": str(result.get("googleCanonical", "") or ""),
+            "user_canonical": str(result.get("userCanonical", "") or ""),
+            "crawled_as": str(result.get("crawledAs", "") or ""),
+        }, ""
+
+    records: list[dict[str, Any]] = []
+    failures: list[str] = []
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(inspect, url): url for url in scoped_urls}
+        for future in as_completed(futures):
+            record, failure = future.result()
+            if record:
+                records.append(record)
+            if failure:
+                failures.append(failure)
+
+    inventory = build_indexing_inventory(records)
+    inventory["inspection"] = {
+        "attempted": len(scoped_urls),
+        "succeeded": len(records),
+        "failed": len(failures),
+        "failure_samples": sorted(failures)[:5],
+    }
+    notes = (
+        [
+            f"Search Console URL inspection completed with {len(failures)} failed URL(s)."
+        ]
+        if failures
+        else []
+    )
+    return inventory, notes
+
+
+def save_search_console_indexing_inventory(
+    settings: Any,
+    inventory: Mapping[str, Any],
+) -> None:
+    directory = _website_ops_root(settings) / "indexing"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "inventory.json").write_text(
+        json.dumps(dict(inventory), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def fetch_ga4_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[str, Any]], list[str]]:
@@ -1356,6 +1485,16 @@ def build_autonomy_overlay(
     action_queue: list[dict[str, Any]] = []
     content_tasks: list[dict[str, Any]] = []
     support_requests: list[str] = []
+    indexing_inventory: dict[str, Any] | None = None
+    if run_mode in {"weekly", "monthly"} and search_console_ready:
+        indexing_inventory, indexing_notes = inspect_search_console_indexing(
+            settings,
+            urls,
+        )
+        inspection = dict(indexing_inventory.get("inspection") or {})
+        if int(inspection.get("succeeded", 0) or 0):
+            save_search_console_indexing_inventory(settings, indexing_inventory)
+        support_requests.extend(indexing_notes)
 
     for observation in observations:
         url = _normalize_url(str(observation.get("url", "")))
@@ -1573,6 +1712,7 @@ def build_autonomy_overlay(
         "customer_questions": customer_questions[:12],
         "content_tasks": filtered_content_tasks[:25],
         "query_intelligence": query_intelligence,
+        "indexing_inventory": indexing_inventory or {},
         "approved_action_count": len(approved_actions),
         "mvp_mode_active": MVP_MODE_ACTIVE,
         "mvp_allowed_action_types": list(MVP_ALLOWED_ACTION_TYPES),

@@ -23,6 +23,8 @@ from sales_support_agent.services.website_ops_autonomy import (
     _load_service_account_info,
     _deterministic_metadata_actions,
     build_autonomy_overlay,
+    inspect_search_console_indexing,
+    save_search_console_indexing_inventory,
 )
 from sales_support_agent.services.website_ops_content import clean_generated_content
 from sales_support_agent.services.website_ops_article_engine import build_article_action
@@ -85,6 +87,64 @@ example
         )
         self.assertEqual(payload["project_id"], "anata-project")
         self.assertIn("BEGIN PRIVATE KEY", payload["private_key"])
+
+    def test_url_inspection_builds_and_persists_indexing_inventory(self) -> None:
+        class Response:
+            ok = True
+            status_code = 200
+
+            def json(self) -> dict[str, object]:
+                return {
+                    "inspectionResult": {
+                        "indexStatusResult": {
+                            "verdict": "FAIL",
+                            "coverageState": "Blocked due to access forbidden (403)",
+                            "lastCrawlTime": "2026-07-27T12:00:00Z",
+                            "robotsTxtState": "ALLOWED",
+                            "indexingState": "INDEXING_ALLOWED",
+                            "pageFetchState": "ACCESS_FORBIDDEN",
+                            "googleCanonical": "https://anatainc.com/services/amazon-seo",
+                            "userCanonical": "https://anatainc.com/services/amazon-seo",
+                            "crawledAs": "DESKTOP",
+                        }
+                    }
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                website_ops_root=Path(tmpdir),
+                google_service_account_json='{"client_email":"a","private_key":"b","token_uri":"c"}',
+                website_ops_gsc_property="sc-domain:anatainc.com",
+                website_ops_ga4_property_id="123",
+                website_ops_lookback_days=28,
+                website_ops_ga4_primary_lead_event="generate_lead",
+            )
+            with mock.patch(
+                "sales_support_agent.services.website_ops_autonomy._google_access_token",
+                return_value="token",
+            ):
+                inventory, notes = inspect_search_console_indexing(
+                    settings,
+                    [
+                        "https://anatainc.com/services/amazon-seo",
+                        "https://agent.anatainc.com/admin/website-ops",
+                    ],
+                    requester=lambda *args, **kwargs: Response(),
+                )
+            self.assertEqual(notes, [])
+            self.assertEqual(inventory["inspection"]["attempted"], 1)
+            self.assertEqual(inventory["summary"]["needs_action"], 1)
+            record = inventory["records"][0]
+            self.assertEqual(record["page_fetch_state"], "ACCESS_FORBIDDEN")
+            self.assertEqual(
+                record["google_canonical"],
+                "https://anatainc.com/services/amazon-seo",
+            )
+            save_search_console_indexing_inventory(settings, inventory)
+            saved = json.loads(
+                (Path(tmpdir) / "indexing" / "inventory.json").read_text()
+            )
+            self.assertEqual(saved["inspection"]["succeeded"], 1)
 
     def _generated_article_record(self) -> dict[str, object]:
         article = {
