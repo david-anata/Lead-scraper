@@ -149,7 +149,7 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
 
     def test_01_page_explains_all_blockers_and_calendar_uncertainty(self) -> None:
         page = self.client.get("/admin/building")
-        self.assertIn("Finish setting up Arena bookings", page.text)
+        self.assertIn("Your Arena decisions and remaining setup", page.text)
         self.assertIn(
             "Evidence conflicts: one supplied policy says venue card-only with no checks",
             page.text,
@@ -166,7 +166,7 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
             "Approve one numeric premium rate; do not infer $150 or $175.",
             page.text,
         )
-        self.assertIn("0/10 answered", page.text)
+        self.assertIn("0/10 complete", page.text)
         self.assertIn(
             "Create a dedicated Arena calendar owned by Anata",
             page.text,
@@ -185,15 +185,20 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
         self.assertEqual(page.text.count('class="decision-card"'), 10)
         self.assertEqual(
             page.text.count("<summary>Answer this question</summary>"),
-            10,
+            7,
+        )
+        self.assertEqual(
+            page.text.count("<summary>Record completed setup</summary>"),
+            3,
         )
         self.assertIn(
             "Saving records the approved rule and audit history.",
             page.text,
         )
         self.assertIn("What happens if a customer cancels?", page.text)
-        self.assertIn("Recommended starting point", page.text)
+        self.assertIn("What remains", page.text)
         self.assertIn("What we need from you", page.text)
+        self.assertIn("Outside setup required", page.text)
         self.assertIn("I APPROVE THIS DECISION", page.text)
         self.assertNotIn("<label>Applies to</label>", page.text)
         self.assertIn('id="incoming-inquiries"', page.text)
@@ -222,6 +227,13 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
                 action="arena_launch_decision_recorded",
             ).one()
             self.assertFalse(audit.after_json["external_write"])
+        page = self.client.get("/admin/building")
+        self.assertIn("Answered", page.text)
+        self.assertIn("Change this approved answer", page.text)
+        self.assertIn(
+            "calendar-id / owner / service-account verified",
+            page.text,
+        )
 
     def test_03_reconciled_rate_plan_approval_stays_blocked(self) -> None:
         response = self.client.post(
