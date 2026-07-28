@@ -277,6 +277,8 @@ def _ensure_building_tables(engine: Any) -> None:
         "building_reservations",
         "building_event_lifecycle_commands",
         "building_agreements",
+        "building_agreement_templates",
+        "building_payment_request_readiness",
         "building_proposals",
         "building_tours",
         "building_deposit_evidence",
@@ -322,6 +324,24 @@ def _ensure_building_columns(engine: Any) -> None:
                 else "DATETIME"
             ),
             "guest_ends_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+        },
+        "building_agreements": {
+            "template_id": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "preparation_status": "VARCHAR(32) NOT NULL DEFAULT 'not_started'",
+            "package_snapshot_json": "JSON NOT NULL DEFAULT '{}'",
+            "package_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "reviewed_by": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "reviewed_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+            "approved_by": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "approved_at": (
                 "TIMESTAMP WITH TIME ZONE"
                 if engine.dialect.name == "postgresql"
                 else "DATETIME"

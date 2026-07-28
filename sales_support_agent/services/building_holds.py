@@ -14,6 +14,9 @@ from sales_support_agent.models.entities import (
     BuildingReservation,
 )
 from sales_support_agent.services.building_calendar import queue_calendar_projection
+from sales_support_agent.services.building_agreement_readiness import (
+    propagate_event_readiness_terminal_state,
+)
 
 
 def _aware(value: datetime) -> datetime:
@@ -72,6 +75,12 @@ def expire_building_holds(
             row.status = "expired"
             row.hold_expires_at = None
             row.updated_at = now
+            propagate_event_readiness_terminal_state(
+                session,
+                row,
+                terminal_status="expired",
+                actor=actor,
+            )
             queue_calendar_projection(session, row)
             session.add(BuildingAuditEvent(
                 entity_type="reservation",

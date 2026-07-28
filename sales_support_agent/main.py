@@ -37,6 +37,10 @@ from sales_support_agent.api.building_crm_router import (
     public_router as building_crm_public_router,
 )
 from sales_support_agent.api.building_booking_router import router as building_booking_router
+from sales_support_agent.api.building_agreement_readiness_router import (
+    admin_router as building_agreement_readiness_admin_router,
+    internal_router as building_agreement_readiness_internal_router,
+)
 from sales_support_agent.api.building_billing_router import (
     internal_router as building_billing_internal_router,
     webhook_router as building_stripe_webhook_router,
@@ -248,6 +252,8 @@ def create_app() -> FastAPI:
     app.include_router(outbound_router)
     app.include_router(building_crm_admin_router)
     app.include_router(building_booking_router)
+    app.include_router(building_agreement_readiness_internal_router)
+    app.include_router(building_agreement_readiness_admin_router)
     app.include_router(building_billing_internal_router)
     app.include_router(building_stripe_webhook_router)
     app.include_router(building_admin_operations_router)

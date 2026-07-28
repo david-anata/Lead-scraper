@@ -2110,6 +2110,20 @@ class BuildingAgreement(Base):
     provider: Mapped[str] = mapped_column(String(64), default="")
     provider_reference: Mapped[str] = mapped_column(String(255), default="")
     template_name: Mapped[str] = mapped_column(String(255), default="")
+    template_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    preparation_status: Mapped[str] = mapped_column(
+        String(32), default="not_started", index=True
+    )
+    package_snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    package_checksum: Mapped[str] = mapped_column(String(64), default="", index=True)
+    reviewed_by: Mapped[str] = mapped_column(String(255), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     document_url: Mapped[str] = mapped_column(String(1024), default="")
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     signed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -2121,6 +2135,86 @@ class BuildingAgreement(Base):
 
     __table_args__ = (
         Index("ix_building_agreement_version", "reservation_id", "version", unique=True),
+    )
+
+
+class BuildingAgreementTemplate(Base):
+    """Approved, versioned reference for provider-neutral agreement packages."""
+
+    __tablename__ = "building_agreement_templates"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    template_key: Mapped[str] = mapped_column(String(64), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    template_reference: Mapped[str] = mapped_column(String(1024), default="")
+    merge_fields_json: Mapped[list] = mapped_column(JSON, default=list)
+    approval_evidence: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_building_agreement_template_version",
+            "template_key",
+            "version",
+            unique=True,
+        ),
+    )
+
+
+class BuildingPaymentRequestReadiness(Base):
+    """Provider-neutral payment request outbox; never payment evidence."""
+
+    __tablename__ = "building_payment_request_readiness"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reservation_id: Mapped[str] = mapped_column(
+        ForeignKey("building_reservations.id"), index=True
+    )
+    agreement_id: Mapped[str] = mapped_column(
+        ForeignKey("building_agreements.id"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="prepared", index=True)
+    request_type: Mapped[str] = mapped_column(String(32), default="deposit")
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    checksum: Mapped[str] = mapped_column(String(64), index=True)
+    reviewed_by: Mapped[str] = mapped_column(String(255), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_building_payment_readiness_version",
+            "reservation_id",
+            "version",
+            unique=True,
+        ),
     )
 
 

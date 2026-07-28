@@ -682,3 +682,12 @@ uses the complete setup-through-teardown window while guest times remain
 separately visible. Approved pricing and reviewed terms are frozen into the
 quote version; contract, signature, payment, and confirmation remain explicit
 gates. See `../docs/building-event-review-lifecycle.md`.
+
+## Agreement and payment readiness
+
+An active event hold with a frozen quote can now produce an immutable,
+provider-neutral agreement package on the existing agreement record plus a
+separate payment-request readiness outbox. Approved template versions use a
+fixed merge-field allow-list; package and payment evidence carry independent
+checksums and prepare/review/approve states. No provider object or success state
+is created. See `../docs/building-agreement-payment-readiness.md`.

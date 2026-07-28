@@ -33,6 +33,9 @@ from sales_support_agent.services.building_calendar import queue_calendar_projec
 from sales_support_agent.services.building_checklists import (
     ensure_operational_checklist,
 )
+from sales_support_agent.services.building_agreement_readiness import (
+    propagate_event_readiness_terminal_state,
+)
 
 
 router = APIRouter(prefix="/api/internal/building/bookings", tags=["building-bookings"])
@@ -915,7 +918,8 @@ def get_event_lifecycle(
                 "contract_generated": bool(
                     session.execute(
                         select(BuildingAgreement).where(
-                            BuildingAgreement.reservation_id == row.id
+                            BuildingAgreement.reservation_id == row.id,
+                            BuildingAgreement.document_url != "",
                         )
                     ).scalars().first()
                 ),
@@ -1155,6 +1159,13 @@ def transition_reservation(
                 )
             )
             row.hold_expires_at = None
+        if payload.target_status in {"cancelled", "expired"}:
+            propagate_event_readiness_terminal_state(
+                session,
+                row,
+                terminal_status=payload.target_status,
+                actor=payload.actor,
+            )
         before = row.status
         if (
             row.kind == "event"
