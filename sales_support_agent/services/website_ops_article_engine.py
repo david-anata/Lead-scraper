@@ -94,6 +94,12 @@ def _request_article(*, settings: Any, prompt: str) -> dict[str, Any]:
 
 def _eligible_cluster(query_intelligence: Mapping[str, Any]) -> Mapping[str, Any] | None:
     for cluster in query_intelligence.get("clusters", []) or []:
+        label = _clean(cluster.get("label"))
+        if (
+            len(label) > 140
+            or re.search(r"(?:^|\s)-?(?:site|inurl|intitle|filetype):", label.lower())
+        ):
+            continue
         citation = dict(cluster.get("citation") or {})
         owner_path = urlparse(_clean(cluster.get("owner_url"))).path
         cited_urls = [

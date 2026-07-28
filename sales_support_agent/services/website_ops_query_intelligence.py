@@ -437,6 +437,9 @@ def collect_query_observations(
                 source_detail="sanitized_first_party_language",
                 metrics={"frequency": int(item.get("frequency", 0) or 0)},
             )
+            quality_status, quality_reason = _observed_query_quality(raw_query)
+            record["quality_status"] = quality_status
+            record["quality_reason"] = quality_reason
             eligible_observed = [
                 candidate
                 for candidate in page_observed
@@ -468,6 +471,9 @@ def collect_query_observations(
                 source_detail="deterministic_commercial_fanout",
                 facet=_clean(item.get("facet")),
             )
+            quality_status, quality_reason = _observed_query_quality(raw_query)
+            record["quality_status"] = quality_status
+            record["quality_reason"] = quality_reason
             eligible_observed = [
                 candidate
                 for candidate in page_observed
