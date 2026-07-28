@@ -1763,6 +1763,9 @@ class BuildingRelationship(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     contact_id: Mapped[str] = mapped_column(ForeignKey("building_contacts.id"), index=True)
+    billing_account_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_billing_accounts.id"), nullable=True, index=True
+    )
     relationship_type: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
     organization: Mapped[str] = mapped_column(String(255), default="")
@@ -1792,6 +1795,13 @@ class BuildingCommunicationPreference(Base):
     marketing_source: Mapped[str] = mapped_column(String(64), default="")
     marketing_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     transactional_allowed: Mapped[bool] = mapped_column(Boolean, default=True)
+    operational_source: Mapped[str] = mapped_column(String(64), default="")
+    operational_evidence_reference: Mapped[str] = mapped_column(
+        String(1024), default=""
+    )
+    operational_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
     updated_by: Mapped[str] = mapped_column(String(255), default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
@@ -1843,6 +1853,13 @@ class BuildingSegment(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True)
     description: Mapped[str] = mapped_column(Text, default="")
     rules_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    segment_type: Mapped[str] = mapped_column(
+        String(64), default="custom", index=True
+    )
+    purpose_scope: Mapped[str] = mapped_column(
+        String(32), default="both", index=True
+    )
+    approval_evidence: Mapped[str] = mapped_column(Text, default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_by: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
@@ -1858,9 +1875,22 @@ class BuildingCampaign(Base):
     communication_class: Mapped[str] = mapped_column(String(32), default="marketing", index=True)
     subject: Mapped[str] = mapped_column(String(255))
     body_text: Mapped[str] = mapped_column(Text)
+    content_version: Mapped[int] = mapped_column(Integer, default=1)
+    template_reference: Mapped[str] = mapped_column(String(1024), default="")
+    content_checksum: Mapped[str] = mapped_column(String(64), default="", index=True)
+    content_classification: Mapped[str] = mapped_column(
+        String(32), default="standard", index=True
+    )
+    private_content_approval_evidence: Mapped[str] = mapped_column(
+        Text, default=""
+    )
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
     preview_hash: Mapped[str] = mapped_column(String(128), default="")
     previewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_by: Mapped[str] = mapped_column(String(255), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     test_sent_by: Mapped[str] = mapped_column(String(255), default="")
     test_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     approved_by: Mapped[str] = mapped_column(String(255), default="")
@@ -1883,6 +1913,13 @@ class BuildingCampaignRecipient(Base):
     contact_id: Mapped[str] = mapped_column(ForeignKey("building_contacts.id"), index=True)
     email: Mapped[str] = mapped_column(String(255), index=True)
     full_name: Mapped[str] = mapped_column(String(255), default="")
+    campaign_version: Mapped[int] = mapped_column(Integer, default=1)
+    communication_class: Mapped[str] = mapped_column(
+        String(32), default="marketing", index=True
+    )
+    content_checksum: Mapped[str] = mapped_column(String(64), default="")
+    permission_snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    recipient_checksum: Mapped[str] = mapped_column(String(64), default="", index=True)
     inclusion_reason: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[str] = mapped_column(String(32), default="approved", index=True)
     exclusion_reason: Mapped[str] = mapped_column(String(255), default="")

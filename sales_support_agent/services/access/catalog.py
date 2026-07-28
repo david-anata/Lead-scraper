@@ -42,6 +42,27 @@ TOOL_CATALOG: tuple[Tool, ...] = (
         any_of=("building.manage",),
     ),
     Tool(
+        "building.crm.manage",
+        "Manage Building contacts, tenants, and audiences",
+        "Building",
+        (),
+        any_of=("building.manage",),
+    ),
+    Tool(
+        "building.campaigns.prepare",
+        "Draft and review Building campaigns",
+        "Building",
+        (),
+        any_of=("building.manage",),
+    ),
+    Tool(
+        "building.campaigns.approve",
+        "Approve Building campaign snapshots",
+        "Building",
+        (),
+        any_of=("building.manage",),
+    ),
+    Tool(
         "building.agreements.prepare",
         "Prepare and review Building agreements",
         "Building",

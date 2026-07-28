@@ -246,10 +246,11 @@ def render_building_page(
         campaign_id = _esc(item.get("id"))
         status = str(item.get("status") or "draft")
         if status in {"draft", "previewed"}:
-            approve = (
-                f'<form method="post" action="/admin/building/campaigns/{campaign_id}/approve">'
+            review = (
+                f'<form class="inline-send" method="post" action="/admin/building/campaigns/{campaign_id}/review">'
                 f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
-                '<button class="secondary secondary--small" type="submit">Approve snapshot</button></form>'
+                f'<input aria-label="Review confirmation" name="confirmation" required placeholder="REVIEW CAMPAIGN {campaign_id}">'
+                '<button class="secondary secondary--small" type="submit">Complete review</button></form>'
                 if status == "previewed"
                 else ""
             )
@@ -262,7 +263,14 @@ def render_building_page(
                 f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
                 '<input aria-label="Test recipient email" name="test_email" type="email" required placeholder="Test email">'
                 '<button class="secondary secondary--small" type="submit">Send test</button></form>'
-                f"{approve}</div>"
+                f"{review}</div>"
+            )
+        if status == "reviewed":
+            return (
+                f'<form class="inline-send" method="post" action="/admin/building/campaigns/{campaign_id}/approve">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                f'<input aria-label="Approval confirmation" name="confirmation" required placeholder="APPROVE CAMPAIGN {campaign_id}">'
+                '<button class="primary secondary--small" type="submit">Approve schedule-ready snapshot</button></form>'
             )
         if status == "approved":
             return (
@@ -310,7 +318,7 @@ def render_building_page(
         </tr>
         """
         for item in campaigns
-    ) or '<tr><td colspan="5"><div class="empty"><strong>No campaigns yet.</strong><br>Campaigns require a segment preview, test send, and approval before delivery.</div></td></tr>'
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No campaigns yet.</strong><br>Campaigns require a deterministic audience preview, review, and approval before they become schedule-ready.</div></td></tr>'
 
     def roster_contact_preview(item: dict[str, Any]) -> str:
         rows = list(item.get("rows") or [])
@@ -1046,7 +1054,7 @@ def render_building_page(
         </form>
       </section>
       <section class="panel panel--wide">
-        <div class="panel-head"><div><h2>Draft a campaign</h2><p>Saving creates a draft only. Preview, test send, approval, and final send remain separate gates.</p></div></div>
+        <div class="panel-head"><div><h2>Draft a campaign</h2><p>Saving creates a draft only. Preview, review, approval, scheduling, and delivery remain separate gates.</p></div></div>
         <form class="form-grid" method="post" action="/admin/building/campaigns">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="campaign-id">Stable ID</label><input id="campaign-id" name="campaign_id" required placeholder="tenant-august-update"></div>
@@ -1054,6 +1062,9 @@ def render_building_page(
           <div class="field"><label for="campaign-segment">Audience</label><select id="campaign-segment" name="segment_id" required><option value="">Choose a reviewed audience</option>{segment_options}</select></div>
           <div class="field"><label for="campaign-class">Message type</label><select id="campaign-class" name="communication_class"><option value="marketing">Optional marketing</option><option value="operational">Required tenant / event operations</option></select><span class="form-note">Operational notices only work with active tenant, tenant employee, or event host audiences. They cannot be used for promotions.</span></div>
           <div class="field"><label for="campaign-subject">Email subject</label><input id="campaign-subject" name="subject" required></div>
+          <div class="field"><label for="campaign-template">Template reference</label><input id="campaign-template" name="template_reference" placeholder="tenant-update-v1"><span class="form-note">Use a reviewed template ID or document reference.</span></div>
+          <div class="field"><label for="campaign-content-class">Content classification</label><select id="campaign-content-class" name="content_classification"><option value="standard">Standard</option><option value="tenant_private">Private tenant operational content</option></select><span class="form-note">Private tenant benefits are never eligible for marketing campaigns.</span></div>
+          <div class="field field--wide"><label for="campaign-private-evidence">Private-content approval evidence</label><input id="campaign-private-evidence" name="private_content_approval_evidence" placeholder="Required only for private tenant operational content"></div>
           <div class="field field--wide"><label for="campaign-body">Plain-text message</label><textarea id="campaign-body" name="body_text" required placeholder="Warm, useful, and specific."></textarea></div>
           <div class="form-actions"><span class="form-note">This button never sends email.</span><button class="primary" type="submit">Save campaign draft</button></div>
         </form>
