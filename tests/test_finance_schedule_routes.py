@@ -493,3 +493,24 @@ def test_answering_a_bill_that_is_no_longer_listed_says_so(books):
     flash = _flash(response)
     assert "no longer in the list" in flash
     assert "Tracking" not in flash, "it must not claim success for a no-op"
+
+
+def test_enhanced_bill_answer_returns_json_and_stale_row_is_not_removed(books):
+    _monthly_history(books)
+    with _client() as client:
+        saved = client.post(
+            "/admin/finances/whats-coming/bulk",
+            data={"pattern_keys": PATTERN_KEY, "action": "track"},
+            headers={"Accept": "application/json"},
+        )
+        stale = client.post(
+            "/admin/finances/whats-coming/bulk",
+            data={"pattern_keys": "0123456789abcdef", "action": "track"},
+            headers={"Accept": "application/json"},
+        )
+
+    assert saved.status_code == 200
+    assert saved.json()["remaining"] == 0
+    assert saved.json()["batch_id"]
+    assert stale.status_code == 409
+    assert "no longer in the list" in stale.json()["detail"]

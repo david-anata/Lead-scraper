@@ -1543,3 +1543,33 @@ input:focus, select:focus, textarea:focus {
 .finance-nav-count { display: inline-block; min-width: 18px; text-align: center; padding: 1px 6px; border-radius: 999px; background: #fdecec; color: #a12020; font-size: 11px; font-weight: 600; }
 .finance-nav-link.is-active .finance-nav-count { background: rgba(255,255,255,.2); color: #fff; }
 .finance-book-subhead { font-size: 13px; font-weight: 600; margin: 14px 0 4px; }
+.finance-page-header,.bill-command-bar{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.bill-command-bar{margin:14px 0 8px;flex-wrap:wrap}
+.bill-command-bar>div{display:flex;gap:6px;flex-wrap:wrap}
+.bill-command-bar [aria-pressed=true]{background:var(--ink,#243246);color:#fff}
+.bill-table-wrap{max-height:calc(100vh - 285px);min-height:360px;overflow:auto;border:1px solid var(--border,#d9e0e7);border-radius:14px;background:#fff}
+.bill-queue{margin:0;width:100%;font-size:13px}
+.bill-queue thead{position:sticky;top:0;z-index:2;background:#f5f8fa}
+.bill-queue th,.bill-queue td{padding:7px 9px;vertical-align:top}
+.bill-queue tbody tr{height:42px}
+.bill-queue .status-badge{display:inline-block;margin-left:6px}
+.bill-select{width:32px}
+.bill-row-actions form{display:flex;gap:4px;flex-wrap:nowrap}
+.bill-row-actions .btn{padding:6px 8px;white-space:nowrap}
+.bill-evidence{margin-top:3px;color:#5d6d80}
+.bill-evidence summary{cursor:pointer;font-size:12px}
+.bill-evidence p,.bill-evidence ul{margin:5px 0;font-size:12px}
+.bill-bulk-bar{position:sticky;bottom:12px;z-index:5;display:none;align-items:center;gap:8px;flex-wrap:wrap;margin:10px;padding:10px 12px;border:1px solid var(--border,#d9e0e7);border-radius:14px;background:#fff;box-shadow:0 8px 24px rgba(28,43,61,.12)}
+.bill-bulk-bar.is-active{display:flex}
+.bill-bulk-bar label{font-size:12px;display:flex;align-items:center;gap:5px}
+.bill-bulk-bar input:not([type=checkbox]){max-width:140px}
+.bill-queue tr.is-working{opacity:.55;pointer-events:none}
+.bill-queue tr.is-working td:first-child::after{content:"Saving…";display:block;font-size:10px}
+.row-error{margin:4px 0 0;color:#b42318;font-size:12px}
+.bill-undo{position:fixed;right:28px;bottom:24px;z-index:6}
+.bill-answered{margin-top:14px}
+.bill-combine-dialog{max-width:560px;border:1px solid var(--border,#d9e0e7);border-radius:16px;padding:22px}
+.bill-combine-dialog::backdrop{background:rgba(24,34,48,.42)}
+.bill-combine-dialog label{display:grid;gap:5px;margin:12px 0}
+@media (max-width:900px){.bill-table-wrap{max-height:none}.bill-row-actions form{flex-wrap:wrap}.bill-bulk-bar{position:static}}
+@media (prefers-reduced-motion:reduce){.bill-queue tr{transition:none}}
