@@ -525,7 +525,7 @@ def _user_chip_html(user: Optional[dict]) -> str:
     </details>"""
 
 
-def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", executive_section: str = "", fulfillment_section: str = "", hr_section: str = "", permissions: Optional[set] = None, is_superadmin: bool = False, user: Optional[dict] = None) -> str:
+def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", executive_section: str = "", fulfillment_section: str = "", hr_section: str = "", permissions: Optional[set] = None, is_superadmin: bool = False, user: Optional[dict] = None, include_content_target: bool = True) -> str:
     # Per-tool nav filtering. When neither permissions nor is_superadmin is
     # supplied, we keep the legacy "show everything" behaviour (the routes
     # themselves are still guarded server-side). The Access admin link is the
@@ -634,6 +634,11 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
     # Access/Team management is intentionally NOT a primary nav section — it lives
     # only in the profile dropdown ("Team"), so the top bar stays identical on
     # every page.
+    content_target = (
+        '<div id="agent-main-content" tabindex="-1"></div>'
+        if include_content_target
+        else ""
+    )
     return f"""
     <a class="agent-skip-link" href="#agent-main-content">Skip to content</a>
     <header class="topbar">
@@ -648,5 +653,5 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         {active_section_row}
       </div>
     </header>
-    <div id="agent-main-content" tabindex="-1"></div>
+    {content_target}
     """
