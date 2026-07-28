@@ -20,6 +20,7 @@ from sales_support_agent.api.hr_router import router as hr_router
 from sales_support_agent.api.hr_jobs_router import router as hr_jobs_router
 from sales_support_agent.api.marketing_router import router as marketing_router
 from sales_support_agent.api.website_ops_jobs_router import router as website_ops_jobs_router
+from sales_support_agent.api.content_router import router as content_router
 from sales_support_agent.api.outbound_jobs import router as outbound_jobs_router
 from sales_support_agent.api.sales_jobs_router import router as sales_jobs_router
 from sales_support_agent.api.sales_router import router as sales_router
@@ -199,6 +200,7 @@ def create_app() -> FastAPI:
     app.include_router(sales_router)
     app.include_router(marketing_router)
     app.include_router(website_ops_jobs_router)
+    app.include_router(content_router)
     app.include_router(outbound_jobs_router)
     include_building_routers(app)
     from sales_support_agent.api.outbound_router import router as outbound_router

@@ -66,6 +66,9 @@ _NAV_SECTIONS = [
         _NavSubpage("website_ops.queue", "Queue", "/admin/website-ops/queue", "queue"),
         _NavSubpage("website_ops.reports", "Reports", "/admin/website-ops/reports", "reports"),
     ]),
+    _NavSection("content", "Content", "content", [
+        _NavSubpage("content.view", "Content", "/admin/content", "content"),
+    ]),
     _NavSection("finance", "Finance", "finance", [
         _NavSubpage("finance", "Finance", "/admin/finances", "finance"),
     ]),
@@ -562,6 +565,8 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "sales"
     if active in {"finance", "finances"}:
         primary_active = "finance"
+    if active == "content":
+        primary_active = "content"
     if active == "building":
         primary_active = "building"
     if active in {"advertising", "advertising_audit", "advertising_clients", "advertising_profit_calculator", "advertising_bulk_profitability"}:
@@ -584,6 +589,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
     _current_subpage = {
         "sales": sales_section or active,
         "website_ops": website_ops_section or ("seo_dashboard" if active == "website_ops" else active),
+        "content": active,
         "advertising": advertising_section or ("advertising_audit" if active == "advertising" else active),
         "executive": executive_section or ("executive" if active == "executive" else active),
         "finance": active,

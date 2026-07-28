@@ -32,6 +32,21 @@ TOOL_CATALOG: tuple[Tool, ...] = (
     Tool("website_ops.seo", "Overview, Indexing & Query Map", "Website Ops", ("/admin/website-ops", "/admin/website-ops/indexing", "/admin/website-ops/queries", "/admin/api/website-ops/run", "/admin/api/website-ops/status"), exact=True),
     Tool("website_ops.queue", "Queue", "Website Ops", ("/admin/website-ops/queue", "/admin/website-ops/feedback", "/admin/api/website-ops/feedback")),
     Tool("website_ops.reports", "Reports", "Website Ops", ("/admin/website-ops/reports",)),
+    Tool(
+        "content.view",
+        "View Content Control Room",
+        "Content",
+        ("/admin/content", "/admin/api/content"),
+        any_of=("content.operate", "content.admin"),
+    ),
+    Tool(
+        "content.operate",
+        "Operate Content Engine",
+        "Content",
+        (),
+        any_of=("content.admin",),
+    ),
+    Tool("content.admin", "Manage Content Engine", "Content", ()),
     Tool("finance", "Finance", "Finance", ("/admin/finances",)),
     Tool("building.manage", "Building operations", "Building", ("/admin/building",)),
     Tool(

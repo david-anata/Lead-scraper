@@ -92,6 +92,36 @@ services:
         sync: false
       - key: GOOGLE_SERVICE_ACCOUNT_JSON
         sync: false
+      - key: CONTENT_DRIVE_PARENT_ID
+        value: 0APLEjKQW8NZlUk9PVA
+      - key: CONTENT_DRIVE_VERIFIED
+        value: "false"
+      - key: CONTENT_RIVERSIDE_RELAY_ENABLED
+        value: "false"
+      - key: CONTENT_LINKEDIN_CONNECTOR_URL
+        sync: false
+      - key: CONTENT_LINKEDIN_CONNECTOR_KEY
+        sync: false
+      - key: CONTENT_LINKEDIN_CONNECTOR_VERIFIED
+        value: "false"
+      - key: CONTENT_YOUTUBE_CONNECTOR_URL
+        sync: false
+      - key: CONTENT_YOUTUBE_CONNECTOR_KEY
+        sync: false
+      - key: CONTENT_YOUTUBE_CONNECTOR_VERIFIED
+        value: "false"
+      - key: CONTENT_INSTAGRAM_CONNECTOR_URL
+        sync: false
+      - key: CONTENT_INSTAGRAM_CONNECTOR_KEY
+        sync: false
+      - key: CONTENT_INSTAGRAM_CONNECTOR_VERIFIED
+        value: "false"
+      - key: CONTENT_NEWSLETTER_PROVIDER
+        sync: false
+      - key: CONTENT_NEWSLETTER_AUDIENCE_ID
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: WEBSITE_OPS_CITATION_TESTING_ENABLED
@@ -156,6 +186,24 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: |
       curl -sS -X POST "$AGENT_URL/api/jobs/website-ops/run" \
+        -H "Content-Type: application/json" \
+        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
+        -d '{"mode":"scheduled"}'
+    envVars:
+      - key: AGENT_URL
+        value: https://agent.anatainc.com
+      - key: SALES_AGENT_INTERNAL_API_KEY
+        sync: false
+
+  - type: cron
+    name: content-engine-scheduler
+    runtime: python
+    # Render cron is UTC. The endpoint accepts only the local 6 AM invocation.
+    schedule: "0 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: |
+      curl --fail --silent --show-error \
+        -X POST "$AGENT_URL/api/jobs/content/run" \
         -H "Content-Type: application/json" \
         -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
         -d '{"mode":"scheduled"}'
