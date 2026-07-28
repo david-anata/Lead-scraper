@@ -1768,7 +1768,12 @@ async def whats_coming_bulk(request: Request):
             payment_date=str(form.get("payment_date") or ""),
             canonical_key=str(form.get("canonical_key") or ""),
             canonical_name=str(form.get("canonical_name") or ""),
-            request_id=request.headers.get("Idempotency-Key") or uuid4().hex,
+            preview_token=str(form.get("preview_token") or ""),
+            request_id=str(
+                form.get("request_id")
+                or request.headers.get("Idempotency-Key")
+                or uuid4().hex
+            ),
         )
     except ValueError as exc:
         if wants_json:
