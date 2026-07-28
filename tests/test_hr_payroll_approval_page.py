@@ -37,7 +37,7 @@ def test_confirmation_identifies_version_totals_provider_and_approver():
     assert "3,250.00" in html
     assert "Employees included</strong><p>3" in html
     assert "David Narayan" in html
-    assert "No authoritative payroll provider connected" in html
+    assert "Manual controlled payroll — no provider connected" in html
     assert "does <strong>not</strong> transfer wages" in html
     assert "Approve this exact payroll version" in html
     assert "Reject this version" in html

@@ -1193,7 +1193,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     <div class="hr-callout {'ok' if readiness['ready'] else 'warn'}"><div class="hr-kicker">Payroll readiness</div>
       <h2 style="margin:6px 0">{status_label}</h2><ul>{blockers}</ul>
       <p>No bank transfer, check, tax payment, or filing occurs from preparation.</p>
-      <p><strong>Calculation authority:</strong> gross, withholding, net pay, and employer cost shown here are Anata planning estimates until matched to the authoritative payroll service's result.</p></div>
+      <p><strong>Calculation authority:</strong> gross, withholding, net pay, and employer cost shown here are Anata planning estimates. No payroll provider is connected. The first live run remains blocked until a qualified professional reviews the rule package and the exact run is independently compared.</p></div>
     {outside_correction_notice}
     <div class="hr-cards">
       <div class="hr-card"><div class="n">{_esc(period.pay_date)}</div><div class="l">Payday</div></div>
@@ -1220,7 +1220,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     <h2>Prepared and approved versions</h2>
     <table class="hr-tbl"><thead><tr><th>Version ID</th><th>Status</th><th>Estimated gross</th><th>Estimated tax liability</th><th>Deduction liability</th><th>Estimated employee check cash</th><th>Estimated employer cost</th><th>People</th><th>Prepared by</th><th>Approval</th></tr></thead><tbody>{run_rows}</tbody></table>
     <h2>Tax payment and filing reconciliation</h2>
-    <p class="hr-sub">Anata creates planning liability estimates after approval. Replace or reconcile them against the authoritative payroll service's totals before recording payments and filings. Paid and filed are separate facts.</p>
+    <p class="hr-sub">Anata creates planning liability estimates after approval. Use the independently reviewed calculation and official government portal amounts before recording payments and filings. If a future payroll service is connected, reconcile its totals here too. Paid and filed are separate facts.</p>
     <table class="hr-tbl"><thead><tr><th>Agency</th><th>Type</th><th>Amount</th><th>Due</th><th>Status</th><th>Evidence action</th></tr></thead><tbody>{liability_rows}</tbody></table>
     <div class="hr-callout"><div class="hr-kicker">Approved operating rules</div>
       <ul><li>Semimonthly: 1st–15th paid the 20th; 16th–month end paid the following 5th.</li>
@@ -1234,7 +1234,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
 def render_hr_payroll_approval(run: dict, *, user, flash=None) -> str:
     """Render the deliberate final checkpoint before a payroll version is approved."""
     handoff = run.get("provider_handoff") or {}
-    provider_name = handoff.get("provider_name") or "No authoritative payroll provider connected"
+    provider_name = handoff.get("provider_name") or "Manual controlled payroll — no provider connected"
     employee_count = len(run.get("calculations") or [])
     approver = user.get("name") or user.get("email") or "Signed-in approver"
     approver_email = user.get("email") or ""
