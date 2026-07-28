@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
-from datetime import date, datetime, timezone
+import base64
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
@@ -20,12 +22,15 @@ from sales_support_agent.models.entities import (
     BuildingContact,
     BuildingDepositEvidence,
     BuildingEventLifecycleCommand,
+    BuildingInvoice,
     BuildingInquiry,
     BuildingOffering,
     BuildingProposal,
+    BuildingPaymentRequestReadiness,
     BuildingRatePlan,
     BuildingRelationship,
     BuildingReservation,
+    BuildingCalendarProjection,
     BuildingSpace,
     BuildingTour,
 )
@@ -39,6 +44,9 @@ from sales_support_agent.services.building_agreement_readiness import (
 
 
 router = APIRouter(prefix="/api/internal/building/bookings", tags=["building-bookings"])
+public_router = APIRouter(
+    prefix="/api/public/building/bookings", tags=["building-bookings-public"]
+)
 
 EVENT_TRANSITIONS = {
     "inquiry": {"requirements_review", "cancelled"},
@@ -115,6 +123,11 @@ class ReservationInput(BaseModel):
         if self.ends_at <= self.starts_at:
             raise ValueError("Reservation end must be after start.")
         return self
+
+
+class CustomerStatusAccessInput(BaseModel):
+    expires_in_days: int = Field(default=30, ge=1, le=90)
+    actor: str = Field(min_length=1, max_length=255)
 
 
 class TransitionInput(BaseModel):
@@ -269,6 +282,148 @@ def _customer_event_status(row: BuildingReservation) -> dict[str, Any]:
             row.hold_expires_at.isoformat() if row.status == "soft_hold" and row.hold_expires_at else None
         ),
         "updated_at": (row.updated_at or _now()).isoformat(),
+    }
+
+
+def _customer_status_secret(request: Request) -> str:
+    """Reuse the configured Building HMAC secret with a domain-separated token."""
+
+    secret = str(
+        getattr(
+            request.app.state.settings, "building_campaign_token_secret", ""
+        )
+        or ""
+    ).strip()
+    if not secret:
+        raise HTTPException(
+            status_code=503,
+            detail="Customer status access is not configured.",
+        )
+    return secret
+
+
+def _encode_customer_status_token(
+    request: Request,
+    *,
+    reservation_id: str,
+    contact_id: str,
+    expires_at: datetime,
+) -> str:
+    payload = {
+        "aud": "building-customer-status-v1",
+        "reservation_id": reservation_id,
+        "contact_id": contact_id,
+        "exp": int(expires_at.timestamp()),
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    signature = hmac.new(
+        _customer_status_secret(request).encode(),
+        f"building-customer-status:{encoded}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def _decode_customer_status_token(request: Request, token: str) -> dict[str, Any]:
+    try:
+        encoded, signature = token.split(".", 1)
+        expected = hmac.new(
+            _customer_status_secret(request).encode(),
+            f"building-customer-status:{encoded}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(expected, signature):
+            raise ValueError("signature")
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode())
+        if payload.get("aud") != "building-customer-status-v1":
+            raise ValueError("audience")
+        if int(payload.get("exp") or 0) <= int(_now().timestamp()):
+            raise HTTPException(status_code=410, detail="Status link has expired.")
+        if not payload.get("reservation_id") or not payload.get("contact_id"):
+            raise ValueError("subject")
+        return payload
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, json.JSONDecodeError):
+        raise HTTPException(status_code=404, detail="Status link is invalid.") from None
+
+
+def _customer_status_projection(
+    session,
+    reservation: BuildingReservation,
+) -> dict[str, Any]:
+    """Return customer-safe lifecycle evidence without operator or provider data."""
+
+    proposal = session.execute(
+        select(BuildingProposal)
+        .where(BuildingProposal.reservation_id == reservation.id)
+        .order_by(BuildingProposal.version.desc())
+    ).scalars().first()
+    agreement = session.execute(
+        select(BuildingAgreement)
+        .where(BuildingAgreement.reservation_id == reservation.id)
+        .order_by(BuildingAgreement.version.desc())
+    ).scalars().first()
+    payment = session.execute(
+        select(BuildingPaymentRequestReadiness)
+        .where(BuildingPaymentRequestReadiness.reservation_id == reservation.id)
+        .order_by(BuildingPaymentRequestReadiness.version.desc())
+    ).scalars().first()
+    invoice = session.execute(
+        select(BuildingInvoice)
+        .where(BuildingInvoice.reservation_id == reservation.id)
+        .order_by(BuildingInvoice.created_at.desc())
+    ).scalars().first()
+    calendar = session.execute(
+        select(BuildingCalendarProjection).where(
+            BuildingCalendarProjection.reservation_id == reservation.id
+        )
+    ).scalar_one_or_none()
+    status = _customer_event_status(reservation)
+    return {
+        "reservation_id": reservation.id,
+        "event_window": {
+            "starts_at": reservation.starts_at.isoformat(),
+            "ends_at": reservation.ends_at.isoformat(),
+        },
+        "status": status,
+        "quote": {
+            "status": proposal.status if proposal else "not_started",
+            "version": proposal.version if proposal else None,
+        },
+        "agreement": {
+            "status": reservation.agreement_status,
+            "preparation_status": (
+                agreement.preparation_status if agreement else "not_started"
+            ),
+            "signature_verified": reservation.agreement_status == "signed",
+        },
+        "payment": {
+            "status": reservation.deposit_status,
+            "request_status": payment.status if payment else "not_started",
+            "payment_verified": reservation.deposit_status == "paid",
+            "invoice_status": invoice.status if invoice else "not_created",
+        },
+        "operations": {
+            "calendar_projection": (
+                "ready"
+                if calendar and calendar.status == "synced"
+                else "pending"
+                if calendar
+                else "not_started"
+            ),
+        },
+        "communications": {
+            "delivery_claimed": False,
+            "message": (
+                "This page shows Agent status only. It does not claim that an "
+                "email or text message was delivered."
+            ),
+        },
+        "updated_at": (reservation.updated_at or _now()).isoformat(),
     }
 
 
@@ -867,6 +1022,88 @@ def create_event_review(
         session.add(command)
         session.flush()
         return _event_review_response(row, proposal, replayed=False)
+
+
+@router.post("/{reservation_id}/customer-status-access")
+def prepare_customer_status_access(
+    reservation_id: str,
+    payload: CustomerStatusAccessInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Prepare a time-limited read-only status URL without sending it."""
+
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        reservation = session.get(BuildingReservation, reservation_id)
+        if reservation is None or reservation.kind != "event":
+            raise HTTPException(status_code=404, detail="Event reservation not found.")
+        if not reservation.contact_id:
+            raise HTTPException(
+                status_code=409, detail="A linked customer contact is required."
+            )
+        contact = session.get(BuildingContact, reservation.contact_id)
+        if contact is None or contact.status != "active":
+            raise HTTPException(
+                status_code=409,
+                detail="The linked customer contact is unavailable.",
+            )
+        expires_at = _now() + timedelta(days=payload.expires_in_days)
+        token = _encode_customer_status_token(
+            request,
+            reservation_id=reservation.id,
+            contact_id=contact.id,
+            expires_at=expires_at,
+        )
+        status_url = (
+            f"{str(request.base_url).rstrip('/')}"
+            f"/api/public/building/bookings/status?token={token}"
+        )
+        session.add(BuildingAuditEvent(
+            entity_type="reservation",
+            entity_id=reservation.id,
+            action="customer_status_access_prepared",
+            actor=payload.actor,
+            after_json={
+                "contact_id": contact.id,
+                "expires_at": expires_at.isoformat(),
+                "sent": False,
+            },
+        ))
+        return {
+            "ok": True,
+            "reservation_id": reservation.id,
+            "expires_at": expires_at.isoformat(),
+            "status_url": status_url,
+            "sent": False,
+        }
+
+
+@public_router.get("/status")
+def public_customer_status(token: str, request: Request) -> dict[str, Any]:
+    """Read a redacted event status using a signed, expiring bearer URL."""
+
+    claims = _decode_customer_status_token(request, token)
+    with session_scope(request.app.state.session_factory) as session:
+        reservation = session.get(
+            BuildingReservation, str(claims["reservation_id"])
+        )
+        if (
+            reservation is None
+            or reservation.kind != "event"
+            or reservation.contact_id != str(claims["contact_id"])
+        ):
+            raise HTTPException(status_code=404, detail="Status link is invalid.")
+        contact = session.get(BuildingContact, reservation.contact_id)
+        if contact is None or contact.status != "active":
+            raise HTTPException(status_code=404, detail="Status link is invalid.")
+        return {
+            "ok": True,
+            "expires_at": datetime.fromtimestamp(
+                int(claims["exp"]), tz=timezone.utc
+            ).isoformat(),
+            "booking": _customer_status_projection(session, reservation),
+        }
 
 
 @router.get("/{reservation_id}/lifecycle")
