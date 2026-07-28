@@ -44,6 +44,7 @@ def _register_models() -> None:
 
     import sales_support_agent.models.entities  # noqa: F401
     import sales_support_agent.models.hr  # noqa: F401  — HR / payroll tables
+    import sales_support_agent.models.content  # noqa: F401
 
 
 def _normalize_db_url(url: str) -> str:
@@ -114,10 +115,23 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     ensure_finance_trust_schema(engine)
     _backfill_legacy_settlements(engine)
     _ensure_hr_tables(engine)
+    _ensure_content_tables(engine)
     _ensure_hr_columns(engine)
     _repair_legacy_building_event_inquiries(session_factory)
     ensure_job_lease_schema(engine)
     ensure_website_ops_storage_schema(engine)
+
+
+def _ensure_content_tables(engine: Any) -> None:
+    """Create additive Content Engine tables without touching other domains."""
+
+    tables = [
+        table
+        for name, table in Base.metadata.tables.items()
+        if name.startswith("content_")
+    ]
+    if tables:
+        Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
 
 
 def _repair_legacy_building_event_inquiries(
