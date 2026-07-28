@@ -482,6 +482,90 @@ class MarketingIntakeTests(unittest.TestCase):
         self.assertTrue(second.json()["duplicate"])
         record.assert_called_once()
 
+    def test_direct_booking_records_deal_alert_and_deduplicates(self) -> None:
+        payload = {
+            "email": "direct-booking@example.com",
+            "tool": "strategy",
+            "source": "header-book-a-call",
+            "booking_reference": "meeting-abc-123",
+            "qualification": {
+                "name": "Direct Booker",
+                "company": "Direct Brand",
+                "phone": "385-555-0101",
+            },
+        }
+        with mock.patch.object(
+            M,
+            "_record_hubspot_booking",
+            return_value=(True, "deal-direct-123"),
+        ) as record, mock.patch.object(
+            M,
+            "_send_internal_booking_email",
+            return_value=True,
+        ) as notify:
+            first = self.client.post(
+                "/api/public/marketing/booking",
+                json=payload,
+                headers=HEADERS,
+            )
+            second = self.client.post(
+                "/api/public/marketing/booking",
+                json=payload,
+                headers=HEADERS,
+            )
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertFalse(first.json()["duplicate"])
+        self.assertEqual(first.json()["notification"], "delivered")
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertTrue(second.json()["duplicate"])
+        record.assert_called_once()
+        notify.assert_called_once()
+
+    def test_direct_booking_rejects_missing_hubspot_contact(self) -> None:
+        with mock.patch.object(
+            M,
+            "_record_hubspot_booking",
+            return_value=(False, ""),
+        ):
+            response = self.client.post(
+                "/api/public/marketing/booking",
+                json={
+                    "email": "unknown@example.com",
+                    "tool": "strategy",
+                    "source": "book",
+                    "booking_reference": "missing-contact",
+                },
+                headers=HEADERS,
+            )
+        self.assertEqual(response.status_code, 502, response.text)
+
+    def test_booking_updates_only_matching_strategy_deal(self) -> None:
+        client = mock.Mock()
+        client.is_configured = True
+        client.find_contact_by_email.return_value = {
+            "id": "contact-1",
+            "properties": {"company": "Ocean Rx"},
+        }
+        client.list_associations.return_value = ["unrelated", "strategy"]
+        client.batch_read.return_value = [
+            {"id": "unrelated", "properties": {"dealname": "Ocean Rx - Fulfillment"}},
+            {"id": "strategy", "properties": {"dealname": "Ocean Rx - Strategy Audit"}},
+        ]
+        with mock.patch.object(M, "HubSpotClient", return_value=client):
+            recorded, deal_id = M._record_hubspot_booking(
+                app.state.settings,
+                email="ocean@example.com",
+                brand_name="Ocean Rx",
+                source="diagnostic-report-unlocked",
+            )
+        self.assertTrue(recorded)
+        self.assertEqual(deal_id, "strategy")
+        client.update_deal.assert_called_once_with(
+            "strategy",
+            {"dealstage": mock.ANY},
+        )
+        client.create_deal.assert_not_called()
+
     def test_qualified_contact_fields_sync_to_hubspot(self) -> None:
         client = mock.Mock()
         client.is_configured = True

@@ -45,6 +45,11 @@ INTAKE_RUN_TYPE = "marketing_analysis_intake"
 # Run type for the two-step site intake (identifier → needs → email unlock).
 SITE_INTAKE_RUN_TYPE = "marketing_intake"
 
+# Indexed, key-specific run type for calendar confirmations that arrive without
+# a Strategy Audit token. The 40-character digest suffix keeps the full value
+# within AutomationRun.run_type's 64-character column.
+BOOKING_RUN_TYPE_PREFIX = "marketing_booking_"
+
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _ASIN_RE = re.compile(r"^B0[A-Z0-9]{8}$", re.IGNORECASE)
 _AMAZON_ASIN_RE = re.compile(
@@ -1059,6 +1064,8 @@ def _record_hubspot_booking(
     email: str,
     brand_name: str,
     source: str,
+    tool: str = "strategy",
+    booking_reference: str = "",
     qualification: Optional[dict[str, str]] = None,
 ) -> tuple[bool, str]:
     """Advance or create the strategy deal when the embedded calendar confirms.
@@ -1078,14 +1085,54 @@ def _record_hubspot_booking(
         return False, ""
 
     qualification = qualification or {}
-    company = qualification.get("company") or brand_name or email.split("@", 1)[0]
+    contact_properties = dict((contact or {}).get("properties") or {})
+    company = (
+        qualification.get("company")
+        or brand_name
+        or str(contact_properties.get("company", "") or "").strip()
+        or email.split("@", 1)[0]
+    )
+    contact_updates = {
+        key: value
+        for key, value in {
+            "firstname": qualification.get("name", ""),
+            "company": qualification.get("company", ""),
+            "phone": qualification.get("phone", ""),
+        }.items()
+        if value
+    }
+    if contact_updates:
+        client.update_contact(contact_id, contact_updates)
+
+    tool_labels = {
+        "strategy": "Strategy Audit",
+        "rate": "Fulfillment Rate Review",
+        "ads": "Advertising Audit",
+        "profit": "Profit Review",
+    }
+    tool_label = tool_labels.get(tool, "Strategy Audit")
+    expected_deal_name = f"{company} - {tool_label}"
     stage = (
         os.getenv("HUBSPOT_BOOKED_DEAL_STAGE", "").strip()
         or os.getenv("HUBSPOT_DEFAULT_DEAL_STAGE", "").strip()
         or "appointmentscheduled"
     )
-    deal_ids = client.list_associations("contacts", contact_id, "deals")
-    deal_id = str(deal_ids[0] if deal_ids else "")
+    deal_ids = client.list_associations("contacts", contact_id, "deals")[:100]
+    deal_id = ""
+    if deal_ids:
+        associated_deals = client.batch_read(
+            "deals",
+            deal_ids,
+            properties=["dealname", "pipeline", "dealstage"],
+        )
+        expected_folded = expected_deal_name.casefold()
+        tool_suffix = f" - {tool_label}".casefold()
+        for row in associated_deals:
+            properties = dict(row.get("properties") or {})
+            deal_name = str(properties.get("dealname", "") or "").strip()
+            if deal_name.casefold() == expected_folded or deal_name.casefold().endswith(tool_suffix):
+                deal_id = str(row.get("id", "") or "")
+                break
     if deal_id:
         client.update_deal(deal_id, {"dealstage": stage})
     else:
@@ -1096,7 +1143,7 @@ def _record_hubspot_booking(
         )
         created = client.create_deal(
             {
-                "dealname": f"{company} - Strategy Audit",
+                "dealname": expected_deal_name,
                 "pipeline": pipeline,
                 "dealstage": stage,
             },
@@ -1117,13 +1164,86 @@ def _record_hubspot_booking(
         return False, ""
 
     note = (
-        "Strategy call booked from the embedded Anata calendar."
+        f"{escape(tool_label)} call booked from the embedded Anata calendar."
         f"<br>Source: {escape(source or 'diagnostic-report-unlocked')}"
         f"<br>Contact: {escape(email)}"
     )
+    if booking_reference:
+        note += f"<br>Booking reference: {escape(booking_reference)}"
     client.create_note(deal_id=deal_id, body=note)
     client.create_contact_note(contact_id=contact_id, body=note)
     return True, deal_id
+
+
+def _booking_idempotency_key(
+    *,
+    email: str,
+    tool: str,
+    source: str,
+    booking_reference: str,
+) -> str:
+    stable_reference = booking_reference or datetime.now(timezone.utc).date().isoformat()
+    material = "|".join(
+        [
+            email.strip().lower(),
+            tool.strip().lower(),
+            source.strip().lower(),
+            stable_reference.strip().lower(),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _find_booking_run(session, idempotency_key: str) -> Optional[AutomationRun]:
+    run_type = f"{BOOKING_RUN_TYPE_PREFIX}{idempotency_key[:40]}"
+    return session.execute(
+        select(AutomationRun)
+        .where(AutomationRun.run_type == run_type)
+        .order_by(AutomationRun.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def _send_internal_booking_email(
+    settings,
+    *,
+    email: str,
+    tool: str,
+    source: str,
+    qualification: dict[str, str],
+    deal_id: str,
+    idempotency_key: str,
+) -> bool:
+    client = ResendClient(settings)
+    recipients = _lead_notification_recipients()
+    if not recipients or not client.is_configured():
+        logger.warning("[marketing_booking] internal booking email is not configured")
+        return False
+    label = {
+        "strategy": "Strategy Audit",
+        "rate": "Fulfillment Rate Review",
+        "ads": "Advertising Audit",
+        "profit": "Profit Review",
+    }.get(tool, "Strategy Audit")
+    lines = [
+        "New Anata website booking",
+        "",
+        f"Type: {label}",
+        f"Name: {qualification.get('name', '') or 'Provided in HubSpot'}",
+        f"Company: {qualification.get('company', '') or 'Provided in HubSpot'}",
+        f"Phone: {qualification.get('phone', '') or 'Provided in HubSpot'}",
+        f"Email: {email}",
+        f"Source: {source or 'anatainc.com/book'}",
+        f"HubSpot deal: {deal_id}",
+    ]
+    client.send_message(
+        to=recipients,
+        subject=f"New website booking: {qualification.get('company') or email}",
+        text="\n".join(lines),
+        reply_to=email,
+        idempotency_key=f"marketing-booking-{idempotency_key[:32]}",
+    )
+    return True
 
 
 def _send_store_deck_email(
@@ -1664,6 +1784,137 @@ async def marketing_site_intake_unlock(
     return JSONResponse(
         status_code=202 if captured else 503,
         content=response_content,
+    )
+
+
+@router.post("/booking")
+async def marketing_site_direct_booking(
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> JSONResponse:
+    """Attach a direct website calendar booking to the matching HubSpot lead.
+
+    HubSpot creates the contact and meeting first. This endpoint only accepts a
+    booking-success handoff from the server-side website proxy, finds that
+    existing contact, and advances or creates the matching tool deal.
+    """
+    denied = _enforce_marketing_intake_key(request, x_internal_api_key)
+    if denied is not None:
+        return denied
+    try:
+        body: dict[str, Any] = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Request body must be valid JSON."},
+        )
+    if not isinstance(body, dict):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Request body must be a JSON object."},
+        )
+
+    email = str(body.get("email", "") or "").strip().lower()[:254]
+    tool = str(body.get("tool", "") or "").strip().lower()[:24]
+    source = str(body.get("source", "") or "").strip()[:120]
+    booking_reference = str(body.get("booking_reference", "") or "").strip()[:160]
+    if not email or not _EMAIL_RE.fullmatch(email):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "A valid booked contact email is required."},
+        )
+    if tool not in {"strategy", "rate", "ads", "profit"}:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "A recognized booking tool is required."},
+        )
+    qualification = _sanitize_qualification(body.get("qualification"))
+    idempotency_key = _booking_idempotency_key(
+        email=email,
+        tool=tool,
+        source=source,
+        booking_reference=booking_reference,
+    )
+
+    with session_scope(request.app.state.session_factory) as session:
+        existing = _find_booking_run(session, idempotency_key)
+        if existing and existing.status == "success":
+            return JSONResponse(
+                content={
+                    "status": "recorded",
+                    "deal_id": str((existing.summary_json or {}).get("deal_id", "") or ""),
+                    "notification": str(
+                        (existing.summary_json or {}).get("notification", "pending") or "pending"
+                    ),
+                    "duplicate": True,
+                }
+            )
+        booking_run = AuditService(session).start_run(
+            f"{BOOKING_RUN_TYPE_PREFIX}{idempotency_key[:40]}",
+            trigger="marketing_site_booking",
+            metadata={
+                "email": email,
+                "tool": tool,
+                "source": source,
+                "booking_reference": booking_reference,
+                "idempotency_key": idempotency_key,
+            },
+        )
+        booking_run_id = booking_run.id
+
+    try:
+        recorded, deal_id = _record_hubspot_booking(
+            request.app.state.settings,
+            email=email,
+            brand_name=qualification.get("company", ""),
+            source=source,
+            tool=tool,
+            booking_reference=booking_reference,
+            qualification=qualification,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("[marketing_booking] direct booking handoff failed for %s", email)
+        recorded, deal_id = False, ""
+
+    notification_sent = False
+    if recorded:
+        try:
+            notification_sent = _send_internal_booking_email(
+                request.app.state.settings,
+                email=email,
+                tool=tool,
+                source=source,
+                qualification=qualification,
+                deal_id=deal_id,
+                idempotency_key=idempotency_key,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[marketing_booking] internal booking email failed for %s", email)
+
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.get(AutomationRun, booking_run_id)
+        if run is not None:
+            AuditService(session).finish_run(
+                run,
+                status="success" if recorded else "failed",
+                summary={
+                    "deal_id": deal_id,
+                    "notification": "delivered" if notification_sent else "failed",
+                },
+            )
+
+    if not recorded:
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "The HubSpot booking handoff did not complete."},
+        )
+    return JSONResponse(
+        content={
+            "status": "recorded",
+            "deal_id": deal_id,
+            "notification": "delivered" if notification_sent else "failed",
+            "duplicate": False,
+        }
     )
 
 
