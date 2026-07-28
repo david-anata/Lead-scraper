@@ -24,6 +24,7 @@ try:
     from sales_support_agent.models.database import create_session_factory, init_database
     from sales_support_agent.models.entities import (
         BuildingAuditEvent,
+        BuildingLaunchDecision,
         BuildingOffering,
         BuildingRatePlan,
         BuildingSpace,
@@ -274,6 +275,25 @@ class BuildingCommercialReconciliationTests(unittest.TestCase):
         ):
             response = self._reconcile(conflict_id, status, note)
             self.assertEqual(response.status_code, 303, response.text)
+        with self.factory() as session:
+            for key in (
+                "cancellation_policy",
+                "tax_treatment",
+                "setup_price",
+                "teardown_price",
+                "overtime_rate",
+                "effective_date",
+            ):
+                session.add(BuildingLaunchDecision(
+                    id=f"commercial-arena-events:{key}",
+                    offering_id="commercial-arena-events",
+                    decision_key=key,
+                    status="accepted_policy",
+                    value="Reviewed decision",
+                    evidence="pricing committee record 2026-08",
+                    decided_by="pricing-admin@anatainc.com",
+                ))
+            session.commit()
         approved = self.client.post(
             "/admin/building/rate-plans/"
             "commercial-arena-events-commercial-baseline-v1/approve",

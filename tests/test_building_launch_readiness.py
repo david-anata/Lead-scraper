@@ -1,0 +1,281 @@
+from __future__ import annotations
+
+import dataclasses
+import os
+import re
+import tempfile
+import unittest
+import uuid
+from datetime import date
+
+os.environ.setdefault("SALES_AGENT_DB_URL", "sqlite:///" + tempfile.gettempdir() + "/launch_ready_boot.db")
+os.environ.setdefault("ADMIN_DASHBOARD_SESSION_SECRET", "launch-ready-session-secret")
+
+from fastapi.testclient import TestClient
+
+from sales_support_agent.main import app
+from sales_support_agent.models.database import create_session_factory, init_database
+from sales_support_agent.models.entities import (
+    BuildingAuditEvent,
+    BuildingLaunchDecision,
+    BuildingOffering,
+    BuildingRatePlan,
+    BuildingSpace,
+)
+from sales_support_agent.services.admin_auth import create_user_session_token
+from sales_support_agent.services.building_launch_readiness import launch_decision_id
+
+
+class BuildingLaunchReadinessTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        path = os.path.join(tempfile.gettempdir(), f"launch_ready_{uuid.uuid4().hex}.db")
+        cls.factory = create_session_factory("sqlite:///" + path)
+        init_database(cls.factory)
+        app.state.session_factory = cls.factory
+        app.state.settings = dataclasses.replace(
+            app.state.settings,
+            internal_api_key="launch-ready-internal",
+            building_campaign_token_secret="launch-ready-csrf",
+        )
+        cls.client = TestClient(app)
+        token = create_user_session_token(
+            app.state.agent_settings,
+            email="david@anatainc.com",
+            name="David",
+            role="admin",
+        )
+        cls.client.cookies.set(app.state.agent_settings.admin_cookie_name, token)
+        cls.headers = {"Origin": "http://testserver", "Sec-Fetch-Mode": "navigate"}
+        with cls.factory() as session:
+            session.add(BuildingSpace(
+                id="launch-arena",
+                slug="launch-arena",
+                name="The Arena",
+                space_type="event",
+                status="available",
+                is_public=True,
+            ))
+            session.add(BuildingOffering(
+                id="launch-arena-events",
+                slug="launch-arena-events",
+                name="Arena events",
+                offering_type="event",
+                space_id="launch-arena",
+                is_published=True,
+            ))
+            session.add(BuildingOffering(
+                id="arena-empty-evidence",
+                slug="arena-empty-evidence",
+                name="Arena empty evidence",
+                offering_type="event",
+                space_id="launch-arena",
+                is_published=False,
+            ))
+            session.add(BuildingSpace(
+                id="other-event-space",
+                slug="other-event-space",
+                name="Other Event Space",
+                space_type="event",
+                status="available",
+                is_public=False,
+            ))
+            session.add(BuildingOffering(
+                id="other-event-offering",
+                slug="other-event-offering",
+                name="Other event offering",
+                offering_type="event",
+                space_id="other-event-space",
+                is_published=False,
+            ))
+            session.add(BuildingRatePlan(
+                id="launch-arena-rate-v1",
+                offering_id="launch-arena-events",
+                version=1,
+                name="Arena reconciled draft",
+                status="in_review",
+                unit_amount_cents=17500,
+                public_price_display="$175/hour",
+                booking_unit="hour",
+                minimum_units=6,
+                deposit_type="percent",
+                deposit_percent_bps=5000,
+                cancellation_policy="Reviewed cancellation terms.",
+                tax_status="review_required",
+                tax_note="Tax reviewed in quote.",
+                source_evidence_json=[{"source": "Listing Copy Pack"}],
+                conflicts_json=[],
+                effective_from=date(2026, 1, 1),
+                created_by="test",
+            ))
+            session.add(BuildingRatePlan(
+                id="arena-empty-rate-v1",
+                offering_id="arena-empty-evidence",
+                version=1,
+                name="Arena empty evidence plan",
+                status="in_review",
+                unit_amount_cents=17500,
+                public_price_display="$175/hour",
+                booking_unit="hour",
+                minimum_units=6,
+                cancellation_policy="Reviewed cancellation terms.",
+                tax_status="review_required",
+                tax_note="Tax reviewed in quote.",
+                source_evidence_json=[],
+                effective_from=date(2026, 1, 1),
+                created_by="test",
+            ))
+            session.commit()
+
+    def _csrf(self) -> str:
+        page = self.client.get("/admin/building")
+        self.assertEqual(page.status_code, 200, page.text)
+        return re.search(r'name="_csrf_token" value="([^"]+)"', page.text).group(1)
+
+    def _decide(self, key: str, status: str, value: str = "Reviewed value"):
+        return self.client.post(
+            f"/admin/building/launch-readiness/decisions/{key}",
+            headers=self.headers,
+            data={
+                "_csrf_token": self._csrf(),
+                "offering_id": "launch-arena-events",
+                "decision_status": status,
+                "value": value,
+                "evidence": "Approval record launch-2026",
+                "confirmation": f"DECIDE {key}",
+            },
+            follow_redirects=False,
+        )
+
+    def test_01_page_explains_all_blockers_and_calendar_uncertainty(self) -> None:
+        page = self.client.get("/admin/building")
+        self.assertIn("Arena launch readiness", page.text)
+        self.assertIn("0/10 decided", page.text)
+        self.assertIn("no dedicated Arena calendar ID", page.text)
+        self.assertIn("Venue payment workflow", page.text)
+        self.assertIn("no checks, overpayments, or third-party vendor payments", page.text)
+
+    def test_02_decision_requires_exact_status_confirmation_and_evidence(self) -> None:
+        wrong = self._decide("event_calendar", "accepted_policy")
+        self.assertIn("requires+status+provider_verified", wrong.headers["location"])
+        recorded = self._decide(
+            "event_calendar",
+            "provider_verified",
+            "calendar-id / owner / service-account verified",
+        )
+        self.assertEqual(recorded.status_code, 303)
+        with self.factory() as session:
+            row = session.get(
+                BuildingLaunchDecision,
+                launch_decision_id("launch-arena-events", "event_calendar"),
+            )
+            self.assertEqual(row.status, "provider_verified")
+            audit = session.query(BuildingAuditEvent).filter_by(
+                entity_type="launch_decision",
+                entity_id=row.id,
+                action="arena_launch_decision_recorded",
+            ).one()
+            self.assertFalse(audit.after_json["external_write"])
+
+    def test_03_reconciled_rate_plan_approval_stays_blocked(self) -> None:
+        response = self.client.post(
+            "/admin/building/rate-plans/launch-arena-rate-v1/approve",
+            headers=self.headers,
+            data={
+                "_csrf_token": self._csrf(),
+                "approval_evidence": "pricing approval evidence",
+                "confirmation": "APPROVE launch-arena-rate-v1",
+            },
+            follow_redirects=False,
+        )
+        self.assertIn("Resolve+Arena+launch+decisions", response.headers["location"])
+        with self.factory() as session:
+            self.assertEqual(session.get(BuildingRatePlan, "launch-arena-rate-v1").status, "in_review")
+
+    def test_04_commercial_decisions_unlock_only_rate_plan_approval(self) -> None:
+        for key in (
+            "cancellation_policy",
+            "tax_treatment",
+            "setup_price",
+            "teardown_price",
+            "overtime_rate",
+            "effective_date",
+        ):
+            self.assertEqual(self._decide(key, "accepted_policy").status_code, 303)
+        response = self.client.post(
+            "/admin/building/rate-plans/launch-arena-rate-v1/approve",
+            headers=self.headers,
+            data={
+                "_csrf_token": self._csrf(),
+                "approval_evidence": "pricing approval evidence",
+                "confirmation": "APPROVE launch-arena-rate-v1",
+            },
+            follow_redirects=False,
+        )
+        self.assertIn("approved+and+locked", response.headers["location"])
+        with self.factory() as session:
+            self.assertEqual(session.get(BuildingRatePlan, "launch-arena-rate-v1").status, "approved")
+            self.assertEqual(session.query(BuildingLaunchDecision).count(), 7)
+
+    def test_05_empty_source_evidence_cannot_bypass_arena_gates(self) -> None:
+        control = self.client.post(
+            "/admin/building/rate-plans/arena-empty-rate-v1/approve",
+            headers=self.headers,
+            data={
+                "_csrf_token": self._csrf(),
+                "approval_evidence": "pricing approval evidence",
+                "confirmation": "APPROVE arena-empty-rate-v1",
+            },
+            follow_redirects=False,
+        )
+        self.assertIn("Resolve+Arena+launch+decisions", control.headers["location"])
+
+        payload = {
+            "id": "arena-empty-rate-v2",
+            "version": 2,
+            "name": "Arena API empty evidence",
+            "status": "approved",
+            "unit_amount_cents": 17500,
+            "public_price_display": "$175/hour",
+            "booking_unit": "hour",
+            "minimum_units": 6,
+            "cancellation_policy": "Reviewed policy.",
+            "tax_status": "review_required",
+            "tax_note": "Tax reviewed in quote.",
+            "approval_evidence": "api approval evidence",
+            "effective_from": "2027-01-01",
+            "approved_by": "approver@anatainc.com",
+            "actor": "operator@anatainc.com",
+            "source_evidence": [],
+        }
+        arena_api = self.client.put(
+            "/api/internal/building/offerings/arena-empty-evidence/"
+            "rate-plans/arena-empty-rate-v2",
+            headers={"X-Internal-Api-Key": "launch-ready-internal"},
+            json=payload,
+        )
+        self.assertEqual(arena_api.status_code, 409, arena_api.text)
+        self.assertIn("Resolve Arena launch decisions", arena_api.text)
+
+        other_payload = dict(payload)
+        other_payload.update(
+            id="other-event-rate-v1",
+            version=1,
+            name="Other event approved plan",
+        )
+        other_api = self.client.put(
+            "/api/internal/building/offerings/other-event-offering/"
+            "rate-plans/other-event-rate-v1",
+            headers={"X-Internal-Api-Key": "launch-ready-internal"},
+            json=other_payload,
+        )
+        self.assertEqual(other_api.status_code, 200, other_api.text)
+        self.assertEqual(other_api.json()["rate_plan"]["status"], "approved")
+        self.assertLessEqual(
+            len(launch_decision_id("x" * 64, "transactional_sender")),
+            64,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

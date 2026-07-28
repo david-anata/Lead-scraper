@@ -23,6 +23,7 @@ try:
         BuildingAvailabilityBlock,
         BuildingContact,
         BuildingInquiry,
+        BuildingLaunchDecision,
         BuildingRelationship,
     )
     DEPS = True
@@ -296,6 +297,25 @@ class BuildingOperationsTests(unittest.TestCase):
             },
         )
         self.assertEqual(invalid.status_code, 422, invalid.text)
+        with self.factory() as session:
+            for key in (
+                "cancellation_policy",
+                "tax_treatment",
+                "setup_price",
+                "teardown_price",
+                "overtime_rate",
+                "effective_date",
+            ):
+                session.add(BuildingLaunchDecision(
+                    id=f"operations-arena-{key}",
+                    offering_id="arena-events",
+                    decision_key=key,
+                    status="accepted_policy",
+                    value="Existing reviewed test policy",
+                    evidence="building operations test evidence",
+                    decided_by="test@example.com",
+                ))
+            session.commit()
         unavailable = self.client.post(
             "/api/public/building/event-estimates",
             json={

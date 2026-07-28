@@ -19,6 +19,7 @@ try:
         BuildingCalendarProjection,
         BuildingEventLifecycleCommand,
         BuildingInquiry,
+        BuildingLaunchDecision,
         BuildingProposal,
         BuildingRelationship,
         BuildingReservation,
@@ -101,6 +102,25 @@ class BuildingBookingTests(unittest.TestCase):
         )
         if response.status_code != 200:
             raise AssertionError(response.text)
+        with factory() as session:
+            for key in (
+                "cancellation_policy",
+                "tax_treatment",
+                "setup_price",
+                "teardown_price",
+                "overtime_rate",
+                "effective_date",
+            ):
+                session.add(BuildingLaunchDecision(
+                    id=f"booking-arena-{key}",
+                    offering_id="arena-events",
+                    decision_key=key,
+                    status="accepted_policy",
+                    value="Existing reviewed booking test policy",
+                    evidence="booking test approval evidence",
+                    decided_by="test@example.com",
+                ))
+            session.commit()
         response = cls.client.put(
             "/api/internal/building/offerings/arena-events/rate-plans/arena-rate-v1",
             headers=cls.headers,
