@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
 from sales_support_agent.services.website_ops_query_intelligence import (
+    _article_pipeline_state,
+    _weekly_cycles,
     build_clusters,
     build_intent_coverage,
     build_query_intelligence,
@@ -12,6 +14,42 @@ from sales_support_agent.services.website_ops_query_intelligence import (
     record_outcomes,
     run_citation_harness,
 )
+
+
+def test_weekly_cycles_count_distinct_iso_weeks_not_run_dates() -> None:
+    observations = [
+        {"status": "cited", "observed_at": "2026-07-27T08:00:00-06:00"},
+        {"status": "no-citation", "observed_at": "2026-07-29T08:00:00-06:00"},
+        {"status": "mentioned", "observed_at": "2026-08-03T08:00:00-06:00"},
+        {"status": "error", "observed_at": "2026-08-10T08:00:00-06:00"},
+        {"status": "cited", "observed_at": "not-a-date"},
+    ]
+
+    assert _weekly_cycles(observations) == 2
+
+
+def test_article_pipeline_explains_cycle_and_source_gates() -> None:
+    cluster = {
+        "validation_status": "validated",
+        "quality_status": "eligible",
+        "ownership_status": "assigned",
+        "intent": "informational",
+        "owner_url": "https://anatainc.com/services/amazon-advertising",
+        "alignment": {"composite": 0.2},
+        "citation": {
+            "cited_urls": [
+                {"url": "https://advertising.amazon.com/library"},
+                {"url": "https://support.google.com/analytics"},
+            ]
+        },
+    }
+
+    waiting = _article_pipeline_state([cluster], weekly_validation_cycles=1)
+    eligible = _article_pipeline_state([cluster], weekly_validation_cycles=2)
+
+    assert waiting["status"] == "waiting_for_distinct_week"
+    assert waiting["source_qualified_candidates"] == 1
+    assert eligible["status"] == "eligible"
 
 
 class _JsonResponse:
