@@ -28,6 +28,7 @@ from sales_support_agent.services.website_ops_program import (
 )
 from sales_support_agent.services.website_ops_screaming_frog import (
     build_crawl_verification,
+    collect_crawl_resource_observations,
     load_crawl_inventory,
     load_crawl_verification,
     save_crawl_verification,
@@ -1274,9 +1275,13 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
             )
     indexing_inventory = load_indexing_inventory(settings.website_ops_root)
     crawl_inventory = load_crawl_inventory(settings.website_ops_root)
-    crawl_verification = build_crawl_verification(
+    crawl_observations = collect_crawl_resource_observations(
         crawl_inventory,
         list(pipeline.get("observations") or []),
+    )
+    crawl_verification = build_crawl_verification(
+        crawl_inventory,
+        crawl_observations,
     )
     save_crawl_verification(settings.website_ops_root, crawl_verification)
     enriched_report["indexing_inventory"] = indexing_inventory
@@ -2549,7 +2554,7 @@ def render_indexing_page(
         f"""
           <tr>
             <td><a class="text-link" href="{html.escape(str(item.get('url', '')), quote=True)}">{html.escape(_short_page_label(str(item.get('url', ''))))}</a></td>
-            <td><span class="status-pill {'status-bad' if item.get('state') == 'confirmed' else 'status-warn' if item.get('state') == 'pending' else 'status-ok'}">{html.escape(str(item.get('state', 'pending')).title())}</span></td>
+            <td><span class="status-pill {'status-bad' if item.get('state') == 'confirmed' else 'status-warn' if item.get('state') == 'pending' else 'status-neutral' if item.get('state') == 'noise' else 'status-ok'}">{html.escape(str(item.get('state', 'pending')).title())}</span></td>
             <td>{html.escape('; '.join(str(warning.get('report', '')) for warning in list(item.get('warning_results') or [])[:3]))}</td>
             <td>{html.escape('; '.join(str(warning.get('reason', '')) for warning in list(item.get('warning_results') or [])[:2]))}</td>
             <td>{html.escape(str(item.get('rendered_at', '') or 'Not observed'))}</td>
@@ -2611,13 +2616,14 @@ def render_indexing_page(
         <section class="stats">
           {_dashboard_stat_card("Confirmed", verification_summary.get("confirmed_urls", 0), "Eligible for remediation planning", "/admin/website-ops/indexing")}
           {_dashboard_stat_card("Pending Proof", verification_summary.get("pending_urls", 0), "Requires stronger evidence", "/admin/website-ops/indexing")}
-          {_dashboard_stat_card("Disproved", verification_summary.get("disproved_urls", 0), "Retained as crawl-history noise", "/admin/website-ops/indexing")}
+          {_dashboard_stat_card("Noise", verification_summary.get("noise_urls", 0), "Real signal outside ranking remediation", "/admin/website-ops/indexing")}
+          {_dashboard_stat_card("Stale", verification_summary.get("disproved_urls", 0), "Disproved by fresh production evidence", "/admin/website-ops/indexing")}
         </section>
         <section class="card stack">
           <div class="row-actions">
             <div class="stack">
               <h2>Crawl verification ledger</h2>
-              <p class="lead-sm">Only rendered-confirmed warnings may become remediation work. Pending warnings need stronger evidence; disproved warnings remain visible so the system does not rediscover stale work.</p>
+              <p class="lead-sm">Only production-confirmed ranking defects may become remediation work. Pending warnings need stronger evidence, noise stays outside SEO, and stale findings remain visible so the system does not rediscover old work.</p>
             </div>
             <span class="status-pill status-neutral">{len(verification_records)} warning URLs</span>
           </div>

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from sales_support_agent.services.website_ops_program import (
     build_indexing_inventory,
@@ -16,11 +17,13 @@ from sales_support_agent.services.website_ops_program import (
 from sales_support_agent.services.website_ops_screaming_frog import (
     ScreamingFrogImportError,
     build_crawl_verification,
+    collect_crawl_resource_observations,
     import_screaming_frog_zip,
     load_crawl_inventory,
     load_crawl_verification,
     save_crawl_verification,
 )
+from sales_support_agent.services.website_ops_vendor.core import inspect_html_document
 
 
 class WebsiteOpsProgramTests(unittest.TestCase):
@@ -264,6 +267,111 @@ class WebsiteOpsProgramTests(unittest.TestCase):
             save_crawl_verification(root, payload)
             self.assertEqual(load_crawl_verification(root)["summary"], payload["summary"])
             self.assertEqual(load_indexing_inventory(root)["summary"]["known_urls"], 0)
+
+    def test_rendered_evidence_captures_images_links_and_response_headers(self) -> None:
+        observation = inspect_html_document(
+            "https://anatainc.com/guide",
+            (
+                "<html><head><title>Guide</title></head><body>"
+                '<img src="/informative.webp">'
+                '<img src="/decorative.webp" alt="" width="20" height="20">'
+                '<a href="/services">Services</a>'
+                "</body></html>"
+            ),
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "strict-origin-when-cross-origin",
+            },
+        )
+        self.assertFalse(observation["images"][0]["has_alt_attribute"])
+        self.assertTrue(observation["images"][1]["has_alt_attribute"])
+        self.assertEqual(observation["links"][0]["href"], "/services")
+        self.assertEqual(
+            observation["response_headers"]["x-content-type-options"],
+            "nosniff",
+        )
+
+    def test_verification_separates_confirmed_defects_security_noise_and_stale_warnings(self) -> None:
+        inventory = {
+            "records": [
+                {
+                    "url": "https://anatainc.com/guide",
+                    "environment": "production",
+                    "warnings": [
+                        {"report": "images_missing_alt_attribute_inlinks.csv"},
+                        {"report": "security_missing_contentsecuritypolicy_header.csv"},
+                        {"report": "security_missing_xcontenttypeoptions_header.csv"},
+                        {"report": "blocked_by_robots_txt_inlinks.csv"},
+                    ],
+                }
+            ]
+        }
+        observation = inspect_html_document(
+            "https://anatainc.com/guide",
+            '<html><body><img src="/guide.webp"><a href="/services">Services</a></body></html>',
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
+        observation["robots_allowed_googlebot"] = True
+        verification = build_crawl_verification(inventory, [observation])
+        verdicts = {
+            item["report"]: item["verdict"]
+            for item in verification["records"][0]["warning_results"]
+        }
+        self.assertEqual(verdicts["images_missing_alt_attribute_inlinks.csv"], "confirmed")
+        self.assertEqual(
+            verdicts["security_missing_contentsecuritypolicy_header.csv"],
+            "noise",
+        )
+        self.assertEqual(
+            verdicts["security_missing_xcontenttypeoptions_header.csv"],
+            "disproved",
+        )
+        self.assertEqual(verdicts["blocked_by_robots_txt_inlinks.csv"], "disproved")
+        self.assertEqual(verification["summary"]["confirmed_urls"], 1)
+        self.assertEqual(verification["summary"]["noise_warnings"], 1)
+        self.assertEqual(verification["summary"]["disproved_warnings"], 2)
+
+    def test_resource_observation_is_bounded_to_unobserved_production_warning_urls(self) -> None:
+        inventory = {
+            "records": [
+                {
+                    "url": "https://anatainc.com/",
+                    "environment": "production",
+                    "warnings": [{"report": "security_missing_hsts_header.csv"}],
+                },
+                {
+                    "url": "https://anatainc.com/image.webp",
+                    "environment": "production",
+                    "warnings": [{"report": "images_over_100_kb.csv"}],
+                },
+                {
+                    "url": "https://example.com/external.webp",
+                    "environment": "external",
+                    "warnings": [{"report": "images_over_100_kb.csv"}],
+                },
+            ]
+        }
+        with (
+            mock.patch(
+                "sales_support_agent.services.website_ops_screaming_frog._head_observation",
+                return_value={
+                    "url": "https://anatainc.com/image.webp",
+                    "status_code": 200,
+                    "response_headers": {"content-length": "1200"},
+                },
+            ) as head,
+            mock.patch(
+                "sales_support_agent.services.website_ops_screaming_frog.urllib.robotparser.RobotFileParser.read",
+                side_effect=OSError("offline"),
+            ),
+        ):
+            observations = collect_crawl_resource_observations(
+                inventory,
+                [{"url": "https://anatainc.com/", "status_code": 200}],
+            )
+        head.assert_called_once()
+        self.assertEqual(len(observations), 2)
+        self.assertEqual(observations[1]["url"], "https://anatainc.com/image.webp")
 
     def test_screaming_frog_import_rejects_unsafe_archive_paths(self) -> None:
         payload = self._crawl_zip(

@@ -75,6 +75,8 @@ class _ObservationHTMLParser(HTMLParser):
         self.h2: List[str] = []
         self.h3: List[str] = []
         self.canonical_url = ""
+        self.images: List[Dict[str, Any]] = []
+        self.links: List[Dict[str, str]] = []
 
     def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
         attrs_map = {key.lower(): (value or "") for key, value in attrs}
@@ -100,6 +102,25 @@ class _ObservationHTMLParser(HTMLParser):
             rel = attrs_map.get("rel", "").lower().split()
             if "canonical" in rel and attrs_map.get("href"):
                 self.canonical_url = attrs_map["href"].strip()
+            return
+        if tag == "img":
+            self.images.append(
+                {
+                    "src": attrs_map.get("src", "").strip(),
+                    "alt": normalize_text(attrs_map.get("alt", "")),
+                    "has_alt_attribute": "alt" in attrs_map,
+                    "width": attrs_map.get("width", "").strip(),
+                    "height": attrs_map.get("height", "").strip(),
+                }
+            )
+            return
+        if tag == "a" and attrs_map.get("href"):
+            self.links.append(
+                {
+                    "href": attrs_map["href"].strip(),
+                    "rel": attrs_map.get("rel", "").strip(),
+                }
+            )
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -244,6 +265,9 @@ def parse_html_document(html_text: str, *, headers: Optional[Mapping[str, str]] 
         "h2": list(parser.h2),
         "h3": list(parser.h3),
         "heading_counts": {"h1": len(parser.h1), "h2": len(parser.h2), "h3": len(parser.h3)},
+        "images": list(parser.images),
+        "links": list(parser.links),
+        "response_headers": header_map,
         "text_length": len(parser.text_content),
         "text_excerpt": parser.text_content[:240],
     }
