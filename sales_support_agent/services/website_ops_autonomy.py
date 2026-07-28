@@ -29,6 +29,7 @@ from sales_support_agent.services.website_ops_query_intelligence import (
 from sales_support_agent.services.website_ops_program import (
     build_indexing_inventory,
     load_indexing_inventory,
+    reconcile_indexing_inventory,
 )
 
 try:
@@ -43,6 +44,7 @@ except ModuleNotFoundError:  # pragma: no cover - environment dependent
 
 
 SEARCH_CONSOLE_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
+SEARCH_CONSOLE_WRITE_SCOPE = "https://www.googleapis.com/auth/webmasters"
 GA4_SCOPE = "https://www.googleapis.com/auth/analytics.readonly"
 MVP_MODE_ACTIVE = True
 MVP_ALLOWED_ACTION_TYPES = (
@@ -669,6 +671,62 @@ def save_search_console_indexing_inventory(
         json.dumps(dict(inventory), indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def submit_search_console_sitemap(
+    settings: Any,
+    *,
+    sitemap_url: str = "https://anatainc.com/sitemap.xml",
+    requester: Any = requests.put,
+) -> dict[str, Any]:
+    """Submit the canonical production sitemap through the supported GSC API."""
+
+    config = analytics_config_from_settings(settings)
+    try:
+        token = _google_access_token(
+            config.service_account_json,
+            [SEARCH_CONSOLE_WRITE_SCOPE],
+        )
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "sitemap_url": sitemap_url,
+            "reason": f"Search Console sitemap authorization failed: {exc}",
+        }
+    property_name = quote(config.search_console_property, safe="")
+    feed_path = quote(sitemap_url, safe="")
+    endpoint = (
+        "https://www.googleapis.com/webmasters/v3/sites/"
+        f"{property_name}/sitemaps/{feed_path}"
+    )
+    try:
+        response = requester(
+            endpoint,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=20,
+        )
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "sitemap_url": sitemap_url,
+            "reason": f"Search Console sitemap submission failed: {type(exc).__name__}",
+        }
+    if not response.ok:
+        return {
+            "status": "failed",
+            "sitemap_url": sitemap_url,
+            "http_status": response.status_code,
+            "reason": _search_console_failure_note(
+                response,
+                config.search_console_property,
+                _service_account_project_name(config.service_account_json),
+            ),
+        }
+    return {
+        "status": "submitted",
+        "sitemap_url": sitemap_url,
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def fetch_ga4_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[str, Any]], list[str]]:
@@ -1494,6 +1552,19 @@ def build_autonomy_overlay(
             settings,
             urls,
         )
+        indexing_inventory = reconcile_indexing_inventory(
+            indexing_inventory,
+            observations,
+        )
+        sitemap_submission = submit_search_console_sitemap(settings)
+        indexing_inventory["sitemap_submission"] = sitemap_submission
+        if sitemap_submission.get("status") != "submitted":
+            support_requests.append(
+                str(
+                    sitemap_submission.get("reason")
+                    or "Search Console sitemap submission failed."
+                )
+            )
         inspection = dict(indexing_inventory.get("inspection") or {})
         if int(inspection.get("succeeded", 0) or 0):
             save_search_console_indexing_inventory(settings, indexing_inventory)
@@ -1502,6 +1573,7 @@ def build_autonomy_overlay(
                 Path(settings.website_ops_root)
             )
             retained_inventory["inspection"] = inspection
+            retained_inventory["sitemap_submission"] = sitemap_submission
             save_search_console_indexing_inventory(settings, retained_inventory)
         support_requests.extend(indexing_notes)
 

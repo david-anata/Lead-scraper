@@ -25,6 +25,7 @@ from sales_support_agent.services.website_ops_autonomy import (
     build_autonomy_overlay,
     inspect_search_console_indexing,
     save_search_console_indexing_inventory,
+    submit_search_console_sitemap,
 )
 from sales_support_agent.services.website_ops_content import clean_generated_content
 from sales_support_agent.services.website_ops_article_engine import build_article_action
@@ -68,6 +69,10 @@ from sales_support_agent.services.website_ops_github import (
     update_static_metadata_source,
     validate_generated_article,
     validate_metadata_action,
+)
+from sales_support_agent.services.website_ops_program import (
+    build_indexing_inventory,
+    reconcile_indexing_inventory,
 )
 
 
@@ -145,6 +150,80 @@ example
                 (Path(tmpdir) / "indexing" / "inventory.json").read_text()
             )
             self.assertEqual(saved["inspection"]["succeeded"], 1)
+
+    def test_indexing_reconciliation_separates_current_200_from_historical_404(
+        self,
+    ) -> None:
+        inventory = build_indexing_inventory(
+            [
+                {
+                    "url": "https://anatainc.com/case-studies",
+                    "reason": "Not found (404)",
+                },
+                {
+                    "url": "https://anatainc.com/about",
+                    "reason": "Submitted and indexed",
+                },
+            ]
+        )
+
+        reconciled = reconcile_indexing_inventory(
+            inventory,
+            [
+                {
+                    "url": "https://anatainc.com/case-studies",
+                    "status_code": 200,
+                },
+                {"url": "https://anatainc.com/about", "status_code": 200},
+            ],
+        )
+
+        by_url = {item["url"]: item for item in reconciled["records"]}
+        self.assertEqual(
+            by_url["https://anatainc.com/case-studies"]["desired_state"],
+            "recrawl pending",
+        )
+        self.assertEqual(reconciled["summary"]["indexed"], 1)
+        self.assertEqual(reconciled["summary"]["needs_action"], 1)
+
+    def test_sitemap_submission_uses_canonical_production_feed(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Response:
+            ok = True
+            status_code = 204
+
+        def requester(url: str, **kwargs: object) -> Response:
+            captured["url"] = url
+            captured.update(kwargs)
+            return Response()
+
+        settings = SimpleNamespace(
+            google_service_account_json='{"client_email":"a","private_key":"b","token_uri":"c"}',
+            website_ops_gsc_property="sc-domain:anatainc.com",
+            website_ops_ga4_property_id="123",
+            website_ops_lookback_days=28,
+            website_ops_ga4_primary_lead_event="generate_lead",
+        )
+        with mock.patch(
+            "sales_support_agent.services.website_ops_autonomy._google_access_token",
+            return_value="write-token",
+        ):
+            result = submit_search_console_sitemap(
+                settings,
+                requester=requester,
+            )
+
+        self.assertEqual(result["status"], "submitted")
+        self.assertIn(
+            "sc-domain%3Aanatainc.com/sitemaps/"
+            "https%3A%2F%2Fanatainc.com%2Fsitemap.xml",
+            str(captured["url"]),
+        )
+        self.assertEqual(
+            captured["headers"],
+            {"Authorization": "Bearer write-token"},
+        )
 
     def _generated_article_record(self) -> dict[str, object]:
         article = {
