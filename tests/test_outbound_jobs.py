@@ -93,3 +93,24 @@ class MorningRoutineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TimezoneTests(unittest.TestCase):
+    """The database stamps UTC; the schedule thinks in Denver. After ~6pm local
+    those are different dates, and matching on the row timestamp made the job
+    forget it had run and restart every ten minutes, paying each time."""
+
+    def _e(self):
+        return create_engine("sqlite://", future=True)
+
+    def test_an_evening_run_is_still_remembered(self):
+        e = self._e()
+        evening = datetime(2026, 7, 27, 19, 40, tzinfo=DENVER)  # 01:40 UTC next day
+        jobs._mark_ran(e, evening)
+        self.assertTrue(jobs._already_ran_today(e, evening),
+                        "the job forgot it had run and would restart on a loop")
+
+    def test_it_still_runs_the_following_morning(self):
+        e = self._e()
+        jobs._mark_ran(e, datetime(2026, 7, 27, 19, 40, tzinfo=DENVER))
+        self.assertFalse(jobs._already_ran_today(e, datetime(2026, 7, 28, 7, tzinfo=DENVER)))

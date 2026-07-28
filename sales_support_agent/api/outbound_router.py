@@ -260,8 +260,14 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "",
         except Exception:  # noqa: BLE001
             engine = None
         held = outbound_memory.load_leads(engine, limit=2000) if engine is not None else []
-        ready = [l for l in held if str(l.get("amazon_checked_at") or "").strip()
-                 and not str(l.get("amazon_skipped_reason") or "").strip()]
+        # Checked, matched, AND actually found something worth opening with. A
+        # brand we looked at and found nothing on still carries the old
+        # plan-upgrade line, which pitches the previous offer and reads as a
+        # non sequitur under an Amazon email. Not sendable on this campaign.
+        ready = [l for l in held
+                 if str(l.get("amazon_checked_at") or "").strip()
+                 and not str(l.get("amazon_skipped_reason") or "").strip()
+                 and str(l.get("amz_situation") or "").strip()]
         ready.sort(key=lambda l: -int(l.get("score") or 0))
         ready = ready[:max(1, min(int(max_new or 100), 2000))]
         body = _op.leads_to_csv(ready)

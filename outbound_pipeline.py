@@ -691,7 +691,13 @@ def leads_to_csv(leads: list[dict[str, Any]]) -> str:
         # Revenue is stored in cents; a person reading the sheet needs dollars,
         # otherwise $8.4M reads as 835227012 and looks a hundred times too big.
         try:
-            row["revenue_usd"] = int(lead.get("estimated_sales_yearly_cents") or 0) // 100
+            # Freshly pulled leads carry the StoreLeads field name; leads read back
+            # out of our own table carry ours. Reading only one silently exports
+            # every scanned brand at $0.
+            cents = lead.get("estimated_sales_yearly_cents")
+            if cents in (None, ""):
+                cents = lead.get("revenue_cents")
+            row["revenue_usd"] = int(cents or 0) // 100
         except (TypeError, ValueError):
             row["revenue_usd"] = 0
         # Flatten anything non-scalar so the CSV stays clean.

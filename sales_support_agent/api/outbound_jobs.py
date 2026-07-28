@@ -44,6 +44,12 @@ def _today(now: datetime) -> str:
     return now.strftime("%Y-%m-%d")
 
 
+def _note_for(now: datetime) -> str:
+    """The marker text. Comparing this rather than the row timestamp keeps the
+    check on our clock instead of the database's."""
+    return f"Automatic morning run started {_today(now)}"
+
+
 def _already_ran_today(engine, now: datetime) -> bool:
     """Has the morning routine already started today?
 
@@ -54,11 +60,16 @@ def _already_ran_today(engine, now: datetime) -> bool:
     from sales_support_agent.services import outbound_memory
 
     try:
+        stamp = _note_for(now)
         for run in outbound_memory.load_runs(engine, limit=40):
             if str(run.get("recipe") or "") != _MARKER:
                 continue
-            when = str(run.get("ran_at") or "")
-            if when.startswith(_today(now)):
+            # Match on OUR date written into the note, not the row's timestamp.
+            # The database stamps UTC while the schedule thinks in Denver time,
+            # so after ~6pm local those are different dates and the job would
+            # forget it had run, restart, and pay for the Amazon checks again
+            # every ten minutes.
+            if str(run.get("note") or "") == stamp:
                 return True
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-jobs] could not tell whether today already ran")
@@ -72,7 +83,7 @@ def _mark_ran(engine, now: datetime) -> None:
         outbound_memory.record_run(
             engine, recipe=_MARKER, scanned=0, matched=0, fresh=0, skipped_seen=0,
             delivery="scheduled", delivered=0,
-            note=f"Automatic morning run started {_today(now)}",
+            note=_note_for(now),
         )
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-jobs] could not record that today's run started")

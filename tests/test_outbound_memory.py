@@ -340,3 +340,27 @@ class FactsReachTheClayFileTests(unittest.TestCase):
         e = self._e()
         m.record_leads(e, [{"domain": "new.com", "brand": "New", "tier": "A"}])
         self.assertFalse(m.load_leads(e)[0].get("amz_situation"))
+
+
+class ScannedExportOnlyShipsSendableBrandsTests(unittest.TestCase):
+    """What goes to Clay must be sendable under THIS campaign."""
+
+    def _e(self):
+        return create_engine("sqlite://", future=True)
+
+    def test_revenue_survives_the_round_trip(self):
+        """Stored leads carry revenue_cents, freshly pulled ones carry the
+        StoreLeads name. Reading only one exported every scanned brand at $0."""
+        import csv as _csv
+        import io as _io
+
+        import outbound_pipeline as op
+        e = self._e()
+        store = {"name": "rho.com", "merchant_name": "Rho", "platform": "shopify",
+                 "country_code": "US", "estimated_sales_yearly": 838176000,
+                 "categories": "Health", "tags": "",
+                 "contact_info": [{"type": "email", "value": "a@b.com"}], "apps": []}
+        m.record_leads(e, [op.to_clay_lead(store)])
+        row = list(_csv.DictReader(_io.StringIO(op.leads_to_csv([m.load_leads(e)[0]]))))[0]
+        self.assertEqual(row["revenue_usd"], "8381760",
+                         "a scanned brand exported at $0 makes every lead look tiny")
