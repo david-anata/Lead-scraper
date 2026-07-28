@@ -27,7 +27,10 @@ from sales_support_agent.services.website_ops_program import (
     load_indexing_inventory,
 )
 from sales_support_agent.services.website_ops_screaming_frog import (
+    build_crawl_verification,
     load_crawl_inventory,
+    load_crawl_verification,
+    save_crawl_verification,
 )
 from sales_support_agent.services.website_ops_github import (
     CONTENT_ACTION_TYPES,
@@ -1270,12 +1273,25 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
                 report_slug=_slugify_text(report_title),
             )
     indexing_inventory = load_indexing_inventory(settings.website_ops_root)
+    crawl_inventory = load_crawl_inventory(settings.website_ops_root)
+    crawl_verification = build_crawl_verification(
+        crawl_inventory,
+        list(pipeline.get("observations") or []),
+    )
+    save_crawl_verification(settings.website_ops_root, crawl_verification)
     enriched_report["indexing_inventory"] = indexing_inventory
+    enriched_report["crawl_inventory"] = {
+        "generated_at": crawl_inventory.get("generated_at", ""),
+        "imports": list(crawl_inventory.get("imports") or []),
+        "summary": dict(crawl_inventory.get("summary") or {}),
+    }
+    enriched_report["crawl_verification"] = crawl_verification
     enriched_report["program_plan"] = build_program_plan(
         analytics_status=dict(enriched_report.get("analytics_status") or {}),
         action_queue=list(enriched_report.get("action_queue") or []),
         support_requests=list(enriched_report.get("support_requests") or []),
         indexing_inventory=indexing_inventory,
+        crawl_verification=crawl_verification,
     )
     artifacts = website_ops.write_daily_report_artifacts(enriched_report, output_dir=output_dir, config=config)
     enriched_report["email_delivery"] = send_website_ops_report_email(
@@ -2315,6 +2331,10 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         latest_payload.get("indexing_inventory")
         or load_indexing_inventory(settings.website_ops_root)
     )
+    crawl_verification = dict(
+        latest_payload.get("crawl_verification")
+        or load_crawl_verification(settings.website_ops_root)
+    )
     program_plan = dict(
         latest_payload.get("program_plan")
         or build_program_plan(
@@ -2322,6 +2342,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             action_queue=action_queue,
             support_requests=support_requests,
             indexing_inventory=indexing_inventory,
+            crawl_verification=crawl_verification,
         )
     )
     decision_ready = _decision_data_ready(analytics_status)
@@ -2491,14 +2512,21 @@ def render_indexing_page(
 ) -> str:
     inventory = load_indexing_inventory(settings.website_ops_root)
     crawl_inventory = load_crawl_inventory(settings.website_ops_root)
+    crawl_verification = load_crawl_verification(settings.website_ops_root)
     summary = dict(inventory.get("summary") or {})
     crawl_summary = dict(crawl_inventory.get("summary") or {})
+    verification_summary = dict(crawl_verification.get("summary") or {})
     imports = [
         dict(item)
         for item in list(crawl_inventory.get("imports") or [])
         if isinstance(item, Mapping)
     ]
     records = [dict(item) for item in list(inventory.get("records") or []) if isinstance(item, Mapping)]
+    verification_records = [
+        dict(item)
+        for item in list(crawl_verification.get("records") or [])
+        if isinstance(item, Mapping)
+    ]
     reason_counts = dict(summary.get("reason_counts") or {})
     reason_cards = "".join(
         _summary_chip(reason, count, tone="neutral")
@@ -2516,6 +2544,18 @@ def render_indexing_page(
           </tr>
         """
         for item in records
+    )
+    verification_rows = "".join(
+        f"""
+          <tr>
+            <td><a class="text-link" href="{html.escape(str(item.get('url', '')), quote=True)}">{html.escape(_short_page_label(str(item.get('url', ''))))}</a></td>
+            <td><span class="status-pill {'status-bad' if item.get('state') == 'confirmed' else 'status-warn' if item.get('state') == 'pending' else 'status-ok'}">{html.escape(str(item.get('state', 'pending')).title())}</span></td>
+            <td>{html.escape('; '.join(str(warning.get('report', '')) for warning in list(item.get('warning_results') or [])[:3]))}</td>
+            <td>{html.escape('; '.join(str(warning.get('reason', '')) for warning in list(item.get('warning_results') or [])[:2]))}</td>
+            <td>{html.escape(str(item.get('rendered_at', '') or 'Not observed'))}</td>
+          </tr>
+        """
+        for item in verification_records[:100]
     )
     empty = """
       <div class="list-card empty-state">
@@ -2567,6 +2607,28 @@ def render_indexing_page(
           {_dashboard_stat_card("Production Crawl", crawl_summary.get("production_urls", 0), "anatainc.com URLs only", "/admin/website-ops/indexing")}
           {_dashboard_stat_card("Vercel Sandbox", crawl_summary.get("sandbox_urls", 0), "Kept separate from production", "/admin/website-ops/indexing")}
           {_dashboard_stat_card("Crawler Warnings", crawl_summary.get("urls_with_warnings", 0), "Evidence awaiting verification", "/admin/website-ops/indexing")}
+        </section>
+        <section class="stats">
+          {_dashboard_stat_card("Confirmed", verification_summary.get("confirmed_urls", 0), "Eligible for remediation planning", "/admin/website-ops/indexing")}
+          {_dashboard_stat_card("Pending Proof", verification_summary.get("pending_urls", 0), "Requires stronger evidence", "/admin/website-ops/indexing")}
+          {_dashboard_stat_card("Disproved", verification_summary.get("disproved_urls", 0), "Retained as crawl-history noise", "/admin/website-ops/indexing")}
+        </section>
+        <section class="card stack">
+          <div class="row-actions">
+            <div class="stack">
+              <h2>Crawl verification ledger</h2>
+              <p class="lead-sm">Only rendered-confirmed warnings may become remediation work. Pending warnings need stronger evidence; disproved warnings remain visible so the system does not rediscover stale work.</p>
+            </div>
+            <span class="status-pill status-neutral">{len(verification_records)} warning URLs</span>
+          </div>
+          {f'''
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>URL</th><th>Verdict</th><th>Crawler reports</th><th>Fresh evidence</th><th>Observed</th></tr></thead>
+              <tbody>{verification_rows}</tbody>
+            </table>
+          </div>
+          ''' if verification_records else '<div class="list-card empty-state"><h3>No crawl verification run yet.</h3><p class="muted">Run the daily sweep to compare imported crawler warnings with fresh production evidence.</p></div>'}
         </section>
         <section class="card stack">
           <h2>Reason groups</h2>
