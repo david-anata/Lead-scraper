@@ -28,8 +28,10 @@ try:
         BuildingAuditEvent,
         BuildingInquiry,
         BuildingInvoice,
+        BuildingOffering,
         BuildingReservation,
         BuildingServiceRequest,
+        BuildingSpace,
     )
     from sales_support_agent.services.admin_auth import create_user_session_token
 
@@ -119,6 +121,86 @@ class BuildingAdminOperationsTests(unittest.TestCase):
 
     def _assert_notice(self, response) -> None:
         self.assertIn("notice=", response.headers["location"])
+
+    def test_00a_prepare_verified_arena_catalog_is_gated_audited_and_idempotent(
+        self,
+    ) -> None:
+        rejected = self._post(
+            "/admin/building/catalog/arena/prepare",
+            {"confirmation": "prepare it"},
+        )
+        self.assertIn("error=", rejected.headers["location"])
+        with self.factory() as session:
+            self.assertIsNone(session.get(BuildingSpace, "arena"))
+            self.assertIsNone(session.get(BuildingOffering, "arena-events"))
+
+        prepared = self._post(
+            "/admin/building/catalog/arena/prepare",
+            {"confirmation": "PREPARE ARENA CATALOG"},
+        )
+        self._assert_notice(prepared)
+        with self.factory() as session:
+            space = session.get(BuildingSpace, "arena")
+            offering = session.get(BuildingOffering, "arena-events")
+            self.assertIsNotNone(space)
+            self.assertEqual(space.capacity, 200)
+            self.assertEqual(space.status, "unavailable")
+            self.assertFalse(space.is_public)
+            self.assertEqual(offering.space_id, "arena")
+            self.assertEqual(offering.booking_unit, "hour")
+            self.assertFalse(offering.is_published)
+            self.assertEqual(offering.price_display, "")
+            events = (
+                session.query(BuildingAuditEvent)
+                .filter(
+                    BuildingAuditEvent.action
+                    == "verified_arena_catalog_prepared"
+                )
+                .all()
+            )
+            self.assertEqual(len(events), 2)
+
+        replay = self._post(
+            "/admin/building/catalog/arena/prepare",
+            {"confirmation": "PREPARE ARENA CATALOG"},
+        )
+        self._assert_notice(replay)
+        with self.factory() as session:
+            events = (
+                session.query(BuildingAuditEvent)
+                .filter(
+                    BuildingAuditEvent.action
+                    == "verified_arena_catalog_prepared"
+                )
+                .all()
+            )
+            self.assertEqual(len(events), 2)
+            completion = (
+                session.query(BuildingAuditEvent)
+                .filter(
+                    BuildingAuditEvent.action
+                    == "verified_arena_catalog_preparation_completed"
+                )
+                .all()
+            )
+            self.assertEqual(len(completion), 2)
+            self.assertFalse(completion[-1].after_json["created_space"])
+            self.assertFalse(completion[-1].after_json["created_offering"])
+            self.assertFalse(completion[-1].after_json["published"])
+            self.assertFalse(completion[-1].after_json["external_write"])
+
+        with self.factory.begin() as session:
+            space = session.get(BuildingSpace, "arena")
+            space.slug = "conflicting-arena"
+        conflict = self._post(
+            "/admin/building/catalog/arena/prepare",
+            {"confirmation": "PREPARE ARENA CATALOG"},
+        )
+        self.assertIn("error=", conflict.headers["location"])
+        with self.factory.begin() as session:
+            space = session.get(BuildingSpace, "arena")
+            self.assertEqual(space.slug, "conflicting-arena")
+            space.slug = "arena"
 
     def test_00_assisted_lead_preserves_source_consent_and_deduplication(self) -> None:
         missing_reference = self._post(

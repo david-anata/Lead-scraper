@@ -111,6 +111,9 @@ SEGMENT_PURPOSE_SCOPES = {"marketing", "operational", "both"}
 INQUIRY_KINDS = {"workspace", "event", "tour"}
 CAMPAIGN_CONTENT_CLASSIFICATIONS = {"standard", "tenant_private"}
 MOUNTAIN = ZoneInfo("America/Denver")
+ARENA_CATALOG_CONFIRMATION = "PREPARE ARENA CATALOG"
+ARENA_SPACE_ID = "arena"
+ARENA_OFFERING_ID = "arena-events"
 
 def _building_redirect(*, notice: str = "", error: str = "") -> RedirectResponse:
     query = urlencode({"notice": notice} if notice else {"error": error})
@@ -119,6 +122,134 @@ def _building_redirect(*, notice: str = "", error: str = "") -> RedirectResponse
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _prepare_verified_arena_catalog(session, *, actor: str) -> dict[str, bool]:
+    """Create the factual Arena records without publishing commercial claims.
+
+    Existing records are reused only when their identity and relationship are
+    compatible. This deliberately fails closed instead of overwriting an
+    operator-managed record.
+    """
+
+    space = session.get(BuildingSpace, ARENA_SPACE_ID)
+    created_space = space is None
+    if space is not None and (
+        space.slug != ARENA_SPACE_ID
+        or space.name.strip().casefold() != "the arena"
+        or space.space_type != "event"
+    ):
+        raise ValueError(
+            "The existing arena space conflicts with the verified catalog identity; review it manually."
+        )
+    if space is None:
+        space = BuildingSpace(
+            id=ARENA_SPACE_ID,
+            slug=ARENA_SPACE_ID,
+            name="The Arena",
+            space_type="event",
+            floor="2nd floor",
+            capacity=200,
+            status="unavailable",
+            public_description=(
+                "A 6,000-square-foot event venue for company gatherings, "
+                "workshops, celebrations, and community events."
+            ),
+            internal_notes=(
+                "Prepared from the approved Listing Copy Pack baseline. "
+                "Maximum public capacity 200. Unavailable and private until "
+                "an operator completes launch readiness."
+            ),
+            features_json=[],
+            media_json=[],
+            is_public=False,
+            updated_at=_now(),
+        )
+        session.add(space)
+        session.flush()
+        session.add(
+            BuildingAuditEvent(
+                entity_type="space",
+                entity_id=space.id,
+                action="verified_arena_catalog_prepared",
+                actor=actor,
+                before_json={},
+                after_json={
+                    "name": space.name,
+                    "capacity": space.capacity,
+                    "status": space.status,
+                    "is_public": space.is_public,
+                    "source": "approved_listing_copy_pack",
+                },
+            )
+        )
+
+    offering = session.get(BuildingOffering, ARENA_OFFERING_ID)
+    created_offering = offering is None
+    if offering is not None and (
+        offering.slug != ARENA_OFFERING_ID
+        or offering.offering_type != "event"
+        or offering.space_id != ARENA_SPACE_ID
+    ):
+        raise ValueError(
+            "The existing arena-events offering conflicts with the verified catalog relationship; review it manually."
+        )
+    if offering is None:
+        offering = BuildingOffering(
+            id=ARENA_OFFERING_ID,
+            slug=ARENA_OFFERING_ID,
+            name="The Arena",
+            offering_type="event",
+            space_id=ARENA_SPACE_ID,
+            public_description=(
+                "Request a reviewed event date for The Arena at The Anata Building."
+            ),
+            price_display="",
+            booking_unit="hour",
+            call_to_action="request_date",
+            features_json=[],
+            is_published=False,
+            updated_at=_now(),
+        )
+        session.add(offering)
+        session.flush()
+        session.add(
+            BuildingAuditEvent(
+                entity_type="offering",
+                entity_id=offering.id,
+                action="verified_arena_catalog_prepared",
+                actor=actor,
+                before_json={},
+                after_json={
+                    "name": offering.name,
+                    "space_id": offering.space_id,
+                    "is_published": offering.is_published,
+                    "price_display": offering.price_display,
+                    "source": "approved_listing_copy_pack",
+                },
+            )
+        )
+
+    session.add(
+        BuildingAuditEvent(
+            entity_type="catalog_preparation",
+            entity_id=ARENA_OFFERING_ID,
+            action="verified_arena_catalog_preparation_completed",
+            actor=actor,
+            after_json={
+                "created_space": created_space,
+                "created_offering": created_offering,
+                "published": False,
+                "availability_claimed": False,
+                "rate_plan_approved": False,
+                "external_write": False,
+            },
+        )
+    )
+    return {
+        "created_space": created_space,
+        "created_offering": created_offering,
+    }
 
 
 def _mountain(value: datetime) -> datetime:
@@ -2469,6 +2600,40 @@ def retry_campaign_failures(
             "status": campaign.status,
             **counts,
         }
+
+
+@admin_router.post(
+    "/catalog/arena/prepare",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def prepare_verified_arena_catalog_from_control_room(
+    request: Request,
+    confirmation: str = Form(...),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Prepare the approved Arena identity without publishing or pricing it."""
+
+    if confirmation.strip() != ARENA_CATALOG_CONFIRMATION:
+        return _building_redirect(
+            error=f"Type {ARENA_CATALOG_CONFIRMATION} to continue."
+        )
+    actor = str(user.get("email") or "building-operator")
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            result = _prepare_verified_arena_catalog(session, actor=actor)
+    except ValueError as exc:
+        return _building_redirect(error=str(exc))
+    if not result["created_space"] and not result["created_offering"]:
+        return _building_redirect(
+            notice="The verified Arena catalog is already prepared; no records changed."
+        )
+    return _building_redirect(
+        notice=(
+            "Verified Arena catalog prepared as private and unavailable. "
+            "Pricing, publication, and booking remain blocked pending approval."
+        )
+    )
 
 
 @admin_router.post(
