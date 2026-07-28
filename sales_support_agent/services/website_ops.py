@@ -616,12 +616,17 @@ def _report_entries(settings: Settings, *, mode: str | None = None) -> list[dict
     root = settings.website_ops_root / "reports"
     candidates = root.rglob("*.md") if mode is None else (root / mode).glob("*.md")
     entries: list[dict[str, Any]] = []
-    for path in sorted(candidates, key=lambda item: item.stat().st_mtime, reverse=True):
+    for path in candidates:
         try:
             text = path.read_text()
         except OSError:
             continue
         metadata = _extract_report_metadata(text, path)
+        json_path = path.with_suffix(".json")
+        artifact_mtime = max(
+            path.stat().st_mtime,
+            json_path.stat().st_mtime if json_path.exists() else 0,
+        )
         entries.append(
             {
                 "path": path,
@@ -632,10 +637,11 @@ def _report_entries(settings: Settings, *, mode: str | None = None) -> list[dict
                 "scope": metadata["scope"],
                 "excerpt": metadata["excerpt"],
                 "html_path": path.with_suffix(".html"),
-                "modified": datetime.fromtimestamp(path.stat().st_mtime).astimezone().strftime("%Y-%m-%d %H:%M %Z"),
+                "modified": datetime.fromtimestamp(artifact_mtime).astimezone().strftime("%Y-%m-%d %H:%M %Z"),
+                "_artifact_mtime": artifact_mtime,
             }
         )
-    return entries
+    return sorted(entries, key=lambda item: item["_artifact_mtime"], reverse=True)
 
 
 def _report_payload(entry: dict[str, Any]) -> dict[str, Any]:

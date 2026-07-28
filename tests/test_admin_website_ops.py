@@ -1652,6 +1652,28 @@ export default function Page() {
             self.assertEqual(entry["slug"], "2026-03-26-demo-report")
             self.assertEqual(entry["title"], "Demo Report")
 
+    def test_latest_report_entry_uses_enriched_json_artifact_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            daily = settings.website_ops_root / "reports" / "daily"
+            weekly = settings.website_ops_root / "reports" / "weekly"
+            daily.mkdir(parents=True, exist_ok=True)
+            weekly.mkdir(parents=True, exist_ok=True)
+            daily_md = daily / "2026-03-27-daily.md"
+            weekly_md = weekly / "2026-03-26-weekly.md"
+            daily_json = daily_md.with_suffix(".json")
+            daily_md.write_text("# Daily\n\nDate: 2026-03-27\n")
+            daily_json.write_text("{}")
+            weekly_md.write_text("# Weekly\n\nDate: 2026-03-26\n")
+            now = datetime.now(timezone.utc).timestamp()
+            os.utime(daily_md, (now - 30, now - 30))
+            os.utime(weekly_md, (now - 10, now - 10))
+            os.utime(daily_json, (now, now))
+            entry = latest_report_entry(settings)
+            self.assertIsNotNone(entry)
+            assert entry is not None
+            self.assertEqual(entry["slug"], "2026-03-27-daily")
+
 
 if __name__ == "__main__":
     unittest.main()
