@@ -276,6 +276,11 @@ Protected POST routes accept `X-Internal-Api-Key` when `SALES_AGENT_INTERNAL_API
   creation, provider-confirmed payment evidence, and an explicit QBO accounting
   handoff state.
 
+The production root entrypoint (`main.py`) and the modular Agent entrypoint
+share `api/building_routes.py` as the single Building route registrar. Any new
+Building admin, public, internal, webhook, or provider route must be added
+there so both deployments expose the same operating surface.
+
 Authorized building operators can create or update reviewed spaces and
 offerings, add deduplicated CRM relationships, record explicit marketing
 permission, define explainable audiences, and move campaigns through draft,
