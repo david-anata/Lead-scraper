@@ -695,7 +695,7 @@ def render_daily_report_markdown(report: Mapping[str, Any]) -> str:
                 f"- Articles ready: `{content_strategy.get('ready_to_publish', 0)}`",
                 f"- Researching sources: `{content_strategy.get('researching_sources', 0)}`",
                 f"- Scheduled validation: `{content_strategy.get('scheduled_for_validation', 0)}`",
-                f"- Weekly article budget: `{content_strategy.get('weekly_article_budget', 1)}`",
+                f"- Daily article maximum: `{content_strategy.get('daily_article_budget', 1)}`",
                 f"- Next content topic: {content_strategy.get('next_topic', 'No qualified topic')}",
                 f"- Next content operation: {content_strategy.get('next_operation', 'Run the next evidence sweep.')}",
             ]
@@ -1039,7 +1039,7 @@ def render_daily_report_html(report: Mapping[str, Any]) -> str:
       </div>
       <p><strong>Article pipeline:</strong> {esc(str(operations.get('article_pipeline_status', 'unavailable')).replace('_', ' ').title())}</p>
       <p class="muted">{esc(operations.get('article_pipeline_message', 'No article pipeline explanation was recorded.'))}</p>
-      <p><strong>Editorial program:</strong> {esc(content_strategy.get('total_briefs', 0))} briefs · {esc(content_strategy.get('ready_to_publish', 0))} ready · {esc(content_strategy.get('researching_sources', 0))} researching sources · weekly budget {esc(content_strategy.get('weekly_article_budget', 1))}</p>
+      <p><strong>Editorial program:</strong> {esc(content_strategy.get('total_briefs', 0))} briefs · {esc(content_strategy.get('ready_to_publish', 0))} ready · {esc(content_strategy.get('researching_sources', 0))} researching sources · daily article maximum {esc(content_strategy.get('daily_article_budget', 1))}</p>
       <p><strong>Next content topic:</strong> {esc(content_strategy.get('next_topic', 'No qualified topic'))}</p>
       <p class="muted">{esc(content_strategy.get('next_operation', 'Run the next evidence sweep.'))}</p>
       <p><a href="/admin/website-ops/strategy">Open content strategy and editorial briefs</a></p>

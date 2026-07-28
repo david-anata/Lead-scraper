@@ -503,6 +503,7 @@ def _build_operations_summary(report: Mapping[str, Any]) -> dict[str, Any]:
             "researching_sources": int(content_summary.get("researching_sources", 0) or 0),
             "scheduled_for_validation": int(content_summary.get("scheduled_for_validation", 0) or 0),
             "improve_existing": int(content_summary.get("improve_existing", 0) or 0),
+            "daily_article_budget": int(content_strategy.get("daily_article_budget", 1) or 1),
             "weekly_article_budget": int(content_strategy.get("weekly_article_budget", 1) or 1),
             "next_topic": str(content_next.get("topic", "") or ""),
             "next_operation": str(content_next.get("next_operation", "") or ""),
@@ -697,7 +698,7 @@ def send_website_ops_report_email(
             f"Actions requiring review: {int(operations.get('review_required_actions', 0) or 0)}",
             f"Content briefs: {int(content_strategy.get('total_briefs', 0) or 0)}",
             f"Articles ready: {int(content_strategy.get('ready_to_publish', 0) or 0)}",
-            f"Article weekly budget: {int(content_strategy.get('weekly_article_budget', 1) or 1)}",
+            f"Article daily maximum: {int(content_strategy.get('daily_article_budget', 1) or 1)}",
             (
                 "Priority: "
                 + ", ".join(
@@ -2588,8 +2589,8 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     article_pipeline = dict(query_intelligence.get("article_pipeline") or {})
     monitored_count = int(latest_payload.get("pages_reviewed", 0) or len(settings.website_ops_site_urls))
     schedule_note = (
-        "<p class='muted'>Scheduled for 8:00 AM America/Denver. "
-        "A daily email records completed changes and anything only you can do.</p>"
+        "<p class='muted'>Scheduled pulses at 8:00 AM, 1:00 PM, and 6:00 PM America/Denver. "
+        "Email is sent when completed work or the action state changes.</p>"
     )
     body = f"""
       {_nav("website_ops", website_ops_section="seo_dashboard", user=user)}
@@ -2627,7 +2628,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <div class="summary-grid">
               {_summary_chip("Writable host", "anatainc.com", tone="good")}
               {_summary_chip("Daily email", "Changes and your to-do list", tone="neutral")}
-              {_summary_chip("Schedule", "8 AM Mountain", tone="neutral")}
+              {_summary_chip("Schedule", "8 AM · 1 PM · 6 PM", tone="neutral")}
               {_summary_chip("Query validation", f"{query_summary.get('validated_clusters', 0)} validated", tone="good" if query_summary.get('validated_clusters') else "neutral")}
             </div>
             <a class="text-link" href="/admin/website-ops/queries">Inspect query ownership and citations</a>
@@ -2644,12 +2645,12 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <span class="status-pill {'status-ok' if article_pipeline.get('status') == 'eligible' else 'status-warn'}">{html.escape(str(article_pipeline.get("status", "not calculated")).replace("_", " ").title())}</span>
           </div>
           <div class="summary-grid">
-            {_summary_chip("Distinct weekly cycles", f"{article_pipeline.get('cycles_completed', 0)} / {article_pipeline.get('cycles_required', 2)}", tone="good" if int(article_pipeline.get('cycles_completed', 0) or 0) >= int(article_pipeline.get('cycles_required', 2) or 2) else "warn")}
+            {_summary_chip("Daily article maximum", "1", tone="neutral")}
             {_summary_chip("Validated content gaps", article_pipeline.get("validated_informational_gaps", 0), tone="neutral")}
             {_summary_chip("Source-qualified candidates", article_pipeline.get("source_qualified_candidates", 0), tone="good" if article_pipeline.get("source_qualified_candidates") else "neutral")}
             {_summary_chip("Publishing policy", "Validated autopush", tone="good")}
           </div>
-          <p class="muted">Every daily sweep maintains the editorial strategy and briefs. Weekly runs publish one eligible source-backed article, verify production, and schedule outcome measurement.</p>
+          <p class="muted">Each scheduled pulse audits the site, researches promising questions, advances briefs, completes eligible fixes, and verifies production. Agent publishes at most one eligible source-backed article per day.</p>
           <div class="button-row">
             <a class="text-link" href="/admin/website-ops/strategy">Open content strategy and briefs</a>
             <a class="text-link" href="/admin/website-ops/queries">Inspect query evidence</a>
@@ -3353,8 +3354,8 @@ def render_content_strategy_page(
         </section>
         <section class="card stack">
           <div class="row-actions">
-            <div class="stack"><h2>This week’s operating plan</h2><p class="lead-sm">The scheduler maintains briefs daily and has a one-article weekly publication budget.</p></div>
-            <span class="status-pill status-neutral">{int(strategy.get('weekly_article_budget', 1) or 1)} article / week</span>
+            <div class="stack"><h2>Today’s operating plan</h2><p class="lead-sm">Agent runs at 8 AM, 1 PM, and 6 PM Mountain. Each pulse audits, advances briefs, completes eligible fixes, and verifies production.</p></div>
+            <span class="status-pill status-neutral">{int(strategy.get('daily_article_budget', 1) or 1)} article / day maximum</span>
           </div>
           <div class="summary-grid">{stage_links}</div>
           {f'''
@@ -3374,7 +3375,7 @@ def render_content_strategy_page(
               <li>Collect query, page, citation, and conversion evidence.</li>
               <li>Assign one canonical owner and decide improve-versus-create.</li>
               <li>Maintain a source and internal-link brief.</li>
-              <li>Generate one eligible article during the weekly run.</li>
+              <li>Generate and publish one eligible source-backed article per day maximum.</li>
               <li>Publish through GitHub, verify production, roll back failures, and measure outcomes.</li>
             </ol>
           </div>
