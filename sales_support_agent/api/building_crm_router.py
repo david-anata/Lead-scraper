@@ -55,6 +55,7 @@ from sales_support_agent.models.entities import (
     BuildingTour,
     BuildingInquiry,
     BuildingInvoice,
+    BuildingLaunchDecision,
     BuildingOffering,
     BuildingRatePlan,
     BuildingOperationalChecklist,
@@ -71,6 +72,11 @@ from sales_support_agent.services.building_security import (
 )
 from sales_support_agent.services.building_analytics import build_building_analytics
 from sales_support_agent.services.building_page import render_building_page
+from sales_support_agent.services.building_launch_readiness import (
+    ARENA_LAUNCH_DECISIONS,
+    arena_rate_plan_decision_blockers,
+    launch_decision_id,
+)
 
 
 public_router = APIRouter(prefix="/api/public/building", tags=["building-public"])
@@ -105,7 +111,6 @@ SEGMENT_PURPOSE_SCOPES = {"marketing", "operational", "both"}
 INQUIRY_KINDS = {"workspace", "event", "tour"}
 CAMPAIGN_CONTENT_CLASSIFICATIONS = {"standard", "tenant_private"}
 MOUNTAIN = ZoneInfo("America/Denver")
-
 
 def _building_redirect(*, notice: str = "", error: str = "") -> RedirectResponse:
     query = urlencode({"notice": notice} if notice else {"error": error})
@@ -2735,6 +2740,95 @@ def save_offering_from_control_room(
 
 
 @admin_router.post(
+    "/launch-readiness/decisions/{decision_key}",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def record_arena_launch_decision(
+    decision_key: str,
+    request: Request,
+    offering_id: str = Form(...),
+    decision_status: str = Form(...),
+    value: str = Form(...),
+    evidence: str = Form(...),
+    confirmation: str = Form(...),
+    user: dict = Depends(require_tool("building.pricing.approve")),
+) -> RedirectResponse:
+    """Record one explicit Arena launch decision without calling a provider."""
+
+    definition = ARENA_LAUNCH_DECISIONS.get(decision_key)
+    if definition is None:
+        return _building_redirect(error="Unknown launch-readiness decision.")
+    if confirmation.strip() != f"DECIDE {decision_key}":
+        return _building_redirect(error=f"Type DECIDE {decision_key} to continue.")
+    label, required_status = definition
+    if decision_status.strip() != required_status:
+        return _building_redirect(
+            error=f"{label} requires status {required_status}."
+        )
+    if len(value.strip()) < 3 or len(evidence.strip()) < 8:
+        return _building_redirect(
+            error="Record a specific decision value and supporting evidence."
+        )
+    actor = user.get("email") or "building-launch-approver"
+    with session_scope(request.app.state.session_factory) as session:
+        offering = session.get(BuildingOffering, offering_id.strip())
+        space = (
+            session.get(BuildingSpace, offering.space_id)
+            if offering is not None and offering.space_id
+            else None
+        )
+        if (
+            offering is None
+            or offering.offering_type != "event"
+            or space is None
+            or space.name.strip().casefold() != "the arena"
+        ):
+            return _building_redirect(error="Choose The Arena event offering.")
+        decision_id = launch_decision_id(offering.id, decision_key)
+        row = session.get(BuildingLaunchDecision, decision_id)
+        before = (
+            {
+                "status": row.status,
+                "value": row.value,
+                "evidence": row.evidence,
+            }
+            if row
+            else {"status": "unresolved"}
+        )
+        if row is None:
+            row = BuildingLaunchDecision(
+                id=decision_id,
+                offering_id=offering.id,
+                decision_key=decision_key,
+            )
+        row.status = decision_status.strip()
+        row.value = value.strip()
+        row.evidence = evidence.strip()
+        row.decided_by = actor
+        row.decided_at = _now()
+        row.updated_at = _now()
+        session.add(row)
+        session.add(BuildingAuditEvent(
+            entity_type="launch_decision",
+            entity_id=row.id,
+            action="arena_launch_decision_recorded",
+            actor=actor,
+            before_json=before,
+            after_json={
+                "decision_key": decision_key,
+                "status": row.status,
+                "value": row.value,
+                "evidence": row.evidence,
+                "external_write": False,
+            },
+        ))
+    return _building_redirect(
+        notice=f"{label} decision recorded. No provider was changed."
+    )
+
+
+@admin_router.post(
     "/rate-plans",
     dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
@@ -3216,6 +3310,16 @@ def approve_rate_plan_from_control_room(
             )
         except ValidationError as exc:
             return _building_redirect(error=exc.errors()[0].get("msg", "Invalid rate plan."))
+        launch_blockers = arena_rate_plan_decision_blockers(
+            session, row.offering_id
+        )
+        if launch_blockers:
+            labels = ", ".join(
+                ARENA_LAUNCH_DECISIONS[key][0] for key in launch_blockers
+            )
+            return _building_redirect(
+                error=f"Resolve Arena launch decisions before approval: {labels}."
+            )
         before = {"status": row.status}
         row.status = "approved"
         row.approved_by = actor
@@ -4464,6 +4568,12 @@ def building_control_room(
                 BuildingRatePlan.version.desc(),
             )
         ).scalars().all()
+        launch_decision_rows = session.execute(
+            select(BuildingLaunchDecision).order_by(
+                BuildingLaunchDecision.offering_id,
+                BuildingLaunchDecision.decision_key,
+            )
+        ).scalars().all()
         contact_rows = session.execute(
             select(BuildingContact).order_by(BuildingContact.full_name, BuildingContact.email)
         ).scalars().all()
@@ -4807,6 +4917,20 @@ def building_control_room(
                     "approved_by": item.approved_by,
                 }
                 for item in rate_plan_rows
+            ],
+            launch_decisions=[
+                {
+                    "offering_id": item.offering_id,
+                    "decision_key": item.decision_key,
+                    "status": item.status,
+                    "value": item.value,
+                    "evidence": item.evidence,
+                    "decided_by": item.decided_by,
+                    "decided_at": (
+                        item.decided_at.isoformat() if item.decided_at else ""
+                    ),
+                }
+                for item in launch_decision_rows
             ],
             contacts=contacts,
             segments=segments,

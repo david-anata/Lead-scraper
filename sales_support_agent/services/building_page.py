@@ -125,6 +125,7 @@ def render_building_page(
     checklists: list[dict[str, Any]],
     service_requests: list[dict[str, Any]],
     rate_plans: list[dict[str, Any]] | None = None,
+    launch_decisions: list[dict[str, Any]] | None = None,
     collections: list[dict[str, Any]] | None = None,
     tours: list[dict[str, Any]] | None = None,
     contact_merges: list[dict[str, Any]] | None = None,
@@ -142,6 +143,7 @@ def render_building_page(
     tours = list(tours or [])
     contact_merges = list(contact_merges or [])
     rate_plans = list(rate_plans or [])
+    launch_decisions = list(launch_decisions or [])
     collections = list(collections or [])
     nav = render_agent_nav("building", user=user)
     nav_styles = render_agent_nav_styles()
@@ -748,6 +750,44 @@ def render_building_page(
         for item in offerings
         if item.get("offering_type") == "event"
     )
+    launch_decision_map = {
+        str(item.get("decision_key") or ""): item for item in launch_decisions
+    }
+    launch_definitions = [
+        ("cancellation_policy", "Cancellation policy", "accepted_policy", "Approved cancellation/refund language"),
+        ("tax_treatment", "Tax treatment and rate", "accepted_policy", "Taxable/non-taxable and reviewed rate"),
+        ("setup_price", "Setup add-on price", "accepted_policy", "Approved price or explicitly included"),
+        ("teardown_price", "Teardown add-on price", "accepted_policy", "Approved price or explicitly included"),
+        ("overtime_rate", "Overtime hourly rate", "accepted_policy", "Approved numeric rate; do not infer $150 or $175"),
+        ("payment_workflow", "Venue payment workflow", "accepted_policy", "Venue card-only; no checks, overpayments, or third-party vendor payments; date held after cleared funds"),
+        ("agreement_template", "Reusable agreement template", "approved_reference", "Approved provider-neutral template ID/version"),
+        ("event_calendar", "Dedicated event calendar", "provider_verified", "Calendar ID, owner, and service-account access"),
+        ("transactional_sender", "Transactional sender and owner", "owner_confirmed", "Verified sender identity and accountable owner"),
+        ("effective_date", "Launch effective date", "accepted_policy", "Approved effective date"),
+    ]
+    launch_readiness_rows = "".join(
+        f"""<tr>
+          <td><strong>{_esc(label)}</strong><span class="sub">{_esc(guidance)}</span></td>
+          <td>{_badge(str(launch_decision_map.get(key, {}).get("status") or "unresolved"))}<span class="sub">{_esc(launch_decision_map.get(key, {}).get("value") or "No decision recorded")}</span></td>
+          <td><span class="sub">{_esc(launch_decision_map.get(key, {}).get("evidence") or ("Search found only a past primary-calendar tour; dedicated calendar remains unverified." if key == "event_calendar" else "Evidence required."))}</span></td>
+          <td><form class="inline-send" method="post" action="/admin/building/launch-readiness/decisions/{_esc(key)}">
+            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+            <select name="offering_id" required><option value="">Arena offering</option>{event_offering_options}</select>
+            <input type="hidden" name="decision_status" value="{_esc(required_status)}">
+            <input name="value" required placeholder="{_esc(guidance)}">
+            <input name="evidence" required minlength="8" placeholder="Approval record or verification evidence">
+            <input name="confirmation" required placeholder="DECIDE {_esc(key)}">
+            <button class="secondary secondary--small" type="submit">Record decision</button>
+            <span class="sub">Agent audit only. No provider write, send, charge, or calendar change.</span>
+          </form></td>
+        </tr>"""
+        for key, label, required_status, guidance in launch_definitions
+    )
+    launch_ready_count = sum(
+        1
+        for key, _, status, _ in launch_definitions
+        if launch_decision_map.get(key, {}).get("status") == status
+    )
     qualified_event_inquiry_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))} · {_esc(item.get("preferred_date") or "date not set")}</option>'
         for item in inquiries
@@ -1182,6 +1222,11 @@ def render_building_page(
           <div class="field field--wide"><label for="offering-description">Public description</label><textarea id="offering-description" name="public_description" placeholder="Warm, specific copy for the public offering."></textarea></div>
           <div class="form-actions"><span class="form-note">Publish only after the linked space, price wording, and copy have been reviewed.</span><label class="check"><input type="checkbox" name="is_published" value="true"> Publish offering</label><button class="primary" type="submit">Save offering</button></div>
         </form>
+      </section>
+      <section class="panel panel--wide" id="arena-launch-readiness">
+        <div class="panel-head"><div><h2>Arena launch readiness</h2><p>Ten explicit decisions must have accountable evidence before the venue workflow is production-ready.</p></div><span class="count">{launch_ready_count}/10 decided</span></div>
+        <div class="alert alert--warning"><strong>Unresolved remains blocking.</strong><p>This register does not update payment providers, agreement systems, email senders, TidyCal, or Google Calendar. Calendar evidence currently proves only one past tour on David’s primary calendar; no dedicated Arena calendar ID, owner, or service-account access is verified.</p></div>
+        <div class="table-wrap"><table><thead><tr><th>Decision</th><th>Status/value</th><th>Evidence</th><th>Governed action</th></tr></thead><tbody>{launch_readiness_rows}</tbody></table></div>
       </section>
       <section class="panel panel--wide">
         <div class="panel-head"><div><h2>Commercial rate plans</h2><p>Version pricing, deposits, included items, and cancellation terms. Approved versions are locked.</p></div><span class="count">{len(rate_plans)} versions</span></div>

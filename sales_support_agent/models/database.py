@@ -257,6 +257,7 @@ def _ensure_building_tables(engine: Any) -> None:
         "building_spaces",
         "building_offerings",
         "building_rate_plans",
+        "building_launch_decisions",
         "building_availability_blocks",
         "building_inquiries",
         "building_audit_events",

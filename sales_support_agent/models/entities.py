@@ -1567,6 +1567,40 @@ class BuildingRatePlan(Base):
     )
 
 
+class BuildingLaunchDecision(Base):
+    """Audited operator decision required before a Building offering can launch."""
+
+    __tablename__ = "building_launch_decisions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    offering_id: Mapped[str] = mapped_column(
+        ForeignKey("building_offerings.id"), index=True
+    )
+    decision_key: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="unresolved", index=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    evidence: Mapped[str] = mapped_column(Text, default="")
+    decided_by: Mapped[str] = mapped_column(String(255), default="")
+    decided_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_building_launch_decision_key",
+            "offering_id",
+            "decision_key",
+            unique=True,
+        ),
+    )
+
+
 class BuildingAvailabilityBlock(Base):
     __tablename__ = "building_availability_blocks"
 

@@ -25,6 +25,9 @@ from sales_support_agent.services.building_analytics import (
 from sales_support_agent.services.building_content import (
     offering_publication_readiness,
 )
+from sales_support_agent.services.building_launch_readiness import (
+    arena_rate_plan_decision_blockers,
+)
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
@@ -1290,6 +1293,15 @@ def upsert_rate_plan(
                 detail="That rate-plan version already exists for this offering.",
             )
         if payload.status == "approved":
+            blockers = arena_rate_plan_decision_blockers(session, offering_id)
+            if blockers:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Resolve Arena launch decisions before approving this "
+                        f"rate plan: {', '.join(blockers)}."
+                    ),
+                )
             approved_plans = session.execute(
                 select(BuildingRatePlan).where(
                     BuildingRatePlan.offering_id == offering_id,
