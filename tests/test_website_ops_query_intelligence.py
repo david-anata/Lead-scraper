@@ -154,6 +154,31 @@ def test_observed_overlap_creates_cannibalization_conflict() -> None:
     assert competing["page_url"] in validated[0]["conflict_urls"]
 
 
+def test_branded_navigation_overlap_is_supporting_serp_coverage() -> None:
+    primary = _page("https://anatainc.com", impressions=100)
+    primary["aeo"]["observed_queries"][0]["query"] = "anata company"
+    competing = _page("https://anatainc.com/about", impressions=25)
+    competing["aeo"]["observed_queries"][0]["query"] = "anata company"
+    records = collect_query_observations([primary, competing])
+    cluster = build_clusters(records, [primary, competing])[0]
+    assert cluster["owner_url"] == "https://anatainc.com"
+    assert cluster["ownership_status"] == "brand_coverage"
+    assert cluster["conflict_urls"] == []
+    assert cluster["supporting_urls"] == ["https://anatainc.com/about"]
+
+
+def test_incidental_query_overlap_does_not_create_conflict() -> None:
+    primary = _page(impressions=100)
+    competing = _page(
+        "https://anatainc.com/services/amazon-advertising",
+        impressions=2,
+    )
+    records = collect_query_observations([primary, competing])
+    cluster = build_clusters(records, [primary, competing])[0]
+    assert cluster["ownership_status"] == "assigned"
+    assert cluster["conflict_urls"] == []
+
+
 def test_citation_harness_records_fanout_and_anata_citation(tmp_path) -> None:
     settings = SimpleNamespace(
         website_ops_root=tmp_path,

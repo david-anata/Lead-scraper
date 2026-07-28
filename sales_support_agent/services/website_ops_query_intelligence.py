@@ -114,6 +114,15 @@ def _cluster_key(query: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
+def _is_brand_navigation(query: str, owner_url: str) -> bool:
+    tokens = set(_tokens(query))
+    return (
+        "anata" in tokens
+        and tokens <= {"anata", "inc", "company", "website", "official"}
+        and urlparse(owner_url).path in {"", "/"}
+    )
+
+
 def _append_jsonl(path: Path, records: Sequence[Mapping[str, Any]]) -> None:
     if not records:
         return
@@ -566,10 +575,25 @@ def build_clusters(
             for page_url in all_pages
         }
         owner_url = sorted(candidates, key=lambda url: (-candidates[url], url))[0] if candidates else ""
-        conflict_urls = sorted(
+        material_conflict_urls = sorted(
             url
             for url, impressions in observed_pages.items()
-            if url != owner_url and impressions > 0
+            if url != owner_url
+            and impressions >= 3
+            and impressions >= float(observed_pages.get(owner_url, 0) or 0) * 0.1
+        )
+        brand_coverage_urls = (
+            sorted(url for url in observed_pages if url != owner_url)
+            if _is_brand_navigation(raw_queries[0], owner_url)
+            else []
+        )
+        conflict_urls = [] if brand_coverage_urls else material_conflict_urls
+        ownership_status = (
+            "brand_coverage"
+            if brand_coverage_urls
+            else "conflict"
+            if conflict_urls
+            else "assigned"
         )
         citation = dict(latest_citations.get(cluster_id) or {})
         if citation and citation.get("status") in {"cited", "mentioned", "no-citation"}:
@@ -615,7 +639,8 @@ def build_clusters(
                 "owner_url": owner_url,
                 "owner_title": _clean(pages.get(owner_url, {}).get("page_title")),
                 "conflict_urls": conflict_urls,
-                "ownership_status": "conflict" if conflict_urls else "assigned",
+                "supporting_urls": brand_coverage_urls,
+                "ownership_status": ownership_status,
                 "alignment": alignment,
                 "citation": citation,
                 "observed_impressions": round(sum(observed_pages.values()), 2),
