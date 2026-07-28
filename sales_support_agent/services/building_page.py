@@ -1367,6 +1367,12 @@ def render_building_page(
     .metric span{{display:block;font-size:12px;color:rgba(43,54,68,.6);text-transform:uppercase;letter-spacing:.08em;}}
     .metric strong{{display:block;font-family:"Montserrat";font-size:30px;margin-top:8px;}}
     .notice{{margin-top:18px;padding:16px 18px;border:1px solid rgba(155,101,14,.28);border-radius:12px;background:#fff8e8;line-height:1.55;}}
+    .daily-guide{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:18px;border:1px solid var(--border);border-radius:14px;background:#fff;overflow:hidden;}}
+    .daily-guide__item{{padding:17px 19px;border-right:1px solid var(--border);}}
+    .daily-guide__item:last-child{{border-right:0;}}
+    .daily-guide__item span{{display:block;color:#397a9d;font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;}}
+    .daily-guide__item strong{{display:block;margin-top:5px;font-size:14px;}}
+    .daily-guide__item p{{margin:4px 0 0;color:rgba(43,54,68,.62);font-size:12px;line-height:1.45;}}
     .workspace-nav{{position:sticky;top:0;z-index:8;display:flex;align-items:center;gap:6px;margin:18px 0 0;padding:8px;border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.96);box-shadow:0 8px 24px rgba(43,54,68,.07);overflow-x:auto;scrollbar-width:thin;}}
     .workspace-nav a{{display:inline-flex;align-items:center;min-height:36px;padding:0 12px;border-radius:7px;color:rgba(43,54,68,.72);font-size:13px;font-weight:700;text-decoration:none;white-space:nowrap;}}
     .workspace-nav a:hover,.workspace-nav a:focus-visible{{background:#eef6fa;color:var(--ink);}}
@@ -1413,11 +1419,20 @@ def render_building_page(
     .decision-card__action[open]>summary{{background:#eef6fa;}} .decision-form{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;padding:17px 18px;border-top:1px solid var(--border);}}
     .technical-details{{padding:12px 14px;border:1px dashed var(--border);border-radius:8px;background:#fbfbf9;}} .technical-details summary{{cursor:pointer;color:rgba(43,54,68,.68);font-size:12px;font-weight:700;}} .technical-details p{{margin:8px 0 0;color:rgba(43,54,68,.65);font-size:12px;line-height:1.45;}}
     .advanced-tools{{border-style:dashed;}} .advanced-tools>.panel-head{{background:#fbfbf9;}} .advanced-label{{display:inline-flex;margin-left:8px;padding:3px 7px;border-radius:99px;background:#edf0f2;color:#56616d;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;vertical-align:middle;}}
+    .setup-workspace{{grid-column:1/-1;border:1px solid var(--border);border-radius:14px;background:#f7fafb;overflow:hidden;}}
+    .setup-workspace>summary{{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:20px 22px;cursor:pointer;list-style:none;}}
+    .setup-workspace>summary::-webkit-details-marker{{display:none;}}
+    .setup-workspace>summary strong{{display:block;font:700 18px "Montserrat",sans-serif;}}
+    .setup-workspace>summary span{{display:block;margin-top:4px;color:rgba(43,54,68,.62);font-size:13px;}}
+    .setup-workspace>summary::after{{content:"Open setup";flex:none;color:#397a9d;font-size:12px;font-weight:800;}}
+    .setup-workspace[open]>summary{{border-bottom:1px solid var(--border);background:#eef6fa;}}
+    .setup-workspace[open]>summary::after{{content:"Close setup";}}
+    .setup-workspace__content{{display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:20px;}}
     .advanced-disclosure>summary{{padding:16px 22px;cursor:pointer;color:#397a9d;font-size:13px;font-weight:800;list-style-position:inside;}} .advanced-disclosure[open]>summary{{border-bottom:1px solid var(--border);background:#f4f9fc;}}
     .roster-preview{{max-height:260px;overflow:auto;margin:10px 0 0;padding:10px 10px 10px 28px;border:1px solid var(--border);border-radius:8px;background:#f8f8f6;font-size:12px;line-height:1.6;min-width:320px;}}
     .checklist-list{{display:grid;gap:14px;padding:18px 22px;}} .checklist-group{{border:1px solid var(--border);border-radius:10px;overflow:hidden;}} .checklist-head{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 16px;background:#f8f8f6;}} .checklist-add{{display:grid;grid-template-columns:minmax(220px,1fr) auto auto;align-items:end;gap:10px;padding:12px 16px;border-top:1px solid var(--border);}} .checklist-add label:first-of-type{{display:grid;gap:5px;}}
     .adjustment-evidence{{display:grid;grid-template-columns:repeat(2,minmax(130px,1fr));gap:6px;min-width:360px;}} .adjustment-evidence button{{justify-self:start;}}
-    @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.grid{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}.launch-steps{{grid-template-columns:1fr 1fr}}.launch-step:nth-child(2){{border-right:0}}.launch-step:nth-child(-n+2){{border-bottom:1px solid var(--border)}}}}
+    @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.daily-guide{{grid-template-columns:1fr}}.daily-guide__item{{border-right:0;border-bottom:1px solid var(--border)}}.daily-guide__item:last-child{{border-bottom:0}}.grid,.setup-workspace__content{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}.launch-steps{{grid-template-columns:1fr 1fr}}.launch-step:nth-child(2){{border-right:0}}.launch-step:nth-child(-n+2){{border-bottom:1px solid var(--border)}}}}
     @media(max-width:700px){{.decision-card__summary{{grid-template-columns:42px minmax(0,1fr)}}.decision-card__state{{grid-column:2;justify-self:start;text-align:left;max-width:none}}.decision-card__evidence{{grid-template-columns:1fr}}.decision-card__evidence>div+div{{border-left:0;border-top:1px solid var(--border)}}}}
     @media(max-width:600px){{.page-head{{align-items:start;flex-direction:column}}.metrics{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--border)!important}}.metric:last-child{{border-bottom:0!important}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.launch-command__head{{grid-template-columns:1fr;padding:21px}}.launch-score{{width:78px;height:78px}}.launch-steps{{grid-template-columns:1fr}}.launch-step{{border-right:0;border-bottom:1px solid var(--border)!important}}.launch-step:last-child{{border-bottom:0!important}}.form-grid,.decision-form{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
   </style>
@@ -1430,7 +1445,7 @@ def render_building_page(
       <div>
         <div class="eyebrow">Building operations</div>
         <h1>Building Control</h1>
-        <p class="purpose">One operational view of sellable space, incoming demand, tenant relationships, communication permission, and campaign readiness.</p>
+        <p class="purpose">Your staff workspace for responding to leads, scheduling tours, moving bookings forward, collecting payment, and preparing the building for customers.</p>
       </div>
       <a class="site-link" href="https://anatabuilding.com" target="_blank" rel="noreferrer">Open public site ↗</a>
     </header>
@@ -1440,18 +1455,45 @@ def render_building_page(
       <div class="metric"><span>Tenant relationships</span><strong>{active_tenants}</strong></div>
       <div class="metric"><span>Open invoicing</span><strong>${open_invoice_cents / 100:,.0f}</strong></div>
     </section>
-    <div class="notice"><strong>Data readiness:</strong> public availability stays conservative until reviewed spaces and offerings are entered. Campaign delivery stays locked behind permission, preview, approval, suppression, and provider configuration.</div>
+    <section class="daily-guide" aria-label="How Building Control helps your team">
+      <div class="daily-guide__item"><span>Start here</span><strong>Work the Today queue</strong><p>It brings overdue leads, customer blockers, payment follow-up, and building tasks into one list.</p></div>
+      <div class="daily-guide__item"><span>Move sales forward</span><strong>Use Sales and Bookings</strong><p>Qualify inquiries, schedule tours, review dates, prepare holds, and advance approved next steps.</p></div>
+      <div class="daily-guide__item"><span>Keep delivery on track</span><strong>Use Billing and Operations</strong><p>See what is unpaid, incomplete, or needs staff attention before access and event day.</p></div>
+    </section>
     <nav class="workspace-nav" aria-label="Building Control sections">
       <a href="#operator-queue">Today</a>
-      <a href="#arena-launch-readiness">Arena launch</a>
       <a href="#incoming-inquiries">Sales</a>
       <a href="#bookings-and-holds">Bookings</a>
       <a href="#billing-and-collections">Billing</a>
       <a href="#service-requests">Operations</a>
       <a href="#inventory">Inventory</a>
       <a href="#crm-email-list">CRM &amp; email</a>
+      <a href="#building-setup">Setup</a>
     </nav>
-    <section class="launch-command" aria-labelledby="arena-command-title">
+    <div class="grid">
+      <section class="panel panel--wide" id="operator-queue"><div class="panel-head"><div><h2>Today</h2><p>The customer, revenue, readiness, and building actions that need attention first.</p></div><span class="count">{len(priority_items)} actions</span></div><div class="table-wrap"><table><thead><tr><th>Workstream</th><th>What needs attention</th><th>Next action</th></tr></thead><tbody>{priority_rows}</tbody></table></div></section>
+      <section class="panel panel--wide" id="building-performance">
+        <div class="panel-head"><div><h2>Building performance</h2><p>Sales, utilization, collected cash, and overdue receivables. Missing evidence stays visibly missing.</p></div><span class="count">{_esc(inquiry_metrics.get("total", 0))} inquiries</span></div>
+        <div class="metrics" aria-label="Building performance summary">
+          <div class="metric"><span>Median first response</span><strong>{_metric_value(inquiry_metrics.get("median_first_response_hours"), suffix=" hr")}</strong></div>
+          <div class="metric"><span>30-day scheduled utilization</span><strong>{_pct(operation_metrics.get("scheduled_utilization_30d"))}</strong></div>
+          <div class="metric"><span>Posted collected cash</span><strong>${int(finance_metrics.get("posted_collected_cents") or 0) / 100:,.0f}</strong></div>
+          <div class="metric"><span>Overdue receivables</span><strong>${int(finance_metrics.get("overdue_cents") or 0) / 100:,.0f}</strong></div>
+        </div>
+        <details class="advanced-disclosure">
+          <summary>View funnel and source detail</summary>
+          <div class="grid">
+            <div><h3>Workspace funnel</h3><div class="table-wrap"><table><thead><tr><th>Stage reached</th><th>Count</th></tr></thead><tbody>{workspace_funnel_rows}</tbody></table></div></div>
+            <div><h3>Event funnel</h3><div class="table-wrap"><table><thead><tr><th>Stage reached</th><th>Count</th></tr></thead><tbody>{event_funnel_rows}</tbody></table></div></div>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>Lead source</th><th>Inquiries</th><th>Invoiced</th><th>Posted collected</th></tr></thead><tbody>{source_performance_rows}</tbody></table></div>
+          <p class="sub">Hold expiration: {_pct(operation_metrics.get("hold_expiration_rate"))} · Contract cycle: {_metric_value(operation_metrics.get("median_contract_cycle_hours"), suffix=" hr")} · Deposit cycle: {_metric_value(operation_metrics.get("median_deposit_cycle_hours"), suffix=" hr")} · Delivery feedback: {_esc(str(campaign_metrics.get("delivery_feedback") or "not configured").replace("_", " "))} · Campaign engagement telemetry: {_esc(str(campaign_metrics.get("engagement_tracking") or "not configured").replace("_", " "))}</p>
+        </details>
+      </section>
+      <details class="setup-workspace" id="building-setup">
+        <summary><span><strong>Arena setup and administration</strong><span>{launch_ready_count} of 10 launch requirements are complete. Open this only to change business rules or finish provider setup.</span></span></summary>
+        <div class="setup-workspace__content">
+    <section class="launch-command panel--wide" aria-labelledby="arena-command-title">
       <div class="launch-command__head">
         <div>
           <div class="eyebrow">Arena launch command center</div>
@@ -1467,23 +1509,6 @@ def render_building_page(
         <div class="launch-step"><span>4 · Publication</span><strong>Locked</strong><p>No availability, contract, payment, or booking claim is live.</p></div>
       </div>
     </section>
-    <div class="grid">
-      <section class="panel panel--wide" id="operator-queue"><div class="panel-head"><div><h2>Operator queue</h2><p>The highest-risk customer, revenue, readiness, and building-service actions in one place.</p></div><span class="count">{len(priority_items)} actions</span></div><div class="table-wrap"><table><thead><tr><th>Workstream</th><th>What needs attention</th><th>Next action</th></tr></thead><tbody>{priority_rows}</tbody></table></div></section>
-      <section class="panel panel--wide" id="building-performance">
-        <div class="panel-head"><div><h2>Building performance</h2><p>All-time funnel evidence with current operating and financial measures. Missing evidence stays visibly missing.</p></div><span class="count">{_esc(inquiry_metrics.get("total", 0))} inquiries</span></div>
-        <div class="metrics" aria-label="Building performance summary">
-          <div class="metric"><span>Median first response</span><strong>{_metric_value(inquiry_metrics.get("median_first_response_hours"), suffix=" hr")}</strong></div>
-          <div class="metric"><span>30-day scheduled utilization</span><strong>{_pct(operation_metrics.get("scheduled_utilization_30d"))}</strong></div>
-          <div class="metric"><span>Posted collected cash</span><strong>${int(finance_metrics.get("posted_collected_cents") or 0) / 100:,.0f}</strong></div>
-          <div class="metric"><span>Overdue receivables</span><strong>${int(finance_metrics.get("overdue_cents") or 0) / 100:,.0f}</strong></div>
-        </div>
-        <div class="grid">
-          <div><h3>Workspace funnel</h3><div class="table-wrap"><table><thead><tr><th>Stage reached</th><th>Count</th></tr></thead><tbody>{workspace_funnel_rows}</tbody></table></div></div>
-          <div><h3>Event funnel</h3><div class="table-wrap"><table><thead><tr><th>Stage reached</th><th>Count</th></tr></thead><tbody>{event_funnel_rows}</tbody></table></div></div>
-        </div>
-        <div class="table-wrap"><table><thead><tr><th>Lead source</th><th>Inquiries</th><th>Invoiced</th><th>Posted collected</th></tr></thead><tbody>{source_performance_rows}</tbody></table></div>
-        <p class="sub">Hold expiration: {_pct(operation_metrics.get("hold_expiration_rate"))} · Contract cycle: {_metric_value(operation_metrics.get("median_contract_cycle_hours"), suffix=" hr")} · Deposit cycle: {_metric_value(operation_metrics.get("median_deposit_cycle_hours"), suffix=" hr")} · Delivery feedback: {_esc(str(campaign_metrics.get("delivery_feedback") or "not configured").replace("_", " "))} · Campaign engagement telemetry: {_esc(str(campaign_metrics.get("engagement_tracking") or "not configured").replace("_", " "))}</p>
-      </section>
       <section class="panel panel--wide" id="arena-catalog-readiness">
         <div class="panel-head"><div><h2>Arena catalog foundation</h2><p>Create the verified venue identity required by availability, pricing, inquiry, and launch-readiness workflows.</p></div>{arena_catalog_state}</div>
         <div class="alert alert--warning"><strong>This does not launch the venue.</strong><p>The action creates or reconciles only The Arena and the canonical <code>arena-events</code> offering as private, unavailable, and unpublished. A compatible legacy Canva placeholder may be retained as an unpublished record. It does not approve a rate plan, claim a date is available, send a message, charge a customer, or write a calendar.</p></div>
@@ -1585,6 +1610,8 @@ def render_building_page(
         </form>
         </details>
       </section>
+        </div>
+      </details>
       <section class="panel">
         <div class="panel-head"><div><h2>Add a CRM relationship</h2><p>One person can be a tenant, prospect, event host, or community member without duplication.</p></div></div>
         <form class="form-grid" method="post" action="/admin/building/contacts">
