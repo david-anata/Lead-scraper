@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
@@ -13,13 +13,20 @@ from sqlalchemy import text
 from sales_support_agent.models.database import get_engine
 from sales_support_agent.services.cashflow.bill_patterns import (
     BILL_PATTERN_ACTION, BILL_PATTERN_ENTITY, _PATTERN_CACHE, _build_pattern,
-    _decision_records, _load_bill_history, list_bill_patterns,
+    _decision_records, _load_bill_history, _monthly_cost_cents, list_bill_patterns,
 )
 from sales_support_agent.services.cashflow.vendor_aliases import combine_vendor_keys
 
 BATCH_ACTION = "bill_queue_batch_recorded"
 BATCH_ENTITY = "bill_queue_batch"
 VALID_ACTIONS = frozenset({"track", "not_a_bill", "snooze", "combine"})
+
+
+def _forecast_effect(pattern: Mapping[str, Any], days: int) -> int:
+    due = pattern.get("next_due")
+    if not isinstance(due, date):
+        due = date.fromisoformat(str(due)[:10])
+    return int(pattern.get("amount_cents") or 0) if due <= date.today() + timedelta(days=days) else 0
 
 
 def _selected_patterns(keys: Iterable[str]) -> tuple[list[str], dict[str, dict[str, Any]]]:
@@ -78,6 +85,54 @@ def preview_combine(
     }
 
 
+def preview_track(pattern_keys: Iterable[str], *, payment_date: str = "") -> dict[str, Any]:
+    """Explain the forecast change before a detected bill is tracked."""
+    keys, available = _selected_patterns(pattern_keys)
+    override = date.fromisoformat(payment_date) if payment_date else None
+    rows = []
+    for key in keys:
+        pattern = dict(available[key])
+        if override:
+            pattern["next_due"] = override
+        rows.append({
+            "pattern_key": key,
+            "vendor": pattern["vendor"],
+            "amount_cents": int(pattern["amount_cents"]),
+            "monthly_cost_cents": _monthly_cost_cents(pattern),
+            "next_due": str(pattern["next_due"]),
+            "effect_14_cents": _forecast_effect(pattern, 14),
+            "effect_30_cents": _forecast_effect(pattern, 30),
+            "possible_duplicate": bool(pattern.get("already_tracked")),
+        })
+    if any(row["possible_duplicate"] for row in rows):
+        raise ValueError("A matching schedule already exists. Review that schedule before tracking this bill.")
+    return {"rows": rows, "total_monthly_cost_cents": sum(row["monthly_cost_cents"] for row in rows)}
+
+
+def list_queue_activity(*, limit: int = 20) -> list[dict[str, Any]]:
+    """Recent authoritative bill-review audit records for the operator."""
+    with get_engine().connect() as connection:
+        rows = connection.execute(text("""
+            SELECT id, action_type, entity_id, actor, evidence_json, created_at
+            FROM finance_action_audit
+            WHERE entity_type IN (:pattern_entity, :batch_entity)
+            ORDER BY created_at DESC LIMIT :limit
+        """), {
+            "pattern_entity": BILL_PATTERN_ENTITY, "batch_entity": BATCH_ENTITY,
+            "limit": max(1, min(100, int(limit))),
+        }).fetchall()
+    activity = []
+    for row in rows:
+        values = dict(row._mapping)
+        payload = json.loads(values.get("evidence_json") or "{}")
+        activity.append({
+            "id": str(values["id"]), "action_type": str(values["action_type"]),
+            "pattern_key": str(values["entity_id"]), "actor": str(values.get("actor") or ""),
+            "created_at": str(values.get("created_at") or ""), "payload": payload,
+        })
+    return activity
+
+
 def _write_decision(
     connection: Any, *, pattern_key: str, decision: str, actor: str,
     evidence: Mapping[str, Any], request_id: str,
@@ -111,7 +166,7 @@ def apply_queue_action(
     keys, available = _selected_patterns(pattern_keys)
     if action == "combine" and len(keys) < 2:
         raise ValueError("choose at least two bills to combine")
-    if payment_date:
+    if action == "track" and payment_date:
         date.fromisoformat(payment_date)
     request_id = request_id or uuid4().hex
     batch_id = uuid4().hex
@@ -135,12 +190,17 @@ def apply_queue_action(
             metadata["preview"] = preview
         else:
             evidence: dict[str, Any] = {"batch_id": batch_id}
-            if category:
+            if action == "track" and category:
                 evidence["category"] = category.strip().lower()
-            if paid_in_pieces is not None:
+            if action == "track" and paid_in_pieces is not None:
                 evidence["paid_in_pieces"] = bool(paid_in_pieces)
-            if payment_date:
+            if action == "track" and payment_date:
                 evidence["payment_date"] = payment_date
+            if action == "not_a_bill" and category:
+                evidence["reason"] = category.strip()[:500]
+            if action == "snooze":
+                evidence["snoozed_on"] = date.today().isoformat()
+                evidence["return_on"] = (date.today() + timedelta(days=7)).isoformat()
             for key in keys:
                 _write_decision(
                     connection, pattern_key=key, decision=action, actor=actor,
@@ -148,6 +208,16 @@ def apply_queue_action(
                 )
         payload = {
             "keys": keys, "action": action, "previous": previous,
+            "vendors": [{
+                "pattern_key": key,
+                "vendor": str(available[key].get("vendor") or ""),
+                "before": {
+                    "decision": str(available[key].get("decision") or "unreviewed"),
+                    "amount_cents": int(available[key].get("amount_cents") or 0),
+                    "next_due": str(available[key].get("next_due") or ""),
+                },
+                "after": {"decision": action},
+            } for key in keys],
             "metadata": metadata, "request_id": request_id,
         }
         connection.execute(text("""
@@ -191,4 +261,7 @@ def undo_queue_batch(batch_id: str, *, actor: str) -> dict[str, Any]:
     return {"undone": len(payload.get("keys") or []), "remaining": int(refreshed["counts"]["unreviewed"])}
 
 
-__all__ = ["apply_queue_action", "preview_combine", "undo_queue_batch"]
+__all__ = [
+    "apply_queue_action", "list_queue_activity", "preview_combine",
+    "preview_track", "undo_queue_batch",
+]

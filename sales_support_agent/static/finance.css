@@ -1546,6 +1546,10 @@ input:focus, select:focus, textarea:focus {
 .finance-page-header,.bill-command-bar{display:flex;align-items:center;justify-content:space-between;gap:16px}
 .bill-command-bar{margin:14px 0 8px;flex-wrap:wrap}
 .bill-command-bar>div{display:flex;gap:6px;flex-wrap:wrap}
+.bill-tools{display:flex;align-items:end;justify-content:space-between;gap:12px;margin:14px 0 8px}
+.bill-tools label{display:grid;gap:5px;font-size:12px;font-weight:650}
+.bill-tools input,.bill-tools select{min-height:40px}
+.bill-search{flex:1;max-width:520px}
 .bill-command-bar [aria-pressed=true]{background:var(--ink,#243246);color:#fff}
 .bill-table-wrap{max-height:calc(100vh - 285px);min-height:360px;overflow:auto;border:1px solid var(--border,#d9e0e7);border-radius:14px;background:#fff}
 .bill-queue{margin:0;width:100%;font-size:13px}
@@ -1553,12 +1557,14 @@ input:focus, select:focus, textarea:focus {
 .bill-queue th,.bill-queue td{padding:7px 9px;vertical-align:top}
 .bill-queue tbody tr{height:42px}
 .bill-queue .status-badge{display:inline-block;margin-left:6px}
+.bill-queue td[data-label="Monthly cost"]{white-space:nowrap}
 .bill-select{width:32px}
 .bill-row-actions form{display:flex;gap:4px;flex-wrap:nowrap}
 .bill-row-actions .btn{padding:6px 8px;white-space:nowrap}
 .bill-evidence{margin-top:3px;color:#5d6d80}
 .bill-evidence summary{cursor:pointer;font-size:12px}
 .bill-evidence p,.bill-evidence ul{margin:5px 0;font-size:12px}
+.bill-suggestion{margin:5px 0;padding:6px 8px;border-left:3px solid #d69e2e;background:#fffbeb;font-size:12px}
 .bill-bulk-bar{position:sticky;bottom:12px;z-index:5;display:none;align-items:center;gap:8px;flex-wrap:wrap;margin:10px;padding:10px 12px;border:1px solid var(--border,#d9e0e7);border-radius:14px;background:#fff;box-shadow:0 8px 24px rgba(28,43,61,.12)}
 .bill-bulk-bar.is-active{display:flex}
 .bill-bulk-bar label{font-size:12px;display:flex;align-items:center;gap:5px}
@@ -1567,9 +1573,34 @@ input:focus, select:focus, textarea:focus {
 .bill-queue tr.is-working td:first-child::after{content:"Saving…";display:block;font-size:10px}
 .row-error{margin:4px 0 0;color:#b42318;font-size:12px}
 .bill-undo{position:fixed;right:28px;bottom:24px;z-index:6}
+.bill-undo[hidden]{display:none}
 .bill-answered{margin-top:14px}
 .bill-combine-dialog{max-width:560px;border:1px solid var(--border,#d9e0e7);border-radius:16px;padding:22px}
+.bill-review-dialog{width:min(620px,calc(100vw - 28px));max-height:calc(100vh - 28px);overflow:auto;border:1px solid var(--border,#d9e0e7);border-radius:16px;padding:22px}
+.bill-review-dialog::backdrop{background:rgba(24,34,48,.42)}
+.bill-review-dialog label{display:grid;gap:5px;margin:12px 0}
+.bill-preview{padding:12px;border-radius:10px;background:#f5f8fa;margin:12px 0}
+.bill-activity ol{display:grid;gap:10px;padding-left:22px}
 .bill-combine-dialog::backdrop{background:rgba(24,34,48,.42)}
 .bill-combine-dialog label{display:grid;gap:5px;margin:12px 0}
 @media (max-width:900px){.bill-table-wrap{max-height:none}.bill-row-actions form{flex-wrap:wrap}.bill-bulk-bar{position:static}}
+@media (max-width:600px){
+  .finance-page-header{align-items:flex-start}.bill-tools{display:grid}.bill-search{max-width:none}
+  .bill-table-wrap{overflow:visible;border:0;background:transparent}
+  .bill-queue,.bill-queue tbody,.bill-queue tr,.bill-queue td{display:block;width:100%}
+  .bill-queue thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+  .bill-queue tr{height:auto!important;margin:0 0 12px;padding:14px;border:1px solid var(--border,#d9e0e7);border-radius:14px;background:#fff}
+  .bill-queue td{display:grid;grid-template-columns:minmax(95px,34%) 1fr;gap:8px;padding:5px 0;border:0}
+  .bill-queue td::before{content:attr(data-label);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#607086}
+  .bill-queue .bill-select{display:block;width:100%;padding-bottom:8px}
+  .bill-queue .bill-select::before{content:"Select"}
+  .bill-row-actions form{display:grid;grid-template-columns:1fr}
+  .bill-row-actions .btn{width:100%;min-height:44px}
+  .bill-evidence{grid-column:1/-1}
+  .bill-bulk-bar{margin:10px 0;display:none;align-items:stretch}
+  .bill-bulk-bar.is-active{display:grid;grid-template-columns:1fr 1fr}
+  .bill-bulk-bar strong{grid-column:1/-1}
+  .bill-bulk-bar .btn{min-height:44px}
+  .bill-command-bar{align-items:flex-start}.bill-review-dialog{margin:auto 14px 0;width:calc(100% - 28px);border-radius:18px 18px 0 0}
+}
 @media (prefers-reduced-motion:reduce){.bill-queue tr{transition:none}}

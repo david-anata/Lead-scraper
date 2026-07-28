@@ -7,6 +7,7 @@ prevents a combine action from doubling a bill.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Iterable
 from uuid import uuid4
@@ -14,6 +15,20 @@ from uuid import uuid4
 from sqlalchemy import inspect, text
 
 from sales_support_agent.models.database import get_engine
+
+_DISPLAY_NOISE = re.compile(
+    r"\b(?:ach|web|ccd|ppd|pos|debit|withdrawal|payment|pmt|pmts|autopay|"
+    r"recurring|trace|company|type|card)\b|(?:\*{2,}|\b\d{4,}\b)",
+    re.IGNORECASE,
+)
+
+
+def clean_vendor_display_name(value: str) -> str:
+    """Return a readable vendor label without changing the underlying evidence."""
+    cleaned = _DISPLAY_NOISE.sub(" ", str(value or ""))
+    cleaned = re.sub(r"[^A-Za-z0-9&' -]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -")
+    return (cleaned or str(value or "Unknown vendor").strip()).title()[:120]
 
 
 def ensure_vendor_alias_schema(engine: Any | None = None) -> None:
@@ -180,7 +195,7 @@ def revoke_vendor_alias(
 
 
 __all__ = [
-    "alias_map", "canonical_name", "combine_vendor_keys",
+    "alias_map", "canonical_name", "clean_vendor_display_name", "combine_vendor_keys",
     "ensure_vendor_alias_schema", "list_vendor_aliases", "resolve_vendor_key",
     "revoke_vendor_alias",
 ]

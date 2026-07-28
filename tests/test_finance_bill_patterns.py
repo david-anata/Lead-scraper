@@ -195,6 +195,7 @@ def test_pattern_carries_the_keys_the_page_needs(finance_engine):
         "pattern_key",
         "vendor",
         "amount_cents",
+        "monthly_cost_cents",
         "frequency",
         "next_due",
         "confidence_bps",

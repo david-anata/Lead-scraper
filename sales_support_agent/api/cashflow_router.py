@@ -1763,7 +1763,7 @@ async def whats_coming_bulk(request: Request):
         result = await asyncio.to_thread(
             apply_queue_action, keys, action,
             actor=_bill_queue_actor(request),
-            category=str(form.get("category") or ""),
+            category=str(form.get("reason") or form.get("category") or ""),
             paid_in_pieces=paid_in_pieces,
             payment_date=str(form.get("payment_date") or ""),
             canonical_key=str(form.get("canonical_key") or ""),
@@ -1807,6 +1807,23 @@ async def whats_coming_combine_preview(request: Request):
             [str(value) for value in form.getlist("pattern_keys")],
             canonical_key=str(form.get("canonical_key") or ""),
             canonical_name=str(form.get("canonical_name") or ""),
+        )
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+    return JSONResponse(result)
+
+
+@router.post("/whats-coming/track-preview")
+async def whats_coming_track_preview(request: Request):
+    """Preview the cash-plan effect of tracking without writing anything."""
+    from sales_support_agent.services.cashflow.bill_queue import preview_track
+
+    form = await request.form()
+    try:
+        result = await asyncio.to_thread(
+            preview_track,
+            [str(value) for value in form.getlist("pattern_keys")],
+            payment_date=str(form.get("payment_date") or ""),
         )
     except ValueError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=409)
