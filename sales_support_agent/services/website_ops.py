@@ -2539,6 +2539,7 @@ def render_indexing_page(
     crawl_verification = load_crawl_verification(settings.website_ops_root)
     summary = dict(inventory.get("summary") or {})
     inspection = dict(inventory.get("inspection") or {})
+    sitemap_submission = dict(inventory.get("sitemap_submission") or {})
     crawl_summary = dict(crawl_inventory.get("summary") or {})
     verification_summary = dict(crawl_verification.get("summary") or {})
     imports = [
@@ -2564,7 +2565,7 @@ def render_indexing_page(
             <td>{html.escape(str(item.get('reason', 'Unspecified')))}</td>
             <td><span class="status-pill {'status-ok' if item.get('intentional') or item.get('desired_state') == 'indexed' else 'status-warn'}">{html.escape(str(item.get('desired_state', 'investigate')).replace('_', ' ').title())}</span></td>
             <td>{html.escape(str(item.get('priority', 'medium')).title())}</td>
-            <td>{html.escape(str(item.get('page_fetch_state', '') or item.get('verdict', '') or 'Unavailable').replace('_', ' ').title())}</td>
+            <td>{html.escape(str(item.get('page_fetch_state', '') or item.get('verdict', '') or 'Unavailable').replace('_', ' ').title())}{f'<div class="muted">Production HTTP {html.escape(str(item.get("production_status")))}</div>' if item.get('production_status') else ''}</td>
             <td>{html.escape(str(item.get('next_operation', '')))}</td>
             <td>{html.escape(str(item.get('last_crawled', '') or 'Unavailable'))}</td>
           </tr>
@@ -2626,9 +2627,11 @@ def render_indexing_page(
         </section>
         <section class="stats">
           {_dashboard_stat_card("Known URLs", summary.get("known_urls", 0), "Imported indexing evidence", "/admin/website-ops/indexing")}
+          {_dashboard_stat_card("Indexed", summary.get("indexed", 0), "Confirmed by Google", "/admin/website-ops/indexing")}
           {_dashboard_stat_card("Needs Action", summary.get("needs_action", 0), "Improve, consolidate, or investigate", "/admin/website-ops/indexing")}
           {_dashboard_stat_card("Intentional", summary.get("intentional_exclusions", 0), "Protected or deliberately excluded", "/admin/website-ops/indexing")}
           {_dashboard_stat_card("Inspected", inspection.get("succeeded", 0), f"{inspection.get('failed', 0)} API failures", "/admin/website-ops/indexing")}
+          {_dashboard_stat_card("Sitemap", str(sitemap_submission.get("status", "not submitted")).replace("_", " ").title(), "Search Console discovery feed", "/admin/website-ops/indexing")}
         </section>
         {f'''
         <section class="card stack">

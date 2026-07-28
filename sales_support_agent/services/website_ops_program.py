@@ -149,11 +149,107 @@ def build_indexing_inventory(records: Iterable[Mapping[str, Any]]) -> dict[str, 
         "records": classified,
         "summary": {
             "known_urls": len(classified),
-            "needs_action": sum(1 for item in classified if not item["intentional"]),
+            "needs_action": sum(
+                1
+                for item in classified
+                if item["desired_state"] not in {"indexed", "blocked intentionally"}
+            ),
+            "indexed": sum(
+                1 for item in classified if item["desired_state"] == "indexed"
+            ),
             "intentional_exclusions": sum(1 for item in classified if item["intentional"]),
             "reason_counts": dict(sorted(reason_counts.items())),
             "desired_state_counts": dict(sorted(state_counts.items())),
         },
+    }
+
+
+def reconcile_indexing_inventory(
+    inventory: Mapping[str, Any],
+    observations: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Join Google's historical state to the newest rendered production response."""
+
+    current_status: dict[str, int] = {}
+    for observation in observations:
+        url = _normalized_url(observation.get("url"))
+        if not url:
+            continue
+        status = int(
+            observation.get("status_code")
+            or observation.get("response_status")
+            or 0
+        )
+        if status:
+            current_status[url] = status
+
+    records = [
+        dict(item)
+        for item in list(inventory.get("records") or [])
+        if isinstance(item, Mapping)
+    ]
+    for record in records:
+        status = current_status.get(_normalized_url(record.get("url")), 0)
+        reason = _normalized_reason(record.get("reason"))
+        record["production_status"] = status or None
+        if status == 200 and reason in {
+            "not found (404)",
+            "blocked due to access forbidden (403)",
+        }:
+            record.update(
+                {
+                    "desired_state": "recrawl pending",
+                    "priority": "medium",
+                    "next_operation": (
+                        "Production returns HTTP 200. Retain the canonical sitemap URL "
+                        "and crawlable internal links, then verify after Google's next crawl."
+                    ),
+                    "reconciliation": (
+                        f"Google's last observed state was {record.get('reason')}; "
+                        "fresh rendered production returns HTTP 200."
+                    ),
+                }
+            )
+        elif status == 200 and reason == "url is unknown to google":
+            record.update(
+                {
+                    "desired_state": "discovery pending",
+                    "priority": "medium",
+                    "next_operation": (
+                        "Retain the canonical URL in the submitted sitemap and add or "
+                        "verify crawlable contextual internal links from established pages."
+                    ),
+                    "reconciliation": (
+                        "Fresh rendered production returns HTTP 200, but Google has not "
+                        "discovered or recorded the URL yet."
+                    ),
+                }
+            )
+
+    summary = dict(inventory.get("summary") or {})
+    state_counts: dict[str, int] = {}
+    for record in records:
+        state = str(record.get("desired_state", "investigate"))
+        state_counts[state] = state_counts.get(state, 0) + 1
+    summary.update(
+        {
+            "known_urls": len(records),
+            "needs_action": sum(
+                1
+                for record in records
+                if record.get("desired_state")
+                not in {"indexed", "blocked intentionally"}
+            ),
+            "indexed": sum(
+                1 for record in records if record.get("desired_state") == "indexed"
+            ),
+            "desired_state_counts": dict(sorted(state_counts.items())),
+        }
+    )
+    return {
+        **dict(inventory),
+        "records": records,
+        "summary": summary,
     }
 
 
