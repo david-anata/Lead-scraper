@@ -317,6 +317,43 @@ def _ensure_building_columns(engine: Any) -> None:
                 else "DATETIME"
             ),
         },
+        "building_relationships": {
+            "billing_account_id": "VARCHAR(64)",
+        },
+        "building_communication_preferences": {
+            "operational_source": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "operational_evidence_reference": "VARCHAR(1024) NOT NULL DEFAULT ''",
+            "operational_changed_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+        },
+        "building_segments": {
+            "segment_type": "VARCHAR(64) NOT NULL DEFAULT 'custom'",
+            "purpose_scope": "VARCHAR(32) NOT NULL DEFAULT 'both'",
+            "approval_evidence": "TEXT NOT NULL DEFAULT ''",
+        },
+        "building_campaigns": {
+            "content_version": "INTEGER NOT NULL DEFAULT 1",
+            "template_reference": "VARCHAR(1024) NOT NULL DEFAULT ''",
+            "content_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "content_classification": "VARCHAR(32) NOT NULL DEFAULT 'standard'",
+            "private_content_approval_evidence": "TEXT NOT NULL DEFAULT ''",
+            "reviewed_by": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "reviewed_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+        },
+        "building_campaign_recipients": {
+            "campaign_version": "INTEGER NOT NULL DEFAULT 1",
+            "communication_class": "VARCHAR(32) NOT NULL DEFAULT 'marketing'",
+            "content_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "permission_snapshot_json": "JSON NOT NULL DEFAULT '{}'",
+            "recipient_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
+        },
         "building_reservations": {
             "guest_starts_at": (
                 "TIMESTAMP WITH TIME ZONE"
