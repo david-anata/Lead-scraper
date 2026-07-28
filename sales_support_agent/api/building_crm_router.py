@@ -4507,7 +4507,8 @@ def building_control_room(
                     "id": item.id,
                     "name": item.name,
                     "space_id": item.space_id,
-                    "offering_id": item.offering_id,
+                    "offering_id": item.id,
+                    "offering_type": item.offering_type,
                     "is_published": item.is_published,
                 }
                 for item in offering_rows
@@ -4572,6 +4573,7 @@ def building_control_room(
             ],
             inquiries=[
                 {
+                    "id": item.id,
                     "name": item.name,
                     "email": item.email,
                     "kind": item.kind,
@@ -4596,6 +4598,9 @@ def building_control_room(
                     ),
                     "lifecycle": dict(
                         (item.payload_json or {}).get("_lifecycle") or {}
+                    ),
+                    "tour_handoff": dict(
+                        (item.payload_json or {}).get("_tour_handoff") or {}
                     ),
                     "assigned_owner": item.assigned_owner,
                     "response_due_at": (

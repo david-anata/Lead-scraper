@@ -474,12 +474,58 @@ def render_building_page(
             '<button class="secondary secondary--small" type="submit">Save progress</button></form></details>'
         )
 
+    workspace_offerings = [
+        item
+        for item in offerings
+        if item.get("offering_type")
+        in {"private_office", "coworking", "meeting_room", "membership"}
+        and item.get("space_id")
+    ]
+    workspace_space_ids = {
+        str(item.get("space_id") or "") for item in workspace_offerings
+    }
+
+    def tour_handoff_action(item: dict[str, Any]) -> str:
+        lifecycle = dict(item.get("lifecycle") or {})
+        if (
+            item.get("kind") != "tour"
+            or lifecycle.get("stage") in {"closed_won", "closed_lost"}
+            or item.get("tour_handoff")
+        ):
+            return ""
+        offering_options_html = "".join(
+            f'<option value="{_esc(offering.get("id"))}">{_esc(offering.get("name"))}</option>'
+            for offering in workspace_offerings
+        )
+        space_options_html = "".join(
+            f'<option value="{_esc(space.get("id"))}">{_esc(space.get("name"))}</option>'
+            for space in spaces
+            if str(space.get("id") or "") in workspace_space_ids
+        )
+        if not offering_options_html or not space_options_html:
+            return '<span class="sub">Add a linked workspace offering and space before scheduling.</span>'
+        return f'''<details class="row-actions"><summary>Schedule tour</summary>
+          <form method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/schedule-tour">
+            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+            <input type="hidden" name="idempotency_key" value="tour-inquiry:{_esc(item.get("id"))}:v1">
+            <label>Workspace offering<select name="offering_id" required><option value="">Choose</option>{offering_options_html}</select></label>
+            <label>Tour space<select name="space_id" required><option value="">Choose</option>{space_options_html}</select></label>
+            <label>Tour starts (Mountain time)<input type="datetime-local" name="scheduled_at" required></label>
+            <label>Duration / tour end<input type="number" name="duration_minutes" min="15" max="240" value="30" required><span class="sub">The end is calculated from this duration.</span></label>
+            <label>Host<input name="host" required value="{_esc(item.get("assigned_owner"))}" placeholder="Staff host"></label>
+            <label>Meeting location<input name="meeting_location" required value="Anata Building"></label>
+            <label>Internal notes<textarea name="notes"></textarea></label>
+            <button class="secondary secondary--small" type="submit">Schedule and link tour</button>
+            <span class="sub">Creates no hold and does not reserve workspace inventory.</span>
+          </form>
+        </details>'''
+
     inquiry_rows = "".join(
         f"""
         <tr>
           <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("email"))}</span></td>
           <td>{_esc(item.get("kind"))}</td>
-          <td>{_esc(item.get("preferred_date") or "—")}</td>
+          <td>{_esc(item.get("preferred_date") or "—")}{tour_handoff_action(item)}</td>
           <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")} · respond by {_esc(item.get("response_due_at") or "not set")}</span>{inquiry_lifecycle_action(item)}</td>
           <td>{_esc(item.get("source"))}<span class="sub">{_esc(item.get("source_reference"))}</span></td>
           <td>{(

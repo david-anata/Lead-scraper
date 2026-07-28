@@ -38,10 +38,12 @@ from sales_support_agent.api.building_booking_router import (
     ProposalInput,
     ReservationInput,
     TourInput,
+    TourInquiryHandoffInput,
     TransitionInput,
     create_event_review,
     create_reservation,
     create_tour,
+    create_tour_inquiry_handoff,
     prepare_customer_status_access,
     record_agreement,
     record_deposit,
@@ -343,6 +345,52 @@ def create_event_review_from_control_room(
         action,
         "Authoritative event window reviewed; temporary hold and quote draft created.",
     )
+
+
+@router.post("/inquiries/{inquiry_id}/schedule-tour", dependencies=FORM_DEPS)
+def schedule_tour_inquiry_from_control_room(
+    inquiry_id: str,
+    request: Request,
+    offering_id: str = Form(...),
+    space_id: str = Form(...),
+    scheduled_at: str = Form(...),
+    duration_minutes: int = Form(...),
+    host: str = Form(...),
+    meeting_location: str = Form(...),
+    notes: str = Form(""),
+    idempotency_key: str = Form(...),
+    user: dict = Depends(require_tool("building.events.manage")),
+) -> RedirectResponse:
+    """Schedule one eligible tour inquiry without creating an inventory hold."""
+
+    def action() -> None:
+        result = create_tour_inquiry_handoff(
+            TourInquiryHandoffInput(
+                inquiry_id=inquiry_id,
+                offering_id=offering_id.strip(),
+                space_id=space_id.strip(),
+                scheduled_at=_local_datetime(scheduled_at),
+                duration_minutes=duration_minutes,
+                host=host.strip(),
+                meeting_location=meeting_location.strip(),
+                notes=notes.strip(),
+                actor=_actor(user),
+            ),
+            request,
+            idempotency_key.strip(),
+            _internal_key(request),
+        )
+        request.state.tour_handoff_replayed = bool(result["replayed"])
+
+    response = _run_form_action(
+        action,
+        "Tour handoff replayed without duplicates."
+        if getattr(request.state, "tour_handoff_replayed", False)
+        else "Tour scheduled and linked. No inventory hold was created.",
+    )
+    if getattr(request.state, "tour_handoff_replayed", False):
+        return _redirect(notice="Tour handoff replayed without duplicates.")
+    return response
 
 
 @router.post("/reservations/{reservation_id}/transition", dependencies=FORM_DEPS)
