@@ -1749,6 +1749,39 @@ export default function Page() {
             self.assertIn('type="file"', html)
             self.assertIn("Production Crawl", html)
 
+    def test_indexing_page_surfaces_failed_api_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            directory = settings.website_ops_root / "indexing"
+            directory.mkdir(parents=True)
+            (directory / "inventory.json").write_text(
+                json.dumps(
+                    {
+                        "records": [],
+                        "summary": {
+                            "known_urls": 0,
+                            "needs_action": 0,
+                            "intentional_exclusions": 0,
+                        },
+                        "inspection": {
+                            "attempted": 47,
+                            "succeeded": 0,
+                            "failed": 47,
+                            "failure_samples": [
+                                "https://anatainc.com/: ReadTimeout"
+                            ],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            html = render_indexing_page(settings)
+
+            self.assertIn("latest inspection attempt needs attention", html)
+            self.assertIn("47 of 47 canonical URL inspections failed", html)
+            self.assertIn("ReadTimeout", html)
+
     def test_run_website_ops_auto_executes_new_high_confidence_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir), execute_approved=True)
