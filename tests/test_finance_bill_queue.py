@@ -85,6 +85,28 @@ def test_bulk_is_one_transaction_and_one_recalculation(finance_engine, monkeypat
         )).scalar() == 1
 
 
+def test_retrying_the_same_request_returns_the_original_batch(finance_engine):
+    pattern = _two_patterns(finance_engine)[0]
+    first = apply_queue_action(
+        [pattern["pattern_key"]], "not_a_bill", actor="qa",
+        request_id="stable-request",
+    )
+    replay = apply_queue_action(
+        [pattern["pattern_key"]], "not_a_bill", actor="qa",
+        request_id="stable-request",
+    )
+    assert replay == {
+        "batch_id": first["batch_id"],
+        "applied": 1,
+        "action": "not_a_bill",
+        "idempotent_replay": True,
+    }
+    with finance_engine.connect() as connection:
+        assert connection.execute(text("""
+            SELECT COUNT(*) FROM finance_action_audit WHERE id=:id
+        """), {"id": first["batch_id"]}).scalar() == 1
+
+
 def test_undo_restores_rows_after_bulk_answer(finance_engine):
     patterns = _two_patterns(finance_engine)
     result = apply_queue_action(
