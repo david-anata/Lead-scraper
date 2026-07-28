@@ -12,6 +12,10 @@ and `arena-events` offering from the approved Listing Copy Pack evidence. Both
 records remain private, unavailable, and unpublished. The action does not
 approve pricing, claim availability, send, charge, or write a provider. An
 existing incompatible identity or relationship fails closed for manual review.
+The known private Canva placeholder may be reconciled from capacity `0` to the
+approved capacity `200`; its private/unavailable state is preserved. The
+canonical offering is `arena-events`. Any legacy `arena-event` draft remains
+unpublished and is labeled as legacy in governed selection controls.
 
 Missing records remain `unresolved`. Each decision requires
 `building.pricing.approve`, CSRF/same-origin protection, a key-specific status,

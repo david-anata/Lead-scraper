@@ -817,8 +817,14 @@ def render_building_page(
         for item in offerings
     )
     event_offering_options = "".join(
-        f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name") or item.get("id"))}</option>'
-        for item in offerings
+        f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name") or item.get("id"))}{(" · canonical" if item.get("id") == "arena-events" else " · legacy/unreviewed" if item.get("id") == "arena-event" else "")}</option>'
+        for item in sorted(
+            offerings,
+            key=lambda value: (
+                0 if value.get("id") == "arena-events" else 1,
+                str(value.get("name") or value.get("id") or ""),
+            ),
+        )
         if item.get("offering_type") == "event"
     )
     arena_space = next(
@@ -1287,7 +1293,7 @@ def render_building_page(
       </section>
       <section class="panel panel--wide" id="arena-catalog-readiness">
         <div class="panel-head"><div><h2>Arena catalog foundation</h2><p>Create the verified venue identity required by availability, pricing, inquiry, and launch-readiness workflows.</p></div>{arena_catalog_state}</div>
-        <div class="alert alert--warning"><strong>This does not launch the venue.</strong><p>The action creates only The Arena and its event offering as private, unavailable, and unpublished. It does not approve a rate plan, claim a date is available, send a message, charge a customer, or write a calendar.</p></div>
+        <div class="alert alert--warning"><strong>This does not launch the venue.</strong><p>The action creates or reconciles only The Arena and the canonical <code>arena-events</code> offering as private, unavailable, and unpublished. A compatible legacy Canva placeholder may be retained as an unpublished record. It does not approve a rate plan, claim a date is available, send a message, charge a customer, or write a calendar.</p></div>
         <form class="form-grid" method="post" action="/admin/building/catalog/arena/prepare">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="arena-catalog-confirmation">Typed confirmation</label><input id="arena-catalog-confirmation" name="confirmation" required placeholder="PREPARE ARENA CATALOG"></div>
