@@ -88,6 +88,7 @@ _NAV_SECTIONS = [
     ]),
     _NavSection("hr", "HR", "hr", [
         _NavSubpage("hr.access", "Dashboard", "/admin/hr", "dashboard"),
+        _NavSubpage("hr.payroll", "Setup", "/admin/hr/setup", "setup"),
         _NavSubpage("hr.access", "Employees", "/admin/hr/employees", "employees"),
         _NavSubpage("hr.access", "My onboarding", "/admin/hr/onboarding", "onboarding"),
         _NavSubpage("hr.access", "Policies", "/admin/hr/policies", "policies"),

@@ -61,6 +61,16 @@ _HR_STYLES = """
   .hr-pagination { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:12px 0 28px; }
   .hr-dashboard-action { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:18px 20px; background:#fff; border:1px solid rgba(43,54,68,.1); border-radius:14px; }
   .hr-dashboard-action .hr-sub { margin:0; max-width:720px; }
+  .hr-setup-summary { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:20px; align-items:center; margin:20px 0 24px; padding:20px; border:1px solid var(--agent-border); border-radius:var(--agent-radius-card); background:var(--agent-surface); }
+  .hr-setup-summary h2, .hr-setup-summary p { margin:0; }
+  .hr-setup-summary p { margin-top:6px; color:var(--agent-ink-muted); line-height:1.5; }
+  .hr-setup-list { display:grid; gap:12px; margin:0; padding:0; list-style:none; }
+  .hr-setup-step { display:grid; grid-template-columns:44px minmax(0,1fr) auto; gap:14px; align-items:start; padding:18px; border:1px solid var(--agent-border); border-radius:var(--agent-radius-panel); background:var(--agent-surface); }
+  .hr-setup-step__number { width:36px; height:36px; display:grid; place-items:center; border-radius:50%; background:var(--agent-blue-soft); color:var(--agent-ink); font:800 13px Montserrat,Inter,sans-serif; }
+  .hr-setup-step h2 { margin:1px 0 5px; color:var(--agent-ink); font:800 16px/1.3 Montserrat,Inter,sans-serif; }
+  .hr-setup-step p { margin:0; color:var(--agent-ink-muted); font-size:14px; line-height:1.5; }
+  .hr-setup-step__meta { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
+  .hr-setup-step__owner { color:var(--agent-ink-muted); font:700 11px/1.3 Montserrat,Inter,sans-serif; }
   .hr-btn-danger { background:#8b3a32; }
   .hr-mobile-nav { display:none; }
   @media (max-width: 768px) {
@@ -73,6 +83,11 @@ _HR_STYLES = """
     .hr-actions { flex-direction:column; }
     .hr-dashboard-action { align-items:stretch; flex-direction:column; }
     .hr-dashboard-action .hr-btn { min-height:44px; text-align:center; }
+    .hr-setup-summary { grid-template-columns:1fr; align-items:stretch; }
+    .hr-setup-summary .hr-btn { width:100%; min-height:44px; text-align:center; box-sizing:border-box; }
+    .hr-setup-step { grid-template-columns:38px minmax(0,1fr); padding:16px 14px; }
+    .hr-setup-step__meta { grid-column:2; justify-content:flex-start; }
+    .hr-setup-step__meta .hr-btn { width:100%; min-height:44px; text-align:center; box-sizing:border-box; }
     .hr-btn { min-height:44px; }
     .hr-js .hr-tbl { display:block; width:100%; max-width:100%; overflow:visible; border:0; background:transparent; }
     .hr-js .hr-tbl thead { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
@@ -179,6 +194,218 @@ def render_hr_employee_record_missing(*, user: Optional[dict]) -> str:
         """,
         user=user,
     )
+
+
+def render_hr_setup(control: dict, company_profile: dict, *, user, flash=None) -> str:
+    """Render the approved company-to-payroll setup journey from live readiness."""
+    readiness = control.get("readiness") or {}
+    blockers = readiness.get("blockers") or []
+    blocker_kinds = {item.get("kind") for item in blockers}
+    settings = control.get("settings") or {}
+    employees = control.get("employees") or []
+    openings = {
+        item.get("employee_email"): item
+        for item in (control.get("opening_balances") or [])
+    }
+    active_emails = {item.get("email") for item in employees}
+    approved_openings = sum(
+        1 for email in active_emails
+        if (openings.get(email) or {}).get("approval_status") == "approved"
+    )
+
+    profile_required = (
+        "legal_name", "ein_last4", "address_line1", "city", "state", "zip_code",
+        "payroll_contact_email", "final_approver_email",
+        "utah_withholding_account_last4", "utah_ui_account_last4", "source_note",
+    )
+    profile_ready = all(company_profile.get(field) for field in profile_required)
+    utah_ready = bool(
+        company_profile.get("utah_withholding_account_last4")
+        and company_profile.get("utah_ui_account_last4")
+        and settings.get("utah_ui_rate")
+    )
+    portals_ready = bool(
+        settings.get("eftps_ready")
+        and settings.get("utah_tap_ready")
+        and settings.get("utah_ui_ready")
+    )
+    deposit_ready = settings.get("federal_deposit_schedule") in {
+        "monthly", "semiweekly"
+    }
+    opening_ready = bool(
+        active_emails
+        and approved_openings == len(active_emails)
+        and settings.get("opening_balances_confirmed")
+    )
+    w4_ready = "w4" not in blocker_kinds
+    time_kinds = {
+        "employee_setup", "open_time", "time_correction", "time_missing",
+        "timesheet_approval", "payroll_input",
+    }
+    time_ready = not bool(blocker_kinds.intersection(time_kinds))
+    review_ready = bool(settings.get("qualified_tax_review"))
+
+    tasks = [
+        {
+            "title": "Confirm the employer legal profile",
+            "description": (
+                "Legal identity, Utah account endings, payroll contact, and David’s "
+                "final-approver assignment are recorded with a source note."
+                if profile_ready else
+                "Complete the legal identity, Utah account endings, payroll contact, "
+                "final approver, and evidence note."
+            ),
+            "ready": profile_ready, "owner": "David or Val",
+            "href": "/admin/hr/settings", "action": "Review employer profile",
+        },
+        {
+            "title": "Use the approved payroll calendar",
+            "description": (
+                "Semimonthly periods, Sunday–Saturday workweeks, and weekend payday "
+                "adjustments are configured."
+            ),
+            "ready": True, "owner": "System",
+            "href": "/admin/hr/compliance", "action": "View payroll calendar",
+        },
+        {
+            "title": "Verify Utah payroll registrations",
+            "description": (
+                "Utah withholding and unemployment account endings and the 2026 "
+                "unemployment rate are recorded."
+                if utah_ready else
+                "Record the Utah account endings and the unemployment rate from the "
+                "official employer notice."
+            ),
+            "ready": utah_ready, "owner": "David or Val",
+            "href": "/admin/hr/settings", "action": "Review Utah setup",
+        },
+        {
+            "title": "Test government payment access",
+            "description": (
+                "EFTPS, Utah TAP, and Utah unemployment portal access are confirmed."
+                if portals_ready else
+                "Sign in outside Agent and confirm access to EFTPS, Utah TAP, and the "
+                "Utah unemployment portal. Never enter passwords in HR."
+            ),
+            "ready": portals_ready, "owner": "Val",
+            "href": "/admin/hr/settings", "action": "Record access checks",
+        },
+        {
+            "title": "Confirm the federal deposit schedule",
+            "description": (
+                "The federal payroll-tax deposit schedule is supported by lookback evidence."
+                if deposit_ready else
+                "Use an IRS notice, prior payroll record, or qualified reviewer evidence "
+                "to confirm monthly or semiweekly."
+            ),
+            "ready": deposit_ready, "owner": "David or reviewer",
+            "href": "/admin/hr/settings", "action": "Record deposit evidence",
+        },
+        {
+            "title": "Reconcile 2026 opening balances",
+            "description": (
+                f"{approved_openings} of {len(active_emails)} active W-2 employee balances "
+                "are independently approved. Review the recovered Base44 drafts; do not "
+                "re-enter values that already match the source."
+            ),
+            "ready": opening_ready, "owner": "Val prepares · David reviews",
+            "href": "/admin/hr/settings", "action": "Review opening balances",
+        },
+        {
+            "title": "Collect current employee W-4s",
+            "description": (
+                "Every active W-2 employee has a current signed W-4."
+                if w4_ready else
+                "Send secure onboarding invitations to the employees identified in the "
+                "payroll blocker list. Employees must make and sign their own elections."
+            ),
+            "ready": w4_ready, "owner": "Employees · Val follows up",
+            "href": "/admin/hr/employees", "action": "Open employee records",
+        },
+        {
+            "title": "Close and approve current time",
+            "description": (
+                "Current hourly time, corrections, and payroll inputs are independently reviewed."
+                if time_ready else
+                "Resolve open punches and corrections, then have each hourly employee submit "
+                "and another authorized person approve the unchanged timesheet."
+            ),
+            "ready": time_ready, "owner": "Employees and Val",
+            "href": "/admin/hr/time", "action": "Review time and PTO",
+        },
+        {
+            "title": "Record the qualified calculation review",
+            "description": (
+                "A qualified professional’s 2026 calculation review is recorded with evidence."
+                if review_ready else
+                "A qualified accountant or payroll professional must review the 2026 rules "
+                "and opening setup. Record their real evidence; do not self-certify."
+            ),
+            "ready": review_ready, "owner": "Qualified reviewer",
+            "href": "/admin/hr/settings", "action": "Record review evidence",
+        },
+        {
+            "title": "Prepare the controlled payroll version",
+            "description": (
+                "All preparation gates are clear. Val can prepare the immutable version for "
+                "David’s separate approval."
+                if readiness.get("ready") else
+                f"{len(blockers)} blocking item(s) remain. Payroll preparation stays disabled "
+                "until every critical item is resolved."
+            ),
+            "ready": bool(readiness.get("ready")), "owner": "Val prepares · David approves",
+            "href": "/admin/hr/payroll", "action": "Open payroll control room",
+        },
+    ]
+    complete = sum(1 for task in tasks if task["ready"])
+    remaining = len(tasks) - complete
+    next_task = next((task for task in tasks if not task["ready"]), tasks[-1])
+
+    task_html = "".join(
+        f"""
+        <li class="hr-setup-step">
+          <div class="hr-setup-step__number" aria-hidden="true">{index}</div>
+          <div>
+            <h2>{_esc(task["title"])}</h2>
+            <p>{_esc(task["description"])}</p>
+          </div>
+          <div class="hr-setup-step__meta">
+            <span class="app-status {'app-status--confirmed' if task['ready'] else 'app-status--blocked'}">
+              {'Confirmed' if task['ready'] else 'Needs action'}
+            </span>
+            <span class="hr-setup-step__owner">{_esc(task["owner"])}</span>
+            <a class="hr-btn hr-btn-light" href="{_esc(task["href"])}">{_esc(task["action"])}</a>
+          </div>
+        </li>
+        """
+        for index, task in enumerate(tasks, start=1)
+    )
+    body = f"""
+    {_flash(flash)}
+    <header class="app-page-header">
+      <div>
+        <div class="hr-kicker">HR and payroll setup</div>
+        <h1>Finish setup without re-entering known information</h1>
+        <p>This checklist reads the live HR records. A task turns confirmed only when
+        the required system record or human evidence exists.</p>
+      </div>
+    </header>
+    <section class="app-metric-strip" aria-label="Setup progress">
+      <div class="app-metric"><div class="app-metric__value">{complete}</div><div class="app-metric__label">Confirmed</div></div>
+      <div class="app-metric"><div class="app-metric__value">{remaining}</div><div class="app-metric__label">Needs action</div></div>
+      <div class="app-metric"><div class="app-metric__value">{len(blockers)}</div><div class="app-metric__label">Payroll blockers</div></div>
+    </section>
+    <section class="hr-setup-summary" aria-labelledby="next-setup-action">
+      <div>
+        <div class="hr-kicker">Next action</div>
+        <h2 id="next-setup-action">{_esc(next_task["title"])}</h2>
+        <p>{_esc(next_task["description"])}</p>
+      </div>
+      <a class="hr-btn" href="{_esc(next_task["href"])}">{_esc(next_task["action"])}</a>
+    </section>
+    <ol class="hr-setup-list">{task_html}</ol>
+    """
+    return hr_shell("Setup", "setup", body, user=user)
 
 
 def _flash(flash: Optional[str]) -> str:

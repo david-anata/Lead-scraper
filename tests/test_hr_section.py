@@ -65,6 +65,21 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn('aria-label="HR pages"', r.text)
         self.assertNotIn('class="hr-side"', r.text)
 
+    def test_setup_checklist_uses_live_readiness_and_is_payroll_private(self):
+        page = self._get("/admin/hr/setup", self.sa)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Finish setup without re-entering known information", page.text)
+        self.assertIn("Reconcile 2026 opening balances", page.text)
+        self.assertIn("Review the recovered Base44 drafts; do not", page.text)
+        self.assertIn('href="/admin/hr/setup"', page.text)
+
+        import uuid
+        email = f"setup-viewer-{uuid.uuid4().hex[:8]}@anatainc.com"
+        uid = access_store.upsert_user(email, "Setup Viewer")
+        access_store.set_user_permissions(uid, ["hr.access"])
+        denied = self._get("/admin/hr/setup", _cookie(email))
+        self.assertEqual(denied.status_code, 403)
+
     def test_create_and_list_employee(self):
         import uuid
         email = f"worker-{uuid.uuid4().hex[:8]}@anatainc.com"  # unique — persistent temp DB

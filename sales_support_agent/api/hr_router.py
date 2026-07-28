@@ -53,6 +53,7 @@ from sales_support_agent.services.hr.pages import (
     render_hr_compliance,
     render_hr_offboarding,
     render_hr_reports,
+    render_hr_setup,
     render_hr_policies,
     render_hr_teams,
     render_hr_team_detail,
@@ -210,6 +211,17 @@ async def hr_dashboard(request: Request, user: dict = Depends(_guard)):
     )
     return HTMLResponse(render_hr_dashboard(
         stats, user=user, flash=_flash(request), manager_view=_can_manage(user)
+    ))
+
+
+@router.get("/setup", response_class=HTMLResponse)
+async def hr_setup(request: Request, user: dict = Depends(_pay_view_guard)):
+    """Show one evidence-backed checklist for reaching payroll readiness."""
+    return HTMLResponse(render_hr_setup(
+        payroll_store.control_room(date.today()),
+        payroll_store.get_company_profile(),
+        user=user,
+        flash=_flash(request),
     ))
 
 

@@ -671,7 +671,14 @@ when onboarding, time, contractor-document, I-9-expiration, or payroll-liability
 items need review. The email contains no compensation, SSN, tax-election, or
 pay-statement details.
 
-Before the first live payroll, complete `/admin/hr/settings`:
+Before the first live payroll, open `/admin/hr/setup`. It is the live,
+evidence-backed checklist for Val and David: completed steps reflect current HR
+records, unresolved steps link to the exact page that owns the work, and
+recovered Base44 opening-balance drafts are reviewed rather than re-entered.
+The checklist never marks portal access, independent review, or government
+outcomes complete without the corresponding record.
+
+Use the checklist to:
 
 1. enter reviewed 2026 opening balances for every W-2 employee;
 2. enter the Utah unemployment rate from the employer notice;
