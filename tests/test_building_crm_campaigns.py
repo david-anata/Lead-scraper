@@ -554,6 +554,43 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         self.assertIn("No native invoices yet.", body)
         self.assertIn("Collection work", body)
         self.assertIn("No collection cases.", body)
+        controls = re.findall(
+            r"<(?:input|select|textarea)\b([^>]*)>",
+            body,
+            flags=re.IGNORECASE,
+        )
+        named_controls = 0
+        for attrs in controls:
+            if re.search(
+                r'\btype=["\']?hidden\b',
+                attrs,
+                flags=re.IGNORECASE,
+            ):
+                continue
+            named_controls += 1
+            has_aria_name = re.search(
+                r"\baria-(?:label|labelledby)\s*=",
+                attrs,
+                flags=re.IGNORECASE,
+            )
+            control_id = re.search(
+                r'\bid=(["\'])(.*?)\1',
+                attrs,
+                flags=re.IGNORECASE,
+            )
+            has_visible_association = bool(
+                control_id
+                and re.search(
+                    rf'<label\b[^>]*\bfor=(["\']){re.escape(control_id.group(2))}\1',
+                    body,
+                    flags=re.IGNORECASE,
+                )
+            )
+            self.assertTrue(
+                has_aria_name or has_visible_association,
+                f"Building control is missing an accessible name: {attrs}",
+            )
+        self.assertGreater(named_controls, 50)
 
     def test_08_operator_can_save_reviewed_space_and_offering_from_control_room(self) -> None:
         settings = app.state.agent_settings

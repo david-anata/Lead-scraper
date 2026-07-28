@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import re
 from collections import Counter
 from typing import Any
 
@@ -27,6 +28,67 @@ def _badge(value: str) -> str:
     return f'<span class="badge badge--{tone}">{_esc(normalized)}</span>'
 
 
+_CONTROL_TAG_RE = re.compile(
+    r"<(?P<tag>input|select|textarea)\b(?P<attrs>[^>]*)>",
+    flags=re.IGNORECASE,
+)
+_LABEL_FOR_RE = re.compile(
+    r"<label\b[^>]*\bfor=(?P<quote>['\"])(?P<value>.*?)(?P=quote)",
+    flags=re.IGNORECASE,
+)
+
+
+def _attribute(attrs: str, name: str) -> str:
+    match = re.search(
+        rf"\b{re.escape(name)}\s*=\s*(?:(?P<quote>['\"])(?P<quoted>.*?)(?P=quote)|(?P<bare>[^\s>]+))",
+        attrs,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    return html.unescape(match.group("quoted") or match.group("bare") or "")
+
+
+def _with_accessible_control_names(document: str) -> str:
+    """Give every rendered form control a stable accessible name.
+
+    Most Building forms already show nearby label text, but older generated
+    fragments did not consistently connect that text with ``for``/``id``.
+    Preserve explicit associations and ARIA names, then use the control's
+    descriptive placeholder or field name as a deterministic fallback.
+    """
+
+    associated_ids = {
+        html.unescape(match.group("value"))
+        for match in _LABEL_FOR_RE.finditer(document)
+    }
+
+    def add_name(match: re.Match[str]) -> str:
+        tag = match.group("tag")
+        attrs = match.group("attrs")
+        if _attribute(attrs, "type").lower() == "hidden":
+            return match.group(0)
+        if re.search(r"\baria-(?:label|labelledby)\s*=", attrs, flags=re.IGNORECASE):
+            return match.group(0)
+        control_id = _attribute(attrs, "id")
+        if control_id and control_id in associated_ids:
+            return match.group(0)
+        fallback = (
+            _attribute(attrs, "placeholder")
+            or _attribute(attrs, "title")
+            or _attribute(attrs, "name").replace("_", " ").replace("-", " ")
+            or f"{tag.lower()} field"
+        )
+        normalized = fallback.strip()
+        label = html.escape(
+            normalized[:1].upper() + normalized[1:],
+            quote=True,
+        )
+        return f"<{tag}{attrs} aria-label=\"{label}\">"
+
+    return _CONTROL_TAG_RE.sub(add_name, document)
+
+
 def render_customer_status_link_result(
     *,
     user: dict,
@@ -41,7 +103,7 @@ def render_customer_status_link_result(
     nav_styles = render_agent_nav_styles()
     favicons = render_agent_favicon_links()
     delivery_state = "Sent" if sent else "Not sent"
-    return f"""<!doctype html>
+    document = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -105,6 +167,7 @@ def render_customer_status_link_result(
   </script>
 </body>
 </html>"""
+    return _with_accessible_control_names(document)
 
 
 def render_building_page(
@@ -1103,7 +1166,7 @@ def render_building_page(
         )
     )
 
-    return f"""<!doctype html>
+    document = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -1511,3 +1574,4 @@ def render_building_page(
   </main>
 </body>
 </html>"""
+    return _with_accessible_control_names(document)
