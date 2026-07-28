@@ -368,6 +368,7 @@ def _script() -> str:
         combinePreviewValid=false;combinePreviewToken='';
         combine.querySelector('[data-combine-confirm]').hidden=true;
         combine.querySelector('[data-combine-confirm]').disabled=true;
+        combine.querySelector('[data-combine-preview]').textContent='Your choices changed. Preview the recalculated result again.';
       }));
       combine.querySelector('[data-combine-cancel]').addEventListener('click',()=>combine.close());
       combine.querySelector('[data-combine-preview-button]').addEventListener('click',async()=>{
