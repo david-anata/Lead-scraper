@@ -49,6 +49,9 @@ def validate_generated_article(record: Mapping[str, Any]) -> dict[str, Any]:
         "primaryIntent",
         "evidenceId",
         "generatedAt",
+        "publishedAt",
+        "modifiedAt",
+        "author",
         "title",
         "description",
         "content",
@@ -62,6 +65,34 @@ def validate_generated_article(record: Mapping[str, Any]) -> dict[str, Any]:
     slug = str(article["slug"]).strip()
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
         raise website_ops.ExecutionError("Generated article slug is invalid.")
+    timestamps: dict[str, datetime] = {}
+    for field in ("generatedAt", "publishedAt", "modifiedAt"):
+        try:
+            timestamps[field] = datetime.fromisoformat(
+                str(article[field]).strip().replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError) as exc:
+            raise website_ops.ExecutionError(
+                f"Generated article {field} must be an ISO 8601 timestamp."
+            ) from exc
+        if timestamps[field].tzinfo is None:
+            raise website_ops.ExecutionError(
+                f"Generated article {field} must include a timezone."
+            )
+    if timestamps["modifiedAt"] < timestamps["publishedAt"]:
+        raise website_ops.ExecutionError(
+            "Generated article modifiedAt cannot precede publishedAt."
+        )
+    author = article.get("author")
+    expected_author = {
+        "type": "Organization",
+        "name": "Anata Inc.",
+        "url": "https://anatainc.com",
+    }
+    if author != expected_author:
+        raise website_ops.ExecutionError(
+            "Generated articles must use the verified Anata Inc. organization author."
+        )
     title = str(article["title"]).strip()
     description = str(article["description"]).strip()
     if not 15 <= len(title) <= 65:

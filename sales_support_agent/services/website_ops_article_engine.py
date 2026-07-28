@@ -144,6 +144,7 @@ def build_article_action(
         and (urlparse(_clean(item.get("url"))).hostname or "").removeprefix("www.")
         != "anatainc.com"
     ][:6]
+    publication_timestamp = datetime.now(timezone.utc).isoformat()
     prompt = f"""
 Create a source-backed Anata blog article for the informational query:
 {_clean(cluster.get("label"))}
@@ -161,7 +162,14 @@ Return only one JSON object with this exact shape:
   "slug": "lowercase-hyphenated",
   "primaryIntent": "{_clean(cluster.get("normalized_query"))}",
   "evidenceId": "{_clean(cluster.get("cluster_id"))}",
-  "generatedAt": "{datetime.now(timezone.utc).isoformat()}",
+  "generatedAt": "{publication_timestamp}",
+  "publishedAt": "{publication_timestamp}",
+  "modifiedAt": "{publication_timestamp}",
+  "author": {{
+    "type": "Organization",
+    "name": "Anata Inc.",
+    "url": "https://anatainc.com"
+  }},
   "title": "15 to 65 characters",
   "description": "50 to 155 characters",
   "content": {{
@@ -191,7 +199,14 @@ Include at least three substantive sections and two distinct authoritative sourc
     content = dict(article.get("content") or {})
     article["primaryIntent"] = _clean(cluster.get("normalized_query"))
     article["evidenceId"] = _clean(cluster.get("cluster_id"))
-    article["generatedAt"] = datetime.now(timezone.utc).isoformat()
+    article["generatedAt"] = publication_timestamp
+    article["publishedAt"] = publication_timestamp
+    article["modifiedAt"] = publication_timestamp
+    article["author"] = {
+        "type": "Organization",
+        "name": "Anata Inc.",
+        "url": "https://anatainc.com",
+    }
     content["route"] = f"/blog/{slug}"
     article["content"] = content
     return {
