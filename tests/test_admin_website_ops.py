@@ -24,6 +24,7 @@ from sales_support_agent.services.website_ops_autonomy import (
     _deterministic_metadata_actions,
     build_autonomy_overlay,
     inspect_search_console_indexing,
+    refresh_retained_indexing_inventory,
     save_search_console_indexing_inventory,
     submit_search_console_sitemap,
 )
@@ -224,6 +225,58 @@ example
             captured["headers"],
             {"Authorization": "Bearer write-token"},
         )
+
+    def test_daily_index_refresh_reconciles_and_submits_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(website_ops_root=Path(tmpdir))
+            save_search_console_indexing_inventory(
+                settings,
+                build_indexing_inventory(
+                    [
+                        {
+                            "url": "https://anatainc.com/case-studies",
+                            "reason": "Not found (404)",
+                        }
+                    ]
+                ),
+            )
+            with mock.patch(
+                "sales_support_agent.services.website_ops_autonomy.submit_search_console_sitemap",
+                return_value={
+                    "status": "submitted",
+                    "sitemap_url": "https://anatainc.com/sitemap.xml",
+                },
+            ) as submit:
+                refreshed, notes = refresh_retained_indexing_inventory(
+                    settings,
+                    [
+                        {
+                            "url": "https://anatainc.com/case-studies",
+                            "status_code": 200,
+                        }
+                    ],
+                )
+                refreshed_again, second_notes = refresh_retained_indexing_inventory(
+                    settings,
+                    [
+                        {
+                            "url": "https://anatainc.com/case-studies",
+                            "status_code": 200,
+                        }
+                    ],
+                )
+
+            self.assertEqual(notes, [])
+            self.assertEqual(second_notes, [])
+            self.assertEqual(
+                refreshed["records"][0]["desired_state"],
+                "recrawl pending",
+            )
+            self.assertEqual(
+                refreshed_again["sitemap_submission"]["status"],
+                "submitted",
+            )
+            submit.assert_called_once()
 
     def _generated_article_record(self) -> dict[str, object]:
         article = {

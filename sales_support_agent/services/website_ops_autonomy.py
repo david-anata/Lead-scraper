@@ -729,6 +729,32 @@ def submit_search_console_sitemap(
     }
 
 
+def refresh_retained_indexing_inventory(
+    settings: Any,
+    observations: list[Mapping[str, Any]],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Reconcile the last Google snapshot during inexpensive daily sweeps."""
+
+    inventory = load_indexing_inventory(Path(settings.website_ops_root))
+    if not list(inventory.get("records") or []):
+        return None, []
+    refreshed = reconcile_indexing_inventory(inventory, observations)
+    submission = dict(refreshed.get("sitemap_submission") or {})
+    notes: list[str] = []
+    if submission.get("status") != "submitted":
+        submission = submit_search_console_sitemap(settings)
+        refreshed["sitemap_submission"] = submission
+        if submission.get("status") != "submitted":
+            notes.append(
+                str(
+                    submission.get("reason")
+                    or "Search Console sitemap submission failed."
+                )
+            )
+    save_search_console_indexing_inventory(settings, refreshed)
+    return refreshed, notes
+
+
 def fetch_ga4_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[str, Any]], list[str]]:
     config = analytics_config_from_settings(settings)
     project_name = _service_account_project_name(config.service_account_json)
@@ -1575,6 +1601,12 @@ def build_autonomy_overlay(
             retained_inventory["inspection"] = inspection
             retained_inventory["sitemap_submission"] = sitemap_submission
             save_search_console_indexing_inventory(settings, retained_inventory)
+        support_requests.extend(indexing_notes)
+    elif search_console_ready:
+        indexing_inventory, indexing_notes = refresh_retained_indexing_inventory(
+            settings,
+            observations,
+        )
         support_requests.extend(indexing_notes)
 
     for observation in observations:
