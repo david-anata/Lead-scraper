@@ -627,6 +627,18 @@ def _report_entries(settings: Settings, *, mode: str | None = None) -> list[dict
             path.stat().st_mtime,
             json_path.stat().st_mtime if json_path.exists() else 0,
         )
+        generated_epoch = 0.0
+        if json_path.exists():
+            try:
+                generated_at = str(
+                    json.loads(json_path.read_text()).get("generated_at", "") or ""
+                )
+                generated = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+                if generated.tzinfo is None:
+                    generated = generated.replace(tzinfo=timezone.utc)
+                generated_epoch = generated.timestamp()
+            except (OSError, ValueError, json.JSONDecodeError):
+                generated_epoch = 0.0
         entries.append(
             {
                 "path": path,
@@ -639,9 +651,17 @@ def _report_entries(settings: Settings, *, mode: str | None = None) -> list[dict
                 "html_path": path.with_suffix(".html"),
                 "modified": datetime.fromtimestamp(artifact_mtime).astimezone().strftime("%Y-%m-%d %H:%M %Z"),
                 "_artifact_mtime": artifact_mtime,
+                "_generated_epoch": generated_epoch,
             }
         )
-    return sorted(entries, key=lambda item: item["_artifact_mtime"], reverse=True)
+    return sorted(
+        entries,
+        key=lambda item: (
+            item["_generated_epoch"],
+            item["_artifact_mtime"],
+        ),
+        reverse=True,
+    )
 
 
 def _report_payload(entry: dict[str, Any]) -> dict[str, Any]:
