@@ -119,6 +119,20 @@ Confirmed, Delivered, Failed, Blocked, and Stale.
 - Use native semantics first: buttons, links, labels, dialogs, tables, live
   regions, and focus management. A control must remain usable without hover.
 
+## Answering A Queue
+
+- An answered row leaves the working queue immediately and in place.
+- Show progress on the row being saved; keep every other row stable.
+- If the server rejects an answer, restore the row in its original position and
+  show the reason on that row.
+- Offer session-scoped undo for single and bulk answers.
+- A bulk answer is one request, one database transaction, and one downstream
+  refresh.
+- Never hide the tail of a queue. Use visible counts, filters, and contained
+  scrolling while keeping every result reachable.
+- Queue actions use progressive enhancement: real forms and server redirects
+  work without JavaScript; JavaScript adds in-place continuity.
+
 ## Quality Gate
 
 Before shipping a visual change, verify:

@@ -1743,6 +1743,107 @@ async def whats_coming_decide(
     return _redirect_finance_home(_BILL_DECISION_FLASH.get(decision, "Answer saved."))
 
 
+def _bill_queue_actor(request: Request) -> str:
+    user = get_current_user(request) or {}
+    return str(user.get("email") or user.get("id") or "finance-operator")
+
+
+@router.post("/whats-coming/bulk")
+async def whats_coming_bulk(request: Request):
+    """Apply one or many queue answers atomically, with a no-JS redirect fallback."""
+    from sales_support_agent.services.cashflow.bill_queue import apply_queue_action
+
+    form = await request.form()
+    keys = [str(value) for value in form.getlist("pattern_keys")]
+    action = str(form.get("action") or "")
+    paid_value = form.get("paid_in_pieces")
+    paid_in_pieces = True if paid_value is not None else None
+    wants_json = "application/json" in request.headers.get("accept", "")
+    try:
+        result = await asyncio.to_thread(
+            apply_queue_action, keys, action,
+            actor=_bill_queue_actor(request),
+            category=str(form.get("category") or ""),
+            paid_in_pieces=paid_in_pieces,
+            payment_date=str(form.get("payment_date") or ""),
+            canonical_key=str(form.get("canonical_key") or ""),
+            canonical_name=str(form.get("canonical_name") or ""),
+            request_id=request.headers.get("Idempotency-Key") or uuid4().hex,
+        )
+    except ValueError as exc:
+        if wants_json:
+            return JSONResponse({"detail": str(exc)}, status_code=409)
+        request.state.finance_return_to = _WHATS_COMING_PATH
+        return _redirect_finance_error(str(exc))
+    except Exception:
+        logger.exception("Bill queue action failed")
+        if wants_json:
+            return JSONResponse(
+                {"detail": "That answer could not be saved, so nothing changed."},
+                status_code=500,
+            )
+        request.state.finance_return_to = _WHATS_COMING_PATH
+        return _redirect_finance_error("That answer could not be saved, so nothing changed.")
+
+    message = (
+        f"{result['applied']} bill answer{'s' if result['applied'] != 1 else ''} saved."
+        if action != "combine" else "Vendor histories combined and recalculated."
+    )
+    if wants_json:
+        return JSONResponse({**result, "message": message})
+    return RedirectResponse(
+        f"{_WHATS_COMING_PATH}?flash={quote('ok:' + message)}", status_code=303
+    )
+
+
+@router.post("/whats-coming/combine-preview")
+async def whats_coming_combine_preview(request: Request):
+    from sales_support_agent.services.cashflow.bill_queue import preview_combine
+
+    form = await request.form()
+    try:
+        result = await asyncio.to_thread(
+            preview_combine,
+            [str(value) for value in form.getlist("pattern_keys")],
+            canonical_key=str(form.get("canonical_key") or ""),
+            canonical_name=str(form.get("canonical_name") or ""),
+        )
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+    return JSONResponse(result)
+
+
+@router.post("/whats-coming/undo")
+async def whats_coming_undo(request: Request):
+    from sales_support_agent.services.cashflow.bill_queue import undo_queue_batch
+
+    form = await request.form()
+    try:
+        result = await asyncio.to_thread(
+            undo_queue_batch, str(form.get("batch_id") or ""),
+            actor=_bill_queue_actor(request),
+        )
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+    return JSONResponse(result)
+
+
+@router.post("/whats-coming/vendor-alias/revoke")
+async def whats_coming_alias_revoke(request: Request):
+    from sales_support_agent.services.cashflow.vendor_aliases import revoke_vendor_alias
+
+    form = await request.form()
+    revoked = await asyncio.to_thread(
+        revoke_vendor_alias, str(form.get("alias_key") or ""),
+        actor=_bill_queue_actor(request),
+    )
+    if not revoked:
+        return JSONResponse({"detail": "That vendor link is already inactive."}, status_code=404)
+    return RedirectResponse(
+        f"{_WHATS_COMING_PATH}?flash={quote('ok:Vendor grouping separated.')}", status_code=303
+    )
+
+
 # ---------------------------------------------------------------------------
 # QBO invoice sync
 # ---------------------------------------------------------------------------

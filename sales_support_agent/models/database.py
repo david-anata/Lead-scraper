@@ -732,6 +732,8 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
     small deployments initialize the shared engine without ``init_database``.
     """
     db_engine = target_engine or get_engine()
+    from sales_support_agent.services.cashflow.vendor_aliases import ensure_vendor_alias_schema
+    ensure_vendor_alias_schema(db_engine)
     _register_models()
     if db_engine.dialect.name == "sqlite":
         _apply_sqlite_compat_migrations(db_engine)

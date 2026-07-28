@@ -79,7 +79,11 @@ def merchant_key(description: str) -> str:
     # them would leave nothing behind.
     without_codes = [word for word in words if not any(ch.isdigit() for ch in word)]
     words = without_codes or words
-    return " ".join(words[:3])[:255]
+    raw_key = " ".join(words[:3])[:255]
+    if not raw_key:
+        return ""
+    from sales_support_agent.services.cashflow.vendor_aliases import resolve_vendor_key
+    return resolve_vendor_key(raw_key)
 
 
 def suggest_rule_pattern(description: str) -> str:
