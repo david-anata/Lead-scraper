@@ -649,6 +649,7 @@ def unique_preserving(values: Iterable[str]) -> List[str]:
 
 
 def render_daily_report_markdown(report: Mapping[str, Any]) -> str:
+    operations = dict(report.get("operations_summary") or {})
     lines = [
         f"# {report['title']}",
         "",
@@ -668,6 +669,33 @@ def render_daily_report_markdown(report: Mapping[str, Any]) -> str:
     ]
     for priority in ["P0", "P1", "P2", "P3"]:
         lines.append(f"- {priority}: `{report['issue_counts_by_priority'].get(priority, 0)}`")
+
+    lines.extend(
+        [
+            "",
+            "## Improvement Funnel",
+            "",
+            f"- Candidates observed: `{operations.get('observed_candidates', 0)}`",
+            f"- Candidates validated: `{operations.get('validated_candidates', 0)}`",
+            f"- Actions queued: `{operations.get('queued_actions', 0)}`",
+            f"- Ready for autonomous execution: `{operations.get('auto_ready_actions', 0)}`",
+            f"- Requiring review: `{operations.get('review_required_actions', 0)}`",
+            f"- Executed this cycle: `{operations.get('executed_actions', 0)}`",
+            f"- Content tasks tracked: `{operations.get('content_tasks', 0)}`",
+            f"- Article pipeline: `{operations.get('article_pipeline_status', 'unavailable')}`",
+        ]
+    )
+    if operations.get("article_pipeline_message"):
+        lines.append(f"- Article gate: {operations['article_pipeline_message']}")
+    lines.extend(["", "## Why Other Work Did Not Run", ""])
+    if operations.get("deferred_reasons"):
+        for item in operations["deferred_reasons"]:
+            lines.append(f"- `{item.get('count', 0)}` {item.get('reason', '')}")
+    else:
+        lines.append("- No candidates were deferred in this cycle.")
+    lines.extend(["", "## Autonomous Coverage", ""])
+    for item in operations.get("execution_coverage", []):
+        lines.append(f"- {item.get('lane', '')}: `{item.get('status', '')}`")
 
     lines.extend(
         [
@@ -892,6 +920,18 @@ def render_daily_report_html(report: Mapping[str, Any]) -> str:
         + "</li>"
         for item in report.get("page_insights", [])[:10]
     )
+    operations = dict(report.get("operations_summary") or {})
+    deferred_rows = "".join(
+        f"<li><strong>{esc(item.get('count', 0))}</strong> {esc(item.get('reason', ''))}</li>"
+        for item in operations.get("deferred_reasons", [])
+    )
+    coverage_rows = "".join(
+        "<li>"
+        f"<strong>{esc(item.get('lane', ''))}</strong>: "
+        f"{esc(str(item.get('status', '')).replace('_', ' ').title())}"
+        "</li>"
+        for item in operations.get("execution_coverage", [])
+    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -962,6 +1002,27 @@ def render_daily_report_html(report: Mapping[str, Any]) -> str:
     <div class="panel">
       <h2>Issue Mix</h2>
       <ul>{issue_counts}</ul>
+    </div>
+    <div class="panel">
+      <h2>Improvement Funnel</h2>
+      <div class="grid">
+        <div><strong>Observed</strong><br>{esc(operations.get('observed_candidates', 0))}</div>
+        <div><strong>Validated</strong><br>{esc(operations.get('validated_candidates', 0))}</div>
+        <div><strong>Queued</strong><br>{esc(operations.get('queued_actions', 0))}</div>
+        <div><strong>Ready to run</strong><br>{esc(operations.get('auto_ready_actions', 0))}</div>
+        <div><strong>Needs review</strong><br>{esc(operations.get('review_required_actions', 0))}</div>
+        <div><strong>Executed</strong><br>{esc(operations.get('executed_actions', 0))}</div>
+      </div>
+      <p><strong>Article pipeline:</strong> {esc(str(operations.get('article_pipeline_status', 'unavailable')).replace('_', ' ').title())}</p>
+      <p class="muted">{esc(operations.get('article_pipeline_message', 'No article pipeline explanation was recorded.'))}</p>
+    </div>
+    <div class="panel">
+      <h2>Why Other Work Did Not Run</h2>
+      <ul>{deferred_rows if deferred_rows else '<li>No candidates were deferred in this cycle.</li>'}</ul>
+    </div>
+    <div class="panel">
+      <h2>Autonomous Coverage</h2>
+      <ul>{coverage_rows if coverage_rows else '<li>No execution coverage was recorded.</li>'}</ul>
     </div>
     <div class="panel">
       <h2>Goal</h2>

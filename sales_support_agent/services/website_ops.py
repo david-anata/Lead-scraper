@@ -393,10 +393,86 @@ def _report_change_fingerprint(report: Mapping[str, Any]) -> str:
             ),
         },
         "indexing_summary": dict((report.get("indexing_inventory") or {}).get("summary") or {}),
+        "operations_summary": dict(report.get("operations_summary") or {}),
     }
     return hashlib.sha256(
         json.dumps(stable_payload, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
+
+
+def _build_operations_summary(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Explain the complete candidate funnel, including work that did not execute."""
+
+    crawl = dict((report.get("crawl_verification") or {}).get("summary") or {})
+    query_intelligence = dict(report.get("query_intelligence") or {})
+    query = dict(query_intelligence.get("summary") or {})
+    article = dict(query_intelligence.get("article_pipeline") or {})
+    queue = [dict(item) for item in report.get("action_queue", []) or []]
+    content = [dict(item) for item in report.get("content_tasks", []) or []]
+    executed = [dict(item) for item in report.get("executed_actions", []) or []]
+    auto_ready = sum(
+        1 for item in queue if str(item.get("execution_eligibility", "")) == "auto_execute"
+    )
+    review_required = len(queue) - auto_ready
+    suggestion_only = sum(
+        1
+        for item in content
+        if str(item.get("action_type", "")) in {"inject_faq_block", "expand_service_page_section"}
+    )
+    deferred_reasons = [
+        {
+            "reason": "Crawler evidence still needs rendered-page or repository proof.",
+            "count": int(crawl.get("pending_warnings", 0) or 0),
+        },
+        {
+            "reason": "Crawler warnings were disproved by current production evidence.",
+            "count": int(crawl.get("disproved_warnings", 0) or 0),
+        },
+        {
+            "reason": "Crawler warnings were classified as non-remediation noise.",
+            "count": int(crawl.get("noise_warnings", 0) or 0),
+        },
+        {
+            "reason": "Query clusters remain hypotheses and cannot authorize a change.",
+            "count": int(query.get("hypothesis_clusters", 0) or 0),
+        },
+        {
+            "reason": "Intent ownership conflicts block publishing.",
+            "count": int(query.get("ownership_conflicts", 0) or 0),
+        },
+        {
+            "reason": "FAQ and page-expansion ideas are suggestion-only until deterministic executors ship.",
+            "count": suggestion_only,
+        },
+    ]
+    deferred_reasons = [item for item in deferred_reasons if item["count"]]
+    return {
+        "observed_candidates": (
+            int(crawl.get("confirmed_warnings", 0) or 0)
+            + int(crawl.get("pending_warnings", 0) or 0)
+            + int(query.get("total_clusters", 0) or 0)
+        ),
+        "validated_candidates": (
+            int(crawl.get("confirmed_warnings", 0) or 0)
+            + int(query.get("validated_clusters", 0) or 0)
+        ),
+        "queued_actions": len(queue),
+        "auto_ready_actions": auto_ready,
+        "review_required_actions": review_required,
+        "executed_actions": len(executed),
+        "content_tasks": len(content),
+        "article_pipeline_status": str(article.get("status", "unavailable") or "unavailable"),
+        "article_pipeline_message": str(article.get("message", "") or ""),
+        "crawl": crawl,
+        "query": query,
+        "deferred_reasons": deferred_reasons,
+        "execution_coverage": [
+            {"lane": "Metadata and canonical corrections", "status": "autonomous"},
+            {"lane": "Validated new articles", "status": "autonomous"},
+            {"lane": "FAQ and existing-page expansion", "status": "suggestion_only"},
+            {"lane": "Internal links, broken links, schema, images, and redirects", "status": "not_automated"},
+        ],
+    }
 
 
 def _notification_state_path(settings: Settings) -> Path:
@@ -518,8 +594,17 @@ def send_website_ops_report_email(
     )
     if not work_lines:
         work_lines = ["- Run the daily sweep to generate the next source-backed work plan."]
+    operations = dict(report.get("operations_summary") or {})
+    deferred_lines = [
+        f"- {int(item.get('count', 0) or 0)} | {str(item.get('reason', '')).strip()}"
+        for item in operations.get("deferred_reasons", []) or []
+        if int(item.get("count", 0) or 0)
+    ]
+    if not deferred_lines:
+        deferred_lines = ["- No candidates were deferred in this cycle."]
     subject = (
         f"Website Ops {mode}: {len(executed)} changed, "
+        f"{int(operations.get('auto_ready_actions', 0) or 0)} ready, "
         f"{len(support_requests)} for you"
     )
     text = "\n".join(
@@ -530,6 +615,10 @@ def send_website_ops_report_email(
             f"Pages reviewed: {report.get('pages_reviewed', 0)}",
             f"Open findings: {len(issues)}",
             f"Automated corrections: {len(executed)}",
+            f"Candidates observed: {int(operations.get('observed_candidates', 0) or 0)}",
+            f"Candidates validated: {int(operations.get('validated_candidates', 0) or 0)}",
+            f"Actions ready to run: {int(operations.get('auto_ready_actions', 0) or 0)}",
+            f"Actions requiring review: {int(operations.get('review_required_actions', 0) or 0)}",
             (
                 "Priority: "
                 + ", ".join(
@@ -539,6 +628,9 @@ def send_website_ops_report_email(
             "",
             "Changes completed:",
             *change_lines,
+            "",
+            "Why other work did not run:",
+            *deferred_lines,
             "",
             "Your to-do list:",
             *todo_lines,
@@ -1298,6 +1390,7 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         indexing_inventory=indexing_inventory,
         crawl_verification=crawl_verification,
     )
+    enriched_report["operations_summary"] = _build_operations_summary(enriched_report)
     artifacts = website_ops.write_daily_report_artifacts(enriched_report, output_dir=output_dir, config=config)
     enriched_report["email_delivery"] = send_website_ops_report_email(
         settings,
