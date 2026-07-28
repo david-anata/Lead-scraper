@@ -678,6 +678,10 @@ recovered Base44 opening-balance drafts are reviewed rather than re-entered.
 The checklist never marks portal access, independent review, or government
 outcomes complete without the corresponding record.
 
+Before August 1, 2026, the Setup and Payroll pages default to the approved first
+live period, August 1–15, instead of treating an earlier July period as the
+launch run. An authorized operator can still select another period explicitly.
+
 Use the checklist to:
 
 1. enter reviewed 2026 opening balances for every W-2 employee;

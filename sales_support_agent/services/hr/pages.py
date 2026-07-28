@@ -202,6 +202,9 @@ def render_hr_setup(control: dict, company_profile: dict, *, user, flash=None) -
     blockers = readiness.get("blockers") or []
     blocker_kinds = {item.get("kind") for item in blockers}
     settings = control.get("settings") or {}
+    period = control.get("period")
+    period_start = str(getattr(period, "start_date", "") or "")
+    period_query = f"?period_date={_esc(period_start)}" if period_start else ""
     employees = control.get("employees") or []
     openings = {
         item.get("employee_email"): item
@@ -331,7 +334,7 @@ def render_hr_setup(control: dict, company_profile: dict, *, user, flash=None) -
                 "and another authorized person approve the unchanged timesheet."
             ),
             "ready": time_ready, "owner": "Employees and Val",
-            "href": "/admin/hr/time", "action": "Review time and PTO",
+            "href": f"/admin/hr/time{period_query}", "action": "Review time and PTO",
         },
         {
             "title": "Record the qualified calculation review",
@@ -354,7 +357,7 @@ def render_hr_setup(control: dict, company_profile: dict, *, user, flash=None) -
                 "until every critical item is resolved."
             ),
             "ready": bool(readiness.get("ready")), "owner": "Val prepares · David approves",
-            "href": "/admin/hr/payroll", "action": "Open payroll control room",
+            "href": f"/admin/hr/payroll{period_query}", "action": "Open payroll control room",
         },
     ]
     complete = sum(1 for task in tasks if task["ready"])

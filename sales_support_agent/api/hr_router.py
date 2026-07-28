@@ -203,6 +203,14 @@ def _require_team_record(user: dict, records: list[dict], record_id: int) -> Non
 
 # --- dashboard -------------------------------------------------------------
 
+FIRST_LIVE_PAYROLL_DATE = date(2026, 8, 1)
+
+
+def _default_payroll_date(today: date | None = None) -> date:
+    """Keep pre-launch views on the approved first live payroll period."""
+    current = today or date.today()
+    return max(current, FIRST_LIVE_PAYROLL_DATE)
+
 @router.get("", response_class=HTMLResponse)
 async def hr_dashboard(request: Request, user: dict = Depends(_guard)):
     stats = (
@@ -218,7 +226,7 @@ async def hr_dashboard(request: Request, user: dict = Depends(_guard)):
 async def hr_setup(request: Request, user: dict = Depends(_pay_view_guard)):
     """Show one evidence-backed checklist for reaching payroll readiness."""
     return HTMLResponse(render_hr_setup(
-        payroll_store.control_room(date.today()),
+        payroll_store.control_room(_default_payroll_date()),
         payroll_store.get_company_profile(),
         user=user,
         flash=_flash(request),
@@ -908,7 +916,7 @@ async def hr_policy_acknowledge(
 async def hr_payroll(request: Request, period_date: date | None = None,
                      user: dict = Depends(_pay_view_guard)):
     return HTMLResponse(render_hr_payroll_control(
-        payroll_store.control_room(period_date or date.today()),
+        payroll_store.control_room(period_date or _default_payroll_date()),
         user=user, flash=_flash(request),
     ))
 

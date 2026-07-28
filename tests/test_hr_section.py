@@ -80,6 +80,21 @@ class HRSectionTests(unittest.TestCase):
         denied = self._get("/admin/hr/setup", _cookie(email))
         self.assertEqual(denied.status_code, 403)
 
+    def test_prelaunch_payroll_defaults_to_approved_first_live_period(self):
+        from sales_support_agent.api.hr_router import _default_payroll_date
+
+        self.assertEqual(
+            _default_payroll_date(date(2026, 7, 28)),
+            date(2026, 8, 1),
+        )
+        self.assertEqual(
+            _default_payroll_date(date(2026, 8, 20)),
+            date(2026, 8, 20),
+        )
+        page = self._get("/admin/hr/payroll", self.sa)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Prepare 2026-08-01–2026-08-15", page.text)
+
     def test_create_and_list_employee(self):
         import uuid
         email = f"worker-{uuid.uuid4().hex[:8]}@anatainc.com"  # unique — persistent temp DB
