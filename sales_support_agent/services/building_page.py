@@ -821,6 +821,31 @@ def render_building_page(
         for item in offerings
         if item.get("offering_type") == "event"
     )
+    arena_space = next(
+        (
+            item
+            for item in spaces
+            if item.get("id") == "arena"
+            and str(item.get("name") or "").strip().casefold() == "the arena"
+        ),
+        None,
+    )
+    arena_offering = next(
+        (
+            item
+            for item in offerings
+            if item.get("id") == "arena-events"
+            and item.get("space_id") == "arena"
+            and item.get("offering_type") == "event"
+        ),
+        None,
+    )
+    arena_catalog_ready = bool(arena_space and arena_offering)
+    arena_catalog_state = (
+        '<span class="badge badge--ok">Prepared</span>'
+        if arena_catalog_ready
+        else '<span class="badge badge--warn">Missing</span>'
+    )
     launch_decision_map = {
         str(item.get("decision_key") or ""): item for item in launch_decisions
     }
@@ -1259,6 +1284,15 @@ def render_building_page(
         </div>
         <div class="table-wrap"><table><thead><tr><th>Lead source</th><th>Inquiries</th><th>Invoiced</th><th>Posted collected</th></tr></thead><tbody>{source_performance_rows}</tbody></table></div>
         <p class="sub">Hold expiration: {_pct(operation_metrics.get("hold_expiration_rate"))} · Contract cycle: {_metric_value(operation_metrics.get("median_contract_cycle_hours"), suffix=" hr")} · Deposit cycle: {_metric_value(operation_metrics.get("median_deposit_cycle_hours"), suffix=" hr")} · Delivery feedback: {_esc(str(campaign_metrics.get("delivery_feedback") or "not configured").replace("_", " "))} · Campaign engagement telemetry: {_esc(str(campaign_metrics.get("engagement_tracking") or "not configured").replace("_", " "))}</p>
+      </section>
+      <section class="panel panel--wide" id="arena-catalog-readiness">
+        <div class="panel-head"><div><h2>Arena catalog foundation</h2><p>Create the verified venue identity required by availability, pricing, inquiry, and launch-readiness workflows.</p></div>{arena_catalog_state}</div>
+        <div class="alert alert--warning"><strong>This does not launch the venue.</strong><p>The action creates only The Arena and its event offering as private, unavailable, and unpublished. It does not approve a rate plan, claim a date is available, send a message, charge a customer, or write a calendar.</p></div>
+        <form class="form-grid" method="post" action="/admin/building/catalog/arena/prepare">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="arena-catalog-confirmation">Typed confirmation</label><input id="arena-catalog-confirmation" name="confirmation" required placeholder="PREPARE ARENA CATALOG"></div>
+          <div class="form-actions"><span class="form-note">Idempotent: rerunning a compatible preparation changes nothing. Conflicting existing records fail closed for manual review.</span><button class="secondary" type="submit">Prepare verified Arena catalog</button></div>
+        </form>
       </section>
       <section class="panel">
         <div class="panel-head"><div><h2>Add or update a space</h2><p>Save reviewed physical inventory. Publishing remains a separate choice.</p></div></div>

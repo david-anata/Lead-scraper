@@ -5,6 +5,14 @@ cancellation policy, tax treatment/rate, setup price, teardown price, overtime
 rate, venue payment workflow, reusable agreement template, dedicated event
 calendar, transactional sender/owner, and effective date.
 
+Before those decisions can be recorded, an authorized Building operator may use
+**Prepare verified Arena catalog** with the typed phrase
+`PREPARE ARENA CATALOG`. The idempotent action creates the stable `arena` space
+and `arena-events` offering from the approved Listing Copy Pack evidence. Both
+records remain private, unavailable, and unpublished. The action does not
+approve pricing, claim availability, send, charge, or write a provider. An
+existing incompatible identity or relationship fails closed for manual review.
+
 Missing records remain `unresolved`. Each decision requires
 `building.pricing.approve`, CSRF/same-origin protection, a key-specific status,
 a value, evidence, and the typed phrase `DECIDE {decision_key}`. Every change
