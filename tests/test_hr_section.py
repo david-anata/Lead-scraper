@@ -64,6 +64,7 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn(">HR<", r.text)              # HR in the top nav
         self.assertIn('aria-label="HR pages"', r.text)
         self.assertNotIn('class="hr-side"', r.text)
+        self.assertEqual(r.text.count('id="agent-main-content"'), 1)
 
     def test_setup_checklist_uses_live_readiness_and_is_payroll_private(self):
         page = self._get("/admin/hr/setup", self.sa)
@@ -588,6 +589,9 @@ class HRSectionTests(unittest.TestCase):
         import uuid
         suffix = uuid.uuid4().hex[:8]
         team_id = hr_store.create_team(name=f"Ops {suffix}", actor="test")
+        hr_store.create_employee(
+            email="val@anatainc.com", full_name="Val", status="active"
+        )
         employee_id = hr_store.create_employee(
             email=f"team-member-{suffix}@anatainc.com", full_name="Team Member"
         )
@@ -1134,6 +1138,119 @@ class HRSectionTests(unittest.TestCase):
             _cookie(manager),
         )
         self.assertEqual(blocked.status_code, 403)
+
+    def test_new_employee_setup_saves_employment_and_one_pay_basis(self):
+        import uuid
+        email = f"complete-{uuid.uuid4().hex[:8]}@anatainc.com"
+        response = self._post(
+            "/admin/hr/employees/new",
+            {
+                "email": email, "full_name": "Complete Hire",
+                "pay_basis": "fixed_semimonthly", "hourly_rate": "0",
+                "fixed_pay_per_period": "1000.00", "hire_date": "2026-08-03",
+                "title": "Coordinator", "classification": "exempt",
+                "standard_weekly_hours": "40",
+            },
+            self.sa,
+        )
+        self.assertEqual(response.status_code, 303)
+        employee = hr_store.get_employee_by_email(email)
+        self.assertEqual(employee["employee_type"], "salaried")
+        employment = hr_store.get_employment_profile(email)
+        self.assertEqual(
+            employment["fixed_pay_per_period_cents"], 100000
+        )
+        self.assertEqual(employment["hire_date"], date(2026, 8, 3))
+
+    def test_employee_money_is_rejected_instead_of_silently_becoming_zero(self):
+        import uuid
+        email = f"bad-money-{uuid.uuid4().hex[:8]}@anatainc.com"
+        invalid = self._post(
+            "/admin/hr/employees/new",
+            {
+                "email": email, "pay_basis": "hourly",
+                "hourly_rate": "twenty five",
+            },
+            self.sa,
+        )
+        self.assertEqual(invalid.status_code, 422)
+        self.assertIn("valid dollar amount", invalid.text)
+        self.assertIsNone(hr_store.get_employee_by_email(email))
+
+        conflicting = self._post(
+            "/admin/hr/employees/new",
+            {
+                "email": email, "pay_basis": "hourly",
+                "hourly_rate": "25", "fixed_pay_per_period": "1000",
+            },
+            self.sa,
+        )
+        self.assertEqual(conflicting.status_code, 422)
+        self.assertIn("no fixed check amount", conflicting.text)
+        self.assertIsNone(hr_store.get_employee_by_email(email))
+
+    def test_contractor_record_stays_outside_w2_pay_basis(self):
+        import uuid
+        email = f"contractor-{uuid.uuid4().hex[:8]}@example.com"
+        response = self._post(
+            "/admin/hr/employees/new",
+            {
+                "email": email, "full_name": "Overseas Contractor",
+                "employee_type": "contractor", "hourly_rate": "0",
+                "fixed_pay_per_period": "0",
+            },
+            self.sa,
+        )
+        self.assertEqual(response.status_code, 303)
+        employee = hr_store.get_employee_by_email(email)
+        self.assertEqual(employee["employee_type"], "contractor")
+        self.assertEqual(hr_store.get_employment_profile(email), {})
+
+    def test_team_names_are_unique_and_manager_must_be_active_employee(self):
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        team_name = f"Validated {suffix}"
+        invalid = self._post(
+            "/admin/hr/teams",
+            {
+                "name": team_name,
+                "manager_email": f"missing-{suffix}@anatainc.com",
+            },
+            self.sa,
+        )
+        self.assertIn("err=team_name_or_manager_invalid", invalid.headers["location"])
+        self.assertFalse(any(team["name"] == team_name for team in hr_store.list_teams()))
+
+        manager = f"manager-{suffix}@anatainc.com"
+        hr_store.create_employee(email=manager, full_name="Manager")
+        created = self._post(
+            "/admin/hr/teams",
+            {"name": team_name, "manager_email": manager},
+            self.sa,
+        )
+        self.assertIn("ok=team_created", created.headers["location"])
+        duplicate = self._post(
+            "/admin/hr/teams",
+            {"name": team_name.lower(), "manager_email": manager},
+            self.sa,
+        )
+        self.assertIn("err=team_name_or_manager_invalid", duplicate.headers["location"])
+
+    def test_employee_reporting_manager_must_be_an_active_employee(self):
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        email = f"report-{suffix}@anatainc.com"
+        invalid = self._post(
+            "/admin/hr/employees/new",
+            {
+                "email": email, "manager_email": f"missing-{suffix}@anatainc.com",
+                "pay_basis": "hourly", "hourly_rate": "20",
+            },
+            self.sa,
+        )
+        self.assertEqual(invalid.status_code, 422)
+        self.assertIn("Manager must be an active employee record", invalid.text)
+        self.assertIsNone(hr_store.get_employee_by_email(email))
 
 
 if __name__ == "__main__":

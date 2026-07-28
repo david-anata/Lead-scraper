@@ -655,10 +655,14 @@ Anata's Utah team. It is intentionally provider-independent:
 - Finance/Plaid is not part of this implementation. No Finance records are
   created or changed by HR.
 
-There is currently no external payroll provider integration. Plaid is not a
-payroll provider. A future provider adapter can receive approved payroll
-snapshots, but it must not bypass the existing readiness and human-approval
-controls.
+The approved launch mode is manual controlled payroll. There is no external
+payroll provider integration, and Plaid is not a payroll provider. Agent
+prepares an independently reviewed estimate and immutable approval packet;
+David approves it; David or Val issues checks and completes government portal
+payments and filings with confirmation evidence. Square, bank transfer, and
+automatic submission remain disabled. A future internal payroll service can
+receive approved snapshots only after it declares and proves its authority and
+security capabilities under the versioned provider contract.
 
 Set `HR_PII_SECRET` to a long, production-only secret before collecting W-4
 information. Without it, W-4 storage fails closed. Existing databases receive
@@ -689,7 +693,9 @@ Use the checklist to:
 3. verify EFTPS, Utah TAP, and Utah unemployment portal access;
 4. have a qualified reviewer confirm the 2026 calculations;
 5. complete each employee's employment setup and W-4;
-6. resolve all open punches, time corrections, and payroll inputs.
+6. resolve open punches, corrections that can change the selected period, and
+   payroll inputs. Older corrections remain a separate human review task but do
+   not block an unrelated payroll period.
 
 ## Authoritative event review
 

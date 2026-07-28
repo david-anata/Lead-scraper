@@ -431,6 +431,19 @@ class InviteRequestTests(unittest.TestCase):
         # Cookie should be set
         self.assertIn("pending_invite", r.headers.get("set-cookie", ""))
 
+    def test_accepted_invite_token_cannot_be_reused(self) -> None:
+        import secrets as _sec
+        token = _sec.token_urlsafe(32)
+        invite_id = store.create_invite(
+            "single_use@anatainc.com", None, token=token,
+            invited_by="david@anatainc.com",
+        )
+        self.assertIsNotNone(store.get_pending_invite_by_token(token))
+        store.accept_invite(invite_id)
+        self.assertIsNone(store.get_pending_invite_by_token(token))
+        reused = self._get(f"/admin/access/invite/{token}")
+        self.assertEqual(reused.status_code, 410)
+
     def test_access_request_flow(self) -> None:
         # Directly test the store round-trip: create request → approve → user provisioned
         rid = _role_id("ReqApprovalRole", ["finance"])

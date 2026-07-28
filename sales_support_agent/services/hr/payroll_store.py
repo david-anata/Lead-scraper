@@ -287,10 +287,21 @@ def save_opening_balance(
     employee_ss_withheld: str, employee_medicare_withheld: str,
     source_note: str, actor: str,
 ) -> tuple[bool, str]:
-    from sales_support_agent.services.hr.store import dollars_to_cents
+    from sales_support_agent.services.hr.store import strict_dollars_to_cents
     email = (employee_email or "").strip().lower()
     if not source_note.strip():
         return False, "opening_source_required"
+    try:
+        values = [
+            strict_dollars_to_cents(value)
+            for value in (
+                gross_wages, social_security_wages, medicare_wages, futa_wages,
+                utah_ui_wages, federal_withheld, utah_withheld,
+                employee_ss_withheld, employee_medicare_withheld,
+            )
+        ]
+    except ValueError:
+        return False, "opening_amount_invalid"
     with _session() as session:
         if not session.query(HREmployee).filter_by(email=email).first():
             return False, "employee_not_found"
@@ -300,15 +311,17 @@ def save_opening_balance(
         if not row:
             row = HROpeningPayrollBalance(employee_email=email, tax_year=tax_year)
             session.add(row)
-        row.gross_wages_cents = dollars_to_cents(gross_wages)
-        row.social_security_wages_cents = dollars_to_cents(social_security_wages)
-        row.medicare_wages_cents = dollars_to_cents(medicare_wages)
-        row.futa_wages_cents = dollars_to_cents(futa_wages)
-        row.utah_ui_wages_cents = dollars_to_cents(utah_ui_wages)
-        row.federal_withheld_cents = dollars_to_cents(federal_withheld)
-        row.utah_withheld_cents = dollars_to_cents(utah_withheld)
-        row.employee_ss_withheld_cents = dollars_to_cents(employee_ss_withheld)
-        row.employee_medicare_withheld_cents = dollars_to_cents(employee_medicare_withheld)
+        (
+            row.gross_wages_cents,
+            row.social_security_wages_cents,
+            row.medicare_wages_cents,
+            row.futa_wages_cents,
+            row.utah_ui_wages_cents,
+            row.federal_withheld_cents,
+            row.utah_withheld_cents,
+            row.employee_ss_withheld_cents,
+            row.employee_medicare_withheld_cents,
+        ) = values
         row.source_note = source_note.strip()
         row.confirmed_by = actor
         row.confirmed_at = datetime.now(timezone.utc)
@@ -543,6 +556,29 @@ def list_payroll_inputs(period_start: date, period_end: date) -> list[dict]:
         return results
 
 
+def _partition_pending_corrections(
+    rows: list, period_start: date, period_end: date
+) -> tuple[list[dict], list[dict]]:
+    """Keep only corrections that can change this payroll inside its readiness gate."""
+    relevant: list[dict] = []
+    outside: list[dict] = []
+    for row in rows:
+        payload = row.proposed_json or row.original_json or {}
+        try:
+            correction_date = date.fromisoformat(str(payload.get("date") or ""))
+        except ValueError:
+            correction_date = None
+        item = {
+            "id": row.id,
+            "employee_email": row.employee_email,
+            "date": correction_date,
+        }
+        (relevant if (
+            correction_date and period_start <= correction_date <= period_end
+        ) else outside).append(item)
+    return relevant, outside
+
+
 def _period_context(containing: date) -> tuple:
     period = semimonthly_period(containing)
     workweek_start = period.start_date - timedelta(
@@ -562,9 +598,12 @@ def _period_context(containing: date) -> tuple:
             HRTimeEntry.date >= workweek_start, HRTimeEntry.date <= period.end_date,
             HRTimeEntry.stop_time == "",
         ).all()]
-        corrections = [{
-            "employee_email": row.employee_email,
-        } for row in session.query(HRTimeCorrection).filter_by(status="requested").all()]
+        requested_corrections = session.query(HRTimeCorrection).filter_by(
+            status="requested"
+        ).all()
+        corrections, outside_period_corrections = _partition_pending_corrections(
+            requested_corrections, workweek_start, period.end_date
+        )
         w4_emails = {
             row[0] for row in session.query(HRTaxElection.employee_email).filter(
                 HRTaxElection.effective_date <= period.end_date,
@@ -590,6 +629,7 @@ def _period_context(containing: date) -> tuple:
         eftps_ready=settings["eftps_ready"],
         utah_tax_ready=settings["utah_tap_ready"] and settings["utah_ui_ready"],
     )
+    readiness["outside_period_corrections"] = outside_period_corrections
     approved_time_emails = {
         item["employee_email"]
         for item in list_timesheet_approvals(period.start_date, period.end_date)
@@ -779,8 +819,13 @@ def record_liability_action(liability_id: int, *, action: str,
             return False, "liability_not_found"
         now = datetime.now(timezone.utc)
         if action == "paid":
-            from sales_support_agent.services.hr.store import dollars_to_cents
-            confirmed_cents = dollars_to_cents(confirmed_amount)
+            from sales_support_agent.services.hr.store import strict_dollars_to_cents
+            try:
+                confirmed_cents = strict_dollars_to_cents(
+                    confirmed_amount, allow_blank=False
+                )
+            except ValueError:
+                return False, "liability_amount_invalid"
             if confirmed_cents != row.amount_cents:
                 _audit(session, actor, "tax_liability.amount_mismatch",
                        "tax_liability", row.id, {
@@ -1302,17 +1347,20 @@ def record_provider_handoff(
             row.submitted_by = actor
             row.submitted_at = now
         else:
-            from sales_support_agent.services.hr.store import dollars_to_cents
+            from sales_support_agent.services.hr.store import strict_dollars_to_cents
             supplied = (gross, net, taxes, employer_cost)
             if any(not str(value).strip() for value in supplied):
                 return False, "provider_totals_required"
-            confirmed = {
-                "gross_cents": dollars_to_cents(gross),
-                "net_cents": dollars_to_cents(net),
-                "taxes_cents": dollars_to_cents(taxes),
-                "employer_cost_cents": dollars_to_cents(employer_cost),
-            }
-            if any(value < 0 for value in confirmed.values()):
+            try:
+                confirmed = {
+                    "gross_cents": strict_dollars_to_cents(gross, allow_blank=False),
+                    "net_cents": strict_dollars_to_cents(net, allow_blank=False),
+                    "taxes_cents": strict_dollars_to_cents(taxes, allow_blank=False),
+                    "employer_cost_cents": strict_dollars_to_cents(
+                        employer_cost, allow_blank=False
+                    ),
+                }
+            except ValueError:
                 return False, "provider_totals_required"
             try:
                 metadata = json.loads(run.notes or "{}")

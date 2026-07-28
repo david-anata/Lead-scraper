@@ -175,6 +175,43 @@ def _has_full_hr_admin(user: dict) -> bool:
     )
 
 
+def _employee_reference_error(
+    *, employee_email: str, manager_email: str, team_id: str
+) -> str:
+    """Validate reporting and team references before changing an employee."""
+    manager = (manager_email or "").strip().lower()
+    email = (employee_email or "").strip().lower()
+    if manager:
+        manager_row = store.get_employee_by_email(manager)
+        if not manager_row or manager_row.get("status") != "active":
+            return "Manager must be an active employee record."
+        if manager == email:
+            return "An employee cannot be their own manager."
+    if team_id:
+        try:
+            valid_team = store.get_team(int(team_id))
+        except (TypeError, ValueError):
+            valid_team = None
+        if not valid_team:
+            return "Choose an existing team."
+    return ""
+
+
+def _employee_classification_error(
+    *, employee_type: str, pay_basis: str, classification: str,
+    standard_weekly_hours: float,
+) -> str:
+    if employee_type not in {"hourly", "salaried", "contractor"}:
+        return "Choose a valid worker record type."
+    if pay_basis not in {"hourly", "fixed_semimonthly"}:
+        return "Choose hourly or fixed semimonthly pay."
+    if classification not in {"exempt", "nonexempt"}:
+        return "Choose exempt or nonexempt overtime classification."
+    if not 0 <= standard_weekly_hours <= 168:
+        return "Standard weekly hours must be between 0 and 168."
+    return ""
+
+
 def _managed_employee_emails(user: dict) -> set[str]:
     if _has_full_hr_admin(user):
         return {item["email"] for item in store.list_employees()}
@@ -265,25 +302,107 @@ async def employee_create(
     employee_type: str = Form("hourly"),
     team_id: str = Form(""),
     hourly_rate: str = Form("0"),
-    annual_salary: str | None = Form(None),
+    fixed_pay_per_period: str = Form("0"),
+    hire_date: date | None = Form(None),
+    title: str = Form(""),
+    manager_email: str = Form(""),
+    classification: str = Form("nonexempt"),
+    pay_basis: str = Form("hourly"),
+    standard_weekly_hours: float = Form(40),
     phone: str = Form(""),
     status: str = Form("active"),
     user: dict = Depends(_people_comp_guard),
 ):
+    entered = {
+        "_is_new": True,
+        "email": email.strip().lower(), "full_name": full_name, "hr_role": hr_role,
+        "employee_type": (
+            "contractor" if employee_type == "contractor" else
+            "salaried" if pay_basis == "fixed_semimonthly" else "hourly"
+        ),
+        "team_id": team_id, "hourly_rate": hourly_rate,
+        "phone": phone, "status": status, "id": "",
+        "employment": {
+            "fixed_pay_per_period": fixed_pay_per_period, "hire_date": hire_date or "",
+            "title": title, "manager_email": manager_email,
+            "classification": classification, "pay_basis": pay_basis,
+            "standard_weekly_hours": standard_weekly_hours,
+        },
+    }
     if not email.strip():
-        return HTMLResponse(render_hr_employee_form(None, store.list_teams(), user=user,
+        return HTMLResponse(render_hr_employee_form(entered, store.list_teams(), user=user,
                                                     error="Email is required."), status_code=422)
+    classification_error = _employee_classification_error(
+        employee_type=employee_type, pay_basis=pay_basis,
+        classification=classification,
+        standard_weekly_hours=standard_weekly_hours,
+    )
+    if classification_error:
+        return HTMLResponse(
+            render_hr_employee_form(
+                entered, store.list_teams(), user=user,
+                error=classification_error,
+            ),
+            status_code=422,
+        )
+    reference_error = _employee_reference_error(
+        employee_email=email, manager_email=manager_email, team_id=team_id
+    )
+    if reference_error:
+        return HTMLResponse(
+            render_hr_employee_form(
+                entered, store.list_teams(), user=user, error=reference_error
+            ),
+            status_code=422,
+        )
+    try:
+        hourly_rate_cents = store.strict_dollars_to_cents(hourly_rate)
+        fixed_pay_cents = store.strict_dollars_to_cents(fixed_pay_per_period)
+    except ValueError as exc:
+        return HTMLResponse(
+            render_hr_employee_form(entered, store.list_teams(), user=user, error=str(exc)),
+            status_code=422,
+        )
+    if employee_type == "contractor" and (hourly_rate_cents or fixed_pay_cents):
+        return HTMLResponse(render_hr_employee_form(
+            entered, store.list_teams(), user=user,
+            error="Contractor fees belong in the separate Contractor workflow.",
+        ), status_code=422)
+    if employee_type != "contractor" and pay_basis == "hourly" and fixed_pay_cents:
+        return HTMLResponse(render_hr_employee_form(
+            entered, store.list_teams(), user=user,
+            error="Hourly employees need one hourly rate and no fixed check amount.",
+        ), status_code=422)
+    if (
+        employee_type != "contractor"
+        and pay_basis == "fixed_semimonthly"
+        and hourly_rate_cents
+    ):
+        return HTMLResponse(render_hr_employee_form(
+            entered, store.list_teams(), user=user,
+            error="Salaried employees need one fixed semimonthly amount and no hourly rate.",
+        ), status_code=422)
     new_id = store.create_employee(
-        email=email, full_name=full_name, hr_role=hr_role, employee_type=employee_type,
-        team_id=team_id or None, hourly_rate=hourly_rate, annual_salary=annual_salary,
+        email=email, full_name=full_name, hr_role=hr_role,
+        employee_type=(
+            "contractor" if employee_type == "contractor" else
+            "salaried" if pay_basis == "fixed_semimonthly" else "hourly"
+        ),
+        team_id=team_id or None, hourly_rate=hourly_rate, annual_salary="0",
         phone=phone, status=status, actor=user.get("email", "system"))
     if new_id is None:
         return HTMLResponse(render_hr_employee_form(
-            {"email": email.strip().lower(), "full_name": full_name, "hr_role": hr_role,
-             "employee_type": employee_type, "team_id": team_id, "hourly_rate": hourly_rate,
-             "annual_salary": annual_salary, "phone": phone, "status": status, "id": ""},
+            entered,
             store.list_teams(), user=user,
             error="An employee with that email already exists."), status_code=422)
+    if employee_type != "contractor":
+        store.upsert_employment_profile(
+            email, hire_date=hire_date, title=title, manager_email=manager_email,
+            classification=classification, pay_basis=pay_basis,
+            fixed_pay_per_period=fixed_pay_per_period,
+            standard_weekly_hours=standard_weekly_hours, standard_period_hours=86.67,
+            actor=user.get("email", "system"),
+        )
     return RedirectResponse("/admin/hr/employees?ok=created", status_code=303)
 
 
@@ -322,14 +441,81 @@ async def employee_update(
     employee = store.get_employee(emp_id)
     if not employee:
         return RedirectResponse("/admin/hr/employees?err=not_found", status_code=303)
+    classification_error = _employee_classification_error(
+        employee_type=employee_type, pay_basis=pay_basis,
+        classification=classification,
+        standard_weekly_hours=standard_weekly_hours,
+    )
+    if classification_error:
+        employee["compensation_history"] = store.list_compensation_changes(
+            employee["email"]
+        )
+        return HTMLResponse(render_hr_employee_form(
+            employee, store.list_teams(), user=user, error=classification_error,
+        ), status_code=422)
+    reference_error = _employee_reference_error(
+        employee_email=employee["email"], manager_email=manager_email,
+        team_id=team_id,
+    )
+    if reference_error:
+        employee["compensation_history"] = store.list_compensation_changes(
+            employee["email"]
+        )
+        return HTMLResponse(render_hr_employee_form(
+            employee, store.list_teams(), user=user, error=reference_error,
+        ), status_code=422)
+    if employee.get("employee_type") == "contractor":
+        employee_type = "contractor"
+    else:
+        employee_type = "salaried" if pay_basis == "fixed_semimonthly" else "hourly"
+    try:
+        hourly_rate_cents = store.strict_dollars_to_cents(hourly_rate)
+        fixed_pay_cents = store.strict_dollars_to_cents(fixed_pay_per_period)
+    except ValueError as exc:
+        employee["compensation_history"] = store.list_compensation_changes(
+            employee["email"]
+        )
+        return HTMLResponse(render_hr_employee_form(
+            employee, store.list_teams(), user=user, error=str(exc),
+        ), status_code=422)
+    if employee_type == "contractor" and (hourly_rate_cents or fixed_pay_cents):
+        employee["compensation_history"] = store.list_compensation_changes(
+            employee["email"]
+        )
+        return HTMLResponse(render_hr_employee_form(
+            employee, store.list_teams(), user=user,
+            error="Contractor fees belong in the separate Contractor workflow.",
+        ), status_code=422)
+    if employee_type != "contractor" and pay_basis == "hourly" and fixed_pay_cents:
+        employee["compensation_history"] = store.list_compensation_changes(
+            employee["email"]
+        )
+        return HTMLResponse(render_hr_employee_form(
+            employee, store.list_teams(), user=user,
+            error="Hourly employees need one hourly rate and no fixed check amount.",
+        ), status_code=422)
+    if (
+        employee_type != "contractor"
+        and pay_basis == "fixed_semimonthly"
+        and hourly_rate_cents
+    ):
+        employee["compensation_history"] = store.list_compensation_changes(
+            employee["email"]
+        )
+        return HTMLResponse(render_hr_employee_form(
+            employee, store.list_teams(), user=user,
+            error="Salaried employees need one fixed semimonthly amount and no hourly rate.",
+        ), status_code=422)
     employment = employee.get("employment") or {}
     stored_pay_basis = employment.get("pay_basis") or (
         "fixed_semimonthly" if employee.get("employee_type") == "salaried" else "hourly"
     )
+    if employee_type == "contractor":
+        stored_pay_basis = "contractor"
     prior_compensation = {
         "employee_type": (
-            "salaried" if stored_pay_basis == "fixed_semimonthly"
-            else employee.get("employee_type", "hourly")
+            "contractor" if stored_pay_basis == "contractor" else
+            "salaried" if stored_pay_basis == "fixed_semimonthly" else "hourly"
         ),
         "hourly_rate_cents": int(employee.get("hourly_rate_cents") or 0),
         "pay_basis": stored_pay_basis,
@@ -339,12 +525,12 @@ async def employee_update(
     }
     new_compensation = {
         "employee_type": employee_type,
-        "hourly_rate_cents": store.dollars_to_cents(hourly_rate),
-        "pay_basis": pay_basis,
-        "fixed_pay_per_period_cents": store.dollars_to_cents(fixed_pay_per_period),
+        "hourly_rate_cents": hourly_rate_cents,
+        "pay_basis": "contractor" if employee_type == "contractor" else pay_basis,
+        "fixed_pay_per_period_cents": fixed_pay_cents,
     }
     compensation_changed = prior_compensation != new_compensation
-    employment_changed = {
+    employment_changed = employee_type != "contractor" and {
         "hire_date": employment.get("hire_date"),
         "title": (employment.get("title") or "").strip(),
         "manager_email": (employment.get("manager_email") or "").strip().lower(),
@@ -362,9 +548,7 @@ async def employee_update(
         "manager_email": manager_email.strip().lower(),
         "classification": classification,
         "pay_basis": pay_basis,
-        "fixed_pay_per_period_cents": store.dollars_to_cents(
-            fixed_pay_per_period
-        ),
+        "fixed_pay_per_period_cents": fixed_pay_cents,
         "standard_weekly_hours": float(standard_weekly_hours),
     }
     if compensation_changed and (
@@ -565,11 +749,15 @@ async def team_create(
     description: str = Form(""),
     user: dict = Depends(_people_guard),
 ):
-    store.create_team(
+    team_id = store.create_team(
         name=name, manager_email=manager_email, description=description,
         actor=user.get("email", "system"),
     )
-    return RedirectResponse("/admin/hr/teams?ok=team_created", status_code=303)
+    return RedirectResponse(
+        "/admin/hr/teams?ok=team_created" if team_id else
+        "/admin/hr/teams?err=team_name_or_manager_invalid",
+        status_code=303,
+    )
 
 
 @router.get("/teams/{team_id}", response_class=HTMLResponse)

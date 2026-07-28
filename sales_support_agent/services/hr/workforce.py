@@ -17,7 +17,10 @@ from sales_support_agent.models.hr import (
     HROffboardingChecklist,
 )
 from sales_support_agent.models.entities import AppUser
-from sales_support_agent.services.hr.store import cents_to_dollars, dollars_to_cents
+from sales_support_agent.services.hr.store import (
+    cents_to_dollars,
+    strict_dollars_to_cents,
+)
 
 
 @contextmanager
@@ -48,9 +51,13 @@ def create_contractor_payment(
 ) -> tuple[bool, str]:
     email = (contractor_email or "").strip().lower()
     currency = (currency or "USD").strip().upper()
+    try:
+        amount_minor = strict_dollars_to_cents(amount, allow_blank=False)
+    except ValueError:
+        return False, "contractor_amount_invalid"
     if service_end < service_start or due_date < service_end:
         return False, "contractor_dates_invalid"
-    if len(currency) != 3 or dollars_to_cents(amount) <= 0:
+    if len(currency) != 3 or amount_minor <= 0:
         return False, "contractor_amount_invalid"
     with _session() as session:
         contractor = session.query(HREmployee).filter_by(
@@ -60,7 +67,7 @@ def create_contractor_payment(
             return False, "contractor_not_found"
         row = HRContractorPayment(
             contractor_email=email, service_start=service_start, service_end=service_end,
-            due_date=due_date, amount_minor=dollars_to_cents(amount), currency=currency,
+            due_date=due_date, amount_minor=amount_minor, currency=currency,
             description=(description or "").strip(),
             invoice_reference=(invoice_reference or "").strip(), prepared_by=actor,
         )
@@ -82,7 +89,10 @@ def save_contractor_profile(
     email = (contractor_email or "").strip().lower()
     country = (country_code or "").strip().upper()
     currency = (currency or "USD").strip().upper()
-    fee_minor = dollars_to_cents(flat_fee)
+    try:
+        fee_minor = strict_dollars_to_cents(flat_fee, allow_blank=False)
+    except ValueError:
+        return False, "contractor_profile_invalid"
     allowed_forms = {"undetermined", "w9", "w8ben", "w8bene", "other"}
     allowed_statuses = {"missing", "requested", "received", "reviewed", "expired"}
     allowed_engagement_statuses = {"active", "inactive"}

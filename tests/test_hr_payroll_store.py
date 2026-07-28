@@ -1,6 +1,7 @@
 """State-safety tests for payroll approvals and manual checks."""
 
 from datetime import date
+from types import SimpleNamespace
 from unittest import mock
 
 from sqlalchemy import create_engine
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 from sales_support_agent.models.database import Base
 from sales_support_agent.models.hr import (
     HREmployee,
+    HROpeningPayrollBalance,
     HRCompanyProfile,
     HRPayrollApproval,
     HRPayrollCalculation,
@@ -391,3 +393,41 @@ def test_reimbursement_evidence_and_recurring_deduction_controls():
     assert current[0]["status"] == "pending"
     assert current[0]["submitted_by"] == "system"
     assert len(repeated) == 1
+
+
+def test_opening_balance_rejects_invalid_money_instead_of_saving_zero():
+    engine = _engine()
+    with Session(engine) as session:
+        session.add(HREmployee(email="opening@anatainc.com", full_name="Opening"))
+        session.commit()
+
+    with mock.patch.object(payroll_store, "get_engine", return_value=engine):
+        result = payroll_store.save_opening_balance(
+            employee_email="opening@anatainc.com", tax_year=2026,
+            gross_wages="not money", social_security_wages="0",
+            medicare_wages="0", futa_wages="0", utah_ui_wages="0",
+            federal_withheld="0", utah_withheld="0",
+            employee_ss_withheld="0", employee_medicare_withheld="0",
+            source_note="Historical payroll export", actor="david@anatainc.com",
+        )
+    assert result == (False, "opening_amount_invalid")
+    with Session(engine) as session:
+        assert session.query(HROpeningPayrollBalance).count() == 0
+
+
+def test_only_corrections_that_can_change_the_period_block_payroll():
+    rows = [
+        SimpleNamespace(
+            id=1, employee_email="valeria@anatainc.com",
+            proposed_json={"date": "2026-07-22"}, original_json={},
+        ),
+        SimpleNamespace(
+            id=2, employee_email="hourly@anatainc.com",
+            proposed_json={"date": "2026-08-03"}, original_json={},
+        ),
+    ]
+    relevant, outside = payroll_store._partition_pending_corrections(
+        rows, date(2026, 7, 26), date(2026, 8, 15)
+    )
+    assert [item["id"] for item in relevant] == [2]
+    assert [item["id"] for item in outside] == [1]

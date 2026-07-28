@@ -114,7 +114,10 @@ _HR_STYLES = """
 def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str:
     perms = (user or {}).get("permissions") or set()
     is_super = bool((user or {}).get("is_superadmin"))
-    nav = render_agent_nav("hr", hr_section=active, permissions=perms, is_superadmin=is_super, user=user)
+    nav = render_agent_nav(
+        "hr", hr_section=active, permissions=perms, is_superadmin=is_super,
+        user=user, include_content_target=False,
+    )
     styles = render_agent_nav_styles()
     form_token = csrf_token(user)
     mobile_items = (
@@ -246,6 +249,7 @@ def render_hr_setup(control: dict, company_profile: dict, *, user, flash=None) -
         "timesheet_approval", "payroll_input",
     }
     time_ready = not bool(blocker_kinds.intersection(time_kinds))
+    outside_corrections = readiness.get("outside_period_corrections") or []
     review_ready = bool(settings.get("qualified_tax_review"))
 
     tasks = [
@@ -335,6 +339,18 @@ def render_hr_setup(control: dict, company_profile: dict, *, user, flash=None) -
             ),
             "ready": time_ready, "owner": "Employees and Val",
             "href": f"/admin/hr/time{period_query}", "action": "Review time and PTO",
+        },
+        {
+            "title": "Resolve older time corrections",
+            "description": (
+                "No time corrections outside this payroll period are waiting for review."
+                if not outside_corrections else
+                f"{len(outside_corrections)} older correction(s) still require another "
+                "authorized person to approve or deny them. They stay visible but do not "
+                "block the current payroll because they cannot change this period."
+            ),
+            "ready": not outside_corrections, "owner": "David or Val",
+            "href": f"/admin/hr/time{period_query}", "action": "Review older correction",
         },
         {
             "title": "Record the qualified calculation review",
@@ -462,12 +478,14 @@ def _flash(flash: Optional[str]) -> str:
         "pto_withdraw_not_allowed": "Only your own pending PTO request can be withdrawn.",
         "pii_secret_missing": "Secure tax storage is not configured. Ask David or Val to finish setup.",
         "invalid_w4": "Review the SSN and W-4 selections.",
+        "invalid_w4_amount": "Use valid dollar amounts in the W-4 fields. Nothing was saved.",
         "attestation_required": "You must complete and sign your own attestation.",
         "settings_saved": "Payroll setup saved.",
         "company_profile_saved": "Employer legal profile saved.",
         "company_profile_invalid": "Complete the employer profile and evidence note.",
         "opening_balance_saved": "Reviewed opening balance saved.",
         "opening_source_required": "Add the source used to verify the opening balance.",
+        "opening_amount_invalid": "Use valid nonnegative dollar amounts. The opening balance was not changed.",
         "input_added": "Payroll input added for another person's review.",
         "input_approved": "Payroll input approved.",
         "input_rejected": "Payroll input rejected.",
@@ -510,6 +528,10 @@ def _flash(flash: Optional[str]) -> str:
         "evidence_required": "Add a note describing the evidence you reviewed.",
         "payment_and_filing_required": "Record both payment and filing before reconciliation.",
         "liability_amount_mismatch": "The confirmed payment amount does not match the liability.",
+        "liability_amount_invalid": "Enter the exact valid payment amount shown by the government portal.",
+        "team_name_or_manager_invalid": "Use a unique team name and choose an active employee as manager.",
+        "team_name_exists": "That team name is already in use.",
+        "team_manager_invalid": "The team manager must be an active employee record.",
         "correction_reason_required": "Explain what the employee needs to correct.",
         "onboarding_correction_requested": "Correction request sent without deleting prior signed records.",
         "payroll_inputs_changed": "Payroll inputs changed after preparation. Prepare a new version.",
@@ -640,8 +662,8 @@ def render_hr_employees(employees: list, *, user, flash=None) -> str:
 
 
 def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, error=None) -> str:
-    is_new = employee is None
     e = employee or {}
+    is_new = employee is None or bool(e.get("_is_new"))
     action = "/admin/hr/employees/new" if is_new else f"/admin/hr/employees/{e['id']}"
     title = "Add employee" if is_new else f"Edit {e.get('full_name','')}"
     employment = e.get("employment") or {}
@@ -671,8 +693,9 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
       </div>
       <div class="hr-grid2">
         <div><label>HR role</label>{_sel("hr_role", HR_ROLES, e.get("hr_role","employee"))}</div>
-        <div><label>Employee type</label>{_sel("employee_type", EMPLOYEE_TYPES, e.get("employee_type","hourly"))}</div>
+        <div><label>Worker record</label>{_sel("employee_type", EMPLOYEE_TYPES, e.get("employee_type","hourly"))}</div>
       </div>
+      <p class="hr-help">Hourly and salaried records are Utah W-2 employees. Contractor records stay outside W-2 payroll and use the separate Wise contractor workflow.</p>
       <div class="hr-grid2">
         <div><label>Team</label><select name="team_id">{team_opts}</select></div>
         <div><label>Status</label>{_sel("status", ("active","inactive"), e.get("status","active"))}</div>
@@ -681,6 +704,7 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         <div><label>Hourly rate ($)</label><input name="hourly_rate" value="{_esc(e.get('hourly_rate','0.00'))}" placeholder="25.00"></div>
         <div><label>Fixed semimonthly pay ($)</label><input name="fixed_pay_per_period" value="{_esc(employment.get('fixed_pay_per_period','0.00'))}" placeholder="1000.00"></div>
       </div>
+      <p class="hr-help">Choose the pay basis below, then enter only its matching amount. Leave the other amount at zero.</p>
       <div class="hr-grid2">
         <div><label>Hire date</label><input type="date" name="hire_date" value="{_esc(employment.get('hire_date',''))}"></div>
         <div><label>Job title</label><input name="title" value="{_esc(employment.get('title',''))}"></div>
@@ -1106,6 +1130,21 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         f"<li><strong>{_esc(item.get('employee_email') or 'Company setup')}:</strong> "
         f"{_esc(item.get('message'))}</li>" for item in readiness["blockers"]
     ) or "<li>No blocking issues. Payroll can be prepared for approval.</li>"
+    outside_corrections = readiness.get("outside_period_corrections") or []
+    outside_correction_notice = ""
+    if outside_corrections:
+        correction = outside_corrections[0]
+        outside_correction_notice = f"""
+        <div class="hr-callout warn">
+          <div class="hr-kicker">Separate human approval</div>
+          <h2 style="margin:6px 0">An older time correction still needs a decision</h2>
+          <p><strong>{_esc(correction.get('employee_email'))}</strong> has a correction
+          {_esc('for ' + str(correction.get('date')) if correction.get('date') else 'outside this pay period')}.
+          It does not change or block the {_esc(period.start_date)}–{_esc(period.end_date)}
+          payroll. Another authorized person must still approve or deny it; Anata will
+          not decide it automatically.</p>
+          <a class="hr-btn hr-btn-light" href="/admin/hr/time?period_date={_esc(period.start_date)}">Review time corrections</a>
+        </div>"""
     employee_options = "".join(
         f'<option value="{_esc(employee["email"])}">{_esc(employee["full_name"])}'
         f' — {_esc(employee["email"])}</option>' for employee in control["employees"]
@@ -1155,6 +1194,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <h2 style="margin:6px 0">{status_label}</h2><ul>{blockers}</ul>
       <p>No bank transfer, check, tax payment, or filing occurs from preparation.</p>
       <p><strong>Calculation authority:</strong> gross, withholding, net pay, and employer cost shown here are Anata planning estimates until matched to the authoritative payroll service's result.</p></div>
+    {outside_correction_notice}
     <div class="hr-cards">
       <div class="hr-card"><div class="n">{_esc(period.pay_date)}</div><div class="l">Payday</div></div>
       <div class="hr-card"><div class="n">{len(control['employees'])}</div><div class="l">W-2 employees</div></div>
@@ -1785,10 +1825,18 @@ def render_hr_settings(
     {_flash(flash)}
     <h1 class="hr-h1">HR & payroll settings</h1><p class="hr-sub">The policies currently approved for Anata.</p>
     <section class="hr-callout warn">
-      <div class="hr-kicker">Internal payroll connection</div>
-      <h2>Integration contract ready · authority undecided</h2>
-      <p>Square is deferred. The future internal service must declare whether it owns final calculation, wage distribution, tax payment, and tax filing. Anata will not infer those outcomes.</p>
-      <a class="hr-btn hr-btn-light" href="/admin/hr/settings/provider-contract.json">Download machine-readable contract</a>
+      <div class="hr-kicker">Payroll operating mode</div>
+      <h2>Manual controlled payroll · no automatic provider submission</h2>
+      <p><strong>Anata prepares:</strong> time, pay inputs, calculation estimates,
+      cash impact, the frozen approval packet, checks, statements, and evidence.</p>
+      <p><strong>People complete:</strong> David gives final approval; David or Val
+      issues the approved checks and completes government payments and filings in the
+      official portals. A qualified payroll professional must independently review the
+      calculation package before the first live run.</p>
+      <p><strong>Not enabled:</strong> Square, bank transfer, automatic tax filing, and
+      automatic money movement. A future internal service cannot claim any of those
+      outcomes until it passes the published authority and security contract.</p>
+      <a class="hr-btn hr-btn-light" href="/admin/hr/settings/provider-contract.json">View future service requirements</a>
     </section>
     <section class="hr-card">
       <div class="hr-kicker">Base44 recovery</div>

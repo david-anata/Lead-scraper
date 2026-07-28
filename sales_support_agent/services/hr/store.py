@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
 import os
@@ -66,6 +66,24 @@ def dollars_to_cents(value) -> int:
         return int(round(float(str(value).replace("$", "").replace(",", "").strip() or 0) * 100))
     except (TypeError, ValueError):
         return 0
+
+
+def strict_dollars_to_cents(value, *, allow_blank: bool = True) -> int:
+    """Parse an operator-entered money value without silently changing bad input to zero."""
+    raw = str(value or "").replace("$", "").replace(",", "").strip()
+    if not raw and allow_blank:
+        return 0
+    try:
+        amount = Decimal(raw)
+    except (InvalidOperation, ValueError):
+        raise ValueError("Enter a valid dollar amount.") from None
+    if not amount.is_finite() or amount < 0:
+        raise ValueError("Dollar amounts must be zero or greater.")
+    return int(
+        (amount * Decimal("100")).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+    )
 
 
 def cents_to_dollars(cents: Optional[int]) -> str:
@@ -755,6 +773,13 @@ def save_w4(employee_email: str, *, ssn: str, filing_status: str, two_jobs: bool
         return False, "invalid_w4"
     if not attested or actor.strip().lower() != email:
         return False, "attestation_required"
+    try:
+        dependents_credit_cents = strict_dollars_to_cents(dependents_credit)
+        other_income_cents = strict_dollars_to_cents(other_income)
+        deductions_cents = strict_dollars_to_cents(deductions)
+        extra_withholding_cents = strict_dollars_to_cents(extra_withholding)
+    except ValueError:
+        return False, "invalid_w4_amount"
     secret = (os.getenv("HR_PII_SECRET") or "").strip()
     if not secret:
         return False, "pii_secret_missing"
@@ -762,10 +787,10 @@ def save_w4(employee_email: str, *, ssn: str, filing_status: str, two_jobs: bool
         "employee_email": email, "effective_date": date.today().isoformat(),
         "filing_status": filing_status, "two_jobs": bool(two_jobs),
         "exempt_from_federal_withholding": bool(exempt),
-        "dependents_credit_cents": dollars_to_cents(dependents_credit),
-        "other_income_cents": dollars_to_cents(other_income),
-        "deductions_cents": dollars_to_cents(deductions),
-        "extra_withholding_cents": dollars_to_cents(extra_withholding),
+        "dependents_credit_cents": dependents_credit_cents,
+        "other_income_cents": other_income_cents,
+        "deductions_cents": deductions_cents,
+        "extra_withholding_cents": extra_withholding_cents,
         "ssn_last4": digits[-4:],
     }
     snapshot_hash = hashlib.sha256(
@@ -918,6 +943,13 @@ def create_team(*, name: str, manager_email: str = "", description: str = "",
     if not name:
         return None
     with _session() as s:
+        if s.query(HRTeam).filter(func.lower(HRTeam.name) == name.lower()).first():
+            return None
+        manager = (manager_email or "").strip().lower()
+        if manager and not s.query(HREmployee).filter_by(
+            email=manager, status="active"
+        ).first():
+            return None
         t = HRTeam(name=name, manager_email=(manager_email or "").strip().lower(),
                    description=(description or "").strip())
         s.add(t)
@@ -946,6 +978,17 @@ def update_team(
         team = session.get(HRTeam, team_id)
         if not team:
             return False, "team_not_found"
+        duplicate = session.query(HRTeam).filter(
+            func.lower(HRTeam.name) == name.strip().lower(),
+            HRTeam.id != team_id,
+        ).first()
+        if duplicate:
+            return False, "team_name_exists"
+        manager = (manager_email or "").strip().lower()
+        if manager and not session.query(HREmployee).filter_by(
+            email=manager, status="active"
+        ).first():
+            return False, "team_manager_invalid"
         prior = {
             "name": team.name, "manager_email": team.manager_email,
             "description": team.description,
