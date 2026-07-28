@@ -11,7 +11,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
 
 from sales_support_agent.api.building_billing_router import (
@@ -32,15 +32,17 @@ from sales_support_agent.api.building_billing_router import (
 )
 from sales_support_agent.api.building_booking_router import (
     AgreementInput,
+    CustomerStatusAccessInput,
     DepositInput,
     EventReviewInput,
     ProposalInput,
     ReservationInput,
     TourInput,
     TransitionInput,
-    create_reservation,
     create_event_review,
+    create_reservation,
     create_tour,
+    prepare_customer_status_access,
     record_agreement,
     record_deposit,
     record_proposal,
@@ -88,6 +90,9 @@ from sales_support_agent.services.auth_deps import (
 )
 from sales_support_agent.services.building_security import (
     require_building_form_security,
+)
+from sales_support_agent.services.building_page import (
+    render_customer_status_link_result,
 )
 
 
@@ -363,6 +368,52 @@ def transition_reservation_from_control_room(
         )
 
     return _run_form_action(action, f"Booking moved to {target_status.replace('_', ' ')}.")
+
+
+@router.post(
+    "/reservations/{reservation_id}/customer-status-access",
+    dependencies=FORM_DEPS,
+    response_class=HTMLResponse,
+)
+def prepare_customer_status_access_from_control_room(
+    reservation_id: str,
+    request: Request,
+    expires_in_days: int = Form(30),
+    user: dict = Depends(require_tool("building.events.manage")),
+):
+    """Prepare one customer bearer link for deliberate staff copying only."""
+
+    try:
+        result = prepare_customer_status_access(
+            reservation_id,
+            CustomerStatusAccessInput(
+                expires_in_days=expires_in_days,
+                actor=_actor(user),
+            ),
+            request,
+            _internal_key(request),
+        )
+    except (ValidationError, ValueError) as exc:
+        if isinstance(exc, ValidationError):
+            message = exc.errors()[0].get("msg", "Review the form values.")
+        else:
+            message = str(exc)
+        return _redirect(error=message)
+    except HTTPException as exc:
+        return _redirect(error=str(exc.detail))
+    return HTMLResponse(
+        render_customer_status_link_result(
+            user=user,
+            reservation_id=reservation_id,
+            status_url=str(result["status_url"]),
+            expires_at=str(result["expires_at"]),
+            sent=bool(result["sent"]),
+        ),
+        headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
 
 
 @router.post("/reservations/{reservation_id}/agreements", dependencies=FORM_DEPS)
