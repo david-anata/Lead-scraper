@@ -2622,8 +2622,8 @@ def render_indexing_page(
             <span class="status-pill status-neutral">{len(verification_records)} warning URLs</span>
           </div>
           {f'''
-          <div class="table-wrap">
-            <table>
+          <div class="data-workspace">
+            <table class="data-table">
               <thead><tr><th>URL</th><th>Verdict</th><th>Crawler reports</th><th>Fresh evidence</th><th>Observed</th></tr></thead>
               <tbody>{verification_rows}</tbody>
             </table>
@@ -2643,8 +2643,8 @@ def render_indexing_page(
             <span class="status-pill status-neutral">{len(records)} records</span>
           </div>
           {f'''
-          <div class="table-wrap">
-            <table>
+          <div class="data-workspace">
+            <table class="data-table">
               <thead><tr><th>URL</th><th>Search Console reason</th><th>Desired state</th><th>Priority</th><th>Next operation</th><th>Last crawled</th></tr></thead>
               <tbody>{rows}</tbody>
             </table>
