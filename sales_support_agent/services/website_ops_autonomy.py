@@ -21,6 +21,7 @@ from sales_support_agent.services.website_ops_content import (
 from sales_support_agent.services.website_ops_customer_language import collect_customer_questions
 from sales_support_agent.services.website_ops_serp import build_blueprint
 from sales_support_agent.services.website_ops_aeo import build_aeo_assessment
+from sales_support_agent.services.website_ops_article_engine import build_article_action
 from sales_support_agent.services.website_ops_query_intelligence import (
     build_query_intelligence,
 )
@@ -46,6 +47,7 @@ MVP_ALLOWED_ACTION_TYPES = (
     "meta_title_update",
     "meta_description_update",
     "canonical_update",
+    "publish_blog_article",
 )
 MVP_SUGGESTION_ONLY_ACTION_TYPES = {"inject_faq_block", "expand_service_page_section"}
 MVP_FAQ_IMPRESSIONS_THRESHOLD = 25.0
@@ -1397,6 +1399,20 @@ def build_autonomy_overlay(
         decision_data_ready=decision_data_ready,
         run_mode=run_mode,
     )
+    if run_mode in {"weekly", "monthly"} and decision_data_ready:
+        try:
+            article_action = build_article_action(
+                settings=settings,
+                query_intelligence=query_intelligence,
+            )
+            if article_action:
+                action_queue.append(article_action)
+                content_tasks.append(article_action)
+        except Exception as exc:  # noqa: BLE001 - surface provider failure without blocking crawl
+            support_requests.append(
+                "Autonomous article generation could not complete: "
+                f"{type(exc).__name__}: {exc}"
+            )
     page_by_url = {
         _normalize_url(str(item.get("url", ""))): item for item in observations
     }

@@ -22,6 +22,8 @@ METADATA_ACTION_TYPES = {
     "meta_description_update",
     "canonical_update",
 }
+CONTENT_ACTION_TYPES = {"publish_blog_article"}
+GENERATED_ARTICLE_REGISTRY = "src/content/generated-articles/index.ts"
 EXCLUDED_PATH_PREFIXES = ("/api/", "/book", "/brand", "/preview", "/x/")
 
 
@@ -30,6 +32,137 @@ def github_metadata_is_configured() -> bool:
         os.getenv("WEBSITE_OPS_GITHUB_TOKEN", "").strip()
         and os.getenv("WEBSITE_OPS_GITHUB_REPOSITORY", "david-anata/anata-website").strip()
     )
+
+
+def validate_generated_article(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a source-backed article payload before it can reach GitHub."""
+
+    raw = str(record.get("action_value") or record.get("suggested_action_value") or "").strip()
+    try:
+        article = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise website_ops.ExecutionError("Generated article payload must be valid JSON.") from exc
+    if not isinstance(article, dict):
+        raise website_ops.ExecutionError("Generated article payload must be an object.")
+    required = (
+        "slug",
+        "primaryIntent",
+        "evidenceId",
+        "generatedAt",
+        "title",
+        "description",
+        "content",
+        "sources",
+    )
+    missing = [key for key in required if not article.get(key)]
+    if missing:
+        raise website_ops.ExecutionError(
+            "Generated article is missing required fields: " + ", ".join(missing) + "."
+        )
+    slug = str(article["slug"]).strip()
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
+        raise website_ops.ExecutionError("Generated article slug is invalid.")
+    title = str(article["title"]).strip()
+    description = str(article["description"]).strip()
+    if not 15 <= len(title) <= 65:
+        raise website_ops.ExecutionError("Generated article title must be 15 to 65 characters.")
+    if not 50 <= len(description) <= 155:
+        raise website_ops.ExecutionError(
+            "Generated article description must be 50 to 155 characters."
+        )
+    serialized = json.dumps(article, ensure_ascii=False)
+    if "—" in serialized:
+        raise website_ops.ExecutionError("Generated article contains a prohibited em dash.")
+    blocked_claims = ("basic research", "reveal the gap", "app.anatainc.com/demo")
+    lowered = serialized.lower()
+    if any(value in lowered for value in blocked_claims):
+        raise website_ops.ExecutionError("Generated article contains prohibited content.")
+    sources = article.get("sources")
+    if not isinstance(sources, list) or len(sources) < 2:
+        raise website_ops.ExecutionError("Generated article requires at least two sources.")
+    for source in sources:
+        if not isinstance(source, Mapping):
+            raise website_ops.ExecutionError("Generated article source is invalid.")
+        parsed = urlparse(str(source.get("url", "")).strip())
+        if parsed.scheme != "https" or not parsed.hostname or not str(source.get("title", "")).strip():
+            raise website_ops.ExecutionError(
+                "Every generated article source needs an HTTPS URL and title."
+            )
+    content = article.get("content")
+    if not isinstance(content, Mapping):
+        raise website_ops.ExecutionError("Generated article content is invalid.")
+    expected_route = f"/blog/{slug}"
+    if content.get("route") != expected_route or content.get("schemaType") != "article":
+        raise website_ops.ExecutionError(
+            "Generated article route and Article schema must match its slug."
+        )
+    if str(content.get("h1", "")).strip() != str(content.get("articleTitle", "")).strip():
+        raise website_ops.ExecutionError("Generated article H1 and Article title must agree.")
+    sections = content.get("sections")
+    if not isinstance(sections, list) or len(sections) < 2:
+        raise website_ops.ExecutionError("Generated article requires at least two sections.")
+    if not all(
+        isinstance(section, Mapping)
+        and str(section.get("heading", "")).strip()
+        and isinstance(section.get("paragraphs"), list)
+        and section.get("paragraphs")
+        for section in sections
+    ):
+        raise website_ops.ExecutionError("Every generated article section needs content.")
+    breadcrumbs = content.get("breadcrumbs")
+    if not isinstance(breadcrumbs, list) or len(breadcrumbs) < 3:
+        raise website_ops.ExecutionError("Generated article requires a breadcrumb path.")
+    reason = str(
+        record.get("reason")
+        or record.get("details")
+        or record.get("execution_reason")
+        or ""
+    ).strip()
+    evidence = list(record.get("evidence") or [])
+    if str(record.get("confidence", "")).strip().lower() != "high" or not reason or len(evidence) < 2:
+        raise website_ops.ExecutionError(
+            "Article publishing requires high confidence, a reason, and independent evidence."
+        )
+    return article
+
+
+def update_generated_article_registry(source: str, article: Mapping[str, Any]) -> str:
+    start_marker = "// WEBSITE_OPS_GENERATED_ARTICLES_START"
+    end_marker = "// WEBSITE_OPS_GENERATED_ARTICLES_END"
+    start = source.find(start_marker)
+    end = source.find(end_marker)
+    if start < 0 or end < 0 or end <= start:
+        raise website_ops.ExecutionError("Generated article registry markers are missing.")
+    block = source[start + len(start_marker) : end]
+    match = re.search(
+        r"export const GENERATED_ARTICLES: readonly GeneratedArticle\[\] = (?P<data>\[[\s\S]*\]);",
+        block,
+    )
+    if not match:
+        raise website_ops.ExecutionError("Generated article registry could not be parsed.")
+    try:
+        articles = json.loads(match.group("data"))
+    except json.JSONDecodeError as exc:
+        raise website_ops.ExecutionError("Generated article registry contains invalid JSON.") from exc
+    if not isinstance(articles, list):
+        raise website_ops.ExecutionError("Generated article registry must contain a list.")
+    slug = str(article.get("slug", ""))
+    if any(str(item.get("slug", "")) == slug for item in articles if isinstance(item, Mapping)):
+        raise website_ops.ExecutionError("Generated article slug already exists.")
+    primary_intent = str(article.get("primaryIntent", "")).strip().lower()
+    if any(
+        str(item.get("primaryIntent", "")).strip().lower() == primary_intent
+        for item in articles
+        if isinstance(item, Mapping)
+    ):
+        raise website_ops.ExecutionError("Generated article primary intent already has an owner.")
+    articles.append(dict(article))
+    replacement = (
+        "\nexport const GENERATED_ARTICLES: readonly GeneratedArticle[] = "
+        + json.dumps(articles, ensure_ascii=False, indent=2)
+        + ";\n"
+    )
+    return source[: start + len(start_marker)] + replacement + source[end:]
 
 
 def _action_payload(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -326,4 +459,80 @@ def execute_github_metadata_action(
         pass
     raise website_ops.ExecutionError(
         "Production metadata verification timed out; an automatic rollback was attempted."
+    )
+
+
+def execute_github_article_action(
+    record: Mapping[str, Any],
+    *,
+    config: Any,
+    timestamp: datetime | None = None,
+) -> dict[str, Any]:
+    timestamp = timestamp or datetime.now(timezone.utc)
+    article = validate_generated_article(record)
+    client = GitHubWebsiteClient()
+    before_source, before_sha = client.get_file(GENERATED_ARTICLE_REGISTRY)
+    after_source = update_generated_article_registry(before_source, article)
+    feedback_id = str(record.get("feedback_id", "") or "unknown")
+    commit = client.put_file(
+        GENERATED_ARTICLE_REGISTRY,
+        after_source,
+        before_sha,
+        f"SEO: publish {article['slug']} ({feedback_id})",
+    )
+    commit_sha = str((commit.get("commit") or {}).get("sha", ""))
+    page_url = f"https://anatainc.com/blog/{article['slug']}"
+    timeout_seconds = max(
+        60,
+        int(os.getenv("WEBSITE_OPS_DEPLOY_VERIFY_TIMEOUT_SECONDS", "300")),
+    )
+    poll_seconds = max(
+        5,
+        int(os.getenv("WEBSITE_OPS_DEPLOY_VERIFY_POLL_SECONDS", "15")),
+    )
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            observation = website_ops.collect_page_observation(page_url, config=config)
+            if (
+                int(observation.get("status_code", 0) or 0) == 200
+                and str(observation.get("title", "")).strip() == str(article["title"]).strip()
+                and str(observation.get("canonical_url", "")).rstrip("/") == page_url
+                and str(article["content"]["h1"]).strip()
+                in [str(value).strip() for value in observation.get("h1", []) or []]
+            ):
+                return {
+                    "feedback_id": feedback_id,
+                    "action_type": "publish_blog_article",
+                    "page_url": page_url,
+                    "source_path": GENERATED_ARTICLE_REGISTRY,
+                    "repository": client.repository,
+                    "branch": client.branch,
+                    "commit_sha": commit_sha,
+                    "executed_at": timestamp.isoformat(),
+                    "verification_status": "verified",
+                    "summary": {
+                        "before_source_sha": before_sha,
+                        "commit_sha": commit_sha,
+                        "evidence_id": article["evidenceId"],
+                        "primary_intent": article["primaryIntent"],
+                        "source_count": len(article["sources"]),
+                    },
+                }
+        except Exception:  # noqa: BLE001 - deployment can be briefly unavailable
+            pass
+        time.sleep(poll_seconds)
+    try:
+        current_source, current_sha = client.get_file(GENERATED_ARTICLE_REGISTRY)
+        if current_source == after_source:
+            client.put_file(
+                GENERATED_ARTICLE_REGISTRY,
+                before_source,
+                current_sha,
+                f"Rollback SEO article {article['slug']} ({feedback_id})",
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    raise website_ops.ExecutionError(
+        "Production article verification timed out; an automatic rollback was attempted."
     )

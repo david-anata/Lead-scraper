@@ -23,7 +23,9 @@ from sales_support_agent.services.website_ops_query_intelligence import (
     load_query_intelligence,
 )
 from sales_support_agent.services.website_ops_github import (
+    CONTENT_ACTION_TYPES,
     METADATA_ACTION_TYPES,
+    execute_github_article_action,
     execute_github_metadata_action,
     github_metadata_is_configured,
 )
@@ -48,6 +50,7 @@ MVP_ALLOWED_ACTION_TYPES = {
     "meta_title_update",
     "meta_description_update",
     "canonical_update",
+    "publish_blog_article",
 }
 WORKFLOW_OWNED_FEEDBACK_FIELDS = {
     "status",
@@ -153,6 +156,8 @@ def _default_mode_run_state(mode: str) -> dict[str, str]:
         "last_completed_at": "",
         "last_successful_date": "",
         "last_error": "",
+        "attempt_count": "0",
+        "recovery_status": "",
     }
 
 
@@ -360,6 +365,11 @@ def _report_change_fingerprint(report: Mapping[str, Any]) -> str:
             for key, value in dict(report.get("analytics_status") or {}).items()
             if key in {"search_console", "ga4", "ga4_trust_status", "primary_lead_event"}
         },
+        "support_requests": sorted(
+            str(value).strip()
+            for value in report.get("support_requests", []) or []
+            if str(value).strip()
+        ),
     }
     return hashlib.sha256(
         json.dumps(stable_payload, sort_keys=True, default=str).encode("utf-8")
@@ -395,7 +405,7 @@ def send_website_ops_report_email(
     report: Mapping[str, Any],
     force: bool = False,
 ) -> dict[str, Any]:
-    """Send a change-only daily report and an unconditional weekly/monthly report."""
+    """Send a daily operations brief plus weekly and monthly summaries."""
 
     recipients = tuple(getattr(settings, "website_ops_report_email_to", ()) or ())
     if not recipients:
@@ -408,17 +418,14 @@ def send_website_ops_report_email(
     state = _load_notification_state(settings)
     previous = str(state.get(f"{mode}_fingerprint", "") or "")
     changed = fingerprint != previous
-    should_send = bool(force or mode in {"weekly", "monthly"} or changed)
+    should_send = bool(force or mode in {"daily", "weekly", "monthly"})
     result = {
         "attempted": False,
         "sent": False,
         "changed": changed,
-        "reason": "unchanged" if not should_send else "",
+        "reason": "",
         "provider_message_id": "",
     }
-    if not should_send:
-        return result
-
     resend = ResendClient(settings)
     if not recipients or not resend.is_configured(
         from_address=str(getattr(settings, "website_ops_email_from", "") or "")
@@ -428,10 +435,35 @@ def send_website_ops_report_email(
 
     issues = list(report.get("issues") or [])
     executed = list(report.get("executed_actions") or [])
+    support_requests = list(
+        dict.fromkeys(
+            str(value).strip()
+            for value in report.get("support_requests", []) or []
+            if str(value).strip()
+        )
+    )
     priority_counts = dict(report.get("issue_counts_by_priority") or {})
+    change_lines = [
+        "- "
+        + " | ".join(
+            value
+            for value in (
+                str(item.get("action_type", "")).replace("_", " ").title(),
+                str(item.get("page_url", "")).strip(),
+                str(item.get("verification_status", "")).replace("_", " ").title(),
+            )
+            if value
+        )
+        for item in executed
+    ]
+    if not change_lines:
+        change_lines = ["- No production SEO changes were applied in this cycle."]
+    todo_lines = [f"- {item}" for item in support_requests]
+    if not todo_lines:
+        todo_lines = ["- Nothing requires your attention today."]
     subject = (
-        f"Website Ops {mode}: "
-        f"{len(executed)} fixed, {len(issues)} open"
+        f"Website Ops {mode}: {len(executed)} changed, "
+        f"{len(support_requests)} for you"
     )
     text = "\n".join(
         [
@@ -448,6 +480,12 @@ def send_website_ops_report_email(
                 )
             ),
             "",
+            "Changes completed:",
+            *change_lines,
+            "",
+            "Your to-do list:",
+            *todo_lines,
+            "",
             "Review the evidence and full report:",
             "https://agent.anatainc.com/admin/website-ops/reports/latest",
         ]
@@ -458,7 +496,9 @@ def send_website_ops_report_email(
             to=recipients,
             subject=subject,
             text=text,
-            idempotency_key=f"website-ops-{mode}-{fingerprint[:24]}",
+            idempotency_key=(
+                f"website-ops-{mode}-{_utc_now().date().isoformat()}-{fingerprint[:16]}"
+            ),
             from_address=str(getattr(settings, "website_ops_email_from", "") or ""),
         )
         result.update({"sent": True, "provider_message_id": message_id})
@@ -611,6 +651,67 @@ def _report_payload(entry: dict[str, Any]) -> dict[str, Any]:
 def latest_report_entry(settings: Settings) -> dict[str, Any] | None:
     entries = _report_entries(settings)
     return entries[0] if entries else None
+
+
+def latest_report_payload(settings: Settings) -> dict[str, Any]:
+    entry = latest_report_entry(settings)
+    return _report_payload(entry) if entry else {}
+
+
+def website_ops_operating_state(
+    settings: Settings,
+    *,
+    now: datetime | None = None,
+    max_age_hours: int = 36,
+) -> dict[str, Any]:
+    """Return the canonical evidence-backed operating state used by every surface."""
+
+    now = now or _utc_now()
+    report = latest_report_payload(settings)
+    analytics = dict(report.get("analytics_status") or {})
+    generated_at = str(report.get("generated_at", "") or "").strip()
+    age_hours: float | None = None
+    if generated_at:
+        try:
+            generated = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+            if generated.tzinfo is None:
+                generated = generated.replace(tzinfo=timezone.utc)
+            age_hours = max(0.0, (now - generated.astimezone(timezone.utc)).total_seconds() / 3600)
+        except ValueError:
+            age_hours = None
+    search_console_ready = analytics.get("search_console") is True
+    ga4_ready = analytics.get("ga4") is True
+    evidence_fresh = age_hours is not None and age_hours <= max_age_hours
+    blockers = [
+        str(value).strip()
+        for value in analytics.get("notes", []) or []
+        if str(value).strip()
+    ]
+    if not report:
+        blockers.append("Website Ops has not completed an evidence-backed report yet.")
+    elif not evidence_fresh:
+        blockers.append("The latest decision-data evidence is stale.")
+    if not search_console_ready and not any("Search Console" in item for item in blockers):
+        blockers.append("Search Console did not pass the latest live collection.")
+    if not ga4_ready and not any("GA4" in item for item in blockers):
+        blockers.append("GA4 did not pass the latest live collection.")
+    ready = bool(report and evidence_fresh and search_console_ready and ga4_ready)
+    return {
+        "status": "ready" if ready else "blocked",
+        "decision_data": "ready" if ready else "blocked",
+        "search_console": "ready" if search_console_ready and evidence_fresh else "blocked",
+        "ga4": "ready" if ga4_ready and evidence_fresh else "blocked",
+        "evidence_generated_at": generated_at,
+        "evidence_age_hours": round(age_hours, 2) if age_hours is not None else None,
+        "blockers": list(dict.fromkeys(blockers)),
+        "support_requests": list(
+            dict.fromkeys(
+                str(value).strip()
+                for value in report.get("support_requests", []) or []
+                if str(value).strip()
+            )
+        ),
+    }
 
 
 def get_report_entry(settings: Settings, mode: str, slug: str) -> dict[str, Any] | None:
@@ -816,7 +917,13 @@ def save_feedback_record(settings: Settings, payload: dict[str, Any]) -> dict[st
 
 
 def _is_auto_executable_action(action_type: str, execution_eligibility: str = "") -> bool:
-    supported = {"meta_update", "meta_title_update", "meta_description_update", "canonical_update"}
+    supported = {
+        "meta_update",
+        "meta_title_update",
+        "meta_description_update",
+        "canonical_update",
+        "publish_blog_article",
+    }
     normalized_action = action_type.strip()
     normalized_eligibility = execution_eligibility.strip()
     if normalized_action not in supported:
@@ -838,6 +945,8 @@ def _execute_feedback_action(
     config: website_ops.WebsiteOpsConfig,
 ) -> dict[str, Any]:
     action_type = str(record.get("action_type", "")).strip()
+    if action_type in CONTENT_ACTION_TYPES and github_metadata_is_configured():
+        return execute_github_article_action(record, config=config)
     if action_type in METADATA_ACTION_TYPES and github_metadata_is_configured():
         return execute_github_metadata_action(record, config=config)
     return website_ops.execute_feedback_action(record, config=config)
@@ -1213,14 +1322,14 @@ def _team_help_cards(support_requests: list[str], analytics_status: dict[str, An
             <h3>No manual blockers</h3>
             <span class="status-pill status-ok">Clear</span>
           </div>
-          <p class="muted">Website Ops does not need a team intervention from the latest run beyond normal approval review.</p>
+            <p class="muted">Website Ops does not need anything from you based on the latest completed run.</p>
         </article>
         """
     return "".join(
         f"""
         <article class="task-card">
           <div class="row-actions">
-            <h3>Team action</h3>
+            <h3>Action for you</h3>
             <span class="status-pill status-warn">Needed</span>
           </div>
           <p>{html.escape(item)}</p>
@@ -1271,8 +1380,9 @@ def _mvp_mode_banner() -> str:
     allowed = ", ".join(sorted(MVP_ALLOWED_ACTION_TYPES))
     return (
         "<div class='flash'>"
-        "<strong>MVP mode active.</strong> "
-        f"Allowed action types: {html.escape(allowed)}."
+        "<strong>Autonomous publishing guardrails active.</strong> "
+        f"Production-approved action types: {html.escape(allowed)}. "
+        "Every change requires evidence, verification, and rollback support."
         "</div>"
     )
 
@@ -2065,7 +2175,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     monitored_count = int(latest_payload.get("pages_reviewed", 0) or len(settings.website_ops_site_urls))
     schedule_note = (
         "<p class='muted'>Scheduled for 8:00 AM America/Denver. "
-        "Daily email is sent only when findings change, automation runs, or a run fails.</p>"
+        "A daily email records completed changes and anything only you can do.</p>"
     )
     body = f"""
       {_nav("website_ops", website_ops_section="seo_dashboard", user=user)}
@@ -2101,7 +2211,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <p class="lead-sm">Eligible marketing updates publish without routine approval only after evidence, scope, intent, build, deployment, production, and rollback checks pass.</p>
             <div class="summary-grid">
               {_summary_chip("Writable host", "anatainc.com", tone="good")}
-              {_summary_chip("Change email", "Only when changed", tone="neutral")}
+              {_summary_chip("Daily email", "Changes and your to-do list", tone="neutral")}
               {_summary_chip("Schedule", "8 AM Mountain", tone="neutral")}
               {_summary_chip("Query validation", f"{query_summary.get('validated_clusters', 0)} validated", tone="good" if query_summary.get('validated_clusters') else "neutral")}
             </div>
@@ -2124,8 +2234,8 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <p class="lead">This is the system objective the dashboard should optimize against, not just a list of page checks.</p>
           </div>
           <div class="card stack">
-            <p class="eyebrow">How the team helps</p>
-            <p class="lead">These are the manual decisions or assets Website Ops still needs from the team.</p>
+            <p class="eyebrow">Your to-do list</p>
+            <p class="lead">Only work the system cannot complete safely appears here.</p>
             {_team_help_cards(support_requests, analytics_status)}
           </div>
         </section>
