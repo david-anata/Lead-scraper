@@ -19,6 +19,14 @@ from sales_support_agent.config import Settings
 from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.services.admin_nav import render_agent_favicon_links, render_agent_nav, render_agent_nav_styles
 from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
+from sales_support_agent.services.website_ops_candidates import (
+    build_candidates,
+    candidate_summary,
+    lane_registry,
+    load_candidate_ledger,
+    persist_candidate_ledger,
+    select_bounded_actions,
+)
 from sales_support_agent.services.website_ops_query_intelligence import (
     load_query_intelligence,
 )
@@ -403,6 +411,17 @@ def _report_change_fingerprint(report: Mapping[str, Any]) -> str:
 def _build_operations_summary(report: Mapping[str, Any]) -> dict[str, Any]:
     """Explain the complete candidate funnel, including work that did not execute."""
 
+    has_durable_ledger = bool((report.get("candidate_ledger") or {}).get("candidates"))
+    ledger = dict(report.get("candidate_ledger") or {})
+    if not ledger.get("candidates"):
+        legacy_candidates = build_candidates(report)
+        ledger = {
+            "summary": candidate_summary(legacy_candidates),
+            "lanes": lane_registry(legacy_candidates),
+            "candidates": legacy_candidates,
+        }
+    ledger_summary = dict(ledger.get("summary") or {})
+    states = dict(ledger_summary.get("by_state") or {})
     crawl = dict((report.get("crawl_verification") or {}).get("summary") or {})
     query_intelligence = dict(report.get("query_intelligence") or {})
     query = dict(query_intelligence.get("summary") or {})
@@ -448,29 +467,49 @@ def _build_operations_summary(report: Mapping[str, Any]) -> dict[str, Any]:
     deferred_reasons = [item for item in deferred_reasons if item["count"]]
     return {
         "observed_candidates": (
-            int(crawl.get("confirmed_warnings", 0) or 0)
-            + int(crawl.get("pending_warnings", 0) or 0)
-            + int(query.get("total_clusters", 0) or 0)
+            int(ledger_summary.get("total_candidates", 0) or 0)
+            if has_durable_ledger
+            else (
+                int(crawl.get("confirmed_warnings", 0) or 0)
+                + int(crawl.get("pending_warnings", 0) or 0)
+                + int(query.get("total_clusters", 0) or 0)
+            )
         ),
         "validated_candidates": (
-            int(crawl.get("confirmed_warnings", 0) or 0)
-            + int(query.get("validated_clusters", 0) or 0)
+            int(states.get("validated", 0) or 0)
+            if has_durable_ledger
+            else (
+                int(crawl.get("confirmed_warnings", 0) or 0)
+                + int(query.get("validated_clusters", 0) or 0)
+            )
         ),
-        "queued_actions": len(queue),
-        "auto_ready_actions": auto_ready,
+        "count_basis": "durable_candidates" if has_durable_ledger else "legacy_evidence_observations",
+        "queued_actions": int(states.get("queued", len(queue)) or 0),
+        "auto_ready_actions": int(ledger_summary.get("ready_candidates", auto_ready) or 0),
         "review_required_actions": review_required,
-        "executed_actions": len(executed),
+        "executed_actions": int(states.get("completed", len(executed)) or 0),
         "content_tasks": len(content),
         "article_pipeline_status": str(article.get("status", "unavailable") or "unavailable"),
         "article_pipeline_message": str(article.get("message", "") or ""),
         "crawl": crawl,
         "query": query,
+        "candidate_states": states,
+        "candidate_drilldown_url": "/admin/website-ops/candidates",
         "deferred_reasons": deferred_reasons,
         "execution_coverage": [
-            {"lane": "Metadata and canonical corrections", "status": "autonomous"},
-            {"lane": "Validated new articles", "status": "autonomous"},
-            {"lane": "FAQ and existing-page expansion", "status": "suggestion_only"},
-            {"lane": "Internal links, broken links, schema, images, and redirects", "status": "not_automated"},
+            {
+                "lane": str(item.get("label", "")),
+                "lane_id": str(item.get("lane_id", "")),
+                "status": str(item.get("executor_status", "")),
+                "candidate_count": int(item.get("candidate_count", 0) or 0),
+                "run_budget": int(item.get("run_budget", 0) or 0),
+                "concurrency": int(item.get("concurrency", 0) or 0),
+                "drilldown_url": (
+                    "/admin/website-ops/candidates?lane="
+                    + str(item.get("lane_id", ""))
+                ),
+            }
+            for item in ledger.get("lanes", []) or []
         ],
     }
 
@@ -1280,7 +1319,19 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
     visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
     executed_actions: list[dict[str, Any]] = []
     if settings.website_ops_execute_approved and has_baseline:
-        for record in visible_feedback_entries:
+        approved_candidates = [
+            {
+                **dict(record),
+                "action_type": str(
+                    record.get("action_type", "")
+                    or record.get("suggested_action_type", "")
+                ),
+            }
+            for record in visible_feedback_entries
+            if str(record.get("status", "")).strip().lower() == "approved"
+        ]
+        bounded_approved, _ = select_bounded_actions(approved_candidates)
+        for record in bounded_approved:
             result = _execute_record(settings, config, record)
             if result:
                 executed_actions.append(result)
@@ -1332,12 +1383,23 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         visible_feedback_entries,
         report_slug=_slugify_text(report_title),
     )
+    bounded_actions, deferred_actions = select_bounded_actions(
+        list(enriched_report.get("action_queue") or [])
+    )
+    enriched_report["action_queue"] = bounded_actions + deferred_actions
+    bounded_feedback_ids = {
+        str(item.get("feedback_id", "")).strip()
+        for item in bounded_actions
+        if str(item.get("feedback_id", "")).strip()
+    }
     if settings.website_ops_execute_approved and has_baseline:
         current_records = {str(item.get("feedback_id", "")): item for item in _mvp_filter_feedback_records(load_feedback_records(settings))}
         for item in enriched_report["action_queue"]:
             feedback_id = str(item.get("feedback_id", "")).strip()
             record = current_records.get(feedback_id)
             if not record:
+                continue
+            if feedback_id not in bounded_feedback_ids:
                 continue
             if record.get("status") == "new" and _record_is_auto_executable(record):
                 record = website_ops.update_feedback_entry(
@@ -1383,6 +1445,17 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         "summary": dict(crawl_inventory.get("summary") or {}),
     }
     enriched_report["crawl_verification"] = crawl_verification
+    run_id = hashlib.sha256(
+        (
+            f"{mode}:{enriched_report.get('generated_at', '')}:"
+            f"{len(monitored_urls)}"
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    enriched_report["candidate_ledger"] = persist_candidate_ledger(
+        settings.website_ops_root,
+        candidates=build_candidates(enriched_report),
+        run_id=run_id,
+    )
     enriched_report["program_plan"] = build_program_plan(
         analytics_status=dict(enriched_report.get("analytics_status") or {}),
         action_queue=list(enriched_report.get("action_queue") or []),
@@ -3008,6 +3081,134 @@ def render_query_map_page(
       </main>
     """
     return _page_shell("agent | Website Ops — Query Map", body)
+
+
+def render_candidates_page(
+    settings: Settings,
+    *,
+    state_filter: str = "",
+    lane_filter: str = "",
+    user: dict | None = None,
+) -> str:
+    ledger = load_candidate_ledger(settings.website_ops_root)
+    summary = dict(ledger.get("summary") or {})
+    states = dict(summary.get("by_state") or {})
+    lanes = [dict(item) for item in ledger.get("lanes", []) or []]
+    candidates = [
+        dict(item)
+        for item in ledger.get("candidates", []) or []
+        if (not state_filter or str(item.get("state", "")) == state_filter)
+        and (not lane_filter or str(item.get("lane_id", "")) == lane_filter)
+    ]
+
+    def candidate_target(value: Any) -> str:
+        target = str(value or "").strip()
+        parsed = urlparse(target)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return '<span class="muted">Invalid target</span>'
+        escaped = html.escape(target, quote=True)
+        return f'<a class="text-link" href="{escaped}">{html.escape(target)}</a>'
+
+    state_links = "".join(
+        (
+            f'<div class="summary-chip summary-{tone}">'
+            f"<span>{html.escape(state.replace('_', ' ').title())}</span>"
+            f'<strong><a class="text-link" href="/admin/website-ops/candidates?state={html.escape(state, quote=True)}">{int(count or 0)}</a></strong>'
+            "</div>"
+        )
+        for state, count in states.items()
+        if int(count or 0)
+        for tone in [
+            (
+                "good"
+                if state in {"completed", "learned"}
+                else "bad"
+                if state in {"failed", "rolling_back"}
+                else "warn"
+                if state in {"validated", "queued", "deferred", "verifying"}
+                else "neutral"
+            )
+        ]
+    )
+    lane_rows = "".join(
+        f"""
+        <tr>
+          <td><a class="text-link" href="/admin/website-ops/candidates?lane={html.escape(str(item.get('lane_id', '')), quote=True)}">{html.escape(str(item.get('label', '')))}</a></td>
+          <td><span class="status-pill {'status-ok' if item.get('executor_status') == 'autonomous' else 'status-warn' if item.get('executor_status') == 'suggestion_only' else 'status-neutral'}">{html.escape(str(item.get('executor_status', '')).replace('_', ' ').title())}</span></td>
+          <td>{int(item.get('candidate_count', 0) or 0)}</td>
+          <td>{int(item.get('run_budget', 0) or 0)}</td>
+          <td>{int(item.get('concurrency', 0) or 0)}</td>
+          <td>{html.escape(str(item.get('validation', '')))}</td>
+        </tr>
+        """
+        for item in lanes
+    )
+    candidate_rows = "".join(
+        f"""
+        <tr>
+          <td><code>{html.escape(str(item.get('candidate_id', '')))}</code></td>
+          <td><span class="status-pill {'status-ok' if item.get('state') in {'completed', 'learned'} else 'status-bad' if item.get('state') in {'failed', 'rolling_back'} else 'status-warn' if item.get('state') in {'validated', 'queued', 'deferred', 'verifying'} else 'status-neutral'}">{html.escape(str(item.get('state', '')).replace('_', ' ').title())}</span></td>
+          <td>{html.escape(str(item.get('lane_label', '')))}</td>
+          <td>{candidate_target(item.get('target_url')) if item.get('target_url') else '<span class="muted">Intent-level candidate</span>'}</td>
+          <td>{html.escape(str(item.get('state_reason', '')))}</td>
+          <td>{html.escape(str(item.get('required_gate', '')) or 'No remaining gate recorded.')}</td>
+          <td>{html.escape(str(item.get('earliest_eligible_at', '')) or 'Next eligible run')}</td>
+        </tr>
+        """
+        for item in candidates
+    )
+    filters = " · ".join(
+        value
+        for value in (
+            f"State: {state_filter.replace('_', ' ').title()}" if state_filter else "",
+            f"Lane: {lane_filter.replace('_', ' ').title()}" if lane_filter else "",
+        )
+        if value
+    )
+    body = f"""
+      {_nav('website_ops', website_ops_section='candidates', user=user)}
+      <main id="agent-main-content" class="shell app-container app-page">
+        <section class="page-header">
+          <div class="stack">
+            <p class="eyebrow">Website Ops</p>
+            <h1>Candidate ledger</h1>
+            <p class="lead">Every observed opportunity has one current state, one action lane, and one reason. Nothing disappears merely because it cannot run yet.</p>
+          </div>
+          <div class="page-actions"><a class="secondary" href="/admin/website-ops/candidates">Clear filters</a></div>
+        </section>
+        <section class="card stack">
+          <div class="row-actions">
+            <div class="stack"><h2>Improvement funnel</h2><p class="lead-sm">Counts are non-overlapping candidate states, not overlapping crawler observations.</p></div>
+            <span class="status-pill status-neutral">{int(summary.get('total_candidates', 0) or 0)} candidates</span>
+          </div>
+          <div class="summary-grid">{state_links or _summary_chip("No candidates", "Run the daily sweep", tone="neutral")}</div>
+        </section>
+        <section class="card stack">
+          <div class="row-actions"><div class="stack"><h2>Action-lane coverage</h2><p class="lead-sm">Capacity is a ceiling. Unsupported lanes remain visible and cannot execute.</p></div></div>
+          <div class="data-workspace">
+            <table class="data-table">
+              <thead><tr><th>Lane</th><th>Executor</th><th>Candidates</th><th>Budget</th><th>Concurrency</th><th>Required proof</th></tr></thead>
+              <tbody>{lane_rows}</tbody>
+            </table>
+          </div>
+        </section>
+        <section class="card stack">
+          <div class="row-actions">
+            <div class="stack"><h2>Candidate detail</h2><p class="lead-sm">{html.escape(filters or 'All current candidates')}</p></div>
+            <span class="status-pill status-neutral">{len(candidates)} shown</span>
+          </div>
+          {f'''
+          <div class="data-workspace">
+            <table class="data-table">
+              <thead><tr><th>ID</th><th>State</th><th>Lane</th><th>Target</th><th>Reason</th><th>Remaining gate</th><th>Eligible</th></tr></thead>
+              <tbody>{candidate_rows}</tbody>
+            </table>
+          </div>
+          ''' if candidates else '<div class="list-card empty-state"><h3>No candidates match this filter.</h3><p class="muted">Clear the filters or run a fresh daily sweep.</p></div>'}
+        </section>
+      </main>
+    """
+    return _page_shell("agent | Website Ops — Candidates", body)
 
 
 def render_queue_page(settings: Settings, *, flash_message: str = "", status_filter: str = "", user: dict | None = None) -> str:

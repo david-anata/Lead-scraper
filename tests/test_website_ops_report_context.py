@@ -81,3 +81,39 @@ def test_report_artifacts_surface_candidate_funnel_and_reasons() -> None:
         assert "Autonomous Coverage" in output
         assert "31" in output
         assert "waiting" in output.lower()
+
+
+def test_operations_summary_prefers_non_overlapping_durable_candidate_states() -> None:
+    report = _report()
+    report["candidate_ledger"] = {
+        "summary": {
+            "total_candidates": 5,
+            "ready_candidates": 1,
+            "by_state": {
+                "validated": 2,
+                "queued": 1,
+                "disproved": 1,
+                "observed": 1,
+                "completed": 0,
+            },
+        },
+        "lanes": [
+            {
+                "lane_id": "metadata",
+                "label": "Metadata corrections",
+                "executor_status": "autonomous",
+                "candidate_count": 3,
+                "run_budget": 10,
+                "concurrency": 2,
+            }
+        ],
+        "candidates": [{"candidate_id": "present"}],
+    }
+
+    summary = _build_operations_summary(report)
+
+    assert summary["count_basis"] == "durable_candidates"
+    assert summary["observed_candidates"] == 5
+    assert summary["validated_candidates"] == 2
+    assert summary["auto_ready_actions"] == 1
+    assert summary["candidate_states"]["disproved"] == 1

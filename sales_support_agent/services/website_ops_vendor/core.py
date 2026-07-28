@@ -929,8 +929,18 @@ def render_daily_report_html(report: Mapping[str, Any]) -> str:
         "<li>"
         f"<strong>{esc(item.get('lane', ''))}</strong>: "
         f"{esc(str(item.get('status', '')).replace('_', ' ').title())}"
+        f" · {esc(item.get('candidate_count', 0))} candidate(s)"
+        f" · budget {esc(item.get('run_budget', 0))}"
         "</li>"
         for item in operations.get("execution_coverage", [])
+    )
+    candidate_states = dict(operations.get("candidate_states") or {})
+    candidate_state_rows = "".join(
+        "<li>"
+        f'<a href="/admin/website-ops/candidates?state={esc(state)}">{esc(state.replace("_", " ").title())}: {esc(count)}</a>'
+        "</li>"
+        for state, count in candidate_states.items()
+        if int(count or 0)
     )
 
     return f"""<!doctype html>
@@ -1015,6 +1025,8 @@ def render_daily_report_html(report: Mapping[str, Any]) -> str:
       </div>
       <p><strong>Article pipeline:</strong> {esc(str(operations.get('article_pipeline_status', 'unavailable')).replace('_', ' ').title())}</p>
       <p class="muted">{esc(operations.get('article_pipeline_message', 'No article pipeline explanation was recorded.'))}</p>
+      <ul>{candidate_state_rows if candidate_state_rows else '<li>No durable candidates recorded.</li>'}</ul>
+      <p><a href="{esc(operations.get('candidate_drilldown_url', '/admin/website-ops/candidates'))}">Open the complete candidate ledger</a></p>
     </div>
     <div class="panel">
       <h2>Why Other Work Did Not Run</h2>
