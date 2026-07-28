@@ -358,12 +358,16 @@ def _script() -> str:
         const select=combine.querySelector('[name="canonical_key"]');
         select.innerHTML=affected.map(row=>`<option value="${row.dataset.merchantKey}">${row.dataset.vendor}</option>`).join('');
         combine.querySelector('[name="canonical_name"]').value=affected[0].dataset.vendor;
-        combinePreviewValid=false; combinePreviewToken=''; combine.querySelector('[data-combine-confirm]').hidden=true;
+        combinePreviewValid=false; combinePreviewToken='';
+        combine.querySelector('[data-combine-confirm]').hidden=true;
+        combine.querySelector('[data-combine-confirm]').disabled=true;
         combine.querySelector('[data-combine-preview]').textContent='Preview the recalculated result before confirming.';
         combine.showModal();
       }
       combine.querySelectorAll('input,select').forEach(input=>input.addEventListener('input',()=>{
-        combinePreviewValid=false;combinePreviewToken='';combine.querySelector('[data-combine-confirm]').hidden=true;
+        combinePreviewValid=false;combinePreviewToken='';
+        combine.querySelector('[data-combine-confirm]').hidden=true;
+        combine.querySelector('[data-combine-confirm]').disabled=true;
       }));
       combine.querySelector('[data-combine-cancel]').addEventListener('click',()=>combine.close());
       combine.querySelector('[data-combine-preview-button]').addEventListener('click',async()=>{
@@ -373,7 +377,9 @@ def _script() -> str:
         if(!response.ok){combine.querySelector('[data-combine-error]').textContent=result.detail;return;}
         combine.querySelector('[data-combine-preview]').textContent=`${result.before.length} histories become ${result.after.vendor}: ${money(result.after.amount_cents)} ${result.after.frequency}, next ${result.after.next_due}. ${result.explanation}`;
         combinePreviewToken=result.preview_token||'';
-        combinePreviewValid=Boolean(combinePreviewToken);combine.querySelector('[data-combine-confirm]').hidden=!combinePreviewValid;
+        combinePreviewValid=Boolean(combinePreviewToken);
+        combine.querySelector('[data-combine-confirm]').hidden=!combinePreviewValid;
+        combine.querySelector('[data-combine-confirm]').disabled=!combinePreviewValid;
       });
       combine.querySelector('[data-combine-confirm]').addEventListener('click',()=>{
         if(!combinePreviewValid)return;
@@ -474,7 +480,7 @@ def render_whats_coming_page(*, flash: str = "") -> str:
       <p class="row-error" data-combine-error role="alert"></p><div class="action-row">
       <button class="btn btn-secondary" type="button" data-combine-cancel>Cancel</button>
       <button class="btn btn-secondary" type="button" data-combine-preview-button>Preview</button>
-      <button class="btn btn-primary" type="button" data-combine-confirm hidden>Confirm combine</button></div></form></dialog>
+      <button class="btn btn-primary" type="button" data-combine-confirm hidden disabled>Confirm combine</button></div></form></dialog>
     <button class="btn btn-secondary bill-undo" data-bill-undo hidden>Undo last answer</button>
     {_answered_section(patterns, listing["tracked"])}{_alias_history()}{_activity(patterns)}{_script()}"""
     return _page_shell("What is coming", NAV_KEY, body, flash=flash)

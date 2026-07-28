@@ -1576,6 +1576,8 @@ input:focus, select:focus, textarea:focus {
 .bill-undo[hidden]{display:none}
 .bill-answered{margin-top:14px}
 .bill-combine-dialog{max-width:560px;border:1px solid var(--border,#d9e0e7);border-radius:16px;padding:22px}
+.bill-combine-dialog [hidden],
+.bill-review-dialog [hidden]{display:none!important}
 .bill-review-dialog{width:min(620px,calc(100vw - 28px));max-height:calc(100vh - 28px);overflow:auto;border:1px solid var(--border,#d9e0e7);border-radius:16px;padding:22px}
 .bill-review-dialog::backdrop{background:rgba(24,34,48,.42)}
 .bill-review-dialog label{display:grid;gap:5px;margin:12px 0}
