@@ -429,6 +429,9 @@ example
             self.assertIn("Cited", page)
             self.assertIn("Shadow", page)
             self.assertIn("Two comparable weekly", page)
+            self.assertIn("Earned citation monitoring", page)
+            self.assertIn("Observed business outcomes", page)
+            self.assertIn("cannot buy, exchange, or automatically create", page)
 
     def test_sitemap_discovery_restricts_scope_and_private_routes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1860,6 +1863,8 @@ export default function Page() {
             self.assertIn("What Agent is working on next", html)
             self.assertIn("Import and classify Search Console indexing exclusions", html)
             self.assertIn("Validate qualified-lead attribution", html)
+            self.assertIn("Earn citations. Never manufacture links.", html)
+            self.assertIn("Measure movement without claiming causation.", html)
 
     def test_indexing_page_renders_classified_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
