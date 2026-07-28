@@ -2963,8 +2963,10 @@ def record_arena_launch_decision(
     definition = ARENA_LAUNCH_DECISIONS.get(decision_key)
     if definition is None:
         return _building_redirect(error="Unknown launch-readiness decision.")
-    if confirmation.strip() != f"DECIDE {decision_key}":
-        return _building_redirect(error=f"Type DECIDE {decision_key} to continue.")
+    if confirmation.strip().upper() != "I APPROVE THIS DECISION":
+        return _building_redirect(
+            error="Type I APPROVE THIS DECISION to continue."
+        )
     label, required_status = definition
     if decision_status.strip() != required_status:
         return _building_redirect(

@@ -867,13 +867,62 @@ def render_building_page(
         ("transactional_sender", "Transactional sender and owner", "owner_confirmed", "Verified sender identity and accountable owner", "building@anatainc.com was specified for Building Control access; it is not yet confirmed as the outbound customer sender.", "Confirm the From address, reply-to address, and accountable inbox owner."),
         ("effective_date", "Launch effective date", "accepted_policy", "Approved effective date", "No launch-effective date has been approved.", "Choose the first date on which approved Arena terms may be quoted."),
     ]
+    owner_questions = {
+        "cancellation_policy": "What happens if a customer cancels?",
+        "tax_treatment": "Should quotes add tax or wait for review?",
+        "setup_price": "What should extra setup time cost?",
+        "teardown_price": "What should extra teardown time cost?",
+        "overtime_rate": "What is the hourly overtime rate?",
+        "payment_workflow": "Which payment methods will you accept?",
+        "agreement_template": "Which event agreement should the team use?",
+        "event_calendar": "Which calendar owns Arena events?",
+        "transactional_sender": "Which inbox sends customer updates?",
+        "effective_date": "When may the sales team start using these terms?",
+    }
+    owner_recommendations = {
+        "cancellation_policy": "Use the policy you already described: non-refundable, with one approved transfer requested at least 14 days before the event and used within six months.",
+        "tax_treatment": "Keep tax as “review required” until your accountant confirms what is taxable and the rate to use.",
+        "setup_price": "Include two hours before the event. Choose one hourly rate for any additional setup time.",
+        "teardown_price": "Include two hours after the event. Choose one hourly rate for any additional teardown time.",
+        "overtime_rate": "Choose a premium hourly rate. The existing $150 and $175 references are not approved overtime prices.",
+        "payment_workflow": "Accept cards, and decide whether ACH/check remain allowed with seven extra days to clear. A date is held only after cleared funds.",
+        "agreement_template": "Approve a reusable Anata event agreement before choosing or connecting an e-sign provider.",
+        "event_calendar": "Create a dedicated Arena calendar owned by Anata; do not use a person’s primary calendar.",
+        "transactional_sender": "Use building@anatainc.com only if it is the monitored customer-facing inbox and its sending domain is verified.",
+        "effective_date": "Choose the first future date when every approved term can be used consistently in quotes and agreements.",
+    }
+    owner_categories = {
+        "cancellation_policy": "Customer policy",
+        "tax_treatment": "Customer policy",
+        "setup_price": "Pricing",
+        "teardown_price": "Pricing",
+        "overtime_rate": "Pricing",
+        "payment_workflow": "Payments",
+        "agreement_template": "Agreement",
+        "event_calendar": "Operations",
+        "transactional_sender": "Customer communication",
+        "effective_date": "Launch",
+    }
+    decision_offering_id = str(
+        (arena_offering or next(
+            (
+                item
+                for item in offerings
+                if item.get("offering_type") == "event"
+                and item.get("space_id") == (arena_space or {}).get("id")
+            ),
+            {},
+        )).get("id")
+        or ""
+    )
     launch_readiness_cards = "".join(
         f"""<article class="decision-card">
           <div class="decision-card__summary">
             <div class="decision-card__number" aria-hidden="true">{index:02d}</div>
             <div class="decision-card__title">
-              <strong>{_esc(label)}</strong>
-              <span>{_esc(guidance)}</span>
+              <span class="decision-card__category">{_esc(owner_categories[key])}</span>
+              <strong>{_esc(owner_questions[key])}</strong>
+              <span>{_esc(label)}</span>
             </div>
             <div class="decision-card__state">
               {_badge(str(launch_decision_map.get(key, {}).get("status") or "unresolved"))}
@@ -881,19 +930,20 @@ def render_building_page(
             </div>
           </div>
           <div class="decision-card__evidence">
-            <div><span class="evidence-label">Known evidence</span><p>{_esc(launch_decision_map.get(key, {}).get("evidence") or known_evidence)}</p></div>
-            <div class="decision-card__next"><span class="evidence-label">Next action</span><p>{_esc(next_action)}</p></div>
+            <div><span class="evidence-label">Recommended starting point</span><p>{_esc(owner_recommendations[key])}</p></div>
+            <div class="decision-card__next"><span class="evidence-label">What we need from you</span><p>{_esc(next_action)}</p></div>
           </div>
           <details class="decision-card__action">
-            <summary>Record an approved decision</summary>
+            <summary>Answer this question</summary>
             <form class="decision-form" method="post" action="/admin/building/launch-readiness/decisions/{_esc(key)}">
               <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
               <input type="hidden" name="decision_status" value="{_esc(required_status)}">
-              <div class="field"><label>Applies to</label><select name="offering_id" required><option value="">Choose Arena offering</option>{event_offering_options}</select></div>
-              <div class="field"><label>Approved decision</label><input name="value" required placeholder="{_esc(guidance)}"></div>
-              <div class="field field--wide"><label>Approval or verification evidence</label><input name="evidence" required minlength="8" placeholder="Approver, document, provider verification, or dated source"></div>
-              <div class="field field--wide"><label>Typed confirmation</label><input name="confirmation" required placeholder="DECIDE {_esc(key)}"></div>
-              <div class="form-actions"><span class="form-note">Records Agent audit evidence only. It does not write, send, charge, publish, or change a calendar.</span><button class="primary" type="submit">Save approved decision</button></div>
+              <input type="hidden" name="offering_id" value="{_esc(decision_offering_id)}">
+              <div class="field field--wide"><label>Your approved answer</label><textarea name="value" required placeholder="Write the exact rule the sales team should follow."></textarea></div>
+              <div class="field field--wide"><label>Who approved this, or where is it documented?</label><input name="evidence" required minlength="8" placeholder="Example: Approved by David on July 28, 2026"></div>
+              <div class="field field--wide"><label>To prevent accidental changes, type: I APPROVE THIS DECISION</label><input name="confirmation" required autocomplete="off" placeholder="I APPROVE THIS DECISION"></div>
+              <details class="technical-details field--wide"><summary>Technical details</summary><p><strong>Stored status:</strong> {_esc(required_status.replace("_", " "))}</p><p><strong>Existing evidence:</strong> {_esc(launch_decision_map.get(key, {}).get("evidence") or known_evidence)}</p></details>
+              <div class="form-actions"><span class="form-note">Saving records the approved rule and audit history. It does not email anyone, charge a card, publish the venue, or change a calendar.</span><button class="primary" type="submit">Save my answer</button></div>
             </form>
           </details>
         </article>"""
@@ -1288,7 +1338,8 @@ def render_building_page(
     .decision-card{{border:1px solid var(--border);border-radius:12px;background:#fff;overflow:hidden;}}
     .decision-card__summary{{display:grid;grid-template-columns:42px minmax(220px,.8fr) minmax(180px,.45fr);gap:14px;align-items:center;padding:17px 18px;}}
     .decision-card__number{{display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:#edf5f9;color:#397a9d;font:800 12px "Montserrat",sans-serif;}}
-    .decision-card__title strong{{display:block;font-size:15px;}} .decision-card__title span,.decision-card__state span{{display:block;margin-top:4px;color:rgba(43,54,68,.59);font-size:12px;line-height:1.4;}}
+    .decision-card__title strong{{display:block;margin-top:3px;font-size:16px;}} .decision-card__title>span:not(.decision-card__category),.decision-card__state span{{display:block;margin-top:4px;color:rgba(43,54,68,.59);font-size:12px;line-height:1.4;}}
+    .decision-card__category{{display:block;color:#397a9d;font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;}}
     .decision-card__state{{justify-self:end;max-width:240px;text-align:right;}}
     .decision-card__evidence{{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--border);background:#fbfbf9;}}
     .decision-card__evidence>div{{padding:14px 18px;}} .decision-card__evidence>div+div{{border-left:1px solid var(--border);}}
@@ -1296,6 +1347,7 @@ def render_building_page(
     .decision-card__next{{background:#f4f9fc;}} .evidence-label{{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#397a9d;}}
     .decision-card__action{{border-top:1px solid var(--border);}} .decision-card__action>summary{{padding:13px 18px;cursor:pointer;color:#397a9d;font-size:12px;font-weight:800;list-style-position:inside;}}
     .decision-card__action[open]>summary{{background:#eef6fa;}} .decision-form{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;padding:17px 18px;border-top:1px solid var(--border);}}
+    .technical-details{{padding:12px 14px;border:1px dashed var(--border);border-radius:8px;background:#fbfbf9;}} .technical-details summary{{cursor:pointer;color:rgba(43,54,68,.68);font-size:12px;font-weight:700;}} .technical-details p{{margin:8px 0 0;color:rgba(43,54,68,.65);font-size:12px;line-height:1.45;}}
     .advanced-tools{{border-style:dashed;}} .advanced-tools>.panel-head{{background:#fbfbf9;}} .advanced-label{{display:inline-flex;margin-left:8px;padding:3px 7px;border-radius:99px;background:#edf0f2;color:#56616d;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;vertical-align:middle;}}
     .advanced-disclosure>summary{{padding:16px 22px;cursor:pointer;color:#397a9d;font-size:13px;font-weight:800;list-style-position:inside;}} .advanced-disclosure[open]>summary{{border-bottom:1px solid var(--border);background:#f4f9fc;}}
     .roster-preview{{max-height:260px;overflow:auto;margin:10px 0 0;padding:10px 10px 10px 28px;border:1px solid var(--border);border-radius:8px;background:#f8f8f6;font-size:12px;line-height:1.6;min-width:320px;}}
@@ -1421,8 +1473,8 @@ def render_building_page(
         </details>
       </section>
       <section class="panel panel--wide" id="arena-launch-readiness">
-        <div class="panel-head"><div><h2>Arena launch readiness</h2><p>Ten explicit decisions must have accountable evidence before the venue workflow is production-ready.</p></div><span class="count">{launch_ready_count}/10 decided</span></div>
-        <div class="alert alert--warning"><strong>Unresolved remains blocking.</strong><p>This register does not update payment providers, agreement systems, email senders, TidyCal, or Google Calendar. Calendar evidence currently proves only one past tour on David’s primary calendar; no dedicated Arena calendar ID, owner, or service-account access is verified.</p></div>
+        <div class="panel-head"><div><h2>Finish setting up Arena bookings</h2><p>Answer these ten owner questions once. Agent will use the approved answers consistently across quotes, agreements, payments, and operations.</p></div><span class="count">{launch_ready_count}/10 answered</span></div>
+        <div class="alert alert--warning"><strong>Nothing goes live just by answering.</strong><p>Your answers create the approved operating rules. Publishing, customer messages, payments, agreements, and calendar connections remain separate steps that the system will show after the rules are complete.</p></div>
         <div class="decision-list">{launch_readiness_cards}</div>
       </section>
       <section class="panel panel--wide">
