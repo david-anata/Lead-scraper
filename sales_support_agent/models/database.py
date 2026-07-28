@@ -354,6 +354,32 @@ def _ensure_building_columns(engine: Any) -> None:
             "permission_snapshot_json": "JSON NOT NULL DEFAULT '{}'",
             "recipient_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
         },
+        "building_calendar_projections": {
+            "target_calendar_id": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "operation_key": "VARCHAR(128) NOT NULL DEFAULT ''",
+            "payload_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "claim_token": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "claimed_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+            "next_attempt_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+            "delivered_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+            "reconciled_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+        },
         "building_reservations": {
             "guest_starts_at": (
                 "TIMESTAMP WITH TIME ZONE"
