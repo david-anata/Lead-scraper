@@ -650,6 +650,7 @@ def unique_preserving(values: Iterable[str]) -> List[str]:
 
 def render_daily_report_markdown(report: Mapping[str, Any]) -> str:
     operations = dict(report.get("operations_summary") or {})
+    content_strategy = dict(operations.get("content_strategy") or {})
     lines = [
         f"# {report['title']}",
         "",
@@ -687,6 +688,18 @@ def render_daily_report_markdown(report: Mapping[str, Any]) -> str:
     )
     if operations.get("article_pipeline_message"):
         lines.append(f"- Article gate: {operations['article_pipeline_message']}")
+    if content_strategy:
+        lines.extend(
+            [
+                f"- Editorial briefs: `{content_strategy.get('total_briefs', 0)}`",
+                f"- Articles ready: `{content_strategy.get('ready_to_publish', 0)}`",
+                f"- Researching sources: `{content_strategy.get('researching_sources', 0)}`",
+                f"- Scheduled validation: `{content_strategy.get('scheduled_for_validation', 0)}`",
+                f"- Weekly article budget: `{content_strategy.get('weekly_article_budget', 1)}`",
+                f"- Next content topic: {content_strategy.get('next_topic', 'No qualified topic')}",
+                f"- Next content operation: {content_strategy.get('next_operation', 'Run the next evidence sweep.')}",
+            ]
+        )
     lines.extend(["", "## Why Other Work Did Not Run", ""])
     if operations.get("deferred_reasons"):
         for item in operations["deferred_reasons"]:
@@ -921,6 +934,7 @@ def render_daily_report_html(report: Mapping[str, Any]) -> str:
         for item in report.get("page_insights", [])[:10]
     )
     operations = dict(report.get("operations_summary") or {})
+    content_strategy = dict(operations.get("content_strategy") or {})
     deferred_rows = "".join(
         f"<li><strong>{esc(item.get('count', 0))}</strong> {esc(item.get('reason', ''))}</li>"
         for item in operations.get("deferred_reasons", [])
@@ -1025,6 +1039,10 @@ def render_daily_report_html(report: Mapping[str, Any]) -> str:
       </div>
       <p><strong>Article pipeline:</strong> {esc(str(operations.get('article_pipeline_status', 'unavailable')).replace('_', ' ').title())}</p>
       <p class="muted">{esc(operations.get('article_pipeline_message', 'No article pipeline explanation was recorded.'))}</p>
+      <p><strong>Editorial program:</strong> {esc(content_strategy.get('total_briefs', 0))} briefs · {esc(content_strategy.get('ready_to_publish', 0))} ready · {esc(content_strategy.get('researching_sources', 0))} researching sources · weekly budget {esc(content_strategy.get('weekly_article_budget', 1))}</p>
+      <p><strong>Next content topic:</strong> {esc(content_strategy.get('next_topic', 'No qualified topic'))}</p>
+      <p class="muted">{esc(content_strategy.get('next_operation', 'Run the next evidence sweep.'))}</p>
+      <p><a href="/admin/website-ops/strategy">Open content strategy and editorial briefs</a></p>
       <ul>{candidate_state_rows if candidate_state_rows else '<li>No durable candidates recorded.</li>'}</ul>
       <p><a href="{esc(operations.get('candidate_drilldown_url', '/admin/website-ops/candidates'))}">Open the complete candidate ledger</a></p>
     </div>

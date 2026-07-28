@@ -911,7 +911,10 @@ def run_citation_harness(
     requester: Callable[..., Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     config = citation_config(settings)
-    if run_mode not in {"weekly", "monthly"}:
+    # Daily citation research keeps source briefs moving. Publication still
+    # requires evidence from two distinct ISO weeks, so a faster research
+    # cadence cannot weaken the editorial gate.
+    if run_mode not in {"daily", "weekly", "monthly"}:
         return []
     eligible = [
         item

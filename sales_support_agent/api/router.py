@@ -104,6 +104,7 @@ from sales_support_agent.services.website_ops import (
     render_dashboard_page as render_website_ops_dashboard_page,
     render_feedback_detail_page,
     render_candidates_page,
+    render_content_strategy_page,
     render_indexing_page,
     render_query_map_page,
     render_queue_page as render_website_ops_queue_page,
@@ -1260,6 +1261,23 @@ def admin_website_ops_candidates(
             state_filter=(state or "").strip().lower(),
             lane_filter=(lane or "").strip().lower(),
             page=max(1, page),
+            user=_get_request_user(request),
+        )
+    )
+
+
+@router.get("/admin/website-ops/strategy", response_class=HTMLResponse)
+def admin_website_ops_strategy(
+    request: Request,
+    stage: str = "",
+) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(
+        render_content_strategy_page(
+            request.app.state.settings,
+            stage_filter=(stage or "").strip().lower(),
             user=_get_request_user(request),
         )
     )

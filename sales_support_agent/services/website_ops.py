@@ -27,6 +27,9 @@ from sales_support_agent.services.website_ops_candidates import (
     persist_candidate_ledger,
     select_bounded_actions,
 )
+from sales_support_agent.services.website_ops_content_strategy import (
+    load_content_strategy,
+)
 from sales_support_agent.services.website_ops_query_intelligence import (
     load_query_intelligence,
 )
@@ -426,6 +429,9 @@ def _build_operations_summary(report: Mapping[str, Any]) -> dict[str, Any]:
     query_intelligence = dict(report.get("query_intelligence") or {})
     query = dict(query_intelligence.get("summary") or {})
     article = dict(query_intelligence.get("article_pipeline") or {})
+    content_strategy = dict(report.get("content_strategy") or {})
+    content_summary = dict(content_strategy.get("summary") or {})
+    content_next = dict(content_strategy.get("next_operation") or {})
     queue = [dict(item) for item in report.get("action_queue", []) or []]
     content = [dict(item) for item in report.get("content_tasks", []) or []]
     executed = [dict(item) for item in report.get("executed_actions", []) or []]
@@ -491,6 +497,18 @@ def _build_operations_summary(report: Mapping[str, Any]) -> dict[str, Any]:
         "content_tasks": len(content),
         "article_pipeline_status": str(article.get("status", "unavailable") or "unavailable"),
         "article_pipeline_message": str(article.get("message", "") or ""),
+        "content_strategy": {
+            "total_briefs": int(content_summary.get("total_briefs", 0) or 0),
+            "ready_to_publish": int(content_summary.get("ready_to_publish", 0) or 0),
+            "researching_sources": int(content_summary.get("researching_sources", 0) or 0),
+            "scheduled_for_validation": int(content_summary.get("scheduled_for_validation", 0) or 0),
+            "improve_existing": int(content_summary.get("improve_existing", 0) or 0),
+            "weekly_article_budget": int(content_strategy.get("weekly_article_budget", 1) or 1),
+            "next_topic": str(content_next.get("topic", "") or ""),
+            "next_operation": str(content_next.get("next_operation", "") or ""),
+            "earliest_publish_date": str(content_next.get("earliest_publish_date", "") or ""),
+            "drilldown_url": "/admin/website-ops/strategy",
+        },
         "crawl": crawl,
         "query": query,
         "candidate_states": states,
@@ -634,6 +652,25 @@ def send_website_ops_report_email(
     if not work_lines:
         work_lines = ["- Run the daily sweep to generate the next source-backed work plan."]
     operations = dict(report.get("operations_summary") or {})
+    content_strategy = dict(operations.get("content_strategy") or {})
+    if content_strategy.get("next_topic"):
+        work_lines.append(
+            "- CONTENT | "
+            + " | ".join(
+                value
+                for value in (
+                    str(content_strategy.get("next_topic", "")).strip(),
+                    str(content_strategy.get("next_operation", "")).strip(),
+                    (
+                        "Earliest publish "
+                        + str(content_strategy.get("earliest_publish_date", "")).strip()
+                        if content_strategy.get("earliest_publish_date")
+                        else ""
+                    ),
+                )
+                if value
+            )
+        )
     deferred_lines = [
         f"- {int(item.get('count', 0) or 0)} | {str(item.get('reason', '')).strip()}"
         for item in operations.get("deferred_reasons", []) or []
@@ -658,6 +695,9 @@ def send_website_ops_report_email(
             f"Candidates validated: {int(operations.get('validated_candidates', 0) or 0)}",
             f"Actions ready to run: {int(operations.get('auto_ready_actions', 0) or 0)}",
             f"Actions requiring review: {int(operations.get('review_required_actions', 0) or 0)}",
+            f"Content briefs: {int(content_strategy.get('total_briefs', 0) or 0)}",
+            f"Articles ready: {int(content_strategy.get('ready_to_publish', 0) or 0)}",
+            f"Article weekly budget: {int(content_strategy.get('weekly_article_budget', 1) or 1)}",
             (
                 "Priority: "
                 + ", ".join(
@@ -679,6 +719,8 @@ def send_website_ops_report_email(
             "",
             "Review the evidence and full report:",
             "https://agent.anatainc.com/admin/website-ops/reports/latest",
+            "Content strategy:",
+            "https://agent.anatainc.com/admin/website-ops/strategy",
         ]
     )
     result["attempted"] = True
@@ -2596,7 +2638,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
           <div class="section-heading">
             <div class="stack">
               <p class="eyebrow">Next autonomous work</p>
-              <h2>Content only publishes when the evidence gate clears.</h2>
+              <h2>Content program: brief, source, publish, measure.</h2>
               <p class="lead-sm">{html.escape(str(article_pipeline.get("message", "The next sweep will calculate article eligibility.")))}</p>
             </div>
             <span class="status-pill {'status-ok' if article_pipeline.get('status') == 'eligible' else 'status-warn'}">{html.escape(str(article_pipeline.get("status", "not calculated")).replace("_", " ").title())}</span>
@@ -2607,8 +2649,11 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             {_summary_chip("Source-qualified candidates", article_pipeline.get("source_qualified_candidates", 0), tone="good" if article_pipeline.get("source_qualified_candidates") else "neutral")}
             {_summary_chip("Publishing policy", "Validated autopush", tone="good")}
           </div>
-          <p class="muted">When eligible, Agent generates one bounded, cited article; checks intent ownership, factual sourcing, repository build, deployment, rendered production, and rollback; then records the result in the action ledger and daily email.</p>
-          <a class="text-link" href="/admin/website-ops/queries">Inspect the evidence and canonical owner map</a>
+          <p class="muted">Every daily sweep maintains the editorial strategy and briefs. Weekly runs publish one eligible source-backed article, verify production, and schedule outcome measurement.</p>
+          <div class="button-row">
+            <a class="text-link" href="/admin/website-ops/strategy">Open content strategy and briefs</a>
+            <a class="text-link" href="/admin/website-ops/queries">Inspect query evidence</a>
+          </div>
         </section>
         <section class="grid-2">
           <div class="card stack">
@@ -3247,6 +3292,109 @@ def render_candidates_page(
       </main>
     """
     return _page_shell("agent | Website Ops — Candidates", body)
+
+
+def render_content_strategy_page(
+    settings: Settings,
+    *,
+    stage_filter: str = "",
+    user: dict | None = None,
+) -> str:
+    strategy = load_content_strategy(settings.website_ops_root)
+    summary = dict(strategy.get("summary") or {})
+    next_operation = dict(strategy.get("next_operation") or {})
+    briefs = [
+        dict(item)
+        for item in strategy.get("briefs", []) or []
+        if not stage_filter or str(item.get("stage", "")) == stage_filter
+    ]
+    stage_links = "".join(
+        f'<a class="summary-chip summary-neutral" href="/admin/website-ops/strategy?stage={html.escape(stage, quote=True)}">'
+        f"<span>{html.escape(label)}</span><strong>{int(summary.get(count_key, 0) or 0)}</strong></a>"
+        for stage, label, count_key in (
+            ("ready", "Ready to publish", "ready_to_publish"),
+            ("researching", "Researching sources", "researching_sources"),
+            ("scheduled", "Scheduled validation", "scheduled_for_validation"),
+            ("improve_existing", "Improve existing", "improve_existing"),
+            ("validating", "Validating", "validating"),
+            ("blocked", "Blocked", "blocked"),
+        )
+    )
+    rules = "".join(
+        f"<li>{html.escape(str(item))}</li>"
+        for item in strategy.get("operating_rules", []) or []
+    )
+    rows = "".join(
+        f"""
+        <tr>
+          <td><strong>{html.escape(str(item.get('topic', '')))}</strong><br><span class="muted">{html.escape(str(item.get('pillar', '')))}</span></td>
+          <td>{html.escape(str(item.get('content_type', '')))}</td>
+          <td><span class="status-pill {'status-ok' if item.get('stage') == 'ready' else 'status-warn' if item.get('stage') in {'researching', 'scheduled', 'validating'} else 'status-neutral'}">{html.escape(str(item.get('stage', '')).replace('_', ' ').title())}</span></td>
+          <td>{f'<a class="text-link" href="{html.escape(str(item.get("owner_url", "")), quote=True)}">{html.escape(str(item.get("owner_url", "")))}</a>' if item.get('owner_url') else '<span class="muted">Owner required</span>'}</td>
+          <td>{int(item.get('source_count', 0) or 0)}</td>
+          <td>{html.escape(str(item.get('earliest_publish_date', '')) or 'Evidence driven')}</td>
+          <td>{html.escape(str(item.get('next_operation', '')))}</td>
+          <td>{html.escape(str(item.get('internal_link_plan', '')))}</td>
+        </tr>
+        """
+        for item in briefs[:100]
+    )
+    body = f"""
+      {_nav("website_ops", website_ops_section="strategy", user=user)}
+      <main id="agent-main-content" class="shell app-container app-page">
+        <section class="page-header">
+          <div class="stack">
+            <p class="eyebrow">Website Ops</p>
+            <h1>Content strategy and publishing program</h1>
+            <p class="lead">{html.escape(str(strategy.get('objective', 'Build qualified organic discovery with a durable content system.')))}</p>
+          </div>
+          <div class="page-actions"><a class="secondary" href="/admin/website-ops/strategy">Clear filters</a></div>
+        </section>
+        <section class="card stack">
+          <div class="row-actions">
+            <div class="stack"><h2>This week’s operating plan</h2><p class="lead-sm">The scheduler maintains briefs daily and has a one-article weekly publication budget.</p></div>
+            <span class="status-pill status-neutral">{int(strategy.get('weekly_article_budget', 1) or 1)} article / week</span>
+          </div>
+          <div class="summary-grid">{stage_links}</div>
+          {f'''
+          <div class="list-card">
+            <span class="status-pill status-warn">Next operation</span>
+            <h3>{html.escape(str(next_operation.get('topic', 'No eligible topic yet.')))}</h3>
+            <p>{html.escape(str(next_operation.get('next_operation', 'The next sweep will rebuild the strategy from current evidence.')))}</p>
+            <p class="muted">Earliest publish: {html.escape(str(next_operation.get('earliest_publish_date', 'Evidence driven')) or 'Evidence driven')} · Sources: {int(next_operation.get('source_count', 0) or 0)} · Owner: {html.escape(str(next_operation.get('owner_url', 'Unassigned')) or 'Unassigned')}</p>
+          </div>
+          ''' if next_operation else ''}
+        </section>
+        <section class="grid-2">
+          <div class="card stack"><h2>Publishing rules</h2><ul>{rules}</ul></div>
+          <div class="card stack">
+            <h2>What the agent does automatically</h2>
+            <ol>
+              <li>Collect query, page, citation, and conversion evidence.</li>
+              <li>Assign one canonical owner and decide improve-versus-create.</li>
+              <li>Maintain a source and internal-link brief.</li>
+              <li>Generate one eligible article during the weekly run.</li>
+              <li>Publish through GitHub, verify production, roll back failures, and measure outcomes.</li>
+            </ol>
+          </div>
+        </section>
+        <section class="card stack">
+          <div class="row-actions">
+            <div class="stack"><h2>Editorial work queue</h2><p class="lead-sm">{html.escape(('Stage: ' + stage_filter.replace('_', ' ').title()) if stage_filter else 'All current briefs')}</p></div>
+            <span class="status-pill status-neutral">{len(briefs)} briefs</span>
+          </div>
+          {f'''
+          <div class="data-workspace">
+            <table class="data-table">
+              <thead><tr><th>Topic and pillar</th><th>Work type</th><th>Stage</th><th>Current owner</th><th>Sources</th><th>Earliest publish</th><th>Next operation</th><th>Internal-link plan</th></tr></thead>
+              <tbody>{rows}</tbody>
+            </table>
+          </div>
+          ''' if briefs else '<div class="list-card empty-state"><h3>No briefs match this stage.</h3><p class="muted">Clear the filter or run a daily sweep.</p></div>'}
+        </section>
+      </main>
+    """
+    return _page_shell("agent | Website Ops — Content Strategy", body)
 
 
 def render_queue_page(settings: Settings, *, flash_message: str = "", status_filter: str = "", user: dict | None = None) -> str:
