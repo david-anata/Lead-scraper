@@ -554,6 +554,11 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         self.assertIn("No native invoices yet.", body)
         self.assertIn("Collection work", body)
         self.assertIn("No collection cases.", body)
+        self.assertEqual(body.count('id="agent-main-content"'), 1)
+        self.assertIn(
+            'class="agent-skip-link" href="#agent-main-content"',
+            body,
+        )
         controls = re.findall(
             r"<(?:input|select|textarea)\b([^>]*)>",
             body,

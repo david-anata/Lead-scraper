@@ -99,7 +99,11 @@ def render_customer_status_link_result(
 ) -> str:
     """Render a deliberate one-result page so bearer tokens avoid list pages."""
 
-    nav = render_agent_nav("building", user=user)
+    nav = render_agent_nav(
+        "building",
+        user=user,
+        include_content_target=False,
+    )
     nav_styles = render_agent_nav_styles()
     favicons = render_agent_favicon_links()
     delivery_state = "Sent" if sent else "Not sent"
@@ -208,7 +212,11 @@ def render_building_page(
     rate_plans = list(rate_plans or [])
     launch_decisions = list(launch_decisions or [])
     collections = list(collections or [])
-    nav = render_agent_nav("building", user=user)
+    nav = render_agent_nav(
+        "building",
+        user=user,
+        include_content_target=False,
+    )
     nav_styles = render_agent_nav_styles()
     favicons = render_agent_favicon_links()
     availability = Counter(str(item.get("status") or "unknown") for item in spaces)
