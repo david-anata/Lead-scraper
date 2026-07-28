@@ -169,6 +169,28 @@ def test_repeated_crawl_evidence_is_one_candidate() -> None:
     assert len(broken) == 1
 
 
+def test_overlapping_broken_link_exports_are_one_candidate() -> None:
+    report = _report()
+    base = report["crawl_verification"]["records"][0]["warning_results"][0]
+    report["crawl_verification"]["records"][0]["warning_results"].append(
+        {
+            **base,
+            "report": "all_error_(4xx_5xx_no_response)_inlinks",
+            "crawler_evidence": "The aggregate export reports the same target.",
+        }
+    )
+
+    candidates = build_candidates(report)
+    broken = [
+        item
+        for item in candidates
+        if item["lane_id"] == "broken_internal_links"
+        and item["target_url"] == "https://anatainc.com/services"
+    ]
+
+    assert len(broken) == 1
+
+
 def test_lane_budgets_and_target_locks_bound_execution() -> None:
     actions = [
         {
