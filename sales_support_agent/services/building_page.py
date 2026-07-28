@@ -867,28 +867,51 @@ def render_building_page(
         ("transactional_sender", "Transactional sender and owner", "owner_confirmed", "Verified sender identity and accountable owner", "building@anatainc.com was specified for Building Control access; it is not yet confirmed as the outbound customer sender.", "Confirm the From address, reply-to address, and accountable inbox owner."),
         ("effective_date", "Launch effective date", "accepted_policy", "Approved effective date", "No launch-effective date has been approved.", "Choose the first date on which approved Arena terms may be quoted."),
     ]
-    launch_readiness_rows = "".join(
-        f"""<tr>
-          <td><strong>{_esc(label)}</strong><span class="sub">{_esc(guidance)}</span></td>
-          <td>{_badge(str(launch_decision_map.get(key, {}).get("status") or "unresolved"))}<span class="sub">{_esc(launch_decision_map.get(key, {}).get("value") or "No decision recorded")}</span></td>
-          <td><span class="sub">{_esc(launch_decision_map.get(key, {}).get("evidence") or known_evidence)}</span><span class="sub"><strong>Next:</strong> {_esc(next_action)}</span></td>
-          <td><form class="inline-send" method="post" action="/admin/building/launch-readiness/decisions/{_esc(key)}">
-            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-            <select name="offering_id" required><option value="">Arena offering</option>{event_offering_options}</select>
-            <input type="hidden" name="decision_status" value="{_esc(required_status)}">
-            <input name="value" required placeholder="{_esc(guidance)}">
-            <input name="evidence" required minlength="8" placeholder="Approval record or verification evidence">
-            <input name="confirmation" required placeholder="DECIDE {_esc(key)}">
-            <button class="secondary secondary--small" type="submit">Record decision</button>
-            <span class="sub">Agent audit only. No provider write, send, charge, or calendar change.</span>
-          </form></td>
-        </tr>"""
-        for key, label, required_status, guidance, known_evidence, next_action in launch_definitions
+    launch_readiness_cards = "".join(
+        f"""<article class="decision-card">
+          <div class="decision-card__summary">
+            <div class="decision-card__number" aria-hidden="true">{index:02d}</div>
+            <div class="decision-card__title">
+              <strong>{_esc(label)}</strong>
+              <span>{_esc(guidance)}</span>
+            </div>
+            <div class="decision-card__state">
+              {_badge(str(launch_decision_map.get(key, {}).get("status") or "unresolved"))}
+              <span>{_esc(launch_decision_map.get(key, {}).get("value") or "Decision required")}</span>
+            </div>
+          </div>
+          <div class="decision-card__evidence">
+            <div><span class="evidence-label">Known evidence</span><p>{_esc(launch_decision_map.get(key, {}).get("evidence") or known_evidence)}</p></div>
+            <div class="decision-card__next"><span class="evidence-label">Next action</span><p>{_esc(next_action)}</p></div>
+          </div>
+          <details class="decision-card__action">
+            <summary>Record an approved decision</summary>
+            <form class="decision-form" method="post" action="/admin/building/launch-readiness/decisions/{_esc(key)}">
+              <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+              <input type="hidden" name="decision_status" value="{_esc(required_status)}">
+              <div class="field"><label>Applies to</label><select name="offering_id" required><option value="">Choose Arena offering</option>{event_offering_options}</select></div>
+              <div class="field"><label>Approved decision</label><input name="value" required placeholder="{_esc(guidance)}"></div>
+              <div class="field field--wide"><label>Approval or verification evidence</label><input name="evidence" required minlength="8" placeholder="Approver, document, provider verification, or dated source"></div>
+              <div class="field field--wide"><label>Typed confirmation</label><input name="confirmation" required placeholder="DECIDE {_esc(key)}"></div>
+              <div class="form-actions"><span class="form-note">Records Agent audit evidence only. It does not write, send, charge, publish, or change a calendar.</span><button class="primary" type="submit">Save approved decision</button></div>
+            </form>
+          </details>
+        </article>"""
+        for index, (key, label, required_status, guidance, known_evidence, next_action) in enumerate(launch_definitions, start=1)
     )
     launch_ready_count = sum(
         1
         for key, _, status, _, _, _ in launch_definitions
         if launch_decision_map.get(key, {}).get("status") == status
+    )
+    launch_remaining_count = len(launch_definitions) - launch_ready_count
+    launch_progress_percent = int(
+        (launch_ready_count / len(launch_definitions)) * 100
+    )
+    arena_plan_ready = any(
+        item.get("offering_id") == "arena-events"
+        and item.get("status") == "approved"
+        for item in rate_plans
     )
     qualified_event_inquiry_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))} · {_esc(item.get("preferred_date") or "date not set")}</option>'
@@ -1231,6 +1254,19 @@ def render_building_page(
     .metric span{{display:block;font-size:12px;color:rgba(43,54,68,.6);text-transform:uppercase;letter-spacing:.08em;}}
     .metric strong{{display:block;font-family:"Montserrat";font-size:30px;margin-top:8px;}}
     .notice{{margin-top:18px;padding:16px 18px;border:1px solid rgba(155,101,14,.28);border-radius:12px;background:#fff8e8;line-height:1.55;}}
+    .workspace-nav{{position:sticky;top:0;z-index:8;display:flex;align-items:center;gap:6px;margin:18px 0 0;padding:8px;border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.96);box-shadow:0 8px 24px rgba(43,54,68,.07);overflow-x:auto;scrollbar-width:thin;}}
+    .workspace-nav a{{display:inline-flex;align-items:center;min-height:36px;padding:0 12px;border-radius:7px;color:rgba(43,54,68,.72);font-size:13px;font-weight:700;text-decoration:none;white-space:nowrap;}}
+    .workspace-nav a:hover,.workspace-nav a:focus-visible{{background:#eef6fa;color:var(--ink);}}
+    .workspace-nav a:first-child{{background:var(--ink);color:#fff;}}
+    .launch-command{{margin-top:20px;border:1px solid rgba(57,122,157,.28);border-radius:16px;background:linear-gradient(135deg,#fff 0,#f3f9fc 100%);overflow:hidden;}}
+    .launch-command__head{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:24px;align-items:center;padding:25px 26px;border-bottom:1px solid var(--border);}}
+    .launch-command h2{{font-size:25px;}} .launch-command p{{max-width:760px;margin:7px 0 0;color:rgba(43,54,68,.67);line-height:1.55;}}
+    .launch-score{{display:grid;place-items:center;width:92px;height:92px;border:8px solid #dcebf2;border-top-color:#397a9d;border-radius:50%;background:#fff;text-align:center;}}
+    .launch-score strong{{display:block;font:800 24px "Montserrat",sans-serif;line-height:1;}} .launch-score span{{display:block;margin-top:4px;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:rgba(43,54,68,.56);}}
+    .launch-steps{{display:grid;grid-template-columns:repeat(4,1fr);}}
+    .launch-step{{padding:17px 20px;border-right:1px solid var(--border);}} .launch-step:last-child{{border-right:0;}}
+    .launch-step span{{display:block;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:rgba(43,54,68,.55);}}
+    .launch-step strong{{display:block;margin-top:6px;font-size:14px;}} .launch-step p{{margin:4px 0 0;font-size:12px;line-height:1.4;}}
     .flash{{margin:0 0 18px;padding:14px 16px;border-radius:10px;font-weight:700;}} .flash--ok{{background:#e4f4f1;color:#11665f;border:1px solid #acd8d2;}} .flash--error{{background:#fff0ed;color:#8b2f23;border:1px solid #e4b3aa;}}
     .grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px;}}
     .panel{{background:#fff;border:1px solid var(--border);border-radius:14px;overflow:hidden;}}
@@ -1248,11 +1284,26 @@ def render_building_page(
     label{{font-size:12px;font-weight:700;color:rgba(43,54,68,.72);}} input,select,textarea{{box-sizing:border-box;width:100%;min-height:42px;border:1px solid rgba(43,54,68,.22);border-radius:8px;background:#fff;padding:10px 11px;color:var(--ink);font:inherit;}} textarea{{min-height:92px;resize:vertical;}} input:focus,select:focus,textarea:focus{{outline:3px solid rgba(133,187,218,.34);border-color:#397a9d;}}
     .check{{display:flex;align-items:center;gap:9px;font-size:13px;}} .check input{{width:18px;min-height:18px;}} .check-stack{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;padding:11px;border:1px solid rgba(43,54,68,.14);border-radius:8px;}} .form-actions{{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid var(--border);padding-top:16px;}} .form-note{{font-size:12px;color:rgba(43,54,68,.62);line-height:1.45;}} .primary,.secondary{{min-height:42px;border:0;border-radius:8px;background:var(--ink);color:#fff;padding:0 17px;font-weight:700;cursor:pointer;}} .primary:hover{{background:#17222d;}} .secondary{{border:1px solid var(--border);background:#fff;color:var(--ink);}} .secondary--small{{min-height:34px;padding:0 11px;font-size:12px;white-space:nowrap;}} .action-stack{{display:grid;gap:7px;min-width:210px;}} .inline-send{{display:flex;gap:6px;align-items:center;}} .inline-send input{{min-height:34px;padding:7px 8px;font-size:12px;}}
     .row-actions{{min-width:220px;}} .row-actions summary{{cursor:pointer;font-weight:700;color:#397a9d;}} .row-actions form{{display:grid;gap:7px;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:9px;background:#f8f8f6;}} .row-actions label{{display:grid;gap:4px;}} .row-actions input,.row-actions select{{min-height:34px;padding:7px 8px;font-size:12px;}}
+    .decision-list{{display:grid;gap:12px;padding:18px 20px;background:#f8fafb;}}
+    .decision-card{{border:1px solid var(--border);border-radius:12px;background:#fff;overflow:hidden;}}
+    .decision-card__summary{{display:grid;grid-template-columns:42px minmax(220px,.8fr) minmax(180px,.45fr);gap:14px;align-items:center;padding:17px 18px;}}
+    .decision-card__number{{display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:#edf5f9;color:#397a9d;font:800 12px "Montserrat",sans-serif;}}
+    .decision-card__title strong{{display:block;font-size:15px;}} .decision-card__title span,.decision-card__state span{{display:block;margin-top:4px;color:rgba(43,54,68,.59);font-size:12px;line-height:1.4;}}
+    .decision-card__state{{justify-self:end;max-width:240px;text-align:right;}}
+    .decision-card__evidence{{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--border);background:#fbfbf9;}}
+    .decision-card__evidence>div{{padding:14px 18px;}} .decision-card__evidence>div+div{{border-left:1px solid var(--border);}}
+    .decision-card__evidence p{{margin:5px 0 0;color:rgba(43,54,68,.7);font-size:12px;line-height:1.5;}}
+    .decision-card__next{{background:#f4f9fc;}} .evidence-label{{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#397a9d;}}
+    .decision-card__action{{border-top:1px solid var(--border);}} .decision-card__action>summary{{padding:13px 18px;cursor:pointer;color:#397a9d;font-size:12px;font-weight:800;list-style-position:inside;}}
+    .decision-card__action[open]>summary{{background:#eef6fa;}} .decision-form{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;padding:17px 18px;border-top:1px solid var(--border);}}
+    .advanced-tools{{border-style:dashed;}} .advanced-tools>.panel-head{{background:#fbfbf9;}} .advanced-label{{display:inline-flex;margin-left:8px;padding:3px 7px;border-radius:99px;background:#edf0f2;color:#56616d;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;vertical-align:middle;}}
+    .advanced-disclosure>summary{{padding:16px 22px;cursor:pointer;color:#397a9d;font-size:13px;font-weight:800;list-style-position:inside;}} .advanced-disclosure[open]>summary{{border-bottom:1px solid var(--border);background:#f4f9fc;}}
     .roster-preview{{max-height:260px;overflow:auto;margin:10px 0 0;padding:10px 10px 10px 28px;border:1px solid var(--border);border-radius:8px;background:#f8f8f6;font-size:12px;line-height:1.6;min-width:320px;}}
     .checklist-list{{display:grid;gap:14px;padding:18px 22px;}} .checklist-group{{border:1px solid var(--border);border-radius:10px;overflow:hidden;}} .checklist-head{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 16px;background:#f8f8f6;}} .checklist-add{{display:grid;grid-template-columns:minmax(220px,1fr) auto auto;align-items:end;gap:10px;padding:12px 16px;border-top:1px solid var(--border);}} .checklist-add label:first-of-type{{display:grid;gap:5px;}}
     .adjustment-evidence{{display:grid;grid-template-columns:repeat(2,minmax(130px,1fr));gap:6px;min-width:360px;}} .adjustment-evidence button{{justify-self:start;}}
-    @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.grid{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}}}
-    @media(max-width:600px){{.page-head{{align-items:start;flex-direction:column}}.metrics{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--border)!important}}.metric:last-child{{border-bottom:0!important}}.shell{{padding-inline:16px}}.form-grid{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
+    @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.grid{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}.launch-steps{{grid-template-columns:1fr 1fr}}.launch-step:nth-child(2){{border-right:0}}.launch-step:nth-child(-n+2){{border-bottom:1px solid var(--border)}}}}
+    @media(max-width:700px){{.decision-card__summary{{grid-template-columns:42px minmax(0,1fr)}}.decision-card__state{{grid-column:2;justify-self:start;text-align:left;max-width:none}}.decision-card__evidence{{grid-template-columns:1fr}}.decision-card__evidence>div+div{{border-left:0;border-top:1px solid var(--border)}}}}
+    @media(max-width:600px){{.page-head{{align-items:start;flex-direction:column}}.metrics{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--border)!important}}.metric:last-child{{border-bottom:0!important}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.launch-command__head{{grid-template-columns:1fr;padding:21px}}.launch-score{{width:78px;height:78px}}.launch-steps{{grid-template-columns:1fr}}.launch-step{{border-right:0;border-bottom:1px solid var(--border)!important}}.launch-step:last-child{{border-bottom:0!important}}.form-grid,.decision-form{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
   </style>
 </head>
 <body class="app app--operator">
@@ -1274,6 +1325,32 @@ def render_building_page(
       <div class="metric"><span>Open invoicing</span><strong>${open_invoice_cents / 100:,.0f}</strong></div>
     </section>
     <div class="notice"><strong>Data readiness:</strong> public availability stays conservative until reviewed spaces and offerings are entered. Campaign delivery stays locked behind permission, preview, approval, suppression, and provider configuration.</div>
+    <nav class="workspace-nav" aria-label="Building Control sections">
+      <a href="#operator-queue">Today</a>
+      <a href="#arena-launch-readiness">Arena launch</a>
+      <a href="#incoming-inquiries">Sales</a>
+      <a href="#bookings-and-holds">Bookings</a>
+      <a href="#billing-and-collections">Billing</a>
+      <a href="#service-requests">Operations</a>
+      <a href="#inventory">Inventory</a>
+      <a href="#crm-email-list">CRM &amp; email</a>
+    </nav>
+    <section class="launch-command" aria-labelledby="arena-command-title">
+      <div class="launch-command__head">
+        <div>
+          <div class="eyebrow">Arena launch command center</div>
+          <h2 id="arena-command-title">Private, protected, and not ready to publish</h2>
+          <p>The verified venue catalog exists, but {launch_remaining_count} governed decision{"s" if launch_remaining_count != 1 else ""} still block approved pricing, agreements, provider setup, and a truthful public launch.</p>
+        </div>
+        <div class="launch-score" aria-label="{launch_ready_count} of 10 launch decisions complete"><div><strong>{launch_progress_percent}%</strong><span>decided</span></div></div>
+      </div>
+      <div class="launch-steps" aria-label="Arena launch stages">
+        <div class="launch-step"><span>1 · Catalog</span><strong>{"Prepared" if arena_catalog_ready else "Action required"}</strong><p>{"Canonical Arena records are private." if arena_catalog_ready else "Prepare the verified Arena catalog."}</p></div>
+        <div class="launch-step"><span>2 · Decisions</span><strong>{launch_ready_count} of 10 approved</strong><p>{launch_remaining_count} accountable decisions remain.</p></div>
+        <div class="launch-step"><span>3 · Rate plan</span><strong>{"Approved" if arena_plan_ready else "Blocked"}</strong><p>{"Approved plan evidence exists." if arena_plan_ready else "Cannot approve until decisions are complete."}</p></div>
+        <div class="launch-step"><span>4 · Publication</span><strong>Locked</strong><p>No availability, contract, payment, or booking claim is live.</p></div>
+      </div>
+    </section>
     <div class="grid">
       <section class="panel panel--wide" id="operator-queue"><div class="panel-head"><div><h2>Operator queue</h2><p>The highest-risk customer, revenue, readiness, and building-service actions in one place.</p></div><span class="count">{len(priority_items)} actions</span></div><div class="table-wrap"><table><thead><tr><th>Workstream</th><th>What needs attention</th><th>Next action</th></tr></thead><tbody>{priority_rows}</tbody></table></div></section>
       <section class="panel panel--wide" id="building-performance">
@@ -1294,14 +1371,19 @@ def render_building_page(
       <section class="panel panel--wide" id="arena-catalog-readiness">
         <div class="panel-head"><div><h2>Arena catalog foundation</h2><p>Create the verified venue identity required by availability, pricing, inquiry, and launch-readiness workflows.</p></div>{arena_catalog_state}</div>
         <div class="alert alert--warning"><strong>This does not launch the venue.</strong><p>The action creates or reconciles only The Arena and the canonical <code>arena-events</code> offering as private, unavailable, and unpublished. A compatible legacy Canva placeholder may be retained as an unpublished record. It does not approve a rate plan, claim a date is available, send a message, charge a customer, or write a calendar.</p></div>
+        <details class="advanced-disclosure">
+          <summary>{"Review or rerun catalog preparation" if arena_catalog_ready else "Prepare the verified Arena catalog"}</summary>
         <form class="form-grid" method="post" action="/admin/building/catalog/arena/prepare">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="arena-catalog-confirmation">Typed confirmation</label><input id="arena-catalog-confirmation" name="confirmation" required placeholder="PREPARE ARENA CATALOG"></div>
           <div class="form-actions"><span class="form-note">Idempotent: rerunning a compatible preparation changes nothing. Conflicting existing records fail closed for manual review.</span><button class="secondary" type="submit">Prepare verified Arena catalog</button></div>
         </form>
+        </details>
       </section>
-      <section class="panel">
-        <div class="panel-head"><div><h2>Add or update a space</h2><p>Save reviewed physical inventory. Publishing remains a separate choice.</p></div></div>
+      <section class="panel advanced-tools">
+        <div class="panel-head"><div><h2>Add or update a space <span class="advanced-label">Advanced</span></h2><p>Save reviewed physical inventory. Publishing remains a separate choice.</p></div></div>
+        <details class="advanced-disclosure">
+          <summary>Open space editor</summary>
         <form class="form-grid" method="post" action="/admin/building/spaces">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="space-id">Stable ID</label><input id="space-id" name="space_id" required placeholder="office-201"></div>
@@ -1316,9 +1398,12 @@ def render_building_page(
           <div class="field field--wide"><label for="space-notes">Internal notes</label><textarea id="space-notes" name="internal_notes" placeholder="Occupancy, repairs, or operator context. Never shown publicly."></textarea></div>
           <div class="form-actions"><label class="check"><input type="checkbox" name="is_public" value="true"> Allow this space to appear publicly</label><button class="primary" type="submit">Save space</button></div>
         </form>
+        </details>
       </section>
-      <section class="panel">
-        <div class="panel-head"><div><h2>Add or update an offering</h2><p>Define what customers can inquire about and how pricing is described.</p></div></div>
+      <section class="panel advanced-tools">
+        <div class="panel-head"><div><h2>Add or update an offering <span class="advanced-label">Advanced</span></h2><p>Define what customers can inquire about and how pricing is described.</p></div></div>
+        <details class="advanced-disclosure">
+          <summary>Open offering editor</summary>
         <form class="form-grid" method="post" action="/admin/building/offerings">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="offering-id">Stable ID</label><input id="offering-id" name="offering_id" required placeholder="private-office-201"></div>
@@ -1333,11 +1418,12 @@ def render_building_page(
           <div class="field field--wide"><label for="offering-description">Public description</label><textarea id="offering-description" name="public_description" placeholder="Warm, specific copy for the public offering."></textarea></div>
           <div class="form-actions"><span class="form-note">Publish only after the linked space, price wording, and copy have been reviewed.</span><label class="check"><input type="checkbox" name="is_published" value="true"> Publish offering</label><button class="primary" type="submit">Save offering</button></div>
         </form>
+        </details>
       </section>
       <section class="panel panel--wide" id="arena-launch-readiness">
         <div class="panel-head"><div><h2>Arena launch readiness</h2><p>Ten explicit decisions must have accountable evidence before the venue workflow is production-ready.</p></div><span class="count">{launch_ready_count}/10 decided</span></div>
         <div class="alert alert--warning"><strong>Unresolved remains blocking.</strong><p>This register does not update payment providers, agreement systems, email senders, TidyCal, or Google Calendar. Calendar evidence currently proves only one past tour on David’s primary calendar; no dedicated Arena calendar ID, owner, or service-account access is verified.</p></div>
-        <div class="table-wrap"><table><thead><tr><th>Decision</th><th>Status/value</th><th>Evidence</th><th>Governed action</th></tr></thead><tbody>{launch_readiness_rows}</tbody></table></div>
+        <div class="decision-list">{launch_readiness_cards}</div>
       </section>
       <section class="panel panel--wide">
         <div class="panel-head"><div><h2>Commercial rate plans</h2><p>Version pricing, deposits, included items, and cancellation terms. Approved versions are locked.</p></div><span class="count">{len(rate_plans)} versions</span></div>
@@ -1354,6 +1440,8 @@ def render_building_page(
           </form>
         </div>
         <div class="table-wrap"><table><thead><tr><th>Plan</th><th>Price</th><th>Deposit</th><th>Effective</th><th>State</th><th>Evidence</th><th>Review action</th></tr></thead><tbody>{rate_plan_rows}</tbody></table></div>
+        <details class="advanced-disclosure">
+          <summary>Open manual rate-plan editor</summary>
         <form class="form-grid" method="post" action="/admin/building/rate-plans">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="rate-offering">Offering</label><select id="rate-offering" name="offering_id" required><option value="">Choose offering</option>{offering_options}</select></div>
@@ -1379,6 +1467,7 @@ def render_building_page(
           <div class="field field--wide"><label for="rate-tax-note">Customer tax note</label><textarea id="rate-tax-note" name="tax_note" placeholder="State whether tax is included, calculated, or pending review. Required before approval."></textarea></div>
           <div class="form-actions"><span class="form-note">Submit for review here. A pricing approver must separately provide evidence and type the approval phrase before the plan becomes public.</span><button class="primary" type="submit">Save rate plan</button></div>
         </form>
+        </details>
       </section>
       <section class="panel">
         <div class="panel-head"><div><h2>Add a CRM relationship</h2><p>One person can be a tenant, prospect, event host, or community member without duplication.</p></div></div>
@@ -1547,8 +1636,8 @@ def render_building_page(
           <div class="form-actions"><span class="form-note">Saving remains a no-write draft.</span><button class="primary" type="submit">Save schedule draft</button></div>
         </form>
       </section>
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand. Partial CRM failures stay queued without losing the lead.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th><th>CRM recovery</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/agreement-readiness">Open agreement and payment readiness →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
+      <section class="panel panel--wide" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand. Partial CRM failures stay queued without losing the lead.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th><th>CRM recovery</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
+      <section class="panel panel--wide" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/agreement-readiness">Open agreement and payment readiness →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
       <section class="panel panel--wide">
         <div class="panel-head">
@@ -1566,7 +1655,7 @@ def render_building_page(
         <div class="checklist-list">{checklist_blocks}</div>
       </section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Billing schedules</h2><p>Drafts are editable; approved schedules are locked and provider writes require typed confirmation.</p></div><span class="count">{len(billing_schedules)} schedules</span></div><div class="table-wrap"><table><thead><tr><th>Schedule</th><th>Amount</th><th>Next invoice</th><th>Status</th><th>Action</th></tr></thead><tbody>{billing_schedule_rows}</tbody></table></div></section>
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>
+      <section class="panel panel--wide" id="billing-and-collections"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>
       {(
         f'''<section class="panel panel--wide"><div class="panel-head"><div><h2>Collection work</h2><p>Overdue balances become owned follow-up cases. Reminders require typed confirmation and retain delivery evidence.</p></div><span class="count">{len(collections)} cases</span></div>
         <form class="inline-send" method="post" action="/admin/building/billing/collections/refresh"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="default_owner" placeholder="Default collection owner"><button class="secondary secondary--small" type="submit">Refresh invoice aging</button></form>
@@ -1589,10 +1678,10 @@ def render_building_page(
         if can_finance
         else '<section class="panel panel--wide"><div class="panel-head"><div><h2>Financial adjustments</h2><p>Refunds, credits, and write-offs require both Building and Finance access.</p></div></div></section>'
       )}
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
+      <section class="panel panel--wide" id="inventory"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Media assignments</h2><p>Attach images and videos to the exact physical space. Draft assets never reach the public site; approval requires descriptive alt text.</p></div></div><div class="checklist-list">{media_blocks}</div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Roster import reviews</h2><p>Previewed lists remain inert until an operator confirms the exact snapshot.</p></div><span class="count">{len(roster_imports)} imports</span></div><div class="table-wrap"><table><thead><tr><th>Roster</th><th>Contacts</th><th>Status</th><th>Action</th></tr></thead><tbody>{roster_import_rows}</tbody></table></div></section>
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, suppression, and permissioned data controls. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th><th>Data controls</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
+      <section class="panel panel--wide" id="crm-email-list"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, suppression, and permissioned data controls. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th><th>Data controls</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
       <section class="panel panel--wide">
         <div class="panel-head"><div><h2>Duplicate contact review</h2><p>Preview every move before merging. The survivor keeps the most restrictive communication permission; campaign and inquiry history remains unchanged.</p></div><span class="count">{len(contact_merges)} completed</span></div>
         <form class="form-grid" method="post" action="/admin/building/contacts/merge/preview">
