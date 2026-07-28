@@ -2688,6 +2688,12 @@ def render_query_map_page(
 ) -> str:
     intelligence = load_query_intelligence(settings)
     summary = dict(intelligence.get("summary") or {})
+    intent_coverage = dict(intelligence.get("intent_coverage") or {})
+    intent_records = [
+        dict(item)
+        for item in list(intent_coverage.get("records") or [])
+        if isinstance(item, Mapping)
+    ]
     clusters = [
         dict(item)
         for item in intelligence.get("clusters", []) or []
@@ -2727,6 +2733,18 @@ def render_query_map_page(
             </tr>
             """
         )
+    intent_rows = "".join(
+        f"""
+          <tr>
+            <td><a class="text-link" href="{html.escape(str(item.get('url', '')), quote=True)}">{html.escape(str(item.get('path', '')))}</a></td>
+            <td><div class="query-label"><strong>{html.escape(str(item.get('primary_intent', '')))}</strong><span class="muted">{html.escape(str(item.get('intent_type', '')).title())}</span></div></td>
+            <td><span class="status-pill {'status-ok' if item.get('coverage_status') == 'observed' else 'status-neutral'}">{html.escape(str(item.get('coverage_status', 'unobserved')).title())}</span></td>
+            <td>{html.escape(str(item.get('cluster_count', 0)))}</td>
+            <td><span class="status-pill {'status-bad' if item.get('ownership_conflicts') else 'status-ok'}">{html.escape('Conflict' if item.get('ownership_conflicts') else 'Unique')}</span></td>
+          </tr>
+        """
+        for item in intent_records
+    )
     empty = """
       <div class="ops-state ops-state--blocked">
         <div class="stack">
@@ -2763,6 +2781,10 @@ def render_query_map_page(
           <h1>One query cluster. <span style="color:var(--accent)">One owning page.</span></h1>
           <p class="lead">Separate observed demand from hypotheses, catch cannibalization, and track whether answer engines cite Anata.</p>
           <div class="summary-grid">
+            {_summary_chip("Canonical routes", summary.get("canonical_routes", 0), tone="neutral")}
+            {_summary_chip("Unique intents", summary.get("unique_primary_intents", 0), tone="good" if summary.get("unique_primary_intents") else "neutral")}
+            {_summary_chip("Duplicate intents", summary.get("duplicate_primary_intents", 0), tone="bad" if summary.get("duplicate_primary_intents") else "good")}
+            {_summary_chip("Observed owners", summary.get("routes_with_observed_demand", 0), tone="neutral")}
             {_summary_chip("Validated", summary.get("validated_clusters", 0), tone="good")}
             {_summary_chip("Hypotheses", summary.get("hypothesis_clusters", 0), tone="neutral")}
             {_summary_chip("Quarantined", summary.get("quarantined_clusters", 0), tone="warn" if summary.get("quarantined_clusters") else "neutral")}
@@ -2778,6 +2800,10 @@ def render_query_map_page(
             <a class="{'btn' if status_filter == 'conflict' else 'btn btn--ghost'}" href="/admin/website-ops/queries?status=conflict">Conflicts</a>
             <a class="{'btn' if status_filter == 'cited' else 'btn btn--ghost'}" href="/admin/website-ops/queries?status=cited">Cited</a>
           </div>
+        </section>
+        <section class="card stack">
+          <div class="section-heading"><div class="stack"><h2>Canonical intent owners</h2><p class="lead-sm">Every public canonical route declares one primary intent. “Unobserved” means Search Console has not supplied demand evidence yet, not that the page should be deleted or rewritten.</p></div><span class="status-pill status-neutral">{html.escape(str(intent_coverage.get("status", "unavailable")).title())}</span></div>
+          {f'<div class="data-workspace"><table class="data-table"><thead><tr><th>Route</th><th>Primary intent</th><th>Demand evidence</th><th>Clusters</th><th>Ownership</th></tr></thead><tbody>{intent_rows}</tbody></table></div>' if intent_rows else '<div class="list-card empty-state"><h3>Intent manifest unavailable.</h3><p class="muted">Agent will retain the last valid manifest and retry the public contract on the next sweep.</p></div>'}
         </section>
         <section class="card stack">
           <div class="section-heading"><div class="stack"><h2>Query map</h2><p class="lead-sm">{len(clusters)} matching cluster(s). Impressions appear only for observed Search Console evidence.</p></div></div>
