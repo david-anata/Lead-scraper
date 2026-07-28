@@ -92,6 +92,13 @@ example
             "primaryIntent": "how to structure an amazon ppc account",
             "evidenceId": "cluster-123",
             "generatedAt": "2026-07-27T14:00:00+00:00",
+            "publishedAt": "2026-07-27T14:00:00+00:00",
+            "modifiedAt": "2026-07-27T14:00:00+00:00",
+            "author": {
+                "type": "Organization",
+                "name": "Anata Inc.",
+                "url": "https://anatainc.com",
+            },
             "title": "How to Structure an Amazon PPC Account",
             "description": (
                 "A practical framework for organizing Amazon PPC campaigns around "
@@ -1246,6 +1253,22 @@ example
         invalid["sources"] = invalid["sources"][:1]
         with self.assertRaises(ExecutionError):
             validate_generated_article({**record, "action_value": json.dumps(invalid)})
+
+    def test_generated_article_requires_truthful_publication_identity(self) -> None:
+        record = self._generated_article_record()
+        invalid_author = json.loads(str(record["action_value"]))
+        invalid_author["author"]["name"] = "SEO Bot"
+        with self.assertRaises(ExecutionError):
+            validate_generated_article(
+                {**record, "action_value": json.dumps(invalid_author)}
+            )
+
+        invalid_dates = json.loads(str(record["action_value"]))
+        invalid_dates["modifiedAt"] = "2026-07-26T14:00:00+00:00"
+        with self.assertRaises(ExecutionError):
+            validate_generated_article(
+                {**record, "action_value": json.dumps(invalid_dates)}
+            )
 
     def test_generated_article_registry_enforces_one_page_one_intent(self) -> None:
         source = """import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
