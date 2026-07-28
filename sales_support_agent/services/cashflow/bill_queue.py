@@ -22,6 +22,17 @@ BATCH_ENTITY = "bill_queue_batch"
 VALID_ACTIONS = frozenset({"track", "not_a_bill", "snooze", "combine"})
 
 
+def _audit_payload(value: Any) -> dict[str, Any]:
+    """Read JSON consistently from SQLite text and Postgres JSON columns."""
+    if isinstance(value, Mapping):
+        return dict(value)
+    try:
+        decoded = json.loads(str(value or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return dict(decoded) if isinstance(decoded, Mapping) else {}
+
+
 def _forecast_effect(pattern: Mapping[str, Any], days: int) -> int:
     due = pattern.get("next_due")
     if not isinstance(due, date):
@@ -124,7 +135,7 @@ def list_queue_activity(*, limit: int = 20) -> list[dict[str, Any]]:
     activity = []
     for row in rows:
         values = dict(row._mapping)
-        payload = json.loads(values.get("evidence_json") or "{}")
+        payload = _audit_payload(values.get("evidence_json"))
         activity.append({
             "id": str(values["id"]), "action_type": str(values["action_type"]),
             "pattern_key": str(values["entity_id"]), "actor": str(values.get("actor") or ""),

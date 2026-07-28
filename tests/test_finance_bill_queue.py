@@ -17,7 +17,7 @@ from sales_support_agent.services.cashflow.bill_patterns import (
     _PATTERN_CACHE, _monthly_cost_cents, list_bill_patterns,
 )
 from sales_support_agent.services.cashflow.bill_queue import (
-    apply_queue_action, list_queue_activity, preview_combine, preview_track,
+    _audit_payload, apply_queue_action, list_queue_activity, preview_combine, preview_track,
     undo_queue_batch,
 )
 from sales_support_agent.services.cashflow.bookkeeping import group_needs_decision
@@ -154,6 +154,13 @@ def test_alias_migration_is_idempotent(finance_engine):
 ])
 def test_monthly_cost_normalizes_every_supported_frequency(frequency, amount, monthly):
     assert _monthly_cost_cents({"frequency": frequency, "amount_cents": amount}) == monthly
+
+
+def test_audit_payload_accepts_sqlite_text_and_postgres_json_objects():
+    expected = {"action": "track", "vendors": [{"vendor": "Acme"}]}
+    assert _audit_payload(json.dumps(expected)) == expected
+    assert _audit_payload(expected) == expected
+    assert _audit_payload(None) == {}
 
 
 def test_track_preview_explains_monthly_and_forecast_effect_without_writing(finance_engine):
