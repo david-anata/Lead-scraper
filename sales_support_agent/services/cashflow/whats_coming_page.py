@@ -125,7 +125,7 @@ def _alias_history() -> str:
     </details>"""
 
 
-def _activity() -> str:
+def _activity(patterns: Sequence[Mapping[str, Any]]) -> str:
     from sales_support_agent.services.cashflow.bill_queue import list_queue_activity
     try:
         activity = list_queue_activity(limit=20)
@@ -133,6 +133,12 @@ def _activity() -> str:
         return ""
     if not activity:
         return ""
+    vendors_by_key = {
+        str(row.get("pattern_key") or ""): clean_vendor_display_name(
+            str(row.get("vendor") or "")
+        )
+        for row in patterns
+    }
     items = []
     labels = {
         "track": "Tracked", "not_a_bill": "Marked not a bill",
@@ -145,15 +151,38 @@ def _activity() -> str:
         vendors = ", ".join(
             str(item.get("vendor") or "") for item in payload.get("vendors") or []
         )
+        if not vendors:
+            vendors = vendors_by_key.get(
+                str(payload.get("pattern_key") or entry.get("pattern_key") or ""), ""
+            )
         detail = ""
         if evidence.get("return_on"):
             detail = f" · returns {_day(evidence['return_on'])}"
+        if evidence.get("reason"):
+            detail += f" · reason: {str(evidence['reason'])}"
+        changes = "; ".join(
+            f"{item.get('before', {}).get('decision', 'unreviewed')} → "
+            f"{item.get('after', {}).get('decision', action)}"
+            for item in payload.get("vendors") or []
+        )
+        batch_id = str(
+            evidence.get("batch_id")
+            or (entry["id"] if entry["action_type"] == "bill_queue_batch_recorded" else "")
+        )
+        undo = (
+            f'<button class="btn btn-secondary" type="button" '
+            f'data-activity-undo="{html.escape(batch_id, quote=True)}">Undo batch</button>'
+            if batch_id and entry["action_type"] == "bill_queue_batch_recorded"
+            and action != "combine" else ""
+        )
         items.append(
             f"<li><strong>{html.escape(labels.get(action, action.replace('_', ' ').title() or 'Queue updated'))}"
             f"{': ' + html.escape(vendors) if vendors else ''}</strong>"
             f"{html.escape(detail)}<br><small>{html.escape(entry['actor'])} · "
             f"{html.escape(str(entry['created_at'])[:19].replace('T', ' '))} · "
-            f"Audit {html.escape(entry['id'][:8])}</small></li>"
+            f"Audit {html.escape(entry['id'][:8])}"
+            f"{' · Batch ' + html.escape(batch_id[:8]) if batch_id else ''}</small>"
+            f"{f'<br><small>{html.escape(changes)}</small>' if changes else ''}{undo}</li>"
         )
     return f"""<details class="card bill-activity"><summary>Recent bill activity ({len(activity)})</summary>
       <p>This history comes from the authoritative finance audit log.</p><ol>{''.join(items)}</ol></details>"""
@@ -330,6 +359,14 @@ def _script() -> str:
         const response=await fetch(`${location.pathname}/undo`,{method:'POST',body:data,headers:{Accept:'application/json'}});
         if(response.ok)location.reload();
       });
+      document.querySelectorAll('[data-activity-undo]').forEach(button => {
+        button.addEventListener('click', async () => {
+          const data=new FormData();data.append('batch_id',button.dataset.activityUndo);
+          const response=await fetch(`${location.pathname}/undo`,{method:'POST',body:data,headers:{Accept:'application/json'}});
+          if(response.ok)location.reload();
+          else live.textContent='That batch could not be undone.';
+        });
+      });
       applyView();
     })();
     </script>"""
@@ -402,7 +439,7 @@ def render_whats_coming_page(*, flash: str = "") -> str:
       <button class="btn btn-secondary" type="button" data-combine-preview-button>Preview</button>
       <button class="btn btn-primary" type="button" data-combine-confirm hidden>Confirm combine</button></div></form></dialog>
     <button class="btn btn-secondary bill-undo" data-bill-undo hidden>Undo last answer</button>
-    {_answered_section(patterns, listing["tracked"])}{_alias_history()}{_activity()}{_script()}"""
+    {_answered_section(patterns, listing["tracked"])}{_alias_history()}{_activity(patterns)}{_script()}"""
     return _page_shell("What is coming", NAV_KEY, body, flash=flash)
 
 
