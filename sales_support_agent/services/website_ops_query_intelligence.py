@@ -1101,12 +1101,89 @@ def build_recommendations(
 
 
 def _weekly_cycles(historical_citations: Sequence[Mapping[str, Any]]) -> int:
-    weeks = {
-        _clean(item.get("observed_at"))[:10]
-        for item in historical_citations
-        if item.get("status") in {"cited", "mentioned", "no-citation", "no-retrieval"}
-    }
+    weeks: set[tuple[int, int]] = set()
+    for item in historical_citations:
+        if item.get("status") not in {
+            "cited",
+            "mentioned",
+            "no-citation",
+            "no-retrieval",
+        }:
+            continue
+        observed_at = _clean(item.get("observed_at"))
+        try:
+            observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        iso_year, iso_week, _ = observed.isocalendar()
+        weeks.add((iso_year, iso_week))
     return len(weeks)
+
+
+def _article_pipeline_state(
+    clusters: Sequence[Mapping[str, Any]],
+    *,
+    weekly_validation_cycles: int,
+) -> dict[str, Any]:
+    """Explain the conservative article gate without implying publication is due."""
+
+    validated_informational = 0
+    source_qualified = 0
+    for cluster in clusters:
+        owner_path = urlparse(_clean(cluster.get("owner_url"))).path
+        if not (
+            cluster.get("validation_status") == "validated"
+            and cluster.get("quality_status") == "eligible"
+            and cluster.get("ownership_status") == "assigned"
+            and cluster.get("intent") == "informational"
+            and not owner_path.startswith(("/blog", "/guides", "/glossary"))
+            and float(dict(cluster.get("alignment") or {}).get("composite", 1) or 1)
+            < 0.35
+        ):
+            continue
+        validated_informational += 1
+        external_sources = {
+            _clean(item.get("url"))
+            for item in dict(cluster.get("citation") or {}).get("cited_urls", []) or []
+            if isinstance(item, Mapping)
+            and _clean(item.get("url")).startswith("https://")
+            and (urlparse(_clean(item.get("url"))).hostname or "").removeprefix("www.")
+            != "anatainc.com"
+        }
+        if len(external_sources) >= 2:
+            source_qualified += 1
+
+    if weekly_validation_cycles < 2:
+        status = "waiting_for_distinct_week"
+        message = (
+            f"{weekly_validation_cycles} of 2 distinct ISO-week evidence cycles complete. "
+            "The scheduler will collect the next comparable cycle automatically."
+        )
+    elif source_qualified:
+        status = "eligible"
+        message = (
+            f"{source_qualified} source-qualified article candidate(s) can enter "
+            "generation and production validation."
+        )
+    elif validated_informational:
+        status = "waiting_for_sources"
+        message = (
+            f"{validated_informational} validated informational gap(s) need at least "
+            "two authoritative external sources before generation."
+        )
+    else:
+        status = "no_validated_gap"
+        message = (
+            "No validated informational content gap currently justifies a new article."
+        )
+    return {
+        "status": status,
+        "cycles_completed": weekly_validation_cycles,
+        "cycles_required": 2,
+        "validated_informational_gaps": validated_informational,
+        "source_qualified_candidates": source_qualified,
+        "message": message,
+    }
 
 
 def record_outcomes(
@@ -1217,6 +1294,10 @@ def build_query_intelligence(
         historical_citations,
     )
     weekly_cycles = _weekly_cycles(all_citations)
+    article_pipeline = _article_pipeline_state(
+        clusters,
+        weekly_validation_cycles=weekly_cycles,
+    )
     recommendations = build_recommendations(
         clusters=clusters,
         decision_data_ready=decision_data_ready,
@@ -1282,6 +1363,7 @@ def build_query_intelligence(
         "citation_observations": current_citations,
         "outcomes": outcomes,
         "intent_coverage": intent_coverage,
+        "article_pipeline": article_pipeline,
         "policy": {
             "independent_signals_required": 2,
             "weekly_shadow_cycles_required": 2,

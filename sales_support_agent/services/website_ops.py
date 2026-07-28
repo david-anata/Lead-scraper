@@ -2377,6 +2377,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         latest_payload.get("query_intelligence") or load_query_intelligence(settings)
     )
     query_summary = dict(query_intelligence.get("summary") or {})
+    article_pipeline = dict(query_intelligence.get("article_pipeline") or {})
     monitored_count = int(latest_payload.get("pages_reviewed", 0) or len(settings.website_ops_site_urls))
     schedule_note = (
         "<p class='muted'>Scheduled for 8:00 AM America/Denver. "
@@ -2425,6 +2426,24 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
           </div>
         </section>
         {_continuous_loop_panel()}
+        <section class="card stack">
+          <div class="section-heading">
+            <div class="stack">
+              <p class="eyebrow">Next autonomous work</p>
+              <h2>Content only publishes when the evidence gate clears.</h2>
+              <p class="lead-sm">{html.escape(str(article_pipeline.get("message", "The next sweep will calculate article eligibility.")))}</p>
+            </div>
+            <span class="status-pill {'status-ok' if article_pipeline.get('status') == 'eligible' else 'status-warn'}">{html.escape(str(article_pipeline.get("status", "not calculated")).replace("_", " ").title())}</span>
+          </div>
+          <div class="summary-grid">
+            {_summary_chip("Distinct weekly cycles", f"{article_pipeline.get('cycles_completed', 0)} / {article_pipeline.get('cycles_required', 2)}", tone="good" if int(article_pipeline.get('cycles_completed', 0) or 0) >= int(article_pipeline.get('cycles_required', 2) or 2) else "warn")}
+            {_summary_chip("Validated content gaps", article_pipeline.get("validated_informational_gaps", 0), tone="neutral")}
+            {_summary_chip("Source-qualified candidates", article_pipeline.get("source_qualified_candidates", 0), tone="good" if article_pipeline.get("source_qualified_candidates") else "neutral")}
+            {_summary_chip("Publishing policy", "Validated autopush", tone="good")}
+          </div>
+          <p class="muted">When eligible, Agent generates one bounded, cited article; checks intent ownership, factual sourcing, repository build, deployment, rendered production, and rollback; then records the result in the action ledger and daily email.</p>
+          <a class="text-link" href="/admin/website-ops/queries">Inspect the evidence and canonical owner map</a>
+        </section>
         <section class="stats">
           {_dashboard_stat_card("Reports", len(reports), "Daily, weekly, monthly", "/admin/website-ops/reports")}
           {_dashboard_stat_card("Validated Queries", query_summary.get('validated_clusters', 0), "One page, one intent", "/admin/website-ops/queries?status=validated")}
@@ -2688,6 +2707,7 @@ def render_query_map_page(
 ) -> str:
     intelligence = load_query_intelligence(settings)
     summary = dict(intelligence.get("summary") or {})
+    article_pipeline = dict(intelligence.get("article_pipeline") or {})
     intent_coverage = dict(intelligence.get("intent_coverage") or {})
     intent_records = [
         dict(item)
@@ -2800,6 +2820,22 @@ def render_query_map_page(
             <a class="{'btn' if status_filter == 'conflict' else 'btn btn--ghost'}" href="/admin/website-ops/queries?status=conflict">Conflicts</a>
             <a class="{'btn' if status_filter == 'cited' else 'btn btn--ghost'}" href="/admin/website-ops/queries?status=cited">Cited</a>
           </div>
+        </section>
+        <section class="card stack">
+          <div class="section-heading">
+            <div class="stack">
+              <p class="eyebrow">Continuous content gate</p>
+              <h2>{html.escape(str(article_pipeline.get("status", "not calculated")).replace("_", " ").title())}</h2>
+              <p class="lead-sm">{html.escape(str(article_pipeline.get("message", "Run a sweep to calculate article eligibility.")))}</p>
+            </div>
+            <span class="status-pill {'status-ok' if article_pipeline.get('status') == 'eligible' else 'status-warn'}">{html.escape(f"{article_pipeline.get('cycles_completed', 0)} / {article_pipeline.get('cycles_required', 2)} cycles")}</span>
+          </div>
+          <div class="summary-grid">
+            {_summary_chip("Validated content gaps", article_pipeline.get("validated_informational_gaps", 0), tone="neutral")}
+            {_summary_chip("Source-qualified", article_pipeline.get("source_qualified_candidates", 0), tone="good" if article_pipeline.get("source_qualified_candidates") else "neutral")}
+            {_summary_chip("Execution", "Autopush after validation", tone="good")}
+          </div>
+          <p class="muted">Cycles are counted by distinct ISO week, not by number of button presses. This prevents duplicate runs from manufacturing confidence.</p>
         </section>
         <section class="card stack">
           <div class="section-heading"><div class="stack"><h2>Canonical intent owners</h2><p class="lead-sm">Every public canonical route declares one primary intent. “Unobserved” means Search Console has not supplied demand evidence yet, not that the page should be deleted or rewritten.</p></div><span class="status-pill status-neutral">{html.escape(str(intent_coverage.get("status", "unavailable")).title())}</span></div>
