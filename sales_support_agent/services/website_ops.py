@@ -2727,7 +2727,7 @@ def render_query_map_page(
               <td><span class="status-pill {'status-bad' if quality_status == 'quarantined' else 'status-ok' if cluster.get('validation_status') == 'validated' else 'status-neutral'}">{html.escape('Quarantined' if quality_status == 'quarantined' else str(cluster.get("validation_status", "hypothesis")).title())}</span></td>
               <td>{html.escape(evidence)}</td>
               <td class="query-owner"><a href="{html.escape(str(cluster.get("owner_url", "#")), quote=True)}">{html.escape(str(cluster.get("owner_url", "Unassigned")))}</a></td>
-              <td><span class="status-pill {'status-bad' if ownership_status == 'conflict' else 'status-ok'}">{html.escape(ownership_status.title())}</span>{f'<div class="muted">{conflict_count} competing page(s)</div>' if conflict_count else ''}</td>
+              <td><span class="status-pill {'status-bad' if ownership_status == 'conflict' else 'status-ok'}">{html.escape(ownership_status.replace('_', ' ').title())}</span>{f'<div class="muted">{conflict_count} competing page(s)</div>' if conflict_count else ''}{f'<div class="muted">{len(list(cluster.get("supporting_urls") or []))} supporting brand page(s)</div>' if ownership_status == 'brand_coverage' else ''}</td>
               <td>{html.escape(citation_status.replace("-", " ").title())}</td>
               <td>{html.escape(str(cluster.get("observed_impressions", "Unavailable"))) if "observed_search" in cluster.get("evidence_classes", []) else "Unavailable"}</td>
             </tr>
