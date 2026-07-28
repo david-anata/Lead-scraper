@@ -2,14 +2,27 @@ from types import SimpleNamespace
 
 from sales_support_agent.services.website_ops_query_intelligence import (
     build_clusters,
+    build_intent_coverage,
     build_query_intelligence,
     build_recommendations,
     citation_config,
     collect_query_observations,
+    collect_route_intent_manifest,
     normalize_query,
     record_outcomes,
     run_citation_harness,
 )
+
+
+class _JsonResponse:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self.payload
 
 
 def _page(
@@ -337,6 +350,88 @@ def test_build_persists_snapshot_and_immutable_logs(tmp_path) -> None:
     assert second["summary"]["validated_clusters"] == 1
     assert (root / "snapshot.json").exists()
     assert len((root / "query_observations.jsonl").read_text().splitlines()) == 2
+
+
+def test_route_intent_manifest_is_validated_cached_and_joined_to_clusters(tmp_path) -> None:
+    settings = SimpleNamespace(
+        website_ops_root=tmp_path,
+        website_ops_site_urls=("https://anatainc.com",),
+    )
+    raw_manifest = {
+        "schemaVersion": 1,
+        "site": "anatainc.com",
+        "generatedAt": "2026-07-28T04:00:00+00:00",
+        "routes": [
+            {
+                "url": "https://anatainc.com/services/amazon-ppc-management",
+                "path": "/services/amazon-ppc-management",
+                "primaryIntent": "Amazon PPC management",
+                "intentType": "commercial",
+            },
+            {
+                "url": "https://anatainc.com/guides/amazon-advertising",
+                "path": "/guides/amazon-advertising",
+                "primaryIntent": "How Amazon advertising works",
+                "intentType": "informational",
+            },
+        ],
+    }
+    manifest = collect_route_intent_manifest(
+        settings,
+        requester=lambda *_args, **_kwargs: _JsonResponse(raw_manifest),
+    )
+    assert manifest["status"] == "fresh"
+    clusters = [
+        {
+            "owner_url": "https://anatainc.com/services/amazon-ppc-management",
+            "evidence_classes": ["observed_search"],
+            "ownership_status": "assigned",
+        }
+    ]
+    coverage = build_intent_coverage(manifest, clusters)
+    assert coverage["summary"]["canonical_routes"] == 2
+    assert coverage["summary"]["unique_primary_intents"] == 2
+    assert coverage["summary"]["routes_with_observed_demand"] == 1
+    assert coverage["summary"]["duplicate_primary_intents"] == 0
+
+    cached = collect_route_intent_manifest(
+        settings,
+        requester=lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
+    )
+    assert cached["status"] == "cached"
+    assert len(cached["routes"]) == 2
+
+
+def test_intent_coverage_surfaces_duplicate_primary_intents_and_unknown_owners() -> None:
+    manifest = {
+        "status": "fresh",
+        "routes": [
+            {
+                "url": "https://anatainc.com/a",
+                "path": "/a",
+                "primary_intent": "Amazon PPC management",
+                "intent_type": "commercial",
+            },
+            {
+                "url": "https://anatainc.com/b",
+                "path": "/b",
+                "primary_intent": "amazon ppc management",
+                "intent_type": "commercial",
+            },
+        ],
+    }
+    coverage = build_intent_coverage(
+        manifest,
+        [
+            {
+                "owner_url": "https://anatainc.com/not-canonical",
+                "evidence_classes": ["observed_search"],
+                "ownership_status": "assigned",
+            }
+        ],
+    )
+    assert coverage["summary"]["duplicate_primary_intents"] == 1
+    assert coverage["summary"]["unknown_cluster_owners"] == 1
 
 
 def test_outcome_learning_records_association_not_causation(tmp_path) -> None:

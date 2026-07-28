@@ -152,6 +152,171 @@ def query_intelligence_root(settings: Any) -> Path:
     return Path(settings.website_ops_root) / "query_intelligence"
 
 
+def _intent_manifest_path(settings: Any) -> Path:
+    return query_intelligence_root(settings) / "route_intents.json"
+
+
+def _validated_intent_manifest(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or value.get("schemaVersion") != 1:
+        return {}
+    routes: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for item in list(value.get("routes") or []):
+        if not isinstance(item, Mapping):
+            return {}
+        url = _clean(item.get("url")).rstrip("/")
+        path = _clean(item.get("path"))
+        primary_intent = _clean(item.get("primaryIntent"))
+        intent_type = _clean(item.get("intentType"))
+        parsed = urlparse(url)
+        if (
+            parsed.scheme != "https"
+            or (parsed.hostname or "").lower().removeprefix("www.") != "anatainc.com"
+            or not path.startswith("/")
+            or not primary_intent
+            or intent_type
+            not in {"commercial", "informational", "navigational", "transactional"}
+            or url in seen_urls
+        ):
+            return {}
+        seen_urls.add(url)
+        routes.append(
+            {
+                "url": url,
+                "path": path,
+                "primary_intent": primary_intent,
+                "intent_type": intent_type,
+            }
+        )
+    if not routes:
+        return {}
+    return {
+        "schema_version": 1,
+        "site": "anatainc.com",
+        "policy": "one-page-one-primary-intent",
+        "source_generated_at": _clean(value.get("generatedAt")),
+        "observed_at": _now(),
+        "routes": routes,
+    }
+
+
+def collect_route_intent_manifest(
+    settings: Any,
+    *,
+    requester: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Fetch the public route-intent contract, retaining the last valid snapshot."""
+
+    path = _intent_manifest_path(settings)
+    site_urls = tuple(getattr(settings, "website_ops_site_urls", ()) or ())
+    base_url = next(
+        (
+            str(url).rstrip("/")
+            for url in site_urls
+            if (urlparse(str(url)).hostname or "").lower().removeprefix("www.")
+            == "anatainc.com"
+        ),
+        "",
+    )
+    if base_url:
+        request = requester or requests.get
+        try:
+            response = request(f"{base_url}/seo-intents.json", timeout=15)
+            if hasattr(response, "raise_for_status"):
+                response.raise_for_status()
+            raw = response.json() if hasattr(response, "json") else response
+            manifest = _validated_intent_manifest(raw)
+            if manifest:
+                _write_snapshot(path, manifest)
+                return {**manifest, "status": "fresh"}
+        except (requests.RequestException, OSError, ValueError, TypeError):
+            pass
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        cached = {}
+    if isinstance(cached, Mapping) and cached.get("routes"):
+        return {**dict(cached), "status": "cached"}
+    return {
+        "status": "unavailable",
+        "schema_version": 1,
+        "site": "anatainc.com",
+        "policy": "one-page-one-primary-intent",
+        "routes": [],
+    }
+
+
+def build_intent_coverage(
+    manifest: Mapping[str, Any],
+    clusters: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    routes = [
+        dict(item)
+        for item in list(manifest.get("routes") or [])
+        if isinstance(item, Mapping)
+    ]
+    clusters_by_owner: dict[str, list[Mapping[str, Any]]] = {}
+    for cluster in clusters:
+        owner = _clean(cluster.get("owner_url")).rstrip("/")
+        if owner:
+            clusters_by_owner.setdefault(owner, []).append(cluster)
+    intent_owners: dict[str, list[str]] = {}
+    records: list[dict[str, Any]] = []
+    for route in routes:
+        url = _clean(route.get("url")).rstrip("/")
+        primary_intent = _clean(route.get("primary_intent"))
+        normalized_intent = normalize_query(primary_intent)
+        intent_owners.setdefault(normalized_intent, []).append(url)
+        owned_clusters = clusters_by_owner.get(url, [])
+        observed_clusters = [
+            item
+            for item in owned_clusters
+            if "observed_search" in list(item.get("evidence_classes") or [])
+        ]
+        records.append(
+            {
+                **route,
+                "normalized_intent": normalized_intent,
+                "cluster_count": len(owned_clusters),
+                "observed_cluster_count": len(observed_clusters),
+                "coverage_status": "observed" if observed_clusters else "unobserved",
+                "ownership_conflicts": sum(
+                    1
+                    for item in owned_clusters
+                    if item.get("ownership_status") == "conflict"
+                ),
+            }
+        )
+    duplicate_intents = [
+        {"normalized_intent": intent, "urls": urls}
+        for intent, urls in sorted(intent_owners.items())
+        if intent and len(urls) > 1
+    ]
+    manifest_urls = {_clean(item.get("url")).rstrip("/") for item in routes}
+    unknown_cluster_owners = sorted(
+        owner for owner in clusters_by_owner if owner not in manifest_urls
+    )
+    return {
+        "status": manifest.get("status", "unavailable"),
+        "policy": "one-page-one-primary-intent",
+        "records": records,
+        "duplicate_intents": duplicate_intents,
+        "unknown_cluster_owners": unknown_cluster_owners,
+        "summary": {
+            "canonical_routes": len(records),
+            "unique_primary_intents": len(intent_owners),
+            "duplicate_primary_intents": len(duplicate_intents),
+            "routes_with_observed_demand": sum(
+                1 for item in records if item["coverage_status"] == "observed"
+            ),
+            "routes_without_observed_demand": sum(
+                1 for item in records if item["coverage_status"] == "unobserved"
+            ),
+            "unknown_cluster_owners": len(unknown_cluster_owners),
+        },
+    }
+
+
 def load_query_intelligence(settings: Any) -> dict[str, Any]:
     path = query_intelligence_root(settings) / "snapshot.json"
     if not path.exists():
@@ -992,6 +1157,7 @@ def build_query_intelligence(
     decision_data_ready: bool,
     run_mode: str,
     citation_requester: Callable[..., Mapping[str, Any]] | None = None,
+    intent_manifest_requester: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     root = query_intelligence_root(settings)
     observation_log = root / "query_observations.jsonl"
@@ -1016,6 +1182,11 @@ def build_query_intelligence(
     _append_jsonl(citation_log, current_citations)
     all_citations = historical_citations + current_citations
     clusters = build_clusters(observations, page_insights, all_citations)
+    intent_manifest = collect_route_intent_manifest(
+        settings,
+        requester=intent_manifest_requester,
+    )
+    intent_coverage = build_intent_coverage(intent_manifest, clusters)
     comparable_changes = _comparable_citation_changes(
         current_citations,
         historical_citations,
@@ -1072,6 +1243,7 @@ def build_query_intelligence(
         ),
         "observed_outcome_pages": len(observed_outcomes),
         "pages_with_associated_lead_growth": pages_with_lead_growth,
+        **dict(intent_coverage.get("summary") or {}),
     }
     payload = {
         "status": "ready" if decision_data_ready else "partial",
@@ -1084,6 +1256,7 @@ def build_query_intelligence(
         "recommendations": recommendations,
         "citation_observations": current_citations,
         "outcomes": outcomes,
+        "intent_coverage": intent_coverage,
         "policy": {
             "independent_signals_required": 2,
             "weekly_shadow_cycles_required": 2,
