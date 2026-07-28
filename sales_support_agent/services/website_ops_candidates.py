@@ -92,6 +92,41 @@ def _warning_lane(report: str) -> str:
     return "technical_other"
 
 
+def _warning_issue_key(report: str, lane_id: str) -> str:
+    """Collapse overlapping crawler exports into one actionable issue family."""
+
+    normalized = str(report or "").strip().lower()
+    if lane_id == "broken_internal_links":
+        return "broken_internal_target"
+    if lane_id == "redirect_cleanup":
+        return "redirect_path"
+    if lane_id == "canonical_sitemap":
+        if "robots" in normalized:
+            return "robots_directive"
+        if "sitemap" in normalized:
+            return "sitemap_membership"
+        return "canonical"
+    if lane_id == "metadata":
+        return "meta_description" if "description" in normalized else "page_title"
+    if lane_id == "internal_links":
+        if "orphan" in normalized:
+            return "orphan_page"
+        if "anchor" in normalized:
+            return "anchor_text"
+        if "nofollow" in normalized:
+            return "nofollow_internal_link"
+        return "internal_link_graph"
+    if lane_id == "structured_data":
+        return "structured_data"
+    if lane_id == "images":
+        if "alt" in normalized:
+            return "image_alt"
+        if any(token in normalized for token in ("size", "kb", "delivery", "payload")):
+            return "image_delivery"
+        return "image_semantics"
+    return normalized.removesuffix(".csv").replace("\\", "/").split("/")[-1]
+
+
 def action_lane(action_type: str) -> str:
     normalized = str(action_type or "").strip()
     if normalized in {"meta_update", "meta_title_update", "meta_description_update"}:
@@ -208,14 +243,15 @@ def build_candidates(report: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "noise": "noise",
             }.get(verdict, "observed")
             warning_report = str(warning.get("report", "") or "")
+            lane_id = _warning_lane(warning_report)
             candidates.append(
                 _candidate(
                     source_type="crawl_warning",
                     # Multiple Screaming Frog exports may report the same
                     # warning class for the same URL. Evidence belongs on the
                     # candidate; it must not create a second opportunity.
-                    source_key=warning_report,
-                    lane_id=_warning_lane(warning_report),
+                    source_key=_warning_issue_key(warning_report, lane_id),
+                    lane_id=lane_id,
                     target_url=url,
                     state=state,
                     reason=str(warning.get("reason", "") or "Crawler evidence requires classification."),
