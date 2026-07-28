@@ -921,7 +921,7 @@ def render_building_page(
         <h1>Building Control</h1>
         <p class="purpose">One operational view of sellable space, incoming demand, tenant relationships, communication permission, and campaign readiness.</p>
       </div>
-      <a class="site-link" href="https://anata-building.vercel.app" target="_blank" rel="noreferrer">Open public site ↗</a>
+      <a class="site-link" href="https://anatabuilding.com" target="_blank" rel="noreferrer">Open public site ↗</a>
     </header>
     <section class="metrics" aria-label="Building summary">
       <div class="metric"><span>Available spaces</span><strong>{availability.get("available", 0)}</strong></div>

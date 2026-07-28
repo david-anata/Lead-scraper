@@ -71,7 +71,7 @@ services:
       - key: BUILDING_SITE_INTAKE_KEY
         sync: false
       - key: BUILDING_PUBLIC_BASE_URL
-        value: https://anata-building.vercel.app
+        value: https://anatabuilding.com
       - key: BUILDING_CAMPAIGN_TOKEN_SECRET
         sync: false
       - key: RESEND_WEBHOOK_SECRET

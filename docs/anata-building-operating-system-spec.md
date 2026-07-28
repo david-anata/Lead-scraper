@@ -3,7 +3,7 @@
 Status: Product specification  
 Prepared: 2026-07-23  
 Primary application: `agent.anatainc.com`  
-Public storefront: `anata-building.vercel.app`
+Public storefront: `anatabuilding.com`
 
 ## Plain-English Summary
 
