@@ -27,6 +27,86 @@ def _badge(value: str) -> str:
     return f'<span class="badge badge--{tone}">{_esc(normalized)}</span>'
 
 
+def render_customer_status_link_result(
+    *,
+    user: dict,
+    reservation_id: str,
+    status_url: str,
+    expires_at: str,
+    sent: bool,
+) -> str:
+    """Render a deliberate one-result page so bearer tokens avoid list pages."""
+
+    nav = render_agent_nav("building", user=user)
+    nav_styles = render_agent_nav_styles()
+    favicons = render_agent_favicon_links()
+    delivery_state = "Sent" if sent else "Not sent"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Customer status link · Building Control</title>
+  {favicons}
+  <link rel="stylesheet" href="/static/admin.css?v=2">
+  <style>
+    {nav_styles}
+    body{{margin:0;background:linear-gradient(180deg,#eef6fa 0,#f9f7f3 320px);color:#2b3644;font-family:"Inter","Segoe UI",sans-serif;}}
+    .status-shell{{max-width:760px;margin:0 auto;padding:52px 24px 80px;}}
+    .status-card{{background:#fff;border:1px solid rgba(43,54,68,.14);border-radius:14px;padding:28px;}}
+    h1{{font-family:"Montserrat","Inter",sans-serif;font-size:clamp(30px,5vw,44px);letter-spacing:-.04em;margin:8px 0 12px;}}
+    .eyebrow{{font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#397a9d;}}
+    p{{line-height:1.6;color:rgba(43,54,68,.72);}}
+    .state{{display:inline-block;margin:8px 0 20px;padding:6px 10px;border-radius:99px;background:#fff0d2;color:#845407;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;}}
+    label{{display:block;margin:18px 0 7px;font-size:12px;font-weight:800;}}
+    .copy-row{{display:flex;gap:8px;align-items:stretch;}}
+    input{{box-sizing:border-box;min-width:0;flex:1;min-height:46px;border:1px solid rgba(43,54,68,.24);border-radius:8px;padding:10px 12px;font:13px ui-monospace,monospace;color:#2b3644;background:#f8f8f6;}}
+    button,.back{{display:inline-flex;min-height:46px;align-items:center;justify-content:center;border:0;border-radius:8px;padding:0 17px;background:#2b3644;color:#fff;font:700 14px "Inter",sans-serif;text-decoration:none;cursor:pointer;}}
+    .back{{margin-top:24px;background:#fff;color:#2b3644;border:1px solid rgba(43,54,68,.18);}}
+    .copy-status{{min-height:22px;margin:7px 0 0;font-size:13px;color:#18776f;}}
+    .evidence{{margin:20px 0 0;padding:14px 16px;border-left:4px solid #85bbda;background:#f4f9fc;}}
+    @media(max-width:600px){{.status-shell{{padding:28px 16px 60px}}.status-card{{padding:21px}}.copy-row{{display:grid}}}}
+  </style>
+</head>
+<body class="app app--operator">
+  {nav}
+  <main id="agent-main-content" class="status-shell">
+    <section class="status-card" aria-labelledby="status-link-title">
+      <div class="eyebrow">Building operations</div>
+      <h1 id="status-link-title">Customer status link prepared</h1>
+      <span class="state">{_esc(delivery_state)}</span>
+      <p>This secure link was prepared for event reservation <strong>{_esc(reservation_id)}</strong>. It has not been emailed or texted. Copy it only when you are ready to share it with the linked customer.</p>
+      <label for="customer-status-url">Branded customer link</label>
+      <div class="copy-row">
+        <input id="customer-status-url" type="text" readonly value="{_esc(status_url)}" onclick="this.select()">
+        <button id="copy-status-link" type="button">Copy link</button>
+      </div>
+      <p id="copy-status-message" class="copy-status" role="status" aria-live="polite"></p>
+      <div class="evidence"><strong>Expires:</strong> {_esc(expires_at)}<br><strong>Delivery:</strong> {_esc(delivery_state)} — Agent made no email, SMS, or provider call.</div>
+      <a class="back" href="/admin/building">Back to Building Control</a>
+    </section>
+  </main>
+  <script>
+    (() => {{
+      const button = document.getElementById("copy-status-link");
+      const field = document.getElementById("customer-status-url");
+      const message = document.getElementById("copy-status-message");
+      button.addEventListener("click", async () => {{
+        try {{
+          await navigator.clipboard.writeText(field.value);
+          message.textContent = "Link copied.";
+        }} catch (_) {{
+          field.focus();
+          field.select();
+          message.textContent = "Select and copy the highlighted link.";
+        }}
+      }});
+    }})();
+  </script>
+</body>
+</html>"""
+
+
 def render_building_page(
     *,
     user: dict,
@@ -484,6 +564,16 @@ def render_building_page(
                   <span class="sub">Scheduling a tour does not hold or reserve the office.</span>
                 </form>'''
                 if item.get("kind") == "workspace"
+                else ""
+              )}
+              {(
+                f'''<form method="post" action="/admin/building/reservations/{_esc(item.get("id"))}/customer-status-access">
+                  <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+                  <label>Link expires in days<input type="number" name="expires_in_days" min="1" max="90" value="30" required></label>
+                  <button class="secondary secondary--small" type="submit">Prepare customer status link</button>
+                  <span class="sub">Creates a copyable link only. Nothing is emailed or texted.</span>
+                </form>'''
+                if item.get("kind") == "event"
                 else ""
               )}
               <form method="post" action="/admin/building/reservations/{_esc(item.get("id"))}/proposals">
