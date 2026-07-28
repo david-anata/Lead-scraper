@@ -142,14 +142,14 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
                 "decision_status": status,
                 "value": value,
                 "evidence": "Approval record launch-2026",
-                "confirmation": f"DECIDE {key}",
+                "confirmation": "I APPROVE THIS DECISION",
             },
             follow_redirects=False,
         )
 
     def test_01_page_explains_all_blockers_and_calendar_uncertainty(self) -> None:
         page = self.client.get("/admin/building")
-        self.assertIn("Arena launch readiness", page.text)
+        self.assertIn("Finish setting up Arena bookings", page.text)
         self.assertIn(
             "Evidence conflicts: one supplied policy says venue card-only with no checks",
             page.text,
@@ -166,8 +166,11 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
             "Approve one numeric premium rate; do not infer $150 or $175.",
             page.text,
         )
-        self.assertIn("0/10 decided", page.text)
-        self.assertIn("no dedicated Arena calendar ID", page.text)
+        self.assertIn("0/10 answered", page.text)
+        self.assertIn(
+            "Create a dedicated Arena calendar owned by Anata",
+            page.text,
+        )
         self.assertIn("Venue payment workflow", page.text)
         self.assertIn("no checks, overpayments, or third-party vendor payments", page.text)
 
@@ -181,13 +184,18 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
         self.assertIn('class="decision-list"', page.text)
         self.assertEqual(page.text.count('class="decision-card"'), 10)
         self.assertEqual(
-            page.text.count("<summary>Record an approved decision</summary>"),
+            page.text.count("<summary>Answer this question</summary>"),
             10,
         )
         self.assertIn(
-            "Records Agent audit evidence only. It does not write, send, charge, publish, or change a calendar.",
+            "Saving records the approved rule and audit history.",
             page.text,
         )
+        self.assertIn("What happens if a customer cancels?", page.text)
+        self.assertIn("Recommended starting point", page.text)
+        self.assertIn("What we need from you", page.text)
+        self.assertIn("I APPROVE THIS DECISION", page.text)
+        self.assertNotIn("<label>Applies to</label>", page.text)
         self.assertIn('id="incoming-inquiries"', page.text)
         self.assertIn('id="bookings-and-holds"', page.text)
         self.assertIn('id="billing-and-collections"', page.text)
