@@ -182,7 +182,11 @@ def load_indexing_inventory(root: Path) -> dict[str, Any]:
             except OSError:
                 continue
         for path in sorted(directory.glob("*.json")):
-            if path.name in {inventory_path.name, "crawl_inventory.json"}:
+            if path.name in {
+                inventory_path.name,
+                "crawl_inventory.json",
+                "crawl_verification.json",
+            }:
                 continue
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -219,6 +223,7 @@ def build_program_plan(
     action_queue: list[Mapping[str, Any]],
     support_requests: list[str],
     indexing_inventory: Mapping[str, Any],
+    crawl_verification: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the visible current/next-work plan from verified system state."""
 
@@ -266,6 +271,41 @@ def build_program_plan(
         )
 
     indexing_summary = dict(indexing_inventory.get("summary") or {})
+    crawl_summary = dict((crawl_verification or {}).get("summary") or {})
+    confirmed_crawl_urls = int(crawl_summary.get("confirmed_urls", 0) or 0)
+    pending_crawl_urls = int(crawl_summary.get("pending_urls", 0) or 0)
+    if confirmed_crawl_urls:
+        items.append(
+            ProgramWorkItem(
+                title=f"Resolve {confirmed_crawl_urls} rendered-confirmed crawl defects",
+                state="Ready",
+                work_type="Technical SEO remediation",
+                target="anatainc.com production crawl",
+                evidence=f"{confirmed_crawl_urls} production URLs still reproduce one or more crawler warnings in fresh rendered evidence.",
+                business_impact="Confirmed crawl and page-structure defects can prevent discovery, indexing, relevance, and confident AI citation.",
+                confidence="High",
+                risk="Medium",
+                next_operation="Apply the smallest marketing-site correction for each confirmed warning, then deploy and recrawl.",
+                start_condition="The next eligible Website Ops implementation run.",
+                validation="The production URL passes a fresh rendered observation and the next crawl no longer reports the defect.",
+            )
+        )
+    if pending_crawl_urls:
+        items.append(
+            ProgramWorkItem(
+                title=f"Verify {pending_crawl_urls} crawl-warning URLs",
+                state="Measuring",
+                work_type="Crawler evidence verification",
+                target="anatainc.com production crawl",
+                evidence=f"{pending_crawl_urls} URLs have warnings that are not yet proved by rendered-page, resource-header, or link-graph evidence.",
+                business_impact="Verification prevents stale crawler output and false positives from causing unnecessary production changes.",
+                confidence="Medium",
+                risk="Low",
+                next_operation="Run the required resource, header, semantic, or internal-link check for each pending warning class.",
+                start_condition="The next daily evidence sweep.",
+                validation="Every warning becomes confirmed or disproved with timestamped production evidence.",
+            )
+        )
     if not indexing_summary.get("known_urls"):
         items.append(
             ProgramWorkItem(

@@ -15,8 +15,11 @@ from sales_support_agent.services.website_ops_program import (
 )
 from sales_support_agent.services.website_ops_screaming_frog import (
     ScreamingFrogImportError,
+    build_crawl_verification,
     import_screaming_frog_zip,
     load_crawl_inventory,
+    load_crawl_verification,
+    save_crawl_verification,
 )
 
 
@@ -146,6 +149,10 @@ class WebsiteOpsProgramTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            (directory / "crawl_verification.json").write_text(
+                json.dumps({"records": [{"url": "https://anatainc.com/noise"}]}),
+                encoding="utf-8",
+            )
             inventory = load_indexing_inventory(root)
         self.assertEqual(inventory["summary"]["known_urls"], 0)
 
@@ -205,6 +212,58 @@ class WebsiteOpsProgramTests(unittest.TestCase):
             )
             self.assertIn("unverified evidence", inventory["policy"])
             self.assertEqual(load_crawl_inventory(root)["summary"], inventory["summary"])
+
+    def test_crawl_verification_requires_fresh_rendered_evidence(self) -> None:
+        inventory = {
+            "records": [
+                {
+                    "url": "https://anatainc.com/services/amazon-advertising",
+                    "environment": "production",
+                    "warnings": [
+                        {"report": "h1_missing.csv", "evidence": "H1 missing"},
+                        {"report": "canonicals_missing.csv", "evidence": "Canonical missing"},
+                    ],
+                },
+                {
+                    "url": "https://anatainc.com/_next/static/app.js",
+                    "environment": "production",
+                    "warnings": [
+                        {"report": "security_headers_missing.csv", "evidence": "Header missing"},
+                    ],
+                },
+            ]
+        }
+        verification = build_crawl_verification(
+            inventory,
+            [
+                {
+                    "url": "https://anatainc.com/services/amazon-advertising/",
+                    "status_code": 200,
+                    "fetched_at": "2026-07-27T14:00:00+00:00",
+                    "title": "Amazon Advertising",
+                    "meta_description": "Accountable Amazon advertising operations for scaling brands.",
+                    "canonical_url": "",
+                    "h1": ["Amazon advertising, connected to profit."],
+                    "h2": ["How we work"],
+                }
+            ],
+        )
+        page = verification["records"][0]
+        self.assertEqual(page["state"], "confirmed")
+        self.assertEqual(page["warning_results"][0]["verdict"], "disproved")
+        self.assertEqual(page["warning_results"][1]["verdict"], "confirmed")
+        resource = verification["records"][1]
+        self.assertEqual(resource["state"], "pending")
+        self.assertEqual(verification["summary"]["confirmed_urls"], 1)
+        self.assertEqual(verification["summary"]["pending_urls"], 1)
+
+    def test_crawl_verification_persists_without_becoming_gsc_inventory(self) -> None:
+        payload = build_crawl_verification({"records": []}, [])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            save_crawl_verification(root, payload)
+            self.assertEqual(load_crawl_verification(root)["summary"], payload["summary"])
+            self.assertEqual(load_indexing_inventory(root)["summary"]["known_urls"], 0)
 
     def test_screaming_frog_import_rejects_unsafe_archive_paths(self) -> None:
         payload = self._crawl_zip(
