@@ -127,6 +127,28 @@ class WebsiteOpsProgramTests(unittest.TestCase):
         self.assertEqual(inventory["summary"]["known_urls"], 1)
         self.assertEqual(inventory["records"][0]["url"], "https://anatainc.com/a")
 
+    def test_crawl_inventory_is_not_misreported_as_search_console_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            directory = root / "indexing"
+            directory.mkdir()
+            (directory / "crawl_inventory.json").write_text(
+                json.dumps(
+                    {
+                        "records": [
+                            {
+                                "url": "https://anatainc.com/",
+                                "environment": "production",
+                                "warnings": [],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            inventory = load_indexing_inventory(root)
+        self.assertEqual(inventory["summary"]["known_urls"], 0)
+
     def test_program_plan_exposes_indexing_and_measurement_next_work(self) -> None:
         plan = build_program_plan(
             analytics_status={

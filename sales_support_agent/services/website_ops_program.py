@@ -182,7 +182,7 @@ def load_indexing_inventory(root: Path) -> dict[str, Any]:
             except OSError:
                 continue
         for path in sorted(directory.glob("*.json")):
-            if path.name == inventory_path.name:
+            if path.name in {inventory_path.name, "crawl_inventory.json"}:
                 continue
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -344,4 +344,3 @@ def build_program_plan(
         "needs_david_count": sum(1 for item in items if item.needs_david),
         "support_requests": david_requests,
     }
-
