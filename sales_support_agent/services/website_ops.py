@@ -2538,6 +2538,7 @@ def render_indexing_page(
     crawl_inventory = load_crawl_inventory(settings.website_ops_root)
     crawl_verification = load_crawl_verification(settings.website_ops_root)
     summary = dict(inventory.get("summary") or {})
+    inspection = dict(inventory.get("inspection") or {})
     crawl_summary = dict(crawl_inventory.get("summary") or {})
     verification_summary = dict(crawl_verification.get("summary") or {})
     imports = [
@@ -2561,8 +2562,9 @@ def render_indexing_page(
           <tr>
             <td><a class="text-link" href="{html.escape(str(item.get('url', '')), quote=True)}">{html.escape(_short_page_label(str(item.get('url', ''))))}</a></td>
             <td>{html.escape(str(item.get('reason', 'Unspecified')))}</td>
-            <td><span class="status-pill {'status-ok' if item.get('intentional') else 'status-warn'}">{html.escape(str(item.get('desired_state', 'investigate')).replace('_', ' ').title())}</span></td>
+            <td><span class="status-pill {'status-ok' if item.get('intentional') or item.get('desired_state') == 'indexed' else 'status-warn'}">{html.escape(str(item.get('desired_state', 'investigate')).replace('_', ' ').title())}</span></td>
             <td>{html.escape(str(item.get('priority', 'medium')).title())}</td>
+            <td>{html.escape(str(item.get('page_fetch_state', '') or item.get('verdict', '') or 'Unavailable').replace('_', ' ').title())}</td>
             <td>{html.escape(str(item.get('next_operation', '')))}</td>
             <td>{html.escape(str(item.get('last_crawled', '') or 'Unavailable'))}</td>
           </tr>
@@ -2583,9 +2585,9 @@ def render_indexing_page(
     )
     empty = """
       <div class="list-card empty-state">
-        <h3>No Search Console indexing URLs imported yet.</h3>
-        <p class="muted">Place Page Indexing CSV or JSON exports in Website Ops indexing storage. The next scheduled run will classify every URL without treating missing data as zero.</p>
-        <p class="muted">Recognized columns include URL, Reason, and Last crawled. Intentional <code>wp-*.php</code> protection remains excluded from remediation.</p>
+        <h3>No Search Console indexing URLs observed yet.</h3>
+        <p class="muted">The next weekly sweep will inspect every canonical marketing URL through Search Console. CSV or JSON exports remain supported as a fallback.</p>
+        <p class="muted">Agent records coverage, fetch, robots, canonical, and last-crawl evidence without treating missing data as zero.</p>
       </div>
     """
     body = f"""
@@ -2599,8 +2601,8 @@ def render_indexing_page(
           <p class="lead">Search Console exclusions are reconciled against production evidence before Agent improves, consolidates, redirects, or intentionally excludes a URL.</p>
           <div class="button-row">
             <form action="/admin/api/website-ops/run" method="post">
-              <input type="hidden" name="mode" value="daily">
-              <button type="submit">Run Daily Sweep</button>
+              <input type="hidden" name="mode" value="weekly">
+              <button type="submit">Run Weekly Inspection</button>
             </form>
             <a class="btn btn--ghost" href="/admin/website-ops">Return to Overview</a>
           </div>
@@ -2626,6 +2628,7 @@ def render_indexing_page(
           {_dashboard_stat_card("Known URLs", summary.get("known_urls", 0), "Imported indexing evidence", "/admin/website-ops/indexing")}
           {_dashboard_stat_card("Needs Action", summary.get("needs_action", 0), "Improve, consolidate, or investigate", "/admin/website-ops/indexing")}
           {_dashboard_stat_card("Intentional", summary.get("intentional_exclusions", 0), "Protected or deliberately excluded", "/admin/website-ops/indexing")}
+          {_dashboard_stat_card("Inspected", inspection.get("succeeded", 0), f"{inspection.get('failed', 0)} API failures", "/admin/website-ops/indexing")}
         </section>
         <section class="stats">
           {_dashboard_stat_card("Production Crawl", crawl_summary.get("production_urls", 0), "anatainc.com URLs only", "/admin/website-ops/indexing")}
@@ -2670,7 +2673,7 @@ def render_indexing_page(
           {f'''
           <div class="data-workspace">
             <table class="data-table">
-              <thead><tr><th>URL</th><th>Search Console reason</th><th>Desired state</th><th>Priority</th><th>Next operation</th><th>Last crawled</th></tr></thead>
+              <thead><tr><th>URL</th><th>Search Console reason</th><th>Desired state</th><th>Priority</th><th>Fetch evidence</th><th>Next operation</th><th>Last crawled</th></tr></thead>
               <tbody>{rows}</tbody>
             </table>
           </div>

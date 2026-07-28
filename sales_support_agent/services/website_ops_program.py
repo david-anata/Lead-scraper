@@ -12,6 +12,16 @@ from urllib.parse import urlparse
 
 
 INDEXING_REASON_POLICIES: dict[str, tuple[str, str, str]] = {
+    "submitted and indexed": (
+        "indexed",
+        "low",
+        "Retain the canonical, sitemap membership, and crawlable internal links.",
+    ),
+    "indexed, not submitted in sitemap": (
+        "indexed",
+        "medium",
+        "Confirm whether the canonical URL belongs in the production sitemap.",
+    ),
     "blocked due to access forbidden (403)": (
         "investigate",
         "high",
@@ -104,6 +114,13 @@ def classify_indexing_record(record: Mapping[str, Any]) -> dict[str, Any]:
         "next_operation": operation,
         "source": str(record.get("source", "Google Search Console")).strip(),
         "observed_at": str(record.get("observed_at", "")).strip(),
+        "verdict": str(record.get("verdict", "")).strip(),
+        "robots_txt_state": str(record.get("robots_txt_state", "")).strip(),
+        "indexing_state": str(record.get("indexing_state", "")).strip(),
+        "page_fetch_state": str(record.get("page_fetch_state", "")).strip(),
+        "google_canonical": str(record.get("google_canonical", "")).strip(),
+        "user_canonical": str(record.get("user_canonical", "")).strip(),
+        "crawled_as": str(record.get("crawled_as", "")).strip(),
     }
 
 
