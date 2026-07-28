@@ -1269,13 +1269,20 @@ def build_query_intelligence(
     citation_log = root / "citation_observations.jsonl"
     historical_citations = _load_jsonl(citation_log)
     observations = collect_query_observations(page_insights)
+    historical_observations = _load_jsonl(observation_log)
     existing_ids = {
-        _clean(item.get("observation_id")) for item in _load_jsonl(observation_log)
+        _clean(item.get("observation_id")) for item in historical_observations
     }
     _append_jsonl(
         observation_log,
         [item for item in observations if item["observation_id"] not in existing_ids],
     )
+    # A temporary Search Console or analytics outage must not erase the durable
+    # editorial program. Rebuild from the immutable evidence log plus any newly
+    # collected observations so a thin run can advance existing briefs safely.
+    observations = historical_observations + [
+        item for item in observations if item["observation_id"] not in existing_ids
+    ]
 
     clusters = build_clusters(observations, page_insights, historical_citations)
     current_citations = run_citation_harness(

@@ -415,6 +415,29 @@ def test_build_persists_snapshot_and_immutable_logs(tmp_path) -> None:
     assert len((root / "query_observations.jsonl").read_text().splitlines()) == 2
 
 
+def test_build_retains_durable_query_evidence_when_current_run_is_empty(tmp_path) -> None:
+    settings = SimpleNamespace(
+        website_ops_root=tmp_path,
+        openai_api_key="",
+    )
+    first = build_query_intelligence(
+        settings=settings,
+        page_insights=[_page()],
+        decision_data_ready=True,
+        run_mode="daily",
+    )
+    second = build_query_intelligence(
+        settings=settings,
+        page_insights=[],
+        decision_data_ready=False,
+        run_mode="daily",
+    )
+
+    assert first["summary"]["total_clusters"] == 1
+    assert second["summary"]["total_clusters"] == 1
+    assert second["clusters"][0]["label"] == first["clusters"][0]["label"]
+
+
 def test_route_intent_manifest_is_validated_cached_and_joined_to_clusters(tmp_path) -> None:
     settings = SimpleNamespace(
         website_ops_root=tmp_path,
