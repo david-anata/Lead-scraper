@@ -7,11 +7,15 @@ import hashlib
 import io
 import json
 import re
+import urllib.error
+import urllib.request
+import urllib.robotparser
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -382,6 +386,127 @@ def load_crawl_inventory(root: Path) -> dict[str, Any]:
     }
 
 
+def _head_observation(url: str, *, timeout_seconds: int) -> dict[str, Any]:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "anata-website-ops/1.0",
+            "Accept": "*/*",
+        },
+        method="HEAD",
+    )
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            return {
+                "url": url,
+                "final_url": response.geturl(),
+                "status_code": getattr(response, "status", response.getcode()),
+                "fetched_at": fetched_at,
+                "response_headers": {
+                    str(key).lower(): str(value).strip()
+                    for key, value in response.headers.items()
+                },
+                "resource_observation": True,
+            }
+    except urllib.error.HTTPError as exc:
+        return {
+            "url": url,
+            "final_url": exc.geturl() if hasattr(exc, "geturl") else url,
+            "status_code": exc.code,
+            "fetched_at": fetched_at,
+            "response_headers": {
+                str(key).lower(): str(value).strip()
+                for key, value in (getattr(exc, "headers", {}) or {}).items()
+            },
+            "resource_observation": True,
+        }
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return {
+            "url": url,
+            "final_url": url,
+            "status_code": None,
+            "fetched_at": fetched_at,
+            "response_headers": {},
+            "response_error": str(exc),
+            "resource_observation": True,
+        }
+
+
+def collect_crawl_resource_observations(
+    crawl_inventory: Mapping[str, Any],
+    observations: Iterable[Mapping[str, Any]],
+    *,
+    timeout_seconds: int = 8,
+    max_urls: int = 200,
+) -> list[dict[str, Any]]:
+    """Collect bounded production resource/header evidence missing from page crawls."""
+
+    observed = [dict(item) for item in observations if isinstance(item, Mapping)]
+    observed_urls = {
+        _observation_url(item.get("url"))
+        for item in observed
+        if _observation_url(item.get("url"))
+    }
+    candidates: list[str] = []
+    for record in list(crawl_inventory.get("records") or []):
+        if not isinstance(record, Mapping) or record.get("environment") != "production":
+            continue
+        url = str(record.get("url") or "")
+        normalized = _observation_url(url)
+        if not normalized or normalized in observed_urls:
+            continue
+        reports = " ".join(
+            str(item.get("report") or "")
+            for item in list(record.get("warnings") or [])
+            if isinstance(item, Mapping)
+        ).lower()
+        if not any(
+            token in reports
+            for token in (
+                "security_",
+                "client_error",
+                "server_error",
+                "no_response",
+                "blocked_resource",
+                "images_over_",
+            )
+        ):
+            continue
+        if urlparse(url).hostname not in PRODUCTION_HOSTS:
+            continue
+        candidates.append(url)
+        if len(candidates) >= max_urls:
+            break
+
+    if candidates:
+        with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as executor:
+            observed.extend(
+                executor.map(
+                    lambda url: _head_observation(
+                        url,
+                        timeout_seconds=timeout_seconds,
+                    ),
+                    candidates,
+                )
+            )
+
+    robots = urllib.robotparser.RobotFileParser()
+    robots.set_url("https://anatainc.com/robots.txt")
+    robots_loaded = False
+    try:
+        robots.read()
+        robots_loaded = True
+    except (urllib.error.URLError, OSError):
+        pass
+    if robots_loaded:
+        for item in observed:
+            url = str(item.get("url") or "")
+            if urlparse(url).hostname in PRODUCTION_HOSTS:
+                item["robots_allowed_googlebot"] = robots.can_fetch("Googlebot", url)
+    return observed
+
+
 def _observation_url(value: Any) -> str:
     return _clean_url(value).rstrip("/") or _clean_url(value)
 
@@ -389,6 +514,7 @@ def _observation_url(value: Any) -> str:
 def _warning_verdict(
     report: str,
     *,
+    source: Mapping[str, Any],
     observation: Mapping[str, Any],
     title_counts: Mapping[str, int],
     description_counts: Mapping[str, int],
@@ -402,6 +528,21 @@ def _warning_verdict(
     h1 = [str(value).strip() for value in observation.get("h1") or [] if str(value).strip()]
     h2 = [str(value).strip() for value in observation.get("h2") or [] if str(value).strip()]
     canonical = str(observation.get("canonical_url") or "").strip()
+    response_headers = {
+        str(key).lower(): str(value).strip()
+        for key, value in dict(observation.get("response_headers") or {}).items()
+    }
+    page_url = str(observation.get("url") or source.get("url") or "")
+    images = [
+        dict(item)
+        for item in list(observation.get("images") or [])
+        if isinstance(item, Mapping)
+    ]
+    links = [
+        dict(item)
+        for item in list(observation.get("links") or [])
+        if isinstance(item, Mapping)
+    ]
 
     if any(token in report for token in ("client_error", "server_error", "all_error_", "no_response")):
         confirmed = status_code is None or status_code >= 400
@@ -410,6 +551,104 @@ def _warning_verdict(
             if confirmed
             else ("disproved", f"Rendered production now returns HTTP {status_code}.")
         )
+    security_headers = {
+        "security_missing_hsts_header": "strict-transport-security",
+        "security_missing_contentsecuritypolicy_header": "content-security-policy",
+        "security_missing_secure_referrerpolicy_header": "referrer-policy",
+        "security_missing_xcontenttypeoptions_header": "x-content-type-options",
+        "security_missing_xframeoptions_header": "x-frame-options",
+    }
+    for report_token, header_name in security_headers.items():
+        if report_token not in report:
+            continue
+        if response_headers.get(header_name):
+            return (
+                "disproved",
+                f"Fresh production headers include {header_name}.",
+            )
+        return (
+            "noise",
+            f"Fresh production does not include {header_name}, but this is a security-hardening signal rather than an SEO ranking defect.",
+        )
+    if "blocked_by_robots_txt" in report:
+        allowed = observation.get("robots_allowed_googlebot")
+        if allowed is True:
+            return ("disproved", "Googlebot is allowed by the current production robots.txt.")
+        if allowed is False:
+            return (
+                "pending",
+                "The current robots.txt blocks Googlebot; page/resource intent must establish whether that block is deliberate.",
+            )
+    if "images_missing_alt_attribute" in report:
+        missing = [
+            urljoin(page_url, str(item.get("src") or ""))
+            for item in images
+            if item.get("src") and not item.get("has_alt_attribute")
+        ]
+        if missing:
+            return (
+                "confirmed",
+                f"Rendered production has {len(missing)} image element(s) without an alt attribute.",
+            )
+        if images:
+            return ("disproved", "Every rendered image element has an alt attribute.")
+    if "images_missing_alt_text" in report:
+        empty = [
+            item
+            for item in images
+            if item.get("has_alt_attribute") and not str(item.get("alt") or "").strip()
+        ]
+        if empty:
+            return (
+                "pending",
+                f"Rendered production has {len(empty)} empty alt value(s); page context must determine whether each image is decorative.",
+            )
+        if images:
+            return ("disproved", "Every rendered image has non-empty alternative text.")
+    if "missing_size_attributes" in report:
+        missing_size = [
+            item
+            for item in images
+            if item.get("src") and (not item.get("width") or not item.get("height"))
+        ]
+        if missing_size:
+            return (
+                "pending",
+                f"Rendered production has {len(missing_size)} image element(s) without both width and height attributes; computed layout or field Core Web Vitals evidence must prove layout instability before remediation.",
+            )
+        if images:
+            return ("disproved", "Every rendered image has width and height attributes.")
+    if "images_over_100_kb" in report or "images_over_x_kb" in report:
+        content_length = _integer(response_headers.get("content-length")) or _integer(
+            source.get("size_bytes")
+        )
+        if content_length is not None and content_length <= 100 * 1024:
+            return (
+                "disproved",
+                f"Fresh production resource size is {content_length} bytes.",
+            )
+        if content_length is not None:
+            return (
+                "pending",
+                f"Fresh production resource size is {content_length} bytes; rendered usage and Core Web Vitals relevance must justify optimization.",
+            )
+    if "links_pages_without_internal_outlinks" in report:
+        internal_links = [
+            item
+            for item in links
+            if urlparse(urljoin(page_url, str(item.get("href") or ""))).hostname
+            in PRODUCTION_HOSTS
+        ]
+        if internal_links:
+            return (
+                "disproved",
+                f"Rendered production exposes {len(internal_links)} internal link(s).",
+            )
+        if links:
+            return (
+                "pending",
+                "Rendered production has links but no internal outlink; page intent must determine the appropriate next step.",
+            )
     if "h1_missing" in report:
         return (
             ("confirmed", "Rendered production has no H1.")
@@ -531,6 +770,7 @@ def build_crawl_verification(
             else:
                 verdict, reason = _warning_verdict(
                     report,
+                    source=source,
                     observation=observation,
                     title_counts=title_counts,
                     description_counts=description_counts,
@@ -549,6 +789,8 @@ def build_crawl_verification(
             if "confirmed" in verdicts
             else "pending"
             if "pending" in verdicts
+            else "noise"
+            if "noise" in verdicts
             else "disproved"
         )
         rows.append(
@@ -563,7 +805,7 @@ def build_crawl_verification(
         )
     rows.sort(
         key=lambda item: (
-            {"confirmed": 0, "pending": 1, "disproved": 2}.get(item["state"], 3),
+            {"confirmed": 0, "pending": 1, "noise": 2, "disproved": 3}.get(item["state"], 4),
             item["url"],
         )
     )
@@ -575,6 +817,7 @@ def build_crawl_verification(
             "confirmed_urls": sum(1 for item in rows if item["state"] == "confirmed"),
             "pending_urls": sum(1 for item in rows if item["state"] == "pending"),
             "disproved_urls": sum(1 for item in rows if item["state"] == "disproved"),
+            "noise_urls": sum(1 for item in rows if item["state"] == "noise"),
             "confirmed_warnings": sum(
                 1
                 for item in rows
@@ -593,10 +836,16 @@ def build_crawl_verification(
                 for warning in item["warning_results"]
                 if warning["verdict"] == "disproved"
             ),
+            "noise_warnings": sum(
+                1
+                for item in rows
+                for warning in item["warning_results"]
+                if warning["verdict"] == "noise"
+            ),
         },
         "policy": (
             "Only confirmed warnings may enter remediation planning. Pending warnings "
-            "need stronger evidence; disproved warnings are retained as crawl-history noise."
+            "need stronger evidence; noise is outside ranking remediation; disproved warnings are retained as crawl history."
         ),
     }
 
@@ -622,8 +871,10 @@ def load_crawl_verification(root: Path) -> dict[str, Any]:
             "confirmed_urls": 0,
             "pending_urls": 0,
             "disproved_urls": 0,
+            "noise_urls": 0,
             "confirmed_warnings": 0,
             "pending_warnings": 0,
             "disproved_warnings": 0,
+            "noise_warnings": 0,
         },
     }
