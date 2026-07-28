@@ -3324,6 +3324,7 @@ def render_content_strategy_page(
         f"<li>{html.escape(str(item))}</li>"
         for item in strategy.get("operating_rules", []) or []
     )
+    displayed_briefs = briefs[:100]
     rows = "".join(
         f"""
         <tr>
@@ -3337,7 +3338,7 @@ def render_content_strategy_page(
           <td>{html.escape(str(item.get('internal_link_plan', '')))}</td>
         </tr>
         """
-        for item in briefs[:100]
+        for item in displayed_briefs
     )
     body = f"""
       {_nav("website_ops", website_ops_section="strategy", user=user)}
@@ -3381,7 +3382,7 @@ def render_content_strategy_page(
         <section class="card stack">
           <div class="row-actions">
             <div class="stack"><h2>Editorial work queue</h2><p class="lead-sm">{html.escape(('Stage: ' + stage_filter.replace('_', ' ').title()) if stage_filter else 'All current briefs')}</p></div>
-            <span class="status-pill status-neutral">{len(briefs)} briefs</span>
+            <span class="status-pill status-neutral">Showing {len(displayed_briefs)} of {len(briefs)} briefs</span>
           </div>
           {f'''
           <div class="data-workspace">
