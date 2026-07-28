@@ -23,6 +23,10 @@ from sales_support_agent.services.website_ops_customer_language import collect_c
 from sales_support_agent.services.website_ops_serp import build_blueprint
 from sales_support_agent.services.website_ops_aeo import build_aeo_assessment
 from sales_support_agent.services.website_ops_article_engine import build_article_action
+from sales_support_agent.services.website_ops_content_strategy import (
+    build_content_strategy,
+    persist_content_strategy,
+)
 from sales_support_agent.services.website_ops_query_intelligence import (
     build_query_intelligence,
 )
@@ -1712,6 +1716,8 @@ def build_autonomy_overlay(
         decision_data_ready=decision_data_ready,
         run_mode=run_mode,
     )
+    content_strategy = build_content_strategy(query_intelligence)
+    persist_content_strategy(_website_ops_root(settings), content_strategy)
     if run_mode in {"weekly", "monthly"} and decision_data_ready:
         try:
             article_action = build_article_action(
@@ -1825,6 +1831,7 @@ def build_autonomy_overlay(
         "customer_questions": customer_questions[:12],
         "content_tasks": filtered_content_tasks[:25],
         "query_intelligence": query_intelligence,
+        "content_strategy": content_strategy,
         "indexing_inventory": indexing_inventory or {},
         "approved_action_count": len(approved_actions),
         "mvp_mode_active": MVP_MODE_ACTIVE,

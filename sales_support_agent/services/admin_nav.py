@@ -61,6 +61,7 @@ _NAV_SECTIONS = [
         _NavSubpage("website_ops.seo", "Overview", "/admin/website-ops", "seo_dashboard"),
         _NavSubpage("website_ops.seo", "Indexing", "/admin/website-ops/indexing", "indexing"),
         _NavSubpage("website_ops.seo", "Query Map", "/admin/website-ops/queries", "queries"),
+        _NavSubpage("website_ops.seo", "Strategy", "/admin/website-ops/strategy", "strategy"),
         _NavSubpage("website_ops.seo", "Candidates", "/admin/website-ops/candidates", "candidates"),
         _NavSubpage("website_ops.queue", "Queue", "/admin/website-ops/queue", "queue"),
         _NavSubpage("website_ops.reports", "Reports", "/admin/website-ops/reports", "reports"),
