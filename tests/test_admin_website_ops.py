@@ -930,6 +930,47 @@ example
             self.assertEqual(reopened["reopened_from_feedback_id"], original["feedback_id"])
             self.assertEqual(reopened["reopened_reason"], "recommendation_reappeared")
 
+    def test_run_website_ops_keeps_rejected_auto_generated_item_suppressed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            original = save_feedback_record(
+                settings,
+                {
+                    "summary": "Reject stale FAQ",
+                    "status": "rejected",
+                    "automation_key": "auto-rejected",
+                    "auto_generated": True,
+                    "suggested_action_type": "inject_faq_block",
+                    "source_report_date": "2026-03-26",
+                },
+            )
+            fake_pipeline = {"report": self._fake_report(), "observations": [], "artifacts": {}}
+            fake_overlay = {
+                "goal": {"primary": "Increase qualified leads."},
+                "action_queue": [{
+                    "page_url": "https://anatainc.com/",
+                    "page_title": "Anata Inc.",
+                    "action_type": "inject_faq_block",
+                    "section_name": "FAQ block",
+                    "after_state": "Insert an FAQ block.",
+                    "reason": "Old recommendation.",
+                    "insight_source": "SERP + Customer Language",
+                }],
+                "analytics_status": {"search_console": True, "ga4": True, "notes": []},
+                "support_requests": [],
+                "page_insights": [],
+            }
+            with mock.patch("sales_support_agent.services.website_ops._automation_key", return_value="auto-rejected"):
+                with mock.patch("sales_support_agent.services.website_ops._utc_now", return_value=datetime(2026, 3, 27, 12, 0, tzinfo=timezone.utc)):
+                    with mock.patch("sales_support_agent.services.website_ops.website_ops.run_daily_report_pipeline", return_value=fake_pipeline):
+                        with mock.patch("sales_support_agent.services.website_ops.build_autonomy_overlay", return_value=fake_overlay):
+                            result = run_website_ops(settings, mode="daily")
+            self.assertTrue(result.ok)
+            records = load_feedback_records(settings)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["feedback_id"], original["feedback_id"])
+            self.assertEqual(records[0]["status"], "rejected")
+
     def test_build_autonomy_overlay_generates_mvp_only_actions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir))
@@ -1492,7 +1533,10 @@ export default function Page() {
                             "clicks": 1.0,
                             "ctr": 0.0081,
                             "position": 18.0,
-                            "top_queries": [],
+                            "top_queries": [
+                                {"query": "how does fulfillment work", "impressions": 70.0, "clicks": 1.0},
+                                {"query": "what does fulfillment cost", "impressions": 54.0, "clicks": 0.0},
+                            ],
                         }
                     },
                     [],
@@ -1524,7 +1568,7 @@ export default function Page() {
                                 "query": "Fulfillment",
                                 "source_urls": [],
                                 "heading_structure": [],
-                                "faq_patterns": [],
+                                "faq_patterns": ["How does fulfillment work?"],
                                 "content_gaps": ["SERP leaders frequently open with a direct definition block."],
                             },
                         ):
@@ -1545,7 +1589,7 @@ export default function Page() {
             self.assertTrue(insight["blueprint_found"])
             self.assertTrue(insight["faq_demand_detected"])
             self.assertFalse(insight["page_thin_enough"])
-            self.assertEqual(insight["query_seed"], "Fulfillment")
+            self.assertEqual(insight["query_seed"], "how does fulfillment work")
             self.assertEqual(insight["task_block_reason"], "")
 
     def test_dashboard_render_shows_mvp_debug_fields(self) -> None:

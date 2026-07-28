@@ -340,6 +340,35 @@ def _service_focus(page: Mapping[str, Any], gsc: Mapping[str, Any]) -> str:
     return _humanize_slug((_path_from_url(str(page.get("url", ""))) or "/").split("/")[-1])
 
 
+def _is_branded_query(query: str) -> bool:
+    tokens = re.findall(r"[a-z0-9]+", str(query).lower())
+    if not tokens:
+        return False
+    if "anatainc" in tokens:
+        return True
+    return tokens[0] == "anata" and len(tokens) <= 3
+
+
+def _content_route_is_eligible(page: Mapping[str, Any]) -> bool:
+    path = urlparse(str(page.get("url", "")).strip()).path.rstrip("/").lower()
+    return any(path.startswith(prefix) for prefix in ("/services/", "/guides/", "/glossary/", "/blog/"))
+
+
+def _observed_question_queries(top_queries: list[Mapping[str, Any]]) -> list[str]:
+    question_terms = {
+        "how", "what", "why", "when", "which", "who", "can", "does", "do",
+        "is", "are", "should", "cost", "price", "pricing", "vs", "versus",
+        "compare", "comparison",
+    }
+    matches: list[str] = []
+    for item in top_queries:
+        query = str(item.get("query", "")).strip()
+        tokens = set(re.findall(r"[a-z0-9]+", query.lower()))
+        if query and not _is_branded_query(query) and tokens.intersection(question_terms):
+            matches.append(query)
+    return matches
+
+
 def _service_cluster_map(urls: list[str]) -> dict[str, list[str]]:
     normalized = [_normalize_url(url) for url in urls if str(url).strip()]
     services = [url for url in normalized if "/services/" in url and url.rstrip("/").split("/")[-1] != "services"]
@@ -1120,6 +1149,8 @@ def _content_actions(
         "task_block_reason": "",
         "top_query_count": len(top_queries),
         "query_seed": "",
+        "query_pertinent": False,
+        "content_route_eligible": _content_route_is_eligible(page),
         "page_has_faq_coverage": _page_has_faq_coverage(page),
     }
     if not search_console_ready:
@@ -1138,9 +1169,20 @@ def _content_actions(
     if not query:
         query = _service_focus(page, gsc)
     debug_state["query_seed"] = query
+    if not debug_state["content_route_eligible"]:
+        debug_state["task_block_reason"] = (
+            "Content recommendations are limited to service, guide, glossary, and blog routes."
+        )
+        return [], None, debug_state
     if not query:
         debug_state["task_block_reason"] = "No query seed was available for SERP blueprint generation."
         return [], None, debug_state
+    if _is_branded_query(query):
+        debug_state["task_block_reason"] = (
+            "The leading query is branded or navigational and does not support an FAQ or article recommendation."
+        )
+        return [], None, debug_state
+    debug_state["query_pertinent"] = True
     blueprint = blueprint_cache.get(query)
     if blueprint is None:
         try:
@@ -1161,9 +1203,11 @@ def _content_actions(
 
     matched_questions = _matching_customer_questions(page, customer_questions, top_queries)
     debug_state["customer_question_count"] = len(matched_questions)
+    observed_question_queries = _observed_question_queries(top_queries)
+    debug_state["observed_question_query_count"] = len(observed_question_queries)
     page_lacks_faq_coverage = not bool(debug_state["page_has_faq_coverage"])
-    faq_demand_detected = bool(matched_questions) or _blueprint_missing_faq(blueprint) or (
-        page_lacks_faq_coverage and impressions >= MVP_FAQ_FORCE_IMPRESSIONS_THRESHOLD and ctr <= MVP_FAQ_FORCE_CTR_THRESHOLD
+    faq_demand_detected = bool(matched_questions) or (
+        len(observed_question_queries) >= 2 and _blueprint_missing_faq(blueprint)
     )
     debug_state["faq_demand_detected"] = faq_demand_detected
     page_thin_enough = _page_thin_for_section(page, blueprint, matched_questions)
@@ -1177,9 +1221,9 @@ def _content_actions(
         supporting_signals += 1
     if question_count > 0:
         supporting_signals += 1
-    if _blueprint_missing_faq(blueprint):
+    if observed_question_queries and _blueprint_missing_faq(blueprint):
         supporting_signals += 1
-    if page_lacks_faq_coverage and impressions >= MVP_FAQ_FORCE_IMPRESSIONS_THRESHOLD and ctr <= MVP_FAQ_FORCE_CTR_THRESHOLD:
+    if len(observed_question_queries) >= 2:
         supporting_signals += 1
 
     faq_payload = build_faq_payload(
@@ -1207,12 +1251,13 @@ def _content_actions(
                     (
                         f"{question_count} matching customer questions were found."
                         if question_count
-                        else "SERP or page-level FAQ demand supports direct-answer content."
+                        else f"{len(observed_question_queries)} non-branded question queries support direct-answer content."
                     ),
                 ],
                 evidence=common_evidence
                 + ([f"Customer language: {question_count} repeated buyer questions matched this page."] if question_count else [])
-                + ([f"SERP blueprint: {len(list(blueprint.get('faq_patterns') or []))} repeated FAQ patterns."] if _blueprint_missing_faq(blueprint) else [])
+                + ([f"Search Console: {len(observed_question_queries)} non-branded question queries were observed."] if observed_question_queries else [])
+                + ([f"SERP blueprint: {len(list(blueprint.get('faq_patterns') or []))} repeated FAQ patterns."] if observed_question_queries and _blueprint_missing_faq(blueprint) else [])
                 + (["The live page has no visible FAQ section despite strong CTR-loss signals."] if page_lacks_faq_coverage else []),
                 execution_eligibility="suggestion_only",
                 target_region="FAQ insertion zone",
@@ -1224,7 +1269,9 @@ def _content_actions(
             )
         )
 
-    if list(blueprint.get("content_gaps") or []) and page_thin_enough:
+    if list(blueprint.get("content_gaps") or []) and page_thin_enough and (
+        matched_questions or len(observed_question_queries) >= 2
+    ):
         section_payload = build_section_expansion_payload(
             page={**page, "related_service": _page_service_slug(page)},
             blueprint=blueprint,
@@ -1264,6 +1311,8 @@ def _content_actions(
             block_reasons.append("No matched customer questions or FAQ demand signal was found.")
         if list(blueprint.get("content_gaps") or []) and not page_thin_enough:
             block_reasons.append("The page is not thin enough for MVP section expansion.")
+        elif list(blueprint.get("content_gaps") or []) and not (matched_questions or len(observed_question_queries) >= 2):
+            block_reasons.append("The content gap is not supported by current customer questions or non-branded question queries.")
         if not faq_payload.get("questions"):
             block_reasons.append("FAQ payload generation returned no usable questions.")
         debug_state["task_block_reason"] = " ".join(block_reasons) or "No MVP content task qualified for this page."
