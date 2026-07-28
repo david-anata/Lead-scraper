@@ -1985,6 +1985,8 @@ def _page_shell(title: str, body: str) -> str:
         .shell > * + * {{ margin-top: 20px; }}
         .card.stack {{ display: block; }}
         .card.stack > * + * {{ margin-top: 12px; }}
+        .card form.stack {{ display: block; }}
+        .card form.stack > * + * {{ margin-top: 12px; }}
         .row-actions {{ display: grid; grid-template-columns: minmax(0, 1fr); }}
         .row-actions > * {{ min-width: 0; }}
         input[type="file"] {{ max-width: 100%; }}
