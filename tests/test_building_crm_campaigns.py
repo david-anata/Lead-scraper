@@ -546,7 +546,7 @@ class BuildingCrmCampaignTests(unittest.TestCase):
             can_finance=True,
         )
         self.assertIn("Building Control", body)
-        self.assertIn("Operator queue", body)
+        self.assertIn("Work the Today queue", body)
         self.assertIn("No service requests.", body)
         self.assertIn("No spaces entered yet.", body)
         self.assertIn("No building contacts yet.", body)

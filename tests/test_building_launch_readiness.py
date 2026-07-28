@@ -178,7 +178,14 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
         page = self.client.get("/admin/building")
         self.assertEqual(page.status_code, 200)
         self.assertIn('aria-label="Building Control sections"', page.text)
-        self.assertIn('href="#arena-launch-readiness"', page.text)
+        self.assertIn('href="#building-setup"', page.text)
+        self.assertIn('class="daily-guide"', page.text)
+        self.assertIn("Work the Today queue", page.text)
+        self.assertIn("Arena setup and administration", page.text)
+        self.assertIn(
+            "Open this only to change business rules or finish provider setup.",
+            page.text,
+        )
         self.assertIn("Arena launch command center", page.text)
         self.assertIn("Private, protected, and not ready to publish", page.text)
         self.assertIn('class="decision-list"', page.text)
