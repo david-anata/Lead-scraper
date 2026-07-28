@@ -71,7 +71,7 @@ from sales_support_agent.services.cashflow.trend_detector import (
 
 BILL_PATTERN_ACTION = "bill_pattern_decision_recorded"
 BILL_PATTERN_ENTITY = "bill_pattern"
-VALID_BILL_DECISIONS = frozenset({"track", "not_a_bill", "snooze"})
+VALID_BILL_DECISIONS = frozenset({"track", "not_a_bill", "snooze", "reset"})
 
 DEFAULT_LOOKBACK_DAYS = 180
 MIN_OCCURRENCES = 3
@@ -175,11 +175,18 @@ def _data_stamp() -> tuple[Any, ...]:
             schedules = connection.execute(text(
                 "SELECT COUNT(*) FROM recurring_templates WHERE event_type = 'outflow'"
             )).scalar()
+            try:
+                aliases = connection.execute(text("""
+                    SELECT COUNT(*), MAX(created_at), MAX(revoked_at)
+                    FROM finance_vendor_aliases
+                """)).fetchone()
+            except Exception:
+                aliases = (0, None, None)
     except Exception:
         # Never let the fingerprint be the thing that breaks the page. A unique
         # value simply means this call is not served from cache.
         return (uuid4().hex,)
-    return (bank[0], str(bank[1]), answers, schedules)
+    return (bank[0], str(bank[1]), answers, schedules, *aliases)
 
 
 def _list_bill_patterns_uncached(
@@ -482,23 +489,28 @@ def _build_pattern(
     why = _explain(frequency=frequency, dates=dates, median_gap_days=median_gap)
     if paid_in_pieces:
         why += ", paid in pieces across each month and added up here"
+    decision_record = decisions.get(pattern_key) or {}
+    decision_evidence = decision_record.get("evidence") or {}
+    override_date = _to_date(decision_evidence.get("payment_date"))
     return {
         "pattern_key": pattern_key,
         "vendor": label,
         "merchant_key": merchant,
         "amount_cents": amount_cents,
         "frequency": frequency,
-        "next_due": next_due,
+        "next_due": override_date or next_due,
         "confidence_bps": confidence_bps,
         "confidence_label": _confidence_label(confidence_bps),
         "occurrences": len(series),
-        "paid_in_pieces": paid_in_pieces,
+        "paid_in_pieces": bool(decision_evidence.get("paid_in_pieces", paid_in_pieces)),
         "evidence": [
             {"due_date": row[0], "amount_cents": row[1]}
             for row in sorted(series, key=lambda row: row[0], reverse=True)[:6]
         ],
         "why": why,
-        "category": _bill_category([row[2] for row in occurrences], label),
+        "category": str(decision_evidence.get("category") or _bill_category(
+            [row[2] for row in occurrences], label
+        )),
         "already_tracked": already_tracked,
         "decision": _effective_decision(decisions.get(pattern_key), as_of=as_of),
     }
@@ -897,6 +909,8 @@ def _effective_decision(record: Mapping[str, Any] | None, *, as_of: date) -> str
     decision = str(record.get("decision") or "")
     if decision in {"track", "not_a_bill"}:
         return decision
+    if decision == "reset":
+        return ""
     if decision != "snooze":
         return ""
     evidence = record.get("evidence")
@@ -940,6 +954,12 @@ def _load_bill_history(
 
     from sales_support_agent.services.cashflow.transfers import is_internal_transfer
 
+    from sales_support_agent.services.cashflow.vendor_aliases import (
+        alias_map,
+        canonical_name,
+    )
+
+    aliases = alias_map()
     grouped: dict[str, list[tuple[date, int, str, str]]] = {}
     for row in rows:
         values = dict(row._mapping)
@@ -960,6 +980,10 @@ def _load_bill_history(
         merchant = bill_merchant_key(
             readable or str(values.get("description") or "")
         )
+        alias = aliases.get(merchant)
+        if alias:
+            merchant = alias["canonical_key"]
+            readable = canonical_name(merchant, readable)
         if not merchant or _is_not_a_merchant(merchant):
             continue
         grouped.setdefault(merchant, []).append((

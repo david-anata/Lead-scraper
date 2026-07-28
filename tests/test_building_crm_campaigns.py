@@ -93,6 +93,19 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
 
+    def _operational_preference(self, contact_id: str) -> None:
+        response = self.client.put(
+            f"/api/internal/building/crm/contacts/{contact_id}/operational-preference",
+            headers=self.headers,
+            json={
+                "transactional_allowed": True,
+                "source": "documented-tenant-operations",
+                "evidence_reference": f"lease:{contact_id}",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
     def test_00_contact_can_hold_multiple_relationships(self) -> None:
         self._contact("contact-tenant", "tenant@example.com", "Taylor Tenant")
         self._relationship("contact-tenant", "tenant", "lease:1")
@@ -330,6 +343,8 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         self._contact("contact-tenant-two", "tenant-two@example.com", "Terry Tenant")
         self._relationship("contact-tenant-two", "tenant", "lease:2")
         self._preference("contact-tenant-two", "unsubscribed")
+        self._operational_preference("contact-tenant-two")
+        self._operational_preference("contact-tenant")
         draft = self.client.put(
             "/api/internal/building/crm/campaigns/tenant-operations-1",
             headers=self.headers,

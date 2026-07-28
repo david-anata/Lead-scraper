@@ -93,6 +93,17 @@ CONTACT_STATUSES = {"active", "inactive", "merged"}
 CAMPAIGN_COMMUNICATION_CLASSES = {"marketing", "operational"}
 OPERATIONAL_RELATIONSHIP_TYPES = {"tenant", "tenant_employee", "event_host"}
 REVIEWED_RELATIONSHIP_TYPES = {"tenant_employee", "community_member"}
+SEGMENT_TYPES = {
+    "custom",
+    "current_tenants",
+    "former_tenants",
+    "workspace_prospects",
+    "event_prospects_hosts",
+    "manual_approved_list",
+}
+SEGMENT_PURPOSE_SCOPES = {"marketing", "operational", "both"}
+INQUIRY_KINDS = {"workspace", "event", "tour"}
+CAMPAIGN_CONTENT_CLASSIFICATIONS = {"standard", "tenant_private"}
 MOUNTAIN = ZoneInfo("America/Denver")
 
 
@@ -280,6 +291,7 @@ class ContactInput(BaseModel):
 
 class RelationshipInput(BaseModel):
     id: str | None = Field(default=None, max_length=64)
+    billing_account_id: str | None = Field(default=None, max_length=64)
     relationship_type: str
     status: Literal["active", "inactive"] = "active"
     organization: str = Field(default="", max_length=255)
@@ -312,6 +324,13 @@ class PreferenceInput(BaseModel):
         return value
 
 
+class OperationalPreferenceInput(BaseModel):
+    transactional_allowed: bool
+    source: str = Field(min_length=1, max_length=64)
+    evidence_reference: str = Field(min_length=1, max_length=1024)
+    actor: str = Field(min_length=1, max_length=255)
+
+
 class RelationshipReviewInput(BaseModel):
     list_owner: str = Field(min_length=1, max_length=255)
     review_due_on: date
@@ -326,6 +345,11 @@ class SegmentInput(BaseModel):
     relationship_types: list[str] = Field(default_factory=list)
     relationship_status: Literal["active", "inactive", "any"] = "active"
     marketing_statuses: list[str] = Field(default_factory=lambda: ["subscribed"])
+    segment_type: str = "custom"
+    purpose_scope: str = "both"
+    inquiry_kinds: list[str] = Field(default_factory=list)
+    manual_contact_ids: list[str] = Field(default_factory=list, max_length=500)
+    approval_evidence: str = Field(default="", max_length=2000)
     is_active: bool = True
     actor: str = Field(default="", max_length=255)
 
@@ -345,6 +369,28 @@ class SegmentInput(BaseModel):
             raise ValueError(f"Unsupported marketing statuses: {', '.join(sorted(unknown))}")
         return sorted(set(values))
 
+    @field_validator("segment_type")
+    @classmethod
+    def valid_segment_type(cls, value: str) -> str:
+        if value not in SEGMENT_TYPES:
+            raise ValueError("Unsupported segment type.")
+        return value
+
+    @field_validator("purpose_scope")
+    @classmethod
+    def valid_purpose_scope(cls, value: str) -> str:
+        if value not in SEGMENT_PURPOSE_SCOPES:
+            raise ValueError("Unsupported segment purpose scope.")
+        return value
+
+    @field_validator("inquiry_kinds")
+    @classmethod
+    def valid_inquiry_kinds(cls, values: list[str]) -> list[str]:
+        unknown = set(values) - INQUIRY_KINDS
+        if unknown:
+            raise ValueError(f"Unsupported inquiry kinds: {', '.join(sorted(unknown))}")
+        return sorted(set(values))
+
 
 class CampaignInput(BaseModel):
     id: str = Field(min_length=1, max_length=64)
@@ -353,11 +399,21 @@ class CampaignInput(BaseModel):
     communication_class: Literal["marketing", "operational"] = "marketing"
     subject: str = Field(min_length=1, max_length=255)
     body_text: str = Field(min_length=1, max_length=20000)
+    template_reference: str = Field(default="", max_length=1024)
+    content_classification: Literal["standard", "tenant_private"] = "standard"
+    private_content_approval_evidence: str = Field(default="", max_length=2000)
     actor: str = Field(default="", max_length=255)
 
 
 class ApprovalInput(BaseModel):
     preview_hash: str = Field(min_length=64, max_length=128)
+    confirmation: str = Field(default="", max_length=255)
+    actor: str = Field(min_length=1, max_length=255)
+
+
+class CampaignReviewInput(BaseModel):
+    preview_hash: str = Field(min_length=64, max_length=128)
+    confirmation: str = Field(min_length=1, max_length=255)
     actor: str = Field(min_length=1, max_length=255)
 
 
@@ -417,6 +473,7 @@ def _contact_payload(
         "relationships": [
             {
                 "id": item.id,
+                "billing_account_id": item.billing_account_id,
                 "type": item.relationship_type,
                 "status": item.status,
                 "organization": item.organization,
@@ -432,6 +489,24 @@ def _contact_payload(
         ],
         "marketing_status": preference.marketing_status if preference else "unknown",
         "marketing_source": preference.marketing_source if preference else "",
+        "marketing_changed_at": (
+            preference.marketing_changed_at.isoformat() if preference else None
+        ),
+        "operational_allowed": (
+            bool(
+                preference
+                and preference.transactional_allowed
+                and str(preference.operational_source or "").strip()
+                and str(preference.operational_evidence_reference or "").strip()
+            )
+        ),
+        "operational_source": preference.operational_source if preference else "",
+        "operational_evidence_reference": (
+            preference.operational_evidence_reference if preference else ""
+        ),
+        "operational_changed_at": (
+            preference.operational_changed_at.isoformat() if preference else None
+        ),
         "suppressed": suppressed,
         "updated_at": contact.updated_at.isoformat(),
     }
@@ -443,6 +518,15 @@ def _validate_campaign_segment(
 ) -> None:
     if communication_class not in CAMPAIGN_COMMUNICATION_CLASSES:
         raise HTTPException(status_code=422, detail="Unsupported communication class.")
+    purpose_scope = str(segment.purpose_scope or "marketing")
+    if purpose_scope not in {communication_class, "both"}:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"This audience is approved for {purpose_scope} messages, "
+                f"not {communication_class} messages."
+            ),
+        )
     if communication_class != "operational":
         return
     rules = segment.rules_json or {}
@@ -459,6 +543,52 @@ def _validate_campaign_segment(
                 "tenant employees, or event hosts."
             ),
         )
+
+
+def _validate_private_campaign(
+    campaign: BuildingCampaign,
+    segment: BuildingSegment,
+) -> None:
+    """Keep private tenant benefits out of marketing and public defaults."""
+
+    if campaign.content_classification != "tenant_private":
+        return
+    rules = dict(segment.rules_json or {})
+    relationship_types = set(rules.get("relationship_types") or [])
+    if (
+        campaign.communication_class != "operational"
+        or not relationship_types
+        or not relationship_types.issubset({"tenant", "tenant_employee"})
+        or str(rules.get("relationship_status") or "active") != "active"
+        or not campaign.private_content_approval_evidence.strip()
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Private tenant content requires explicit approval evidence and "
+                "an active tenant-only operational audience."
+            ),
+        )
+
+
+def _campaign_content_checksum(campaign: BuildingCampaign) -> str:
+    canonical = {
+        "campaign_id": campaign.id,
+        "version": campaign.content_version,
+        "communication_class": campaign.communication_class,
+        "subject": campaign.subject,
+        "body_text": campaign.body_text,
+        "template_reference": campaign.template_reference,
+        "content_classification": campaign.content_classification,
+        "private_content_approval_evidence": (
+            campaign.private_content_approval_evidence
+            if campaign.content_classification == "tenant_private"
+            else ""
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def _relationship_review_is_current(relationship: BuildingRelationship) -> bool:
@@ -485,6 +615,8 @@ def _resolve_segment(
     wanted_types = set(rules.get("relationship_types") or [])
     wanted_relationship_status = str(rules.get("relationship_status") or "active")
     wanted_marketing = set(rules.get("marketing_statuses") or ["subscribed"])
+    wanted_inquiry_kinds = set(rules.get("inquiry_kinds") or [])
+    manual_contact_ids = set(rules.get("manual_contact_ids") or [])
 
     contacts = session.execute(
         select(BuildingContact)
@@ -524,6 +656,21 @@ def _resolve_segment(
                 or item.status == wanted_relationship_status
             )
         ]
+        if wanted_inquiry_kinds:
+            matching_relationships = [
+                item
+                for item in matching_relationships
+                if (
+                    item.relationship_type == "event_host"
+                    and "event" in wanted_inquiry_kinds
+                )
+                or str((item.metadata_json or {}).get("inquiry_kind") or "")
+                in wanted_inquiry_kinds
+            ]
+        if segment.segment_type == "manual_approved_list":
+            matching_relationships = (
+                contact_relationships if contact.id in manual_contact_ids else []
+            )
         eligible_relationships = [
             item
             for item in matching_relationships
@@ -537,10 +684,14 @@ def _resolve_segment(
             exclusions.append("relationship review is overdue or missing an owner")
         elif wanted_types and not eligible_relationships:
             exclusions.append("relationship does not match")
+        elif segment.segment_type == "manual_approved_list" and contact.id not in manual_contact_ids:
+            exclusions.append("contact is not on the approved manual list")
         elif eligible_relationships:
             reasons.append(
                 ", ".join(sorted({item.relationship_type for item in eligible_relationships}))
             )
+        if segment.segment_type == "manual_approved_list" and contact.id in manual_contact_ids:
+            reasons.append("explicitly approved manual list")
         if communication_class == "marketing":
             if marketing_status not in wanted_marketing:
                 exclusions.append(f"marketing status is {marketing_status}")
@@ -549,10 +700,17 @@ def _resolve_segment(
             if suppression_scopes.get(contact.email) in {"marketing", "all"}:
                 exclusions.append("email is suppressed for marketing")
         else:
-            if preference is not None and not preference.transactional_allowed:
+            if preference is None:
+                exclusions.append("operational contact authority is not documented")
+            elif not preference.transactional_allowed:
                 exclusions.append("required operational email is disabled")
+            elif not (
+                str(preference.operational_source or "").strip()
+                and str(preference.operational_evidence_reference or "").strip()
+            ):
+                exclusions.append("operational contact authority evidence is incomplete")
             else:
-                reasons.append("required operational email is allowed")
+                reasons.append("required operational email authority is documented")
             if suppression_scopes.get(contact.email) == "all":
                 exclusions.append("all email is suppressed")
         resolved.append(
@@ -949,6 +1107,13 @@ def _preview_payload(
     segment = session.get(BuildingSegment, campaign.segment_id)
     if segment is None or not segment.is_active:
         raise HTTPException(status_code=422, detail="Campaign segment is unavailable.")
+    _validate_private_campaign(campaign, segment)
+    expected_content_checksum = _campaign_content_checksum(campaign)
+    if campaign.content_checksum and campaign.content_checksum != expected_content_checksum:
+        raise HTTPException(
+            status_code=409,
+            detail="Campaign content checksum changed; save a new draft version.",
+        )
     resolved = _resolve_segment(
         session,
         segment,
@@ -978,6 +1143,10 @@ def _preview_payload(
             "campaign_id": campaign.id,
             "segment_id": campaign.segment_id,
             "communication_class": campaign.communication_class,
+            "content_version": campaign.content_version,
+            "content_checksum": expected_content_checksum,
+            "template_reference": campaign.template_reference,
+            "content_classification": campaign.content_classification,
             "sender_identity": sender_identity,
             "subject": campaign.subject,
             "body_text": campaign.body_text,
@@ -990,6 +1159,14 @@ def _preview_payload(
         "campaign_id": campaign.id,
         "sender_identity": sender_identity,
         "communication_class": campaign.communication_class,
+        "content_version": campaign.content_version,
+        "content_checksum": expected_content_checksum,
+        "template_reference": campaign.template_reference,
+        "content_classification": campaign.content_classification,
+        "private_content_approved": bool(
+            campaign.content_classification == "tenant_private"
+            and campaign.private_content_approval_evidence
+        ),
         "permission_rule": (
             "Subscribed marketing contacts only; marketing and all-email suppressions apply."
             if campaign.communication_class == "marketing"
@@ -1214,6 +1391,11 @@ def add_relationship(
     with session_scope(request.app.state.session_factory) as session:
         if session.get(BuildingContact, contact_id) is None:
             raise HTTPException(status_code=404, detail="Contact not found.")
+        if (
+            payload.billing_account_id
+            and session.get(BuildingBillingAccount, payload.billing_account_id) is None
+        ):
+            raise HTTPException(status_code=422, detail="Billing account not found.")
         metadata = dict(payload.metadata)
         if payload.relationship_type in REVIEWED_RELATIONSHIP_TYPES:
             metadata.update({
@@ -1227,6 +1409,7 @@ def add_relationship(
         row = BuildingRelationship(
             id=payload.id or str(uuid4()),
             contact_id=contact_id,
+            billing_account_id=payload.billing_account_id,
             relationship_type=payload.relationship_type,
             status=payload.status,
             organization=payload.organization,
@@ -1350,6 +1533,55 @@ def set_preference(
         return {"ok": True, "marketing_status": row.marketing_status}
 
 
+@internal_router.put("/contacts/{contact_id}/operational-preference")
+def set_operational_preference(
+    contact_id: str,
+    payload: OperationalPreferenceInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Record operational-contact authority without changing marketing consent."""
+
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        contact = session.get(BuildingContact, contact_id)
+        if contact is None:
+            raise HTTPException(status_code=404, detail="Contact not found.")
+        row = session.get(BuildingCommunicationPreference, contact_id)
+        if row is None:
+            row = BuildingCommunicationPreference(contact_id=contact_id)
+        before = {
+            "transactional_allowed": row.transactional_allowed,
+            "operational_source": row.operational_source,
+        }
+        row.transactional_allowed = payload.transactional_allowed
+        row.operational_source = payload.source.strip()
+        row.operational_evidence_reference = payload.evidence_reference.strip()
+        row.operational_changed_at = _now()
+        row.updated_by = payload.actor
+        row.updated_at = _now()
+        session.add(row)
+        session.add(BuildingAuditEvent(
+            entity_type="preference",
+            entity_id=contact_id,
+            action="operational_permission_recorded",
+            actor=payload.actor,
+            before_json=before,
+            after_json={
+                "transactional_allowed": row.transactional_allowed,
+                "source": row.operational_source,
+                "evidence_reference": row.operational_evidence_reference,
+                "changed_at": row.operational_changed_at.isoformat(),
+                "marketing_status_unchanged": row.marketing_status,
+            },
+        ))
+        return {
+            "ok": True,
+            "transactional_allowed": row.transactional_allowed,
+            "marketing_status": row.marketing_status,
+        }
+
+
 @internal_router.put("/segments/{segment_id}")
 def upsert_segment(
     segment_id: str,
@@ -1360,8 +1592,16 @@ def upsert_segment(
     _require_internal_key(request, x_internal_api_key)
     if payload.id != segment_id:
         raise HTTPException(status_code=422, detail="Segment ID does not match route.")
-    if not payload.relationship_types:
+    if not payload.relationship_types and payload.segment_type != "manual_approved_list":
         raise HTTPException(status_code=422, detail="Select at least one relationship type.")
+    if (
+        payload.segment_type == "manual_approved_list"
+        and (not payload.manual_contact_ids or not payload.approval_evidence.strip())
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Manual lists require contacts and explicit approval evidence.",
+        )
     with session_scope(request.app.state.session_factory) as session:
         row = session.get(BuildingSegment, segment_id)
         if row is None:
@@ -1372,7 +1612,12 @@ def upsert_segment(
             "relationship_types": payload.relationship_types,
             "relationship_status": payload.relationship_status,
             "marketing_statuses": payload.marketing_statuses,
+            "inquiry_kinds": payload.inquiry_kinds,
+            "manual_contact_ids": sorted(set(payload.manual_contact_ids)),
         }
+        row.segment_type = payload.segment_type
+        row.purpose_scope = payload.purpose_scope
+        row.approval_evidence = payload.approval_evidence.strip()
         row.is_active = payload.is_active
         row.created_by = row.created_by or payload.actor
         row.updated_at = _now()
@@ -1383,14 +1628,128 @@ def upsert_segment(
             entity_id=row.id,
             action="upserted",
             actor=payload.actor or "internal-api",
-            after_json={"name": row.name, "rules": row.rules_json, "active": row.is_active},
+            after_json={
+                "name": row.name,
+                "rules": row.rules_json,
+                "segment_type": row.segment_type,
+                "purpose_scope": row.purpose_scope,
+                "approval_evidence": row.approval_evidence,
+                "active": row.is_active,
+            },
         ))
-        resolved = _resolve_segment(session, row)
+        preview_class = (
+            "operational" if row.purpose_scope == "operational" else "marketing"
+        )
+        resolved = _resolve_segment(
+            session, row, communication_class=preview_class
+        )
         return {
             "ok": True,
             "segment_id": row.id,
             "included_count": sum(1 for item in resolved if item["included"]),
             "excluded_count": sum(1 for item in resolved if not item["included"]),
+        }
+
+
+@internal_router.post("/segments/bootstrap")
+def bootstrap_standard_segments(
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Idempotently provision empty canonical audience definitions only."""
+
+    _require_internal_key(request, x_internal_api_key)
+    definitions = [
+        (
+            "current-tenants",
+            "Current tenants",
+            "current_tenants",
+            "both",
+            ["tenant", "tenant_employee"],
+            "active",
+            [],
+        ),
+        (
+            "former-tenants",
+            "Former tenants",
+            "former_tenants",
+            "marketing",
+            ["former_tenant"],
+            "any",
+            [],
+        ),
+        (
+            "workspace-prospects",
+            "Workspace prospects",
+            "workspace_prospects",
+            "marketing",
+            ["prospect", "waitlist"],
+            "active",
+            ["workspace", "tour"],
+        ),
+        (
+            "event-prospects-hosts",
+            "Event prospects and hosts",
+            "event_prospects_hosts",
+            "marketing",
+            ["prospect", "event_host"],
+            "active",
+            ["event"],
+        ),
+    ]
+    with session_scope(request.app.state.session_factory) as session:
+        created = 0
+        preserved = 0
+        for (
+            segment_id,
+            name,
+            segment_type,
+            purpose_scope,
+            relationship_types,
+            relationship_status,
+            inquiry_kinds,
+        ) in definitions:
+            row = session.get(BuildingSegment, segment_id)
+            if row is not None:
+                preserved += 1
+                continue
+            row = BuildingSegment(
+                id=segment_id,
+                name=name,
+                description=f"Canonical governed audience: {name}.",
+                rules_json={
+                    "relationship_types": relationship_types,
+                    "relationship_status": relationship_status,
+                    "marketing_statuses": ["subscribed"],
+                    "inquiry_kinds": inquiry_kinds,
+                    "manual_contact_ids": [],
+                },
+                segment_type=segment_type,
+                purpose_scope=purpose_scope,
+                approval_evidence="system:canonical-audience-definition-v1",
+                is_active=True,
+                created_by="system:canonical-segments",
+            )
+            session.add(row)
+            session.add(BuildingAuditEvent(
+                entity_type="segment",
+                entity_id=row.id,
+                action="canonical_segment_created",
+                actor="system:canonical-segments",
+                after_json={
+                    "segment_type": segment_type,
+                    "purpose_scope": purpose_scope,
+                    "rules": row.rules_json,
+                    "contacts_imported": 0,
+                },
+            ))
+            created += 1
+        return {
+            "ok": True,
+            "created": created,
+            "preserved": preserved,
+            "contacts_imported": 0,
+            "segment_ids": [item[0] for item in definitions],
         }
 
 
@@ -1405,9 +1764,28 @@ def preview_segment(
         segment = session.get(BuildingSegment, segment_id)
         if segment is None:
             raise HTTPException(status_code=404, detail="Segment not found.")
-        resolved = _resolve_segment(session, segment)
+        preview_class = (
+            "operational"
+            if segment.purpose_scope == "operational"
+            else "marketing"
+        )
+        resolved = _resolve_segment(
+            session, segment, communication_class=preview_class
+        )
+        included_count = sum(1 for item in resolved if item["included"])
+        excluded_count = len(resolved) - included_count
         return {
             "segment_id": segment.id,
+            "segment_type": segment.segment_type,
+            "purpose_scope": segment.purpose_scope,
+            "included_count": included_count,
+            "excluded_count": excluded_count,
+            "empty": included_count == 0,
+            "message": (
+                "No eligible contacts. Review relationships, consent evidence, and suppressions."
+                if included_count == 0
+                else "Audience preview is ready for review."
+            ),
             "contacts": [
                 {
                     "contact_id": item["contact"].id,
@@ -1438,6 +1816,37 @@ def upsert_campaign(
         row = session.get(BuildingCampaign, campaign_id)
         if row and row.status not in {"draft", "previewed"}:
             raise HTTPException(status_code=409, detail="Approved or sent campaigns are immutable.")
+        if row and all((
+            row.name == payload.name,
+            row.segment_id == payload.segment_id,
+            row.communication_class == payload.communication_class,
+            row.subject == payload.subject,
+            row.body_text == payload.body_text,
+            row.template_reference == payload.template_reference.strip(),
+            row.content_classification == payload.content_classification,
+            row.private_content_approval_evidence
+            == payload.private_content_approval_evidence.strip(),
+        )):
+            return {
+                "ok": True,
+                "campaign_id": row.id,
+                "status": row.status,
+                "content_version": row.content_version,
+                "content_checksum": row.content_checksum,
+                "replayed": True,
+            }
+        content_changed = bool(
+            row
+            and any((
+                row.communication_class != payload.communication_class,
+                row.subject != payload.subject,
+                row.body_text != payload.body_text,
+                row.template_reference != payload.template_reference.strip(),
+                row.content_classification != payload.content_classification,
+                row.private_content_approval_evidence
+                != payload.private_content_approval_evidence.strip(),
+            ))
+        )
         if row is None:
             row = BuildingCampaign(
                 id=campaign_id,
@@ -1446,6 +1855,7 @@ def upsert_campaign(
                 communication_class=payload.communication_class,
                 subject=payload.subject,
                 body_text=payload.body_text,
+                content_version=1,
                 created_by=payload.actor,
             )
         row.name = payload.name
@@ -1453,11 +1863,22 @@ def upsert_campaign(
         row.communication_class = payload.communication_class
         row.subject = payload.subject
         row.body_text = payload.body_text
+        row.template_reference = payload.template_reference.strip()
+        row.content_classification = payload.content_classification
+        row.private_content_approval_evidence = (
+            payload.private_content_approval_evidence.strip()
+        )
+        if content_changed:
+            row.content_version += 1
+        _validate_private_campaign(row, segment)
+        row.content_checksum = _campaign_content_checksum(row)
         row.status = "draft"
         row.preview_hash = ""
         row.previewed_at = None
         row.test_sent_by = ""
         row.test_sent_at = None
+        row.reviewed_by = ""
+        row.reviewed_at = None
         row.sender_identity = ""
         row.sent_by = ""
         row.updated_at = _now()
@@ -1472,9 +1893,20 @@ def upsert_campaign(
                 "segment_id": row.segment_id,
                 "communication_class": row.communication_class,
                 "subject": row.subject,
+                "content_version": row.content_version,
+                "template_reference": row.template_reference,
+                "content_checksum": row.content_checksum,
+                "content_classification": row.content_classification,
             },
         ))
-        return {"ok": True, "campaign_id": row.id, "status": row.status}
+        return {
+            "ok": True,
+            "campaign_id": row.id,
+            "status": row.status,
+            "content_version": row.content_version,
+            "content_checksum": row.content_checksum,
+            "replayed": False,
+        }
 
 
 @internal_router.post("/campaigns/{campaign_id}/preview")
@@ -1551,6 +1983,70 @@ def test_send_campaign(
         return {"ok": True, "status": "test_sent", "email": payload.email}
 
 
+@internal_router.post("/campaigns/{campaign_id}/review")
+def review_campaign(
+    campaign_id: str,
+    payload: CampaignReviewInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Complete provider-free content/audience review."""
+
+    _require_internal_key(request, x_internal_api_key)
+    expected_confirmation = f"REVIEW CAMPAIGN {campaign_id}"
+    if payload.confirmation.strip() != expected_confirmation:
+        raise HTTPException(
+            status_code=422, detail=f"Type exactly: {expected_confirmation}"
+        )
+    with session_scope(request.app.state.session_factory) as session:
+        campaign = session.get(BuildingCampaign, campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="Campaign not found.")
+        if campaign.status == "reviewed" and campaign.preview_hash == payload.preview_hash:
+            return {"ok": True, "status": "reviewed", "replayed": True}
+        if campaign.status != "previewed" or campaign.preview_hash != payload.preview_hash:
+            raise HTTPException(
+                status_code=409,
+                detail="Preview changed; refresh the audience preview.",
+            )
+        preview = _preview_payload(
+            session,
+            campaign,
+            sender_identity=request.app.state.settings.resend_from,
+        )
+        if preview["preview_hash"] != payload.preview_hash:
+            raise HTTPException(
+                status_code=409,
+                detail="Audience or content changed; preview the campaign again.",
+            )
+        campaign.status = "reviewed"
+        campaign.reviewed_by = payload.actor
+        campaign.reviewed_at = _now()
+        campaign.content_checksum = preview["content_checksum"]
+        campaign.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="campaign",
+            entity_id=campaign.id,
+            action="reviewed_provider_neutral",
+            actor=payload.actor,
+            after_json={
+                "preview_hash": campaign.preview_hash,
+                "content_version": campaign.content_version,
+                "content_checksum": campaign.content_checksum,
+                "included_count": preview["included_count"],
+                "excluded_count": preview["excluded_count"],
+                "provider_call": False,
+            },
+        ))
+        return {
+            "ok": True,
+            "status": campaign.status,
+            "replayed": False,
+            "included_count": preview["included_count"],
+            "excluded_count": preview["excluded_count"],
+        }
+
+
 @internal_router.post("/campaigns/{campaign_id}/approve")
 def approve_campaign(
     campaign_id: str,
@@ -1563,10 +2059,33 @@ def approve_campaign(
         campaign = session.get(BuildingCampaign, campaign_id)
         if campaign is None:
             raise HTTPException(status_code=404, detail="Campaign not found.")
-        if campaign.status != "previewed" or campaign.preview_hash != payload.preview_hash:
+        if (
+            campaign.status == "approved"
+            and campaign.preview_hash == payload.preview_hash
+        ):
+            recipient_count = session.execute(
+                select(BuildingCampaignRecipient).where(
+                    BuildingCampaignRecipient.campaign_id == campaign.id
+                )
+            ).scalars().all()
+            return {
+                "ok": True,
+                "status": "approved",
+                "recipient_count": len(recipient_count),
+                "outbox_status": "schedule_ready",
+                "replayed": True,
+            }
+        if campaign.status not in {"previewed", "reviewed"} or campaign.preview_hash != payload.preview_hash:
             raise HTTPException(status_code=409, detail="Preview changed; preview the campaign again.")
-        if campaign.test_sent_at is None:
+        provider_free_review = campaign.status == "reviewed"
+        if not provider_free_review and campaign.test_sent_at is None:
             raise HTTPException(status_code=409, detail="Send a test message before approval.")
+        if provider_free_review:
+            expected_confirmation = f"APPROVE CAMPAIGN {campaign.id}"
+            if payload.confirmation.strip() != expected_confirmation:
+                raise HTTPException(
+                    status_code=422, detail=f"Type exactly: {expected_confirmation}"
+                )
         preview = _preview_payload(
             session,
             campaign,
@@ -1582,17 +2101,65 @@ def approve_campaign(
             )
         )
         for item in preview["included"]:
+            preference = session.get(
+                BuildingCommunicationPreference, item["contact_id"]
+            )
+            permission_snapshot = {
+                "communication_class": campaign.communication_class,
+                "marketing_status": (
+                    preference.marketing_status if preference else "unknown"
+                ),
+                "marketing_source": (
+                    preference.marketing_source if preference else ""
+                ),
+                "marketing_changed_at": (
+                    preference.marketing_changed_at.isoformat()
+                    if preference
+                    else None
+                ),
+                "operational_allowed": (
+                    preference.transactional_allowed if preference else False
+                ),
+                "operational_source": (
+                    preference.operational_source if preference else ""
+                ),
+                "operational_evidence_reference": (
+                    preference.operational_evidence_reference if preference else ""
+                ),
+                "inclusion_reason": item["reason"],
+                "suppression_checked_at": _now().isoformat(),
+            }
+            recipient_checksum = hashlib.sha256(
+                json.dumps(
+                    {
+                        "campaign_id": campaign.id,
+                        "campaign_version": campaign.content_version,
+                        "contact_id": item["contact_id"],
+                        "email": item["email"],
+                        "content_checksum": preview["content_checksum"],
+                        "permission": permission_snapshot,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
             session.add(BuildingCampaignRecipient(
                 campaign_id=campaign.id,
                 contact_id=item["contact_id"],
                 email=item["email"],
                 full_name=item["full_name"],
+                campaign_version=campaign.content_version,
+                communication_class=campaign.communication_class,
+                content_checksum=preview["content_checksum"],
+                permission_snapshot_json=permission_snapshot,
+                recipient_checksum=recipient_checksum,
                 inclusion_reason=item["reason"],
             ))
         campaign.status = "approved"
         campaign.approved_by = payload.actor
         campaign.approved_at = _now()
         campaign.sender_identity = preview["sender_identity"]
+        campaign.content_checksum = preview["content_checksum"]
         campaign.updated_at = _now()
         session.add(BuildingAuditEvent(
             entity_type="campaign",
@@ -1603,12 +2170,17 @@ def approve_campaign(
                 "recipient_count": preview["included_count"],
                 "preview_hash": payload.preview_hash,
                 "sender_identity": campaign.sender_identity,
+                "content_version": campaign.content_version,
+                "content_checksum": campaign.content_checksum,
+                "outbox_status": "schedule_ready",
+                "provider_call": False,
             },
         ))
         return {
             "ok": True,
             "status": campaign.status,
             "recipient_count": preview["included_count"],
+            "outbox_status": "schedule_ready",
         }
 
 
@@ -2766,7 +3338,7 @@ def save_contact_from_control_room(
     review_due_on: date | None = Form(None),
     marketing_status: str = Form("unknown"),
     consent_confirmed: bool = Form(False),
-    user: dict = Depends(require_tool("building.manage")),
+    user: dict = Depends(require_tool("building.crm.manage")),
 ) -> RedirectResponse:
     actor = user.get("email") or "building-operator"
     try:
@@ -2903,7 +3475,7 @@ def review_relationship_from_control_room(
     list_owner: str = Form(...),
     review_due_on: date = Form(...),
     status: str = Form("active"),
-    user: dict = Depends(require_tool("building.manage")),
+    user: dict = Depends(require_tool("building.crm.manage")),
 ) -> RedirectResponse:
     actor = user.get("email") or "building-operator"
     try:
@@ -2963,7 +3535,7 @@ def save_segment_from_control_room(
     marketing_statuses: list[str] = Form(...),
     relationship_status: str = Form("active"),
     is_active: bool = Form(False),
-    user: dict = Depends(require_tool("building.manage")),
+    user: dict = Depends(require_tool("building.crm.manage")),
 ) -> RedirectResponse:
     actor = user.get("email") or "building-operator"
     try:
@@ -3030,7 +3602,10 @@ def save_campaign_from_control_room(
     communication_class: str = Form("marketing"),
     subject: str = Form(...),
     body_text: str = Form(...),
-    user: dict = Depends(require_tool("building.manage")),
+    template_reference: str = Form(""),
+    content_classification: str = Form("standard"),
+    private_content_approval_evidence: str = Form(""),
+    user: dict = Depends(require_tool("building.campaigns.prepare")),
 ) -> RedirectResponse:
     actor = user.get("email") or "building-operator"
     try:
@@ -3041,6 +3616,9 @@ def save_campaign_from_control_room(
             communication_class=communication_class.strip(),
             subject=subject.strip(),
             body_text=body_text.strip(),
+            template_reference=template_reference.strip(),
+            content_classification=content_classification.strip(),
+            private_content_approval_evidence=private_content_approval_evidence.strip(),
             actor=actor,
         )
     except ValidationError as exc:
@@ -3056,6 +3634,18 @@ def save_campaign_from_control_room(
         row = session.get(BuildingCampaign, payload.id)
         if row and row.status not in {"draft", "previewed"}:
             return _building_redirect(error="Approved or sent campaigns are immutable.")
+        content_changed = bool(
+            row
+            and any((
+                row.communication_class != payload.communication_class,
+                row.subject != payload.subject,
+                row.body_text != payload.body_text,
+                row.template_reference != payload.template_reference,
+                row.content_classification != payload.content_classification,
+                row.private_content_approval_evidence
+                != payload.private_content_approval_evidence,
+            ))
+        )
         if row is None:
             row = BuildingCampaign(
                 id=payload.id,
@@ -3064,6 +3654,7 @@ def save_campaign_from_control_room(
                 communication_class=payload.communication_class,
                 subject=payload.subject,
                 body_text=payload.body_text,
+                content_version=1,
                 created_by=actor,
             )
         row.name = payload.name
@@ -3071,6 +3662,18 @@ def save_campaign_from_control_room(
         row.communication_class = payload.communication_class
         row.subject = payload.subject
         row.body_text = payload.body_text
+        row.template_reference = payload.template_reference
+        row.content_classification = payload.content_classification
+        row.private_content_approval_evidence = (
+            payload.private_content_approval_evidence
+        )
+        if content_changed:
+            row.content_version += 1
+        try:
+            _validate_private_campaign(row, segment)
+        except HTTPException as exc:
+            return _building_redirect(error=str(exc.detail))
+        row.content_checksum = _campaign_content_checksum(row)
         row.status = "draft"
         row.preview_hash = ""
         row.previewed_at = None
@@ -3090,6 +3693,10 @@ def save_campaign_from_control_room(
                 "segment_id": row.segment_id,
                 "communication_class": row.communication_class,
                 "subject": row.subject,
+                "content_version": row.content_version,
+                "template_reference": row.template_reference,
+                "content_checksum": row.content_checksum,
+                "content_classification": row.content_classification,
             },
         ))
     return _building_redirect(notice=f"{payload.name} saved as a draft.")
@@ -3103,7 +3710,7 @@ def save_campaign_from_control_room(
 def preview_campaign_from_control_room(
     campaign_id: str,
     request: Request,
-    user: dict = Depends(require_tool("building.manage")),
+    user: dict = Depends(require_tool("building.campaigns.prepare")),
 ) -> RedirectResponse:
     with session_scope(request.app.state.session_factory) as session:
         campaign = session.get(BuildingCampaign, campaign_id)
@@ -3136,6 +3743,62 @@ def preview_campaign_from_control_room(
             f"{campaign.name} previewed: {preview['included_count']} eligible, "
             f"{preview['excluded_count']} excluded. No email was sent."
         )
+    )
+
+
+@admin_router.post(
+    "/campaigns/{campaign_id}/review",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def review_campaign_from_control_room(
+    campaign_id: str,
+    request: Request,
+    confirmation: str = Form(...),
+    user: dict = Depends(require_tool("building.campaigns.prepare")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-operator"
+    expected = f"REVIEW CAMPAIGN {campaign_id}"
+    if confirmation.strip() != expected:
+        return _building_redirect(error=f"Type exactly: {expected}")
+    with session_scope(request.app.state.session_factory) as session:
+        campaign = session.get(BuildingCampaign, campaign_id)
+        if campaign is None:
+            return _building_redirect(error="Campaign not found.")
+        if campaign.status == "reviewed":
+            return _building_redirect(notice=f"{campaign.name} is already reviewed.")
+        if campaign.status != "previewed" or not campaign.preview_hash:
+            return _building_redirect(error="Refresh the audience preview first.")
+        preview = _preview_payload(
+            session,
+            campaign,
+            sender_identity=request.app.state.settings.resend_from,
+        )
+        if preview["preview_hash"] != campaign.preview_hash:
+            return _building_redirect(
+                error="Audience or content changed; refresh the preview again."
+            )
+        campaign.status = "reviewed"
+        campaign.reviewed_by = actor
+        campaign.reviewed_at = _now()
+        campaign.content_checksum = preview["content_checksum"]
+        campaign.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="campaign",
+            entity_id=campaign.id,
+            action="reviewed_provider_neutral_from_control_room",
+            actor=actor,
+            after_json={
+                "preview_hash": campaign.preview_hash,
+                "content_version": campaign.content_version,
+                "content_checksum": campaign.content_checksum,
+                "included_count": preview["included_count"],
+                "excluded_count": preview["excluded_count"],
+                "provider_call": False,
+            },
+        ))
+    return _building_redirect(
+        notice=f"{campaign.name} reviewed. No email was sent."
     )
 
 
@@ -3195,17 +3858,25 @@ def test_send_campaign_from_control_room(
 def approve_campaign_from_control_room(
     campaign_id: str,
     request: Request,
-    user: dict = Depends(require_tool("building.manage")),
+    confirmation: str = Form(""),
+    user: dict = Depends(require_tool("building.campaigns.approve")),
 ) -> RedirectResponse:
     actor = user.get("email") or "building-operator"
     with session_scope(request.app.state.session_factory) as session:
         campaign = session.get(BuildingCampaign, campaign_id)
         if campaign is None:
             return _building_redirect(error="Campaign not found.")
-        if campaign.status != "previewed" or not campaign.preview_hash:
+        if campaign.status not in {"previewed", "reviewed"} or not campaign.preview_hash:
             return _building_redirect(error="Refresh the final audience preview first.")
-        if campaign.test_sent_at is None:
-            return _building_redirect(error="Send a test message before approval.")
+        provider_free_review = campaign.status == "reviewed"
+        if provider_free_review:
+            expected = f"APPROVE CAMPAIGN {campaign_id}"
+            if confirmation.strip() != expected:
+                return _building_redirect(error=f"Type exactly: {expected}")
+        elif campaign.test_sent_at is None:
+            return _building_redirect(
+                error="Complete provider-free review or send a test message first."
+            )
         preview = _preview_payload(
             session,
             campaign,
@@ -3221,17 +3892,51 @@ def approve_campaign_from_control_room(
             )
         )
         for item in preview["included"]:
+            preference = session.get(
+                BuildingCommunicationPreference, item["contact_id"]
+            )
+            permission_snapshot = {
+                "communication_class": campaign.communication_class,
+                "marketing_status": (
+                    preference.marketing_status if preference else "unknown"
+                ),
+                "marketing_source": (
+                    preference.marketing_source if preference else ""
+                ),
+                "operational_allowed": (
+                    preference.transactional_allowed if preference else False
+                ),
+                "operational_source": (
+                    preference.operational_source if preference else ""
+                ),
+                "inclusion_reason": item["reason"],
+                "suppression_checked_at": _now().isoformat(),
+            }
+            recipient_checksum = hashlib.sha256(json.dumps({
+                "campaign_id": campaign.id,
+                "campaign_version": campaign.content_version,
+                "contact_id": item["contact_id"],
+                "email": item["email"],
+                "content_checksum": preview["content_checksum"],
+                "permission": permission_snapshot,
+            }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             session.add(BuildingCampaignRecipient(
                 campaign_id=campaign.id,
                 contact_id=item["contact_id"],
                 email=item["email"],
                 full_name=item["full_name"],
+                campaign_version=campaign.content_version,
+                communication_class=campaign.communication_class,
+                content_checksum=preview["content_checksum"],
+                permission_snapshot_json=permission_snapshot,
+                recipient_checksum=recipient_checksum,
                 inclusion_reason=item["reason"],
             ))
         campaign.status = "approved"
         campaign.approved_by = actor
         campaign.approved_at = _now()
         campaign.sender_identity = preview["sender_identity"]
+        campaign.content_checksum = preview["content_checksum"]
         campaign.updated_at = _now()
         session.add(BuildingAuditEvent(
             entity_type="campaign",
@@ -3242,10 +3947,17 @@ def approve_campaign_from_control_room(
                 "recipient_count": preview["included_count"],
                 "preview_hash": campaign.preview_hash,
                 "sender_identity": campaign.sender_identity,
+                "content_version": campaign.content_version,
+                "content_checksum": campaign.content_checksum,
+                "outbox_status": "schedule_ready",
+                "provider_call": False,
             },
         ))
     return _building_redirect(
-        notice=f"{campaign.name} approved for {preview['included_count']} recipients."
+        notice=(
+            f"{campaign.name} approved as schedule-ready for "
+            f"{preview['included_count']} recipients. No email was sent."
+        )
     )
 
 

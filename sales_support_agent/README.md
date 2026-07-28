@@ -336,12 +336,13 @@ change writes a Building audit event.
 
 Approved holds and confirmed reservations enter a durable calendar projection
 queue. Agent remains the booking source of truth: a Google Calendar edit or
-deletion never changes a reservation. Calendar sync is previewable through the
-internal API and requires `SYNC CALENDAR` in Building Control before an external
-write. Set `BUILDING_GOOGLE_CALENDAR_ID` and
-`BUILDING_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON`, then share only the intended
-building calendar with that service-account email. Stable Google event IDs make
-retries idempotent; provider failures stay visible and retryable in the queue.
+deletion never changes a reservation. Building Control and the internal API are
+dry-run by default. Set a dedicated `BUILDING_GOOGLE_CALENDAR_ID` (never
+`primary`) and `BUILDING_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON`, then share only
+that calendar with the service-account email. The separate
+`BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED` gate defaults to false. Stable event
+IDs, committed claims, reconciliation evidence, and retry backoff prevent
+duplicate delivery and keep provider failures visible.
 
 Confirming an event creates an event-readiness and closeout checklist.
 Confirming a workspace creates a move-in checklist, and moving an occupied
@@ -682,3 +683,12 @@ uses the complete setup-through-teardown window while guest times remain
 separately visible. Approved pricing and reviewed terms are frozen into the
 quote version; contract, signature, payment, and confirmation remain explicit
 gates. See `../docs/building-event-review-lifecycle.md`.
+
+## Agreement and payment readiness
+
+An active event hold with a frozen quote can now produce an immutable,
+provider-neutral agreement package on the existing agreement record plus a
+separate payment-request readiness outbox. Approved template versions use a
+fixed merge-field allow-list; package and payment evidence carry independent
+checksums and prepare/review/approve states. No provider object or success state
+is created. See `../docs/building-agreement-payment-readiness.md`.

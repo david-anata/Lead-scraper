@@ -277,6 +277,8 @@ def _ensure_building_tables(engine: Any) -> None:
         "building_reservations",
         "building_event_lifecycle_commands",
         "building_agreements",
+        "building_agreement_templates",
+        "building_payment_request_readiness",
         "building_proposals",
         "building_tours",
         "building_deposit_evidence",
@@ -315,6 +317,69 @@ def _ensure_building_columns(engine: Any) -> None:
                 else "DATETIME"
             ),
         },
+        "building_relationships": {
+            "billing_account_id": "VARCHAR(64)",
+        },
+        "building_communication_preferences": {
+            "operational_source": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "operational_evidence_reference": "VARCHAR(1024) NOT NULL DEFAULT ''",
+            "operational_changed_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+        },
+        "building_segments": {
+            "segment_type": "VARCHAR(64) NOT NULL DEFAULT 'custom'",
+            "purpose_scope": "VARCHAR(32) NOT NULL DEFAULT 'both'",
+            "approval_evidence": "TEXT NOT NULL DEFAULT ''",
+        },
+        "building_campaigns": {
+            "content_version": "INTEGER NOT NULL DEFAULT 1",
+            "template_reference": "VARCHAR(1024) NOT NULL DEFAULT ''",
+            "content_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "content_classification": "VARCHAR(32) NOT NULL DEFAULT 'standard'",
+            "private_content_approval_evidence": "TEXT NOT NULL DEFAULT ''",
+            "reviewed_by": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "reviewed_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+        },
+        "building_campaign_recipients": {
+            "campaign_version": "INTEGER NOT NULL DEFAULT 1",
+            "communication_class": "VARCHAR(32) NOT NULL DEFAULT 'marketing'",
+            "content_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "permission_snapshot_json": "JSON NOT NULL DEFAULT '{}'",
+            "recipient_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
+        },
+        "building_calendar_projections": {
+            "target_calendar_id": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "operation_key": "VARCHAR(128) NOT NULL DEFAULT ''",
+            "payload_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "claim_token": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "claimed_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+            "next_attempt_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+            "delivered_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+            "reconciled_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+        },
         "building_reservations": {
             "guest_starts_at": (
                 "TIMESTAMP WITH TIME ZONE"
@@ -322,6 +387,24 @@ def _ensure_building_columns(engine: Any) -> None:
                 else "DATETIME"
             ),
             "guest_ends_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+        },
+        "building_agreements": {
+            "template_id": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "preparation_status": "VARCHAR(32) NOT NULL DEFAULT 'not_started'",
+            "package_snapshot_json": "JSON NOT NULL DEFAULT '{}'",
+            "package_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "reviewed_by": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "reviewed_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+            "approved_by": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "approved_at": (
                 "TIMESTAMP WITH TIME ZONE"
                 if engine.dialect.name == "postgresql"
                 else "DATETIME"
@@ -712,6 +795,8 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
     small deployments initialize the shared engine without ``init_database``.
     """
     db_engine = target_engine or get_engine()
+    from sales_support_agent.services.cashflow.vendor_aliases import ensure_vendor_alias_schema
+    ensure_vendor_alias_schema(db_engine)
     _register_models()
     if db_engine.dialect.name == "sqlite":
         _apply_sqlite_compat_migrations(db_engine)

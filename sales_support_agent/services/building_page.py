@@ -246,10 +246,11 @@ def render_building_page(
         campaign_id = _esc(item.get("id"))
         status = str(item.get("status") or "draft")
         if status in {"draft", "previewed"}:
-            approve = (
-                f'<form method="post" action="/admin/building/campaigns/{campaign_id}/approve">'
+            review = (
+                f'<form class="inline-send" method="post" action="/admin/building/campaigns/{campaign_id}/review">'
                 f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
-                '<button class="secondary secondary--small" type="submit">Approve snapshot</button></form>'
+                f'<input aria-label="Review confirmation" name="confirmation" required placeholder="REVIEW CAMPAIGN {campaign_id}">'
+                '<button class="secondary secondary--small" type="submit">Complete review</button></form>'
                 if status == "previewed"
                 else ""
             )
@@ -262,7 +263,14 @@ def render_building_page(
                 f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
                 '<input aria-label="Test recipient email" name="test_email" type="email" required placeholder="Test email">'
                 '<button class="secondary secondary--small" type="submit">Send test</button></form>'
-                f"{approve}</div>"
+                f"{review}</div>"
+            )
+        if status == "reviewed":
+            return (
+                f'<form class="inline-send" method="post" action="/admin/building/campaigns/{campaign_id}/approve">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                f'<input aria-label="Approval confirmation" name="confirmation" required placeholder="APPROVE CAMPAIGN {campaign_id}">'
+                '<button class="primary secondary--small" type="submit">Approve schedule-ready snapshot</button></form>'
             )
         if status == "approved":
             return (
@@ -310,7 +318,7 @@ def render_building_page(
         </tr>
         """
         for item in campaigns
-    ) or '<tr><td colspan="5"><div class="empty"><strong>No campaigns yet.</strong><br>Campaigns require a segment preview, test send, and approval before delivery.</div></td></tr>'
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No campaigns yet.</strong><br>Campaigns require a deterministic audience preview, review, and approval before they become schedule-ready.</div></td></tr>'
 
     def roster_contact_preview(item: dict[str, Any]) -> str:
         rows = list(item.get("rows") or [])
@@ -913,7 +921,7 @@ def render_building_page(
         <h1>Building Control</h1>
         <p class="purpose">One operational view of sellable space, incoming demand, tenant relationships, communication permission, and campaign readiness.</p>
       </div>
-      <a class="site-link" href="https://anata-building.vercel.app" target="_blank" rel="noreferrer">Open public site ↗</a>
+      <a class="site-link" href="https://anatabuilding.com" target="_blank" rel="noreferrer">Open public site ↗</a>
     </header>
     <section class="metrics" aria-label="Building summary">
       <div class="metric"><span>Available spaces</span><strong>{availability.get("available", 0)}</strong></div>
@@ -1046,7 +1054,7 @@ def render_building_page(
         </form>
       </section>
       <section class="panel panel--wide">
-        <div class="panel-head"><div><h2>Draft a campaign</h2><p>Saving creates a draft only. Preview, test send, approval, and final send remain separate gates.</p></div></div>
+        <div class="panel-head"><div><h2>Draft a campaign</h2><p>Saving creates a draft only. Preview, review, approval, scheduling, and delivery remain separate gates.</p></div></div>
         <form class="form-grid" method="post" action="/admin/building/campaigns">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="campaign-id">Stable ID</label><input id="campaign-id" name="campaign_id" required placeholder="tenant-august-update"></div>
@@ -1054,6 +1062,9 @@ def render_building_page(
           <div class="field"><label for="campaign-segment">Audience</label><select id="campaign-segment" name="segment_id" required><option value="">Choose a reviewed audience</option>{segment_options}</select></div>
           <div class="field"><label for="campaign-class">Message type</label><select id="campaign-class" name="communication_class"><option value="marketing">Optional marketing</option><option value="operational">Required tenant / event operations</option></select><span class="form-note">Operational notices only work with active tenant, tenant employee, or event host audiences. They cannot be used for promotions.</span></div>
           <div class="field"><label for="campaign-subject">Email subject</label><input id="campaign-subject" name="subject" required></div>
+          <div class="field"><label for="campaign-template">Template reference</label><input id="campaign-template" name="template_reference" placeholder="tenant-update-v1"><span class="form-note">Use a reviewed template ID or document reference.</span></div>
+          <div class="field"><label for="campaign-content-class">Content classification</label><select id="campaign-content-class" name="content_classification"><option value="standard">Standard</option><option value="tenant_private">Private tenant operational content</option></select><span class="form-note">Private tenant benefits are never eligible for marketing campaigns.</span></div>
+          <div class="field field--wide"><label for="campaign-private-evidence">Private-content approval evidence</label><input id="campaign-private-evidence" name="private_content_approval_evidence" placeholder="Required only for private tenant operational content"></div>
           <div class="field field--wide"><label for="campaign-body">Plain-text message</label><textarea id="campaign-body" name="body_text" required placeholder="Warm, useful, and specific."></textarea></div>
           <div class="form-actions"><span class="form-note">This button never sends email.</span><button class="primary" type="submit">Save campaign draft</button></div>
         </form>
@@ -1167,15 +1178,15 @@ def render_building_page(
         </form>
       </section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand. Partial CRM failures stay queued without losing the lead.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th><th>CRM recovery</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
+      <section class="panel panel--wide"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/agreement-readiness">Open agreement and payment readiness →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
       <section class="panel panel--wide">
         <div class="panel-head">
-          <div><h2>Calendar projection</h2><p>Agent remains authoritative. Approved holds and bookings are queued for Google Calendar; calendar edits never change a booking.</p></div>
+          <div><h2>Calendar projection</h2><p>Agent remains authoritative. This control previews the dedicated calendar queue in dry-run mode; it never changes Google Calendar.</p></div>
           <form class="inline-send" method="post" action="/admin/building/calendar/sync">
             <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-            <input aria-label="Calendar sync confirmation" name="confirmation" required placeholder="SYNC CALENDAR">
-            <button class="secondary secondary--small" type="submit">Sync pending</button>
+            <input aria-label="Calendar preview confirmation" name="confirmation" required placeholder="PREVIEW CALENDAR">
+            <button class="secondary secondary--small" type="submit">Preview pending</button>
           </form>
         </div>
         <div class="table-wrap"><table><thead><tr><th>Booking</th><th>Desired action</th><th>Sync state</th><th>Google event</th><th>Updated</th></tr></thead><tbody>{calendar_projection_rows}</tbody></table></div>

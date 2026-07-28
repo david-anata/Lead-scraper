@@ -20,10 +20,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from sales_support_agent.services import website_ops_vendor as website_ops
 from sales_support_agent.services.website_ops_autonomy import (
+    _load_service_account_info,
     _deterministic_metadata_actions,
     build_autonomy_overlay,
 )
 from sales_support_agent.services.website_ops_content import clean_generated_content
+from sales_support_agent.services.website_ops_article_engine import build_article_action
 from sales_support_agent.services.website_ops import (
     discover_website_ops_urls,
     execute_approved_website_ops_actions,
@@ -40,6 +42,7 @@ from sales_support_agent.services.website_ops import (
     run_website_ops,
     save_feedback_record,
     send_website_ops_report_email,
+    website_ops_operating_state,
     website_ops_run_is_due,
     write_website_ops_run_state,
 )
@@ -58,12 +61,71 @@ from sales_support_agent.api.website_ops_jobs_router import (
 from sales_support_agent.services.website_ops_github import (
     execute_github_metadata_action,
     route_source_path,
+    update_generated_article_registry,
     update_static_metadata_source,
+    validate_generated_article,
     validate_metadata_action,
 )
 
 
 class AdminWebsiteOpsTests(unittest.TestCase):
+    def test_google_credential_loader_accepts_render_multiline_object_format(self) -> None:
+        payload = _load_service_account_info(
+            """{
+  type: "service_account",
+  project_id: "anata-project",
+  client_email: "website-ops@example.iam.gserviceaccount.com",
+  private_key: "-----BEGIN PRIVATE KEY-----
+example
+-----END PRIVATE KEY-----
+",
+  token_uri: "https://oauth2.googleapis.com/token",
+}"""
+        )
+        self.assertEqual(payload["project_id"], "anata-project")
+        self.assertIn("BEGIN PRIVATE KEY", payload["private_key"])
+
+    def _generated_article_record(self) -> dict[str, object]:
+        article = {
+            "slug": "amazon-ppc-account-structure",
+            "primaryIntent": "how to structure an amazon ppc account",
+            "evidenceId": "cluster-123",
+            "generatedAt": "2026-07-27T14:00:00+00:00",
+            "title": "How to Structure an Amazon PPC Account",
+            "description": (
+                "A practical framework for organizing Amazon PPC campaigns around "
+                "clear ownership, measurement, and ongoing optimization."
+            ),
+            "content": {
+                "route": "/blog/amazon-ppc-account-structure",
+                "eyebrow": "Amazon advertising",
+                "h1": "How to Structure an Amazon PPC Account",
+                "tldr": {"answer": "Organize campaigns around a single measurable purpose."},
+                "sections": [
+                    {"heading": "Start with ownership", "paragraphs": ["Assign one purpose to each campaign."]},
+                    {"heading": "Measure the result", "paragraphs": ["Review query evidence before changing structure."]},
+                ],
+                "breadcrumbs": [
+                    {"name": "Home", "href": "/"},
+                    {"name": "Blog", "href": "/blog"},
+                    {"name": "Amazon PPC account structure"},
+                ],
+                "schemaType": "article",
+                "articleTitle": "How to Structure an Amazon PPC Account",
+                "articleDescription": "A practical evidence-backed campaign structure.",
+            },
+            "sources": [
+                {"title": "Amazon Ads campaign guidance", "url": "https://advertising.amazon.com/library/guides"},
+                {"title": "Google Search documentation", "url": "https://developers.google.com/search/docs"},
+            ],
+        }
+        return {
+            "action_value": json.dumps(article),
+            "confidence": "high",
+            "reason": "Two independent observed sources show an unowned informational intent.",
+            "evidence": ["Search Console cluster-123", "Observed buyer question cluster-123"],
+        }
+
     def _fake_report(self) -> dict[str, object]:
         return {
             "date": "2026-03-26",
@@ -193,7 +255,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 ("https://anatainc.com/", "https://anatainc.com/services"),
             )
 
-    def test_daily_email_is_change_only_and_idempotent(self) -> None:
+    def test_daily_email_always_sends_an_operations_brief(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = SimpleNamespace(
                 website_ops_root=Path(tmpdir),
@@ -210,9 +272,14 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 first = send_website_ops_report_email(settings, mode="daily", report=report)
                 second = send_website_ops_report_email(settings, mode="daily", report=report)
             self.assertTrue(first["sent"])
-            self.assertFalse(second["sent"])
-            self.assertEqual(second["reason"], "unchanged")
-            send.assert_called_once()
+            self.assertTrue(second["sent"])
+            self.assertFalse(second["changed"])
+            self.assertEqual(second["reason"], "")
+            self.assertEqual(send.call_count, 2)
+            sent_text = send.call_args.kwargs["text"]
+            self.assertIn("Changes completed:", sent_text)
+            self.assertIn("Your to-do list:", sent_text)
+            self.assertIn("Nothing requires your attention today.", sent_text)
 
     def test_daily_email_ignores_volatile_report_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -233,9 +300,9 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             ) as send:
                 send_website_ops_report_email(settings, mode="daily", report=first_report)
                 second = send_website_ops_report_email(settings, mode="daily", report=second_report)
-            self.assertFalse(second["sent"])
-            self.assertEqual(second["reason"], "unchanged")
-            send.assert_called_once()
+            self.assertTrue(second["sent"])
+            self.assertFalse(second["changed"])
+            self.assertEqual(send.call_count, 2)
 
     def test_run_due_respects_daily_weekly_and_monthly_periods(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -280,7 +347,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 response = client.post(
                     "/api/jobs/website-ops/run",
                     headers={"X-Internal-Api-Key": "test-internal-key"},
-                    json={"mode": "daily"},
+                    json={"mode": "daily", "force": True},
                 )
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["details"]["daily"]["status"], "succeeded")
@@ -312,6 +379,27 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     "last_successful_date": "2026-07-27",
                 },
             )
+            report_dir = Path(tmpdir) / "reports" / "daily"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_path = report_dir / "2026-07-27-anata-website-ops-daily-report"
+            report_path.with_suffix(".md").write_text(
+                "# Anata Website Ops Daily Report\n\nDate: 2026-07-27\n",
+                encoding="utf-8",
+            )
+            report_path.with_suffix(".json").write_text(
+                json.dumps(
+                    {
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "analytics_status": {
+                            "search_console": True,
+                            "ga4": True,
+                            "notes": [],
+                        },
+                        "support_requests": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
             app = FastAPI()
             app.state.settings = settings
             app.include_router(website_ops_jobs_router)
@@ -342,6 +430,39 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertEqual(payload["schedule"]["hour"], 8)
             self.assertEqual(payload["runs"]["daily"]["status"], "succeeded")
             self.assertNotIn("last_error", payload["runs"]["daily"])
+            self.assertEqual(payload["states"]["decision_data"], "ready")
+            self.assertEqual(payload["user_todo"], [])
+
+    def test_operating_state_uses_latest_live_evidence_not_secret_presence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            report_dir = Path(tmpdir) / "reports" / "daily"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_path = report_dir / "2026-07-27-anata-website-ops-daily-report"
+            report_path.with_suffix(".md").write_text(
+                "# Anata Website Ops Daily Report\n\nDate: 2026-07-27\n",
+                encoding="utf-8",
+            )
+            report_path.with_suffix(".json").write_text(
+                json.dumps(
+                    {
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "analytics_status": {
+                            "search_console": False,
+                            "ga4": False,
+                            "notes": ["Search Console authentication failed."],
+                        },
+                        "support_requests": ["Repair the Google service account JSON."],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            state = website_ops_operating_state(settings)
+
+            self.assertEqual(state["status"], "blocked")
+            self.assertEqual(state["decision_data"], "blocked")
+            self.assertIn("Repair the Google service account JSON.", state["support_requests"])
 
     def test_website_ops_runtime_health_blocks_invalid_decision_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -447,7 +568,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertIn("Insert structured shipping FAQ", html)
             self.assertIn("Provide proof assets for shipping.", html)
             self.assertIn("GA4 unavailable", html)
-            self.assertIn("MVP mode active", html)
+            self.assertIn("Autonomous publishing guardrails active", html)
             self.assertIn("Needs setup", html)
             self.assertIn("sdr-support-agent", html)
             self.assertIn("codex-website-ops@sdr-support-agent.iam.gserviceaccount.com", html)
@@ -1071,6 +1192,83 @@ class AdminWebsiteOpsTests(unittest.TestCase):
         with self.assertRaises(ExecutionError):
             route_source_path("https://anatainc.com/book")
 
+    def test_generated_article_requires_citations_and_independent_evidence(self) -> None:
+        record = self._generated_article_record()
+        article = validate_generated_article(record)
+        self.assertEqual(article["slug"], "amazon-ppc-account-structure")
+        with self.assertRaises(ExecutionError):
+            validate_generated_article({**record, "evidence": ["one signal"]})
+        invalid = json.loads(str(record["action_value"]))
+        invalid["sources"] = invalid["sources"][:1]
+        with self.assertRaises(ExecutionError):
+            validate_generated_article({**record, "action_value": json.dumps(invalid)})
+
+    def test_generated_article_registry_enforces_one_page_one_intent(self) -> None:
+        source = """import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
+export type GeneratedArticle = { content: ArticlePageContent };
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+"""
+        article = validate_generated_article(self._generated_article_record())
+        updated = update_generated_article_registry(source, article)
+        self.assertIn('"amazon-ppc-account-structure"', updated)
+        with self.assertRaises(ExecutionError):
+            update_generated_article_registry(updated, article)
+        duplicate_intent = dict(article)
+        duplicate_intent["slug"] = "another-ppc-structure-guide"
+        with self.assertRaises(ExecutionError):
+            update_generated_article_registry(updated, duplicate_intent)
+
+    def test_article_engine_only_builds_from_repeated_validated_gap(self) -> None:
+        settings = SimpleNamespace(openai_api_key="test-key")
+        intelligence = {
+            "summary": {"weekly_validation_cycles": 2},
+            "clusters": [
+                {
+                    "cluster_id": "cluster-123",
+                    "label": "how to structure an amazon ppc account",
+                    "normalized_query": "how to structure an amazon ppc account",
+                    "validation_status": "validated",
+                    "quality_status": "eligible",
+                    "ownership_status": "assigned",
+                    "intent": "informational",
+                    "owner_url": "https://anatainc.com/services/amazon-advertising",
+                    "alignment": {"composite": 0.2},
+                    "evidence_classes": ["observed_search", "observed_answer_engine"],
+                    "citation": {
+                        "cited_urls": [
+                            {"title": "Amazon Ads", "url": "https://advertising.amazon.com/library/guides"},
+                            {"title": "Google Search", "url": "https://developers.google.com/search/docs"},
+                        ]
+                    },
+                }
+            ],
+        }
+        generated = json.loads(str(self._generated_article_record()["action_value"]))
+
+        def requester(**_: object) -> dict[str, object]:
+            return generated
+
+        action = build_article_action(
+            settings=settings,
+            query_intelligence=intelligence,
+            requester=requester,
+        )
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action["action_type"], "publish_blog_article")
+        self.assertEqual(action["execution_eligibility"], "auto_execute")
+        validate_generated_article(action)
+        intelligence["summary"] = {"weekly_validation_cycles": 1}
+        self.assertIsNone(
+            build_article_action(
+                settings=settings,
+                query_intelligence=intelligence,
+                requester=requester,
+            )
+        )
+
     def test_github_metadata_validation_requires_reason_evidence_and_safe_lengths(self) -> None:
         record = {
             "action_type": "meta_update",
@@ -1453,6 +1651,28 @@ export default function Page() {
             assert entry is not None
             self.assertEqual(entry["slug"], "2026-03-26-demo-report")
             self.assertEqual(entry["title"], "Demo Report")
+
+    def test_latest_report_entry_uses_enriched_json_artifact_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            daily = settings.website_ops_root / "reports" / "daily"
+            weekly = settings.website_ops_root / "reports" / "weekly"
+            daily.mkdir(parents=True, exist_ok=True)
+            weekly.mkdir(parents=True, exist_ok=True)
+            daily_md = daily / "2026-03-27-daily.md"
+            weekly_md = weekly / "2026-03-26-weekly.md"
+            daily_json = daily_md.with_suffix(".json")
+            daily_md.write_text("# Daily\n\nDate: 2026-03-27\n")
+            daily_json.write_text("{}")
+            weekly_md.write_text("# Weekly\n\nDate: 2026-03-26\n")
+            now = datetime.now(timezone.utc).timestamp()
+            os.utime(daily_md, (now - 30, now - 30))
+            os.utime(weekly_md, (now - 10, now - 10))
+            os.utime(daily_json, (now, now))
+            entry = latest_report_entry(settings)
+            self.assertIsNotNone(entry)
+            assert entry is not None
+            self.assertEqual(entry["slug"], "2026-03-27-daily")
 
 
 if __name__ == "__main__":
