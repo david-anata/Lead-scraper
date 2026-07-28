@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from sales_support_agent.services import website_ops_vendor as website_ops
 from sales_support_agent.services.website_ops_autonomy import (
+    _load_service_account_info,
     _deterministic_metadata_actions,
     build_autonomy_overlay,
 )
@@ -68,6 +69,22 @@ from sales_support_agent.services.website_ops_github import (
 
 
 class AdminWebsiteOpsTests(unittest.TestCase):
+    def test_google_credential_loader_accepts_render_multiline_object_format(self) -> None:
+        payload = _load_service_account_info(
+            """{
+  type: "service_account",
+  project_id: "anata-project",
+  client_email: "website-ops@example.iam.gserviceaccount.com",
+  private_key: "-----BEGIN PRIVATE KEY-----
+example
+-----END PRIVATE KEY-----
+",
+  token_uri: "https://oauth2.googleapis.com/token",
+}"""
+        )
+        self.assertEqual(payload["project_id"], "anata-project")
+        self.assertIn("BEGIN PRIVATE KEY", payload["private_key"])
+
     def _generated_article_record(self) -> dict[str, object]:
         article = {
             "slug": "amazon-ppc-account-structure",

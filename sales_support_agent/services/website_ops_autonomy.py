@@ -77,7 +77,19 @@ def _load_service_account_info(raw: str) -> dict[str, Any]:
     if not raw:
         raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON is missing.")
     if raw.lstrip().startswith("{"):
-        payload = json.loads(raw)
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            # Render's multiline editor can preserve a credential copied from a
+            # JavaScript object with unquoted keys or literal private-key line
+            # breaks. Normalize that data-only shape without ever evaluating it.
+            normalized = re.sub(
+                r'(?P<prefix>[{,]\s*)(?P<key>[A-Za-z_][A-Za-z0-9_]*)(?P<suffix>\s*:)',
+                r'\g<prefix>"\g<key>"\g<suffix>',
+                raw,
+            )
+            normalized = re.sub(r",(\s*[}\]])", r"\1", normalized)
+            payload = json.loads(normalized, strict=False)
     else:
         payload = json.loads(Path(raw).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
