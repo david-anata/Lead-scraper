@@ -1,0 +1,149 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from sales_support_agent.services.website_ops_program import (
+    build_indexing_inventory,
+    build_program_plan,
+    classify_indexing_record,
+    load_indexing_inventory,
+)
+
+
+class WebsiteOpsProgramTests(unittest.TestCase):
+    def test_wordpress_system_pattern_is_an_intentional_403(self) -> None:
+        record = classify_indexing_record(
+            {
+                "url": "https://anatainc.com/wp-*.php",
+                "reason": "Blocked due to access forbidden (403)",
+                "last_crawled": "2026-07-23",
+            }
+        )
+        self.assertTrue(record["intentional"])
+        self.assertEqual(record["desired_state"], "blocked intentionally")
+        self.assertIn("Retain", record["next_operation"])
+
+    def test_real_marketing_403_requires_high_priority_investigation(self) -> None:
+        record = classify_indexing_record(
+            {
+                "url": "https://anatainc.com/services/fulfillment/",
+                "reason": "Blocked due to access forbidden (403)",
+            }
+        )
+        self.assertFalse(record["intentional"])
+        self.assertEqual(record["desired_state"], "investigate")
+        self.assertEqual(record["priority"], "high")
+
+    def test_inventory_preserves_reason_and_desired_state_counts(self) -> None:
+        inventory = build_indexing_inventory(
+            [
+                {
+                    "url": "https://anatainc.com/a",
+                    "reason": "Crawled - currently not indexed",
+                },
+                {
+                    "url": "https://anatainc.com/b",
+                    "reason": "Page with redirect",
+                },
+                {
+                    "url": "https://anatainc.com/wp-*.php",
+                    "reason": "Blocked due to access forbidden (403)",
+                },
+            ]
+        )
+        self.assertEqual(inventory["summary"]["known_urls"], 3)
+        self.assertEqual(inventory["summary"]["needs_action"], 2)
+        self.assertEqual(inventory["summary"]["intentional_exclusions"], 1)
+        self.assertEqual(inventory["summary"]["desired_state_counts"]["investigate"], 1)
+
+    def test_load_inventory_imports_search_console_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            directory = root / "indexing"
+            directory.mkdir()
+            (directory / "crawled.csv").write_text(
+                "URL,Last crawled,Reason\n"
+                "https://anatainc.com/guide,Jul 23 2026,Crawled - currently not indexed\n",
+                encoding="utf-8",
+            )
+            inventory = load_indexing_inventory(root)
+        self.assertEqual(inventory["summary"]["known_urls"], 1)
+        self.assertEqual(
+            inventory["records"][0]["reason"],
+            "Crawled - currently not indexed",
+        )
+
+    def test_durable_inventory_takes_precedence_over_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            directory = root / "indexing"
+            directory.mkdir()
+            payload = build_indexing_inventory(
+                [{"url": "https://anatainc.com/a", "reason": "Not found (404)"}]
+            )
+            (directory / "inventory.json").write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+            (directory / "other.csv").write_text(
+                "URL,Reason\nhttps://anatainc.com/b,Page with redirect\n",
+                encoding="utf-8",
+            )
+            inventory = load_indexing_inventory(root)
+        self.assertEqual(inventory["summary"]["known_urls"], 1)
+        self.assertEqual(inventory["records"][0]["url"], "https://anatainc.com/a")
+
+    def test_program_plan_exposes_indexing_and_measurement_next_work(self) -> None:
+        plan = build_program_plan(
+            analytics_status={
+                "search_console": True,
+                "ga4": True,
+                "ga4_trust_status": "partial",
+                "primary_lead_event": "generate_lead",
+            },
+            action_queue=[],
+            support_requests=[],
+            indexing_inventory=build_indexing_inventory([]),
+        )
+        self.assertEqual(
+            plan["current"]["title"],
+            "Import and classify Search Console indexing exclusions",
+        )
+        self.assertEqual(plan["next"][0]["title"], "Validate qualified-lead attribution")
+        self.assertTrue(plan["next"][0]["needs_david"])
+
+    def test_qualified_action_precedes_indexing_backlog(self) -> None:
+        plan = build_program_plan(
+            analytics_status={
+                "search_console": True,
+                "ga4": True,
+                "ga4_trust_status": "trusted",
+            },
+            action_queue=[
+                {
+                    "page_url": "https://anatainc.com/services/fulfillment/",
+                    "action_type": "meta_update",
+                    "section_name": "Search metadata",
+                    "after_state": "Use intent-aligned metadata.",
+                    "execution_eligibility": "auto_execute",
+                    "confidence": "high",
+                    "evidence": ["Observed non-branded query demand."],
+                }
+            ],
+            support_requests=[],
+            indexing_inventory=build_indexing_inventory([]),
+        )
+        self.assertEqual(plan["current"]["title"], "Search metadata")
+        self.assertEqual(plan["current"]["state"], "Ready")
+        self.assertEqual(
+            plan["next"][0]["title"],
+            "Import and classify Search Console indexing exclusions",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
+

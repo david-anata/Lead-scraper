@@ -22,6 +22,10 @@ from sales_support_agent.services.website_ops_autonomy import build_autonomy_ove
 from sales_support_agent.services.website_ops_query_intelligence import (
     load_query_intelligence,
 )
+from sales_support_agent.services.website_ops_program import (
+    build_program_plan,
+    load_indexing_inventory,
+)
 from sales_support_agent.services.website_ops_github import (
     CONTENT_ACTION_TYPES,
     METADATA_ACTION_TYPES,
@@ -370,6 +374,18 @@ def _report_change_fingerprint(report: Mapping[str, Any]) -> str:
             for value in report.get("support_requests", []) or []
             if str(value).strip()
         ),
+        "program_plan": {
+            "current": {
+                key: value
+                for key, value in dict((report.get("program_plan") or {}).get("current") or {}).items()
+                if key in {"title", "state", "work_type", "target", "next_operation", "needs_david"}
+            },
+            "next": _stable_records(
+                (report.get("program_plan") or {}).get("next"),
+                ("title", "state", "work_type", "target", "next_operation", "needs_david"),
+            ),
+        },
+        "indexing_summary": dict((report.get("indexing_inventory") or {}).get("summary") or {}),
     }
     return hashlib.sha256(
         json.dumps(stable_payload, sort_keys=True, default=str).encode("utf-8")
@@ -418,7 +434,7 @@ def send_website_ops_report_email(
     state = _load_notification_state(settings)
     previous = str(state.get(f"{mode}_fingerprint", "") or "")
     changed = fingerprint != previous
-    should_send = bool(force or mode in {"daily", "weekly", "monthly"})
+    should_send = bool(force or changed)
     result = {
         "attempted": False,
         "sent": False,
@@ -431,6 +447,9 @@ def send_website_ops_report_email(
         from_address=str(getattr(settings, "website_ops_email_from", "") or "")
     ):
         result["reason"] = "email_not_configured"
+        return result
+    if not should_send:
+        result["reason"] = "unchanged"
         return result
 
     issues = list(report.get("issues") or [])
@@ -461,6 +480,37 @@ def send_website_ops_report_email(
     todo_lines = [f"- {item}" for item in support_requests]
     if not todo_lines:
         todo_lines = ["- Nothing requires your attention today."]
+    program_plan = dict(report.get("program_plan") or {})
+    current_work = dict(program_plan.get("current") or {})
+    next_work = [dict(item) for item in list(program_plan.get("next") or []) if isinstance(item, Mapping)]
+    work_lines = []
+    if current_work:
+        work_lines.append(
+            "- NOW | "
+            + " | ".join(
+                value
+                for value in (
+                    str(current_work.get("title", "")).strip(),
+                    str(current_work.get("state", "")).strip(),
+                    str(current_work.get("next_operation", "")).strip(),
+                )
+                if value
+            )
+        )
+    work_lines.extend(
+        "- NEXT | "
+        + " | ".join(
+            value
+            for value in (
+                str(item.get("title", "")).strip(),
+                str(item.get("state", "")).strip(),
+            )
+            if value
+        )
+        for item in next_work[:4]
+    )
+    if not work_lines:
+        work_lines = ["- Run the daily sweep to generate the next source-backed work plan."]
     subject = (
         f"Website Ops {mode}: {len(executed)} changed, "
         f"{len(support_requests)} for you"
@@ -485,6 +535,9 @@ def send_website_ops_report_email(
             "",
             "Your to-do list:",
             *todo_lines,
+            "",
+            "What Agent is working on next:",
+            *work_lines,
             "",
             "Review the evidence and full report:",
             "https://agent.anatainc.com/admin/website-ops/reports/latest",
@@ -1213,6 +1266,14 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
                 visible_feedback_entries,
                 report_slug=_slugify_text(report_title),
             )
+    indexing_inventory = load_indexing_inventory(settings.website_ops_root)
+    enriched_report["indexing_inventory"] = indexing_inventory
+    enriched_report["program_plan"] = build_program_plan(
+        analytics_status=dict(enriched_report.get("analytics_status") or {}),
+        action_queue=list(enriched_report.get("action_queue") or []),
+        support_requests=list(enriched_report.get("support_requests") or []),
+        indexing_inventory=indexing_inventory,
+    )
     artifacts = website_ops.write_daily_report_artifacts(enriched_report, output_dir=output_dir, config=config)
     enriched_report["email_delivery"] = send_website_ops_report_email(
         settings,
@@ -2152,6 +2213,69 @@ def _feedback_cards(
     return "".join(cards)
 
 
+def _program_work_card(item: Mapping[str, Any], *, rank: int, current: bool = False) -> str:
+    state = str(item.get("state", "Next")).strip() or "Next"
+    state_tone = "status-ok" if state in {"Ready", "Measuring"} else "status-warn"
+    if state == "Blocked":
+        state_tone = "status-bad"
+    return f"""
+      <article class="action-card">
+        <div class="row-actions">
+          <span class="status-pill status-neutral">{'Now' if current else f'Next {rank}'}</span>
+          <span class="status-pill {state_tone}">{html.escape(state)}</span>
+          <span class="source-chip">{html.escape(str(item.get('work_type', 'Website improvement')))}</span>
+        </div>
+        <h3>{html.escape(str(item.get('title', 'Website Ops work item')))}</h3>
+        <p class="muted">{html.escape(str(item.get('target', 'anatainc.com')))}</p>
+        <p><strong>Next operation:</strong> {html.escape(str(item.get('next_operation', 'No operation recorded.')))}</p>
+        <p class="muted"><strong>Why now:</strong> {html.escape(str(item.get('evidence', 'No evidence recorded.')))}</p>
+        <div class="mini-grid">
+          {_mini_chip("Impact", str(item.get("business_impact", "Not recorded")))}
+          {_mini_chip("Confidence", str(item.get("confidence", "Unknown")))}
+          {_mini_chip("Risk", str(item.get("risk", "Unknown")))}
+          {_mini_chip("Owner", str(item.get("owner", "Website Ops")))}
+        </div>
+        <details>
+          <summary class="text-link">Start and validation conditions</summary>
+          <p class="muted"><strong>Starts when:</strong> {html.escape(str(item.get('start_condition', 'Not recorded.')))}</p>
+          <p class="muted"><strong>Validated by:</strong> {html.escape(str(item.get('validation', 'Not recorded.')))}</p>
+        </details>
+      </article>
+    """
+
+
+def _program_plan_panel(plan: Mapping[str, Any]) -> str:
+    current = dict(plan.get("current") or {})
+    next_items = [dict(item) for item in list(plan.get("next") or []) if isinstance(item, Mapping)]
+    if not current:
+        return """
+          <section class="card stack">
+            <p class="eyebrow">Current and next work</p>
+            <h2>No work plan has been generated yet.</h2>
+            <p class="lead">Run the daily sweep to build a source-backed operating plan.</p>
+          </section>
+        """
+    cards = [_program_work_card(current, rank=0, current=True)]
+    cards.extend(
+        _program_work_card(item, rank=index, current=False)
+        for index, item in enumerate(next_items, start=1)
+    )
+    generated_at = str(plan.get("generated_at", "")).strip()
+    return f"""
+      <section class="card stack">
+        <div class="row-actions">
+          <div class="stack">
+            <p class="eyebrow">Current and next work</p>
+            <h2>What Agent is working on next</h2>
+          </div>
+          {f"<span class='muted'>Plan generated {html.escape(generated_at)}</span>" if generated_at else ""}
+        </div>
+        <p class="lead">This plan comes from the latest source health, qualified actions, indexing inventory, and measurement trust. It distinguishes active work from work that needs you.</p>
+        <div class="widget-scroll">{''.join(cards)}</div>
+      </section>
+    """
+
+
 def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: dict | None = None) -> str:
     reports = _report_entries(settings)
     latest = reports[0] if reports else None
@@ -2175,6 +2299,19 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     )
     analytics_status.setdefault("customer_language_status", "quarantined")
     latest_payload["analytics_status"] = analytics_status
+    indexing_inventory = dict(
+        latest_payload.get("indexing_inventory")
+        or load_indexing_inventory(settings.website_ops_root)
+    )
+    program_plan = dict(
+        latest_payload.get("program_plan")
+        or build_program_plan(
+            analytics_status=analytics_status,
+            action_queue=action_queue,
+            support_requests=support_requests,
+            indexing_inventory=indexing_inventory,
+        )
+    )
     decision_ready = _decision_data_ready(analytics_status)
     page_insights = [
         dict(item)
@@ -2223,6 +2360,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             {schedule_note}
         </section>
         {_operator_blocker_panel(analytics_status)}
+        {_program_plan_panel(program_plan)}
         <section class="hero">
           <div id="submit-issue" class="card stack">
             <p class="eyebrow">Current scope</p>
@@ -2330,6 +2468,81 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
       {_dashboard_auto_run_script(run_state)}
     """
     return _page_shell("agent | Website Ops", body)
+
+
+def render_indexing_page(settings: Settings, *, user: dict | None = None) -> str:
+    inventory = load_indexing_inventory(settings.website_ops_root)
+    summary = dict(inventory.get("summary") or {})
+    records = [dict(item) for item in list(inventory.get("records") or []) if isinstance(item, Mapping)]
+    reason_counts = dict(summary.get("reason_counts") or {})
+    reason_cards = "".join(
+        _summary_chip(reason, count, tone="neutral")
+        for reason, count in sorted(reason_counts.items(), key=lambda item: (-int(item[1]), item[0]))
+    )
+    rows = "".join(
+        f"""
+          <tr>
+            <td><a class="text-link" href="{html.escape(str(item.get('url', '')), quote=True)}">{html.escape(_short_page_label(str(item.get('url', ''))))}</a></td>
+            <td>{html.escape(str(item.get('reason', 'Unspecified')))}</td>
+            <td><span class="status-pill {'status-ok' if item.get('intentional') else 'status-warn'}">{html.escape(str(item.get('desired_state', 'investigate')).replace('_', ' ').title())}</span></td>
+            <td>{html.escape(str(item.get('priority', 'medium')).title())}</td>
+            <td>{html.escape(str(item.get('next_operation', '')))}</td>
+            <td>{html.escape(str(item.get('last_crawled', '') or 'Unavailable'))}</td>
+          </tr>
+        """
+        for item in records
+    )
+    empty = """
+      <div class="list-card empty-state">
+        <h3>No Search Console indexing URLs imported yet.</h3>
+        <p class="muted">Place Page Indexing CSV or JSON exports in Website Ops indexing storage. The next scheduled run will classify every URL without treating missing data as zero.</p>
+        <p class="muted">Recognized columns include URL, Reason, and Last crawled. Intentional <code>wp-*.php</code> protection remains excluded from remediation.</p>
+      </div>
+    """
+    body = f"""
+      {_nav("website_ops", website_ops_section="indexing", user=user)}
+      <main id="agent-main-content" class="shell app-container app-page">
+        <section class="card stack">
+          <p class="eyebrow">Website Ops indexing</p>
+          <h1>Every known URL gets a desired search state.</h1>
+          <p class="lead">Search Console exclusions are reconciled against production evidence before Agent improves, consolidates, redirects, or intentionally excludes a URL.</p>
+          <div class="button-row">
+            <form action="/admin/api/website-ops/run" method="post">
+              <input type="hidden" name="mode" value="daily">
+              <button type="submit">Run Daily Sweep</button>
+            </form>
+            <a class="btn btn--ghost" href="/admin/website-ops">Return to Overview</a>
+          </div>
+        </section>
+        <section class="stats">
+          {_dashboard_stat_card("Known URLs", summary.get("known_urls", 0), "Imported indexing evidence", "/admin/website-ops/indexing")}
+          {_dashboard_stat_card("Needs Action", summary.get("needs_action", 0), "Improve, consolidate, or investigate", "/admin/website-ops/indexing")}
+          {_dashboard_stat_card("Intentional", summary.get("intentional_exclusions", 0), "Protected or deliberately excluded", "/admin/website-ops/indexing")}
+        </section>
+        <section class="card stack">
+          <h2>Reason groups</h2>
+          <div class="summary-grid">{reason_cards or _summary_chip("No imported reasons", "Waiting", tone="neutral")}</div>
+        </section>
+        <section class="card stack">
+          <div class="row-actions">
+            <div class="stack">
+              <h2>URL classification ledger</h2>
+              <p class="lead-sm">A crawler or Search Console warning is evidence to investigate, not automatic permission to change production.</p>
+            </div>
+            <span class="status-pill status-neutral">{len(records)} records</span>
+          </div>
+          {f'''
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>URL</th><th>Search Console reason</th><th>Desired state</th><th>Priority</th><th>Next operation</th><th>Last crawled</th></tr></thead>
+              <tbody>{rows}</tbody>
+            </table>
+          </div>
+          ''' if records else empty}
+        </section>
+      </main>
+    """
+    return _page_shell("agent | Website Ops — Indexing", body)
 
 
 def _query_filter_matches(cluster: Mapping[str, Any], status_filter: str) -> bool:

@@ -35,6 +35,7 @@ from sales_support_agent.services.website_ops import (
     load_website_ops_run_state,
     render_dashboard_page,
     render_feedback_detail_page,
+    render_indexing_page,
     render_query_map_page,
     render_queue_page,
     render_report_page,
@@ -255,7 +256,7 @@ example
                 ("https://anatainc.com/", "https://anatainc.com/services"),
             )
 
-    def test_daily_email_always_sends_an_operations_brief(self) -> None:
+    def test_daily_email_sends_only_when_meaningful_state_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = SimpleNamespace(
                 website_ops_root=Path(tmpdir),
@@ -272,13 +273,14 @@ example
                 first = send_website_ops_report_email(settings, mode="daily", report=report)
                 second = send_website_ops_report_email(settings, mode="daily", report=report)
             self.assertTrue(first["sent"])
-            self.assertTrue(second["sent"])
+            self.assertFalse(second["sent"])
             self.assertFalse(second["changed"])
-            self.assertEqual(second["reason"], "")
-            self.assertEqual(send.call_count, 2)
-            sent_text = send.call_args.kwargs["text"]
+            self.assertEqual(second["reason"], "unchanged")
+            self.assertEqual(send.call_count, 1)
+            sent_text = send.call_args_list[0].kwargs["text"]
             self.assertIn("Changes completed:", sent_text)
             self.assertIn("Your to-do list:", sent_text)
+            self.assertIn("What Agent is working on next:", sent_text)
             self.assertIn("Nothing requires your attention today.", sent_text)
 
     def test_daily_email_ignores_volatile_report_fields(self) -> None:
@@ -300,9 +302,10 @@ example
             ) as send:
                 send_website_ops_report_email(settings, mode="daily", report=first_report)
                 second = send_website_ops_report_email(settings, mode="daily", report=second_report)
-            self.assertTrue(second["sent"])
+            self.assertFalse(second["sent"])
             self.assertFalse(second["changed"])
-            self.assertEqual(send.call_count, 2)
+            self.assertEqual(second["reason"], "unchanged")
+            self.assertEqual(send.call_count, 1)
 
     def test_run_due_respects_daily_weekly_and_monthly_periods(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1634,6 +1637,31 @@ export default function Page() {
             self.assertIn("FAQ Demand", html)
             self.assertIn("Task block reason", html)
             self.assertIn("The page is not thin enough for MVP section expansion.", html)
+
+    def test_dashboard_render_shows_current_and_next_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            html = render_dashboard_page(settings)
+            self.assertIn("What Agent is working on next", html)
+            self.assertIn("Import and classify Search Console indexing exclusions", html)
+            self.assertIn("Validate qualified-lead attribution", html)
+
+    def test_indexing_page_renders_classified_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            directory = settings.website_ops_root / "indexing"
+            directory.mkdir(parents=True)
+            (directory / "search-console.csv").write_text(
+                "URL,Reason,Last crawled\n"
+                "https://anatainc.com/services/fulfillment/,Crawled - currently not indexed,Jul 23 2026\n"
+                "https://anatainc.com/wp-*.php,Blocked due to access forbidden (403),Jul 23 2026\n",
+                encoding="utf-8",
+            )
+            html = render_indexing_page(settings)
+            self.assertIn("Every known URL gets a desired search state", html)
+            self.assertIn("services/fulfillment", html)
+            self.assertIn("Blocked Intentionally", html)
+            self.assertIn("2 records", html)
 
     def test_run_website_ops_auto_executes_new_high_confidence_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

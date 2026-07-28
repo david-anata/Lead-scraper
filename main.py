@@ -71,6 +71,7 @@ from sales_support_agent.services.website_ops import (
     latest_report_entry as latest_website_ops_report_entry,
     render_dashboard_page as render_website_ops_dashboard_page,
     render_feedback_detail_page as render_website_ops_feedback_detail_page,
+    render_indexing_page as render_website_ops_indexing_page,
     render_queue_page as render_website_ops_queue_page,
     render_report_page as render_website_ops_report_page,
     render_reports_page as render_website_ops_reports_page,
@@ -4300,6 +4301,17 @@ def admin_website_ops_queue(request: Request, status: str = "") -> Response:
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
     return HTMLResponse(render_website_ops_queue_page(load_website_ops_settings(), status_filter=status, user=_current_nav_user(request)))
+
+
+@app.get("/admin/website-ops/indexing", response_class=HTMLResponse)
+def admin_website_ops_indexing(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_website_ops_indexing_page(load_website_ops_settings(), user=_current_nav_user(request)))
 
 
 @app.get("/admin/website-ops/reports", response_class=HTMLResponse)
