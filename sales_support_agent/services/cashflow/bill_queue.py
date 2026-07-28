@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import hmac
+import re
 from datetime import date, datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from hashlib import sha256
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
@@ -20,6 +23,10 @@ from sales_support_agent.services.cashflow.vendor_aliases import combine_vendor_
 BATCH_ACTION = "bill_queue_batch_recorded"
 BATCH_ENTITY = "bill_queue_batch"
 VALID_ACTIONS = frozenset({"track", "not_a_bill", "snooze", "combine"})
+_VENDOR_STOP_WORDS = frozenset({
+    "ach", "autopay", "bill", "card", "company", "debit", "online",
+    "payment", "payments", "pmt", "recurring", "services", "the", "web",
+})
 
 
 def _audit_payload(value: Any) -> dict[str, Any]:
@@ -38,6 +45,56 @@ def _forecast_effect(pattern: Mapping[str, Any], days: int) -> int:
     if not isinstance(due, date):
         due = date.fromisoformat(str(due)[:10])
     return int(pattern.get("amount_cents") or 0) if due <= date.today() + timedelta(days=days) else 0
+
+
+def _vendor_tokens(value: str) -> set[str]:
+    return {
+        word for word in re.findall(r"[a-z0-9]+", str(value or "").lower())
+        if len(word) > 1 and word not in _VENDOR_STOP_WORDS and not word.isdigit()
+    }
+
+
+def _possible_schedule_match(pattern: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Find a strong deterministic match without changing either record."""
+    candidate_name = str(pattern.get("vendor") or "")
+    candidate_tokens = _vendor_tokens(candidate_name)
+    if not candidate_tokens:
+        return None
+    try:
+        with get_engine().connect() as connection:
+            schedules = connection.execute(text("""
+                SELECT id, name, vendor_or_customer, amount_cents, next_due_date
+                FROM recurring_templates
+                WHERE event_type='outflow' AND is_active=true
+            """)).fetchall()
+    except Exception:
+        return None
+    matches: list[tuple[float, dict[str, Any]]] = []
+    for schedule in schedules:
+        values = dict(schedule._mapping)
+        schedule_name = str(
+            values.get("vendor_or_customer") or values.get("name") or ""
+        )
+        schedule_tokens = _vendor_tokens(schedule_name)
+        if not schedule_tokens:
+            continue
+        overlap = len(candidate_tokens & schedule_tokens) / len(
+            candidate_tokens | schedule_tokens
+        )
+        wording = SequenceMatcher(
+            None, candidate_name.lower(), schedule_name.lower()
+        ).ratio()
+        score = max(overlap, wording)
+        if score < 0.60:
+            continue
+        matches.append((score, {
+            "schedule_id": str(values.get("id") or ""),
+            "vendor": schedule_name,
+            "amount_cents": int(values.get("amount_cents") or 0),
+            "next_due": str(values.get("next_due_date") or ""),
+            "match_score": round(score, 3),
+        }))
+    return max(matches, key=lambda match: match[0])[1] if matches else None
 
 
 def _selected_patterns(keys: Iterable[str]) -> tuple[list[str], dict[str, dict[str, Any]]]:
@@ -78,7 +135,7 @@ def preview_combine(
     )
     if after is None:
         raise ValueError("these histories do not form one reliable bill")
-    return {
+    result = {
         "before": [{
             "pattern_key": row["pattern_key"], "merchant_key": row["merchant_key"],
             "vendor": row["vendor"], "amount_cents": row["amount_cents"],
@@ -94,6 +151,13 @@ def preview_combine(
             "The two existing estimates are not added together."
         ),
     }
+    result["preview_token"] = sha256(json.dumps({
+        "keys": keys,
+        "canonical_key": keep,
+        "canonical_name": name,
+        "after": result["after"],
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return result
 
 
 def preview_track(pattern_keys: Iterable[str], *, payment_date: str = "") -> dict[str, Any]:
@@ -105,6 +169,7 @@ def preview_track(pattern_keys: Iterable[str], *, payment_date: str = "") -> dic
         pattern = dict(available[key])
         if override:
             pattern["next_due"] = override
+        duplicate = _possible_schedule_match(pattern)
         rows.append({
             "pattern_key": key,
             "vendor": pattern["vendor"],
@@ -113,11 +178,13 @@ def preview_track(pattern_keys: Iterable[str], *, payment_date: str = "") -> dic
             "next_due": str(pattern["next_due"]),
             "effect_14_cents": _forecast_effect(pattern, 14),
             "effect_30_cents": _forecast_effect(pattern, 30),
-            "possible_duplicate": bool(pattern.get("already_tracked")),
+            "possible_duplicate": duplicate,
         })
-    if any(row["possible_duplicate"] for row in rows):
-        raise ValueError("A matching schedule already exists. Review that schedule before tracking this bill.")
-    return {"rows": rows, "total_monthly_cost_cents": sum(row["monthly_cost_cents"] for row in rows)}
+    return {
+        "rows": rows,
+        "blocked": any(bool(row["possible_duplicate"]) for row in rows),
+        "total_monthly_cost_cents": sum(row["monthly_cost_cents"] for row in rows),
+    }
 
 
 def list_queue_activity(*, limit: int = 20) -> list[dict[str, Any]]:
@@ -169,7 +236,8 @@ def _write_decision(
 def apply_queue_action(
     pattern_keys: Iterable[str], action: str, *, actor: str, category: str = "",
     paid_in_pieces: bool | None = None, payment_date: str = "",
-    canonical_key: str = "", canonical_name: str = "", request_id: str = "",
+    canonical_key: str = "", canonical_name: str = "", preview_token: str = "",
+    request_id: str = "",
 ) -> dict[str, Any]:
     action = str(action or "").strip()
     if action not in VALID_ACTIONS:
@@ -177,10 +245,20 @@ def apply_queue_action(
     keys, available = _selected_patterns(pattern_keys)
     if action == "combine" and len(keys) < 2:
         raise ValueError("choose at least two bills to combine")
+    if action == "track":
+        track_preview = preview_track(keys, payment_date=payment_date)
+        if track_preview["blocked"]:
+            matches = ", ".join(
+                str(row["possible_duplicate"]["vendor"])
+                for row in track_preview["rows"] if row["possible_duplicate"]
+            )
+            raise ValueError(
+                f"Review the matching schedule before tracking this bill: {matches}."
+            )
     if action == "track" and payment_date:
         date.fromisoformat(payment_date)
     request_id = request_id or uuid4().hex
-    batch_id = uuid4().hex
+    batch_id = sha256(f"bill-queue-batch:{request_id}".encode()).hexdigest()[:32]
     prior_records = _decision_records()
     previous = {
         key: {
@@ -192,6 +270,10 @@ def apply_queue_action(
     with get_engine().begin() as connection:
         if action == "combine":
             preview = preview_combine(keys, canonical_key=canonical_key, canonical_name=canonical_name)
+            if not preview_token or not hmac.compare_digest(
+                preview["preview_token"], str(preview_token)
+            ):
+                raise ValueError("Preview the current combination before confirming it.")
             combine_vendor_keys(
                 [str(available[key]["merchant_key"]) for key in keys],
                 canonical_key=preview["after"]["merchant_key"],
@@ -236,6 +318,7 @@ def apply_queue_action(
                 id, scope_key, action_type, entity_type, entity_id,
                 actor, evidence_json, created_at
             ) VALUES (:id, 'default', :action, :entity, :id, :actor, :payload, :now)
+            ON CONFLICT(id) DO NOTHING
         """), {
             "id": batch_id, "action": BATCH_ACTION, "entity": BATCH_ENTITY,
             "actor": actor, "payload": json.dumps(payload), "now": datetime.now(timezone.utc),

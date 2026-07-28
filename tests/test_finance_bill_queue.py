@@ -106,6 +106,63 @@ def test_combine_recalculates_raw_history_instead_of_adding_projections(finance_
     summed = sum(row["amount_cents"] for row in preview["before"])
     assert preview["after"]["amount_cents"] != summed
     assert "not added together" in preview["explanation"]
+    with pytest.raises(ValueError, match="Preview the current combination"):
+        apply_queue_action(
+            [row["pattern_key"] for row in patterns], "combine", actor="qa",
+            canonical_key=preview["after"]["merchant_key"],
+            canonical_name=preview["after"]["vendor"],
+        )
+
+
+def test_combine_confirmation_is_bound_to_current_preview(finance_engine):
+    for i, age in enumerate((165, 135, 105, 75)):
+        _payment(finance_engine, f"a{i}", "North Star Media", age, 10_000)
+    for i, age in enumerate((150, 120, 90, 60)):
+        _payment(finance_engine, f"b{i}", "Northstar Services", age, 12_000)
+    patterns = list_bill_patterns()["patterns"]
+    keys = [row["pattern_key"] for row in patterns]
+    preview = preview_combine(keys, canonical_name="North Star")
+    changed = preview_combine(keys, canonical_name="North Star Media")
+    assert preview["preview_token"] != changed["preview_token"]
+    with pytest.raises(ValueError, match="Preview the current combination"):
+        apply_queue_action(
+            keys, "combine", actor="qa", canonical_name="North Star Media",
+            preview_token=preview["preview_token"],
+        )
+    result = apply_queue_action(
+        keys, "combine", actor="qa", canonical_name="North Star",
+        preview_token=preview["preview_token"],
+    )
+    assert result["applied"] == 2
+
+
+def test_tracking_pauses_for_possible_existing_schedule(finance_engine):
+    pattern = next(
+        row for row in _two_patterns(finance_engine)
+        if "Acme" in row["vendor"]
+    )
+    with finance_engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO recurring_templates (
+                id, name, vendor_or_customer, event_type, category, amount_cents,
+                confidence, notes, flexibility, frequency, next_due_date,
+                is_active, clickup_task_id, created_at, updated_at
+            ) VALUES (
+                'existing-acme', 'Acme Hosting', 'Acme Hosting', 'outflow',
+                'software', 10000, 'confirmed', '', 'unknown', 'monthly',
+                :next_due, true, '', :now, :now
+            )
+        """), {
+            "next_due": datetime.combine(
+                date.today() + timedelta(days=15), datetime.min.time()
+            ),
+            "now": datetime.now(),
+        })
+    preview = preview_track([pattern["pattern_key"]])
+    assert preview["blocked"] is True
+    assert preview["rows"][0]["possible_duplicate"]["vendor"] == "Acme Hosting"
+    with pytest.raises(ValueError, match="matching schedule"):
+        apply_queue_action([pattern["pattern_key"]], "track", actor="qa")
 
 
 def test_alias_survives_new_bank_rows_and_revoke_restores_grouping(finance_engine):

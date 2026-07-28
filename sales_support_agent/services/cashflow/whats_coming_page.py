@@ -6,6 +6,7 @@ import html
 from datetime import date, timedelta
 from difflib import SequenceMatcher
 from typing import Any, Mapping, Sequence
+from uuid import uuid4
 
 from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
 from sales_support_agent.services.cashflow.overview import _money, _page_shell
@@ -78,6 +79,7 @@ def _row(pattern: Mapping[str, Any], suggestion: str = "") -> str:
         <span class="sr-only">Track this · Not now</span>
         <form method="post" action="{BULK_ACTION}" data-bill-action-form>
           <input type="hidden" name="pattern_keys" value="{key}">
+          <input type="hidden" name="request_id" value="{uuid4().hex}">
           <button class="btn btn-primary" name="action" value="track">Review &amp; track<span class="sr-only"> this</span></button>
           <button class="btn btn-secondary" name="action" value="not_a_bill">Not a bill</button>
           <button class="btn btn-secondary" name="action" value="snooze">Ask me next week<span class="sr-only"> (formerly Not now)</span></button>
@@ -213,6 +215,9 @@ def _script() -> str:
       const undo = document.querySelector('[data-bill-undo]');
       let filter = 'all';
       const money = cents => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(cents/100);
+      const escapeText = value => String(value ?? '').replace(/[&<>"']/g, character => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+      })[character]);
 
       function visibleRows() { return rows().filter(row => !row.hidden); }
       function applyView() {
@@ -265,6 +270,7 @@ def _script() -> str:
       }
       async function submit(form, affected, action) {
         affected.forEach(row => row.classList.add('is-working'));
+        form.setAttribute('aria-busy','true');
         const data = new FormData(form); data.set('action', action);
         if (form === bulk) selected().forEach(box => data.append('pattern_keys', box.value));
         try {
@@ -277,6 +283,8 @@ def _script() -> str:
           updateBar(); applyView();
         } catch(error) {
           affected.forEach(row => { row.classList.remove('is-working'); const msg=row.querySelector('.row-error'); msg.hidden=false; msg.textContent=error.message; });
+        } finally {
+          form.removeAttribute('aria-busy');
         }
       }
 
@@ -291,18 +299,25 @@ def _script() -> str:
         const result=await response.json();
         if (!response.ok) { live.textContent=result.detail; return false; }
         review.querySelector('[data-track-preview]').innerHTML=result.rows.map(row =>
-          `<strong>${row.vendor}</strong><br>${money(row.amount_cents)} each · ${money(row.monthly_cost_cents)}/month · next ${row.next_due}<br>14-day effect: ${money(row.effect_14_cents)} · 30-day effect: ${money(row.effect_30_cents)}`
+          `<strong>${escapeText(row.vendor)}</strong><br>${money(row.amount_cents)} each · ${money(row.monthly_cost_cents)}/month · next ${escapeText(row.next_due)}<br>14-day effect: ${money(row.effect_14_cents)} · 30-day effect: ${money(row.effect_30_cents)}`
+          + (row.possible_duplicate
+            ? `<br><strong role="alert">Possible existing schedule: ${escapeText(row.possible_duplicate.vendor)} (${money(row.possible_duplicate.amount_cents)}, next ${escapeText(row.possible_duplicate.next_due)}). Review that schedule before tracking.</strong>`
+            : '<br>No matching active schedule was found.')
         ).join('<hr>');
-        return true;
+        const confirm=review.querySelector('[data-review-confirm]');
+        confirm.disabled=Boolean(result.blocked);
+        if(result.blocked) live.textContent='Tracking is paused because a possible matching schedule already exists.';
+        return !result.blocked;
       }
       async function openReview(form, affected, action) {
         pending={form,rows:affected,action};
         review.querySelector('[data-review-title]').textContent = action === 'track' ? 'Preview tracking' : action === 'not_a_bill' ? 'Mark as not a bill' : 'Ask me next week';
         review.querySelectorAll('[data-review-fields]').forEach(group => group.hidden = group.dataset.reviewFields !== action);
         review.querySelector('[data-review-confirm]').textContent = action === 'track' ? 'Track bill' : action === 'not_a_bill' ? 'Confirm not a bill' : 'Ask again next week';
+        review.querySelector('[data-review-confirm]').disabled = false;
         review.querySelector('[data-track-preview]').textContent = '';
         if (action === 'track') {
-          if (!await renderTrackPreview(affected)) return;
+          await renderTrackPreview(affected);
         }
         review.showModal();
       }
@@ -337,17 +352,18 @@ def _script() -> str:
 
       const combine=document.querySelector('#bill-combine-dialog');
       let combinePreviewValid=false;
+      let combinePreviewToken='';
       function openCombine(affected){
         if(affected.length<2){live.textContent='Select at least two vendors to combine.';return;}
         const select=combine.querySelector('[name="canonical_key"]');
         select.innerHTML=affected.map(row=>`<option value="${row.dataset.merchantKey}">${row.dataset.vendor}</option>`).join('');
         combine.querySelector('[name="canonical_name"]').value=affected[0].dataset.vendor;
-        combinePreviewValid=false; combine.querySelector('[data-combine-confirm]').hidden=true;
+        combinePreviewValid=false; combinePreviewToken=''; combine.querySelector('[data-combine-confirm]').hidden=true;
         combine.querySelector('[data-combine-preview]').textContent='Preview the recalculated result before confirming.';
         combine.showModal();
       }
       combine.querySelectorAll('input,select').forEach(input=>input.addEventListener('input',()=>{
-        combinePreviewValid=false;combine.querySelector('[data-combine-confirm]').hidden=true;
+        combinePreviewValid=false;combinePreviewToken='';combine.querySelector('[data-combine-confirm]').hidden=true;
       }));
       combine.querySelector('[data-combine-cancel]').addEventListener('click',()=>combine.close());
       combine.querySelector('[data-combine-preview-button]').addEventListener('click',async()=>{
@@ -356,12 +372,14 @@ def _script() -> str:
         const result=await response.json();
         if(!response.ok){combine.querySelector('[data-combine-error]').textContent=result.detail;return;}
         combine.querySelector('[data-combine-preview]').textContent=`${result.before.length} histories become ${result.after.vendor}: ${money(result.after.amount_cents)} ${result.after.frequency}, next ${result.after.next_due}. ${result.explanation}`;
-        combinePreviewValid=true;combine.querySelector('[data-combine-confirm]').hidden=false;
+        combinePreviewToken=result.preview_token||'';
+        combinePreviewValid=Boolean(combinePreviewToken);combine.querySelector('[data-combine-confirm]').hidden=!combinePreviewValid;
       });
       combine.querySelector('[data-combine-confirm]').addEventListener('click',()=>{
         if(!combinePreviewValid)return;
         bulk.querySelector('[name="canonical_key"]').value=combine.querySelector('[name="canonical_key"]').value;
         bulk.querySelector('[name="canonical_name"]').value=combine.querySelector('[name="canonical_name"]').value;
+        bulk.querySelector('[name="preview_token"]').value=combinePreviewToken;
         combine.close();submit(bulk,selected().map(box=>box.closest('[data-bill-row]')),'combine');
       });
       undo.addEventListener('click',async()=>{
@@ -390,6 +408,13 @@ def render_whats_coming_page(*, flash: str = "") -> str:
         body = render_finance_nav(NAV_KEY) + f'<h1>What is coming</h1><div class="card"><strong>Could not load bills.</strong><p>{html.escape(str(exc))}</p></div>'
         return _page_shell("What is coming", NAV_KEY, body, flash=flash)
     patterns = list(listing["patterns"])
+    evidence_dates = [
+        str(item.get("due_date") or "")[:10]
+        for pattern in patterns
+        for item in pattern.get("evidence") or []
+        if item.get("due_date")
+    ]
+    freshness = _day(max(evidence_dates)) if evidence_dates else "No dated bank evidence"
     waiting = [row for row in patterns if not row.get("decision")]
     waiting.sort(key=lambda row: (-int(row.get("monthly_cost_cents") or row.get("amount_cents") or 0), str(row.get("vendor") or "")))
     suggestions: dict[str, str] = {}
@@ -422,11 +447,13 @@ def render_whats_coming_page(*, flash: str = "") -> str:
     {render_finance_nav(NAV_KEY)}
     <div class="finance-page-header"><div><h1>What is coming</h1>
     <p class="page-sub">Decide which regular bank payments belong in the cash plan. Nothing is added until you confirm it.</p>
+    <p class="page-sub"><strong>Bank evidence through {html.escape(freshness)}.</strong></p>
     </div><a href="/admin/finances/recurring" class="btn btn-secondary">Schedules</a></div>
     <p class="sr-only">{len(waiting)} {'bill needs' if len(waiting) == 1 else 'bills need'} an answer</p>
     <p class="sr-only" aria-live="polite" data-bill-live></p>{queue}
     <form method="post" action="{BULK_ACTION}" id="bill-bulk-form" class="bill-bulk-bar">
       <input type="hidden" name="canonical_key"><input type="hidden" name="canonical_name">
+      <input type="hidden" name="preview_token"><input type="hidden" name="request_id" value="{uuid4().hex}">
       <strong data-selected-count>0 selected</strong><button class="btn btn-primary" name="action" value="track">Track</button>
       <button class="btn btn-secondary" name="action" value="not_a_bill">Not a bill</button>
       <button class="btn btn-secondary" name="action" value="snooze">Ask me next week</button>
