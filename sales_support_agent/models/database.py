@@ -253,44 +253,14 @@ def backfill_building_inquiry_assignments(
 def _ensure_building_tables(engine: Any) -> None:
     """Create additive Anata Building tables on persistent databases."""
 
-    table_names = {
-        "building_spaces",
-        "building_offerings",
-        "building_rate_plans",
-        "building_launch_decisions",
-        "building_availability_blocks",
-        "building_inquiries",
-        "building_audit_events",
-        "building_lifestyle_media",
-        "building_tenant_logos",
-        "building_testimonials",
-        "building_contacts",
-        "building_contact_merges",
-        "building_roster_imports",
-        "building_relationships",
-        "building_communication_preferences",
-        "building_suppressions",
-        "building_privacy_requests",
-        "building_segments",
-        "building_campaigns",
-        "building_campaign_recipients",
-        "building_email_events",
-        "building_reservations",
-        "building_event_lifecycle_commands",
-        "building_agreements",
-        "building_agreement_templates",
-        "building_payment_request_readiness",
-        "building_proposals",
-        "building_tours",
-        "building_deposit_evidence",
-        "building_billing_accounts",
-        "building_billing_schedules",
-        "building_invoices",
-        "building_collection_cases",
-        "building_payments",
-        "building_stripe_events",
-    }
-    tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
+    # The ORM registry is the source of truth. A hand-maintained allowlist
+    # previously omitted newer tables, allowing code to deploy before its
+    # required production schema existed.
+    tables = [
+        table
+        for name, table in Base.metadata.tables.items()
+        if name.startswith("building_")
+    ]
     if tables:
         Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
 
