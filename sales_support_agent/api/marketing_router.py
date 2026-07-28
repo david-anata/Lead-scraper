@@ -11,6 +11,7 @@ in HubSpot.
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import logging
 import json
 import os
@@ -834,6 +835,123 @@ def _load_site_intake(session, intake_id: int, token: str):
     return run, None
 
 
+def _public_intake_correlation_id(run: AutomationRun) -> str:
+    """Return a stable, opaque identifier without exposing the database id."""
+    summary = dict(run.summary_json or {})
+    existing = str(summary.get("correlation_id", "") or "").strip()
+    if existing:
+        return existing
+    token = str(summary.get("token", "") or "")
+    digest = hashlib.sha256(f"{run.id}:{token}".encode("utf-8")).hexdigest()[:24]
+    return f"mkt_{digest}"
+
+
+def _public_outcome(
+    value: Any,
+    *,
+    complete_values: set[str],
+    unlocked: bool,
+) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in complete_values:
+        return "complete"
+    if normalized in {"failed", "error"}:
+        return "failed"
+    if normalized in {"pending", "building", "retrying"}:
+        return "pending" if normalized != "retrying" else "retrying"
+    return "pending" if unlocked else "not_required"
+
+
+def _public_intake_delivery_status(run: AutomationRun) -> dict[str, Any]:
+    """Serialize only the delivery state the tokenized website experience needs."""
+    summary = dict(run.summary_json or {})
+    metadata = dict(run.metadata_json or {})
+    unlocked = bool(str(metadata.get("email", "") or "").strip())
+    acknowledgement = _public_outcome(
+        summary.get("acknowledgement_email"),
+        complete_values={"delivered", "sent", "complete"},
+        unlocked=unlocked,
+    )
+    internal_notification = _public_outcome(
+        summary.get("internal_lead_email"),
+        complete_values={"delivered", "sent", "complete"},
+        unlocked=unlocked,
+    )
+    sales_handoff = _public_outcome(
+        summary.get("hubspot_handoff"),
+        complete_values={"recorded", "complete"},
+        unlocked=unlocked,
+    )
+    final_email = _public_outcome(
+        summary.get("email_delivery"),
+        complete_values={"delivered", "sent", "complete"},
+        unlocked=unlocked,
+    )
+    booking_handoff = _public_outcome(
+        summary.get("booking_handoff"),
+        complete_values={"recorded", "complete"},
+        unlocked=False,
+    )
+
+    view_url = str(summary.get("view_url", "") or "").strip()
+    if view_url:
+        report_status = "complete"
+    elif run.status == "failed" and unlocked:
+        report_status = "failed"
+    else:
+        report_status = "pending" if unlocked else "not_required"
+
+    captured = internal_notification == "complete" or sales_handoff == "complete"
+    failed_outcomes = {
+        acknowledgement,
+        internal_notification,
+        sales_handoff,
+        final_email,
+        report_status,
+    }
+    if not unlocked:
+        request_status = "draft"
+    elif not captured:
+        request_status = "failed"
+    elif run.status == "failed":
+        request_status = "partial_failure"
+    elif report_status == "complete" and final_email == "complete":
+        request_status = "completed"
+    elif report_status == "complete":
+        request_status = "ready"
+    elif "failed" in failed_outcomes:
+        request_status = "partial_failure"
+    else:
+        request_status = "building"
+
+    updated_at = run.completed_at or run.started_at
+    request_state = {
+        "status": request_status,
+        "retryable": request_status in {"failed", "partial_failure"}
+        or "failed" in failed_outcomes,
+        "updated_at": (
+            updated_at.replace(tzinfo=timezone.utc).isoformat()
+            if updated_at and updated_at.tzinfo is None
+            else updated_at.isoformat()
+            if updated_at
+            else ""
+        ),
+    }
+    return {
+        "correlation_id": _public_intake_correlation_id(run),
+        "request": request_state,
+        "acknowledgement": {"status": acknowledgement},
+        "internal_notification": {"status": internal_notification},
+        "sales_handoff": {"status": sales_handoff},
+        "report": {
+            "status": report_status,
+            **({"result_url": view_url} if view_url else {}),
+        },
+        "final_email": {"status": final_email},
+        "booking_handoff": {"status": booking_handoff},
+    }
+
+
 def _send_store_ack_email(
     settings,
     *,
@@ -1519,8 +1637,16 @@ async def marketing_site_intake_unlock(
         )
 
     captured = internal_lead_sent or hubspot_recorded
+    with session_scope(request.app.state.session_factory) as session:
+        persisted_run = session.get(AutomationRun, run_id)
+        delivery_status = (
+            _public_intake_delivery_status(persisted_run)
+            if persisted_run is not None
+            else {}
+        )
     response_content = {
         "status": "building" if captured else "delivery_unavailable",
+        "delivery_status": delivery_status,
         "delivery": {
             "acknowledgement": acknowledgement_sent,
             "internal_notification": internal_lead_sent,
@@ -1665,5 +1791,6 @@ def marketing_site_intake_status(
                 "brand_read": str(summary.get("brand_read", "") or ""),
                 "needs": [str(n) for n in (summary.get("needs") or [])],
                 "shelf": summary.get("shelf") or None,
+                "delivery_status": _public_intake_delivery_status(run),
             }
         )

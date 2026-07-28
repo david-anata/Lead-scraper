@@ -163,6 +163,21 @@ class MarketingIntakeTests(unittest.TestCase):
         self.assertEqual(data["product_title"], "Test Product")
         self.assertNotIn("dtc_domain", data)
 
+    def test_status_exposes_a_public_draft_delivery_state(self) -> None:
+        data = self._create()
+        response = self.client.get(
+            f"/api/public/marketing/intake/{data['intake_id']}",
+            params={"token": data["token"]},
+            headers=HEADERS,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        delivery = response.json()["delivery_status"]
+        self.assertTrue(delivery["correlation_id"].startswith("mkt_"))
+        self.assertEqual(delivery["request"]["status"], "draft")
+        self.assertEqual(delivery["report"]["status"], "not_required")
+        self.assertEqual(delivery["final_email"]["status"], "not_required")
+        self.assertNotIn("email", delivery)
+
     def test_store_create_returns_dtc_domain(self) -> None:
         data = self._create(kind="store", identifier="testbrand.com")
         self.assertEqual(data["kind"], "store")
@@ -258,6 +273,12 @@ class MarketingIntakeTests(unittest.TestCase):
         self.assertEqual(body["status"], "building")
         self.assertTrue(body["closers"]["software"])
         self.assertTrue(body["closers"]["services"])
+        self.assertTrue(body["delivery_status"]["correlation_id"].startswith("mkt_"))
+        self.assertEqual(
+            body["delivery_status"]["internal_notification"]["status"],
+            "complete",
+        )
+        self.assertEqual(body["delivery_status"]["report"]["status"], "pending")
         deliver.assert_called_once()
 
         # Same email, same UTC day, a fresh intake → 429 daily_limit.
@@ -340,6 +361,85 @@ class MarketingIntakeTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 503, response.text)
         self.assertEqual(response.json()["status"], "delivery_unavailable")
+        delivery = response.json()["delivery_status"]
+        self.assertEqual(delivery["request"]["status"], "failed")
+        self.assertTrue(delivery["request"]["retryable"])
+
+    def test_status_exposes_ready_report_and_final_email_outcomes(self) -> None:
+        data = self._create()
+        with mock.patch.object(
+            M, "_send_unlock_ack_email", return_value=True
+        ), mock.patch.object(
+            M, "_send_internal_lead_email", return_value=True
+        ), mock.patch.object(
+            M, "_record_hubspot_lead", return_value=True
+        ), mock.patch.object(M, "_run_analysis_and_deliver"):
+            unlocked = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/unlock",
+                json={"token": data["token"], "email": "ready@example.com"},
+                headers=HEADERS,
+            )
+        self.assertEqual(unlocked.status_code, 202, unlocked.text)
+        with app.state.session_factory() as session:
+            run = session.get(M.AutomationRun, int(data["intake_id"]))
+            run.status = "success"
+            run.summary_json = {
+                **dict(run.summary_json or {}),
+                "view_url": "https://agent.example/decks/tokenized",
+                "email_delivery": "delivered",
+            }
+            session.add(run)
+            session.commit()
+
+        status = self.client.get(
+            f"/api/public/marketing/intake/{data['intake_id']}",
+            params={"token": data["token"]},
+            headers=HEADERS,
+        )
+        self.assertEqual(status.status_code, 200, status.text)
+        delivery = status.json()["delivery_status"]
+        self.assertEqual(delivery["request"]["status"], "completed")
+        self.assertEqual(delivery["report"], {
+            "status": "complete",
+            "result_url": "https://agent.example/decks/tokenized",
+        })
+        self.assertEqual(delivery["final_email"]["status"], "complete")
+
+    def test_status_distinguishes_report_failure_from_lead_capture(self) -> None:
+        data = self._create()
+        with mock.patch.object(
+            M, "_send_unlock_ack_email", return_value=True
+        ), mock.patch.object(
+            M, "_send_internal_lead_email", return_value=True
+        ), mock.patch.object(
+            M, "_record_hubspot_lead", return_value=True
+        ), mock.patch.object(M, "_run_analysis_and_deliver"):
+            unlocked = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/unlock",
+                json={"token": data["token"], "email": "partial@example.com"},
+                headers=HEADERS,
+            )
+        self.assertEqual(unlocked.status_code, 202, unlocked.text)
+        with app.state.session_factory() as session:
+            run = session.get(M.AutomationRun, int(data["intake_id"]))
+            run.status = "failed"
+            run.summary_json = {
+                **dict(run.summary_json or {}),
+                "email_delivery": "failed",
+            }
+            session.add(run)
+            session.commit()
+
+        status = self.client.get(
+            f"/api/public/marketing/intake/{data['intake_id']}",
+            params={"token": data["token"]},
+            headers=HEADERS,
+        )
+        self.assertEqual(status.status_code, 200, status.text)
+        delivery = status.json()["delivery_status"]
+        self.assertEqual(delivery["request"]["status"], "partial_failure")
+        self.assertEqual(delivery["report"]["status"], "failed")
+        self.assertEqual(delivery["final_email"]["status"], "failed")
 
     def test_booking_confirmation_updates_hubspot_once(self) -> None:
         data = self._create()
