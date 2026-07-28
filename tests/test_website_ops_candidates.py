@@ -125,8 +125,48 @@ def test_candidate_page_exposes_drilldowns_and_executor_truth(tmp_path: Path) ->
     assert "Counts are non-overlapping candidate states" in html
     assert "Action-lane coverage" in html
     assert "Not Automated" in html
-    assert "2 shown" in html
+    assert "2 of 2 shown" in html
     assert "/admin/website-ops/candidates?state=validated" in html
+
+
+def test_candidate_page_paginates_large_ledgers(tmp_path: Path) -> None:
+    candidates = []
+    for index in range(205):
+        report = _report()
+        report["action_queue"][0]["feedback_id"] = f"meta-{index}"
+        report["action_queue"][0]["page_url"] = f"https://anatainc.com/page-{index}"
+        candidates.extend(build_candidates(report))
+    unique = list({item["candidate_id"]: item for item in candidates}.values())
+    persist_candidate_ledger(tmp_path, candidates=unique, run_id="run-large")
+
+    html = render_candidates_page(
+        SimpleNamespace(website_ops_root=tmp_path),
+        page=2,
+    )
+
+    assert "100 of" in html
+    assert "Page 2 of" in html
+    assert "/admin/website-ops/candidates?page=1" in html
+    assert "/admin/website-ops/candidates?page=3" in html
+
+
+def test_repeated_crawl_evidence_is_one_candidate() -> None:
+    report = _report()
+    warning = dict(
+        report["crawl_verification"]["records"][0]["warning_results"][0]
+    )
+    warning["crawler_evidence"] = "Second export reports the same 404."
+    report["crawl_verification"]["records"][0]["warning_results"].append(warning)
+
+    candidates = build_candidates(report)
+    broken = [
+        item
+        for item in candidates
+        if item["lane_id"] == "broken_internal_links"
+        and item["target_url"] == "https://anatainc.com/services"
+    ]
+
+    assert len(broken) == 1
 
 
 def test_lane_budgets_and_target_locks_bound_execution() -> None:

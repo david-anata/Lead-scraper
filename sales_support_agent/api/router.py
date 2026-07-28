@@ -1249,6 +1249,7 @@ def admin_website_ops_candidates(
     request: Request,
     state: str = "",
     lane: str = "",
+    page: int = 1,
 ) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
@@ -1258,6 +1259,7 @@ def admin_website_ops_candidates(
             request.app.state.settings,
             state_filter=(state or "").strip().lower(),
             lane_filter=(lane or "").strip().lower(),
+            page=max(1, page),
             user=_get_request_user(request),
         )
     )

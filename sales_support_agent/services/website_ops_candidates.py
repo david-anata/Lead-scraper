@@ -211,7 +211,10 @@ def build_candidates(report: Mapping[str, Any]) -> list[dict[str, Any]]:
             candidates.append(
                 _candidate(
                     source_type="crawl_warning",
-                    source_key=f"{warning_report}:{warning.get('crawler_evidence', '')}",
+                    # Multiple Screaming Frog exports may report the same
+                    # warning class for the same URL. Evidence belongs on the
+                    # candidate; it must not create a second opportunity.
+                    source_key=warning_report,
                     lane_id=_warning_lane(warning_report),
                     target_url=url,
                     state=state,

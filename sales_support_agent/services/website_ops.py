@@ -3088,18 +3088,25 @@ def render_candidates_page(
     *,
     state_filter: str = "",
     lane_filter: str = "",
+    page: int = 1,
     user: dict | None = None,
 ) -> str:
     ledger = load_candidate_ledger(settings.website_ops_root)
     summary = dict(ledger.get("summary") or {})
     states = dict(summary.get("by_state") or {})
     lanes = [dict(item) for item in ledger.get("lanes", []) or []]
-    candidates = [
+    filtered_candidates = [
         dict(item)
         for item in ledger.get("candidates", []) or []
         if (not state_filter or str(item.get("state", "")) == state_filter)
         and (not lane_filter or str(item.get("lane_id", "")) == lane_filter)
     ]
+    page_size = 100
+    total_filtered = len(filtered_candidates)
+    total_pages = max(1, (total_filtered + page_size - 1) // page_size)
+    current_page = min(max(1, page), total_pages)
+    start_index = (current_page - 1) * page_size
+    candidates = filtered_candidates[start_index : start_index + page_size]
 
     def candidate_target(value: Any) -> str:
         target = str(value or "").strip()
@@ -3165,6 +3172,35 @@ def render_candidates_page(
         )
         if value
     )
+    filter_query = "&".join(
+        value
+        for value in (
+            f"state={html.escape(state_filter, quote=True)}" if state_filter else "",
+            f"lane={html.escape(lane_filter, quote=True)}" if lane_filter else "",
+        )
+        if value
+    )
+
+    def page_href(target_page: int) -> str:
+        suffix = f"&{filter_query}" if filter_query else ""
+        return f"/admin/website-ops/candidates?page={target_page}{suffix}"
+
+    pagination = ""
+    if total_pages > 1:
+        previous = (
+            f'<a class="secondary" href="{page_href(current_page - 1)}">Previous</a>'
+            if current_page > 1
+            else '<span class="status-pill status-neutral">Previous</span>'
+        )
+        following = (
+            f'<a class="secondary" href="{page_href(current_page + 1)}">Next</a>'
+            if current_page < total_pages
+            else '<span class="status-pill status-neutral">Next</span>'
+        )
+        pagination = (
+            f'<div class="row-actions"><div class="page-actions">{previous}{following}</div>'
+            f'<span class="muted">Page {current_page} of {total_pages}</span></div>'
+        )
     body = f"""
       {_nav('website_ops', website_ops_section='candidates', user=user)}
       <main id="agent-main-content" class="shell app-container app-page">
@@ -3195,8 +3231,9 @@ def render_candidates_page(
         <section class="card stack">
           <div class="row-actions">
             <div class="stack"><h2>Candidate detail</h2><p class="lead-sm">{html.escape(filters or 'All current candidates')}</p></div>
-            <span class="status-pill status-neutral">{len(candidates)} shown</span>
+            <span class="status-pill status-neutral">{len(candidates)} of {total_filtered} shown</span>
           </div>
+          {pagination}
           {f'''
           <div class="data-workspace">
             <table class="data-table">
@@ -3204,6 +3241,7 @@ def render_candidates_page(
               <tbody>{candidate_rows}</tbody>
             </table>
           </div>
+          {pagination}
           ''' if candidates else '<div class="list-card empty-state"><h3>No candidates match this filter.</h3><p class="muted">Clear the filters or run a fresh daily sweep.</p></div>'}
         </section>
       </main>
