@@ -119,6 +119,62 @@ class MarketingIntakeTests(unittest.TestCase):
         )
         cls.client = TestClient(app)
 
+    @staticmethod
+    def _rate_limit_request(client_key: str):
+        from starlette.requests import Request
+
+        return Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/",
+                "headers": [
+                    (
+                        b"x-marketing-client-key",
+                        client_key.encode("ascii"),
+                    )
+                ],
+                "client": ("127.0.0.1", 1234),
+                "server": ("testserver", 80),
+                "scheme": "http",
+                "app": app,
+            }
+        )
+
+    def test_rate_limit_is_durable_and_isolated_by_client_digest(self) -> None:
+        first = self._rate_limit_request("a" * 64)
+        second = self._rate_limit_request("b" * 64)
+        scope = f"test:{self.id()}"
+
+        self.assertFalse(
+            M._marketing_rate_limited(first, scope=scope, limit=2)
+        )
+        self.assertFalse(
+            M._marketing_rate_limited(first, scope=scope, limit=2)
+        )
+        self.assertTrue(
+            M._marketing_rate_limited(first, scope=scope, limit=2)
+        )
+        self.assertFalse(
+            M._marketing_rate_limited(second, scope=scope, limit=2)
+        )
+
+        with M.session_scope(app.state.session_factory) as session:
+            rows = session.execute(
+                M.select(M.AutomationRun).where(
+                    M.AutomationRun.run_type.like(
+                        f"{M.RATE_LIMIT_RUN_TYPE_PREFIX}%"
+                    )
+                )
+            ).scalars().all()
+        matching = [
+            row
+            for row in rows
+            if (row.metadata_json or {}).get("scope") == scope
+        ]
+        self.assertEqual(len(matching), 2)
+        self.assertNotIn("a" * 64, str([row.metadata_json for row in matching]))
+
     def _create(self, kind: str = "asin", identifier: str = "B0TESTASIN1") -> dict:
         with mock.patch.object(
             M,

@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Header, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from sales_support_agent.integrations.hubspot import HubSpotClient
 from sales_support_agent.integrations.resend import ResendClient
@@ -49,6 +49,12 @@ SITE_INTAKE_RUN_TYPE = "marketing_intake"
 # a Strategy Audit token. The 40-character digest suffix keeps the full value
 # within AutomationRun.run_type's 64-character column.
 BOOKING_RUN_TYPE_PREFIX = "marketing_booking_"
+
+# Durable, fixed-bucket limits for every website-reachable marketing endpoint.
+# Vercel sends a keyed client digest after authenticating to this router, so no
+# raw visitor IP is persisted in the Agent database.
+RATE_LIMIT_RUN_TYPE_PREFIX = "marketing_limit_"
+_MARKETING_CLIENT_KEY_RE = re.compile(r"^[a-f0-9]{64}$")
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _ASIN_RE = re.compile(r"^B0[A-Z0-9]{8}$", re.IGNORECASE)
@@ -106,6 +112,95 @@ def _enforce_marketing_intake_key(request: Request, provided: Optional[str]) -> 
     if str(provided or "").strip() != configured:
         return JSONResponse(status_code=401, content={"detail": "Invalid intake key."})
     return None
+
+
+def _marketing_client_key(request: Request) -> str:
+    provided = str(request.headers.get("X-Marketing-Client-Key", "") or "").strip().lower()
+    if _MARKETING_CLIENT_KEY_RE.fullmatch(provided):
+        return provided
+
+    # Non-website/internal callers still receive a bounded fallback without
+    # storing their address. The shared intake key salts the digest.
+    settings = request.app.state.settings
+    salt = str(getattr(settings, "marketing_site_intake_key", "") or "")
+    host = str(request.client.host if request.client else "unknown")
+    return hashlib.sha256(f"{salt}|{host}".encode("utf-8")).hexdigest()
+
+
+def _marketing_rate_limited(
+    request: Request,
+    *,
+    scope: str,
+    limit: int,
+    window_seconds: int = 600,
+) -> bool:
+    """Cross-instance limiter with one indexed row per client/scope/window.
+
+    PostgreSQL advisory locking serializes the first request for a new bucket,
+    preventing parallel Vercel invocations from creating competing counters.
+    SQLite tests remain deterministic without a database-specific lock.
+    """
+
+    now = datetime.now(timezone.utc)
+    bucket = int(now.timestamp()) // window_seconds
+    client_key = _marketing_client_key(request)
+    material = f"{scope}|{client_key}|{bucket}"
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+    run_type = f"{RATE_LIMIT_RUN_TYPE_PREFIX}{digest[:40]}"
+
+    with session_scope(request.app.state.session_factory) as session:
+        bind = session.get_bind()
+        if bind.dialect.name == "postgresql":
+            lock_key = int.from_bytes(bytes.fromhex(digest[:16]), "big", signed=True)
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                {"lock_key": lock_key},
+            )
+        row = session.execute(
+            select(AutomationRun)
+            .where(AutomationRun.run_type == run_type)
+            .order_by(AutomationRun.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            AuditService(session).start_run(
+                run_type,
+                trigger="marketing_rate_limit",
+                metadata={
+                    "scope": scope,
+                    "bucket": bucket,
+                    "count": 1,
+                    "window_seconds": window_seconds,
+                },
+            )
+            return False
+
+        metadata = dict(row.metadata_json or {})
+        count = int(metadata.get("count", 0) or 0) + 1
+        row.metadata_json = {**metadata, "count": count}
+        session.add(row)
+        return count > limit
+
+
+def _rate_limit_response(
+    request: Request,
+    *,
+    scope: str,
+    limit: int,
+    window_seconds: int = 600,
+) -> Optional[JSONResponse]:
+    if not _marketing_rate_limited(
+        request,
+        scope=scope,
+        limit=limit,
+        window_seconds=window_seconds,
+    ):
+        return None
+    return JSONResponse(
+        status_code=429,
+        headers={"Retry-After": str(window_seconds)},
+        content={"reason": "rate_limited"},
+    )
 
 
 def _daily_gate_enabled() -> bool:
@@ -511,6 +606,9 @@ async def marketing_analysis_intake(
     denied = _enforce_marketing_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = _rate_limit_response(request, scope="analysis:create", limit=30)
+    if limited is not None:
+        return limited
 
     try:
         body: dict[str, Any] = await request.json()
@@ -563,6 +661,9 @@ async def advertising_audit_intake(
     denied = _enforce_marketing_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = _rate_limit_response(request, scope="advertising:create", limit=30)
+    if limited is not None:
+        return limited
     try:
         body: dict[str, Any] = await request.json()
     except Exception:  # noqa: BLE001
@@ -647,6 +748,13 @@ def advertising_audit_status(
     denied = _enforce_marketing_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = _rate_limit_response(
+        request,
+        scope="advertising:status",
+        limit=240,
+    )
+    if limited is not None:
+        return limited
     with session_scope(request.app.state.session_factory) as session:
         run = session.get(AutomationRun, run_id)
         if run is None or run.run_type != INTAKE_RUN_TYPE:
@@ -690,6 +798,9 @@ def marketing_analysis_status(
     denied = _enforce_marketing_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = _rate_limit_response(request, scope="analysis:status", limit=240)
+    if limited is not None:
+        return limited
     if not asin.strip() or not email.strip():
         return JSONResponse(status_code=400, content={"detail": "asin and email query params are required."})
 
@@ -1383,6 +1494,9 @@ async def marketing_site_intake_create(
     denied = _enforce_marketing_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = _rate_limit_response(request, scope="intake:create", limit=30)
+    if limited is not None:
+        return limited
 
     try:
         body: dict[str, Any] = await request.json()
@@ -1585,6 +1699,9 @@ async def marketing_site_intake_needs(
     denied = _enforce_marketing_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = _rate_limit_response(request, scope="intake:needs", limit=60)
+    if limited is not None:
+        return limited
 
     try:
         body: dict[str, Any] = await request.json()
@@ -1623,6 +1740,9 @@ async def marketing_site_intake_unlock(
     denied = _enforce_marketing_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = _rate_limit_response(request, scope="intake:unlock", limit=30)
+    if limited is not None:
+        return limited
 
     try:
         body: dict[str, Any] = await request.json()
@@ -1801,6 +1921,9 @@ async def marketing_site_direct_booking(
     denied = _enforce_marketing_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = _rate_limit_response(request, scope="booking:create", limit=30)
+    if limited is not None:
+        return limited
     try:
         body: dict[str, Any] = await request.json()
     except Exception:  # noqa: BLE001
@@ -1928,6 +2051,9 @@ async def marketing_site_intake_booked(
     denied = _enforce_marketing_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = _rate_limit_response(request, scope="booking:tokenized", limit=30)
+    if limited is not None:
+        return limited
     try:
         body: dict[str, Any] = await request.json()
     except Exception:  # noqa: BLE001
@@ -2018,6 +2144,9 @@ def marketing_site_intake_status(
     denied = _enforce_marketing_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = _rate_limit_response(request, scope="intake:read", limit=240)
+    if limited is not None:
+        return limited
 
     with session_scope(request.app.state.session_factory) as session:
         run, error = _load_site_intake(session, intake_id, token)
