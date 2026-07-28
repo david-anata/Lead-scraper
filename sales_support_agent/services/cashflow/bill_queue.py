@@ -242,7 +242,31 @@ def apply_queue_action(
     action = str(action or "").strip()
     if action not in VALID_ACTIONS:
         raise ValueError("choose a valid action")
-    keys, available = _selected_patterns(pattern_keys)
+    requested_keys = list(dict.fromkeys(
+        str(key or "").strip() for key in pattern_keys if str(key or "").strip()
+    ))
+    request_id = request_id or uuid4().hex
+    batch_id = sha256(f"bill-queue-batch:{request_id}".encode()).hexdigest()[:32]
+    with get_engine().connect() as connection:
+        existing_row = connection.execute(text("""
+            SELECT evidence_json FROM finance_action_audit
+            WHERE id=:id AND action_type=:action_type
+        """), {"id": batch_id, "action_type": BATCH_ACTION}).first()
+    if existing_row:
+        existing = _audit_payload(existing_row._mapping["evidence_json"])
+        existing_keys = [
+            str(item.get("pattern_key") or "")
+            for item in existing.get("vendors") or []
+        ]
+        if existing.get("action") != action or set(existing_keys) != set(requested_keys):
+            raise ValueError("This save request was already used for a different answer.")
+        return {
+            "batch_id": batch_id,
+            "applied": len(existing_keys),
+            "action": action,
+            "idempotent_replay": True,
+        }
+    keys, available = _selected_patterns(requested_keys)
     if action == "combine" and len(keys) < 2:
         raise ValueError("choose at least two bills to combine")
     if action == "track":
@@ -257,8 +281,6 @@ def apply_queue_action(
             )
     if action == "track" and payment_date:
         date.fromisoformat(payment_date)
-    request_id = request_id or uuid4().hex
-    batch_id = sha256(f"bill-queue-batch:{request_id}".encode()).hexdigest()[:32]
     prior_records = _decision_records()
     previous = {
         key: {

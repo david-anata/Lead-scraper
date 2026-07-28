@@ -273,6 +273,7 @@ def _script() -> str:
       async function submit(form, affected, action) {
         affected.forEach(row => row.classList.add('is-working'));
         form.setAttribute('aria-busy','true');
+        live.textContent='Saving your answer…';
         const data = new FormData(form); data.set('action', action);
         if (form === bulk) selected().forEach(box => data.append('pattern_keys', box.value));
         try {
@@ -281,6 +282,8 @@ def _script() -> str:
           if (!response.ok) throw new Error(result.detail || 'Nothing changed. Please try again.');
           if (action === 'combine') return location.reload();
           affected.forEach(row => row.remove()); live.textContent = result.message || 'Saved.';
+          const requestId=form.querySelector('[name="request_id"]');
+          if(requestId)requestId.value=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`;
           if (result.batch_id) { undo.hidden=false; undo.dataset.batchId=result.batch_id; }
           updateBar(); applyView();
         } catch(error) {
@@ -295,20 +298,25 @@ def _script() -> str:
       let mobileActionRow = null;
       let pending = {form:null, rows:[], action:''};
       async function renderTrackPreview(affected) {
+        const preview=review.querySelector('[data-track-preview]');
+        const confirm=review.querySelector('[data-review-confirm]');
+        preview.setAttribute('aria-busy','true');
+        preview.textContent='Preparing the cash-plan preview…';
+        confirm.disabled=true;
         const data = new FormData();
         affected.forEach(row => data.append('pattern_keys',row.dataset.patternKey));
         const chosenDate = review.querySelector('[name="payment_date"]').value;
         if (chosenDate) data.append('payment_date', chosenDate);
         const response=await fetch(`${location.pathname}/track-preview`,{method:'POST',body:data,headers:{Accept:'application/json'}});
         const result=await response.json();
-        if (!response.ok) { live.textContent=result.detail; return false; }
-        review.querySelector('[data-track-preview]').innerHTML=result.rows.map(row =>
+        preview.removeAttribute('aria-busy');
+        if (!response.ok) { preview.textContent=result.detail; live.textContent=result.detail; return false; }
+        preview.innerHTML=result.rows.map(row =>
           `<strong>${escapeText(row.vendor)}</strong><br>${money(row.amount_cents)} each · ${money(row.monthly_cost_cents)}/month · next ${escapeText(row.next_due)}<br>14-day effect: ${money(row.effect_14_cents)} · 30-day effect: ${money(row.effect_30_cents)}`
           + (row.possible_duplicate
             ? `<br><strong role="alert">Possible existing schedule: ${escapeText(row.possible_duplicate.vendor)} (${money(row.possible_duplicate.amount_cents)}, next ${escapeText(row.possible_duplicate.next_due)}). Review that schedule before tracking.</strong>`
             : '<br>No matching active schedule was found.')
         ).join('<hr>');
-        const confirm=review.querySelector('[data-review-confirm]');
         confirm.disabled=Boolean(result.blocked);
         if(result.blocked) live.textContent='Tracking is paused because a possible matching schedule already exists.';
         return !result.blocked;
@@ -320,10 +328,10 @@ def _script() -> str:
         review.querySelector('[data-review-confirm]').textContent = action === 'track' ? 'Track bill' : action === 'not_a_bill' ? 'Confirm not a bill' : 'Ask again next week';
         review.querySelector('[data-review-confirm]').disabled = false;
         review.querySelector('[data-track-preview]').textContent = '';
+        review.showModal();
         if (action === 'track') {
           await renderTrackPreview(affected);
         }
-        review.showModal();
       }
       review.querySelector('[name="payment_date"]').addEventListener('change', () => {
         if (pending.action === 'track') renderTrackPreview(pending.rows);
@@ -390,15 +398,23 @@ def _script() -> str:
       }));
       combine.querySelector('[data-combine-cancel]').addEventListener('click',()=>combine.close());
       combine.querySelector('[data-combine-preview-button]').addEventListener('click',async()=>{
+        const previewButton=combine.querySelector('[data-combine-preview-button]');
+        previewButton.disabled=true;previewButton.textContent='Preparing preview…';
+        combine.querySelector('[data-combine-preview]').setAttribute('aria-busy','true');
         const data=new FormData(combine.querySelector('form'));selected().forEach(box=>data.append('pattern_keys',box.value));
-        const response=await fetch(`${location.pathname}/combine-preview`,{method:'POST',body:data,headers:{Accept:'application/json'}});
-        const result=await response.json();
-        if(!response.ok){combine.querySelector('[data-combine-error]').textContent=result.detail;return;}
-        combine.querySelector('[data-combine-preview]').textContent=`${result.before.length} histories become ${result.after.vendor}: ${money(result.after.amount_cents)} ${result.after.frequency}, next ${result.after.next_due}. ${result.explanation}`;
-        combinePreviewToken=result.preview_token||'';
-        combinePreviewValid=Boolean(combinePreviewToken);
-        combine.querySelector('[data-combine-confirm]').hidden=!combinePreviewValid;
-        combine.querySelector('[data-combine-confirm]').disabled=!combinePreviewValid;
+        try{
+          const response=await fetch(`${location.pathname}/combine-preview`,{method:'POST',body:data,headers:{Accept:'application/json'}});
+          const result=await response.json();
+          if(!response.ok){combine.querySelector('[data-combine-error]').textContent=result.detail;return;}
+          combine.querySelector('[data-combine-preview]').textContent=`${result.before.length} histories become ${result.after.vendor}: ${money(result.after.amount_cents)} ${result.after.frequency}, next ${result.after.next_due}. ${result.explanation}`;
+          combinePreviewToken=result.preview_token||'';
+          combinePreviewValid=Boolean(combinePreviewToken);
+          combine.querySelector('[data-combine-confirm]').hidden=!combinePreviewValid;
+          combine.querySelector('[data-combine-confirm]').disabled=!combinePreviewValid;
+        }finally{
+          combine.querySelector('[data-combine-preview]').removeAttribute('aria-busy');
+          previewButton.disabled=false;previewButton.textContent='Preview';
+        }
       });
       combine.querySelector('[data-combine-confirm]').addEventListener('click',()=>{
         if(!combinePreviewValid)return;
@@ -467,7 +483,9 @@ def render_whats_coming_page(*, flash: str = "") -> str:
       <th><input type="checkbox" data-select-all aria-label="Select all visible bills"></th><th>Vendor</th>
       <th>Payment</th><th>Monthly cost</th><th>Frequency</th><th>Next due</th><th>Confidence</th><th>Decision</th>
       </tr></thead><tbody>{rows}</tbody></table></div>
-    """ if waiting else '<div class="card"><strong>Nothing to add.</strong><p>Your bank history has no regular payment waiting for review.</p></div>'
+    """ if waiting else """<div class="card"><strong>Nothing to add — everything detected has an answer.</strong>
+      <p>There is no regular payment waiting for review.</p>
+      <p><a href="/admin/finances/recurring">Review schedules</a> or check the recent decisions below.</p></div>"""
     body = f"""
     {render_finance_nav(NAV_KEY)}
     <div class="finance-page-header"><div><h1>What is coming</h1>
