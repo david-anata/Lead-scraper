@@ -471,6 +471,7 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
       <label>Phone</label><input name="phone" value="{_esc(e.get('phone',''))}" placeholder="(555) 123-4567">
       <div class="hr-actions">
         <button type="submit" class="hr-btn">{"Add employee" if is_new else "Save changes"}</button>
+        {"" if is_new else f'<button type="submit" class="hr-btn hr-btn-light" formaction="/admin/hr/employees/{e.get("id")}/status">Save status only</button>'}
         <a class="hr-btn hr-btn-light" href="/admin/hr/employees">Cancel</a>
       </div>
     </form>

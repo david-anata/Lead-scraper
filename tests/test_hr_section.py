@@ -504,6 +504,37 @@ class HRSectionTests(unittest.TestCase):
         self.assertEqual(hr_store.get_employee(employee_id)["status"], "inactive")
         self.assertEqual(hr_store.list_compensation_changes(email), [])
 
+    def test_dedicated_status_update_does_not_require_pay_change_metadata(self):
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        employee_id = hr_store.create_employee(
+            email=f"status-only-{suffix}@anatainc.com",
+            full_name="Status Only",
+            employee_type="salaried",
+            annual_salary="90000",
+        )
+
+        page = self._get(f"/admin/hr/employees/{employee_id}", self.sa)
+        self.assertIn(
+            f'formaction="/admin/hr/employees/{employee_id}/status"',
+            page.text,
+        )
+        saved = self._post(
+            f"/admin/hr/employees/{employee_id}/status",
+            {"status": "inactive"},
+            self.sa,
+        )
+
+        self.assertEqual(saved.status_code, 303)
+        self.assertIn("ok=status_saved", saved.headers["location"])
+        self.assertEqual(hr_store.get_employee(employee_id)["status"], "inactive")
+        self.assertEqual(
+            hr_store.list_compensation_changes(
+                f"status-only-{suffix}@anatainc.com"
+            ),
+            [],
+        )
+
     def test_team_detail_can_update_leader_and_manage_membership(self):
         import uuid
         suffix = uuid.uuid4().hex[:8]

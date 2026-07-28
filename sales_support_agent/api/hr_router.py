@@ -378,6 +378,28 @@ async def employee_update(
     return RedirectResponse(f"/admin/hr/employees/{emp_id}?ok=employment_saved", status_code=303)
 
 
+@router.post("/employees/{emp_id}/status", response_class=HTMLResponse)
+async def employee_status_update(
+    emp_id: int,
+    status: str = Form(...),
+    user: dict = Depends(_people_comp_guard),
+):
+    if status not in {"active", "inactive"}:
+        raise HTTPException(status_code=422, detail="Invalid employee status.")
+    employee = store.get_employee(emp_id)
+    if not employee:
+        return RedirectResponse("/admin/hr/employees?err=not_found", status_code=303)
+    store.update_employee(
+        emp_id,
+        status=status,
+        actor=user.get("email", "system"),
+    )
+    return RedirectResponse(
+        f"/admin/hr/employees/{emp_id}?ok=status_saved",
+        status_code=303,
+    )
+
+
 @router.post("/employees/{emp_id}/invite", response_class=HTMLResponse)
 async def employee_invite(emp_id: int, request: Request, user: dict = Depends(_people_guard)):
     employee = store.get_employee(emp_id)
