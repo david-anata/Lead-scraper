@@ -171,6 +171,28 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
         self.assertIn("Venue payment workflow", page.text)
         self.assertIn("no checks, overpayments, or third-party vendor payments", page.text)
 
+    def test_01b_page_presents_a_scannable_governed_launch_workspace(self) -> None:
+        page = self.client.get("/admin/building")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('aria-label="Building Control sections"', page.text)
+        self.assertIn('href="#arena-launch-readiness"', page.text)
+        self.assertIn("Arena launch command center", page.text)
+        self.assertIn("Private, protected, and not ready to publish", page.text)
+        self.assertIn('class="decision-list"', page.text)
+        self.assertEqual(page.text.count('class="decision-card"'), 10)
+        self.assertEqual(
+            page.text.count("<summary>Record an approved decision</summary>"),
+            10,
+        )
+        self.assertIn(
+            "Records Agent audit evidence only. It does not write, send, charge, publish, or change a calendar.",
+            page.text,
+        )
+        self.assertIn('id="incoming-inquiries"', page.text)
+        self.assertIn('id="bookings-and-holds"', page.text)
+        self.assertIn('id="billing-and-collections"', page.text)
+        self.assertIn('id="crm-email-list"', page.text)
+
     def test_02_decision_requires_exact_status_confirmation_and_evidence(self) -> None:
         wrong = self._decide("event_calendar", "accepted_policy")
         self.assertIn("requires+status+provider_verified", wrong.headers["location"])
