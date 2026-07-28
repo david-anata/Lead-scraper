@@ -668,6 +668,13 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
     title = "Add employee" if is_new else f"Edit {e.get('full_name','')}"
     employment = e.get("employment") or {}
     compensation_history = e.get("compensation_history") or []
+    worker_category = (
+        "contractor" if e.get("employee_type") == "contractor" else "hourly"
+    )
+    worker_options = (
+        ("hourly", "W-2 employee"),
+        ("contractor", "Contractor"),
+    )
 
     def _sel(name, options, current):
         opts = "".join(
@@ -681,6 +688,10 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
     err = f'<div class="hr-flash" style="background:#fdecea;color:#8b4c42;border-color:#8b4c4233">{_esc(error)}</div>' if error else ""
     email_field = (f'<input type="email" name="email" required value="{_esc(e.get("email",""))}" placeholder="name@anatainc.com">'
                    if is_new else f'<input type="email" value="{_esc(e.get("email",""))}" disabled>')
+    worker_select = '<select name="employee_type">' + "".join(
+        f'<option value="{value}"{" selected" if value == worker_category else ""}>{label}</option>'
+        for value, label in worker_options
+    ) + "</select>"
     body = f"""
     {err}
     <h1 class="hr-h1">{_esc(title)}</h1>
@@ -693,9 +704,9 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
       </div>
       <div class="hr-grid2">
         <div><label>HR role</label>{_sel("hr_role", HR_ROLES, e.get("hr_role","employee"))}</div>
-        <div><label>Worker record</label>{_sel("employee_type", EMPLOYEE_TYPES, e.get("employee_type","hourly"))}</div>
+        <div><label>Worker record</label>{worker_select}</div>
       </div>
-      <p class="hr-help">Hourly and salaried records are Utah W-2 employees. Contractor records stay outside W-2 payroll and use the separate Wise contractor workflow.</p>
+      <p class="hr-help">Choose W-2 employee here, then choose hourly or fixed semimonthly pay below. Contractor records stay outside W-2 payroll and use the separate Wise contractor workflow.</p>
       <div class="hr-grid2">
         <div><label>Team</label><select name="team_id">{team_opts}</select></div>
         <div><label>Status</label>{_sel("status", ("active","inactive"), e.get("status","active"))}</div>

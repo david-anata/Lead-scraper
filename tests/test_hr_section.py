@@ -1163,6 +1163,14 @@ class HRSectionTests(unittest.TestCase):
         )
         self.assertEqual(employment["hire_date"], date(2026, 8, 3))
 
+    def test_employee_form_separates_worker_category_from_pay_basis(self):
+        response = self._get("/admin/hr/employees/new", self.sa)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(">W-2 employee</option>", response.text)
+        self.assertIn(">Contractor</option>", response.text)
+        self.assertNotIn(">Salaried</option>", response.text)
+        self.assertIn("choose hourly or fixed semimonthly pay below", response.text)
+
     def test_employee_money_is_rejected_instead_of_silently_becoming_zero(self):
         import uuid
         email = f"bad-money-{uuid.uuid4().hex[:8]}@anatainc.com"
