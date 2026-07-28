@@ -279,6 +279,25 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("Payroll Reviewer", settings.text)
         self.assertIn("Parallel payroll workpaper", settings.text)
 
+    def test_settings_tax_operations_copy_reflects_saved_readiness(self):
+        payroll_store.save_payroll_settings(
+            utah_ui_rate="0.001",
+            qualified_tax_review=False,
+            utah_tap_ready=False,
+            eftps_ready=False,
+            utah_ui_ready=False,
+            opening_balances_confirmed=False,
+            opening_balance_note="Test readiness state.",
+            actor="test",
+        )
+        settings = self._get("/admin/hr/settings", self.sa)
+        self.assertEqual(settings.status_code, 200)
+        self.assertIn("Utah TAP access: Not yet confirmed", settings.text)
+        self.assertIn("Federal deposit schedule:", settings.text)
+        self.assertIn("EFTPS access: Not yet confirmed", settings.text)
+        self.assertIn("Utah unemployment portal access: Not yet confirmed", settings.text)
+        self.assertNotIn("Utah TAP access confirmed", settings.text)
+
     def test_opening_balance_requires_a_different_reviewer(self):
         import uuid
         email = f"opening-{uuid.uuid4().hex[:8]}@anatainc.com"

@@ -1717,6 +1717,18 @@ def render_hr_settings(
     opening_balances: list, handbooks: list, *, user, flash=None,
 ) -> str:
     checked = lambda key: " checked" if settings.get(key) else ""
+    federal_schedule = (
+        str(settings.get("federal_deposit_schedule") or "")
+        .replace("_", " ")
+        .strip()
+        .title()
+        or "Not yet confirmed"
+    )
+    tap_status = "Confirmed" if settings.get("utah_tap_ready") else "Not yet confirmed"
+    eftps_status = "Confirmed" if settings.get("eftps_ready") else "Not yet confirmed"
+    ui_portal_status = (
+        "Confirmed" if settings.get("utah_ui_ready") else "Not yet confirmed"
+    )
     review = settings.get("qualified_review") or {}
     balance_by_email = {row["employee_email"]: row for row in opening_balances}
     balance_forms = ""
@@ -1850,6 +1862,9 @@ def render_hr_settings(
     <div class="hr-stack">
       <div class="hr-callout"><div class="hr-kicker">PTO</div><h2>40-hour combined PTO bank</h2><p>Accrues 1 hour per 52 paid hours, usable after 90 days, capped at 40 hours. No negative balance. Unused PTO is not paid at separation unless a written agreement requires it.</p></div>
       <div class="hr-callout"><div class="hr-kicker">Paid holidays</div><p>New Year's Day, Memorial Day, Independence Day, Labor Day, Thanksgiving, and Christmas. W-2 employees become eligible after 90 days.</p></div>
-      <div class="hr-callout"><div class="hr-kicker">Tax operations</div><p>Utah TAP access confirmed. Federal deposit schedule: semiweekly. EFTPS and Utah unemployment portal access remain setup checks.</p></div>
+      <div class="hr-callout"><div class="hr-kicker">Tax operations</div>
+        <p>Utah TAP access: {_esc(tap_status)}. Federal deposit schedule: {_esc(federal_schedule)}.
+        EFTPS access: {_esc(eftps_status)}. Utah unemployment portal access: {_esc(ui_portal_status)}.</p>
+      </div>
     </div>"""
     return hr_shell("Settings", "settings", body, user=user)
