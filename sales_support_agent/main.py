@@ -27,54 +27,7 @@ from sales_support_agent.api.brand_analysis_router import (
     public_router as brand_analysis_public_router,
     router as brand_analysis_router,
 )
-from sales_support_agent.api.building_router import (
-    internal_router as building_internal_router,
-    public_router as building_public_router,
-)
-from sales_support_agent.api.building_crm_router import (
-    admin_router as building_crm_admin_router,
-    internal_router as building_crm_internal_router,
-    public_router as building_crm_public_router,
-)
-from sales_support_agent.api.building_booking_router import (
-    public_router as building_booking_public_router,
-    router as building_booking_router,
-)
-from sales_support_agent.api.building_agreement_readiness_router import (
-    admin_router as building_agreement_readiness_admin_router,
-    internal_router as building_agreement_readiness_internal_router,
-)
-from sales_support_agent.api.building_billing_router import (
-    internal_router as building_billing_internal_router,
-    webhook_router as building_stripe_webhook_router,
-)
-from sales_support_agent.api.building_admin_operations_router import (
-    router as building_admin_operations_router,
-)
-from sales_support_agent.api.building_calendar_router import (
-    router as building_calendar_router,
-)
-from sales_support_agent.api.building_checklist_router import (
-    router as building_checklist_router,
-)
-from sales_support_agent.api.building_adjustment_router import (
-    router as building_adjustment_router,
-)
-from sales_support_agent.api.building_service_request_router import (
-    router as building_service_request_router,
-)
-from sales_support_agent.api.building_email_webhook_router import (
-    router as building_resend_webhook_router,
-)
-from sales_support_agent.api.building_privacy_router import (
-    admin_router as building_privacy_admin_router,
-    internal_router as building_privacy_internal_router,
-)
-from sales_support_agent.api.building_content_router import (
-    admin_router as building_content_admin_router,
-    internal_router as building_content_internal_router,
-    public_router as building_content_public_router,
-)
+from sales_support_agent.api.building_routes import include_building_routers
 from sales_support_agent.api.cashflow_router import plaid_webhook_router, router as cashflow_router
 from sales_support_agent.api.qbo_auth_router import router as qbo_auth_router
 from sales_support_agent.api.fulfillment_deck_router import (
@@ -247,30 +200,9 @@ def create_app() -> FastAPI:
     app.include_router(marketing_router)
     app.include_router(website_ops_jobs_router)
     app.include_router(outbound_jobs_router)
-    app.include_router(building_public_router)
-    app.include_router(building_internal_router)
-    app.include_router(building_crm_public_router)
-    app.include_router(building_crm_internal_router)
+    include_building_routers(app)
     from sales_support_agent.api.outbound_router import router as outbound_router
     app.include_router(outbound_router)
-    app.include_router(building_crm_admin_router)
-    app.include_router(building_booking_router)
-    app.include_router(building_booking_public_router)
-    app.include_router(building_agreement_readiness_internal_router)
-    app.include_router(building_agreement_readiness_admin_router)
-    app.include_router(building_billing_internal_router)
-    app.include_router(building_stripe_webhook_router)
-    app.include_router(building_admin_operations_router)
-    app.include_router(building_calendar_router)
-    app.include_router(building_checklist_router)
-    app.include_router(building_adjustment_router)
-    app.include_router(building_service_request_router)
-    app.include_router(building_resend_webhook_router)
-    app.include_router(building_privacy_internal_router)
-    app.include_router(building_privacy_admin_router)
-    app.include_router(building_content_public_router)
-    app.include_router(building_content_internal_router)
-    app.include_router(building_content_admin_router)
 
     # RBAC: per-tool authorization gate + friendly 403 handler.
     from sales_support_agent.services.access.middleware import install_access_middleware

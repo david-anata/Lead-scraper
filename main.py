@@ -194,6 +194,11 @@ app.include_router(_google_auth_router)
 from sales_support_agent.api.qbo_auth_router import router as _qbo_auth_router  # noqa: E402
 app.include_router(_qbo_auth_router, prefix="/admin/finances/qbo")
 
+# Building OS — keep both production entrypoints on the same complete route
+# registrar so the live root app cannot silently drift behind the modular app.
+from sales_support_agent.api.building_routes import include_building_routers as _include_building_routers  # noqa: E402
+_include_building_routers(app)
+
 # Access control (RBAC) — MUST be registered at construction time, not in the
 # startup event: once the app starts, Starlette freezes the middleware stack and
 # add_middleware() raises, which was being swallowed — leaving the root app with
@@ -833,13 +838,32 @@ def validate_settings_on_startup(settings: Settings) -> None:
         raise RuntimeError(message)
 
 
+def _configure_agent_runtime_settings(
+    app_instance: FastAPI,
+    lead_builder_settings: Settings,
+) -> None:
+    """Expose the complete Agent settings contract to in-process routers."""
+
+    app_instance.state.lead_builder_settings = lead_builder_settings
+    try:
+        from sales_support_agent.config import load_settings as _load_agent_settings
+
+        agent_settings = _load_agent_settings()
+        app_instance.state.agent_settings = agent_settings
+        app_instance.state.settings = agent_settings
+    except Exception as exc:  # noqa: BLE001 — startup keeps a diagnostic fallback
+        logger.warning("Could not load agent_settings: %s", exc)
+        app_instance.state.agent_settings = None
+        app_instance.state.settings = lead_builder_settings
+
+
 @app.on_event("startup")
 def startup() -> None:
     configure_logging()
     app.state.ready = False
     app.state.render_git_commit = RENDER_GIT_COMMIT or "unknown"
     settings = load_settings()
-    app.state.settings = settings
+    _configure_agent_runtime_settings(app, settings)
     app.state.website_ops_settings = load_website_ops_settings()
     app.state.admin_dashboard_last_auto_sync_at = None
     app.state.admin_dashboard_last_auto_sync_result = {
@@ -887,15 +911,6 @@ def startup() -> None:
     # Store AdminDashboardSettings so cashflow auth_deps can always find
     # admin_cookie_name even when agent_settings fails to load.
     app.state.admin_dashboard_settings = load_admin_dashboard_settings()
-    # Load the full sales_support_agent Settings and store as agent_settings so
-    # cashflow routes (auth_deps, etc.) can access admin_cookie_name and
-    # admin_session_secret without relying on the root Settings dataclass.
-    try:
-        from sales_support_agent.config import load_settings as _load_agent_settings
-        app.state.agent_settings = _load_agent_settings()
-    except Exception as _e:
-        logger.warning("Could not load agent_settings: %s", _e)
-        app.state.agent_settings = None
     # RBAC: seed the never-lockable super-admin(s) and install the per-tool gate.
     try:
         if _cf_db_url and app.state.agent_settings is not None:
