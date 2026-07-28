@@ -76,6 +76,8 @@ def _row(pattern: Mapping[str, Any], suggestion: str = "") -> str:
       <td data-label="Next due">{html.escape(_day(pattern.get("next_due")))}</td>
       <td data-label="Confidence"><span class="status-badge">{confidence}</span></td>
       <td class="bill-row-actions" data-label="Decision">
+        <button class="btn btn-primary bill-mobile-review" type="button"
+            data-mobile-review aria-label="Review {vendor}">Review</button>
         <span class="sr-only">Track this · Not now</span>
         <form method="post" action="{BULK_ACTION}" data-bill-action-form>
           <input type="hidden" name="pattern_keys" value="{key}">
@@ -289,6 +291,8 @@ def _script() -> str:
       }
 
       const review = document.querySelector('#bill-review-dialog');
+      const mobileActions = document.querySelector('#bill-mobile-actions-dialog');
+      let mobileActionRow = null;
       let pending = {form:null, rows:[], action:''};
       async function renderTrackPreview(affected) {
         const data = new FormData();
@@ -328,6 +332,20 @@ def _script() -> str:
         const form=event.target.closest('[data-bill-action-form]'); if(!form)return;
         event.preventDefault(); openReview(form,[form.closest('[data-bill-row]')],event.submitter?.value||'');
       });
+      table.addEventListener('click', event => {
+        const button=event.target.closest('[data-mobile-review]'); if(!button)return;
+        mobileActionRow=button.closest('[data-bill-row]');
+        mobileActions.querySelector('[data-mobile-vendor]').textContent=mobileActionRow.dataset.vendor;
+        mobileActions.showModal();
+      });
+      mobileActions.querySelector('[data-mobile-action-cancel]').addEventListener('click',()=>mobileActions.close());
+      mobileActions.querySelectorAll('[data-mobile-action]').forEach(button=>button.addEventListener('click',()=>{
+        if(!mobileActionRow)return;
+        const form=mobileActionRow.querySelector('[data-bill-action-form]');
+        const action=button.dataset.mobileAction;
+        mobileActions.close();
+        openReview(form,[mobileActionRow],action);
+      }));
       bulk.addEventListener('submit', event => {
         event.preventDefault(); const action=event.submitter?.value||''; const affected=selected().map(box=>box.closest('[data-bill-row]'));
         if(!affected.length)return; setBulkFields(action);
@@ -474,6 +492,16 @@ def render_whats_coming_page(*, flash: str = "") -> str:
       <div data-review-fields="snooze" hidden><p>This will return to the queue on <strong>{_day(date.today() + timedelta(days=7))}</strong>.</p></div>
       <div class="action-row"><button class="btn btn-secondary" type="button" data-review-cancel>Cancel</button>
       <button class="btn btn-primary" type="submit" data-review-confirm>Confirm</button></div></form></dialog>
+    <dialog id="bill-mobile-actions-dialog" class="bill-mobile-action-dialog">
+      <h2>Review <span data-mobile-vendor>bill</span></h2>
+      <p>Choose what you want to do. Nothing changes until the next screen is confirmed.</p>
+      <div class="bill-mobile-action-list">
+        <button class="btn btn-primary" type="button" data-mobile-action="track">Preview &amp; track</button>
+        <button class="btn btn-secondary" type="button" data-mobile-action="not_a_bill">Not a bill</button>
+        <button class="btn btn-secondary" type="button" data-mobile-action="snooze">Ask me next week</button>
+        <button class="btn btn-secondary" type="button" data-mobile-action-cancel>Cancel</button>
+      </div>
+    </dialog>
     <dialog id="bill-combine-dialog" class="bill-combine-dialog"><form method="dialog">
       <h2>Combine vendor histories</h2><p>Choose the name to keep. We recalculate from original payments and never add two forecasts together.</p>
       <label>Keep vendor<select name="canonical_key"></select></label><label>Combined name<input name="canonical_name" required maxlength="255"></label>
