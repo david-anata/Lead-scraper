@@ -108,3 +108,4 @@ def test_strategy_persists_and_page_exposes_the_operating_program(
     assert "how to structure an amazon ppc account" in page
     assert "Revalidate in the next distinct ISO week" in page
     assert "/admin/website-ops/strategy?stage=scheduled" in page
+    assert "Showing 2 of 2 briefs" in page
