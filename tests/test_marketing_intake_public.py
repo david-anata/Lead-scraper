@@ -147,16 +147,16 @@ class MarketingIntakeTests(unittest.TestCase):
         scope = f"test:{self.id()}"
 
         self.assertFalse(
-            M._marketing_rate_limited(first, scope=scope, limit=2)
+            M.durable_rate_limited(first, scope=scope, limit=2)
         )
         self.assertFalse(
-            M._marketing_rate_limited(first, scope=scope, limit=2)
+            M.durable_rate_limited(first, scope=scope, limit=2)
         )
         self.assertTrue(
-            M._marketing_rate_limited(first, scope=scope, limit=2)
+            M.durable_rate_limited(first, scope=scope, limit=2)
         )
         self.assertFalse(
-            M._marketing_rate_limited(second, scope=scope, limit=2)
+            M.durable_rate_limited(second, scope=scope, limit=2)
         )
 
         with M.session_scope(app.state.session_factory) as session:

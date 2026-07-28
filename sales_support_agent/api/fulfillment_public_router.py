@@ -43,6 +43,7 @@ from sales_support_agent.services.fulfillment_deck.service import (
     generate_rate_sheet,
     rerender_rate_sheet,
 )
+from sales_support_agent.services.public_request_guard import durable_rate_limit_response
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,9 @@ async def rate_sheet_taste(
     denied = _enforce_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = durable_rate_limit_response(request, scope="fulfillment:taste", limit=12)
+    if limited is not None:
+        return limited
     body, bad = await _json_body(request)
     if bad is not None:
         return bad
@@ -321,6 +325,9 @@ async def rate_sheet_unlock(
     denied = _enforce_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = durable_rate_limit_response(request, scope="fulfillment:unlock", limit=30)
+    if limited is not None:
+        return limited
     body, bad = await _json_body(request)
     if bad is not None:
         return bad
@@ -418,6 +425,9 @@ async def rate_sheet_status(
     denied = _enforce_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = durable_rate_limit_response(request, scope="fulfillment:status", limit=240)
+    if limited is not None:
+        return limited
     run = storage.get_run_by_public_correlation(correlation_id)
     if run is None:
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
@@ -445,6 +455,9 @@ async def rate_sheet_result(
     denied = _enforce_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    limited = durable_rate_limit_response(request, scope="fulfillment:result", limit=240)
+    if limited is not None:
+        return limited
     run = storage.get_run_by_public_correlation(correlation_id)
     if run is None:
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})

@@ -17,9 +17,11 @@ os.environ.setdefault("SALES_AGENT_DB_URL", "sqlite:///" + tempfile.gettempdir()
 os.environ.setdefault("MARKETING_SITE_INTAKE_KEY", "test-intake-key")
 
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 
 from sales_support_agent.main import app
 from sales_support_agent.models.database import create_session_factory, init_database
+from sales_support_agent.models.database import get_engine
 from sales_support_agent.services.fulfillment_deck import storage
 from sales_support_agent.services.fulfillment_deck.public_payload import PUBLIC_MATRIX_KEYS, serialize_public_matrix
 
@@ -106,6 +108,28 @@ class PublicPayloadTests(unittest.TestCase):
         self.assertNotIn("internal_margin", result.json())
         self.assertNotIn("fulfillment_quote", result.json())
         self.assertEqual(result.json()["quotes"][0]["rate_usd"], 8.25)
+
+    def test_indexed_correlation_lookup_has_fixed_query_count(self) -> None:
+        summary = live_summary("query-budget-correlation-abcdefgh")
+        run_id = storage.create_run(trigger="public_funnel")
+        storage.save_draft(run_id, summary)
+        statements: list[str] = []
+
+        def count_query(_conn, _cursor, statement, _parameters, _context, _many) -> None:
+            statements.append(statement)
+
+        engine = get_engine()
+        event.listen(engine, "before_cursor_execute", count_query)
+        try:
+            resolved = storage.get_run_by_public_correlation(
+                summary["public_correlation_id"]
+            )
+        finally:
+            event.remove(engine, "before_cursor_execute", count_query)
+
+        self.assertIsNotNone(resolved)
+        self.assertEqual(int(resolved.id), run_id)
+        self.assertLessEqual(len(statements), 1, statements)
 
     def test_result_requires_key_and_ready_state(self) -> None:
         self.assertEqual(
