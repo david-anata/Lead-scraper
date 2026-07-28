@@ -1980,7 +1980,9 @@ def _page_shell(title: str, body: str) -> str:
       @media (max-width: 900px) {{
         .hero, .grid-2, .detail-layout, .stats, .form-grid, .setup-grid, .diff-grid, .mini-grid, .ops-state, .loop-grid {{ grid-template-columns: 1fr; }}
         .ops-state__action {{ justify-items:start; }}
-        .shell {{ width: auto; padding: 24px 12px 48px; }}
+        .shell {{ width: auto; min-width: 0; grid-template-columns: minmax(0, 1fr); padding: 24px 12px 48px; }}
+        .shell > * {{ min-width: 0; }}
+        input[type="file"] {{ max-width: 100%; }}
         .help-copy {{ right: auto; left: 0; width: min(300px, 70vw); }}
       }}
     </style>
