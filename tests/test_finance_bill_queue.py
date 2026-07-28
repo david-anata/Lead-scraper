@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -13,10 +14,11 @@ from sales_support_agent.models import database
 from sales_support_agent.models.database import Base, _register_models
 from sales_support_agent.models.entities import CashEvent
 from sales_support_agent.services.cashflow.bill_patterns import (
-    _PATTERN_CACHE, list_bill_patterns,
+    _PATTERN_CACHE, _monthly_cost_cents, list_bill_patterns,
 )
 from sales_support_agent.services.cashflow.bill_queue import (
-    apply_queue_action, preview_combine, undo_queue_batch,
+    apply_queue_action, list_queue_activity, preview_combine, preview_track,
+    undo_queue_batch,
 )
 from sales_support_agent.services.cashflow.bookkeeping import group_needs_decision
 from sales_support_agent.services.cashflow.vendor_aliases import (
@@ -141,3 +143,42 @@ def test_alias_migration_is_idempotent(finance_engine):
         assert connection.execute(text(
             "SELECT COUNT(*) FROM finance_vendor_aliases"
         )).scalar() == 0
+
+
+@pytest.mark.parametrize(("frequency", "amount", "monthly"), [
+    ("weekly", 12_00, 5_200),
+    ("biweekly", 12_00, 2_600),
+    ("monthly", 12_00, 1_200),
+    ("quarterly", 12_00, 400),
+    ("annual", 12_00, 100),
+])
+def test_monthly_cost_normalizes_every_supported_frequency(frequency, amount, monthly):
+    assert _monthly_cost_cents({"frequency": frequency, "amount_cents": amount}) == monthly
+
+
+def test_track_preview_explains_monthly_and_forecast_effect_without_writing(finance_engine):
+    pattern = _two_patterns(finance_engine)[0]
+    before = list_queue_activity()
+    preview = preview_track([pattern["pattern_key"]])
+    assert preview["rows"][0]["monthly_cost_cents"] > 0
+    assert "effect_14_cents" in preview["rows"][0]
+    assert list_queue_activity() == before
+
+
+def test_unrelated_fields_are_ignored_and_snooze_records_exact_return(finance_engine):
+    pattern = _two_patterns(finance_engine)[0]
+    result = apply_queue_action(
+        [pattern["pattern_key"]], "snooze", actor="qa",
+        category="must not be stored", paid_in_pieces=True, payment_date="",
+    )
+    activity = next(row for row in list_queue_activity() if row["id"] == result["batch_id"])
+    assert activity["payload"]["action"] == "snooze"
+    with finance_engine.connect() as connection:
+        payload = json.loads(connection.execute(text("""
+            SELECT evidence_json FROM finance_action_audit
+            WHERE entity_id=:key
+            ORDER BY created_at DESC LIMIT 1
+        """), {"key": pattern["pattern_key"]}).scalar())
+    evidence = payload["evidence"]
+    assert "category" not in evidence and "paid_in_pieces" not in evidence
+    assert date.fromisoformat(evidence["return_on"]) == date.today() + timedelta(days=7)

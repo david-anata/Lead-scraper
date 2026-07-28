@@ -497,6 +497,9 @@ def _build_pattern(
         "vendor": label,
         "merchant_key": merchant,
         "amount_cents": amount_cents,
+        "monthly_cost_cents": _monthly_cost_cents({
+            "amount_cents": amount_cents, "frequency": frequency,
+        }),
         "frequency": frequency,
         "next_due": override_date or next_due,
         "confidence_bps": confidence_bps,
@@ -504,7 +507,11 @@ def _build_pattern(
         "occurrences": len(series),
         "paid_in_pieces": bool(decision_evidence.get("paid_in_pieces", paid_in_pieces)),
         "evidence": [
-            {"due_date": row[0], "amount_cents": row[1]}
+            {
+                "due_date": row[0],
+                "amount_cents": row[1],
+                "raw_descriptor": str(row[3] if len(row) > 3 else ""),
+            }
             for row in sorted(series, key=lambda row: row[0], reverse=True)[:6]
         ],
         "why": why,
