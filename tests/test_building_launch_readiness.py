@@ -206,6 +206,13 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
         self.assertIn("What remains", page.text)
         self.assertIn("What we need from you", page.text)
         self.assertIn("Outside setup required", page.text)
+        self.assertIn("The final handoff", page.text)
+        self.assertIn("Business terms are prepared", page.text)
+        self.assertIn("Calendar permission is missing", page.text)
+        self.assertIn(
+            'href="/admin/building/agreement-readiness"',
+            page.text,
+        )
         self.assertIn("I APPROVE THIS DECISION", page.text)
         self.assertNotIn("<label>Applies to</label>", page.text)
         self.assertIn('id="incoming-inquiries"', page.text)

@@ -1418,6 +1418,15 @@ def render_building_page(
     .decision-card__action{{border-top:1px solid var(--border);}} .decision-card__action>summary{{padding:13px 18px;cursor:pointer;color:#397a9d;font-size:12px;font-weight:800;list-style-position:inside;}}
     .decision-card__action[open]>summary{{background:#eef6fa;}} .decision-form{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;padding:17px 18px;border-top:1px solid var(--border);}}
     .technical-details{{padding:12px 14px;border:1px dashed var(--border);border-radius:8px;background:#fbfbf9;}} .technical-details summary{{cursor:pointer;color:rgba(43,54,68,.68);font-size:12px;font-weight:700;}} .technical-details p{{margin:8px 0 0;color:rgba(43,54,68,.65);font-size:12px;line-height:1.45;}}
+    .launch-handoff{{padding:20px 22px;border-top:1px solid var(--border);background:#fff;}}
+    .launch-handoff h3{{margin:0;font:800 17px "Montserrat",sans-serif;}}
+    .launch-handoff>p{{margin:5px 0 14px;color:rgba(43,54,68,.65);font-size:13px;}}
+    .launch-handoff__steps{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;}}
+    .launch-handoff__step{{padding:15px;border:1px solid var(--border);border-radius:10px;background:#fbfbf9;}}
+    .launch-handoff__step span{{display:block;color:#397a9d;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;}}
+    .launch-handoff__step strong{{display:block;margin-top:5px;font-size:14px;}}
+    .launch-handoff__step p{{margin:5px 0 0;color:rgba(43,54,68,.66);font-size:12px;line-height:1.5;}}
+    .launch-handoff__step a{{display:inline-flex;margin-top:10px;color:#397a9d;font-size:12px;font-weight:800;}}
     .advanced-tools{{border-style:dashed;}} .advanced-tools>.panel-head{{background:#fbfbf9;}} .advanced-label{{display:inline-flex;margin-left:8px;padding:3px 7px;border-radius:99px;background:#edf0f2;color:#56616d;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;vertical-align:middle;}}
     .setup-workspace{{grid-column:1/-1;border:1px solid var(--border);border-radius:14px;background:#f7fafb;overflow:hidden;}}
     .setup-workspace>summary{{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:20px 22px;cursor:pointer;list-style:none;}}
@@ -1432,7 +1441,7 @@ def render_building_page(
     .roster-preview{{max-height:260px;overflow:auto;margin:10px 0 0;padding:10px 10px 10px 28px;border:1px solid var(--border);border-radius:8px;background:#f8f8f6;font-size:12px;line-height:1.6;min-width:320px;}}
     .checklist-list{{display:grid;gap:14px;padding:18px 22px;}} .checklist-group{{border:1px solid var(--border);border-radius:10px;overflow:hidden;}} .checklist-head{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 16px;background:#f8f8f6;}} .checklist-add{{display:grid;grid-template-columns:minmax(220px,1fr) auto auto;align-items:end;gap:10px;padding:12px 16px;border-top:1px solid var(--border);}} .checklist-add label:first-of-type{{display:grid;gap:5px;}}
     .adjustment-evidence{{display:grid;grid-template-columns:repeat(2,minmax(130px,1fr));gap:6px;min-width:360px;}} .adjustment-evidence button{{justify-self:start;}}
-    @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.daily-guide{{grid-template-columns:1fr}}.daily-guide__item{{border-right:0;border-bottom:1px solid var(--border)}}.daily-guide__item:last-child{{border-bottom:0}}.grid,.setup-workspace__content{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}.launch-steps{{grid-template-columns:1fr 1fr}}.launch-step:nth-child(2){{border-right:0}}.launch-step:nth-child(-n+2){{border-bottom:1px solid var(--border)}}}}
+    @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.daily-guide,.launch-handoff__steps{{grid-template-columns:1fr}}.daily-guide__item{{border-right:0;border-bottom:1px solid var(--border)}}.daily-guide__item:last-child{{border-bottom:0}}.grid,.setup-workspace__content{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}.launch-steps{{grid-template-columns:1fr 1fr}}.launch-step:nth-child(2){{border-right:0}}.launch-step:nth-child(-n+2){{border-bottom:1px solid var(--border)}}}}
     @media(max-width:700px){{.decision-card__summary{{grid-template-columns:42px minmax(0,1fr)}}.decision-card__state{{grid-column:2;justify-self:start;text-align:left;max-width:none}}.decision-card__evidence{{grid-template-columns:1fr}}.decision-card__evidence>div+div{{border-left:0;border-top:1px solid var(--border)}}}}
     @media(max-width:600px){{.page-head{{align-items:start;flex-direction:column}}.metrics{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--border)!important}}.metric:last-child{{border-bottom:0!important}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.launch-command__head{{grid-template-columns:1fr;padding:21px}}.launch-score{{width:78px;height:78px}}.launch-steps{{grid-template-columns:1fr}}.launch-step{{border-right:0;border-bottom:1px solid var(--border)!important}}.launch-step:last-child{{border-bottom:0!important}}.form-grid,.decision-form{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
   </style>
@@ -1565,6 +1574,15 @@ def render_building_page(
         <div class="panel-head"><div><h2>Your Arena decisions and remaining setup</h2><p>Your approved policy answers are already loaded. Change them only when the business rule changes; finish the remaining provider and document setup below.</p></div><span class="count">{launch_ready_count}/10 complete</span></div>
         <div class="alert alert--warning"><strong>{launch_remaining_count} setup steps still block launch.</strong><p>Still needed: {_esc(launch_remaining_summary)}. No customer message, payment, publication, or calendar write happens from this page.</p></div>
         <div class="decision-list">{launch_readiness_cards}</div>
+        <div class="launch-handoff">
+          <h3>The final handoff</h3>
+          <p>Your business answers are saved. These are the only remaining external steps, in order.</p>
+          <div class="launch-handoff__steps">
+            <div class="launch-handoff__step"><span>1 · Legal review</span><strong>Business terms are prepared</strong><p>Open the versioned Arena package, register it for review, then have the designated reviewer approve the complete reusable agreement.</p><a href="/admin/building/agreement-readiness">Open agreement review →</a></div>
+            <div class="launch-handoff__step"><span>2 · Google access</span><strong>Calendar permission is missing</strong><p>Reconnect Google Calendar with calendar-list access, then verify one Anata-owned dedicated Arena calendar and Agent service-account access.</p></div>
+            <div class="launch-handoff__step"><span>3 · Launch date</span><strong>Set this last</strong><p>After legal and calendar approval, record the first future date when the approved terms may be quoted consistently.</p></div>
+          </div>
+        </div>
       </section>
       <section class="panel panel--wide">
         <div class="panel-head"><div><h2>Commercial rate plans</h2><p>Version pricing, deposits, included items, and cancellation terms. Approved versions are locked.</p></div><span class="count">{len(rate_plans)} versions</span></div>
