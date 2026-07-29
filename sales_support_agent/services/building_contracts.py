@@ -58,6 +58,98 @@ CONTRACT_STATE_FILTERS = (
 CONTRACT_TYPE_LABELS = {"event": "Event", "workspace": "Workspace"}
 
 
+def compute_event_merge_values(
+    *,
+    reservation: BuildingReservation,
+    contact: BuildingContact,
+    space: BuildingSpace,
+    quote: BuildingProposal,
+) -> tuple[dict[str, Any], int, str]:
+    """Derive the allow-listed merge values, required amount, and request type.
+
+    Package preparation and the template preview both call this, so an operator
+    previews exactly the values a prepared package would freeze. Returns a
+    deposit amount of zero when the frozen terms cannot produce a valid request;
+    the caller decides whether that is fatal.
+    """
+
+    rate = dict(quote.rate_plan_snapshot_json or {})
+    deposit_type = str(rate.get("deposit_type") or "none")
+    deposit_cents = {
+        "fixed": min(int(rate.get("deposit_amount_cents") or 0), quote.amount_cents),
+        "percent": min(
+            (quote.amount_cents * int(rate.get("deposit_percent_bps") or 0) + 5000)
+            // 10000,
+            quote.amount_cents,
+        ),
+        "none": quote.amount_cents,
+    }.get(deposit_type)
+    if deposit_cents is None:
+        deposit_cents = 0
+    request_type = "full_amount" if deposit_type == "none" else "deposit"
+    merge_values = {
+        "customer_name": contact.full_name,
+        "customer_email": contact.email,
+        "event_space": space.name,
+        "setup_starts_at": reservation.starts_at.isoformat(),
+        "guest_starts_at": (
+            reservation.guest_starts_at.isoformat()
+            if reservation.guest_starts_at
+            else None
+        ),
+        "guest_ends_at": (
+            reservation.guest_ends_at.isoformat()
+            if reservation.guest_ends_at
+            else None
+        ),
+        "teardown_ends_at": reservation.ends_at.isoformat(),
+        "attendance": reservation.attendance,
+        "quote_total": quote.amount_cents,
+        "currency": quote.currency,
+        "deposit_amount": deposit_cents,
+        "deposit_type": deposit_type,
+        "cancellation_policy": str(rate.get("cancellation_policy") or ""),
+        "tax_terms": {
+            "status": str(rate.get("tax_status") or "review_required"),
+            "rate_bps": int(rate.get("tax_rate_bps") or 0),
+            "note": str(rate.get("tax_note") or ""),
+        },
+        "included": list(rate.get("included") or []),
+        "addons": list(rate.get("addons") or []),
+    }
+    return merge_values, deposit_cents, request_type
+
+
+def load_preview_merge_values(
+    session: Any, reservation_id: str
+) -> Optional[dict[str, Any]]:
+    """Merge values for a template preview, or None when the records are missing."""
+
+    reservation = session.get(BuildingReservation, reservation_id)
+    if reservation is None:
+        return None
+    contact = (
+        session.get(BuildingContact, reservation.contact_id)
+        if reservation.contact_id
+        else None
+    )
+    space = session.get(BuildingSpace, reservation.space_id) if reservation.space_id else None
+    quote = session.execute(
+        select(BuildingProposal)
+        .where(
+            BuildingProposal.reservation_id == reservation.id,
+            BuildingProposal.proposal_type == "quote",
+        )
+        .order_by(BuildingProposal.version.desc())
+    ).scalars().first()
+    if contact is None or space is None or quote is None:
+        return None
+    merge_values, _deposit, _request_type = compute_event_merge_values(
+        reservation=reservation, contact=contact, space=space, quote=quote
+    )
+    return merge_values
+
+
 def _aware(value: Optional[datetime]) -> Optional[datetime]:
     if value is None:
         return None

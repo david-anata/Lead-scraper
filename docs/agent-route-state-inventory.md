@@ -4,7 +4,7 @@ Generated from the mounted FastAPI application. Re-run
 `python scripts/generate_agent_route_inventory.py --output docs/agent-route-state-inventory.md`
 after adding, removing, or moving a route.
 
-Routes inventoried: **559**
+Routes inventoried: **566**
 
 | Family | Route | Method | Access | Renderer / handler | Primary job | Phase |
 |---|---|---|---|---|---|---|
@@ -122,7 +122,14 @@ Routes inventoried: **559**
 | Building | `/admin/building/content/{kind}/{record_id}/review` | `POST` | Authenticated + route permission | `review_content_from_admin` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/contracts` | `GET` | Authenticated + route permission | `contract_index` | Read, navigate, or download | 7 |
 | Building | `/admin/building/contracts/packages` | `POST` | Authenticated + route permission | `prepare_contract` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/contracts/templates` | `GET` | Authenticated + route permission | `template_index` | Read, navigate, or download | 7 |
+| Building | `/admin/building/contracts/templates` | `POST` | Authenticated + route permission | `create_template_draft` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/contracts/templates/{template_id}` | `GET` | Authenticated + route permission | `template_editor` | Read, navigate, or download | 7 |
+| Building | `/admin/building/contracts/templates/{template_id}` | `POST` | Authenticated + route permission | `save_template_draft` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/contracts/templates/{template_id}/new-version` | `POST` | Authenticated + route permission | `start_next_template_version` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/contracts/templates/{template_id}/transition` | `POST` | Authenticated + route permission | `transition_template` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/contracts/{agreement_id}` | `GET` | Authenticated + route permission | `contract_detail` | Read, navigate, or download | 7 |
+| Building | `/admin/building/contracts/{agreement_id}/document` | `GET` | Authenticated + route permission | `contract_document` | Read, navigate, or download | 7 |
 | Building | `/admin/building/contracts/{agreement_id}/payments/transition` | `POST` | Authenticated + route permission | `transition_contract_payment` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/contracts/{agreement_id}/transition` | `POST` | Authenticated + route permission | `transition_contract` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/event-reviews` | `POST` | Authenticated + route permission | `create_event_review_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |

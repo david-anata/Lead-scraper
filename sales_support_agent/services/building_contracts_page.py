@@ -22,6 +22,7 @@ from sales_support_agent.services.ui_shell import render_operator_document
 
 MOUNTAIN = ZoneInfo("America/Denver")
 CONTRACTS_URL = "/admin/building/contracts"
+TEMPLATES_URL = "/admin/building/contracts/templates"
 _LAUNCH_DECISION_URL = "/admin/building#arena-launch-readiness"
 
 
@@ -75,7 +76,8 @@ def _blocked_template_alert() -> str:
         "preparation fails closed until a reusable template is authored, legally "
         "approved, and versioned. The 2025 Vivint agreement is customer-specific "
         "evidence and is not reusable.</p>"
-        f'<p><a href="{_LAUNCH_DECISION_URL}">Open the '
+        f'<p><a href="{TEMPLATES_URL}">Author a reusable template →</a> · '
+        f'<a href="{_LAUNCH_DECISION_URL}">Open the '
         "<code>agreement_template</code> launch decision →</a></p>",
     )
 
@@ -329,7 +331,10 @@ def render_contract_index(
         <h1>Contracts</h1>
         <p>Every agreement package, its frozen terms, its true state, and the payment request it authorizes. Nothing on this page sends, signs, invoices, or charges.</p>
       </div>
-      <div class="app-page-actions"><a class="admin-btn admin-btn--ghost" href="/admin/building">Building Control</a></div>
+      <div class="app-page-actions">
+        <a class="admin-btn admin-btn--ghost" href="/admin/building">Building Control</a>
+        <a class="admin-btn" href="{TEMPLATES_URL}">Templates</a>
+      </div>
     </header>
     {_messages(notice, error)}
     {'' if template_approved else _blocked_template_alert()}
@@ -365,6 +370,12 @@ def render_contract_detail(
     """One contract: reconciled state, frozen terms, linked records, actions, audit."""
 
     payment = contract.get("payment") or {}
+    document = dict((contract.get("snapshot") or {}).get("document") or {})
+    # The document link only appears once the package is approved, matching the
+    # route's own precondition.
+    has_document = bool(
+        document.get("text") and contract["preparation_status"] == "approved"
+    )
     linked = [
         ("Reservation", contract["reservation_id"], contract["reservation_status"]),
         ("Quote", contract["quote"]["id"], str(contract["quote"]["status"] or "")),
@@ -388,6 +399,11 @@ def render_contract_detail(
       <div class="app-detail-list__row"><dt>Reviewed</dt><dd>{_esc(contract['reviewed_by'] or '—')} · {_esc(_when(contract['reviewed_at']))}</dd></div>
       <div class="app-detail-list__row"><dt>Approved</dt><dd>{_esc(contract['approved_by'] or '—')} · {_esc(_when(contract['approved_at']))}</dd></div>
       <div class="app-detail-list__row"><dt>Agent hold</dt><dd>{'Active until ' + _esc(_when(contract['hold_expires_at'])) if contract['hold_active'] else 'Not active'}</dd></div>
+      <div class="app-detail-list__row"><dt>Frozen document</dt><dd>{
+        f'<code>{_esc(document.get("checksum"))}</code>'
+        if document.get("text")
+        else 'None. This template holds its text outside Agent.'
+      }</dd></div>
     </dl>"""
     else:
         evidence = _alert(
@@ -460,7 +476,10 @@ def render_contract_detail(
         <h1>{_esc(contract['customer_name'])}</h1>
         <p>{_esc(contract['contract_type_label'])} contract for {_esc(contract['space_name'])}, {_esc(_when(contract['starts_at'], with_time=False))}. Approval authorizes a future provider handoff only.</p>
       </div>
-      <div class="app-page-actions">{_status(contract['state_label'], contract['state_modifier'])}</div>
+      <div class="app-page-actions">
+        {_status(contract['state_label'], contract['state_modifier'])}
+        {f'<a class="admin-btn" href="{CONTRACTS_URL}/{_esc(contract["id"])}/document">Read contract</a>' if has_document else ''}
+      </div>
     </header>
     {_messages(notice, error)}
     <div class="app-metric-strip">
