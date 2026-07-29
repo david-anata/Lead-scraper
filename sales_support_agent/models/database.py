@@ -388,6 +388,11 @@ def _ensure_building_columns(engine: Any) -> None:
                 else "DATETIME"
             ),
         },
+        "building_agreement_templates": {
+            "contract_type": "VARCHAR(32) NOT NULL DEFAULT 'event'",
+            "body_markdown": "TEXT NOT NULL DEFAULT ''",
+            "clauses_json": "JSON NOT NULL DEFAULT '[]'",
+        },
         "building_agreements": {
             "template_id": "VARCHAR(64) NOT NULL DEFAULT ''",
             "preparation_status": "VARCHAR(32) NOT NULL DEFAULT 'not_started'",

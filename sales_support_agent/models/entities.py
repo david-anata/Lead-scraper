@@ -2238,7 +2238,15 @@ class BuildingAgreementTemplate(Base):
     version: Mapped[int] = mapped_column(Integer)
     name: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    contract_type: Mapped[str] = mapped_column(String(32), default="event", index=True)
+    #: Optional pointer to externally held paper. Kept for templates whose
+    #: authoritative text lives outside Agent.
     template_reference: Mapped[str] = mapped_column(String(1024), default="")
+    #: Authored contract body. When present this is the authoritative text and
+    #: merge fields are derived from its ``{{token}}`` usage.
+    body_markdown: Mapped[str] = mapped_column(Text, default="")
+    #: Ordered ``{"title": str, "body": str}`` clauses appended after the body.
+    clauses_json: Mapped[list] = mapped_column(JSON, default=list)
     merge_fields_json: Mapped[list] = mapped_column(JSON, default=list)
     approval_evidence: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[str] = mapped_column(String(255), default="")

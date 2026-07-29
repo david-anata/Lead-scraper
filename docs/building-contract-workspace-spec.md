@@ -110,9 +110,20 @@ Four phases, each independently shippable and validatable.
 - Package preparation additionally stores the deterministic rendered document
   text and its own checksum inside `package_snapshot_json`, so an approved
   contract has verifiable content.
-- `GET /admin/building/contracts/{agreement_id}/document.pdf` renders the frozen
-  snapshot for an approved package. Download only. No send, no signature
-  request, no provider object.
+- `GET /admin/building/contracts/{agreement_id}/document` renders the frozen
+  snapshot for an approved package as a print-optimized page. Read only. No
+  send, no signature request, no provider object.
+
+  Shipped as HTML rather than PDF: no pure-Python PDF writer is installed and
+  none of `reportlab`, `weasyprint`, or `xhtml2pdf` is an acceptable new
+  runtime dependency for a Render deploy in this phase. The assumption below
+  pre-authorized this fallback; the browser's print-to-PDF covers the operator
+  need today. A server-rendered PDF remains open.
+
+  `rendered_preview_checksum` was dropped from the template table. The rendered
+  document checksum lives on the prepared package, which is the record that
+  needs to be verifiable; a second checksum on the draft would be redundant
+  state that could drift.
 
 ### Phase 3 — Building section decomposition
 
