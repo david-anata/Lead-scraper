@@ -49,6 +49,7 @@ admin_router = APIRouter(
     tags=["building-agreement-readiness-admin"],
 )
 FORM_DEPS = [Depends(require_building_form_security)]
+CONTRACTS_URL = "/admin/building/contracts"
 
 PREPARATION_TRANSITIONS = {
     "prepared": {"in_review"},
@@ -979,7 +980,13 @@ def prepare_arena_review_package(
 def agreement_readiness_page(
     request: Request,
     user: dict = Depends(require_tool("building.agreements.prepare")),
-) -> HTMLResponse:
+) -> HTMLResponse | RedirectResponse:
+    """Redirect the retired identifier-driven page to the customer-first workspace."""
+
+    return RedirectResponse(CONTRACTS_URL, status_code=308)
+
+    # Retained temporarily below as rollback/reference code while the contract
+    # workspace replaces the identifier-driven UI. This branch is unreachable.
     with session_scope(request.app.state.session_factory) as session:
         templates = session.execute(
             select(BuildingAgreementTemplate).order_by(

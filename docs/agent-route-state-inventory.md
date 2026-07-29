@@ -4,7 +4,7 @@ Generated from the mounted FastAPI application. Re-run
 `python scripts/generate_agent_route_inventory.py --output docs/agent-route-state-inventory.md`
 after adding, removing, or moving a route.
 
-Routes inventoried: **481**
+Routes inventoried: **559**
 
 | Family | Route | Method | Access | Renderer / handler | Primary job | Phase |
 |---|---|---|---|---|---|---|
@@ -36,6 +36,7 @@ Routes inventoried: **481**
 | Access / transition | `/admin/settings/inboxes/connect` | `GET` | Authenticated + route permission | `connect_inbox` | Read, navigate, or download | 3 |
 | Access / transition | `/admin/settings/inboxes/disconnect` | `POST` | Authenticated + route permission | `disconnect_inbox` | Mutation; preserve confirmation/audit contract | 3 |
 | Admin / shared | `/admin` | `GET` | Authenticated + route permission | `admin_dashboard` | Read, navigate, or download | 3–6 |
+| Admin / shared | `/admin/api/content/status` | `GET` | Authenticated + route permission | `content_status` | Read, navigate, or download | 3–6 |
 | Admin / shared | `/admin/api/deck-runs` | `GET` | Authenticated + route permission | `admin_deck_runs` | Read, navigate, or download | 3–6 |
 | Admin / shared | `/admin/api/deck-runs/{run_id}` | `DELETE` | Authenticated + route permission | `admin_delete_deck_run` | Mutation; preserve confirmation/audit contract | 3–6 |
 | Admin / shared | `/admin/api/deck-runs/{run_id}/attach-deal` | `POST` | Authenticated + route permission | `admin_attach_deck_run_to_deal` | Mutation; preserve confirmation/audit contract | 3–6 |
@@ -43,6 +44,8 @@ Routes inventoried: **481**
 | Admin / shared | `/admin/api/generate-deck` | `POST` | Authenticated + route permission | `admin_generate_deck` | Mutation; preserve confirmation/audit contract | 3–6 |
 | Admin / shared | `/admin/api/lead-runs/{run_id}` | `GET` | Authenticated + route permission | `admin_lead_run_status` | Read, navigate, or download | 3–6 |
 | Admin / shared | `/admin/api/lead-runs/{run_id}/download` | `GET` | Authenticated + route permission | `admin_lead_run_download` | Read, navigate, or download | 3–6 |
+| Admin / shared | `/admin/api/outbound/amazon-scan` | `GET` | Authenticated + route permission | `outbound_amazon_scan_status` | Read, navigate, or download | 3–6 |
+| Admin / shared | `/admin/api/outbound/amazon-scan` | `POST` | Authenticated + route permission | `outbound_amazon_scan` | Mutation; preserve confirmation/audit contract | 3–6 |
 | Admin / shared | `/admin/api/outbound/brands.csv` | `GET` | Authenticated + route permission | `outbound_brands_csv` | Read, navigate, or download | 3–6 |
 | Admin / shared | `/admin/api/outbound/nurture` | `POST` | Authenticated + route permission | `outbound_nurture_enroll` | Mutation; preserve confirmation/audit contract | 3–6 |
 | Admin / shared | `/admin/api/outbound/push` | `POST` | Authenticated + route permission | `outbound_push_to_clay` | Mutation; preserve confirmation/audit contract | 3–6 |
@@ -59,6 +62,8 @@ Routes inventoried: **481**
 | Admin / shared | `/admin/assets/navigation.css` | `GET` | Authenticated + route permission | `navigation_stylesheet` | Read, navigate, or download | 3–6 |
 | Admin / shared | `/admin/break-glass` | `GET` | Authenticated + route permission | `admin_break_glass_page` | Read, navigate, or download | 3–6 |
 | Admin / shared | `/admin/break-glass` | `POST` | Authenticated + route permission | `admin_break_glass_submit` | Mutation; preserve confirmation/audit contract | 3–6 |
+| Admin / shared | `/admin/content` | `GET` | Authenticated + route permission | `content_control_room` | Read, navigate, or download | 3–6 |
+| Admin / shared | `/admin/content/runs/{run_id}` | `GET` | Authenticated + route permission | `content_run_detail` | Read, navigate, or download | 3–6 |
 | Admin / shared | `/admin/logout` | `GET` | Authenticated + route permission | `admin_logout` | Read, navigate, or download | 3–6 |
 | Admin / shared | `/admin/outbound/brands` | `GET` | Authenticated + route permission | `outbound_brands_page` | Read, navigate, or download | 3–6 |
 | Admin / shared | `/admin/outbound/lead-ops` | `GET` | Authenticated + route permission | `outbound_lead_ops` | Read, navigate, or download | 3–6 |
@@ -79,6 +84,12 @@ Routes inventoried: **481**
 | Advertising | `/admin/advertising/clients/{client_id}/archive` | `POST` | Authenticated + route permission | `clients_archive` | Mutation; preserve confirmation/audit contract | 6 |
 | Advertising | `/admin/advertising/profit-calculator` | `GET` | Authenticated + route permission | `profit_calculator_page` | Read, navigate, or download | 6 |
 | Building | `/admin/building` | `GET` | Authenticated + route permission | `building_control_room` | Read, navigate, or download | 7 |
+| Building | `/admin/building/agreement-readiness` | `GET` | Authenticated + route permission | `agreement_readiness_page` | Read, navigate, or download | 7 |
+| Building | `/admin/building/agreement-readiness/packages` | `POST` | Authenticated + route permission | `prepare_package_from_admin` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/agreement-readiness/packages/transition` | `POST` | Authenticated + route permission | `transition_package_from_admin` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/agreement-readiness/payments/transition` | `POST` | Authenticated + route permission | `transition_payment_from_admin` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/agreement-readiness/templates` | `POST` | Authenticated + route permission | `save_template_from_admin` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/agreement-readiness/templates/transition` | `POST` | Authenticated + route permission | `transition_template_from_admin` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/billing/accounts` | `POST` | Authenticated + route permission | `save_billing_account_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/billing/adjustments` | `POST` | Authenticated + route permission | `request_adjustment_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/billing/adjustments/{adjustment_id}/approve` | `POST` | Authenticated + route permission | `approve_adjustment_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
@@ -94,19 +105,32 @@ Routes inventoried: **481**
 | Building | `/admin/building/campaigns/{campaign_id}/approve` | `POST` | Authenticated + route permission | `approve_campaign_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/campaigns/{campaign_id}/preview` | `POST` | Authenticated + route permission | `preview_campaign_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/campaigns/{campaign_id}/retry` | `POST` | Authenticated + route permission | `retry_campaign_failures_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/campaigns/{campaign_id}/review` | `POST` | Authenticated + route permission | `review_campaign_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/campaigns/{campaign_id}/schedule` | `POST` | Authenticated + route permission | `schedule_campaign_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/campaigns/{campaign_id}/send` | `POST` | Authenticated + route permission | `send_campaign_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/campaigns/{campaign_id}/test-send` | `POST` | Authenticated + route permission | `test_send_campaign_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/campaigns/{campaign_id}/unschedule` | `POST` | Authenticated + route permission | `unschedule_campaign_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/catalog/arena/prepare` | `POST` | Authenticated + route permission | `prepare_verified_arena_catalog_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/checklists/items/{item_id}/status` | `POST` | Authenticated + route permission | `update_checklist_item_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/checklists/{checklist_id}/items` | `POST` | Authenticated + route permission | `add_checklist_item_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/contacts` | `POST` | Authenticated + route permission | `save_contact_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/contacts/merge` | `POST` | Authenticated + route permission | `merge_contacts_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/contacts/merge/preview` | `POST` | Authenticated + route permission | `preview_contact_merge_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/contacts/{contact_id}/relationships/{relationship_id}/review` | `POST` | Authenticated + route permission | `review_relationship_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/content` | `GET` | Authenticated + route permission | `content_admin_page` | Read, navigate, or download | 7 |
+| Building | `/admin/building/content` | `POST` | Authenticated + route permission | `save_content_from_admin` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/content/{kind}/{record_id}/review` | `POST` | Authenticated + route permission | `review_content_from_admin` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/contracts` | `GET` | Authenticated + route permission | `contract_index` | Read, navigate, or download | 7 |
+| Building | `/admin/building/contracts/packages` | `POST` | Authenticated + route permission | `prepare_contract` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/contracts/{agreement_id}` | `GET` | Authenticated + route permission | `contract_detail` | Read, navigate, or download | 7 |
+| Building | `/admin/building/contracts/{agreement_id}/payments/transition` | `POST` | Authenticated + route permission | `transition_contract_payment` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/contracts/{agreement_id}/transition` | `POST` | Authenticated + route permission | `transition_contract` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/event-reviews` | `POST` | Authenticated + route permission | `create_event_review_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/inquiries` | `POST` | Authenticated + route permission | `create_assisted_inquiry_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/inquiries/{inquiry_id}/lifecycle` | `POST` | Authenticated + route permission | `update_inquiry_lifecycle_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/inquiries/{inquiry_id}/retry-hubspot` | `POST` | Authenticated + route permission | `retry_inquiry_hubspot_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/inquiries/{inquiry_id}/schedule-tour` | `POST` | Authenticated + route permission | `schedule_tour_inquiry_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/launch-readiness/decisions/{decision_key}` | `POST` | Authenticated + route permission | `record_arena_launch_decision` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/offerings` | `POST` | Authenticated + route permission | `save_offering_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/privacy/contacts/{contact_id}/correct` | `POST` | Authenticated + route permission | `correct_contact_admin` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/privacy/contacts/{contact_id}/export` | `GET` | Authenticated + route permission | `export_contact_admin` | Read, navigate, or download | 7 |
@@ -114,8 +138,13 @@ Routes inventoried: **481**
 | Building | `/admin/building/privacy/requests` | `POST` | Authenticated + route permission | `create_request_admin` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/privacy/requests/{request_id}/transition` | `POST` | Authenticated + route permission | `transition_request_admin` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/rate-plans` | `POST` | Authenticated + route permission | `save_rate_plan_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/rate-plans/arena-commercial-baseline` | `POST` | Authenticated + route permission | `prepare_arena_commercial_baseline` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/rate-plans/{rate_plan_id}/approve` | `POST` | Authenticated + route permission | `approve_rate_plan_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/rate-plans/{rate_plan_id}/reconcile-source-conflicts` | `POST` | Authenticated + route permission | `reconcile_rate_plan_source_conflicts` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/rate-plans/{rate_plan_id}/retire` | `POST` | Authenticated + route permission | `retire_rate_plan_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/reservations` | `POST` | Authenticated + route permission | `create_reservation_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/reservations/{reservation_id}/agreements` | `POST` | Authenticated + route permission | `record_agreement_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
+| Building | `/admin/building/reservations/{reservation_id}/customer-status-access` | `POST` | Authenticated + route permission | `prepare_customer_status_access_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/reservations/{reservation_id}/deposits` | `POST` | Authenticated + route permission | `record_deposit_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/reservations/{reservation_id}/proposals` | `POST` | Authenticated + route permission | `record_proposal_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
 | Building | `/admin/building/reservations/{reservation_id}/tours` | `POST` | Authenticated + route permission | `create_tour_from_control_room` | Mutation; preserve confirmation/audit contract | 7 |
@@ -245,7 +274,12 @@ Routes inventoried: **481**
 | Finance | `/admin/finances/vendors/{vendor_id}` | `POST` | Authenticated + route permission | `update_vendor_endpoint` | Mutation; preserve confirmation/audit contract | 9 |
 | Finance | `/admin/finances/vendors/{vendor_id}/delete` | `POST` | Authenticated + route permission | `delete_vendor_endpoint` | Mutation; preserve confirmation/audit contract | 9 |
 | Finance | `/admin/finances/whats-coming` | `GET` | Authenticated + route permission | `whats_coming_page` | Read, navigate, or download | 9 |
+| Finance | `/admin/finances/whats-coming/bulk` | `POST` | Authenticated + route permission | `whats_coming_bulk` | Mutation; preserve confirmation/audit contract | 9 |
+| Finance | `/admin/finances/whats-coming/combine-preview` | `POST` | Authenticated + route permission | `whats_coming_combine_preview` | Mutation; preserve confirmation/audit contract | 9 |
 | Finance | `/admin/finances/whats-coming/decide` | `POST` | Authenticated + route permission | `whats_coming_decide` | Mutation; preserve confirmation/audit contract | 9 |
+| Finance | `/admin/finances/whats-coming/track-preview` | `POST` | Authenticated + route permission | `whats_coming_track_preview` | Mutation; preserve confirmation/audit contract | 9 |
+| Finance | `/admin/finances/whats-coming/undo` | `POST` | Authenticated + route permission | `whats_coming_undo` | Mutation; preserve confirmation/audit contract | 9 |
+| Finance | `/admin/finances/whats-coming/vendor-alias/revoke` | `POST` | Authenticated + route permission | `whats_coming_alias_revoke` | Mutation; preserve confirmation/audit contract | 9 |
 | Fulfillment | `/admin/fulfillment` | `GET` | Authenticated + route permission | `admin_fulfillment_root` | Read, navigate, or download | 4–5 |
 | Fulfillment | `/admin/fulfillment-cs{rest:path}` | `GET` | Authenticated + route permission | `admin_fulfillment_cs_legacy_redirect` | Read, navigate, or download | 4–5 |
 | Fulfillment | `/admin/fulfillment/cs` | `GET` | Authenticated + route permission | `admin_fulfillment_cs_root` | Read, navigate, or download | 4–5 |
@@ -285,6 +319,7 @@ Routes inventoried: **481**
 | HR | `/admin/hr/employees/{emp_id}/invite` | `POST` | Authenticated + route permission | `employee_invite` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/employees/{emp_id}/onboarding-correction` | `POST` | Authenticated + route permission | `onboarding_correction_request` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/employees/{emp_id}/onboarding-review` | `POST` | Authenticated + route permission | `onboarding_employer_review` | Mutation; preserve confirmation/audit contract | 8 |
+| HR | `/admin/hr/employees/{emp_id}/status` | `POST` | Authenticated + route permission | `employee_status_update` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/offboarding` | `GET` | Authenticated + route permission | `hr_offboarding` | Read, navigate, or download | 8 |
 | HR | `/admin/hr/offboarding` | `POST` | Authenticated + route permission | `hr_offboarding_create` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/offboarding/{checklist_id}` | `POST` | Authenticated + route permission | `hr_offboarding_update` | Mutation; preserve confirmation/audit contract | 8 |
@@ -300,12 +335,15 @@ Routes inventoried: **481**
 | HR | `/admin/hr/payroll/liabilities/{liability_id}` | `POST` | Authenticated + route permission | `hr_payroll_liability_action` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/payroll/prepare` | `POST` | Authenticated + route permission | `hr_payroll_prepare` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/payroll/runs/{run_id}` | `GET` | Authenticated + route permission | `hr_payroll_run_review` | Read, navigate, or download | 8 |
+| HR | `/admin/hr/payroll/runs/{run_id}/approve` | `GET` | Authenticated + route permission | `hr_payroll_approval_review` | Read, navigate, or download | 8 |
 | HR | `/admin/hr/payroll/runs/{run_id}/checks` | `POST` | Authenticated + route permission | `hr_payroll_issue_check` | Mutation; preserve confirmation/audit contract | 8 |
+| HR | `/admin/hr/payroll/runs/{run_id}/checks/confirm` | `POST` | Authenticated + route permission | `hr_payroll_confirm_check` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/payroll/runs/{run_id}/checks/reissue` | `POST` | Authenticated + route permission | `hr_payroll_reissue_check` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/payroll/runs/{run_id}/close` | `POST` | Authenticated + route permission | `hr_payroll_close_run` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/payroll/runs/{run_id}/provider` | `POST` | Authenticated + route permission | `hr_payroll_provider_action` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/payroll/runs/{run_id}/provider.csv` | `GET` | Authenticated + route permission | `hr_payroll_provider_export` | Read, navigate, or download | 8 |
 | HR | `/admin/hr/payroll/{run_id}/approve` | `POST` | Authenticated + route permission | `hr_payroll_approve` | Mutation; preserve confirmation/audit contract | 8 |
+| HR | `/admin/hr/payroll/{run_id}/reject` | `POST` | Authenticated + route permission | `hr_payroll_reject` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/policies` | `GET` | Authenticated + route permission | `hr_policies` | Read, navigate, or download | 8 |
 | HR | `/admin/hr/policies/acknowledge` | `POST` | Authenticated + route permission | `hr_policy_acknowledge` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/reports` | `GET` | Authenticated + route permission | `hr_reports` | Read, navigate, or download | 8 |
@@ -322,13 +360,19 @@ Routes inventoried: **481**
 | HR | `/admin/hr/settings/opening-balance/{balance_id}/decision` | `POST` | Authenticated + route permission | `hr_opening_balance_decision` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/settings/provider-contract.json` | `GET` | Authenticated + route permission | `hr_provider_contract` | Read, navigate, or download | 8 |
 | HR | `/admin/hr/settings/qualified-review` | `POST` | Authenticated + route permission | `hr_qualified_review_save` | Mutation; preserve confirmation/audit contract | 8 |
+| HR | `/admin/hr/setup` | `GET` | Authenticated + route permission | `hr_setup` | Read, navigate, or download | 8 |
 | HR | `/admin/hr/teams` | `GET` | Authenticated + route permission | `teams_list` | Read, navigate, or download | 8 |
 | HR | `/admin/hr/teams` | `POST` | Authenticated + route permission | `team_create` | Mutation; preserve confirmation/audit contract | 8 |
+| HR | `/admin/hr/teams/{team_id}` | `GET` | Authenticated + route permission | `team_detail` | Read, navigate, or download | 8 |
+| HR | `/admin/hr/teams/{team_id}` | `POST` | Authenticated + route permission | `team_update` | Mutation; preserve confirmation/audit contract | 8 |
+| HR | `/admin/hr/teams/{team_id}/members` | `POST` | Authenticated + route permission | `team_member_update` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/time` | `GET` | Authenticated + route permission | `hr_time` | Read, navigate, or download | 8 |
 | HR | `/admin/hr/time/clock` | `POST` | Authenticated + route permission | `hr_time_clock` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/time/corrections/{correction_id}/decision` | `POST` | Authenticated + route permission | `hr_time_correction_decision` | Mutation; preserve confirmation/audit contract | 8 |
+| HR | `/admin/hr/time/missed-punch` | `POST` | Authenticated + route permission | `hr_time_missed_punch` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/time/pto` | `POST` | Authenticated + route permission | `hr_pto_request` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/time/pto/{request_id}/decision` | `POST` | Authenticated + route permission | `hr_pto_decision` | Mutation; preserve confirmation/audit contract | 8 |
+| HR | `/admin/hr/time/pto/{request_id}/withdraw` | `POST` | Authenticated + route permission | `hr_pto_withdraw` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/time/timesheets/submit` | `POST` | Authenticated + route permission | `hr_timesheet_submit` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/time/timesheets/{approval_id}/decision` | `POST` | Authenticated + route permission | `hr_timesheet_decision` | Mutation; preserve confirmation/audit contract | 8 |
 | HR | `/admin/hr/time/{time_entry_id}/correction` | `POST` | Authenticated + route permission | `hr_time_correction` | Mutation; preserve confirmation/audit contract | 8 |
@@ -338,6 +382,9 @@ Routes inventoried: **481**
 | Public deliverable | `/api/public/amazon-profit-calculator/catalog/{asin}` | `GET` | Public or token-gated | `profit_calculator_catalog_proxy` | Read, navigate, or download | 10 |
 | Public deliverable | `/api/public/amazon-profit-calculator/profitability/estimate` | `POST` | Public or token-gated | `profit_calculator_estimate_proxy` | Mutation; preserve confirmation/audit contract | 10 |
 | Public deliverable | `/api/public/building/availability` | `GET` | Public or token-gated | `list_public_availability` | Read, navigate, or download | 10 |
+| Public deliverable | `/api/public/building/bookings/status` | `GET` | Public or token-gated | `public_customer_status` | Read, navigate, or download | 10 |
+| Public deliverable | `/api/public/building/content` | `GET` | Public or token-gated | `get_public_building_content` | Read, navigate, or download | 10 |
+| Public deliverable | `/api/public/building/event-estimates` | `POST` | Public or token-gated | `calculate_public_event_estimate` | Mutation; preserve confirmation/audit contract | 10 |
 | Public deliverable | `/api/public/building/inquiries` | `POST` | Public or token-gated | `create_inquiry` | Mutation; preserve confirmation/audit contract | 10 |
 | Public deliverable | `/api/public/building/offerings` | `GET` | Public or token-gated | `list_public_offerings` | Read, navigate, or download | 10 |
 | Public deliverable | `/api/public/building/offerings/{slug}` | `GET` | Public or token-gated | `get_public_offering` | Read, navigate, or download | 10 |
@@ -352,6 +399,7 @@ Routes inventoried: **481**
 | Public deliverable | `/api/public/marketing/analysis/status` | `GET` | Public or token-gated | `marketing_analysis_status` | Read, navigate, or download | 10 |
 | Public deliverable | `/api/public/marketing/intake` | `POST` | Public or token-gated | `marketing_site_intake_create` | Mutation; preserve confirmation/audit contract | 10 |
 | Public deliverable | `/api/public/marketing/intake/{intake_id}` | `GET` | Public or token-gated | `marketing_site_intake_status` | Read, navigate, or download | 10 |
+| Public deliverable | `/api/public/marketing/intake/{intake_id}/booked` | `POST` | Public or token-gated | `marketing_site_intake_booked` | Mutation; preserve confirmation/audit contract | 10 |
 | Public deliverable | `/api/public/marketing/intake/{intake_id}/needs` | `POST` | Public or token-gated | `marketing_site_intake_needs` | Mutation; preserve confirmation/audit contract | 10 |
 | Public deliverable | `/api/public/marketing/intake/{intake_id}/unlock` | `POST` | Public or token-gated | `marketing_site_intake_unlock` | Mutation; preserve confirmation/audit contract | 10 |
 | Public deliverable | `/decks/{deck_slug}/{run_id}/{token}` | `GET` | Public or token-gated | `deck_export_slug_view` | Read, navigate, or download | 10 |
@@ -397,6 +445,12 @@ Routes inventoried: **481**
 | Service / API | `/api/integrations/plaid/webhook` | `POST` | Service contract | `plaid_webhook` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/integrations/resend/webhook` | `POST` | Service contract | `ingest_resend_webhook` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/integrations/stripe/webhook` | `POST` | Service contract | `stripe_webhook` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/agreement-readiness/packages` | `POST` | Service contract | `prepare_agreement_package` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/agreement-readiness/packages/{agreement_id}/transition` | `POST` | Service contract | `transition_agreement_package` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/agreement-readiness/payments/{payment_id}/transition` | `POST` | Service contract | `transition_payment_readiness` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/agreement-readiness/reservations/{reservation_id}` | `GET` | Service contract | `get_reservation_readiness` | Read, navigate, or download | Exempt |
+| Service / API | `/api/internal/building/agreement-readiness/templates/{template_id}` | `PUT` | Service contract | `upsert_agreement_template` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/agreement-readiness/templates/{template_id}/transition` | `POST` | Service contract | `transition_agreement_template` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/analytics` | `GET` | Service contract | `get_building_analytics` | Read, navigate, or download | Exempt |
 | Service / API | `/api/internal/building/availability` | `POST` | Service contract | `create_availability_block` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/billing/accounts/{account_id}` | `PUT` | Service contract | `upsert_billing_account` | Mutation; preserve confirmation/audit contract | Exempt |
@@ -416,23 +470,32 @@ Routes inventoried: **481**
 | Service / API | `/api/internal/building/billing/schedules/{schedule_id}/approve` | `POST` | Service contract | `approve_billing_schedule` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/bookings` | `GET` | Service contract | `list_reservations` | Read, navigate, or download | Exempt |
 | Service / API | `/api/internal/building/bookings` | `POST` | Service contract | `create_reservation` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/bookings/event-reviews` | `POST` | Service contract | `create_event_review` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/bookings/tour-inquiry-handoffs` | `POST` | Service contract | `create_tour_inquiry_handoff` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/bookings/tours/{tour_id}` | `PUT` | Service contract | `update_tour` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/bookings/{reservation_id}/agreements` | `POST` | Service contract | `record_agreement` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/bookings/{reservation_id}/customer-status-access` | `POST` | Service contract | `prepare_customer_status_access` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/bookings/{reservation_id}/deposit-evidence` | `POST` | Service contract | `record_deposit` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/bookings/{reservation_id}/lifecycle` | `GET` | Service contract | `get_event_lifecycle` | Read, navigate, or download | Exempt |
 | Service / API | `/api/internal/building/bookings/{reservation_id}/proposals` | `GET` | Service contract | `list_proposals` | Read, navigate, or download | Exempt |
 | Service / API | `/api/internal/building/bookings/{reservation_id}/proposals` | `POST` | Service contract | `record_proposal` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/bookings/{reservation_id}/tours` | `GET` | Service contract | `list_tours` | Read, navigate, or download | Exempt |
 | Service / API | `/api/internal/building/bookings/{reservation_id}/tours` | `POST` | Service contract | `create_tour` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/bookings/{reservation_id}/transition` | `POST` | Service contract | `transition_reservation` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/calendar/projections` | `GET` | Service contract | `list_calendar_projections` | Read, navigate, or download | Exempt |
+| Service / API | `/api/internal/building/calendar/readiness` | `GET` | Service contract | `calendar_readiness` | Read, navigate, or download | Exempt |
 | Service / API | `/api/internal/building/calendar/sync` | `POST` | Service contract | `sync_calendar_projections` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/checklists` | `GET` | Service contract | `list_checklists` | Read, navigate, or download | Exempt |
 | Service / API | `/api/internal/building/checklists/items/{item_id}/status` | `POST` | Service contract | `update_checklist_item_status` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/checklists/{checklist_id}/items` | `POST` | Service contract | `add_checklist_item` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/content` | `GET` | Service contract | `list_content` | Read, navigate, or download | Exempt |
+| Service / API | `/api/internal/building/content/{kind}/{record_id}` | `PUT` | Service contract | `upsert_content` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/content/{kind}/{record_id}/review` | `POST` | Service contract | `review_content` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/campaigns/{campaign_id}` | `PUT` | Service contract | `upsert_campaign` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/campaigns/{campaign_id}/approve` | `POST` | Service contract | `approve_campaign` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/campaigns/{campaign_id}/preview` | `POST` | Service contract | `preview_campaign` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/campaigns/{campaign_id}/retry` | `POST` | Service contract | `retry_campaign_failures` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/crm/campaigns/{campaign_id}/review` | `POST` | Service contract | `review_campaign` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/campaigns/{campaign_id}/schedule` | `POST` | Service contract | `schedule_campaign` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/campaigns/{campaign_id}/send` | `POST` | Service contract | `send_campaign` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/campaigns/{campaign_id}/test-send` | `POST` | Service contract | `test_send_campaign` | Mutation; preserve confirmation/audit contract | Exempt |
@@ -441,15 +504,18 @@ Routes inventoried: **481**
 | Service / API | `/api/internal/building/crm/contacts/merge/preview` | `POST` | Service contract | `preview_contact_merge` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/contacts/{contact_id}` | `GET` | Service contract | `get_contact` | Read, navigate, or download | Exempt |
 | Service / API | `/api/internal/building/crm/contacts/{contact_id}` | `PUT` | Service contract | `upsert_contact` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/crm/contacts/{contact_id}/operational-preference` | `PUT` | Service contract | `set_operational_preference` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/contacts/{contact_id}/preference` | `PUT` | Service contract | `set_preference` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/contacts/{contact_id}/relationships` | `POST` | Service contract | `add_relationship` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/contacts/{contact_id}/relationships/{relationship_id}/review` | `PUT` | Service contract | `review_relationship` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/scheduled-campaigns/run` | `POST` | Service contract | `run_scheduled_campaigns` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/crm/segments/bootstrap` | `POST` | Service contract | `bootstrap_standard_segments` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/segments/{segment_id}` | `PUT` | Service contract | `upsert_segment` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/crm/segments/{segment_id}/preview` | `GET` | Service contract | `preview_segment` | Read, navigate, or download | Exempt |
 | Service / API | `/api/internal/building/inquiries/{inquiry_id}/lifecycle` | `POST` | Service contract | `update_inquiry_lifecycle` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/inquiries/{inquiry_id}/retry-hubspot` | `POST` | Service contract | `retry_inquiry_hubspot` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/offerings/{offering_id}` | `PUT` | Service contract | `upsert_offering` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/internal/building/offerings/{offering_id}/publication-readiness` | `GET` | Service contract | `get_offering_publication_readiness` | Read, navigate, or download | Exempt |
 | Service / API | `/api/internal/building/offerings/{offering_id}/rate-plans` | `GET` | Service contract | `list_rate_plans` | Read, navigate, or download | Exempt |
 | Service / API | `/api/internal/building/offerings/{offering_id}/rate-plans/{rate_plan_id}` | `PUT` | Service contract | `upsert_rate_plan` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/privacy/contacts/{contact_id}/correct` | `POST` | Service contract | `correct_contact_internal` | Mutation; preserve confirmation/audit contract | Exempt |
@@ -465,11 +531,16 @@ Routes inventoried: **481**
 | Service / API | `/api/internal/building/spaces/{space_id}/media/{media_id}` | `DELETE` | Service contract | `delete_space_media` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/internal/building/spaces/{space_id}/media/{media_id}` | `PUT` | Service contract | `upsert_space_media` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/jobs/building-holds/run` | `POST` | Service contract | `building_hold_expiration_job` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/jobs/content/run` | `POST` | Service contract | `content_run` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/jobs/content/source-assets` | `POST` | Service contract | `content_source_assets` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/jobs/daily-digest/run` | `POST` | Service contract | `run_daily_digest_job` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/jobs/gmail-sync/run` | `POST` | Service contract | `run_gmail_sync_job` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/jobs/hr-reminders/run` | `POST` | Service contract | `hr_reminders_run` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/jobs/outbound-morning/run` | `POST` | Service contract | `run_scheduled_outbound` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/jobs/sales-operator/run` | `POST` | Service contract | `sales_operator_run_job` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/api/jobs/stale-leads/run` | `POST` | Service contract | `run_stale_lead_job` | Mutation; preserve confirmation/audit contract | Exempt |
+| Service / API | `/api/jobs/website-ops/health` | `GET` | Service contract | `website_ops_runtime_health` | Read, navigate, or download | Exempt |
+| Service / API | `/api/jobs/website-ops/run` | `POST` | Service contract | `run_scheduled_website_ops` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/brand-intake` | `GET` | Service contract | `public_intake_guide` | Read, navigate, or download | Exempt |
 | Service / API | `/brand/{slug}/{report_id}/{token}` | `GET` | Service contract | `public_brand_page` | Read, navigate, or download | Exempt |
 | Service / API | `/callback` | `GET` | Service contract | `qb_callback` | Read, navigate, or download | Exempt |
@@ -480,11 +551,18 @@ Routes inventoried: **481**
 | Service / API | `/fulfillment-costs/{run_id}/{token}` | `GET` | Service contract | `fulfillment_cost_form` | Read, navigate, or download | Exempt |
 | Service / API | `/fulfillment-costs/{run_id}/{token}` | `POST` | Service contract | `save_fulfillment_cost_form` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/health` | `GET` | Service contract | `health` | Read, navigate, or download | Exempt |
+| Service / API | `/health/live` | `GET` | Service contract | `health_live` | Read, navigate, or download | Exempt |
+| Service / API | `/health/ready` | `GET` | Service contract | `health_ready` | Read, navigate, or download | Exempt |
+| Service / API | `/health/storage` | `GET` | Service contract | `health_storage` | Read, navigate, or download | Exempt |
 | Service / API | `/rate-sheets/{slug}/{run_id}/{token}` | `GET` | Service contract | `rate_sheet_view` | Read, navigate, or download | Exempt |
 | Service / API | `/rate-sheets/{slug}/{run_id}/{token}/heartbeat` | `POST` | Service contract | `rate_sheet_heartbeat` | Mutation; preserve confirmation/audit contract | Exempt |
 | Service / API | `/rate-sheets/{slug}/{run_id}/{token}/requote` | `POST` | Service contract | `rate_sheet_requote` | Mutation; preserve confirmation/audit contract | Exempt |
 | Website Ops | `/admin/website-ops` | `GET` | Authenticated + route permission | `admin_website_ops` | Read, navigate, or download | 7 |
+| Website Ops | `/admin/website-ops/candidates` | `GET` | Authenticated + route permission | `admin_website_ops_candidates` | Read, navigate, or download | 7 |
 | Website Ops | `/admin/website-ops/feedback/{feedback_id}` | `GET` | Authenticated + route permission | `admin_website_ops_feedback_detail` | Read, navigate, or download | 7 |
+| Website Ops | `/admin/website-ops/indexing` | `GET` | Authenticated + route permission | `admin_website_ops_indexing` | Read, navigate, or download | 7 |
+| Website Ops | `/admin/website-ops/indexing` | `POST` | Authenticated + route permission | `admin_website_ops_indexing_import` | Mutation; preserve confirmation/audit contract | 7 |
+| Website Ops | `/admin/website-ops/queries` | `GET` | Authenticated + route permission | `admin_website_ops_queries` | Read, navigate, or download | 7 |
 | Website Ops | `/admin/website-ops/queue` | `GET` | Authenticated + route permission | `admin_website_ops_queue` | Read, navigate, or download | 7 |
 | Website Ops | `/admin/website-ops/reports` | `GET` | Authenticated + route permission | `admin_website_ops_reports` | Read, navigate, or download | 7 |
 | Website Ops | `/admin/website-ops/reports/latest` | `GET` | Authenticated + route permission | `admin_website_ops_reports_latest` | Read, navigate, or download | 7 |
