@@ -73,6 +73,7 @@ _NAV_SECTIONS = [
     ]),
     _NavSection("building", "Building", "building", [
         _NavSubpage("building.manage", "Control Room", "/admin/building", "building"),
+        _NavSubpage("building.manage", "Contracts", "/admin/building/contracts", "building_contracts"),
         _NavSubpage("building.content.manage", "Public Content", "/admin/building/content", "building_content"),
     ]),
     _NavSection("advertising", "Advertising", "advertising", [
@@ -475,7 +476,7 @@ def render_agent_stylesheet_links() -> str:
         version = "1"
     return (
         f'<link rel="stylesheet" href="/admin/assets/navigation.css?v={version}">'
-        '<link rel="stylesheet" href="/static/admin.css?v=2">'
+        '<link rel="stylesheet" href="/static/admin.css?v=3">'
     )
 
 
@@ -566,7 +567,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "finance"
     if active == "content":
         primary_active = "content"
-    if active == "building":
+    if active in {"building", "building_contracts", "building_content"}:
         primary_active = "building"
     if active in {"advertising", "advertising_audit", "advertising_clients", "advertising_profit_calculator", "advertising_bulk_profitability"}:
         primary_active = "advertising"

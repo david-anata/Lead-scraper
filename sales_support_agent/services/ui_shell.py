@@ -18,7 +18,7 @@ def render_document_head(
 ) -> str:
     """Render shared metadata, fonts, favicon, and cacheable shell styles."""
     styles = render_agent_stylesheet_links() if include_operator_styles else (
-        '<link rel="stylesheet" href="/static/admin.css?v=2">'
+        '<link rel="stylesheet" href="/static/admin.css?v=3">'
     )
     return f"""<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

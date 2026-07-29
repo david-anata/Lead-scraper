@@ -28,6 +28,9 @@ from sales_support_agent.api.building_calendar_router import (
 from sales_support_agent.api.building_checklist_router import (
     router as building_checklist_router,
 )
+from sales_support_agent.api.building_contract_router import (
+    router as building_contract_router,
+)
 from sales_support_agent.api.building_content_router import (
     admin_router as building_content_admin_router,
     internal_router as building_content_internal_router,
@@ -64,6 +67,7 @@ BUILDING_ROUTERS = (
     building_booking_public_router,
     building_agreement_readiness_internal_router,
     building_agreement_readiness_admin_router,
+    building_contract_router,
     building_billing_internal_router,
     building_stripe_webhook_router,
     building_admin_operations_router,

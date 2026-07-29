@@ -660,7 +660,7 @@ def render_building_page(
             f'v{_esc((item.get("proposal") or {}).get("version"))} · {str((item.get("proposal") or {}).get("currency") or "USD")} {int((item.get("proposal") or {}).get("amount_cents") or 0) / 100:,.2f}'
             if item.get("proposal") else "Create a versioned quote or proposal"
           )}</span></td>
-          <td>{_badge(str(item.get("agreement_status") or "not started"))}</td>
+          <td><a href="/admin/building/contracts?q={_esc(item.get("id"))}">{_badge(str(item.get("agreement_status") or "not started"))}</a><span class="sub">Open in Contracts</span></td>
           <td>{_badge(str(item.get("deposit_status") or "not started"))}</td>
           <td>
             <details class="row-actions"><summary>Manage</summary>
@@ -713,15 +713,8 @@ def render_building_page(
                 <button class="secondary secondary--small" type="submit">Record version</button>
                 <span class="sub">Approve before sending. Sent content is locked; use a new version for revisions.</span>
               </form>
-              <form method="post" action="/admin/building/reservations/{_esc(item.get("id"))}/agreements">
-                <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-                <label>Agreement<select name="status"><option value="draft">Draft</option><option value="sent">Sent</option><option value="signed">Signed</option><option value="voided">Voided</option></select></label>
-                <label>Version<input type="number" name="version" min="1" value="1"></label>
-                <label>Provider<input name="provider" placeholder="Dropbox Sign, manual"></label>
-                <label>Evidence reference<input name="provider_reference" placeholder="Required when signed"></label>
-                <label>Document URL<input type="url" name="document_url"></label>
-                <button class="secondary secondary--small" type="submit">Record agreement</button>
-              </form>
+              <p class="sub">Agreement evidence is recorded on the contract itself.
+                <a href="/admin/building/contracts?q={_esc(item.get("id"))}">Open this booking in Contracts →</a></p>
               <form method="post" action="/admin/building/reservations/{_esc(item.get("id"))}/deposits">
                 <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
                 <label>Deposit<select name="status"><option value="due">Due</option><option value="pending">Pending</option><option value="paid">Paid</option><option value="refunded">Refunded</option><option value="waived">Waived</option></select></label>
@@ -1637,7 +1630,7 @@ def render_building_page(
         </form>
       </section>
       <section class="panel panel--wide" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand. Partial CRM failures stay queued without losing the lead.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th><th>CRM recovery</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
-      <section class="panel panel--wide" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/agreement-readiness">Open agreement and payment readiness →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
+      <section class="panel panel--wide" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/contracts">Open Contracts →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
       <section class="panel panel--wide">
         <div class="panel-head">

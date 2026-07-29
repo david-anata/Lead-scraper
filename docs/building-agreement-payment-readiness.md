@@ -114,14 +114,20 @@ checksums, and adds audit events. It makes no provider call.
 
 ## Admin UI and permissions
 
-Open `/admin/building/agreement-readiness` from Building Control.
+The operator surface is the contract workspace at `/admin/building/contracts`,
+reachable from Building navigation. `/admin/building/agreement-readiness`
+returns a permanent redirect there.
 
-- `building.agreements.prepare`: template drafts and package preparation
-- `building.agreements.approve`: template/package review and approval
+- `building.manage`: view the contract index and contract detail
+- `building.agreements.prepare`: package preparation
+- `building.agreements.approve`: package review and approval
 - `building.payments.prepare`: payment-readiness review and approval
 
-Legacy `building.manage` remains compatible. The page intentionally provides
-no document generation, download, send, signature, invoice, or charge action.
+Template drafting and template transitions remain internal-API operations at
+`/api/internal/building/agreement-readiness/templates/...` until the template
+editor ships. The workspace intentionally provides no document generation,
+download, send, signature, invoice, or charge action, and it renders an
+explicit blocked state while no approved template exists.
 
 ## Provider and business inputs still required
 

@@ -354,13 +354,15 @@ class BuildingAdminOperationsTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200, page.text)
         self.assertIn("Building performance", page.text)
         self.assertIn("Posted collected cash", page.text)
-        self.assertIn("/admin/building/agreement-readiness", page.text)
-        readiness_page = self.client.get(
-            "/admin/building/agreement-readiness"
+        self.assertIn("/admin/building/contracts", page.text)
+        contracts_page = self.client.get("/admin/building/contracts")
+        self.assertEqual(contracts_page.status_code, 200, contracts_page.text)
+        self.assertIn("Contracts", contracts_page.text)
+        self.assertIn("Nothing on this page sends", contracts_page.text)
+        legacy = self.client.get(
+            "/admin/building/agreement-readiness", follow_redirects=False
         )
-        self.assertEqual(readiness_page.status_code, 200, readiness_page.text)
-        self.assertIn("Agreement and payment readiness", readiness_page.text)
-        self.assertIn("Nothing here sends a contract", readiness_page.text)
+        self.assertEqual(legacy.status_code, 308, legacy.text)
         with self.factory() as session:
             inquiry = session.get(BuildingInquiry, inquiry_id)
             self.assertEqual(inquiry.status, crm_status)

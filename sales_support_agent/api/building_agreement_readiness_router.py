@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import html
 import json
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
@@ -11,7 +10,7 @@ from urllib.parse import urlencode
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import select
 
@@ -27,14 +26,8 @@ from sales_support_agent.models.entities import (
     BuildingReservation,
     BuildingSpace,
 )
-from sales_support_agent.services.admin_nav import (
-    render_agent_favicon_links,
-    render_agent_nav,
-    render_agent_nav_styles,
-)
 from sales_support_agent.services.auth_deps import require_tool
 from sales_support_agent.services.building_security import (
-    csrf_token,
     require_building_form_security,
 )
 
@@ -48,6 +41,8 @@ admin_router = APIRouter(
     tags=["building-agreement-readiness-admin"],
 )
 FORM_DEPS = [Depends(require_building_form_security)]
+#: The readiness admin surface now lives in the Building contract workspace.
+CONTRACTS_URL = "/admin/building/contracts"
 
 PREPARATION_TRANSITIONS = {
     "prepared": {"in_review"},
@@ -790,110 +785,20 @@ def _internal_key(request: Request) -> str:
 def _redirect(*, notice: str = "", error: str = "") -> RedirectResponse:
     query = urlencode({"notice": notice} if notice else {"error": error})
     return RedirectResponse(
-        f"/admin/building/agreement-readiness?{query}", status_code=303
+        f"{CONTRACTS_URL}?{query}", status_code=303
     )
 
 
-@admin_router.get("", response_class=HTMLResponse)
-def agreement_readiness_page(
-    request: Request,
-    user: dict = Depends(require_tool("building.agreements.prepare")),
-) -> HTMLResponse:
-    with session_scope(request.app.state.session_factory) as session:
-        templates = session.execute(
-            select(BuildingAgreementTemplate).order_by(
-                BuildingAgreementTemplate.template_key,
-                BuildingAgreementTemplate.version.desc(),
-            )
-        ).scalars().all()
-        agreements = session.execute(
-            select(BuildingAgreement)
-            .where(BuildingAgreement.package_checksum != "")
-            .order_by(BuildingAgreement.created_at.desc())
-        ).scalars().all()
-        payments = {
-            row.agreement_id: row
-            for row in session.execute(
-                select(BuildingPaymentRequestReadiness)
-            ).scalars().all()
-        }
-    esc = lambda value: html.escape(str(value or ""))
-    template_rows = "".join(
-        f"<tr><td>{esc(item.name)} v{item.version}</td><td>{esc(item.status)}</td>"
-        f"<td>{esc(', '.join(item.merge_fields_json or []))}</td><td>{esc(item.template_reference)}</td></tr>"
-        for item in templates
-    ) or "<tr><td colspan='4'>No agreement templates yet.</td></tr>"
-    readiness_rows = "".join(
-        f"<tr><td>{esc(item.reservation_id)}</td><td>{esc(item.preparation_status)}</td>"
-        f"<td><code>{esc(item.package_checksum[:12])}</code></td>"
-        f"<td>{esc(payments[item.id].status if item.id in payments else 'missing')}</td>"
-        f"<td>{esc(payments[item.id].currency if item.id in payments else '')} "
-        f"{(payments[item.id].amount_cents / 100):,.2f}</td></tr>"
-        for item in agreements
-    ) or "<tr><td colspan='5'>No prepared packages yet.</td></tr>"
-    nav = render_agent_nav("building", user=user)
-    body = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>Agreement readiness · Anata Agent</title>{render_agent_favicon_links()}
-    <style>{render_agent_nav_styles()}
-    body{{margin:0;background:#f5f7f8;color:#2b3644;font-family:Inter,Segoe UI,sans-serif}}
-    main{{max-width:1320px;margin:auto;padding:28px 24px 60px}}h1,h2{{font-family:Montserrat,Inter,sans-serif}}
-    .notice{{padding:12px 14px;background:#e9f7f5;border:1px solid #8ac9c1;margin:14px 0}}
-    .error{{padding:12px 14px;background:#fff1ef;border:1px solid #d98b82;margin:14px 0}}
-    section{{background:white;border:1px solid #d9e0e4;border-radius:12px;margin:18px 0;padding:20px}}
-    table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:10px;border-bottom:1px solid #e4e8eb;vertical-align:top}}
-    .grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}}
-    label{{display:grid;gap:5px;font-weight:650}}input,textarea,select{{min-height:42px;padding:8px;border:1px solid #aab5bd;border-radius:7px}}
-    button{{min-height:42px;background:#243746;color:white;border:0;border-radius:7px;padding:0 16px;font-weight:700}}
-    .wide{{grid-column:1/-1}}.muted{{color:#5f6d77;font-size:13px}}code{{font-size:12px}}
-    @media(max-width:700px){{.grid{{grid-template-columns:1fr}}.wide{{grid-column:auto}}main{{padding-inline:16px}}}}
-    </style></head><body>{nav}<main><a href="/admin/building">← Building Control</a>
-    <h1>Agreement and payment readiness</h1>
-    <p>Prepare frozen evidence for later provider handoff. Nothing here sends a contract, creates an invoice, charges a card, or confirms a booking.</p>
-    {f'<div class="notice">{esc(request.query_params.get("notice"))}</div>' if request.query_params.get("notice") else ''}
-    {f'<div class="error">{esc(request.query_params.get("error"))}</div>' if request.query_params.get("error") else ''}
-    <section><h2>Template registry</h2><form class="grid" method="post" action="/admin/building/agreement-readiness/templates">
-    <input type="hidden" name="_csrf_token" value="{esc(csrf_token(user))}">
-    <label>Template ID<input name="template_id" required></label><label>Template key<input name="template_key" required></label>
-    <label>Version<input name="version" type="number" min="1" value="1" required></label><label>Name<input name="name" required></label>
-    <label class="wide">Approved repository reference<input name="template_reference" required placeholder="approved-repository:event-agreement-v1"></label>
-    <label class="wide">Merge fields, comma separated<textarea name="merge_fields" required placeholder="customer_name, customer_email, event_space, setup_starts_at"></textarea></label>
-    <div class="wide"><button type="submit">Save template draft</button></div></form>
-    <form class="grid" method="post" action="/admin/building/agreement-readiness/templates/transition">
-    <input type="hidden" name="_csrf_token" value="{esc(csrf_token(user))}">
-    <label>Template ID<input name="template_id" required></label><label>Next state<select name="target_status"><option value="in_review">In review</option><option value="approved">Approved</option><option value="retired">Retired</option></select></label>
-    <label class="wide">Typed confirmation<input name="confirmation" required placeholder="APPROVED TEMPLATE template-id"></label>
-    <label class="wide">Approval evidence<textarea name="evidence" placeholder="Required for approval"></textarea></label>
-    <div class="wide"><button type="submit">Change template state</button></div></form>
-    <table><thead><tr><th>Template</th><th>Status</th><th>Allowed merge fields</th><th>Reference</th></tr></thead><tbody>{template_rows}</tbody></table></section>
-    <section><h2>Prepare package</h2><form class="grid" method="post" action="/admin/building/agreement-readiness/packages">
-    <input type="hidden" name="_csrf_token" value="{esc(csrf_token(user))}">
-    <label>Reservation ID<input name="reservation_id" required></label>
-    <label>Frozen quote ID<input name="quote_id" required></label>
-    <label>Approved template ID<input name="template_id" required></label>
-    <label>Idempotency key<input name="idempotency_key" minlength="8" maxlength="128" required></label>
-    <label>Agreement version<input name="agreement_version" type="number" min="1" value="1"></label>
-    <label>Payment readiness version<input name="payment_version" type="number" min="1" value="1"></label>
-    <div class="wide"><button type="submit">Prepare immutable package</button> <span class="muted">Preparation creates no provider objects.</span></div>
-    </form></section>
-    <section><h2>Review and approve prepared evidence</h2><div class="grid">
-    <form method="post" action="/admin/building/agreement-readiness/packages/transition">
-    <input type="hidden" name="_csrf_token" value="{esc(csrf_token(user))}">
-    <label>Agreement package ID<input name="agreement_id" required></label>
-    <label>Next state<select name="target_status"><option value="in_review">In review</option><option value="approved">Approved</option></select></label>
-    <label>Typed confirmation<input name="confirmation" required placeholder="REVIEW AGREEMENT package-id"></label>
-    <button type="submit">Change agreement readiness</button></form>
-    <form method="post" action="/admin/building/agreement-readiness/payments/transition">
-    <input type="hidden" name="_csrf_token" value="{esc(csrf_token(user))}">
-    <label>Payment readiness ID<input name="payment_id" required></label>
-    <label>Next state<select name="target_status"><option value="in_review">In review</option><option value="approved">Approved</option></select></label>
-    <label>Typed confirmation<input name="confirmation" required placeholder="APPROVE PAYMENT readiness-id"></label>
-    <button type="submit">Change payment readiness</button></form></div>
-    <p class="muted">Approval authorizes only a future provider handoff. It does not create a document, invoice, payment link, or charge.</p></section>
-    <section><h2>Prepared records</h2><table><thead><tr><th>Reservation</th><th>Agreement</th><th>Checksum</th><th>Payment request</th><th>Required amount</th></tr></thead><tbody>{readiness_rows}</tbody></table>
-    <p class="muted">Review and approval use the internal API typed confirmations shown in the documentation. This page intentionally offers no send, sign, invoice, or charge action.</p></section>
-    </main></body></html>"""
-    return HTMLResponse(body)
+@admin_router.get("")
+def agreement_readiness_page(request: Request) -> RedirectResponse:
+    """Permanent redirect to the Building contract workspace.
+
+    The bare template registry and identifier form this page used to render was
+    replaced by /admin/building/contracts, which shows the same records with the
+    customer, space, dates, value, and audit history attached.
+    """
+
+    return RedirectResponse(CONTRACTS_URL, status_code=308)
 
 
 @admin_router.post("/packages", dependencies=FORM_DEPS)
