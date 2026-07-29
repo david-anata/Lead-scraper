@@ -41,6 +41,30 @@ Transitions are `draft → in_review → approved → retired`. Typed confirmati
 
 Approval requires evidence. Approved and retired versions are immutable.
 
+### Arena legal-review starting point
+
+`docs/building/agreements/arena-event-agreement-business-terms-v1.md` is the
+versioned, provider-neutral schedule of owner-approved Arena commercial and
+operating terms. It intentionally excludes invented legal clauses and identifies
+the provisions that still require counsel.
+
+An authorized operator can open
+`/admin/building/agreement-readiness`, download the exact artifact, and type
+`PREPARE ARENA AGREEMENT REVIEW`. Agent then:
+
+- verifies the repository artifact and SHA-256 checksum;
+- creates or reuses template
+  `arena-event-agreement-business-terms-v1`;
+- records the complete merge-field allow list;
+- moves the template only to `in_review`;
+- records audit evidence that no provider write or customer delivery occurred.
+
+The action is idempotent for the matching artifact and fails closed if an
+existing record differs. It never supplies legal approval evidence and cannot
+make the template usable for agreement-package preparation. A designated
+approver must still review the complete reusable agreement and use the ordinary
+governed approval transition.
+
 ## Package preparation
 
 `POST /api/internal/building/agreement-readiness/packages`
@@ -123,10 +147,11 @@ Open `/admin/building/agreement-readiness` from Building Control.
 Legacy `building.manage` remains compatible. The page intentionally provides
 no document generation, download, send, signature, invoice, or charge action.
 
-## Provider and business inputs still required
+## Provider and professional inputs still required
 
-- approved agreement template content and durable repository/version reference;
-- final template merge-field selection and legal approval evidence;
+- counsel-approved legal clauses and approval evidence for the reusable Arena
+  agreement; the owner-approved business terms, merge fields, repository
+  reference, and artifact checksum are already prepared;
 - e-sign provider, authentication, webhook verification, signer routing, and
   retention policy;
 - payment provider workflow (invoice vs checkout), allowed methods, due date,
