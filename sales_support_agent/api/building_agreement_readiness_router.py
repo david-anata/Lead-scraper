@@ -6,12 +6,13 @@ import hashlib
 import html
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal, Optional
 from urllib.parse import urlencode
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import select
 
@@ -80,6 +81,35 @@ ALLOWED_MERGE_FIELDS = {
     "included",
     "addons",
 }
+ARENA_REVIEW_TEMPLATE_ID = "arena-event-agreement-business-terms-v1"
+ARENA_REVIEW_TEMPLATE_KEY = "arena-event-agreement"
+ARENA_REVIEW_TEMPLATE_VERSION = 1
+ARENA_REVIEW_TEMPLATE_NAME = "Arena event agreement business terms"
+ARENA_REVIEW_DOCUMENT = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "building"
+    / "agreements"
+    / "arena-event-agreement-business-terms-v1.md"
+)
+ARENA_REVIEW_MERGE_FIELDS = [
+    "customer_name",
+    "customer_email",
+    "event_space",
+    "setup_starts_at",
+    "guest_starts_at",
+    "guest_ends_at",
+    "teardown_ends_at",
+    "attendance",
+    "quote_total",
+    "currency",
+    "deposit_amount",
+    "deposit_type",
+    "cancellation_policy",
+    "tax_terms",
+    "included",
+    "addons",
+]
 
 
 def _now() -> datetime:
@@ -104,6 +134,24 @@ def _checksum(value: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def _arena_review_document() -> tuple[str, str, str]:
+    """Return the governed Arena review artifact, checksum, and durable reference."""
+
+    try:
+        content = ARENA_REVIEW_DOCUMENT.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The Arena agreement-review document is unavailable.",
+        ) from exc
+    checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    reference = (
+        "repository:docs/building/agreements/"
+        f"{ARENA_REVIEW_DOCUMENT.name}#sha256={checksum}"
+    )
+    return content, checksum, reference
 
 
 class AgreementTemplateInput(BaseModel):
@@ -794,6 +842,139 @@ def _redirect(*, notice: str = "", error: str = "") -> RedirectResponse:
     )
 
 
+@admin_router.get(
+    "/arena-review-package/download",
+    response_class=PlainTextResponse,
+)
+def download_arena_review_package(
+    user: dict = Depends(require_tool("building.agreements.prepare")),
+) -> PlainTextResponse:
+    """Download the internal business-terms schedule without approving or sending it."""
+
+    content, checksum, _ = _arena_review_document()
+    return PlainTextResponse(
+        content,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="anata-arena-agreement-business-terms-v1.md"'
+            ),
+            "X-Content-SHA256": checksum,
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@admin_router.post(
+    "/arena-review-package/prepare",
+    dependencies=FORM_DEPS,
+)
+def prepare_arena_review_package(
+    request: Request,
+    confirmation: str = Form(...),
+    user: dict = Depends(require_tool("building.agreements.prepare")),
+) -> RedirectResponse:
+    """Register the repository artifact for review without claiming legal approval."""
+
+    expected_confirmation = "PREPARE ARENA AGREEMENT REVIEW"
+    if confirmation.strip() != expected_confirmation:
+        return _redirect(error=f"Type exactly: {expected_confirmation}")
+    _, checksum, reference = _arena_review_document()
+    actor = _actor(user)
+    with session_scope(request.app.state.session_factory) as session:
+        row = session.get(BuildingAgreementTemplate, ARENA_REVIEW_TEMPLATE_ID)
+        expected_values = {
+            "template_key": ARENA_REVIEW_TEMPLATE_KEY,
+            "version": ARENA_REVIEW_TEMPLATE_VERSION,
+            "name": ARENA_REVIEW_TEMPLATE_NAME,
+            "template_reference": reference,
+            "merge_fields": ARENA_REVIEW_MERGE_FIELDS,
+        }
+        if row is not None:
+            actual_values = {
+                "template_key": row.template_key,
+                "version": row.version,
+                "name": row.name,
+                "template_reference": row.template_reference,
+                "merge_fields": list(row.merge_fields_json or []),
+            }
+            if actual_values != expected_values:
+                return _redirect(
+                    error=(
+                        "The existing Arena review template differs from the "
+                        "repository artifact. Create a new version after review."
+                    )
+                )
+            if row.status == "retired":
+                return _redirect(
+                    error="The Arena review template is retired; prepare a new version."
+                )
+            if row.status == "approved":
+                return _redirect(
+                    notice=(
+                        "The matching Arena agreement template is already approved. "
+                        "No record was changed and nothing was sent."
+                    )
+                )
+            if row.status == "in_review":
+                return _redirect(
+                    notice=(
+                        "The matching Arena business-terms package is already in "
+                        "legal review. Nothing was sent."
+                    )
+                )
+        else:
+            row = BuildingAgreementTemplate(
+                id=ARENA_REVIEW_TEMPLATE_ID,
+                template_key=ARENA_REVIEW_TEMPLATE_KEY,
+                version=ARENA_REVIEW_TEMPLATE_VERSION,
+                name=ARENA_REVIEW_TEMPLATE_NAME,
+                status="draft",
+                template_reference=reference,
+                merge_fields_json=ARENA_REVIEW_MERGE_FIELDS,
+                created_by=actor,
+                updated_at=_now(),
+            )
+            session.add(row)
+            session.flush()
+            session.add(BuildingAuditEvent(
+                entity_type="agreement_template",
+                entity_id=row.id,
+                action="agreement_template_draft_saved",
+                actor=actor,
+                after_json={
+                    **_template_payload(row),
+                    "artifact_checksum": checksum,
+                    "legal_approval": False,
+                    "provider_write": False,
+                    "customer_delivery": False,
+                },
+            ))
+        before = row.status
+        row.status = "in_review"
+        row.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="agreement_template",
+            entity_id=row.id,
+            action="agreement_template_in_review",
+            actor=actor,
+            before_json={"status": before},
+            after_json={
+                "status": "in_review",
+                "artifact_checksum": checksum,
+                "legal_approval": False,
+                "provider_write": False,
+                "customer_delivery": False,
+            },
+        ))
+    return _redirect(
+        notice=(
+            "Arena agreement business terms prepared for legal review. "
+            "They are not approved, signed, or sent."
+        )
+    )
+
+
 @admin_router.get("", response_class=HTMLResponse)
 def agreement_readiness_page(
     request: Request,
@@ -817,6 +998,16 @@ def agreement_readiness_page(
                 select(BuildingPaymentRequestReadiness)
             ).scalars().all()
         }
+    arena_review_template = next(
+        (item for item in templates if item.id == ARENA_REVIEW_TEMPLATE_ID),
+        None,
+    )
+    _, arena_review_checksum, _ = _arena_review_document()
+    arena_review_status = (
+        str(arena_review_template.status).replace("_", " ")
+        if arena_review_template is not None
+        else "not prepared"
+    )
     esc = lambda value: html.escape(str(value or ""))
     template_rows = "".join(
         f"<tr><td>{esc(item.name)} v{item.version}</td><td>{esc(item.status)}</td>"
@@ -841,22 +1032,45 @@ def agreement_readiness_page(
     .notice{{padding:12px 14px;background:#e9f7f5;border:1px solid #8ac9c1;margin:14px 0}}
     .error{{padding:12px 14px;background:#fff1ef;border:1px solid #d98b82;margin:14px 0}}
     section{{background:white;border:1px solid #d9e0e4;border-radius:12px;margin:18px 0;padding:20px}}
+    .review-card{{border-color:#9fc7d8;background:linear-gradient(135deg,#fff 0,#f1f8fb 100%)}}
+    .review-head{{display:flex;align-items:start;justify-content:space-between;gap:18px}}
+    .status{{display:inline-flex;padding:5px 9px;border-radius:99px;background:#fff0d2;color:#845407;font-size:12px;font-weight:800;text-transform:capitalize}}
+    .actions{{display:flex;align-items:end;flex-wrap:wrap;gap:10px;margin-top:16px}}
+    .download{{display:inline-flex;align-items:center;min-height:42px;padding:0 16px;border:1px solid #aab5bd;border-radius:7px;background:#fff;color:#243746;font-weight:700;text-decoration:none}}
     table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:10px;border-bottom:1px solid #e4e8eb;vertical-align:top}}
     .grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}}
     label{{display:grid;gap:5px;font-weight:650}}input,textarea,select{{min-height:42px;padding:8px;border:1px solid #aab5bd;border-radius:7px}}
     button{{min-height:42px;background:#243746;color:white;border:0;border-radius:7px;padding:0 16px;font-weight:700}}
     .wide{{grid-column:1/-1}}.muted{{color:#5f6d77;font-size:13px}}code{{font-size:12px}}
-    @media(max-width:700px){{.grid{{grid-template-columns:1fr}}.wide{{grid-column:auto}}main{{padding-inline:16px}}}}
+    @media(max-width:700px){{.grid{{grid-template-columns:1fr}}.wide{{grid-column:auto}}main{{padding-inline:16px}}.review-head{{display:block}}.status{{margin-top:10px}}}}
     </style></head><body>{nav}<main><a href="/admin/building">← Building Control</a>
     <h1>Agreement and payment readiness</h1>
     <p>Prepare frozen evidence for later provider handoff. Nothing here sends a contract, creates an invoice, charges a card, or confirms a booking.</p>
     {f'<div class="notice">{esc(request.query_params.get("notice"))}</div>' if request.query_params.get("notice") else ''}
     {f'<div class="error">{esc(request.query_params.get("error"))}</div>' if request.query_params.get("error") else ''}
+    <section class="review-card">
+      <div class="review-head">
+        <div><h2>Arena agreement review package</h2>
+        <p>Your approved business rules are consolidated into one reusable, versioned schedule for legal review. It replaces the Vivint-specific document as the starting point without pretending legal approval already exists.</p></div>
+        <span class="status">{esc(arena_review_status)}</span>
+      </div>
+      <p class="muted">Artifact checksum: <code>{esc(arena_review_checksum)}</code>. Preparing it records an audited template in <strong>in review</strong> state. It does not approve, generate, send, sign, invoice, charge, hold a date, or confirm a booking.</p>
+      <div class="actions">
+        <a class="download" href="/admin/building/agreement-readiness/arena-review-package/download">Download business terms</a>
+        <form method="post" action="/admin/building/agreement-readiness/arena-review-package/prepare">
+          <input type="hidden" name="_csrf_token" value="{esc(csrf_token(user))}">
+          <label>Typed confirmation
+            <input name="confirmation" required placeholder="PREPARE ARENA AGREEMENT REVIEW">
+          </label>
+          <button type="submit">Prepare for legal review</button>
+        </form>
+      </div>
+    </section>
     <section><h2>Template registry</h2><form class="grid" method="post" action="/admin/building/agreement-readiness/templates">
     <input type="hidden" name="_csrf_token" value="{esc(csrf_token(user))}">
     <label>Template ID<input name="template_id" required></label><label>Template key<input name="template_key" required></label>
     <label>Version<input name="version" type="number" min="1" value="1" required></label><label>Name<input name="name" required></label>
-    <label class="wide">Approved repository reference<input name="template_reference" required placeholder="approved-repository:event-agreement-v1"></label>
+    <label class="wide">Repository or document reference<input name="template_reference" required placeholder="approved-repository:event-agreement-v1"></label>
     <label class="wide">Merge fields, comma separated<textarea name="merge_fields" required placeholder="customer_name, customer_email, event_space, setup_starts_at"></textarea></label>
     <div class="wide"><button type="submit">Save template draft</button></div></form>
     <form class="grid" method="post" action="/admin/building/agreement-readiness/templates/transition">

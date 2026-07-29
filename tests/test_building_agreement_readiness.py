@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
+import re
 import tempfile
 import unittest
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 os.environ.setdefault(
     "SALES_AGENT_DB_URL",
     "sqlite:///" + tempfile.gettempdir() + "/building_agreement_readiness_boot.db",
+)
+os.environ.setdefault(
+    "BUILDING_CAMPAIGN_TOKEN_SECRET",
+    "building-agreement-readiness-csrf-secret",
 )
 
 try:
@@ -22,6 +29,7 @@ try:
     from sales_support_agent.models.entities import (
         BuildingAgreement,
         BuildingAgreementTemplate,
+        BuildingAuditEvent,
         BuildingAvailabilityBlock,
         BuildingContact,
         BuildingInquiry,
@@ -30,6 +38,7 @@ try:
         BuildingReservation,
         BuildingSpace,
     )
+    from sales_support_agent.services.admin_auth import create_user_session_token
     from sales_support_agent.services.building_holds import expire_building_holds
 
     DEPS = True
@@ -44,10 +53,9 @@ class BuildingAgreementReadinessTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         path = os.path.join(
-            tempfile.gettempdir(), "building_agreement_readiness_isolated.db"
+            tempfile.gettempdir(),
+            f"building_agreement_readiness_{uuid.uuid4().hex}.db",
         )
-        if os.path.exists(path):
-            os.remove(path)
         factory = create_session_factory("sqlite:///" + path)
         init_database(factory)
         app.state.session_factory = factory
@@ -57,7 +65,18 @@ class BuildingAgreementReadinessTests(unittest.TestCase):
         )
         cls.factory = factory
         cls.client = TestClient(app)
+        token = create_user_session_token(
+            app.state.agent_settings,
+            email="david@anatainc.com",
+            name="David",
+            role="admin",
+        )
+        cls.client.cookies.set(app.state.agent_settings.admin_cookie_name, token)
         cls.headers = {"X-Internal-Api-Key": "internal-test-key"}
+        cls.form_headers = {
+            "Origin": "http://testserver",
+            "Sec-Fetch-Mode": "navigate",
+        }
         now = datetime.now(timezone.utc)
         cls.start = now + timedelta(days=30)
         with factory() as session:
@@ -143,6 +162,107 @@ class BuildingAgreementReadinessTests(unittest.TestCase):
                 created_by="operator@example.com",
             ))
             session.commit()
+
+    def test_00_arena_review_package_is_versioned_audited_and_never_approved(self) -> None:
+        guest = TestClient(app)
+        denied = guest.get(
+            "/admin/building/agreement-readiness/arena-review-package/download",
+            follow_redirects=False,
+        )
+        self.assertEqual(denied.status_code, 302)
+        self.assertEqual(denied.headers["location"], "/admin/login")
+
+        page = self.client.get("/admin/building/agreement-readiness")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("Arena agreement review package", page.text)
+        self.assertIn("not prepared", page.text)
+        self.assertIn("PREPARE ARENA AGREEMENT REVIEW", page.text)
+        csrf = re.search(
+            r'name="_csrf_token" value="([^"]+)"',
+            page.text,
+        ).group(1)
+
+        download = self.client.get(
+            "/admin/building/agreement-readiness/arena-review-package/download"
+        )
+        self.assertEqual(download.status_code, 200, download.text)
+        self.assertIn("Prepared for legal review", download.text)
+        self.assertIn("not approved for customer signature", download.text)
+        self.assertIn(
+            'attachment; filename="anata-arena-agreement-business-terms-v1.md"',
+            download.headers["content-disposition"],
+        )
+        self.assertEqual(download.headers["cache-control"], "private, no-store")
+        self.assertEqual(
+            download.headers["x-content-sha256"],
+            hashlib.sha256(download.content).hexdigest(),
+        )
+
+        wrong = self.client.post(
+            "/admin/building/agreement-readiness/arena-review-package/prepare",
+            headers=self.form_headers,
+            data={"_csrf_token": csrf, "confirmation": "approve it"},
+            follow_redirects=False,
+        )
+        self.assertEqual(wrong.status_code, 303)
+        self.assertIn("Type+exactly", wrong.headers["location"])
+
+        prepared = self.client.post(
+            "/admin/building/agreement-readiness/arena-review-package/prepare",
+            headers=self.form_headers,
+            data={
+                "_csrf_token": csrf,
+                "confirmation": "PREPARE ARENA AGREEMENT REVIEW",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(prepared.status_code, 303, prepared.text)
+        self.assertIn("prepared+for+legal+review", prepared.headers["location"])
+        with self.factory() as session:
+            template = session.get(
+                BuildingAgreementTemplate,
+                "arena-event-agreement-business-terms-v1",
+            )
+            self.assertIsNotNone(template)
+            self.assertEqual(template.status, "in_review")
+            self.assertIsNone(template.approved_at)
+            self.assertEqual(template.approval_evidence, "")
+            self.assertIn(
+                download.headers["x-content-sha256"],
+                template.template_reference,
+            )
+            audits = session.query(BuildingAuditEvent).filter_by(
+                entity_type="agreement_template",
+                entity_id=template.id,
+            ).all()
+            self.assertEqual(len(audits), 2)
+            self.assertTrue(
+                all(
+                    event.after_json.get("provider_write") is False
+                    and event.after_json.get("customer_delivery") is False
+                    for event in audits
+                )
+            )
+
+        replay = self.client.post(
+            "/admin/building/agreement-readiness/arena-review-package/prepare",
+            headers=self.form_headers,
+            data={
+                "_csrf_token": csrf,
+                "confirmation": "PREPARE ARENA AGREEMENT REVIEW",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(replay.status_code, 303)
+        self.assertIn("already+in+legal+review", replay.headers["location"])
+        with self.factory() as session:
+            self.assertEqual(
+                session.query(BuildingAuditEvent).filter_by(
+                    entity_type="agreement_template",
+                    entity_id="arena-event-agreement-business-terms-v1",
+                ).count(),
+                2,
+            )
 
     def test_01_template_package_and_payment_readiness_are_guarded(self) -> None:
         invalid = self.client.put(
