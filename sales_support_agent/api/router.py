@@ -692,6 +692,20 @@ def health(request: Request) -> ApiMessage:
                             item["key"]: item["status"]
                             for item in content["dependencies"]
                         },
+                        "latest_run": (
+                            {
+                                "job": content["runs"][0].job_key,
+                                "status": content["runs"][0].status,
+                                "created_at": content["runs"][
+                                    0
+                                ].created_at.isoformat(),
+                                "safe_message": content["runs"][
+                                    0
+                                ].safe_error_message,
+                            }
+                            if content["runs"]
+                            else None
+                        ),
                     }
                 }
             except Exception as content_exc:

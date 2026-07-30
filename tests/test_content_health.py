@@ -18,3 +18,4 @@ def test_health_exposes_safe_content_runtime_truth(monkeypatch, tmp_path) -> Non
     assert "dependency_states" in runtime
     assert "riverside" in runtime["dependency_states"]
     assert "linkedin_personal" in runtime["dependency_states"]
+    assert runtime["latest_run"] is None
