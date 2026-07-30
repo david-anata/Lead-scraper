@@ -563,6 +563,51 @@ class BuildingCrmCampaignTests(unittest.TestCase):
             'class="agent-skip-link" href="#agent-main-content"',
             body,
         )
+        self.assertNotIn('<label for="review-id">Reservation ID</label>', body)
+        self.assertNotIn('<label for="review-key">Idempotency key</label>', body)
+        self.assertNotIn('<label for="segment-id">Stable ID</label>', body)
+        self.assertNotIn('<label for="campaign-id">Stable ID</label>', body)
+        self.assertNotIn('<label for="billing-account-id">Stable ID</label>', body)
+        self.assertNotIn('<label for="billing-schedule-id">Stable ID</label>', body)
+        self.assertRegex(
+            body,
+            r'<input type="hidden" name="reservation_id" value="event-[a-f0-9]{12}">',
+        )
+        for view, title in {
+            "today": "Today",
+            "sales": "Sales",
+            "bookings": "Bookings",
+            "operations": "Operations",
+            "billing": "Billing",
+            "contacts": "Contacts",
+            "catalog": "Spaces &amp; website",
+            "settings": "Settings",
+        }.items():
+            view_body = render_building_page(
+                user={
+                    "is_superadmin": True,
+                    "permissions": set(),
+                    "email": "admin@example.com",
+                },
+                view=view,
+                spaces=[],
+                offerings=[],
+                contacts=[],
+                segments=[],
+                campaigns=[],
+                inquiries=[],
+                reservations=[],
+                invoices=[],
+                adjustments=[],
+                billing_accounts=[],
+                billing_schedules=[],
+                calendar_projections=[],
+                checklists=[],
+                service_requests=[],
+                can_finance=True,
+            )
+            self.assertIn(f'class="app app--operator view-{view}"', view_body)
+            self.assertIn(f"<h1>{title}</h1>", view_body)
         controls = re.findall(
             r"<(?:input|select|textarea)\b([^>]*)>",
             body,

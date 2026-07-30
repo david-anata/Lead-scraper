@@ -4754,6 +4754,13 @@ def retry_campaign_failures_from_control_room(
     )
 
 
+@admin_router.get("/settings", response_class=HTMLResponse)
+@admin_router.get("/catalog", response_class=HTMLResponse)
+@admin_router.get("/contacts", response_class=HTMLResponse)
+@admin_router.get("/billing", response_class=HTMLResponse)
+@admin_router.get("/operations", response_class=HTMLResponse)
+@admin_router.get("/bookings", response_class=HTMLResponse)
+@admin_router.get("/sales", response_class=HTMLResponse)
 @admin_router.get("", response_class=HTMLResponse)
 def building_control_room(
     request: Request,
@@ -4761,6 +4768,20 @@ def building_control_room(
     error: str = "",
     user: dict = Depends(require_tool("building.manage")),
 ) -> HTMLResponse:
+    requested_view = request.url.path.rstrip("/").rsplit("/", 1)[-1]
+    view = (
+        requested_view
+        if requested_view in {
+            "sales",
+            "bookings",
+            "operations",
+            "billing",
+            "contacts",
+            "catalog",
+            "settings",
+        }
+        else "today"
+    )
     with session_scope(request.app.state.session_factory) as session:
         space_rows = session.execute(
             select(BuildingSpace).order_by(BuildingSpace.name)
@@ -5068,6 +5089,7 @@ def building_control_room(
             })
         html_body = render_building_page(
             user=user,
+            view=view,
             spaces=[
                 {
                     "id": item.id,
