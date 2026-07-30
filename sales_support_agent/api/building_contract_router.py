@@ -636,6 +636,7 @@ def contract_detail(
         navigation=render_agent_nav("building_contracts", user=user),
         contract=contract,
         can_approve=_may(user, "building.agreements.approve"),
+        can_prepare_signature=_may(user, "building.agreements.prepare"),
         can_prepare_payment=_may(user, "building.payments.prepare"),
         can_manage=_may(user, "building.manage"),
         csrf_token=csrf_token(user),
