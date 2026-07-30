@@ -83,6 +83,9 @@ def main() -> None:
         from sales_support_agent.services.building_arena_agreement_seed import (
             ensure_arena_review_template,
         )
+        from sales_support_agent.services.building_arena_rate_plan_seed import (
+            ensure_arena_commercial_draft,
+        )
 
         access_store.seed_superadmins(
             getattr(settings, "rbac_superadmin_emails", ())
@@ -91,6 +94,14 @@ def main() -> None:
         logger.info(
             "predeploy milestone=arena_agreement_template result=%s",
             arena_template_result,
+        )
+        arena_rate_plan_result = ensure_arena_commercial_draft(
+            factory,
+            actor=configured_owner,
+        )
+        logger.info(
+            "predeploy milestone=arena_commercial_draft result=%s",
+            arena_rate_plan_result,
         )
     logger.info(
         "predeploy milestone=schema_ready elapsed_ms=%.1f",

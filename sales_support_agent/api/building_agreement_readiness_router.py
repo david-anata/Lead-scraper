@@ -52,6 +52,9 @@ from sales_support_agent.services.building_contract_templates import (
 from sales_support_agent.services.building_contracts import (
     compute_event_merge_values,
 )
+from sales_support_agent.services.building_launch_readiness import (
+    sync_arena_agreement_template_decision,
+)
 from sales_support_agent.services.building_security import (
     csrf_token,
     require_building_form_security,
@@ -401,6 +404,11 @@ def transition_agreement_template(
                 "approval_evidence": row.approval_evidence,
             },
         ))
+        sync_arena_agreement_template_decision(
+            session,
+            template=row,
+            actor=payload.actor,
+        )
         return {"ok": True, "template": _template_payload(row)}
 
 

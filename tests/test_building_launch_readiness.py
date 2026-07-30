@@ -151,19 +151,19 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
         page = self.client.get("/admin/building")
         self.assertIn("Your Arena decisions and remaining setup", page.text)
         self.assertIn(
-            "Evidence conflicts: one supplied policy says venue card-only with no checks",
+            "Cards are accepted. ACH or check may be approved",
             page.text,
         )
         self.assertIn(
-            "allowed ACH/check with seven additional clearing days",
+            "seven additional days early",
             page.text,
         )
         self.assertIn(
-            "building@anatainc.com was specified for Building Control access",
+            "Owner designated building@anatainc.com",
             page.text,
         )
         self.assertIn(
-            "Approve one numeric premium rate; do not infer $150 or $175.",
+            "Owner approved $175 per full overtime hour",
             page.text,
         )
         self.assertIn("0/10 complete", page.text)
@@ -172,7 +172,7 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
             page.text,
         )
         self.assertIn("Venue payment workflow", page.text)
-        self.assertIn("no checks, overpayments, or third-party vendor payments", page.text)
+        self.assertIn("overpayments and third-party vendor payments are not accepted", page.text)
 
     def test_01b_page_presents_a_scannable_governed_launch_workspace(self) -> None:
         page = self.client.get("/admin/building")
@@ -196,8 +196,10 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
         )
         self.assertEqual(
             page.text.count("<summary>Record completed setup</summary>"),
-            3,
+            1,
         )
+        self.assertIn("Review agreement templates", page.text)
+        self.assertIn("Agent records the date automatically", page.text)
         self.assertIn(
             "Saving records the approved rule and audit history.",
             page.text,
@@ -271,7 +273,6 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
             "setup_price",
             "teardown_price",
             "overtime_rate",
-            "effective_date",
         ):
             self.assertEqual(self._decide(key, "accepted_policy").status_code, 303)
         response = self.client.post(
@@ -288,6 +289,13 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
         with self.factory() as session:
             self.assertEqual(session.get(BuildingRatePlan, "launch-arena-rate-v1").status, "approved")
             self.assertEqual(session.query(BuildingLaunchDecision).count(), 7)
+            effective = session.get(
+                BuildingLaunchDecision,
+                launch_decision_id("launch-arena-events", "effective_date"),
+            )
+            self.assertEqual(effective.status, "accepted_policy")
+            self.assertIn("2026-01-01", effective.value)
+            self.assertIn("launch-arena-rate-v1", effective.evidence)
 
     def test_05_empty_source_evidence_cannot_bypass_arena_gates(self) -> None:
         control = self.client.post(

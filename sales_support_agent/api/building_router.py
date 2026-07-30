@@ -27,6 +27,7 @@ from sales_support_agent.services.building_content import (
 )
 from sales_support_agent.services.building_launch_readiness import (
     arena_rate_plan_decision_blockers,
+    sync_arena_effective_date_decision,
 )
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
@@ -1363,6 +1364,12 @@ def upsert_rate_plan(
             row.approved_at = _now()
         session.add(row)
         session.flush()
+        if row.status == "approved":
+            sync_arena_effective_date_decision(
+                session,
+                rate_plan=row,
+                actor=payload.actor,
+            )
         after = _rate_plan_internal_payload(row)
         session.add(BuildingAuditEvent(
             entity_type="rate_plan",
