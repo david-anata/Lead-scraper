@@ -3,7 +3,9 @@ services:
     name: sales-support-agent
     runtime: python
     plan: starter
-    numInstances: 2
+    # Website Ops currently maintains its report, quota, and publishing ledgers on
+    # the service filesystem. Keep one writer until every ledger is database-backed.
+    numInstances: 1
     autoDeployTrigger: commit
     buildCommand: pip install -r requirements.txt
     preDeployCommand: python scripts/predeploy_agent.py
