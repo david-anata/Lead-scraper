@@ -341,6 +341,23 @@
   font-size: .78rem;
 }
 
+.content-publish-result {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 30;
+  max-width: 420px;
+  padding: 12px 16px;
+  border-radius: var(--agent-radius-control);
+  background: var(--agent-ink);
+  color: var(--agent-surface);
+  box-shadow: var(--agent-shadow-raised);
+}
+
+.content-publish-result:empty {
+  display: none;
+}
+
 .content-six-cs {
   margin-top: 24px;
   padding: 22px;

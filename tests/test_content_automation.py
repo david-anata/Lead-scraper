@@ -134,7 +134,7 @@ def test_shadow_cycle_records_dependencies_and_cross_instance_deduplication() ->
             session.scalar(
                 select(func.count()).select_from(ContentDependencyCheck)
             )
-            == 20
+            == 22
         )
         run = session.scalar(select(ContentJobRun))
         assert run is not None

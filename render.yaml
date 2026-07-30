@@ -106,18 +106,26 @@ services:
         sync: false
       - key: CONTENT_LINKEDIN_CONNECTOR_VERIFIED
         value: "false"
+      - key: CONTENT_LINKEDIN_COMPANY_ID
+        sync: false
+      - key: CONTENT_LINKEDIN_PERSON_ID
+        sync: false
       - key: CONTENT_YOUTUBE_CONNECTOR_URL
         sync: false
       - key: CONTENT_YOUTUBE_CONNECTOR_KEY
         sync: false
       - key: CONTENT_YOUTUBE_CONNECTOR_VERIFIED
         value: "false"
+      - key: CONTENT_YOUTUBE_CHANNEL_ID
+        sync: false
       - key: CONTENT_INSTAGRAM_CONNECTOR_URL
         sync: false
       - key: CONTENT_INSTAGRAM_CONNECTOR_KEY
         sync: false
       - key: CONTENT_INSTAGRAM_CONNECTOR_VERIFIED
         value: "false"
+      - key: CONTENT_INSTAGRAM_ACCOUNT_ID
+        sync: false
       - key: CONTENT_NEWSLETTER_PROVIDER
         sync: false
       - key: CONTENT_NEWSLETTER_AUDIENCE_ID

@@ -17,6 +17,7 @@ from sales_support_agent.services.content_engine import (
     render_content_control_room,
     render_run_detail,
 )
+from sales_support_agent.services.content_publishing import publish_artifact
 from sales_support_agent.services.content_automation import run_content_cycle
 from sales_support_agent.services.content_automation import stage_daily_brief
 from sales_support_agent.services.content_engine import (
@@ -27,6 +28,7 @@ from sales_support_agent.services.content_engine import (
 
 router = APIRouter(tags=["content-operations"])
 CONTENT_VIEW = require_any_tool("content.view", "content.operate", "content.admin")
+CONTENT_OPERATE = require_any_tool("content.operate", "content.admin")
 
 
 class SourceAssetInput(BaseModel):
@@ -71,6 +73,13 @@ class ContentRunInput(BaseModel):
         "newsletter_issue",
     ] = "scheduled"
     force: bool = False
+
+
+class PublishArtifactInput(BaseModel):
+    """Deliberate approval for one channel-specific publication."""
+
+    artifact_id: str = Field(min_length=1, max_length=64)
+    confirmed: bool = False
 
 
 class DailyNewsInput(BaseModel):
@@ -250,3 +259,32 @@ def content_run(
         mode=payload.mode,
         force=payload.force,
     )
+
+
+@router.post("/admin/api/content/publish")
+def content_publish(
+    payload: PublishArtifactInput,
+    request: Request,
+    user: dict = Depends(CONTENT_OPERATE),
+) -> dict[str, Any]:
+    """Approve and execute one audited production publication."""
+
+    actor = str(user.get("email") or user.get("id") or "content-operator")
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            row = publish_artifact(
+                session,
+                artifact_id=payload.artifact_id,
+                actor=actor,
+                confirmed=payload.confirmed,
+            )
+            return {
+                "status": row.status,
+                "publication_id": row.id,
+                "public_url": row.public_url,
+                "verified": bool(row.verified_at),
+            }
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

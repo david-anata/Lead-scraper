@@ -137,6 +137,7 @@ def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dic
             if _configured("GOOGLE_SERVICE_ACCOUNT_JSON", "CONTENT_DRIVE_PARENT_ID")
             and _enabled("CONTENT_DRIVE_VERIFIED")
             else "blocked",
+            "required_for": ["Daily brief", "Episode harvest", "Weekly review"],
             "message": "Briefs and artifacts"
             if _configured("GOOGLE_SERVICE_ACCOUNT_JSON", "CONTENT_DRIVE_PARENT_ID")
             and _enabled("CONTENT_DRIVE_VERIFIED")
@@ -146,6 +147,7 @@ def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dic
             "key": "gmail",
             "label": "Gmail drafts",
             "status": "ready" if gmail_ready else "blocked",
+            "required_for": ["Daily brief delivery"],
             "message": "Draft-only delivery is configured."
             if gmail_ready
             else "Connect the Gmail draft account. Sending remains disabled.",
@@ -156,6 +158,7 @@ def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dic
             "status": "ready"
             if bool(getattr(settings, "slack_bot_token", "") and getattr(settings, "slack_channel_id", ""))
             else "blocked",
+            "required_for": ["Daily brief notification"],
             "message": "Notification delivery is configured."
             if bool(getattr(settings, "slack_bot_token", "") and getattr(settings, "slack_channel_id", ""))
             else "Configure the bot token and content notification channel.",
@@ -166,26 +169,48 @@ def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dic
             "status": "ready"
             if _enabled("CONTENT_RIVERSIDE_RELAY_ENABLED") and source_asset_count
             else ("stale" if source_asset_count else "blocked"),
+            "required_for": ["Episode harvest", "Social candidates"],
             "message": f"{source_asset_count} normalized source asset(s) available."
             if source_asset_count
             else "Connect a production MCP/API relay and ingest the first episode.",
         },
         {
-            "key": "linkedin",
-            "label": "LinkedIn",
+            "key": "linkedin_company",
+            "label": "LinkedIn company",
             "status": "ready"
-            if _configured("CONTENT_LINKEDIN_CONNECTOR_URL", "CONTENT_LINKEDIN_CONNECTOR_KEY")
+            if _configured(
+                "CONTENT_LINKEDIN_CONNECTOR_URL",
+                "CONTENT_LINKEDIN_CONNECTOR_KEY",
+                "CONTENT_LINKEDIN_COMPANY_ID",
+            )
             and _enabled("CONTENT_LINKEDIN_CONNECTOR_VERIFIED")
             else "blocked",
-            "message": "Personal and company destinations must verify separately.",
+            "required_for": ["LinkedIn company publishing"],
+            "message": "Connect and verify the Anata company destination.",
+        },
+        {
+            "key": "linkedin_personal",
+            "label": "LinkedIn personal",
+            "status": "ready"
+            if _configured(
+                "CONTENT_LINKEDIN_CONNECTOR_URL",
+                "CONTENT_LINKEDIN_CONNECTOR_KEY",
+                "CONTENT_LINKEDIN_PERSON_ID",
+            )
+            and _enabled("CONTENT_LINKEDIN_CONNECTOR_VERIFIED")
+            else "blocked",
+            "required_for": ["David's LinkedIn publishing"],
+            "message": "Connect and verify David's personal destination separately.",
         },
         {
             "key": "youtube",
             "label": "YouTube",
             "status": "ready"
             if _configured("CONTENT_YOUTUBE_CONNECTOR_URL", "CONTENT_YOUTUBE_CONNECTOR_KEY")
+            and _configured("CONTENT_YOUTUBE_CHANNEL_ID")
             and _enabled("CONTENT_YOUTUBE_CONNECTOR_VERIFIED")
             else "blocked",
+            "required_for": ["YouTube publishing and review"],
             "message": "Upload and analytics-read contracts are required.",
         },
         {
@@ -193,8 +218,10 @@ def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dic
             "label": "Instagram",
             "status": "ready"
             if _configured("CONTENT_INSTAGRAM_CONNECTOR_URL", "CONTENT_INSTAGRAM_CONNECTOR_KEY")
+            and _configured("CONTENT_INSTAGRAM_ACCOUNT_ID")
             and _enabled("CONTENT_INSTAGRAM_CONNECTOR_VERIFIED")
             else "blocked",
+            "required_for": ["Instagram publishing"],
             "message": "Publishing and analytics-read contracts are required.",
         },
         {
@@ -202,19 +229,22 @@ def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dic
             "label": "Newsletter",
             "status": "ready"
             if _configured("CONTENT_NEWSLETTER_PROVIDER", "CONTENT_NEWSLETTER_AUDIENCE_ID")
-            else "blocked",
+            else "optional",
+            "required_for": ["Newsletter only"],
             "message": "A consent-safe audience and unsubscribe contract are required.",
         },
         {
             "key": "visuals",
             "label": "Selective visuals",
-            "status": "ready" if _configured("GEMINI_API_KEY") else "blocked",
+            "status": "ready" if _configured("GEMINI_API_KEY") else "optional",
+            "required_for": ["Optional generated visuals only"],
             "message": "Gemini is optional. Authentic Riverside media remains the default.",
         },
         {
             "key": "x",
             "label": "X",
             "status": "staged",
+            "required_for": ["X remains staging-only"],
             "message": "Staging only. Automatic publishing is intentionally disabled.",
         },
     ]
@@ -409,6 +439,11 @@ def _status_badge(status: str) -> str:
         "queued": "queued",
         "stale": "stale",
         "staged": "review",
+        "optional": "review",
+        "shadow": "review",
+        "not connected": "review",
+        "needs verification": "review",
+        "staging only": "review",
         "needs review": "review",
         "failed": "failed",
         "blocked": "blocked",
@@ -477,7 +512,14 @@ def control_room_data(session: Session, settings: Any) -> dict[str, Any]:
         ).scalars()
     )
     deps = dependency_health(settings, source_asset_count=source_count)
-    blockers = [item for item in deps if item["status"] == "blocked"]
+    setup_actions = [item for item in deps if item["status"] == "blocked"]
+    ready_destinations = [
+        item
+        for item in deps
+        if item["key"]
+        in {"linkedin_company", "linkedin_personal", "youtube", "instagram"}
+        and item["status"] == "ready"
+    ]
     generated_at = datetime.now(timezone.utc)
     return {
         "generated_at": generated_at,
@@ -489,8 +531,10 @@ def control_room_data(session: Session, settings: Any) -> dict[str, Any]:
         "artifacts": artifacts,
         "runs": runs,
         "dependencies": deps,
-        "blockers": blockers,
-        "overall_status": "blocked" if blockers else "ready",
+        "blockers": setup_actions,
+        "setup_actions": setup_actions,
+        "ready_destination_count": len(ready_destinations),
+        "overall_status": "needs_review" if setup_actions else "ready",
     }
 
 
@@ -532,6 +576,11 @@ def render_content_control_room(
         </table>
         """
 
+    permissions = set(user.get("permissions") or ())
+    can_operate = bool(
+        user.get("is_superadmin")
+        or {"content.operate", "content.admin"}.intersection(permissions)
+    )
     artifact_rows = "".join(
         f"""
         <tr>
@@ -540,6 +589,11 @@ def render_content_control_room(
           <td>{_status_badge(row.status)}</td>
           <td>{html.escape(row.playbook_version)}</td>
           <td>{_format_time(row.created_at)}</td>
+          <td>{(
+              f'<button class="admin-btn admin-btn--secondary content-publish" type="button" data-artifact-id="{html.escape(row.id)}" data-channel="{html.escape(row.channel.replace("_", " ").title())}">Approve and publish</button>'
+              if can_operate and row.artifact_type == "native_candidate" and row.status in {"needs_review", "approved", "failed"}
+              else (f'<a href="{html.escape(row.external_url)}" rel="noopener">View live post</a>' if row.external_url else "—")
+          )}</td>
         </tr>
         """
         for row in artifacts
@@ -547,7 +601,7 @@ def render_content_control_room(
     artifact_workspace = (
         f"""
         <table class="app-table app-table--sticky">
-          <thead><tr><th>Artifact</th><th>Channel</th><th>State</th><th>Playbook</th><th>Created</th></tr></thead>
+          <thead><tr><th>Artifact</th><th>Channel</th><th>State</th><th>Playbook</th><th>Created</th><th>Action</th></tr></thead>
           <tbody>{artifact_rows}</tbody>
         </table>
         """
@@ -574,6 +628,7 @@ def render_content_control_room(
         <tr>
           <td><strong>{html.escape(item['label'])}</strong></td>
           <td>{_status_badge(item['status'])}</td>
+          <td>{html.escape(', '.join(item.get('required_for') or []))}</td>
           <td>{html.escape(item['message'])}</td>
         </tr>
         """
@@ -592,9 +647,12 @@ def render_content_control_room(
         for item in PLAYBOOKS
     )
     overall_copy = (
-        f"{len(data['blockers'])} production dependencies need configuration."
-        if data["blockers"]
-        else "All configured dependencies passed their latest readiness check."
+        (
+            f"{data['ready_destination_count']} publishing destination(s) ready. "
+            f"{len(data['setup_actions'])} setup action(s) remain, each isolated to its workflow."
+        )
+        if data["setup_actions"]
+        else "The content production line and every selected destination are ready."
     )
     latest_artifact = data["latest_artifact"]
     latest_output = (
@@ -633,7 +691,7 @@ def render_content_control_room(
         <p class="content-freshness">State refreshed {_format_time(data['generated_at'])}. Schedule timezone: America/Denver.</p>
       </div>
       <div class="app-page-actions">
-        <a class="admin-btn admin-btn--secondary" href="#dependencies">Resolve blockers</a>
+        <a class="admin-btn admin-btn--secondary" href="#dependencies">Review connections</a>
       </div>
     </header>
 
@@ -650,13 +708,13 @@ def render_content_control_room(
       <div class="app-metric"><div class="app-metric__value">{data['source_asset_count']}</div><div class="app-metric__label">Riverside source assets</div></div>
       <div class="app-metric"><div class="app-metric__value">{data['artifact_count']}</div><div class="app-metric__label">Staged artifacts</div></div>
       <div class="app-metric"><div class="app-metric__value">{data['publication_count']}</div><div class="app-metric__label">Verified publications</div></div>
-      <div class="app-metric"><div class="app-metric__value">{len(data['blockers'])}</div><div class="app-metric__label">Dependencies blocked</div></div>
+      <div class="app-metric"><div class="app-metric__value">{data['ready_destination_count']}</div><div class="app-metric__label">Destinations ready to publish</div></div>
     </section>
 
     <section class="app-command-bar content-command-bar" aria-label="Content schedule and evidence">
       <div><span class="content-command-bar__label">Next scheduled check</span><strong>{_format_time(data['next_daily_run'])}</strong></div>
       <div><span class="content-command-bar__label">Latest output</span><strong>{html.escape(latest_output)}</strong></div>
-      <div><span class="content-command-bar__label">Execution mode</span><strong>Shadow and staging only</strong></div>
+      <div><span class="content-command-bar__label">Execution mode</span><strong>{html.escape(os.getenv('CONTENT_PUBLISHING_MODE', 'shadow').strip().title())}</strong></div>
     </section>
 
     <section class="content-section" aria-labelledby="pipeline-title">
@@ -676,7 +734,7 @@ def render_content_control_room(
 
     <section id="dependencies" class="content-section" aria-labelledby="dependencies-title">
       <div class="content-section__head"><div><p class="content-eyebrow">Production truth</p><h2 id="dependencies-title">Connection readiness</h2></div><p>Developer-only MCP access is not counted as production-ready.</p></div>
-      <div class="app-data-workspace"><table class="app-table"><thead><tr><th>Dependency</th><th>State</th><th>Required action</th></tr></thead><tbody>{dependencies}</tbody></table></div>
+      <div class="app-data-workspace"><table class="app-table"><thead><tr><th>Connection</th><th>State</th><th>Used for</th><th>Next action</th></tr></thead><tbody>{dependencies}</tbody></table></div>
     </section>
 
     <section class="content-section" aria-labelledby="playbooks-title">
@@ -696,6 +754,37 @@ def render_content_control_room(
       </dl>
     </section>
   </main>
+  <div id="content-publish-result" class="content-publish-result" role="status" aria-live="polite"></div>
+  <script>
+  (() => {{
+    const result = document.getElementById("content-publish-result");
+    document.querySelectorAll(".content-publish").forEach((button) => {{
+      button.addEventListener("click", async () => {{
+        const channel = button.dataset.channel;
+        if (!window.confirm(`Publish this approved candidate to ${{channel}}? This can create a public post.`)) return;
+        button.disabled = true;
+        result.textContent = `Publishing to ${{channel}}…`;
+        try {{
+          const response = await fetch("/admin/api/content/publish", {{
+            method: "POST",
+            credentials: "same-origin",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{artifact_id: button.dataset.artifactId, confirmed: true}})
+          }});
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.detail || "Publishing failed.");
+          result.textContent = data.verified
+            ? `Published and verified on ${{channel}}.`
+            : `Accepted by ${{channel}}; verification is pending.`;
+          window.location.reload();
+        }} catch (error) {{
+          result.textContent = error.message;
+          button.disabled = false;
+        }}
+      }});
+    }});
+  }})();
+  </script>
 </body>
 </html>"""
 

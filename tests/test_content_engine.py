@@ -173,7 +173,7 @@ def test_content_routes_require_trusted_key_and_render_for_authorized_user() -> 
     client = TestClient(app)
 
     assert client.get("/admin/content").status_code == 200
-    assert client.get("/admin/api/content/status").json()["status"] == "blocked"
+    assert client.get("/admin/api/content/status").json()["status"] == "needs_review"
     assert (
         client.post(
             "/api/jobs/content/source-assets",
