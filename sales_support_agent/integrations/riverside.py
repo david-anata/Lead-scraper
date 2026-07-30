@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 
@@ -47,11 +48,36 @@ class RiversideClient:
         with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
             return response.read(2_000_000)
 
+    def resolve_download_url(self, source_url: str) -> str:
+        """Resolve a Riverside bearer URL to its short-lived signed media URL."""
+
+        parsed = urlsplit(source_url)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "platform.riverside.fm"
+            or not parsed.path.startswith("/api/v3/download/")
+        ):
+            raise ValueError("Riverside media URL is not allowlisted.")
+        request = Request(
+            source_url,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "User-Agent": "Anata-Agent-Content/1.0",
+            },
+        )
+        with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
+            resolved = response.geturl()
+        final = urlsplit(resolved)
+        if final.scheme != "https" or not final.hostname:
+            raise RuntimeError("Riverside did not return a safe media URL.")
+        return resolved
+
     def list_ready_recordings(
         self,
         *,
         studio_id: str = "",
         start_date: str = "",
+        completed_episode_ids: set[str] | None = None,
     ) -> list[RiversideEpisode]:
         """Return ready recording assets, including downloaded TXT transcripts."""
 
@@ -61,15 +87,38 @@ class RiversideClient:
         if start_date:
             params["start_date"] = start_date
         url = f"{self.base_url}/api/v3/recordings?{urlencode(params)}"
-        payload = json.loads(self._get(url) or b"{}")
         episodes: list[RiversideEpisode] = []
-        for recording in payload.get("data") or []:
+        recordings: list[dict[str, Any]] = []
+        seen_pages: set[str] = set()
+        for _ in range(50):
+            if url in seen_pages:
+                raise RuntimeError("Riverside pagination repeated a page.")
+            seen_pages.add(url)
+            payload = json.loads(self._get(url) or b"{}")
+            recordings.extend(payload.get("data") or [])
+            next_url = str(payload.get("next_page_url") or "").strip()
+            if not next_url:
+                break
+            parsed = urlsplit(next_url)
+            if (
+                parsed.scheme != "https"
+                or parsed.hostname != "platform.riverside.fm"
+                or not parsed.path.startswith("/api/v3/recordings")
+            ):
+                raise RuntimeError("Riverside returned an unsafe pagination URL.")
+            url = next_url
+        else:
+            raise RuntimeError("Riverside pagination exceeded the safety limit.")
+
+        for recording in recordings:
             if str(recording.get("status") or "").lower() != "ready":
                 continue
             episode_id = str(
                 recording.get("recording_id") or recording.get("id") or ""
             ).strip()
             if not episode_id:
+                continue
+            if episode_id in (completed_episode_ids or set()):
                 continue
             title = str(recording.get("name") or "")
             assets: list[dict[str, Any]] = []
@@ -79,9 +128,14 @@ class RiversideClient:
                     download_url = str(file_item.get("download_url") or "")
                     if not download_url:
                         continue
+                    stable_file_id = str(file_item.get("id") or "").strip()
+                    if not stable_file_id:
+                        stable_file_id = hashlib.sha256(
+                            urlsplit(download_url).path.encode("utf-8")
+                        ).hexdigest()[:32]
                     assets.append(
                         {
-                            "asset_id": str(file_item.get("id") or download_url),
+                            "asset_id": f"{episode_id}:{stable_file_id}",
                             "asset_type": (
                                 "audio" if "audio" in file_type else "video"
                             ),

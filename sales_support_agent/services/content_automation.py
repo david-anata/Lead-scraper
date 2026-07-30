@@ -33,6 +33,10 @@ from sales_support_agent.services.content_engine import (
     ingest_source_assets,
     record_orchestration_check,
 )
+from sales_support_agent.services.content_copy import (
+    generate_native_bundle,
+    native_copy_quality,
+)
 from sales_support_agent.services.job_lease import (
     claim_scheduled_job,
     finish_scheduled_job,
@@ -81,12 +85,12 @@ JOB_DEFINITIONS: dict[str, ContentJobDefinition] = {
         upstream_jobs=("episode_harvest",),
         schedule="after_episode_harvest",
     ),
-    "personal_distribution": ContentJobDefinition(
-        "personal_distribution",
-        "David personal channel distribution",
-        ("linkedin_personal",),
+    "daily_distribution": ContentJobDefinition(
+        "daily_distribution",
+        "Daily native distribution portfolio",
+        (),
         upstream_jobs=("social_distribution",),
-        schedule="monday_wednesday_friday_after_0900",
+        schedule="daily_after_0900",
     ),
     "weekly_retrospective": ContentJobDefinition(
         "weekly_retrospective",
@@ -107,13 +111,19 @@ JOB_DEFINITIONS: dict[str, ContentJobDefinition] = {
 DEFAULT_PLAYBOOKS: tuple[dict[str, Any], ...] = (
     {
         "channel": "linkedin_personal",
-        "version": "v1",
+        "version": "v2",
         "priority": "primary_authority",
-        "cadence": {"max_per_week": 3, "minimum_spacing_hours": 36},
+        "cadence": {
+            "min_per_week": 2,
+            "max_per_week": 3,
+            "days": ["monday", "wednesday", "friday"],
+            "minimum_spacing_hours": 36,
+        },
         "format": {
             "treatment": "first_person_operator_lesson",
             "cta_limit": 1,
             "cross_post_copy": False,
+            "cta": "operator_question",
         },
         "quality": {
             "requires_original_experience": True,
@@ -127,13 +137,14 @@ DEFAULT_PLAYBOOKS: tuple[dict[str, Any], ...] = (
     },
     {
         "channel": "linkedin_company",
-        "version": "v1",
+        "version": "v2",
         "priority": "b2b_proof",
         "cadence": {"max_per_week": 2, "minimum_spacing_hours": 48},
         "format": {
             "treatment": "useful_operating_insight",
             "cta_limit": 1,
             "cross_post_copy": False,
+            "cta": "save_framework",
         },
         "quality": {
             "requires_anata_evidence": True,
@@ -147,7 +158,7 @@ DEFAULT_PLAYBOOKS: tuple[dict[str, Any], ...] = (
     },
     {
         "channel": "youtube",
-        "version": "v1",
+        "version": "v2",
         "priority": "depth_and_search",
         "cadence": {
             "max_episodes_per_week": 1,
@@ -158,6 +169,7 @@ DEFAULT_PLAYBOOKS: tuple[dict[str, Any], ...] = (
             "treatment": "story_led_education",
             "requires_thumbnail_contract": True,
             "cross_post_copy": False,
+            "cta": "subscribe",
         },
         "quality": {
             "requires_source_lineage": True,
@@ -171,13 +183,14 @@ DEFAULT_PLAYBOOKS: tuple[dict[str, Any], ...] = (
     },
     {
         "channel": "instagram",
-        "version": "v1",
+        "version": "v2",
         "priority": "discovery_and_relationship",
         "cadence": {"max_per_week": 3, "minimum_spacing_hours": 24},
         "format": {
             "treatment": "native_reel_or_carousel",
             "requires_visual_action": True,
             "cross_post_copy": False,
+            "cta": "save_and_share",
         },
         "quality": {
             "requires_source_lineage": True,
@@ -191,13 +204,14 @@ DEFAULT_PLAYBOOKS: tuple[dict[str, Any], ...] = (
     },
     {
         "channel": "x",
-        "version": "v1",
+        "version": "v2",
         "priority": "staging_only",
         "cadence": {"max_staged_per_week": 5, "minimum_spacing_hours": 12},
         "format": {
             "treatment": "sharp_opinion_or_question",
             "publishing_enabled": False,
             "cross_post_copy": False,
+            "cta": "conversation_question",
         },
         "quality": {
             "requires_original_point_of_view": True,
@@ -295,11 +309,11 @@ def due_scheduled_jobs(session: Session, *, now: datetime) -> list[tuple[str, st
                 _weekly_run_key(now, "weekly_retrospective"),
             )
         )
-    if local.weekday() in {0, 2, 4} and local.hour >= 9:
+    if local.hour >= 9:
         candidates.append(
             (
-                "personal_distribution",
-                _daily_run_key(now, "personal_distribution"),
+                "daily_distribution",
+                _daily_run_key(now, "daily_distribution"),
             )
         )
     due: list[tuple[str, str]] = []
@@ -561,135 +575,138 @@ def stage_daily_brief(
     return {"status": "needs_review", "errors": [], "created": created}
 
 
-def _candidate_body(
-    channel: str,
-    asset: ContentSourceAsset,
-    transcript_excerpt: str,
-) -> str:
-    topic = asset.title.strip() or "this operator lesson"
-    evidence = " ".join(transcript_excerpt.split())[:240].replace(EM_DASH, "-")
-    evidence_note = (
-        f' Source evidence begins: "{evidence}"'
-        if evidence
-        else " Source transcript must be attached before approval."
-    )
-    treatments = {
-        "linkedin_personal": (
-            f"Turn {topic} into David's first-person operator lesson. "
-            "Open with the decision or mistake, show the earned experience, "
-            "teach one practical framework, and end with one useful question."
-        ),
-        "linkedin_company": (
-            f"Build an evidence-led operating insight from {topic}. "
-            "Name the business problem, the Anata framework, and one useful next step."
-        ),
-        "youtube": (
-            f"Build a clear search promise around {topic}. "
-            "Open with the result, teach the mechanism, and preserve the source story."
-        ),
-        "instagram": (
-            f"Build a native visual treatment from {topic}. "
-            "Lead with visible action, one specific lesson, and a save-worthy takeaway."
-        ),
-        "x": (
-            f"Stage one sharp, defensible point of view from {topic}. "
-            "Use one idea and one conversation-opening question."
-        ),
-    }
-    return treatments[channel] + evidence_note
-
-
 def stage_native_candidates(
     session: Session,
     *,
     run: ContentJobRun,
     actor: str,
 ) -> dict[str, int]:
-    """Create channel-specific candidate briefs without external writes."""
+    """Create publishable native copy for every untransformed transcript source."""
 
-    source = session.scalar(
-        select(ContentSourceAsset)
-        .where(ContentSourceAsset.processing_status == "ready")
-        .order_by(ContentSourceAsset.ingested_at.desc())
+    transcripts = list(
+        session.scalars(
+            select(ContentTranscript).order_by(ContentTranscript.created_at)
+        )
     )
-    if source is None:
+    if not transcripts:
         return {"created": 0, "existing": 0, "rejected": 0}
-    transcript = session.scalar(
-        select(ContentTranscript)
-        .where(ContentTranscript.source_asset_id == source.id)
-        .order_by(ContentTranscript.created_at.desc())
-    )
-    transcript_excerpt = transcript.text if transcript is not None else ""
 
     created = 0
     existing = 0
     rejected = 0
-    for channel in (
-        "linkedin_personal",
-        "linkedin_company",
-        "youtube",
-        "instagram",
-        "x",
-    ):
-        body = _candidate_body(channel, source, transcript_excerpt)
-        gate = quality_gate(channel=channel, body=body, source_asset=source)
-        fingerprint = hashlib.sha256(
-            f"{source.source_fingerprint}:{channel}:v1:{body}".encode("utf-8")
-        ).hexdigest()
-        duplicate = session.scalar(
-            select(ContentArtifact).where(
-                ContentArtifact.run_id == run.id,
-                ContentArtifact.artifact_type == "native_candidate",
-                ContentArtifact.channel == channel,
-                ContentArtifact.content_fingerprint == fingerprint,
+    for transcript in transcripts:
+        source = session.get(ContentSourceAsset, transcript.source_asset_id)
+        if source is None or source.processing_status != "ready":
+            rejected += 1
+            continue
+        existing_channels = set(
+            session.scalars(
+                select(ContentArtifact.channel).where(
+                    ContentArtifact.artifact_type == "native_candidate",
+                    ContentArtifact.source_asset_id == source.id,
+                    ContentArtifact.playbook_version == "v2",
+                )
             )
         )
-        if duplicate is not None:
-            existing += 1
+        if len(existing_channels) == 5:
+            existing += 5
             continue
-        status = "needs_review" if gate["passed"] else "failed"
-        if not gate["passed"]:
-            rejected += 1
-        artifact = ContentArtifact(
-            id=uuid4().hex,
-            run_id=run.id,
-            source_asset_id=source.id,
-            artifact_type="native_candidate",
-            channel=channel,
-            playbook_version="v1",
-            status=status,
-            title=f"{source.title or 'Riverside source'}: {channel.replace('_', ' ')}",
-            body=body,
-            content_fingerprint=fingerprint,
-            lineage_json={
-                "provider": source.provider,
-                "episode_external_id": source.episode_external_id,
-                "source_asset_id": source.id,
-                "source_fingerprint": source.source_fingerprint,
-                "transcript_start_ms": source.transcript_start_ms,
-                "transcript_end_ms": source.transcript_end_ms,
-            },
-            quality_gate_json=gate,
+        bundle = generate_native_bundle(
+            title=source.title or "Anata operator lesson",
+            transcript=transcript.text,
         )
-        session.add(artifact)
-        session.add(
-            ContentAuditEvent(
+        media_assets = list(
+            session.scalars(
+                select(ContentSourceAsset).where(
+                    ContentSourceAsset.episode_external_id
+                    == source.episode_external_id,
+                    ContentSourceAsset.processing_status == "ready",
+                    ContentSourceAsset.asset_type.in_(("video", "audio", "clip")),
+                )
+            )
+        )
+        for channel in (
+            "linkedin_personal",
+            "linkedin_company",
+            "youtube",
+            "instagram",
+            "x",
+        ):
+            body = bundle[channel]
+            gate = native_copy_quality(
+                channel=channel,
+                body=body,
+                title=source.title or "",
+                has_transcript=True,
+            )
+            fingerprint = hashlib.sha256(
+                f"{source.source_fingerprint}:{channel}:v2:{body}".encode("utf-8")
+            ).hexdigest()
+            duplicate = session.scalar(
+                select(ContentArtifact).where(
+                    ContentArtifact.artifact_type == "native_candidate",
+                    ContentArtifact.channel == channel,
+                    ContentArtifact.source_asset_id == source.id,
+                    ContentArtifact.playbook_version == "v2",
+                )
+            )
+            if duplicate is not None:
+                existing += 1
+                continue
+            status = "needs_review" if gate["passed"] else "failed"
+            if not gate["passed"]:
+                rejected += 1
+            artifact = ContentArtifact(
                 id=uuid4().hex,
                 run_id=run.id,
-                actor_type="scheduler",
-                actor_id=actor,
-                event_type="native_candidate_staged",
-                object_type="content_artifact",
-                object_id=artifact.id,
-                details_json={
-                    "channel": channel,
-                    "playbook_version": "v1",
+                source_asset_id=source.id,
+                artifact_type="native_candidate",
+                channel=channel,
+                playbook_version="v2",
+                status=status,
+                title=(
+                    f"{source.title or 'Riverside source'}: "
+                    f"{channel.replace('_', ' ')}"
+                ),
+                body=body,
+                content_fingerprint=fingerprint,
+                lineage_json={
+                    "provider": source.provider,
+                    "episode_external_id": source.episode_external_id,
                     "source_asset_id": source.id,
-                    "quality_passed": gate["passed"],
+                    "source_fingerprint": source.source_fingerprint,
+                    "transcript_id": transcript.id,
+                    "transcript_fingerprint": transcript.text_fingerprint,
+                    "media_assets": [
+                        {
+                            "source_asset_id": item.id,
+                            "asset_type": item.asset_type,
+                            "source_url": item.source_url,
+                        }
+                        for item in media_assets
+                    ],
                 },
+                quality_gate_json=gate,
             )
-        )
-        created += 1
+            session.add(artifact)
+            session.add(
+                ContentAuditEvent(
+                    id=uuid4().hex,
+                    run_id=run.id,
+                    actor_type="scheduler",
+                    actor_id=actor,
+                    event_type="native_candidate_staged",
+                    object_type="content_artifact",
+                    object_id=artifact.id,
+                    details_json={
+                        "channel": channel,
+                        "playbook_version": "v2",
+                        "source_asset_id": source.id,
+                        "quality_passed": gate["passed"],
+                    },
+                )
+            )
+            created += 1
     session.commit()
     return {"created": created, "existing": existing, "rejected": rejected}
 
@@ -799,8 +816,14 @@ def run_content_cycle(
                             RiversideClient,
                         )
 
+                        completed_episode_ids = set(
+                            session.scalars(
+                                select(ContentTranscript.episode_external_id)
+                            )
+                        )
                         episodes = RiversideClient(api_key=api_key).list_ready_recordings(
-                            studio_id=os.getenv("RIVERSIDE_STUDIO_ID", "").strip()
+                            studio_id=os.getenv("RIVERSIDE_STUDIO_ID", "").strip(),
+                            completed_episode_ids=completed_episode_ids,
                         )
                         ingested["episodes"] = len(episodes)
                         for episode in episodes:
@@ -812,16 +835,37 @@ def run_content_cycle(
                             )
                             ingested["created"] += result["created"]
                             ingested["existing"] += result["existing"]
+                        staged = stage_native_candidates(
+                            session,
+                            run=row,
+                            actor="job:content-orchestrator",
+                        )
                 published = None
-                if job_key == "personal_distribution" and not blockers:
+                portfolio: dict[str, dict[str, Any]] = {}
+                if job_key == "daily_distribution" and not blockers:
                     from sales_support_agent.services.content_publishing import (
-                        publish_best_personal_candidate,
+                        publish_daily_portfolio,
                     )
 
-                    published = publish_best_personal_candidate(
+                    portfolio = publish_daily_portfolio(
                         session,
                         actor="job:content-orchestrator",
                         now=current,
+                    )
+                    portfolio_states = {
+                        item.get("status") for item in portfolio.values()
+                    }
+                    delivered_states = {"running", "delivered", "confirmed"}
+                    if portfolio_states & delivered_states:
+                        row.status = (
+                            "needs_review"
+                            if portfolio_states - delivered_states
+                            else "delivered"
+                        )
+                    elif portfolio_states <= {"blocked", "failed", "not_eligible"}:
+                        row.status = "blocked"
+                    row.safe_error_message = (
+                        "Daily destinations ran independently. Review channel results."
                     )
                 if (
                     job_key == "social_distribution"
@@ -840,10 +884,16 @@ def run_content_cycle(
                         "upstream_jobs": list(definition.upstream_jobs),
                         "staged_candidates": staged,
                         "publication_id": published.id if published else "",
+                        "daily_portfolio": portfolio,
                         "riverside_ingestion": ingested,
                         "execution_mode": (
                             "live"
                             if published is not None
+                            or any(
+                                item.get("status")
+                                in {"running", "delivered", "confirmed"}
+                                for item in portfolio.values()
+                            )
                             else "shadow"
                         ),
                     }
@@ -858,6 +908,7 @@ def run_content_cycle(
                     "blockers": blockers,
                     "staged_candidates": staged,
                     "publication_id": published.id if published else "",
+                    "daily_portfolio": portfolio,
                 }
             finish_scheduled_job(
                 engine,

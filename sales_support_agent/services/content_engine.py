@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -528,6 +529,38 @@ def control_room_data(session: Session, settings: Any) -> dict[str, Any]:
     ranked_personal = rank_publishable_artifacts(
         session, channel="linkedin_personal", now=generated_at
     )
+    transcript_source_ids = set(
+        session.scalars(select(ContentTranscript.source_asset_id))
+    )
+    native_artifacts = list(
+        session.scalars(
+            select(ContentArtifact).where(
+                ContentArtifact.artifact_type == "native_candidate",
+                ContentArtifact.playbook_version == "v2",
+            )
+        )
+    )
+    covered_pairs = {
+        (item.source_asset_id, item.channel) for item in native_artifacts
+    }
+    required_pairs = {
+        (source_id, channel)
+        for source_id in transcript_source_ids
+        for channel in (
+            "linkedin_personal",
+            "linkedin_company",
+            "youtube",
+            "instagram",
+            "x",
+        )
+    }
+    publishable_backlog = [
+        item
+        for item in native_artifacts
+        if item.channel != "x"
+        and item.status in {"needs_review", "approved", "failed"}
+    ]
+    backlog_days = math.ceil(len(publishable_backlog) * 7 / 12)
     return {
         "generated_at": generated_at,
         "next_daily_run": _next_daily_run(generated_at),
@@ -546,6 +579,10 @@ def control_room_data(session: Session, settings: Any) -> dict[str, Any]:
         "strongest_personal_score": (
             ranked_personal[0][1] if ranked_personal else None
         ),
+        "coverage_missing_count": len(required_pairs - covered_pairs),
+        "coverage_complete_count": len(required_pairs & covered_pairs),
+        "daily_backlog_days": backlog_days,
+        "backlog_low": backlog_days < 7,
     }
 
 
@@ -722,6 +759,8 @@ def render_content_control_room(
       <div class="app-metric"><div class="app-metric__value">{data['publication_count']}</div><div class="app-metric__label">Verified publications</div></div>
       <div class="app-metric"><div class="app-metric__value">{data['ready_destination_count']}</div><div class="app-metric__label">Destinations ready to publish</div></div>
       <div class="app-metric"><div class="app-metric__value">{cadence['delivered']} / 2–3</div><div class="app-metric__label">David posts this week</div></div>
+      <div class="app-metric"><div class="app-metric__value">{data['coverage_missing_count']}</div><div class="app-metric__label">Missing source-channel artifacts</div></div>
+      <div class="app-metric"><div class="app-metric__value">{data['daily_backlog_days']}</div><div class="app-metric__label">Estimated daily backlog</div></div>
     </section>
 
     <section class="app-command-bar content-command-bar" aria-label="Content schedule and evidence">
@@ -729,6 +768,7 @@ def render_content_control_room(
       <div><span class="content-command-bar__label">Latest output</span><strong>{html.escape(latest_output)}</strong></div>
       <div><span class="content-command-bar__label">Execution mode</span><strong>{html.escape(os.getenv('CONTENT_PUBLISHING_MODE', 'shadow').strip().title())}</strong></div>
       <div><span class="content-command-bar__label">Strongest personal candidate</span><strong>{html.escape(f"{data['strongest_personal_score']:.0%}" if data['strongest_personal_score'] is not None else 'No eligible candidate')}</strong></div>
+      <div><span class="content-command-bar__label">Coverage</span><strong>{data['coverage_complete_count']} complete · {data['coverage_missing_count']} missing</strong></div>
     </section>
 
     <section class="content-section" aria-labelledby="pipeline-title">

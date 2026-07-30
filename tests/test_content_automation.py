@@ -19,11 +19,15 @@ from sales_support_agent.models.database import init_database, session_scope
 from sales_support_agent.services.content_automation import (
     due_scheduled_jobs,
     quality_gate,
+    stage_native_candidates,
     stage_daily_brief,
     run_content_cycle,
     seed_default_playbooks,
 )
-from sales_support_agent.services.content_engine import ingest_source_assets
+from sales_support_agent.services.content_engine import (
+    ingest_source_assets,
+    record_orchestration_check,
+)
 
 
 def _settings() -> SimpleNamespace:
@@ -68,7 +72,7 @@ def test_default_playbooks_are_versioned_and_idempotent() -> None:
             )
         )
         assert len(rows) == 5
-        assert {row.version for row in rows} == {"v1"}
+        assert {row.version for row in rows} == {"v2"}
         linkedin = next(row for row in rows if row.channel == "linkedin_personal")
         assert linkedin.priority == "primary_authority"
         assert linkedin.format_rules_json["cross_post_copy"] is False
@@ -200,13 +204,17 @@ def test_social_cycle_stages_separate_native_candidates_with_lineage(
         }
         assert len({row.body for row in artifacts}) == 5
         assert {row.status for row in artifacts} == {"needs_review"}
-        assert all(row.playbook_version == "v1" for row in artifacts)
+        assert all(row.playbook_version == "v2" for row in artifacts)
         assert all(
             row.lineage_json["episode_external_id"] == "episode-42"
             for row in artifacts
         )
         assert all(row.quality_gate_json["passed"] for row in artifacts)
-        assert all("Source evidence begins" in row.body for row in artifacts)
+        assert all(
+            not row.body.lower().startswith(("build ", "turn ", "write ", "create "))
+            for row in artifacts
+        )
+        assert all(row.quality_gate_json["six_cs"]["collection"] for row in artifacts)
         assert session.scalar(
             select(func.count()).select_from(ContentTranscript)
         ) == 1
@@ -229,6 +237,43 @@ def test_clip_quality_gate_requires_transcript_interval_and_no_em_dash() -> None
     assert failed["passed"] is False
     assert failed["checks"]["no_em_dash"] is False
     assert failed["checks"]["transcript_interval_valid"] is False
+
+
+def test_transformation_covers_every_untransformed_episode() -> None:
+    factory = _factory()
+    with session_scope(factory) as session:
+        for index in range(2):
+            ingest_source_assets(
+                session,
+                episode_id=f"episode-{index}",
+                actor="test",
+                assets=[
+                    {
+                        "asset_id": f"transcript-{index}",
+                        "asset_type": "transcript",
+                        "title": f"Episode {index} operating lesson",
+                        "status": "ready",
+                        "transcript_text": (
+                            "Operators need a trusted source before they make a "
+                            "decision. The next action needs one owner. The result "
+                            "must be verified after the change."
+                        ),
+                    }
+                ],
+            )
+        run = record_orchestration_check(
+            session,
+            job_key="social_distribution",
+            run_key="coverage-test",
+            trigger="test",
+            actor="test",
+            blockers=[],
+        )
+        first = stage_native_candidates(session, run=run, actor="test")
+        second = stage_native_candidates(session, run=run, actor="test")
+        assert first == {"created": 10, "existing": 0, "rejected": 0}
+        assert second == {"created": 0, "existing": 10, "rejected": 0}
+        assert session.scalar(select(func.count()).select_from(ContentArtifact)) == 10
 
 
 def _daily_payload(theme: str = "Inventory accuracy protects cash") -> dict:
