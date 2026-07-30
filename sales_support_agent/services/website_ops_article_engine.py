@@ -337,6 +337,31 @@ def _daily_generation_path(settings: Any) -> Path | None:
     )
 
 
+def _historical_cluster_ids(settings: Any) -> set[str]:
+    """Return every topic previously claimed on the durable Website Ops volume."""
+
+    today = _daily_generation_path(settings)
+    if today is None:
+        return set()
+    history: set[str] = set()
+    for target in today.parent.glob("*.json"):
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        history.update(
+            _clean(value)
+            for value in payload.get("cluster_ids", []) or []
+            if _clean(value)
+        )
+        legacy = _clean(payload.get("cluster_id"))
+        if legacy:
+            history.add(legacy)
+    return history
+
+
 def article_generation_progress(settings: Any) -> dict[str, Any]:
     """Return today's bounded production quota and claimed topic IDs."""
 
@@ -436,7 +461,7 @@ def build_article_action(
     progress = article_generation_progress(settings)
     if int(progress["remaining_to_target"]) <= 0:
         return None
-    excluded_cluster_ids = set(progress["cluster_ids"])
+    excluded_cluster_ids = _historical_cluster_ids(settings) | set(progress["cluster_ids"])
     pillar_counts = dict(progress.get("pillar_counts") or {})
     selected_pillar = min(
         SERVICE_PILLARS,
