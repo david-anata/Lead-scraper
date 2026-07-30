@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from sales_support_agent.services.website_ops_article_engine import (
     _claim_daily_article_slot,
     _eligible_editorial_seed,
+    _historical_cluster_ids,
     article_generation_progress,
 )
 from sales_support_agent.api.website_ops_jobs_router import WEBSITE_OPS_PULSE_HOURS
@@ -48,3 +49,15 @@ def test_editorial_backlog_can_select_a_required_service_pillar() -> None:
 
 def test_scheduler_has_one_daily_pulse_for_each_required_article() -> None:
     assert WEBSITE_OPS_PULSE_HOURS == (8, 9, 10, 11, 12, 13, 14, 15)
+
+
+def test_topic_history_prevents_republishing_an_old_daily_claim(tmp_path) -> None:
+    history = tmp_path / "content-strategy" / "article-generation"
+    history.mkdir(parents=True)
+    (history / "2026-07-28.json").write_text(
+        '{"cluster_ids":["already-published"]}',
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(website_ops_root=tmp_path)
+
+    assert _historical_cluster_ids(settings) == {"already-published"}
