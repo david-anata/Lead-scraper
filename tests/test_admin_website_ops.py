@@ -279,6 +279,42 @@ example
             submit.assert_called_once()
 
     def _generated_article_record(self) -> dict[str, object]:
+        tldr = (
+            "Structure Amazon PPC campaigns around one measurable purpose, clear ownership, "
+            "and a defined decision rule. Separate discovery, branded defense, category growth, "
+            "and product-level efficiency so budget changes have an interpretable result. Review "
+            "search terms, placement performance, conversion rate, and contribution margin before "
+            "changing bids or moving products. The right account structure makes waste visible, "
+            "keeps experiments isolated, and gives operators a repeatable way to decide what to "
+            "scale, repair, or stop."
+        )
+        section_names = (
+            "Define campaign ownership",
+            "Separate discovery from control",
+            "Use evidence for budget decisions",
+            "Review failure modes",
+        )
+        sections = [
+            {
+                "heading": heading,
+                "paragraphs": [
+                    (
+                        f"{heading} principle {paragraph_index + 1}. "
+                        + "Each campaign needs one operating purpose, an accountable owner, a "
+                        "measurement window, and a decision threshold. Operators should document "
+                        "the search terms included, the products promoted, the bidding constraint, "
+                        "and the result that would justify more budget. This makes later changes "
+                        "traceable and prevents unrelated goals from competing inside one campaign. "
+                        "The review should connect advertising performance to conversion behavior "
+                        "and contribution margin rather than treating clicks as the final outcome. "
+                        "Teams should also record exclusions, placement assumptions, inventory limits, "
+                        "and the exact date when the next evidence review will change the operating decision. "
+                    )
+                    for paragraph_index in range(2)
+                ],
+            }
+            for heading in section_names
+        ]
         article = {
             "slug": "amazon-ppc-account-structure",
             "primaryIntent": "how to structure an amazon ppc account",
@@ -300,11 +336,8 @@ example
                 "route": "/blog/amazon-ppc-account-structure",
                 "eyebrow": "Amazon advertising",
                 "h1": "How to Structure an Amazon PPC Account",
-                "tldr": {"answer": "Organize campaigns around a single measurable purpose."},
-                "sections": [
-                    {"heading": "Start with ownership", "paragraphs": ["Assign one purpose to each campaign."]},
-                    {"heading": "Measure the result", "paragraphs": ["Review query evidence before changing structure."]},
-                ],
+                "tldr": {"heading": "The short answer.", "answer": [tldr]},
+                "sections": sections,
                 "breadcrumbs": [
                     {"name": "Home", "href": "/"},
                     {"name": "Blog", "href": "/blog"},
@@ -313,6 +346,16 @@ example
                 "schemaType": "article",
                 "articleTitle": "How to Structure an Amazon PPC Account",
                 "articleDescription": "A practical evidence-backed campaign structure.",
+                "related": [
+                    {
+                        "title": "Amazon advertising management",
+                        "href": "/services/amazon-advertising",
+                    },
+                    {
+                        "title": "Amazon PPC management",
+                        "href": "/services/amazon-ppc-management",
+                    },
+                ],
             },
             "sources": [
                 {"title": "Amazon Ads campaign guidance", "url": "https://advertising.amazon.com/library/guides"},
@@ -1448,6 +1491,31 @@ example
         invalid["sources"] = invalid["sources"][:1]
         with self.assertRaises(ExecutionError):
             validate_generated_article({**record, "action_value": json.dumps(invalid)})
+
+    def test_generated_article_rejects_slop_thin_copy_and_weak_links(self) -> None:
+        record = self._generated_article_record()
+        slop = json.loads(str(record["action_value"]))
+        slop["content"]["sections"][0]["paragraphs"][0] += (
+            " This is a game-changer for every brand."
+        )
+        with self.assertRaises(ExecutionError):
+            validate_generated_article(
+                {**record, "action_value": json.dumps(slop)}
+            )
+
+        thin = json.loads(str(record["action_value"]))
+        thin["content"]["sections"] = thin["content"]["sections"][:2]
+        with self.assertRaises(ExecutionError):
+            validate_generated_article(
+                {**record, "action_value": json.dumps(thin)}
+            )
+
+        weak_links = json.loads(str(record["action_value"]))
+        weak_links["content"]["related"] = weak_links["content"]["related"][:1]
+        with self.assertRaises(ExecutionError):
+            validate_generated_article(
+                {**record, "action_value": json.dumps(weak_links)}
+            )
 
     def test_generated_article_requires_truthful_publication_identity(self) -> None:
         record = self._generated_article_record()

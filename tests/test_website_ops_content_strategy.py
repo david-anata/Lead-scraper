@@ -56,7 +56,8 @@ def test_strategy_marks_source_qualified_article_ready_now() -> None:
     )
     assert article["stage"] == "ready"
     assert article["earliest_publish_date"] == "2026-07-28"
-    assert strategy["daily_article_budget"] == 1
+    assert strategy["daily_article_minimum"] == 2
+    assert strategy["daily_article_target"] == 3
     assert strategy["summary"]["ready_to_publish"] == 1
 
 
@@ -104,7 +105,8 @@ def test_strategy_persists_and_page_exposes_the_operating_program(
 
     assert "Content strategy and publishing program" in page
     assert "Today’s operating plan" in page
-    assert "1 article / day maximum" in page
+    assert "2 article / day minimum · target 3" in page
+    assert "Daily publishing minimum is short by 2" in page
     assert "how to structure an amazon ppc account" in page
     assert "Generate, validate, publish" in page
     assert "/admin/website-ops/strategy?stage=ready" in page

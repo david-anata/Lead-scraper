@@ -105,12 +105,24 @@ def validate_generated_article(record: Mapping[str, Any]) -> dict[str, Any]:
     if "—" in serialized:
         raise website_ops.ExecutionError("Generated article contains a prohibited em dash.")
     blocked_claims = ("basic research", "reveal the gap", "app.anatainc.com/demo")
+    slop_phrases = (
+        "in today's fast-paced world",
+        "game-changer",
+        "unlock the power",
+        "delve into",
+        "ever-evolving landscape",
+        "seamlessly",
+        "robust solution",
+    )
     lowered = serialized.lower()
     if any(value in lowered for value in blocked_claims):
         raise website_ops.ExecutionError("Generated article contains prohibited content.")
+    if any(value in lowered for value in slop_phrases):
+        raise website_ops.ExecutionError("Generated article contains prohibited generic filler.")
     sources = article.get("sources")
     if not isinstance(sources, list) or len(sources) < 2:
         raise website_ops.ExecutionError("Generated article requires at least two sources.")
+    source_domains: set[str] = set()
     for source in sources:
         if not isinstance(source, Mapping):
             raise website_ops.ExecutionError("Generated article source is invalid.")
@@ -119,6 +131,16 @@ def validate_generated_article(record: Mapping[str, Any]) -> dict[str, Any]:
             raise website_ops.ExecutionError(
                 "Every generated article source needs an HTTPS URL and title."
             )
+        hostname = parsed.hostname.removeprefix("www.")
+        if hostname == "anatainc.com":
+            raise website_ops.ExecutionError(
+                "External article sources cannot use anatainc.com."
+            )
+        source_domains.add(hostname)
+    if len(source_domains) < 2:
+        raise website_ops.ExecutionError(
+            "Generated article requires two distinct authoritative source domains."
+        )
     content = article.get("content")
     if not isinstance(content, Mapping):
         raise website_ops.ExecutionError("Generated article content is invalid.")
@@ -130,16 +152,69 @@ def validate_generated_article(record: Mapping[str, Any]) -> dict[str, Any]:
     if str(content.get("h1", "")).strip() != str(content.get("articleTitle", "")).strip():
         raise website_ops.ExecutionError("Generated article H1 and Article title must agree.")
     sections = content.get("sections")
-    if not isinstance(sections, list) or len(sections) < 2:
-        raise website_ops.ExecutionError("Generated article requires at least two sections.")
+    if not isinstance(sections, list) or len(sections) < 4:
+        raise website_ops.ExecutionError("Generated article requires at least four sections.")
     if not all(
         isinstance(section, Mapping)
         and str(section.get("heading", "")).strip()
         and isinstance(section.get("paragraphs"), list)
-        and section.get("paragraphs")
+        and len(section.get("paragraphs")) >= 2
         for section in sections
     ):
-        raise website_ops.ExecutionError("Every generated article section needs content.")
+        raise website_ops.ExecutionError(
+            "Every generated article section needs a heading and at least two paragraphs."
+        )
+    paragraphs = [
+        str(paragraph).strip()
+        for section in sections
+        for paragraph in section.get("paragraphs", [])
+        if str(paragraph).strip()
+    ]
+    normalized_paragraphs = {
+        re.sub(r"\s+", " ", paragraph).lower() for paragraph in paragraphs
+    }
+    if len(normalized_paragraphs) != len(paragraphs):
+        raise website_ops.ExecutionError(
+            "Generated article repeats a paragraph."
+        )
+    tldr = content.get("tldr")
+    if not isinstance(tldr, Mapping):
+        raise website_ops.ExecutionError("Generated article requires a direct-answer summary.")
+    tldr_answer = tldr.get("answer")
+    tldr_text = " ".join(
+        str(value).strip()
+        for value in (
+            tldr_answer if isinstance(tldr_answer, list) else [tldr_answer]
+        )
+        if str(value or "").strip()
+    )
+    article_text = " ".join([tldr_text, *paragraphs])
+    word_count = len(re.findall(r"\b[\w'-]+\b", article_text))
+    if not 60 <= len(re.findall(r"\b[\w'-]+\b", tldr_text)) <= 160:
+        raise website_ops.ExecutionError(
+            "Generated article direct answer must be 60 to 160 words."
+        )
+    if word_count < 700:
+        raise website_ops.ExecutionError(
+            "Generated article must contain at least 700 useful words."
+        )
+    related = content.get("related")
+    if not isinstance(related, list) or len(related) < 2:
+        raise website_ops.ExecutionError(
+            "Generated article requires at least two internal links."
+        )
+    internal_hrefs = {
+        str(item.get("href", "")).strip()
+        for item in related
+        if isinstance(item, Mapping)
+        and str(item.get("title", "")).strip()
+        and str(item.get("href", "")).strip().startswith("/")
+        and not str(item.get("href", "")).strip().startswith("//")
+    }
+    if len(internal_hrefs) < 2:
+        raise website_ops.ExecutionError(
+            "Generated article requires two distinct titled internal links."
+        )
     breadcrumbs = content.get("breadcrumbs")
     if not isinstance(breadcrumbs, list) or len(breadcrumbs) < 3:
         raise website_ops.ExecutionError("Generated article requires a breadcrumb path.")

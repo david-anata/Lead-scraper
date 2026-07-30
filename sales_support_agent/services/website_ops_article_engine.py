@@ -9,10 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import requests
 
 from sales_support_agent.services.website_ops_query_intelligence import citation_config
+
+
+DAILY_ARTICLE_MINIMUM = 2
+DAILY_ARTICLE_TARGET = 3
 
 
 def _clean(value: Any) -> str:
@@ -92,9 +97,16 @@ def _request_article(*, settings: Any, prompt: str) -> dict[str, Any]:
     return _json_object(_provider_text(payload, config.provider))
 
 
-def _eligible_cluster(query_intelligence: Mapping[str, Any]) -> Mapping[str, Any] | None:
+def _eligible_cluster(
+    query_intelligence: Mapping[str, Any],
+    *,
+    excluded_cluster_ids: set[str] | None = None,
+) -> Mapping[str, Any] | None:
+    excluded_cluster_ids = excluded_cluster_ids or set()
     for cluster in query_intelligence.get("clusters", []) or []:
         label = _clean(cluster.get("label"))
+        if _clean(cluster.get("cluster_id")) in excluded_cluster_ids:
+            continue
         if (
             len(label) > 140
             or re.search(r"(?:^|\s)-?(?:site|inurl|intitle|filetype):", label.lower())
@@ -123,23 +135,67 @@ def _eligible_cluster(query_intelligence: Mapping[str, Any]) -> Mapping[str, Any
     return None
 
 
-def _claim_daily_article_slot(settings: Any, cluster_id: str) -> bool:
-    """Reserve the single daily generation slot before spending or publishing."""
-
+def _daily_generation_path(settings: Any) -> Path | None:
     configured_root = getattr(settings, "website_ops_root", None)
     if configured_root is None:
+        return None
+    return (
+        Path(configured_root)
+        / "content-strategy"
+        / "article-generation"
+        / f"{datetime.now(ZoneInfo('America/Denver')).date().isoformat()}.json"
+    )
+
+
+def article_generation_progress(settings: Any) -> dict[str, Any]:
+    """Return today's bounded production quota and claimed topic IDs."""
+
+    target = _daily_generation_path(settings)
+    cluster_ids: list[str] = []
+    if target and target.exists():
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        if isinstance(payload, Mapping):
+            cluster_ids = [
+                _clean(value)
+                for value in payload.get("cluster_ids", []) or []
+                if _clean(value)
+            ]
+            legacy = _clean(payload.get("cluster_id"))
+            if legacy and legacy not in cluster_ids:
+                cluster_ids.append(legacy)
+    return {
+        "daily_minimum": DAILY_ARTICLE_MINIMUM,
+        "daily_target": DAILY_ARTICLE_TARGET,
+        "generated_today": len(cluster_ids),
+        "remaining_to_minimum": max(0, DAILY_ARTICLE_MINIMUM - len(cluster_ids)),
+        "remaining_to_target": max(0, DAILY_ARTICLE_TARGET - len(cluster_ids)),
+        "cluster_ids": cluster_ids,
+    }
+
+
+def _claim_daily_article_slot(settings: Any, cluster_id: str) -> bool:
+    """Reserve one of today's production slots without duplicating a topic."""
+
+    target = _daily_generation_path(settings)
+    if target is None:
         return True
-    root = Path(configured_root) / "content-strategy" / "article-generation"
-    root.mkdir(parents=True, exist_ok=True)
-    target = root / f"{datetime.now(timezone.utc).date().isoformat()}.json"
-    if target.exists():
+    progress = article_generation_progress(settings)
+    claimed = list(progress["cluster_ids"])
+    if cluster_id in claimed or len(claimed) >= DAILY_ARTICLE_TARGET:
         return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    claimed.append(cluster_id)
     temporary = target.with_suffix(".tmp")
     temporary.write_text(
         json.dumps(
             {
-                "cluster_id": cluster_id,
-                "claimed_at": datetime.now(timezone.utc).isoformat(),
+                "cluster_ids": claimed,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "daily_minimum": DAILY_ARTICLE_MINIMUM,
+                "daily_target": DAILY_ARTICLE_TARGET,
             },
             indent=2,
         ),
@@ -164,7 +220,13 @@ def build_article_action(
         "on",
     }:
         return None
-    cluster = _eligible_cluster(query_intelligence)
+    progress = article_generation_progress(settings)
+    if int(progress["remaining_to_target"]) <= 0:
+        return None
+    cluster = _eligible_cluster(
+        query_intelligence,
+        excluded_cluster_ids=set(progress["cluster_ids"]),
+    )
     if not cluster:
         return None
     if not _claim_daily_article_slot(settings, _clean(cluster.get("cluster_id"))):
@@ -177,18 +239,34 @@ def build_article_action(
         and (urlparse(_clean(item.get("url"))).hostname or "").removeprefix("www.")
         != "anatainc.com"
     ][:6]
+    known_internal_routes = list(
+        dict.fromkeys(
+            urlparse(_clean(item.get("owner_url"))).path or "/"
+            for item in query_intelligence.get("clusters", []) or []
+            if _clean(item.get("owner_url")).startswith("https://anatainc.com")
+        )
+    )[:20]
     publication_timestamp = datetime.now(timezone.utc).isoformat()
     prompt = f"""
 Create a source-backed Anata blog article for the informational query:
 {_clean(cluster.get("label"))}
 
-This is a conservative SEO/AEO publishing task. Search and verify the web. Use only
+This is a high-utility SEO/AEO publishing task. Search and verify the web. Use only
 factual claims supported by authoritative HTTPS sources. Do not invent Anata results,
 clients, metrics, prices, capabilities, testimonials, or proprietary data. Do not use
 em dashes. Do not mention Basic Research, "reveal the gap", or any demo URL.
+Write for an operator who needs a useful answer, not for a content quota. Ban filler,
+generic scene-setting, fake urgency, repetition, vague superlatives, and phrases such
+as "in today's fast-paced world", "game-changer", "unlock", "delve", "ever-evolving",
+"seamlessly", and "robust". Explain tradeoffs, decision criteria, failure modes, and
+specific next steps. Every claim that depends on external facts must be supported by
+one of the visible sources.
 
 Previously observed sources:
 {json.dumps(citations)}
+
+Existing Anata routes allowed for internal links:
+{json.dumps(known_internal_routes)}
 
 Return only one JSON object with this exact shape:
 {{
@@ -209,7 +287,7 @@ Return only one JSON object with this exact shape:
     "route": "/blog/SLUG",
     "eyebrow": "Topic label",
     "h1": "same as articleTitle",
-    "tldr": {{"heading": "The short answer.", "answer": ["direct answer"]}},
+    "tldr": {{"heading": "The short answer.", "answer": ["60 to 140 word direct answer"]}},
     "sections": [{{"heading": "Heading", "paragraphs": ["paragraph"]}}],
     "breadcrumbs": [
       {{"name": "Home", "href": "/"}},
@@ -220,12 +298,16 @@ Return only one JSON object with this exact shape:
     "articleTitle": "same as h1",
     "articleDescription": "factual summary",
     "related": [
-      {{"title": "Amazon advertising", "href": "/services/amazon-advertising"}}
+      {{"title": "Relevant service", "href": "/services/relevant-service"}},
+      {{"title": "Related educational resource", "href": "/guides/relevant-guide"}}
     ]
   }},
   "sources": [{{"title": "Source title", "url": "https://..."}}]
 }}
-Include at least three substantive sections and two distinct authoritative sources.
+Write at least 900 useful words across at least four substantive sections with at
+least two paragraphs each. Include at least two distinct authoritative external
+sources and at least two relevant internal links. Do not pad the article to reach
+the word count.
 """
     article = dict((requester or _request_article)(settings=settings, prompt=prompt))
     slug = _clean(article.get("slug"))
