@@ -112,6 +112,10 @@ _HR_STYLES = """
     .hr-main { padding:22px 16px 36px; overflow-x:hidden; }
     .hr-h1 { font-size:23px; line-height:1.2; }
     .hr-sub { line-height:1.5; }
+    .hr-row-head { align-items:stretch; flex-direction:column; gap:14px; }
+    .hr-row-head > .hr-btn,
+    .hr-row-head > .hr-inline > .hr-btn { width:100%; min-height:44px; text-align:center; box-sizing:border-box; }
+    .hr-row-head > .hr-inline { width:100%; }
     .hr-grid2 { grid-template-columns:1fr; }
     .hr-actions .hr-btn { width:100%; text-align:center; box-sizing:border-box; min-height:44px; }
     .hr-actions { flex-direction:column; }
