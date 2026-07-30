@@ -100,6 +100,10 @@ services:
         value: "false"
       - key: CONTENT_RIVERSIDE_RELAY_ENABLED
         value: "false"
+      - key: RIVERSIDE_API_KEY
+        sync: false
+      - key: RIVERSIDE_STUDIO_ID
+        sync: false
       - key: CONTENT_LINKEDIN_CONNECTOR_URL
         sync: false
       - key: CONTENT_LINKEDIN_CONNECTOR_KEY
@@ -110,6 +114,12 @@ services:
         sync: false
       - key: CONTENT_LINKEDIN_PERSON_ID
         sync: false
+      - key: CONTENT_LINKEDIN_COMPANY_LIVE_APPROVED
+        value: "false"
+      - key: CONTENT_LINKEDIN_PERSONAL_LIVE_APPROVED
+        value: "false"
+      - key: CONTENT_LINKEDIN_PERSONAL_AUTO_PUBLISH_ENABLED
+        value: "false"
       - key: CONTENT_YOUTUBE_CONNECTOR_URL
         sync: false
       - key: CONTENT_YOUTUBE_CONNECTOR_KEY
@@ -118,6 +128,8 @@ services:
         value: "false"
       - key: CONTENT_YOUTUBE_CHANNEL_ID
         sync: false
+      - key: CONTENT_YOUTUBE_LIVE_APPROVED
+        value: "false"
       - key: CONTENT_INSTAGRAM_CONNECTOR_URL
         sync: false
       - key: CONTENT_INSTAGRAM_CONNECTOR_KEY
@@ -126,6 +138,8 @@ services:
         value: "false"
       - key: CONTENT_INSTAGRAM_ACCOUNT_ID
         sync: false
+      - key: CONTENT_INSTAGRAM_LIVE_APPROVED
+        value: "false"
       - key: CONTENT_NEWSLETTER_PROVIDER
         sync: false
       - key: CONTENT_NEWSLETTER_AUDIENCE_ID

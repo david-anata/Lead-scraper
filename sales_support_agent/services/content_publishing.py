@@ -20,6 +20,10 @@ from sales_support_agent.models.content import (
     ContentAuditEvent,
     ContentPublication,
 )
+from sales_support_agent.services.content_intelligence import (
+    personal_cadence_state,
+    rank_publishable_artifacts,
+)
 
 
 CHANNEL_CONFIG: dict[str, dict[str, str]] = {
@@ -29,6 +33,7 @@ CHANNEL_CONFIG: dict[str, dict[str, str]] = {
         "key": "CONTENT_LINKEDIN_CONNECTOR_KEY",
         "verified": "CONTENT_LINKEDIN_CONNECTOR_VERIFIED",
         "destination": "CONTENT_LINKEDIN_COMPANY_ID",
+        "activation": "CONTENT_LINKEDIN_COMPANY_LIVE_APPROVED",
     },
     "linkedin_personal": {
         "action": ALLOWED_ACTIONS["linkedin_personal"],
@@ -36,6 +41,7 @@ CHANNEL_CONFIG: dict[str, dict[str, str]] = {
         "key": "CONTENT_LINKEDIN_CONNECTOR_KEY",
         "verified": "CONTENT_LINKEDIN_CONNECTOR_VERIFIED",
         "destination": "CONTENT_LINKEDIN_PERSON_ID",
+        "activation": "CONTENT_LINKEDIN_PERSONAL_LIVE_APPROVED",
     },
     "youtube": {
         "action": ALLOWED_ACTIONS["youtube_upload"],
@@ -43,6 +49,7 @@ CHANNEL_CONFIG: dict[str, dict[str, str]] = {
         "key": "CONTENT_YOUTUBE_CONNECTOR_KEY",
         "verified": "CONTENT_YOUTUBE_CONNECTOR_VERIFIED",
         "destination": "CONTENT_YOUTUBE_CHANNEL_ID",
+        "activation": "CONTENT_YOUTUBE_LIVE_APPROVED",
     },
     "instagram": {
         "action": ALLOWED_ACTIONS["instagram_video"],
@@ -50,6 +57,7 @@ CHANNEL_CONFIG: dict[str, dict[str, str]] = {
         "key": "CONTENT_INSTAGRAM_CONNECTOR_KEY",
         "verified": "CONTENT_INSTAGRAM_CONNECTOR_VERIFIED",
         "destination": "CONTENT_INSTAGRAM_ACCOUNT_ID",
+        "activation": "CONTENT_INSTAGRAM_LIVE_APPROVED",
     },
 }
 
@@ -89,6 +97,15 @@ def channel_publish_readiness(channel: str) -> dict[str, Any]:
             "state": "needs_verification",
             "message": "Run a destination identity check, then mark this connector verified.",
         }
+    if not _enabled(config["activation"]):
+        return {
+            "ready": False,
+            "state": "needs_activation",
+            "message": (
+                "Destination identity is verified. Approve the first live "
+                "activation before any public write."
+            ),
+        }
     if os.getenv("CONTENT_PUBLISHING_MODE", "shadow").strip().lower() != "live":
         return {
             "ready": False,
@@ -100,6 +117,61 @@ def channel_publish_readiness(channel: str) -> dict[str, Any]:
         "state": "ready",
         "message": "Approved content can publish to this verified destination.",
     }
+
+
+def publish_best_personal_candidate(
+    session: Session,
+    *,
+    actor: str,
+    now: datetime | None = None,
+) -> ContentPublication | None:
+    """Publish the strongest eligible personal candidate within the 2–3/week policy."""
+
+    current = now or datetime.now(timezone.utc)
+    if not _enabled("CONTENT_LINKEDIN_PERSONAL_AUTO_PUBLISH_ENABLED"):
+        return None
+    cadence = personal_cadence_state(session, now=current)
+    if cadence["at_cap"]:
+        return None
+    ranked = rank_publishable_artifacts(
+        session,
+        channel="linkedin_personal",
+        now=current,
+    )
+    if not ranked:
+        return None
+    artifact, score = ranked[0]
+    artifact.status = "approved"
+    gate = dict(artifact.quality_gate_json or {})
+    gate["selection"] = {
+        "score": score,
+        "policy": "observed_performance_six_cs_freshness_v1",
+        "selected_at": current.isoformat(),
+    }
+    artifact.quality_gate_json = gate
+    session.add(
+        ContentAuditEvent(
+            id=uuid4().hex,
+            run_id=artifact.run_id,
+            actor_type="scheduler",
+            actor_id=actor[:255],
+            event_type="content_candidate_auto_selected",
+            object_type="content_artifact",
+            object_id=artifact.id,
+            details_json={
+                "channel": artifact.channel,
+                "selection_score": score,
+                "weekly_delivered_before": cadence["delivered"],
+            },
+        )
+    )
+    session.commit()
+    return publish_artifact(
+        session,
+        artifact_id=artifact.id,
+        actor=actor,
+        confirmed=True,
+    )
 
 
 def publish_artifact(

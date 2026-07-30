@@ -121,6 +121,10 @@ def _safe_source_url(value: str) -> str:
 def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dict]:
     """Return safe, non-secret readiness for each content dependency."""
 
+    from sales_support_agent.services.content_publishing import (
+        channel_publish_readiness,
+    )
+
     gmail_ready = bool(
         getattr(settings, "gmail_access_token", "")
         or (
@@ -167,62 +171,56 @@ def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dic
             "key": "riverside",
             "label": "Riverside source",
             "status": "ready"
-            if _enabled("CONTENT_RIVERSIDE_RELAY_ENABLED") and source_asset_count
+            if _configured("RIVERSIDE_API_KEY")
+            or _enabled("CONTENT_RIVERSIDE_RELAY_ENABLED")
             else ("stale" if source_asset_count else "blocked"),
             "required_for": ["Episode harvest", "Social candidates"],
-            "message": f"{source_asset_count} normalized source asset(s) available."
-            if source_asset_count
-            else "Connect a production MCP/API relay and ingest the first episode.",
+            "message": (
+                f"{source_asset_count} normalized source asset(s) available."
+                if source_asset_count
+                else (
+                    "Riverside is connected; the first ready recording has not arrived."
+                    if _configured("RIVERSIDE_API_KEY")
+                    or _enabled("CONTENT_RIVERSIDE_RELAY_ENABLED")
+                    else "Authorize the Riverside Business API or production relay."
+                )
+            ),
         },
         {
             "key": "linkedin_company",
             "label": "LinkedIn company",
             "status": "ready"
-            if _configured(
-                "CONTENT_LINKEDIN_CONNECTOR_URL",
-                "CONTENT_LINKEDIN_CONNECTOR_KEY",
-                "CONTENT_LINKEDIN_COMPANY_ID",
-            )
-            and _enabled("CONTENT_LINKEDIN_CONNECTOR_VERIFIED")
+            if channel_publish_readiness("linkedin_company")["ready"]
             else "blocked",
             "required_for": ["LinkedIn company publishing"],
-            "message": "Connect and verify the Anata company destination.",
+            "message": channel_publish_readiness("linkedin_company")["message"],
         },
         {
             "key": "linkedin_personal",
             "label": "LinkedIn personal",
             "status": "ready"
-            if _configured(
-                "CONTENT_LINKEDIN_CONNECTOR_URL",
-                "CONTENT_LINKEDIN_CONNECTOR_KEY",
-                "CONTENT_LINKEDIN_PERSON_ID",
-            )
-            and _enabled("CONTENT_LINKEDIN_CONNECTOR_VERIFIED")
+            if channel_publish_readiness("linkedin_personal")["ready"]
             else "blocked",
             "required_for": ["David's LinkedIn publishing"],
-            "message": "Connect and verify David's personal destination separately.",
+            "message": channel_publish_readiness("linkedin_personal")["message"],
         },
         {
             "key": "youtube",
             "label": "YouTube",
             "status": "ready"
-            if _configured("CONTENT_YOUTUBE_CONNECTOR_URL", "CONTENT_YOUTUBE_CONNECTOR_KEY")
-            and _configured("CONTENT_YOUTUBE_CHANNEL_ID")
-            and _enabled("CONTENT_YOUTUBE_CONNECTOR_VERIFIED")
+            if channel_publish_readiness("youtube")["ready"]
             else "blocked",
             "required_for": ["YouTube publishing and review"],
-            "message": "Upload and analytics-read contracts are required.",
+            "message": channel_publish_readiness("youtube")["message"],
         },
         {
             "key": "instagram",
             "label": "Instagram",
             "status": "ready"
-            if _configured("CONTENT_INSTAGRAM_CONNECTOR_URL", "CONTENT_INSTAGRAM_CONNECTOR_KEY")
-            and _configured("CONTENT_INSTAGRAM_ACCOUNT_ID")
-            and _enabled("CONTENT_INSTAGRAM_CONNECTOR_VERIFIED")
+            if channel_publish_readiness("instagram")["ready"]
             else "blocked",
             "required_for": ["Instagram publishing"],
-            "message": "Publishing and analytics-read contracts are required.",
+            "message": channel_publish_readiness("instagram")["message"],
         },
         {
             "key": "newsletter",
@@ -521,6 +519,15 @@ def control_room_data(session: Session, settings: Any) -> dict[str, Any]:
         and item["status"] == "ready"
     ]
     generated_at = datetime.now(timezone.utc)
+    from sales_support_agent.services.content_intelligence import (
+        personal_cadence_state,
+        rank_publishable_artifacts,
+    )
+
+    cadence = personal_cadence_state(session, now=generated_at)
+    ranked_personal = rank_publishable_artifacts(
+        session, channel="linkedin_personal", now=generated_at
+    )
     return {
         "generated_at": generated_at,
         "next_daily_run": _next_daily_run(generated_at),
@@ -535,6 +542,10 @@ def control_room_data(session: Session, settings: Any) -> dict[str, Any]:
         "setup_actions": setup_actions,
         "ready_destination_count": len(ready_destinations),
         "overall_status": "needs_review" if setup_actions else "ready",
+        "personal_cadence": cadence,
+        "strongest_personal_score": (
+            ranked_personal[0][1] if ranked_personal else None
+        ),
     }
 
 
@@ -655,6 +666,7 @@ def render_content_control_room(
         else "The content production line and every selected destination are ready."
     )
     latest_artifact = data["latest_artifact"]
+    cadence = data["personal_cadence"]
     latest_output = (
         f"{data['artifact_count']} staged artifact(s); latest update {_format_time(latest_artifact.created_at)}."
         if latest_artifact is not None
@@ -709,12 +721,14 @@ def render_content_control_room(
       <div class="app-metric"><div class="app-metric__value">{data['artifact_count']}</div><div class="app-metric__label">Staged artifacts</div></div>
       <div class="app-metric"><div class="app-metric__value">{data['publication_count']}</div><div class="app-metric__label">Verified publications</div></div>
       <div class="app-metric"><div class="app-metric__value">{data['ready_destination_count']}</div><div class="app-metric__label">Destinations ready to publish</div></div>
+      <div class="app-metric"><div class="app-metric__value">{cadence['delivered']} / 2–3</div><div class="app-metric__label">David posts this week</div></div>
     </section>
 
     <section class="app-command-bar content-command-bar" aria-label="Content schedule and evidence">
       <div><span class="content-command-bar__label">Next scheduled check</span><strong>{_format_time(data['next_daily_run'])}</strong></div>
       <div><span class="content-command-bar__label">Latest output</span><strong>{html.escape(latest_output)}</strong></div>
       <div><span class="content-command-bar__label">Execution mode</span><strong>{html.escape(os.getenv('CONTENT_PUBLISHING_MODE', 'shadow').strip().title())}</strong></div>
+      <div><span class="content-command-bar__label">Strongest personal candidate</span><strong>{html.escape(f"{data['strongest_personal_score']:.0%}" if data['strongest_personal_score'] is not None else 'No eligible candidate')}</strong></div>
     </section>
 
     <section class="content-section" aria-labelledby="pipeline-title">
@@ -723,7 +737,7 @@ def render_content_control_room(
     </section>
 
     <section class="content-section" aria-labelledby="artifacts-title">
-      <div class="content-section__head"><div><p class="content-eyebrow">Production workspace</p><h2 id="artifacts-title">Staged native artifacts</h2></div><p>{len(artifacts)} candidate(s); nothing here is published automatically.</p></div>
+      <div class="content-section__head"><div><p class="content-eyebrow">Production workspace</p><h2 id="artifacts-title">Native content queue</h2></div><p>{len(artifacts)} candidate(s); David's strongest approved material publishes 2–3 times weekly after first-live activation.</p></div>
       <div class="app-data-workspace">{artifact_workspace}</div>
     </section>
 

@@ -1,6 +1,6 @@
 # Anata Content & Growth Engine control-room specification
 
-Status: proposed, build-ready plan
+Status: production implementation; external channels remain activation-gated
 Sources: `Anata Content & Growth Engine. Master Automation Runbook`, version
 1.0, updated July 28, 2026, and `The Six C's of Building a Social Media
 Audience in 2026`
@@ -987,12 +987,25 @@ These do not block Phase 0, but must be resolved before their affected phase:
   live-verified states.
 - `CONTENT_PUBLISHING_MODE=shadow` remains the safe default. No new external
   publishing is enabled merely by deploying the code.
+- Riverside Business API v3 ingestion is implemented directly in the hourly
+  scheduler, with the trusted relay retained as an alternate source path.
+- Every ready Riverside source creates separate personal LinkedIn, company
+  LinkedIn, YouTube, Instagram, and X treatments. X cannot leave staging.
+- Comparable provider analytics are recorded through
+  `POST /api/jobs/content/performance`. Missing metrics remain unavailable;
+  observed Start, Stay, Signal, business-impact, Credibility, and Category
+  evidence is normalized and used to rank eligible originals.
+- David's personal LinkedIn has a hard 2–3 verified-post weekly policy. The
+  scheduler runs Monday, Wednesday, and Friday, selects the strongest eligible
+  material, stops at three, and cannot write until identity verification,
+  first-live approval, live mode, and the personal auto-publish switch all pass.
 
 ### Still requires production configuration
 
 - Verify service-account write access to the Drive parent.
-- Register Riverside Business API or MCP relay credentials in the deployed
-  runtime and complete one real episode harvest.
+- Authorize the Riverside Business API (select Business accounts only) or
+  production relay in the deployed runtime and complete one real episode
+  harvest.
 - Configure and verify each LinkedIn, YouTube, and Instagram relay destination
   separately.
 - Run one safe shadow cycle, then one Drive and draft/staging cycle, before
