@@ -20,6 +20,7 @@ from sales_support_agent.models.entities import (
     BuildingPaymentRequestReadiness,
     BuildingProposal,
     BuildingReservation,
+    BuildingSignatureRequestReadiness,
     BuildingSpace,
 )
 
@@ -345,6 +346,11 @@ def load_contract_detail(session: Any, agreement_id: str) -> Optional[dict[str, 
             BuildingPaymentRequestReadiness.agreement_id == agreement.id
         )
     ).scalars().first()
+    signature = session.execute(
+        select(BuildingSignatureRequestReadiness).where(
+            BuildingSignatureRequestReadiness.agreement_id == agreement.id
+        )
+    ).scalars().first()
     template = (
         session.get(BuildingAgreementTemplate, agreement.template_id)
         if agreement.template_id
@@ -353,7 +359,11 @@ def load_contract_detail(session: Any, agreement_id: str) -> Optional[dict[str, 
     snapshot = dict(agreement.package_snapshot_json or {})
     quote_id = str((snapshot.get("quote") or {}).get("id") or "")
     quote = session.get(BuildingProposal, quote_id) if quote_id else None
-    audit_ids = [agreement.id] + ([payment.id] if payment else [])
+    audit_ids = (
+        [agreement.id]
+        + ([payment.id] if payment else [])
+        + ([signature.id] if signature else [])
+    )
     audit = session.execute(
         select(BuildingAuditEvent)
         .where(BuildingAuditEvent.entity_id.in_(audit_ids))
@@ -432,6 +442,22 @@ def load_contract_detail(session: Any, agreement_id: str) -> Optional[dict[str, 
             "currency": str(payment.currency or "USD"),
             "checksum": str(payment.checksum or ""),
             "metadata": dict(payment.metadata_json or {}),
+        },
+        "signature": None if signature is None else {
+            "id": signature.id,
+            "version": signature.version,
+            "status": str(signature.status or ""),
+            "signer_name": str(signature.signer_name or ""),
+            "signer_email": str(signature.signer_email or ""),
+            "agreement_checksum": str(signature.agreement_checksum or ""),
+            "checksum": str(signature.checksum or ""),
+            "provider": str(signature.provider or ""),
+            "provider_reference": str(signature.provider_reference or ""),
+            "delivery_status": str(signature.delivery_status or "not_sent"),
+            "reviewed_by": str(signature.reviewed_by or ""),
+            "reviewed_at": _aware(signature.reviewed_at),
+            "approved_by": str(signature.approved_by or ""),
+            "approved_at": _aware(signature.approved_at),
         },
         "payment_label": payment_label,
         "payment_modifier": payment_modifier,

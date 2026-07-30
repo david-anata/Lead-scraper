@@ -58,6 +58,9 @@ from sales_support_agent.api.building_router import (
 from sales_support_agent.api.building_service_request_router import (
     router as building_service_request_router,
 )
+from sales_support_agent.api.building_signature_readiness_router import (
+    router as building_signature_readiness_router,
+)
 
 
 BUILDING_ROUTERS = (
@@ -72,6 +75,7 @@ BUILDING_ROUTERS = (
     building_agreement_readiness_internal_router,
     building_agreement_readiness_admin_router,
     building_contract_router,
+    building_signature_readiness_router,
     building_billing_internal_router,
     building_stripe_webhook_router,
     building_admin_operations_router,

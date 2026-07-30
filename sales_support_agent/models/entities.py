@@ -2316,6 +2316,56 @@ class BuildingPaymentRequestReadiness(Base):
     )
 
 
+class BuildingSignatureRequestReadiness(Base):
+    """Provider-neutral signature handoff outbox; never signature evidence."""
+
+    __tablename__ = "building_signature_request_readiness"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reservation_id: Mapped[str] = mapped_column(
+        ForeignKey("building_reservations.id"), index=True
+    )
+    agreement_id: Mapped[str] = mapped_column(
+        ForeignKey("building_agreements.id"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="prepared", index=True)
+    signer_name: Mapped[str] = mapped_column(String(255))
+    signer_email: Mapped[str] = mapped_column(String(320), index=True)
+    agreement_checksum: Mapped[str] = mapped_column(String(64), index=True)
+    snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    checksum: Mapped[str] = mapped_column(String(64), index=True)
+    provider: Mapped[str] = mapped_column(String(64), default="")
+    provider_reference: Mapped[str] = mapped_column(String(255), default="")
+    delivery_status: Mapped[str] = mapped_column(
+        String(32), default="not_sent", index=True
+    )
+    reviewed_by: Mapped[str] = mapped_column(String(255), default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_building_signature_readiness_version",
+            "agreement_id",
+            "version",
+            unique=True,
+        ),
+    )
+
+
 class BuildingProposal(Base):
     """Versioned commercial proposal or event quote tied to a reservation."""
 

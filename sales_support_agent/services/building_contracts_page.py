@@ -361,6 +361,7 @@ def render_contract_detail(
     navigation: str,
     contract: dict[str, Any],
     can_approve: bool,
+    can_prepare_signature: bool,
     can_prepare_payment: bool,
     can_manage: bool,
     csrf_token: str,
@@ -370,6 +371,7 @@ def render_contract_detail(
     """One contract: reconciled state, frozen terms, linked records, actions, audit."""
 
     payment = contract.get("payment") or {}
+    signature = contract.get("signature") or {}
     document = dict((contract.get("snapshot") or {}).get("document") or {})
     # The document link only appears once the package is approved, matching the
     # route's own precondition.
@@ -446,6 +448,43 @@ def render_contract_detail(
         <label class="app-confirmation"><input type="checkbox" required> <span>{_esc(confirmation_copy)}</span></label>
         <div class="app-form-grid__actions"><button class="admin-btn" type="submit">{_esc(action_label)}</button></div>
       </form>""")
+    if (
+        contract["verified"]
+        and contract["preparation_status"] == "approved"
+        and can_prepare_signature
+        and not signature
+    ):
+        actions.append(f"""<form class="app-form-grid" method="post" action="{CONTRACTS_URL}/{_esc(contract['id'])}/signature-readiness">
+        <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+        <h3>Customer signature</h3>
+        <p class="app-muted">Freeze the customer and approved agreement for provider review. This creates no signature request and sends no message.</p>
+        <label class="app-confirmation"><input type="checkbox" required> <span>I confirm the customer name, email, and approved agreement are ready to freeze.</span></label>
+        <div class="app-form-grid__actions"><button class="admin-btn" type="submit">Prepare signature request</button></div>
+      </form>""")
+    signature_next = {
+        "prepared": (
+            "in_review",
+            f"REVIEW SIGNATURE {signature.get('id')}",
+            "Submit signature request for review",
+            "I confirm the frozen signer and agreement checksum are ready for formal review.",
+        ),
+        "in_review": (
+            "approved",
+            f"APPROVE SIGNATURE {signature.get('id')}",
+            "Approve provider handoff",
+            "I confirm this signature-request handoff has completed review. Approval still sends nothing.",
+        ),
+    }.get(str(signature.get("status") or ""))
+    if contract["verified"] and signature and can_approve and signature_next:
+        target, confirmation, action_label, confirmation_copy = signature_next
+        actions.append(f"""<form class="app-form-grid" method="post" action="{CONTRACTS_URL}/{_esc(contract['id'])}/signature-readiness/transition">
+        <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+        <input type="hidden" name="target_status" value="{_esc(target)}">
+        <input type="hidden" name="confirmation" value="{_esc(confirmation)}">
+        <h3>Customer signature</h3>
+        <label class="app-confirmation"><input type="checkbox" required> <span>{_esc(confirmation_copy)}</span></label>
+        <div class="app-form-grid__actions"><button class="admin-btn" type="submit">{_esc(action_label)}</button><span class="app-muted">Delivery remains {_esc(signature.get('delivery_status') or 'not sent')}.</span></div>
+      </form>""")
     payment_next = {
         "prepared": (
             "in_review",
@@ -515,8 +554,35 @@ def render_contract_detail(
       {_metric(_money(int(payment.get('amount_cents') or 0), str(payment.get('currency') or contract['currency'])), "Required payment")}
       {_metric(_status(contract['state_label'], contract['state_modifier']), "Contract state")}
       {_metric(_status(contract['payment_label'], contract['payment_modifier']), "Payment request")}
+      {_metric(
+        _status(
+          "Ready" if signature.get("status") == "approved" else (
+            "Needs review" if signature.get("status") == "in_review" else (
+              "Queued" if signature.get("status") == "prepared" else "Missing"
+            )
+          ),
+          "ready" if signature.get("status") == "approved" else (
+            "review" if signature.get("status") == "in_review" else (
+              "queued" if signature.get("status") == "prepared" else "blocked"
+            )
+          ),
+        ),
+        "Signature request",
+      )}
     </div>
     <section class="admin-panel"><h2>Frozen terms</h2>{_terms(contract['snapshot'], payment)}</section>
+    <section class="admin-panel"><h2>Signature handoff</h2>{
+      (
+        '<dl class="app-detail-list">'
+        f'<div class="app-detail-list__row"><dt>Signer</dt><dd>{_esc(signature.get("signer_name"))}<span class="app-table__sub">{_esc(signature.get("signer_email"))}</span></dd></div>'
+        f'<div class="app-detail-list__row"><dt>Review state</dt><dd>{_esc(str(signature.get("status") or "").replace("_", " ").title())}</dd></div>'
+        f'<div class="app-detail-list__row"><dt>Delivery</dt><dd>{_esc(str(signature.get("delivery_status") or "not_sent").replace("_", " ").title())} — no provider request or customer message exists.</dd></div>'
+        f'<div class="app-detail-list__row"><dt>Frozen checksum</dt><dd><code>{_esc(signature.get("checksum"))}</code></dd></div>'
+        '</dl>'
+        if signature
+        else '<div class="app-state-panel"><h3>Not prepared</h3><p>Approve the agreement package, then freeze the customer signer for review. Agent will not contact an e-sign provider.</p></div>'
+      )
+    }</section>
     <section class="admin-panel"><h2>Evidence</h2>{evidence}</section>
     <section class="admin-panel"><h2>Linked records</h2><dl class="app-detail-list">{linked_rows}</dl></section>
     {actions_section}
