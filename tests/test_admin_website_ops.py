@@ -1613,7 +1613,7 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
         assert fallback_action is not None
         self.assertEqual(
             json.loads(str(fallback_action["action_value"]))["primaryIntent"],
-            "how to calculate amazon tacos",
+            "how to structure amazon ppc campaigns",
         )
         self.assertEqual(
             fallback_action["insight_source"],

@@ -36,7 +36,7 @@ from sales_support_agent.services.job_lease import (
 
 router = APIRouter(prefix="/api/jobs/website-ops", tags=["website-ops-jobs"])
 logger = logging.getLogger(__name__)
-WEBSITE_OPS_PULSE_HOURS = (8, 13, 18)
+WEBSITE_OPS_PULSE_HOURS = (8, 9, 10, 11, 12, 13, 14, 15)
 
 
 def _require_internal_key(request: Request) -> None:
@@ -159,7 +159,7 @@ def _run_due_modes(
 
 
 def install_embedded_website_ops_scheduler(app: FastAPI) -> None:
-    """Run the 8 AM sweep in-process, with restart catch-up and due-state locking."""
+    """Run eight local production pulses, with restart catch-up and due-state locking."""
 
     settings = app.state.settings
     enabled = os.getenv("WEBSITE_OPS_EMBEDDED_SCHEDULER", "false").strip().lower() in {

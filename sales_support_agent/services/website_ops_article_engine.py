@@ -16,51 +16,177 @@ import requests
 from sales_support_agent.services.website_ops_query_intelligence import citation_config
 
 
-DAILY_ARTICLE_MINIMUM = 2
-DAILY_ARTICLE_TARGET = 3
+DAILY_ARTICLE_MINIMUM = 8
+DAILY_ARTICLE_TARGET = 8
+PILLAR_DAILY_MINIMUM = 2
+SERVICE_PILLARS = (
+    "Ecommerce Marketing Management",
+    "Fulfillment / 3PL",
+    "Shipping OS",
+    "Anata Intelligence",
+)
 
 EDITORIAL_TOPIC_SEEDS: tuple[dict[str, Any], ...] = (
     {
         "cluster_id": "editorial-amazon-tacos",
+        "pillar": "Anata Intelligence",
         "label": "How to calculate and use Amazon TACoS",
         "normalized_query": "how to calculate amazon tacos",
         "owner_url": "https://anatainc.com/services/amazon-advertising",
     },
     {
         "cluster_id": "editorial-amazon-ppc-structure",
+        "pillar": "Ecommerce Marketing Management",
         "label": "How to structure Amazon PPC campaigns without losing control",
         "normalized_query": "how to structure amazon ppc campaigns",
         "owner_url": "https://anatainc.com/services/amazon-ppc-management",
     },
     {
         "cluster_id": "editorial-amazon-listing-audit",
+        "pillar": "Ecommerce Marketing Management",
         "label": "How to audit an Amazon product listing",
         "normalized_query": "how to audit an amazon product listing",
         "owner_url": "https://anatainc.com/services/amazon-listing-optimization",
     },
     {
         "cluster_id": "editorial-fba-prep-requirements",
+        "pillar": "Fulfillment / 3PL",
         "label": "Amazon FBA prep requirements and common rejection risks",
         "normalized_query": "amazon fba prep requirements",
         "owner_url": "https://anatainc.com/services/amazon-fba-prep",
     },
     {
         "cluster_id": "editorial-ecommerce-fulfillment-costs",
+        "pillar": "Fulfillment / 3PL",
         "label": "How to compare ecommerce fulfillment costs",
         "normalized_query": "how to compare ecommerce fulfillment costs",
         "owner_url": "https://anatainc.com/services/ecommerce-fulfillment",
     },
     {
         "cluster_id": "editorial-tiktok-shop-fees",
+        "pillar": "Ecommerce Marketing Management",
         "label": "TikTok Shop seller fees, fulfillment costs, and margin planning",
         "normalized_query": "tiktok shop seller fees and fulfillment costs",
         "owner_url": "https://anatainc.com/services/tiktok-shop-management",
     },
     {
         "cluster_id": "editorial-shopify-cac",
+        "pillar": "Anata Intelligence",
         "label": "How Shopify brands should evaluate customer acquisition cost",
         "normalized_query": "how to evaluate shopify customer acquisition cost",
         "owner_url": "https://anatainc.com/services/shopify-marketing-management",
+    },
+    {
+        "cluster_id": "editorial-inventory-placement",
+        "pillar": "Fulfillment / 3PL",
+        "label": "How inventory placement affects ecommerce fulfillment speed and cost",
+        "normalized_query": "how inventory placement affects ecommerce fulfillment",
+        "owner_url": "https://anatainc.com/services/ecommerce-fulfillment",
+    },
+    {
+        "cluster_id": "editorial-3pl-sla-scorecard",
+        "pillar": "Fulfillment / 3PL",
+        "label": "How to build a useful 3PL service-level scorecard",
+        "normalized_query": "how to build a 3pl service level scorecard",
+        "owner_url": "https://anatainc.com/services/ecommerce-fulfillment",
+    },
+    {
+        "cluster_id": "editorial-fulfillment-rfp",
+        "pillar": "Fulfillment / 3PL",
+        "label": "What to include in an ecommerce fulfillment RFP",
+        "normalized_query": "what to include in an ecommerce fulfillment rfp",
+        "owner_url": "https://anatainc.com/services/ecommerce-fulfillment",
+    },
+    {
+        "cluster_id": "editorial-returns-operations",
+        "pillar": "Fulfillment / 3PL",
+        "label": "How to evaluate ecommerce returns operations",
+        "normalized_query": "how to evaluate ecommerce returns operations",
+        "owner_url": "https://anatainc.com/services/ecommerce-fulfillment",
+    },
+    {
+        "cluster_id": "editorial-shipping-zone-cost",
+        "pillar": "Shipping OS",
+        "label": "How shipping zones change parcel cost and delivery speed",
+        "normalized_query": "how shipping zones affect parcel cost",
+        "owner_url": "https://anatainc.com/platform/shipping",
+    },
+    {
+        "cluster_id": "editorial-carrier-mix",
+        "pillar": "Shipping OS",
+        "label": "How to design a resilient parcel carrier mix",
+        "normalized_query": "how to design a parcel carrier mix",
+        "owner_url": "https://anatainc.com/platform/shipping",
+    },
+    {
+        "cluster_id": "editorial-dimensional-weight",
+        "pillar": "Shipping OS",
+        "label": "Dimensional weight: how to calculate it and reduce its impact",
+        "normalized_query": "how to calculate dimensional weight",
+        "owner_url": "https://anatainc.com/platform/shipping",
+    },
+    {
+        "cluster_id": "editorial-delivery-promise",
+        "pillar": "Shipping OS",
+        "label": "How ecommerce teams should set an accurate delivery promise",
+        "normalized_query": "how to set an ecommerce delivery promise",
+        "owner_url": "https://anatainc.com/platform/shipping",
+    },
+    {
+        "cluster_id": "editorial-rate-shopping",
+        "pillar": "Shipping OS",
+        "label": "When parcel rate shopping helps and when it adds risk",
+        "normalized_query": "when parcel rate shopping helps",
+        "owner_url": "https://anatainc.com/platform/shipping",
+    },
+    {
+        "cluster_id": "editorial-contribution-margin",
+        "pillar": "Anata Intelligence",
+        "label": "How ecommerce teams should calculate contribution margin",
+        "normalized_query": "how to calculate ecommerce contribution margin",
+        "owner_url": "https://anatainc.com/platform/intelligence",
+    },
+    {
+        "cluster_id": "editorial-demand-forecast",
+        "pillar": "Anata Intelligence",
+        "label": "How to evaluate an ecommerce demand forecast",
+        "normalized_query": "how to evaluate an ecommerce demand forecast",
+        "owner_url": "https://anatainc.com/platform/intelligence",
+    },
+    {
+        "cluster_id": "editorial-channel-profitability",
+        "pillar": "Anata Intelligence",
+        "label": "How to compare profitability across ecommerce channels",
+        "normalized_query": "how to compare ecommerce channel profitability",
+        "owner_url": "https://anatainc.com/platform/intelligence",
+    },
+    {
+        "cluster_id": "editorial-inventory-turnover",
+        "pillar": "Anata Intelligence",
+        "label": "How to use inventory turnover without hiding stockout risk",
+        "normalized_query": "how to use ecommerce inventory turnover",
+        "owner_url": "https://anatainc.com/platform/intelligence",
+    },
+    {
+        "cluster_id": "editorial-marketplace-channel-mix",
+        "pillar": "Ecommerce Marketing Management",
+        "label": "How to choose the right ecommerce marketplace channel mix",
+        "normalized_query": "how to choose an ecommerce marketplace channel mix",
+        "owner_url": "https://anatainc.com/services/ecommerce-marketing",
+    },
+    {
+        "cluster_id": "editorial-product-page-conversion",
+        "pillar": "Ecommerce Marketing Management",
+        "label": "How to diagnose an ecommerce product page conversion problem",
+        "normalized_query": "how to diagnose product page conversion problems",
+        "owner_url": "https://anatainc.com/services/ecommerce-marketing",
+    },
+    {
+        "cluster_id": "editorial-retail-media-budget",
+        "pillar": "Ecommerce Marketing Management",
+        "label": "How to allocate a retail media budget across products",
+        "normalized_query": "how to allocate a retail media budget",
+        "owner_url": "https://anatainc.com/services/ecommerce-marketing",
     },
 )
 
@@ -180,9 +306,16 @@ def _eligible_cluster(
     return None
 
 
-def _eligible_editorial_seed(excluded_cluster_ids: set[str]) -> Mapping[str, Any] | None:
+def _eligible_editorial_seed(
+    excluded_cluster_ids: set[str],
+    *,
+    pillar: str | None = None,
+) -> Mapping[str, Any] | None:
     for seed in EDITORIAL_TOPIC_SEEDS:
-        if _clean(seed.get("cluster_id")) not in excluded_cluster_ids:
+        if (
+            _clean(seed.get("cluster_id")) not in excluded_cluster_ids
+            and (not pillar or _clean(seed.get("pillar")) == pillar)
+        ):
             return {
                 **seed,
                 "citation": {"cited_urls": []},
@@ -209,6 +342,7 @@ def article_generation_progress(settings: Any) -> dict[str, Any]:
 
     target = _daily_generation_path(settings)
     cluster_ids: list[str] = []
+    claims: list[dict[str, str]] = []
     if target and target.exists():
         try:
             payload = json.loads(target.read_text(encoding="utf-8"))
@@ -223,6 +357,18 @@ def article_generation_progress(settings: Any) -> dict[str, Any]:
             legacy = _clean(payload.get("cluster_id"))
             if legacy and legacy not in cluster_ids:
                 cluster_ids.append(legacy)
+            claims = [
+                {
+                    "cluster_id": _clean(item.get("cluster_id")),
+                    "pillar": _clean(item.get("pillar")),
+                }
+                for item in payload.get("claims", []) or []
+                if isinstance(item, Mapping) and _clean(item.get("cluster_id"))
+            ]
+    pillar_counts = {
+        pillar: sum(1 for claim in claims if claim["pillar"] == pillar)
+        for pillar in SERVICE_PILLARS
+    }
     return {
         "daily_minimum": DAILY_ARTICLE_MINIMUM,
         "daily_target": DAILY_ARTICLE_TARGET,
@@ -230,10 +376,17 @@ def article_generation_progress(settings: Any) -> dict[str, Any]:
         "remaining_to_minimum": max(0, DAILY_ARTICLE_MINIMUM - len(cluster_ids)),
         "remaining_to_target": max(0, DAILY_ARTICLE_TARGET - len(cluster_ids)),
         "cluster_ids": cluster_ids,
+        "claims": claims,
+        "pillar_daily_minimum": PILLAR_DAILY_MINIMUM,
+        "pillar_counts": pillar_counts,
+        "pillar_deficits": {
+            pillar: max(0, PILLAR_DAILY_MINIMUM - count)
+            for pillar, count in pillar_counts.items()
+        },
     }
 
 
-def _claim_daily_article_slot(settings: Any, cluster_id: str) -> bool:
+def _claim_daily_article_slot(settings: Any, cluster_id: str, pillar: str = "") -> bool:
     """Reserve one of today's production slots without duplicating a topic."""
 
     target = _daily_generation_path(settings)
@@ -245,11 +398,14 @@ def _claim_daily_article_slot(settings: Any, cluster_id: str) -> bool:
         return False
     target.parent.mkdir(parents=True, exist_ok=True)
     claimed.append(cluster_id)
+    claims = list(progress.get("claims") or [])
+    claims.append({"cluster_id": cluster_id, "pillar": pillar})
     temporary = target.with_suffix(".tmp")
     temporary.write_text(
         json.dumps(
             {
                 "cluster_ids": claimed,
+                "claims": claims,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "daily_minimum": DAILY_ARTICLE_MINIMUM,
                 "daily_target": DAILY_ARTICLE_TARGET,
@@ -281,15 +437,30 @@ def build_article_action(
     if int(progress["remaining_to_target"]) <= 0:
         return None
     excluded_cluster_ids = set(progress["cluster_ids"])
+    pillar_counts = dict(progress.get("pillar_counts") or {})
+    selected_pillar = min(
+        SERVICE_PILLARS,
+        key=lambda pillar: (int(pillar_counts.get(pillar, 0)), SERVICE_PILLARS.index(pillar)),
+    )
     cluster = _eligible_cluster(
         query_intelligence,
         excluded_cluster_ids=excluded_cluster_ids,
     )
     if not cluster:
+        cluster = _eligible_editorial_seed(
+            excluded_cluster_ids,
+            pillar=selected_pillar,
+        )
+    if not cluster:
         cluster = _eligible_editorial_seed(excluded_cluster_ids)
     if not cluster:
         return None
-    if not _claim_daily_article_slot(settings, _clean(cluster.get("cluster_id"))):
+    pillar = _clean(cluster.get("pillar")) or selected_pillar
+    if not _claim_daily_article_slot(
+        settings,
+        _clean(cluster.get("cluster_id")),
+        pillar,
+    ):
         return None
     citations = [
         {"title": _clean(item.get("title")), "url": _clean(item.get("url"))}
@@ -322,6 +493,7 @@ def build_article_action(
     prompt = f"""
 Create a source-backed Anata blog article for the informational query:
 {_clean(cluster.get("label"))}
+Service pillar: {pillar}
 
 This is a high-utility SEO/AEO publishing task. Search and verify the web. Use only
 factual claims supported by authoritative HTTPS sources. Do not invent Anata results,
