@@ -30,6 +30,7 @@ from sales_support_agent.models.database import session_scope
 from sales_support_agent.services.content_engine import (
     control_room_data,
     dependency_health,
+    ingest_source_assets,
     record_orchestration_check,
 )
 from sales_support_agent.services.job_lease import (
@@ -79,6 +80,13 @@ JOB_DEFINITIONS: dict[str, ContentJobDefinition] = {
         ("riverside",),
         upstream_jobs=("episode_harvest",),
         schedule="after_episode_harvest",
+    ),
+    "personal_distribution": ContentJobDefinition(
+        "personal_distribution",
+        "David personal channel distribution",
+        ("linkedin_personal",),
+        upstream_jobs=("social_distribution",),
+        schedule="monday_wednesday_friday_after_0900",
     ),
     "weekly_retrospective": ContentJobDefinition(
         "weekly_retrospective",
@@ -276,12 +284,22 @@ def due_scheduled_jobs(session: Session, *, now: datetime) -> list[tuple[str, st
     local = now.astimezone(DENVER)
     if local.hour < 6:
         return []
-    candidates = [("daily_brief", _daily_run_key(now, "daily_brief"))]
+    candidates = [
+        ("daily_brief", _daily_run_key(now, "daily_brief")),
+        ("episode_harvest", _daily_run_key(now, "episode_harvest")),
+    ]
     if local.weekday() == 0:
         candidates.append(
             (
                 "weekly_retrospective",
                 _weekly_run_key(now, "weekly_retrospective"),
+            )
+        )
+    if local.weekday() in {0, 2, 4} and local.hour >= 9:
+        candidates.append(
+            (
+                "personal_distribution",
+                _daily_run_key(now, "personal_distribution"),
             )
         )
     due: list[tuple[str, str]] = []
@@ -324,12 +342,21 @@ def quality_gate(
             )
         ),
     }
+    checks["six_cs"] = {
+        "channel": checks["native_channel"],
+        "credibility": bool(source_asset),
+        "category": bool(source_asset and (source_asset.title or "").strip()),
+        "content": checks["has_content"],
+        "calibration": True,
+        "collection": channel != "x",
+    }
     required = ["no_em_dash", "has_content", "native_channel", "source_lineage"]
     if source_asset is not None and source_asset.asset_type == "clip":
         required.append("transcript_interval_valid")
     return {
         "passed": all(checks[name] for name in required),
         "checks": checks,
+        "six_cs": checks["six_cs"],
         "required": required,
     }
 
@@ -547,6 +574,11 @@ def _candidate_body(
         else " Source transcript must be attached before approval."
     )
     treatments = {
+        "linkedin_personal": (
+            f"Turn {topic} into David's first-person operator lesson. "
+            "Open with the decision or mistake, show the earned experience, "
+            "teach one practical framework, and end with one useful question."
+        ),
         "linkedin_company": (
             f"Build an evidence-led operating insight from {topic}. "
             "Name the business problem, the Anata framework, and one useful next step."
@@ -592,7 +624,13 @@ def stage_native_candidates(
     created = 0
     existing = 0
     rejected = 0
-    for channel in ("linkedin_company", "youtube", "instagram", "x"):
+    for channel in (
+        "linkedin_personal",
+        "linkedin_company",
+        "youtube",
+        "instagram",
+        "x",
+    ):
         body = _candidate_body(channel, source, transcript_excerpt)
         gate = quality_gate(channel=channel, body=body, source_asset=source)
         fingerprint = hashlib.sha256(
@@ -751,6 +789,40 @@ def run_content_cycle(
                     if job_key == "social_distribution"
                     else {"created": 0, "existing": 0, "rejected": 0}
                 )
+                ingested = {"episodes": 0, "created": 0, "existing": 0}
+                if job_key == "episode_harvest" and not blockers:
+                    import os
+
+                    api_key = os.getenv("RIVERSIDE_API_KEY", "").strip()
+                    if api_key:
+                        from sales_support_agent.integrations.riverside import (
+                            RiversideClient,
+                        )
+
+                        episodes = RiversideClient(api_key=api_key).list_ready_recordings(
+                            studio_id=os.getenv("RIVERSIDE_STUDIO_ID", "").strip()
+                        )
+                        ingested["episodes"] = len(episodes)
+                        for episode in episodes:
+                            result = ingest_source_assets(
+                                session,
+                                episode_id=episode.episode_id,
+                                assets=episode.assets,
+                                actor="job:riverside-v3",
+                            )
+                            ingested["created"] += result["created"]
+                            ingested["existing"] += result["existing"]
+                published = None
+                if job_key == "personal_distribution" and not blockers:
+                    from sales_support_agent.services.content_publishing import (
+                        publish_best_personal_candidate,
+                    )
+
+                    published = publish_best_personal_candidate(
+                        session,
+                        actor="job:content-orchestrator",
+                        now=current,
+                    )
                 if (
                     job_key == "social_distribution"
                     and not blockers
@@ -767,7 +839,13 @@ def run_content_cycle(
                         "schedule": definition.schedule,
                         "upstream_jobs": list(definition.upstream_jobs),
                         "staged_candidates": staged,
-                        "execution_mode": "shadow",
+                        "publication_id": published.id if published else "",
+                        "riverside_ingestion": ingested,
+                        "execution_mode": (
+                            "live"
+                            if published is not None
+                            else "shadow"
+                        ),
                     }
                 )
                 row.summary_json = summary
@@ -779,6 +857,7 @@ def run_content_cycle(
                     "status": row.status,
                     "blockers": blockers,
                     "staged_candidates": staged,
+                    "publication_id": published.id if published else "",
                 }
             finish_scheduled_job(
                 engine,

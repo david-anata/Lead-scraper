@@ -83,7 +83,8 @@ def test_scheduler_catches_up_after_six_and_deduplicates_the_day() -> None:
     with session_scope(factory) as session:
         assert due_scheduled_jobs(session, now=before) == []
         assert due_scheduled_jobs(session, now=after) == [
-            ("daily_brief", "2026-07-29:daily_brief")
+            ("daily_brief", "2026-07-29:daily_brief"),
+            ("episode_harvest", "2026-07-29:episode_harvest"),
         ]
         session.add(
             ContentJobRun(
@@ -94,7 +95,9 @@ def test_scheduler_catches_up_after_six_and_deduplicates_the_day() -> None:
             )
         )
         session.commit()
-        assert due_scheduled_jobs(session, now=after) == []
+        assert due_scheduled_jobs(session, now=after) == [
+            ("episode_harvest", "2026-07-29:episode_harvest")
+        ]
 
 
 def test_monday_scheduler_includes_comparable_weekly_retrospective() -> None:
@@ -103,6 +106,7 @@ def test_monday_scheduler_includes_comparable_weekly_retrospective() -> None:
     with session_scope(factory) as session:
         assert due_scheduled_jobs(session, now=monday) == [
             ("daily_brief", "2026-08-03:daily_brief"),
+            ("episode_harvest", "2026-08-03:episode_harvest"),
             ("weekly_retrospective", "2026-W32:weekly_retrospective"),
         ]
 
@@ -177,7 +181,7 @@ def test_social_cycle_stages_separate_native_candidates_with_lineage(
     )
     assert result["status"] == "needs_review"
     assert result["details"]["social_distribution"]["staged_candidates"] == {
-        "created": 4,
+        "created": 5,
         "existing": 0,
         "rejected": 0,
     }
@@ -190,10 +194,11 @@ def test_social_cycle_stages_separate_native_candidates_with_lineage(
         assert {row.channel for row in artifacts} == {
             "instagram",
             "linkedin_company",
+            "linkedin_personal",
             "x",
             "youtube",
         }
-        assert len({row.body for row in artifacts}) == 4
+        assert len({row.body for row in artifacts}) == 5
         assert {row.status for row in artifacts} == {"needs_review"}
         assert all(row.playbook_version == "v1" for row in artifacts)
         assert all(

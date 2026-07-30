@@ -48,6 +48,7 @@ def test_channel_readiness_requires_identity_and_live_mode(monkeypatch) -> None:
     monkeypatch.setenv("CONTENT_LINKEDIN_CONNECTOR_URL", "https://relay.example.com")
     monkeypatch.setenv("CONTENT_LINKEDIN_CONNECTOR_KEY", "secret")
     monkeypatch.setenv("CONTENT_LINKEDIN_CONNECTOR_VERIFIED", "true")
+    monkeypatch.setenv("CONTENT_LINKEDIN_COMPANY_LIVE_APPROVED", "true")
     assert channel_publish_readiness("linkedin_company")["state"] == "not_connected"
     monkeypatch.setenv("CONTENT_LINKEDIN_COMPANY_ID", "company-1")
     assert channel_publish_readiness("linkedin_company")["state"] == "shadow"
@@ -73,6 +74,7 @@ def test_publish_records_verified_evidence(monkeypatch) -> None:
     monkeypatch.setenv("CONTENT_LINKEDIN_CONNECTOR_URL", "https://relay.example.com")
     monkeypatch.setenv("CONTENT_LINKEDIN_CONNECTOR_KEY", "secret")
     monkeypatch.setenv("CONTENT_LINKEDIN_CONNECTOR_VERIFIED", "true")
+    monkeypatch.setenv("CONTENT_LINKEDIN_COMPANY_LIVE_APPROVED", "true")
     monkeypatch.setenv("CONTENT_LINKEDIN_COMPANY_ID", "company-1")
     monkeypatch.setenv("CONTENT_PUBLISHING_MODE", "live")
 

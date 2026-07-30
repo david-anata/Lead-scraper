@@ -18,6 +18,9 @@ from sales_support_agent.services.content_engine import (
     render_run_detail,
 )
 from sales_support_agent.services.content_publishing import publish_artifact
+from sales_support_agent.services.content_intelligence import (
+    record_performance_observation,
+)
 from sales_support_agent.services.content_automation import run_content_cycle
 from sales_support_agent.services.content_automation import stage_daily_brief
 from sales_support_agent.services.content_engine import (
@@ -69,6 +72,7 @@ class ContentRunInput(BaseModel):
         "seo_blog",
         "episode_harvest",
         "social_distribution",
+        "personal_distribution",
         "weekly_retrospective",
         "newsletter_issue",
     ] = "scheduled"
@@ -80,6 +84,21 @@ class PublishArtifactInput(BaseModel):
 
     artifact_id: str = Field(min_length=1, max_length=64)
     confirmed: bool = False
+
+
+class PerformanceObservationInput(BaseModel):
+    """Normalized provider analytics for one comparable observation window."""
+
+    publication_id: str = Field(min_length=1, max_length=64)
+    platform: Literal[
+        "linkedin_personal", "linkedin_company", "youtube", "instagram"
+    ]
+    format_name: str = Field(default="", max_length=64)
+    objective: str = Field(default="", max_length=64)
+    window_started_at: str
+    window_ended_at: str
+    metrics: dict[str, float | None]
+    sample_confidence: Literal["low", "medium", "high"] = "low"
 
 
 class DailyNewsInput(BaseModel):
@@ -243,6 +262,43 @@ def content_daily_brief(
             "run_id": run.id,
             "blockers": blockers,
         }
+
+
+@router.post("/api/jobs/content/performance")
+def content_performance(
+    payload: PerformanceObservationInput,
+    request: Request,
+) -> dict[str, Any]:
+    """Record comparable channel analytics from a trusted provider relay."""
+
+    from datetime import datetime
+
+    _require_internal_key(request)
+    try:
+        started = datetime.fromisoformat(payload.window_started_at.replace("Z", "+00:00"))
+        ended = datetime.fromisoformat(payload.window_ended_at.replace("Z", "+00:00"))
+        with session_scope(request.app.state.session_factory) as session:
+            row = record_performance_observation(
+                session,
+                publication_id=payload.publication_id,
+                platform=payload.platform,
+                format_name=payload.format_name,
+                objective=payload.objective,
+                window_started_at=started,
+                window_ended_at=ended,
+                metrics=payload.metrics,
+                sample_confidence=payload.sample_confidence,
+                actor="trusted:content-analytics-relay",
+            )
+        return {
+            "status": "recorded",
+            "observation_id": row.id,
+            "selection_score": row.metrics_json.get("selection_score"),
+        }
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/api/jobs/content/run")
