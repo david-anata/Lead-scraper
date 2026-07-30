@@ -595,6 +595,7 @@ def health(request: Request) -> ApiMessage:
     brand_package_path = Path(str(getattr(settings, "shared_brand_package_path", "") or "")).expanduser()
     ticket1_details: dict[str, object] = {}
     db_details: dict[str, object] = {}
+    content_details: dict[str, object] = {}
     try:
         with session_scope(request.app.state.session_factory) as session:
             bind = session.get_bind()
@@ -669,6 +670,37 @@ def health(request: Request) -> ApiMessage:
                 },
                 "lead_mirror_latest_sync_at": latest_sync_at.isoformat() if latest_sync_at else "",
             }
+            try:
+                from sales_support_agent.services.content_engine import (
+                    control_room_data,
+                )
+
+                content = control_room_data(session, settings)
+                content_details = {
+                    "content_runtime": {
+                        "source_assets": content["source_asset_count"],
+                        "artifacts": content["artifact_count"],
+                        "verified_publications": content["publication_count"],
+                        "missing_source_channel_artifacts": content[
+                            "coverage_missing_count"
+                        ],
+                        "estimated_backlog_days": content["daily_backlog_days"],
+                        "personal_posts_this_week": content["personal_cadence"][
+                            "delivered"
+                        ],
+                        "dependency_states": {
+                            item["key"]: item["status"]
+                            for item in content["dependencies"]
+                        },
+                    }
+                }
+            except Exception as content_exc:
+                content_details = {
+                    "content_runtime": {
+                        "status": "unavailable",
+                        "safe_error_type": type(content_exc).__name__,
+                    }
+                }
     except Exception as exc:
         ticket1_details = {"lead_mirror_ticket1_validation_error": str(exc)}
 
@@ -788,6 +820,7 @@ def health(request: Request) -> ApiMessage:
             **plaid_details,
             **db_details,
             **ticket1_details,
+            **content_details,
         },
     )
 
