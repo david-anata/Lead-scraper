@@ -19,6 +19,51 @@ from sales_support_agent.services.website_ops_query_intelligence import citation
 DAILY_ARTICLE_MINIMUM = 2
 DAILY_ARTICLE_TARGET = 3
 
+EDITORIAL_TOPIC_SEEDS: tuple[dict[str, Any], ...] = (
+    {
+        "cluster_id": "editorial-amazon-tacos",
+        "label": "How to calculate and use Amazon TACoS",
+        "normalized_query": "how to calculate amazon tacos",
+        "owner_url": "https://anatainc.com/services/amazon-advertising",
+    },
+    {
+        "cluster_id": "editorial-amazon-ppc-structure",
+        "label": "How to structure Amazon PPC campaigns without losing control",
+        "normalized_query": "how to structure amazon ppc campaigns",
+        "owner_url": "https://anatainc.com/services/amazon-ppc-management",
+    },
+    {
+        "cluster_id": "editorial-amazon-listing-audit",
+        "label": "How to audit an Amazon product listing",
+        "normalized_query": "how to audit an amazon product listing",
+        "owner_url": "https://anatainc.com/services/amazon-listing-optimization",
+    },
+    {
+        "cluster_id": "editorial-fba-prep-requirements",
+        "label": "Amazon FBA prep requirements and common rejection risks",
+        "normalized_query": "amazon fba prep requirements",
+        "owner_url": "https://anatainc.com/services/amazon-fba-prep",
+    },
+    {
+        "cluster_id": "editorial-ecommerce-fulfillment-costs",
+        "label": "How to compare ecommerce fulfillment costs",
+        "normalized_query": "how to compare ecommerce fulfillment costs",
+        "owner_url": "https://anatainc.com/services/ecommerce-fulfillment",
+    },
+    {
+        "cluster_id": "editorial-tiktok-shop-fees",
+        "label": "TikTok Shop seller fees, fulfillment costs, and margin planning",
+        "normalized_query": "tiktok shop seller fees and fulfillment costs",
+        "owner_url": "https://anatainc.com/services/tiktok-shop-management",
+    },
+    {
+        "cluster_id": "editorial-shopify-cac",
+        "label": "How Shopify brands should evaluate customer acquisition cost",
+        "normalized_query": "how to evaluate shopify customer acquisition cost",
+        "owner_url": "https://anatainc.com/services/shopify-marketing-management",
+    },
+)
+
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
@@ -135,6 +180,18 @@ def _eligible_cluster(
     return None
 
 
+def _eligible_editorial_seed(excluded_cluster_ids: set[str]) -> Mapping[str, Any] | None:
+    for seed in EDITORIAL_TOPIC_SEEDS:
+        if _clean(seed.get("cluster_id")) not in excluded_cluster_ids:
+            return {
+                **seed,
+                "citation": {"cited_urls": []},
+                "evidence_classes": ["editorial_backlog", "service_intent_map"],
+                "source_kind": "editorial_backlog",
+            }
+    return None
+
+
 def _daily_generation_path(settings: Any) -> Path | None:
     configured_root = getattr(settings, "website_ops_root", None)
     if configured_root is None:
@@ -223,10 +280,13 @@ def build_article_action(
     progress = article_generation_progress(settings)
     if int(progress["remaining_to_target"]) <= 0:
         return None
+    excluded_cluster_ids = set(progress["cluster_ids"])
     cluster = _eligible_cluster(
         query_intelligence,
-        excluded_cluster_ids=set(progress["cluster_ids"]),
+        excluded_cluster_ids=excluded_cluster_ids,
     )
+    if not cluster:
+        cluster = _eligible_editorial_seed(excluded_cluster_ids)
     if not cluster:
         return None
     if not _claim_daily_article_slot(settings, _clean(cluster.get("cluster_id"))):
@@ -241,9 +301,21 @@ def build_article_action(
     ][:6]
     known_internal_routes = list(
         dict.fromkeys(
-            urlparse(_clean(item.get("owner_url"))).path or "/"
-            for item in query_intelligence.get("clusters", []) or []
-            if _clean(item.get("owner_url")).startswith("https://anatainc.com")
+            [
+                "/services",
+                "/guides",
+                "/guides/amazon-advertising",
+                "/guides/ecommerce-fulfillment",
+                *[
+                    urlparse(_clean(item.get("owner_url"))).path or "/"
+                    for item in query_intelligence.get("clusters", []) or []
+                    if _clean(item.get("owner_url")).startswith("https://anatainc.com")
+                ],
+                *[
+                    urlparse(_clean(item.get("owner_url"))).path
+                    for item in EDITORIAL_TOPIC_SEEDS
+                ],
+            ]
         )
     )[:20]
     publication_timestamp = datetime.now(timezone.utc).isoformat()
@@ -324,35 +396,67 @@ the word count.
     }
     content["route"] = f"/blog/{slug}"
     article["content"] = content
+    from_editorial_backlog = cluster.get("source_kind") == "editorial_backlog"
     return {
         "page_url": f"https://anatainc.com/blog/{slug}",
         "page_title": _clean(article.get("title")),
         "action_type": "publish_blog_article",
         "section_name": "Generated article registry",
         "before_state": (
-            f"The informational query is landing on {_clean(cluster.get('owner_url'))}, "
-            "where measured semantic alignment is weak."
+            (
+                "No dedicated educational article answers this service-adjacent operator "
+                f"question; the closest owner is {_clean(cluster.get('owner_url'))}."
+            )
+            if from_editorial_backlog
+            else (
+                f"The informational query is landing on {_clean(cluster.get('owner_url'))}, "
+                "where measured semantic alignment is weak."
+            )
         ),
         "after_state": "A dedicated, source-backed answer page owns the informational intent.",
         "reason": (
-            "The query has repeated independent evidence, weak alignment with its current "
-            "commercial page, and multiple observed external sources."
+            (
+                "The approved editorial backlog covers a distinct educational question "
+                "that supports a canonical service owner without replacing it."
+            )
+            if from_editorial_backlog
+            else (
+                "The query has repeated independent evidence, weak alignment with its current "
+                "commercial page, and multiple observed external sources."
+            )
         ),
-        "insight_source": "Validated query intelligence and answer-engine citations",
+        "insight_source": (
+            "Approved editorial backlog and one-page-one-intent map"
+            if from_editorial_backlog
+            else "Validated query intelligence and answer-engine citations"
+        ),
         "expected_impact": "Clearer intent ownership and stronger search and answer-engine retrieval.",
         "confidence": "high",
         "status": "recommended",
         "evidence": [
-            f"Validated cluster: {_clean(cluster.get('cluster_id'))}.",
+            (
+                f"Approved editorial topic: {_clean(cluster.get('cluster_id'))}."
+                if from_editorial_backlog
+                else f"Validated cluster: {_clean(cluster.get('cluster_id'))}."
+            ),
             "Independent evidence: "
             + ", ".join(_clean(value).replace("_", " ") for value in cluster.get("evidence_classes", []) or [])
             + ".",
             f"Observed authoritative sources: {len(citations)}.",
-            "The cluster has at least two independent evidence classes, including an observed signal.",
+            (
+                "The generated draft must independently verify at least two authoritative "
+                "external sources before publication."
+                if from_editorial_backlog
+                else "The cluster has at least two independent evidence classes, including an observed signal."
+            ),
         ],
         "confidence_basis": [
             "The intent is informational and is currently landing on a commercial route.",
-            "Semantic alignment is below the conservative article threshold.",
+            (
+                "The topic is a distinct educational question in the approved service-aligned backlog."
+                if from_editorial_backlog
+                else "Semantic alignment is below the conservative article threshold."
+            ),
             "The article includes visible citations and production rollback.",
         ],
         "execution_eligibility": "auto_execute",

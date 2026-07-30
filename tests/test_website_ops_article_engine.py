@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from sales_support_agent.services.website_ops_article_engine import (
     _claim_daily_article_slot,
+    _eligible_editorial_seed,
     article_generation_progress,
 )
 
@@ -23,3 +24,14 @@ def test_daily_article_quota_tracks_minimum_and_three_topic_target(tmp_path) -> 
     assert _claim_daily_article_slot(settings, "topic-three") is True
     assert _claim_daily_article_slot(settings, "topic-four") is False
 
+
+def test_editorial_backlog_supplies_distinct_topics_when_query_gaps_are_empty() -> None:
+    first = _eligible_editorial_seed(set())
+    assert first is not None
+    assert first["source_kind"] == "editorial_backlog"
+    assert first["normalized_query"] == "how to calculate amazon tacos"
+
+    second = _eligible_editorial_seed({first["cluster_id"]})
+    assert second is not None
+    assert second["cluster_id"] != first["cluster_id"]
+    assert second["owner_url"].startswith("https://anatainc.com/services/")
