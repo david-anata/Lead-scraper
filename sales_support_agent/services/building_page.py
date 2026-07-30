@@ -722,6 +722,7 @@ def render_building_page(
           <td>{_badge(str(item.get("agreement_status") or "not started"))}</td>
           <td>{_badge(str(item.get("deposit_status") or "not started"))}</td>
           <td>
+            <a class="secondary secondary--small" href="/admin/building/bookings/{_esc(item.get("id"))}">View booking</a>
             <details class="row-actions"><summary>Manage</summary>
               <form method="post" action="/admin/building/reservations/{_esc(item.get("id"))}/transition">
                 <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">

@@ -389,6 +389,10 @@ class BuildingAdminOperationsTests(unittest.TestCase):
                 "source_reference": "eventective-pilot",
             },
         )
+        self.assertRegex(
+            created.headers["location"],
+            r"^/admin/building/bookings/[^?]+\?notice=",
+        )
         self._assert_notice(created)
         with self.factory() as session:
             reservation = session.query(BuildingReservation).one()
