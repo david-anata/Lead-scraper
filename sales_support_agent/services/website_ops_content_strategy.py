@@ -9,7 +9,8 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
 
-DAILY_ARTICLE_BUDGET = 1
+DAILY_ARTICLE_MINIMUM = 2
+DAILY_ARTICLE_TARGET = 3
 
 
 def _clean(value: Any) -> str:
@@ -155,13 +156,14 @@ def build_content_strategy(
         ),
         "operating_rules": [
             "Improve an existing intent owner before creating a new URL.",
-            "Publish at most one new article per day; use the other pulses for research, improvements, and verification.",
+            "Publish at least two source-qualified educational articles per day and target three; missed quota remains visible and rolls into the next pulse.",
             "Every article needs two authoritative sources, two independent evidence classes including an observed signal, and a unique informational intent.",
             "Every article ships with internal links, canonical metadata, Article schema, production verification, rollback, and measurement.",
             "No invented facts, clients, results, prices, rankings, search volume, or keyword difficulty.",
         ],
-        "daily_article_budget": DAILY_ARTICLE_BUDGET,
-        "weekly_article_budget": 7,
+        "daily_article_minimum": DAILY_ARTICLE_MINIMUM,
+        "daily_article_target": DAILY_ARTICLE_TARGET,
+        "weekly_article_budget": DAILY_ARTICLE_TARGET * 7,
         "summary": {
             "total_briefs": len(briefs),
             "ready_to_publish": by_stage.get("ready", 0),

@@ -14,6 +14,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from sales_support_agent.config import Settings
 from sales_support_agent.integrations.resend import ResendClient
@@ -503,7 +504,8 @@ def _build_operations_summary(report: Mapping[str, Any]) -> dict[str, Any]:
             "researching_sources": int(content_summary.get("researching_sources", 0) or 0),
             "scheduled_for_validation": int(content_summary.get("scheduled_for_validation", 0) or 0),
             "improve_existing": int(content_summary.get("improve_existing", 0) or 0),
-            "daily_article_budget": int(content_strategy.get("daily_article_budget", 1) or 1),
+            "daily_article_minimum": int(content_strategy.get("daily_article_minimum", 2) or 2),
+            "daily_article_target": int(content_strategy.get("daily_article_target", 3) or 3),
             "weekly_article_budget": int(content_strategy.get("weekly_article_budget", 1) or 1),
             "next_topic": str(content_next.get("topic", "") or ""),
             "next_operation": str(content_next.get("next_operation", "") or ""),
@@ -698,7 +700,8 @@ def send_website_ops_report_email(
             f"Actions requiring review: {int(operations.get('review_required_actions', 0) or 0)}",
             f"Content briefs: {int(content_strategy.get('total_briefs', 0) or 0)}",
             f"Articles ready: {int(content_strategy.get('ready_to_publish', 0) or 0)}",
-            f"Article daily maximum: {int(content_strategy.get('daily_article_budget', 1) or 1)}",
+            f"Article daily minimum: {int(content_strategy.get('daily_article_minimum', 2) or 2)}",
+            f"Article daily target: {int(content_strategy.get('daily_article_target', 3) or 3)}",
             (
                 "Priority: "
                 + ", ".join(
@@ -2645,12 +2648,13 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <span class="status-pill {'status-ok' if article_pipeline.get('status') == 'eligible' else 'status-warn'}">{html.escape(str(article_pipeline.get("status", "not calculated")).replace("_", " ").title())}</span>
           </div>
           <div class="summary-grid">
-            {_summary_chip("Daily article maximum", "1", tone="neutral")}
+            {_summary_chip("Daily article minimum", "2", tone="good")}
+            {_summary_chip("Daily article target", "3", tone="neutral")}
             {_summary_chip("Validated content gaps", article_pipeline.get("validated_informational_gaps", 0), tone="neutral")}
             {_summary_chip("Source-qualified candidates", article_pipeline.get("source_qualified_candidates", 0), tone="good" if article_pipeline.get("source_qualified_candidates") else "neutral")}
             {_summary_chip("Publishing policy", "Validated autopush", tone="good")}
           </div>
-          <p class="muted">Each scheduled pulse audits the site, researches promising questions, advances briefs, completes eligible fixes, and verifies production. Agent publishes at most one eligible source-backed article per day.</p>
+          <p class="muted">Each scheduled pulse audits the site, researches promising questions, advances briefs, completes eligible fixes, and verifies production. Agent must publish at least two source-qualified educational articles per day and targets three.</p>
           <div class="button-row">
             <a class="text-link" href="/admin/website-ops/strategy">Open content strategy and briefs</a>
             <a class="text-link" href="/admin/website-ops/queries">Inspect query evidence</a>
@@ -3303,6 +3307,21 @@ def render_content_strategy_page(
 ) -> str:
     strategy = load_content_strategy(settings.website_ops_root)
     summary = dict(strategy.get("summary") or {})
+    production_quota = dict(strategy.get("production_quota") or {})
+    current_day = datetime.now(ZoneInfo("America/Denver")).date().isoformat()
+    published_today = sum(
+        1
+        for item in load_feedback_records(settings)
+        if str(
+            item.get("action_type", "")
+            or item.get("suggested_action_type", "")
+        ).strip()
+        == "publish_blog_article"
+        and str(item.get("status", "")).strip().lower() == "done"
+        and str(item.get("last_execution_at", "")).startswith(current_day)
+    )
+    daily_minimum = int(strategy.get("daily_article_minimum", 2) or 2)
+    quota_met = published_today >= daily_minimum
     next_operation = dict(strategy.get("next_operation") or {})
     briefs = [
         dict(item)
@@ -3355,7 +3374,16 @@ def render_content_strategy_page(
         <section class="card stack">
           <div class="row-actions">
             <div class="stack"><h2>Today’s operating plan</h2><p class="lead-sm">Agent runs at 8 AM, 1 PM, and 6 PM Mountain. Each pulse audits, advances briefs, completes eligible fixes, and verifies production.</p></div>
-            <span class="status-pill status-neutral">{int(strategy.get('daily_article_budget', 1) or 1)} article / day maximum</span>
+            <span class="status-pill status-neutral">{int(strategy.get('daily_article_minimum', 2) or 2)} article / day minimum · target {int(strategy.get('daily_article_target', 3) or 3)}</span>
+          </div>
+          <div class="summary-grid">
+            {_summary_chip("Published today", published_today, tone="good" if quota_met else "warn")}
+            {_summary_chip("Daily minimum", daily_minimum, tone="neutral")}
+            {_summary_chip("Daily target", int(strategy.get('daily_article_target', 3) or 3), tone="neutral")}
+            {_summary_chip("Generated today", int(production_quota.get('generated_today', summary.get('generated_today', 0)) or 0), tone="neutral")}
+          </div>
+          <div class="alert {'alert--success' if quota_met else 'alert--error'}">
+            {'Daily publishing minimum met.' if quota_met else f'Daily publishing minimum is short by {daily_minimum - published_today}. The next pulse must backfill qualified inventory.'}
           </div>
           <div class="summary-grid">{stage_links}</div>
           {f'''
@@ -3375,7 +3403,7 @@ def render_content_strategy_page(
               <li>Collect query, page, citation, and conversion evidence.</li>
               <li>Assign one canonical owner and decide improve-versus-create.</li>
               <li>Maintain a source and internal-link brief.</li>
-              <li>Generate and publish one eligible source-backed article per day maximum.</li>
+              <li>Generate and publish at least two eligible source-backed articles per day and target three.</li>
               <li>Publish through GitHub, verify production, roll back failures, and measure outcomes.</li>
             </ol>
           </div>

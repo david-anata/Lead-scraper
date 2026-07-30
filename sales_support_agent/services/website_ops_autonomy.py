@@ -22,7 +22,10 @@ from sales_support_agent.services.website_ops_content import (
 from sales_support_agent.services.website_ops_customer_language import collect_customer_questions
 from sales_support_agent.services.website_ops_serp import build_blueprint
 from sales_support_agent.services.website_ops_aeo import build_aeo_assessment
-from sales_support_agent.services.website_ops_article_engine import build_article_action
+from sales_support_agent.services.website_ops_article_engine import (
+    article_generation_progress,
+    build_article_action,
+)
 from sales_support_agent.services.website_ops_content_strategy import (
     build_content_strategy,
     persist_content_strategy,
@@ -1717,7 +1720,6 @@ def build_autonomy_overlay(
         run_mode=run_mode,
     )
     content_strategy = build_content_strategy(query_intelligence)
-    persist_content_strategy(_website_ops_root(settings), content_strategy)
     if run_mode in {"daily", "weekly", "monthly"} and decision_data_ready:
         try:
             article_action = build_article_action(
@@ -1732,6 +1734,14 @@ def build_autonomy_overlay(
                 "Autonomous article generation could not complete: "
                 f"{type(exc).__name__}: {exc}"
             )
+    content_strategy["production_quota"] = article_generation_progress(settings)
+    content_strategy["summary"]["generated_today"] = int(
+        content_strategy["production_quota"].get("generated_today", 0) or 0
+    )
+    content_strategy["summary"]["remaining_to_minimum"] = int(
+        content_strategy["production_quota"].get("remaining_to_minimum", 0) or 0
+    )
+    persist_content_strategy(_website_ops_root(settings), content_strategy)
     page_by_url = {
         _normalize_url(str(item.get("url", ""))): item for item in observations
     }
