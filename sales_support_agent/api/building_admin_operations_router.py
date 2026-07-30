@@ -6,7 +6,7 @@ import hashlib
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -103,9 +103,15 @@ FORM_DEPS = [Depends(require_building_form_security)]
 MOUNTAIN = ZoneInfo("America/Denver")
 
 
-def _redirect(*, notice: str = "", error: str = "") -> RedirectResponse:
+def _redirect(
+    *,
+    notice: str = "",
+    error: str = "",
+    target: str = "/admin/building",
+) -> RedirectResponse:
     query = urlencode({"notice": notice} if notice else {"error": error})
-    return RedirectResponse(f"/admin/building?{query}", status_code=303)
+    separator = "&" if "?" in target else "?"
+    return RedirectResponse(f"{target}{separator}{query}", status_code=303)
 
 
 def _internal_key(request: Request) -> str:
@@ -148,7 +154,12 @@ def _dollars_to_cents(value: str) -> int:
     return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def _run_form_action(action: Callable[[], object], success: str) -> RedirectResponse:
+def _run_form_action(
+    action: Callable[[], object],
+    success: str,
+    *,
+    success_target: str = "/admin/building",
+) -> RedirectResponse:
     try:
         action()
     except (ValidationError, ValueError) as exc:
@@ -159,7 +170,7 @@ def _run_form_action(action: Callable[[], object], success: str) -> RedirectResp
         return _redirect(error=message)
     except HTTPException as exc:
         return _redirect(error=str(exc.detail))
-    return _redirect(notice=success)
+    return _redirect(notice=success, target=success_target)
 
 
 @router.post("/inquiries", dependencies=FORM_DEPS)
@@ -272,9 +283,11 @@ def create_reservation_from_control_room(
     source_reference: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
+    reservation_id = str(uuid4())
+
     def action() -> None:
         payload = ReservationInput(
-            id=str(uuid4()),
+            id=reservation_id,
             kind=kind,
             space_id=space_id.strip(),
             offering_id=offering_id.strip() or None,
@@ -292,7 +305,11 @@ def create_reservation_from_control_room(
         )
         create_reservation(payload, request, _internal_key(request))
 
-    return _run_form_action(action, "Booking workflow created as an inquiry.")
+    return _run_form_action(
+        action,
+        "Booking workflow created as an inquiry.",
+        success_target=f"/admin/building/bookings/{reservation_id}",
+    )
 
 
 @router.post("/event-reviews", dependencies=FORM_DEPS)
@@ -344,6 +361,9 @@ def create_event_review_from_control_room(
     return _run_form_action(
         action,
         "Authoritative event window reviewed; temporary hold and quote draft created.",
+        success_target=(
+            f"/admin/building/bookings/{quote(reservation_id.strip(), safe='')}"
+        ),
     )
 
 
