@@ -8,6 +8,7 @@ import hmac
 import html
 import io
 import json
+import os
 from datetime import date, datetime, timezone
 from typing import Any, Literal, Optional
 from urllib.parse import urlencode
@@ -20,6 +21,9 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import delete, select
 
 from sales_support_agent.integrations.resend import ResendClient
+from sales_support_agent.integrations.building_google_calendar import (
+    BuildingGoogleCalendarClient,
+)
 from sales_support_agent.api.building_router import (
     OfferingInput,
     RatePlanInput,
@@ -37,6 +41,7 @@ from sales_support_agent.api.building_service_request_router import (
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
+    BuildingAgreementTemplate,
     BuildingBillingAccount,
     BuildingBillingSchedule,
     BuildingBillingAdjustment,
@@ -80,6 +85,9 @@ from sales_support_agent.services.building_launch_readiness import (
     arena_rate_plan_decision_blockers,
     launch_decision_id,
     sync_arena_effective_date_decision,
+)
+from sales_support_agent.services.building_launch_status import (
+    build_arena_launch_status,
 )
 
 
@@ -4680,6 +4688,12 @@ def building_control_room(
                 BuildingLaunchDecision.decision_key,
             )
         ).scalars().all()
+        agreement_template_rows = session.execute(
+            select(BuildingAgreementTemplate).order_by(
+                BuildingAgreementTemplate.template_key,
+                BuildingAgreementTemplate.version.desc(),
+            )
+        ).scalars().all()
         contact_rows = session.execute(
             select(BuildingContact).order_by(BuildingContact.full_name, BuildingContact.email)
         ).scalars().all()
@@ -4966,6 +4980,91 @@ def building_control_room(
                     SERVICE_REQUEST_TRANSITIONS.get(item.status, set())
                 ),
             })
+        rate_plan_payloads = [
+            {
+                "id": item.id,
+                "offering_id": item.offering_id,
+                "version": item.version,
+                "name": item.name,
+                "status": item.status,
+                "currency": item.currency,
+                "unit_amount_cents": item.unit_amount_cents,
+                "public_price_display": item.public_price_display,
+                "booking_unit": item.booking_unit,
+                "minimum_units": item.minimum_units,
+                "deposit_type": item.deposit_type,
+                "deposit_amount_cents": item.deposit_amount_cents,
+                "deposit_percent_bps": item.deposit_percent_bps,
+                "cancellation_policy": item.cancellation_policy,
+                "addons": list(item.addons_json or []),
+                "commercial_terms": dict(item.commercial_terms_json or {}),
+                "source_evidence": list(item.source_evidence_json or []),
+                "conflicts": list(item.conflicts_json or []),
+                "tax_status": item.tax_status,
+                "tax_rate_bps": item.tax_rate_bps,
+                "tax_note": item.tax_note,
+                "effective_from": item.effective_from.isoformat(),
+                "effective_until": (
+                    item.effective_until.isoformat()
+                    if item.effective_until
+                    else ""
+                ),
+                "approved_by": item.approved_by,
+            }
+            for item in rate_plan_rows
+        ]
+        launch_decision_payloads = [
+            {
+                "offering_id": item.offering_id,
+                "decision_key": item.decision_key,
+                "status": item.status,
+                "value": item.value,
+                "evidence": item.evidence,
+                "decided_by": item.decided_by,
+                "decided_at": (
+                    item.decided_at.isoformat() if item.decided_at else ""
+                ),
+            }
+            for item in launch_decision_rows
+        ]
+        calendar_adapter = BuildingGoogleCalendarClient()
+        launch_status = build_arena_launch_status(
+            launch_decisions=launch_decision_payloads,
+            rate_plans=rate_plan_payloads,
+            agreement_templates=[
+                {
+                    "id": item.id,
+                    "template_key": item.template_key,
+                    "version": item.version,
+                    "status": item.status,
+                    "name": item.name,
+                }
+                for item in agreement_template_rows
+            ],
+            provider_readiness={
+                "esign_verified": False,
+                "payment_credentials": bool(
+                    str(request.app.state.settings.stripe_secret_key or "").strip()
+                ),
+                "payment_webhook": bool(
+                    str(request.app.state.settings.stripe_webhook_secret or "").strip()
+                ),
+                "calendar_configured": calendar_adapter.configured,
+                "calendar_writes_enabled": os.getenv(
+                    "BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED", ""
+                ).strip().lower() in {"1", "true", "yes", "on"},
+                "sender_credentials": bool(
+                    str(request.app.state.settings.resend_api_key or "").strip()
+                ),
+                "sender_webhook": bool(
+                    str(request.app.state.settings.resend_webhook_secret or "").strip()
+                ),
+                "sender_matches_owner_choice": (
+                    "building@anatainc.com"
+                    in str(request.app.state.settings.resend_from or "").lower()
+                ),
+            },
+        )
         html_body = render_building_page(
             user=user,
             view=view,
@@ -4993,52 +5092,9 @@ def building_control_room(
                 }
                 for item in offering_rows
             ],
-            rate_plans=[
-                {
-                    "id": item.id,
-                    "offering_id": item.offering_id,
-                    "version": item.version,
-                    "name": item.name,
-                    "status": item.status,
-                    "currency": item.currency,
-                    "unit_amount_cents": item.unit_amount_cents,
-                    "public_price_display": item.public_price_display,
-                    "booking_unit": item.booking_unit,
-                    "minimum_units": item.minimum_units,
-                    "deposit_type": item.deposit_type,
-                    "deposit_amount_cents": item.deposit_amount_cents,
-                    "deposit_percent_bps": item.deposit_percent_bps,
-                    "cancellation_policy": item.cancellation_policy,
-                    "addons": list(item.addons_json or []),
-                    "commercial_terms": dict(item.commercial_terms_json or {}),
-                    "source_evidence": list(item.source_evidence_json or []),
-                    "conflicts": list(item.conflicts_json or []),
-                    "tax_status": item.tax_status,
-                    "tax_note": item.tax_note,
-                    "effective_from": item.effective_from.isoformat(),
-                    "effective_until": (
-                        item.effective_until.isoformat()
-                        if item.effective_until
-                        else ""
-                    ),
-                    "approved_by": item.approved_by,
-                }
-                for item in rate_plan_rows
-            ],
-            launch_decisions=[
-                {
-                    "offering_id": item.offering_id,
-                    "decision_key": item.decision_key,
-                    "status": item.status,
-                    "value": item.value,
-                    "evidence": item.evidence,
-                    "decided_by": item.decided_by,
-                    "decided_at": (
-                        item.decided_at.isoformat() if item.decided_at else ""
-                    ),
-                }
-                for item in launch_decision_rows
-            ],
+            rate_plans=rate_plan_payloads,
+            launch_decisions=launch_decision_payloads,
+            launch_status=launch_status,
             contacts=contacts,
             segments=segments,
             campaigns=campaigns,
