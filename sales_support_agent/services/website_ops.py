@@ -3373,7 +3373,7 @@ def render_content_strategy_page(
         <section class="card stack">
           <div class="row-actions">
             <div class="stack"><h2>Today’s operating plan</h2><p class="lead-sm">Agent runs at 8 AM, 1 PM, and 6 PM Mountain. Each pulse audits, advances briefs, completes eligible fixes, and verifies production.</p></div>
-            <span class="status-pill status-neutral">{int(strategy.get('daily_article_minimum', 2) or 2)} article / day minimum · target {int(strategy.get('daily_article_target', 3) or 3)}</span>
+            <span class="status-pill status-neutral">{int(strategy.get('daily_article_minimum', 8) or 8)} articles / day minimum · target {int(strategy.get('daily_article_target', 8) or 8)}</span>
           </div>
           <div class="summary-grid">
             {_summary_chip("Published today", published_today, tone="good" if quota_met else "warn")}

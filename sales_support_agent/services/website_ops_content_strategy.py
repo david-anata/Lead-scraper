@@ -9,8 +9,8 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
 
-DAILY_ARTICLE_MINIMUM = 2
-DAILY_ARTICLE_TARGET = 3
+DAILY_ARTICLE_MINIMUM = 8
+DAILY_ARTICLE_TARGET = 8
 
 
 def _clean(value: Any) -> str:
@@ -24,11 +24,13 @@ def _pillar(cluster: Mapping[str, Any]) -> str:
             _clean(cluster.get("owner_url")),
         )
     ).lower()
-    if any(token in value for token in ("fulfillment", "shipping", "warehouse", "3pl", "fba prep")):
-        return "Fulfillment and Shipping OS"
+    if any(token in value for token in ("fulfillment", "warehouse", "3pl", "fba prep")):
+        return "Fulfillment / 3PL"
+    if any(token in value for token in ("shipping", "carrier", "parcel", "delivery")):
+        return "Shipping OS"
     if any(token in value for token in ("intelligence", "tacos", "profit", "analytics")):
         return "Anata Intelligence"
-    return "Ecommerce Marketing"
+    return "Ecommerce Marketing Management"
 
 
 def _source_count(cluster: Mapping[str, Any]) -> int:
@@ -156,7 +158,7 @@ def build_content_strategy(
         ),
         "operating_rules": [
             "Improve an existing intent owner before creating a new URL.",
-            "Publish at least two source-qualified educational articles per day and target three; missed quota remains visible and rolls into the next pulse.",
+            "Publish eight source-qualified educational articles per day, with two supporting each of the four service pillars; missed quota remains visible.",
             "Every article needs two authoritative sources, two independent evidence classes including an observed signal, and a unique informational intent.",
             "Every article ships with internal links, canonical metadata, Article schema, production verification, rollback, and measurement.",
             "No invented facts, clients, results, prices, rankings, search volume, or keyword difficulty.",
