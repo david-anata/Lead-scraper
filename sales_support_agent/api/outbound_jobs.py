@@ -89,6 +89,76 @@ def _mark_ran(engine, now: datetime) -> None:
         logger.exception("[outbound-jobs] could not record that today's run started")
 
 
+_APP_URL = "https://agent.anatainc.com"
+_BATCH_LINK = f"{_APP_URL}/admin/api/outbound/brands.csv?scanned=1&max_new=200"
+
+
+def _sendable_brands(engine) -> list[dict]:
+    """Brands with a real Amazon finding: what actually goes to Clay."""
+    from sales_support_agent.services import outbound_memory
+
+    held = outbound_memory.load_leads(engine, limit=2000)
+    ready = [l for l in held
+             if str(l.get("amazon_checked_at") or "").strip()
+             and not str(l.get("amazon_skipped_reason") or "").strip()
+             and str(l.get("amz_situation") or "").strip()]
+    ready.sort(key=lambda l: -int(l.get("score") or 0))
+    return ready
+
+
+def _email_the_batch(engine, summary: dict) -> bool:
+    """Tell David what is waiting, so he never has to go looking for it.
+
+    A link rather than an attachment: the file is regenerated on download, so a
+    link is always current while an attachment is stale the moment a scan runs.
+    Sends only when there is something to act on - a daily "0 brands" email
+    trains you to ignore the daily email.
+    """
+    from sales_support_agent.config import load_settings
+    from sales_support_agent.services.access import notify
+
+    ready = _sendable_brands(engine)
+    if not ready:
+        logger.info("[outbound-jobs] nothing sendable today, no email")
+        return False
+
+    to = os.getenv("OUTBOUND_DIGEST_TO", "david@anatainc.com").strip()
+    lines = [
+        f"{len(ready)} brand(s) are ready to put into Clay.",
+        "",
+        f"Download the file:  {_BATCH_LINK}",
+        "",
+        "What is in it:",
+    ]
+    for lead in ready[:40]:
+        brand = str(lead.get("brand") or lead.get("domain") or "").strip()
+        opener = str(lead.get("reason") or "").strip()
+        lines.append(f"  - {brand}: {opener}")
+    if len(ready) > 40:
+        lines.append(f"  ...and {len(ready) - 40} more in the file.")
+
+    lines += [
+        "",
+        "What to do with it:",
+        "  1. Clay > Anata // Claude Table > Recent Store Leads tab > Import CSV",
+        "  2. Run Find people at these companies, then Work Email",
+        "  3. Run the opening line column",
+        "  4. Export from Found Contacts and upload into Instantly",
+        "",
+        f"This morning: pulled {summary.get('pulled', 0)}, checked {summary.get('scanned', 0)} on Amazon.",
+        "",
+        "Nothing sends until you press Resume in Instantly.",
+    ]
+
+    try:
+        return notify._send(load_settings(), to_email=to,
+                            subject=f"Outbound: {len(ready)} brands ready for Clay",
+                            text="\n".join(lines))
+    except Exception:  # noqa: BLE001 - a failed email must not fail the morning
+        logger.exception("[outbound-jobs] could not send the morning digest")
+        return False
+
+
 def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_PER_DAY) -> dict:
     """Pull whatever is due today, then check those brands on Amazon.
 
@@ -177,6 +247,8 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
                     logger.exception("[outbound-jobs] amazon check failed for %s", domain)
 
     out["ran"] = True
+    if engine is not None:
+        out["emailed"] = _email_the_batch(engine, out)
     logger.info("[outbound-jobs] morning run: %s", out)
     return out
 

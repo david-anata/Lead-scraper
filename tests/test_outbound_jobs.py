@@ -114,3 +114,62 @@ class TimezoneTests(unittest.TestCase):
         e = self._e()
         jobs._mark_ran(e, datetime(2026, 7, 27, 19, 40, tzinfo=DENVER))
         self.assertFalse(jobs._already_ran_today(e, datetime(2026, 7, 28, 7, tzinfo=DENVER)))
+
+
+class MorningDigestTests(unittest.TestCase):
+    """The email exists so David never has to go looking for the file."""
+
+    def _e(self):
+        return create_engine("sqlite://", future=True)
+
+    def _ready(self, e, domain="rho.com"):
+        m.record_leads(e, [{"domain": domain, "brand": "Rho", "tier": "A", "score": 16}])
+        m.update_amazon_finding(e, domain, {
+            "reason": "There are a handful of other sellers on your NAD+ listing. All authorized?",
+            "confidence": "high", "marketplace": "amazon.com",
+            "checked_at": "2026-07-27T12:00:00+00:00", "skipped_reason": "",
+            "findings": {"absent": False, "sponsored_competitors": [],
+                         "listings": [{"title": "Rho NAD+", "brand_price": 50.18,
+                                       "cheapest": 48.0, "sellers_unknown": 18}]}})
+
+    def test_only_brands_with_a_real_finding_are_offered(self):
+        """A brand we checked and found nothing on still carries the old
+        plan-upgrade line, which pitches the previous offer."""
+        e = self._e()
+        self._ready(e)
+        m.record_leads(e, [{"domain": "nothing.com", "brand": "Nothing", "tier": "A"}])
+        m.update_amazon_finding(e, "nothing.com", {
+            "reason": "", "confidence": "high", "marketplace": "amazon.com",
+            "checked_at": "2026-07-27T12:00:00+00:00", "skipped_reason": "",
+            "findings": {"absent": False, "listings": [], "sponsored_competitors": []}})
+        domains = [l["domain"] for l in jobs._sendable_brands(e)]
+        self.assertEqual(domains, ["rho.com"])
+
+    def test_a_skipped_brand_is_never_offered(self):
+        e = self._e()
+        m.record_leads(e, [{"domain": "skip.com", "brand": "Skip", "tier": "A"}])
+        m.update_amazon_finding(e, "skip.com", {
+            "reason": "", "confidence": "low", "marketplace": "amazon.com",
+            "checked_at": "2026-07-27T12:00:00+00:00",
+            "skipped_reason": "no confident match", "findings": {}})
+        self.assertEqual(jobs._sendable_brands(e), [])
+
+    def test_no_email_when_there_is_nothing_to_act_on(self):
+        """A daily "0 brands" email trains you to ignore the daily email."""
+        self.assertFalse(jobs._email_the_batch(self._e(), {"pulled": 0, "scanned": 0}))
+
+    def test_best_brands_lead_the_list(self):
+        e = self._e()
+        self._ready(e, "low.com")
+        self._ready(e, "high.com")
+        with __import__("sqlalchemy").orm.Session(e) as s:
+            pass
+        m.record_leads(e, [{"domain": "top.com", "brand": "Top", "tier": "A", "score": 99}])
+        m.update_amazon_finding(e, "top.com", {
+            "reason": "Someone is listing your thing below your own price. Authorized?",
+            "confidence": "high", "marketplace": "amazon.com",
+            "checked_at": "2026-07-27T12:00:00+00:00", "skipped_reason": "",
+            "findings": {"absent": False, "sponsored_competitors": [],
+                         "listings": [{"title": "T", "brand_price": 10.0,
+                                       "cheapest": 8.0, "sellers_unknown": 5}]}})
+        self.assertEqual(jobs._sendable_brands(e)[0]["domain"], "top.com")
