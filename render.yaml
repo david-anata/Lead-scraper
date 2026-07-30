@@ -124,6 +124,8 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      - key: CONTENT_PUBLISHING_MODE
+        value: shadow
       - key: OPENAI_API_KEY
         sync: false
       - key: WEBSITE_OPS_CITATION_TESTING_ENABLED
@@ -200,7 +202,7 @@ services:
   - type: cron
     name: content-engine-scheduler
     runtime: python
-    # Render cron is UTC. The endpoint accepts only the local 6 AM invocation.
+    # Hourly invocation supports restart catch-up; the endpoint owns Denver time.
     schedule: "0 * * * *"
     buildCommand: pip install -r requirements.txt
     startCommand: |

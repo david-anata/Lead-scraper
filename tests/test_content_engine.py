@@ -195,6 +195,41 @@ def test_content_routes_require_trusted_key_and_render_for_authorized_user() -> 
     assert ingested.status_code == 200
     assert ingested.json()["created"] == 1
 
+    brief = client.post(
+        "/api/jobs/content/daily-brief",
+        headers={"X-Internal-Api-Key": "internal-test-key"},
+        json={
+            "date_key": "2026-07-28",
+            "theme": "Inventory accuracy protects cash",
+            "recording_time": "10:00 AM America/Denver",
+            "cold_open": "Inventory uncertainty becomes cash uncertainty.",
+            "news_items": [
+                {
+                    "title": f"Signal {index}",
+                    "what_happened": "A verified market signal changed.",
+                    "why_it_matters": "Operators need a clearer decision.",
+                    "anata_angle": "Connect evidence to the operating system.",
+                    "talking_point": "What changes this week?",
+                }
+                for index in range(1, 4)
+            ],
+            "deep_dives": [
+                {
+                    "title": "The inventory cash loop",
+                    "skill": "Read inventory as working capital.",
+                    "common_mistake": "Trusting one incomplete report.",
+                    "framework": "Observe, reconcile, decide, verify.",
+                    "questions": "Where is uncertainty introduced?",
+                    "keyword": "inventory accuracy",
+                }
+            ],
+            "source_urls": ["https://example.com/evidence"],
+        },
+    )
+    assert brief.status_code == 200
+    assert brief.json()["status"] == "needs_review"
+    assert brief.json()["created"] == 4
+
     run = client.post(
         "/api/jobs/content/run",
         headers={"X-Internal-Api-Key": "internal-test-key"},

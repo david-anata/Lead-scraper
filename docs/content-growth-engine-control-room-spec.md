@@ -960,3 +960,44 @@ These do not block Phase 0, but must be resolved before their affected phase:
    proven low-risk classes.
 10. The approved category, three to five content pillars, repeatable formats,
     recurring phrases, and visual signatures. These are required before Phase 3.
+
+## Implementation status
+
+### Production foundation
+
+- The read-only control room, permissions, navigation, run ledger, Riverside
+  source ingestion, publication evidence model, and dependency truth are live.
+- The scheduler invokes hourly but owns Denver-time rules in Agent. It catches
+  up a missed daily or Monday run after a restart and uses a durable
+  cross-instance lease before recording work.
+- Versioned v1 playbooks are durable data. LinkedIn personal is the primary
+  authority channel; company LinkedIn, YouTube, and Instagram use separate
+  native treatments. X remains staging-only.
+- Trusted research automation can submit a structured Job 1 payload to
+  `POST /api/jobs/content/daily-brief`. Agent applies the 14-day topic block,
+  source and structure checks, and the no-em-dash gate before staging a podcast
+  brief, topic file, Gmail draft payload, and Slack notice payload.
+- A trusted Riverside relay can submit transcript text and normalized source
+  assets to `POST /api/jobs/content/source-assets`. Agent strips signed URL
+  parameters, stores transcript lineage separately, and stages distinct native
+  channel candidates without publishing them.
+- The production relay adapter allowlists only the named LinkedIn, Instagram,
+  and YouTube Zapier actions. It uses stable idempotency keys, bounded retries,
+  HTTPS only, verified destination identities, and separate accepted versus
+  live-verified states.
+- `CONTENT_PUBLISHING_MODE=shadow` remains the safe default. No new external
+  publishing is enabled merely by deploying the code.
+
+### Still requires production configuration
+
+- Verify service-account write access to the Drive parent.
+- Register Riverside Business API or MCP relay credentials in the deployed
+  runtime and complete one real episode harvest.
+- Configure and verify each LinkedIn, YouTube, and Instagram relay destination
+  separately.
+- Run one safe shadow cycle, then one Drive and draft/staging cycle, before
+  enabling any social write.
+- Configure newsletter consent and unsubscribe contracts before any owned-
+  audience delivery.
+- Approve a Gemini model and brand-safe visual template contract before
+  generated visuals can be used.

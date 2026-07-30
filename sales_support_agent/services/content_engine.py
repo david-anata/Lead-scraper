@@ -5,19 +5,22 @@ from __future__ import annotations
 import hashlib
 import html
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from sales_support_agent.models.content import (
+    ContentArtifact,
     ContentAuditEvent,
     ContentJobRun,
     ContentPublication,
     ContentSourceAsset,
+    ContentTranscript,
 )
 from sales_support_agent.services.admin_nav import (
     render_agent_favicon_links,
@@ -249,47 +252,87 @@ def ingest_source_assets(
         ).scalar_one_or_none()
         if row:
             existing += 1
-            continue
-        fingerprint = hashlib.sha256(
-            f"riverside:{episode_id}:{external_id}".encode("utf-8")
-        ).hexdigest()
-        row = ContentSourceAsset(
-            id=uuid4().hex,
-            provider="riverside",
-            episode_external_id=episode_id,
-            external_asset_id=external_id,
-            asset_type=asset_type,
-            processing_status=str(raw.get("status") or "ready").strip().lower(),
-            title=str(raw.get("title") or "").strip()[:500],
-            speaker=str(raw.get("speaker") or "").strip()[:255],
-            transcript_start_ms=raw.get("transcript_start_ms"),
-            transcript_end_ms=raw.get("transcript_end_ms"),
-            source_url=_safe_source_url(str(raw.get("source_url") or "")),
-            source_fingerprint=fingerprint,
-            metadata_json={
-                key: value
-                for key, value in dict(raw.get("metadata") or {}).items()
-                if key
-                in {"duration_ms", "aspect_ratio", "width", "height", "language"}
-            },
-        )
-        session.add(row)
-        session.add(
-            ContentAuditEvent(
+        else:
+            fingerprint = hashlib.sha256(
+                f"riverside:{episode_id}:{external_id}".encode("utf-8")
+            ).hexdigest()
+            row = ContentSourceAsset(
                 id=uuid4().hex,
-                actor_type="connector",
-                actor_id=actor[:255],
-                event_type="source_asset_ingested",
-                object_type="content_source_asset",
-                object_id=row.id,
-                details_json={
-                    "episode_id": episode_id,
-                    "asset_type": asset_type,
-                    "source_fingerprint": fingerprint,
+                provider="riverside",
+                episode_external_id=episode_id,
+                external_asset_id=external_id,
+                asset_type=asset_type,
+                processing_status=str(raw.get("status") or "ready").strip().lower(),
+                title=str(raw.get("title") or "").strip()[:500],
+                speaker=str(raw.get("speaker") or "").strip()[:255],
+                transcript_start_ms=raw.get("transcript_start_ms"),
+                transcript_end_ms=raw.get("transcript_end_ms"),
+                source_url=_safe_source_url(str(raw.get("source_url") or "")),
+                source_fingerprint=fingerprint,
+                metadata_json={
+                    key: value
+                    for key, value in dict(raw.get("metadata") or {}).items()
+                    if key
+                    in {"duration_ms", "aspect_ratio", "width", "height", "language"}
                 },
             )
-        )
-        created += 1
+            session.add(row)
+            session.add(
+                ContentAuditEvent(
+                    id=uuid4().hex,
+                    actor_type="connector",
+                    actor_id=actor[:255],
+                    event_type="source_asset_ingested",
+                    object_type="content_source_asset",
+                    object_id=row.id,
+                    details_json={
+                        "episode_id": episode_id,
+                        "asset_type": asset_type,
+                        "source_fingerprint": fingerprint,
+                    },
+                )
+            )
+            created += 1
+
+        transcript_text = str(raw.get("transcript_text") or "").strip()
+        if transcript_text:
+            transcript_text = transcript_text[:200_000]
+            text_fingerprint = hashlib.sha256(
+                transcript_text.encode("utf-8")
+            ).hexdigest()
+            transcript = session.scalar(
+                select(ContentTranscript).where(
+                    ContentTranscript.source_asset_id == row.id,
+                    ContentTranscript.text_fingerprint == text_fingerprint,
+                )
+            )
+            if transcript is None:
+                transcript = ContentTranscript(
+                    id=uuid4().hex,
+                    source_asset_id=row.id,
+                    episode_external_id=episode_id,
+                    language=str(
+                        dict(raw.get("metadata") or {}).get("language") or "en"
+                    )[:32],
+                    text=transcript_text,
+                    text_fingerprint=text_fingerprint,
+                )
+                session.add(transcript)
+                session.add(
+                    ContentAuditEvent(
+                        id=uuid4().hex,
+                        actor_type="connector",
+                        actor_id=actor[:255],
+                        event_type="source_transcript_ingested",
+                        object_type="content_transcript",
+                        object_id=transcript.id,
+                        details_json={
+                            "source_asset_id": row.id,
+                            "text_fingerprint": text_fingerprint,
+                            "character_count": len(transcript_text),
+                        },
+                    )
+                )
     session.commit()
     return {"created": created, "existing": existing}
 
@@ -381,6 +424,29 @@ def _format_time(value: Optional[datetime]) -> str:
     return value.astimezone(timezone.utc).strftime("%b %d, %Y %H:%M UTC")
 
 
+def _humanize_content_key(value: str) -> str:
+    labels = {
+        "gmail": "Gmail drafts",
+        "drive": "Google Drive",
+        "linkedin": "LinkedIn",
+        "youtube": "YouTube",
+        "riverside": "Riverside",
+        "x": "X",
+    }
+    normalized = str(value or "").strip().lower()
+    return labels.get(normalized, normalized.replace("_", " ").title())
+
+
+def _next_daily_run(value: datetime) -> datetime:
+    """Return the next 6 AM America/Denver scheduler boundary."""
+
+    local = value.astimezone(ZoneInfo("America/Denver"))
+    candidate = local.replace(hour=6, minute=0, second=0, microsecond=0)
+    if local >= candidate:
+        candidate += timedelta(days=1)
+    return candidate
+
+
 def control_room_data(session: Session, settings: Any) -> dict[str, Any]:
     """Build a single safe snapshot for the page and status endpoint."""
 
@@ -389,6 +455,19 @@ def control_room_data(session: Session, settings: Any) -> dict[str, Any]:
     )
     publication_count = int(
         session.scalar(select(func.count()).select_from(ContentPublication)) or 0
+    )
+    artifact_count = int(
+        session.scalar(select(func.count()).select_from(ContentArtifact)) or 0
+    )
+    latest_artifact = session.scalar(
+        select(ContentArtifact).order_by(ContentArtifact.created_at.desc()).limit(1)
+    )
+    artifacts = list(
+        session.scalars(
+            select(ContentArtifact)
+            .order_by(ContentArtifact.created_at.desc())
+            .limit(50)
+        )
     )
     runs = list(
         session.execute(
@@ -399,10 +478,15 @@ def control_room_data(session: Session, settings: Any) -> dict[str, Any]:
     )
     deps = dependency_health(settings, source_asset_count=source_count)
     blockers = [item for item in deps if item["status"] == "blocked"]
+    generated_at = datetime.now(timezone.utc)
     return {
-        "generated_at": datetime.now(timezone.utc),
+        "generated_at": generated_at,
+        "next_daily_run": _next_daily_run(generated_at),
         "source_asset_count": source_count,
+        "artifact_count": artifact_count,
         "publication_count": publication_count,
+        "latest_artifact": latest_artifact,
+        "artifacts": artifacts,
         "runs": runs,
         "dependencies": deps,
         "blockers": blockers,
@@ -420,6 +504,7 @@ def render_content_control_room(
 
     data = control_room_data(session, settings)
     runs = data["runs"]
+    artifacts = data["artifacts"]
     run_rows = "".join(
         f"""
         <tr>
@@ -446,6 +531,34 @@ def render_content_control_room(
           <tbody>{run_rows}</tbody>
         </table>
         """
+
+    artifact_rows = "".join(
+        f"""
+        <tr>
+          <td><strong>{html.escape(row.title)}</strong><br><span class="content-muted">{html.escape(row.artifact_type.replace('_', ' ').title())}</span></td>
+          <td>{html.escape(row.channel.replace('_', ' ').title() or 'Unassigned')}</td>
+          <td>{_status_badge(row.status)}</td>
+          <td>{html.escape(row.playbook_version)}</td>
+          <td>{_format_time(row.created_at)}</td>
+        </tr>
+        """
+        for row in artifacts
+    )
+    artifact_workspace = (
+        f"""
+        <table class="app-table app-table--sticky">
+          <thead><tr><th>Artifact</th><th>Channel</th><th>State</th><th>Playbook</th><th>Created</th></tr></thead>
+          <tbody>{artifact_rows}</tbody>
+        </table>
+        """
+        if artifact_rows
+        else """
+        <div class="app-state-panel">
+          <h2>No staged artifacts yet</h2>
+          <p>Riverside assets will become separate native candidates only after source lineage passes the quality gate.</p>
+        </div>
+        """
+    )
 
     pipeline = "".join(
         f"""
@@ -483,6 +596,12 @@ def render_content_control_room(
         if data["blockers"]
         else "All configured dependencies passed their latest readiness check."
     )
+    latest_artifact = data["latest_artifact"]
+    latest_output = (
+        f"{data['artifact_count']} staged artifact(s); latest update {_format_time(latest_artifact.created_at)}."
+        if latest_artifact is not None
+        else "No staged or delivered output yet."
+    )
     nav = render_agent_nav(
         "content",
         permissions=set(user.get("permissions") or ()),
@@ -500,7 +619,7 @@ def render_content_control_room(
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/admin.css?v=3">
+  <link rel="stylesheet" href="/static/admin.css?v=4">
   <style>{render_agent_nav_styles()}</style>
 </head>
 <body>
@@ -529,14 +648,25 @@ def render_content_control_room(
 
     <section class="app-metric-strip" aria-label="Content engine summary">
       <div class="app-metric"><div class="app-metric__value">{data['source_asset_count']}</div><div class="app-metric__label">Riverside source assets</div></div>
-      <div class="app-metric"><div class="app-metric__value">{len(runs)}</div><div class="app-metric__label">Recorded runs</div></div>
+      <div class="app-metric"><div class="app-metric__value">{data['artifact_count']}</div><div class="app-metric__label">Staged artifacts</div></div>
       <div class="app-metric"><div class="app-metric__value">{data['publication_count']}</div><div class="app-metric__label">Verified publications</div></div>
       <div class="app-metric"><div class="app-metric__value">{len(data['blockers'])}</div><div class="app-metric__label">Dependencies blocked</div></div>
+    </section>
+
+    <section class="app-command-bar content-command-bar" aria-label="Content schedule and evidence">
+      <div><span class="content-command-bar__label">Next scheduled check</span><strong>{_format_time(data['next_daily_run'])}</strong></div>
+      <div><span class="content-command-bar__label">Latest output</span><strong>{html.escape(latest_output)}</strong></div>
+      <div><span class="content-command-bar__label">Execution mode</span><strong>Shadow and staging only</strong></div>
     </section>
 
     <section class="content-section" aria-labelledby="pipeline-title">
       <div class="content-section__head"><div><p class="content-eyebrow">Automation</p><h2 id="pipeline-title">Riverside-to-growth production line</h2></div><p>Research → creation → native distribution → learning</p></div>
       <ol class="content-pipeline">{pipeline}</ol>
+    </section>
+
+    <section class="content-section" aria-labelledby="artifacts-title">
+      <div class="content-section__head"><div><p class="content-eyebrow">Production workspace</p><h2 id="artifacts-title">Staged native artifacts</h2></div><p>{len(artifacts)} candidate(s); nothing here is published automatically.</p></div>
+      <div class="app-data-workspace">{artifact_workspace}</div>
     </section>
 
     <section class="content-section" aria-labelledby="runs-title">
@@ -583,10 +713,21 @@ def render_run_detail(session: Session, run_id: str, *, user: dict) -> str | Non
             .order_by(ContentAuditEvent.created_at.desc())
         ).scalars()
     )
+    artifacts = list(
+        session.scalars(
+            select(ContentArtifact)
+            .where(ContentArtifact.run_id == run_id)
+            .order_by(ContentArtifact.created_at)
+        )
+    )
     event_rows = "".join(
         f"<tr><td>{_format_time(event.created_at)}</td><td>{html.escape(event.event_type.replace('_', ' ').title())}</td><td>{html.escape(event.actor_id)}</td></tr>"
         for event in events
     ) or "<tr><td colspan='3'>No audit events recorded.</td></tr>"
+    artifact_rows = "".join(
+        f"<tr><td>{html.escape(item.channel.replace('_', ' ').title())}</td><td>{html.escape(item.title)}</td><td>{_status_badge(item.status)}</td><td>{html.escape(item.playbook_version)}</td></tr>"
+        for item in artifacts
+    ) or "<tr><td colspan='4'>No artifacts were created by this run.</td></tr>"
     nav = render_agent_nav(
         "content",
         permissions=set(user.get("permissions") or ()),
@@ -595,5 +736,8 @@ def render_run_detail(session: Session, run_id: str, *, user: dict) -> str | Non
         include_content_target=False,
     )
     blockers = list((row.summary_json or {}).get("blockers") or [])
-    blocker_items = "".join(f"<li>{html.escape(str(item))}</li>" for item in blockers)
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Content run · Anata Agent</title>{render_agent_favicon_links()}<link rel="stylesheet" href="/static/admin.css?v=3"><style>{render_agent_nav_styles()}</style></head><body>{nav}<main id="agent-main-content" class="app-container app-page content-page" tabindex="-1"><p><a href="/admin/content">← Content Control Room</a></p><header class="app-page-header"><div><p class="content-eyebrow">Content run</p><h1>{html.escape(row.job_key.replace('_', ' ').title())}</h1><p>{html.escape(row.run_key)}</p></div>{_status_badge(row.status)}</header><section class="content-section"><h2>Run evidence</h2><dl class="content-detail-grid"><div><dt>Trigger</dt><dd>{html.escape(row.trigger.title())}</dd></div><div><dt>Started</dt><dd>{_format_time(row.started_at)}</dd></div><div><dt>Attempts</dt><dd>{row.attempt_count}</dd></div><div><dt>Idempotency</dt><dd>{html.escape(row.idempotency_key[:16])}…</dd></div></dl>{f'<h3>Blocking dependencies</h3><ul>{blocker_items}</ul>' if blockers else '<p>Preflight found no blocking dependency.</p>'}</section><section class="content-section"><h2>Audit history</h2><div class="app-data-workspace"><table class="app-table"><thead><tr><th>Time</th><th>Event</th><th>Actor</th></tr></thead><tbody>{event_rows}</tbody></table></div></section></main></body></html>"""
+    blocker_items = "".join(
+        f"<li>{html.escape(_humanize_content_key(str(item)))}</li>"
+        for item in blockers
+    )
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Content run · Anata Agent</title>{render_agent_favicon_links()}<link rel="stylesheet" href="/static/admin.css?v=4"><style>{render_agent_nav_styles()}</style></head><body>{nav}<main id="agent-main-content" class="app-container app-page content-page" tabindex="-1"><p><a href="/admin/content">← Content Control Room</a></p><header class="app-page-header"><div><p class="content-eyebrow">Content run</p><h1>{html.escape(row.job_key.replace('_', ' ').title())}</h1><p>{html.escape(row.run_key)}</p></div>{_status_badge(row.status)}</header><section class="content-section"><h2>Run evidence</h2><dl class="content-detail-grid"><div><dt>Trigger</dt><dd>{html.escape(row.trigger.title())}</dd></div><div><dt>Started</dt><dd>{_format_time(row.started_at)}</dd></div><div><dt>Attempts</dt><dd>{row.attempt_count}</dd></div><div><dt>Idempotency</dt><dd>{html.escape(row.idempotency_key[:16])}…</dd></div></dl>{f'<h3>Blocking dependencies</h3><ul>{blocker_items}</ul>' if blockers else '<p>Preflight found no blocking dependency.</p>'}</section><section class="content-section"><h2>Artifacts</h2><div class="app-data-workspace"><table class="app-table"><thead><tr><th>Channel</th><th>Artifact</th><th>State</th><th>Playbook</th></tr></thead><tbody>{artifact_rows}</tbody></table></div></section><section class="content-section"><h2>Audit history</h2><div class="app-data-workspace"><table class="app-table"><thead><tr><th>Time</th><th>Event</th><th>Actor</th></tr></thead><tbody>{event_rows}</tbody></table></div></section></main></body></html>"""
