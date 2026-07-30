@@ -80,9 +80,17 @@ def main() -> None:
             response_sla_hours=settings.building_response_sla_hours,
         )
         from sales_support_agent.services.access import store as access_store
+        from sales_support_agent.services.building_arena_agreement_seed import (
+            ensure_arena_review_template,
+        )
 
         access_store.seed_superadmins(
             getattr(settings, "rbac_superadmin_emails", ())
+        )
+        arena_template_result = ensure_arena_review_template(factory)
+        logger.info(
+            "predeploy milestone=arena_agreement_template result=%s",
+            arena_template_result,
         )
     logger.info(
         "predeploy milestone=schema_ready elapsed_ms=%.1f",

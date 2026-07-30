@@ -210,7 +210,7 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
         self.assertIn("Business terms are prepared", page.text)
         self.assertIn("Calendar permission is missing", page.text)
         self.assertIn(
-            'href="/admin/building/agreement-readiness"',
+            'href="/admin/building/contracts"',
             page.text,
         )
         self.assertIn("I APPROVE THIS DECISION", page.text)

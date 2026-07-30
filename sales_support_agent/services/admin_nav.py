@@ -74,6 +74,7 @@ _NAV_SECTIONS = [
     ]),
     _NavSection("building", "Building", "building", [
         _NavSubpage("building.manage", "Today", "/admin/building", "building"),
+        _NavSubpage("building.manage", "Contracts", "/admin/building/contracts", "building_contracts"),
         _NavSubpage("building.content.manage", "Website content", "/admin/building/content", "building_content"),
     ]),
     _NavSection("advertising", "Advertising", "advertising", [

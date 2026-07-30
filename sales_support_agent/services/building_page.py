@@ -770,15 +770,7 @@ def render_building_page(
                 <button class="secondary secondary--small" type="submit">Record version</button>
                 <span class="sub">Approve before sending. Sent content is locked; use a new version for revisions.</span>
               </form>
-              <form method="post" action="/admin/building/reservations/{_esc(item.get("id"))}/agreements">
-                <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-                <label>Agreement<select name="status"><option value="draft">Draft</option><option value="sent">Sent</option><option value="signed">Signed</option><option value="voided">Voided</option></select></label>
-                <label>Version<input type="number" name="version" min="1" value="1"></label>
-                <label>Provider<input name="provider" placeholder="Dropbox Sign, manual"></label>
-                <label>Evidence reference<input name="provider_reference" placeholder="Required when signed"></label>
-                <label>Document URL<input type="url" name="document_url"></label>
-                <button class="secondary secondary--small" type="submit">Record agreement</button>
-              </form>
+              <a class="secondary secondary--small" href="/admin/building/contracts">Open governed contract workspace</a>
               <form method="post" action="/admin/building/reservations/{_esc(item.get("id"))}/deposits">
                 <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
                 <label>Deposit<select name="status"><option value="due">Due</option><option value="pending">Pending</option><option value="paid">Paid</option><option value="refunded">Refunded</option><option value="waived">Waived</option></select></label>
@@ -1647,7 +1639,7 @@ def render_building_page(
           <h3>The final handoff</h3>
           <p>Your business answers are saved. These are the only remaining external steps, in order.</p>
           <div class="launch-handoff__steps">
-            <div class="launch-handoff__step"><span>1 · Legal review</span><strong>Business terms are prepared</strong><p>Open the versioned Arena package, register it for review, then have the designated reviewer approve the complete reusable agreement.</p><a href="/admin/building/agreement-readiness">Open agreement review →</a></div>
+            <div class="launch-handoff__step"><span>1 · Legal review</span><strong>Business terms are prepared</strong><p>Open the versioned Arena package, register it for review, then have the designated reviewer approve the complete reusable agreement.</p><a href="/admin/building/contracts">Open contracts →</a></div>
             <div class="launch-handoff__step"><span>2 · Google access</span><strong>Calendar permission is missing</strong><p>Reconnect Google Calendar with calendar-list access, then verify one Anata-owned dedicated Arena calendar and Agent service-account access.</p></div>
             <div class="launch-handoff__step"><span>3 · Launch date</span><strong>Set this last</strong><p>After legal and calendar approval, record the first future date when the approved terms may be quoted consistently.</p></div>
           </div>
@@ -1887,7 +1879,7 @@ def render_building_page(
         </details>
       </section>
       <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand. Partial CRM failures stay queued without losing the lead.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th><th>CRM recovery</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
-      <section class="panel panel--wide building-view view-bookings" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/agreement-readiness">Open agreement and payment readiness →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-bookings" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/contracts">Open contracts →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-sales view-operations" id="building-tours"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-operations">
         <div class="panel-head">

@@ -18,7 +18,7 @@ def render_document_head(
 ) -> str:
     """Render shared metadata, fonts, favicon, and cacheable shell styles."""
     styles = render_agent_stylesheet_links() if include_operator_styles else (
-        '<link rel="stylesheet" href="/static/admin.css?v=2">'
+        '<link rel="stylesheet" href="/static/admin.css?v=3">'
     )
     return f"""<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -41,12 +41,16 @@ def render_operator_document(
 ) -> str:
     """Render an authenticated page with the canonical landmarks."""
     class_name = f"app app--operator {page_class}".strip()
+    navigation = navigation.replace(
+        '<div id="agent-main-content" tabindex="-1"></div>',
+        "",
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>{render_document_head(title, extra_head=extra_head)}</head>
 <body class="{html.escape(class_name)}">
   {navigation}
-  <main id="agent-main-content" class="app-container app-page">{body}</main>
+  <main id="agent-main-content" class="app-container app-page" tabindex="-1">{body}</main>
 </body>
 </html>"""
 

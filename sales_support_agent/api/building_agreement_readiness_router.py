@@ -13,7 +13,13 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import select
 
 from sales_support_agent.models.database import session_scope
@@ -34,6 +40,18 @@ from sales_support_agent.services.admin_nav import (
     render_agent_nav_styles,
 )
 from sales_support_agent.services.auth_deps import require_tool
+from sales_support_agent.services.building_contract_templates import (
+    EVENT_MERGE_FIELDS,
+    document_checksum,
+    merge_fields_for,
+    normalize_clauses,
+    render_document_text,
+    unresolved_fields,
+    validate_template_content,
+)
+from sales_support_agent.services.building_contracts import (
+    compute_event_merge_values,
+)
 from sales_support_agent.services.building_security import (
     csrf_token,
     require_building_form_security,
@@ -49,6 +67,7 @@ admin_router = APIRouter(
     tags=["building-agreement-readiness-admin"],
 )
 FORM_DEPS = [Depends(require_building_form_security)]
+CONTRACTS_URL = "/admin/building/contracts"
 
 PREPARATION_TRANSITIONS = {
     "prepared": {"in_review"},
@@ -63,24 +82,8 @@ TEMPLATE_TRANSITIONS = {
     "approved": {"retired"},
     "retired": set(),
 }
-ALLOWED_MERGE_FIELDS = {
-    "customer_name",
-    "customer_email",
-    "event_space",
-    "setup_starts_at",
-    "guest_starts_at",
-    "guest_ends_at",
-    "teardown_ends_at",
-    "attendance",
-    "quote_total",
-    "currency",
-    "deposit_amount",
-    "deposit_type",
-    "cancellation_policy",
-    "tax_terms",
-    "included",
-    "addons",
-}
+#: Event merge fields, kept as one source of truth with the template editor.
+ALLOWED_MERGE_FIELDS = set(EVENT_MERGE_FIELDS)
 ARENA_REVIEW_TEMPLATE_ID = "arena-event-agreement-business-terms-v1"
 ARENA_REVIEW_TEMPLATE_KEY = "arena-event-agreement"
 ARENA_REVIEW_TEMPLATE_VERSION = 1
@@ -155,24 +158,59 @@ def _arena_review_document() -> tuple[str, str, str]:
 
 
 class AgreementTemplateInput(BaseModel):
+    """A template version.
+
+    Authoring is either external (a durable ``template_reference`` plus an
+    explicit merge-field list) or in-Agent (``body_markdown`` and/or
+    ``clauses``, whose merge fields are derived from the tokens actually used).
+    """
+
     id: str = Field(min_length=1, max_length=64)
     template_key: str = Field(min_length=1, max_length=64)
     version: int = Field(ge=1)
     name: str = Field(min_length=1, max_length=255)
-    template_reference: str = Field(min_length=1, max_length=1024)
-    merge_fields: list[str] = Field(min_length=1, max_length=30)
+    contract_type: str = Field(default="event", max_length=32)
+    template_reference: str = Field(default="", max_length=1024)
+    body_markdown: str = Field(default="", max_length=60000)
+    clauses: list[dict[str, str]] = Field(default_factory=list, max_length=60)
+    merge_fields: list[str] = Field(default_factory=list, max_length=30)
     actor: str = Field(min_length=1, max_length=255)
 
     @field_validator("merge_fields")
     @classmethod
-    def valid_merge_fields(cls, value: list[str]) -> list[str]:
+    def unique_merge_fields(cls, value: list[str]) -> list[str]:
         normalized = [item.strip() for item in value]
-        unknown = sorted(set(normalized) - ALLOWED_MERGE_FIELDS)
-        if unknown:
-            raise ValueError(f"Unsupported merge fields: {', '.join(unknown)}")
         if len(normalized) != len(set(normalized)):
             raise ValueError("Merge fields must be unique.")
         return normalized
+
+    @model_validator(mode="after")
+    def valid_authoring(self) -> "AgreementTemplateInput":
+        authored = bool(self.body_markdown.strip() or self.clauses)
+        if authored:
+            self.clauses = normalize_clauses(self.clauses)
+            # Derived fields are authoritative for authored templates: the body
+            # is the contract, so its tokens define what must be merged.
+            self.merge_fields = validate_template_content(
+                contract_type=self.contract_type,
+                body_markdown=self.body_markdown,
+                clauses=self.clauses,
+            )
+            return self
+        if not self.template_reference.strip():
+            raise ValueError(
+                "Provide contract body text, clauses, or a durable approved "
+                "repository reference."
+            )
+        if not self.merge_fields:
+            raise ValueError(
+                "An externally authored template must list its merge fields."
+            )
+        allowed = set(merge_fields_for(self.contract_type))
+        unknown = sorted(set(self.merge_fields) - allowed)
+        if unknown:
+            raise ValueError(f"Unsupported merge fields: {', '.join(unknown)}")
+        return self
 
 
 class ReviewActionInput(BaseModel):
@@ -204,7 +242,12 @@ def _template_payload(row: BuildingAgreementTemplate) -> dict[str, Any]:
         "version": row.version,
         "name": row.name,
         "status": row.status,
+        "contract_type": getattr(row, "contract_type", "") or "event",
         "template_reference": row.template_reference,
+        "body_checksum": (
+            document_checksum(row.body_markdown) if row.body_markdown else ""
+        ),
+        "clause_count": len(row.clauses_json or []),
         "merge_fields": list(row.merge_fields_json or []),
         "approval_evidence": row.approval_evidence,
         "approved_by": row.approved_by,
@@ -291,7 +334,10 @@ def upsert_agreement_template(
         row.template_key = payload.template_key
         row.version = payload.version
         row.name = payload.name
+        row.contract_type = payload.contract_type
         row.template_reference = payload.template_reference.strip()
+        row.body_markdown = payload.body_markdown.strip()
+        row.clauses_json = payload.clauses
         row.merge_fields_json = payload.merge_fields
         row.updated_at = _now()
         session.add(row)
@@ -452,54 +498,14 @@ def prepare_agreement_package(
 
         rate = dict(quote.rate_plan_snapshot_json or {})
         deposit_type = str(rate.get("deposit_type") or "none")
-        deposit_cents = {
-            "fixed": min(int(rate.get("deposit_amount_cents") or 0), quote.amount_cents),
-            "percent": min(
-                (
-                    quote.amount_cents * int(rate.get("deposit_percent_bps") or 0)
-                    + 5000
-                )
-                // 10000,
-                quote.amount_cents,
-            ),
-            "none": quote.amount_cents,
-        }.get(deposit_type)
-        if deposit_cents is None or deposit_cents <= 0:
+        merge_values, deposit_cents, request_type = compute_event_merge_values(
+            reservation=reservation, contact=contact, space=space, quote=quote
+        )
+        if deposit_cents <= 0:
             raise HTTPException(
                 status_code=409,
                 detail="Frozen terms do not produce a valid payment request amount.",
             )
-        request_type = "full_amount" if deposit_type == "none" else "deposit"
-        merge_values = {
-            "customer_name": contact.full_name,
-            "customer_email": contact.email,
-            "event_space": space.name,
-            "setup_starts_at": reservation.starts_at.isoformat(),
-            "guest_starts_at": (
-                reservation.guest_starts_at.isoformat()
-                if reservation.guest_starts_at
-                else None
-            ),
-            "guest_ends_at": (
-                reservation.guest_ends_at.isoformat()
-                if reservation.guest_ends_at
-                else None
-            ),
-            "teardown_ends_at": reservation.ends_at.isoformat(),
-            "attendance": reservation.attendance,
-            "quote_total": quote.amount_cents,
-            "currency": quote.currency,
-            "deposit_amount": deposit_cents,
-            "deposit_type": deposit_type,
-            "cancellation_policy": str(rate.get("cancellation_policy") or ""),
-            "tax_terms": {
-                "status": str(rate.get("tax_status") or "review_required"),
-                "rate_bps": int(rate.get("tax_rate_bps") or 0),
-                "note": str(rate.get("tax_note") or ""),
-            },
-            "included": list(rate.get("included") or []),
-            "addons": list(rate.get("addons") or []),
-        }
         selected_merge_values = {
             field: merge_values[field]
             for field in list(template.merge_fields_json or [])
@@ -548,6 +554,31 @@ def prepare_agreement_package(
             "merge_values": selected_merge_values,
             "prepared_at": _now().isoformat(),
         }
+        # An authored template freezes its rendered text with the package, so the
+        # approved contract has verifiable content rather than a bare reference.
+        if (getattr(template, "body_markdown", "") or "") or (
+            getattr(template, "clauses_json", None) or []
+        ):
+            document_text = render_document_text(
+                name=template.name,
+                body_markdown=template.body_markdown or "",
+                clauses=template.clauses_json or [],
+                merge_values=selected_merge_values,
+            )
+            if unresolved_fields(document_text):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "The template uses merge fields this booking cannot "
+                        "supply. Resolve the missing values or approve a "
+                        "template version that does not require them."
+                    ),
+                )
+            package_snapshot["document"] = {
+                "format": "markdown",
+                "text": document_text,
+                "checksum": document_checksum(document_text),
+            }
         agreement = BuildingAgreement(
             id=str(uuid4()),
             reservation_id=reservation.id,
@@ -979,7 +1010,13 @@ def prepare_arena_review_package(
 def agreement_readiness_page(
     request: Request,
     user: dict = Depends(require_tool("building.agreements.prepare")),
-) -> HTMLResponse:
+) -> RedirectResponse:
+    """Redirect the retired identifier-driven page to the customer-first workspace."""
+
+    return RedirectResponse(CONTRACTS_URL, status_code=308)
+
+    # Retained temporarily below as rollback/reference code while the contract
+    # workspace replaces the identifier-driven UI. This branch is unreachable.
     with session_scope(request.app.state.session_factory) as session:
         templates = session.execute(
             select(BuildingAgreementTemplate).order_by(
