@@ -268,6 +268,7 @@ def _emp_dict(e: HREmployee) -> dict:
     return {
         "id": e.id,
         "email": e.email,
+        "personal_email": e.personal_email or "",
         "full_name": e.full_name or e.email,
         "hr_role": e.hr_role,
         "team_id": e.team_id,
@@ -640,6 +641,25 @@ def create_employee_invitation(employee_email: str, *, actor: str,
         employee = s.query(HREmployee).filter_by(email=email).first()
         if not employee:
             return {"ok": False, "error": "employee_not_found"}
+        employee_name = employee.full_name or employee.email
+        employee_hr_role = employee.hr_role
+    existing_access = access_store.get_user_by_email(email)
+    if existing_access:
+        access_user_id = existing_access["id"]
+        if employee_hr_role == "employee":
+            # Employee invitations deliberately remove unrelated operator tools.
+            # Extra access can be granted later as an explicit admin decision.
+            access_store.set_user_permissions(access_user_id, ["hr.access"])
+        else:
+            access_store.set_user_permissions(
+                access_user_id,
+                sorted(set(existing_access.get("permissions") or set()).union({"hr.access"})),
+            )
+    else:
+        access_user_id = access_store.upsert_user(
+            email, employee_name, status="suspended"
+        )
+        access_store.set_user_permissions(access_user_id, ["hr.access"])
     token = secrets.token_urlsafe(32)
     role_id = _ensure_employee_access_role()
     expires_at = datetime.now(timezone.utc) + timedelta(days=max(1, min(expires_days, 30)))
@@ -726,16 +746,27 @@ def request_onboarding_correction(employee_email: str, *, reason: str,
         return True, "onboarding_correction_requested"
 
 
-def save_employee_profile(employee_email: str, *, phone: str, address_line1: str,
+def save_employee_profile(employee_email: str, *, personal_email: str, phone: str, address_line1: str,
                           address_line2: str, city: str, state: str, zip_code: str,
                           emergency_name: str, emergency_relationship: str,
                           emergency_phone: str, emergency_email: str,
                           actor: str) -> tuple[bool, str]:
     email = (employee_email or "").strip().lower()
+    contact_email = (personal_email or "").strip().lower()
+    if (
+        not contact_email
+        or "@" not in contact_email
+        or contact_email.startswith("@")
+        or contact_email.endswith("@")
+        or contact_email.endswith("@anatainc.com")
+        or "." not in contact_email.rsplit("@", 1)[-1]
+    ):
+        return False, "personal_email_invalid"
     with _session() as s:
         employee = s.query(HREmployee).filter_by(email=email).first()
         if not employee:
             return False, "employee_not_found"
+        employee.personal_email = contact_email
         employee.phone = (phone or "").strip()
         employee.address_line1 = (address_line1 or "").strip()
         employee.address_line2 = (address_line2 or "").strip()
@@ -751,6 +782,7 @@ def save_employee_profile(employee_email: str, *, phone: str, address_line1: str
         row.emergency_contact_phone = (emergency_phone or "").strip()
         row.emergency_contact_email = (emergency_email or "").strip().lower()
         row.profile_complete = all([
+            employee.personal_email,
             employee.address_line1, employee.city, employee.state, employee.zip,
             row.emergency_contact_name, row.emergency_contact_phone,
         ])
@@ -760,6 +792,51 @@ def save_employee_profile(employee_email: str, *, phone: str, address_line1: str
         _audit(s, actor, "onboarding.profile_saved", "employee", employee.id,
                {"complete": row.profile_complete})
         return True, "profile_saved"
+
+
+def employee_required_actions(employee_email: str) -> list[dict]:
+    """Return the signed-in employee's own incomplete HR actions."""
+    email = (employee_email or "").strip().lower()
+    employee = get_employee_by_email(email) or {}
+    onboarding = get_onboarding(email)
+    actions: list[dict] = []
+    if not employee:
+        return [{
+            "label": "Ask HR to create your employee record",
+            "description": "Your sign-in works, but your HR record is not linked yet.",
+            "url": "/admin/hr/onboarding",
+        }]
+    if not employee.get("personal_email"):
+        actions.append({
+            "label": "Add your personal contact email",
+            "description": "Use an address you control outside Anata. Anata never reads your inbox.",
+            "url": "/admin/hr/onboarding#personal-contact",
+        })
+    if not onboarding.get("profile_complete"):
+        actions.append({
+            "label": "Complete personal and emergency information",
+            "description": "Add the contact and address information HR needs.",
+            "url": "/admin/hr/onboarding#personal-contact",
+        })
+    if not onboarding.get("w4_complete"):
+        actions.append({
+            "label": "Complete and sign your W-4",
+            "description": "Choose your own withholding elections and save the signed form.",
+            "url": "/admin/hr/onboarding#w4",
+        })
+    if not onboarding.get("i9_employee_complete"):
+        actions.append({
+            "label": "Complete your I-9 employee step",
+            "description": "Finish Section 1, then show acceptable documents directly to David or Val.",
+            "url": "/admin/hr/onboarding#employee-attestations",
+        })
+    if not onboarding.get("policies_complete"):
+        actions.append({
+            "label": "Review and acknowledge policies",
+            "description": "Read the current policies before acknowledging them.",
+            "url": "/admin/hr/policies",
+        })
+    return actions
 
 
 def save_w4(employee_email: str, *, ssn: str, filing_status: str, two_jobs: bool,
@@ -1091,6 +1168,7 @@ def employee_dashboard_stats(employee_email: str) -> dict:
         "pto_available": pto.get("available", 0),
         "pending_pto": pending_pto,
         "pending_corrections": pending_corrections,
+        "required_actions": employee_required_actions(email),
     }
 
 

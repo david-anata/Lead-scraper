@@ -58,6 +58,7 @@ from sales_support_agent.services.hr.pages import (
     render_hr_teams,
     render_hr_team_detail,
     render_hr_time,
+    render_hr_access_training,
 )
 
 async def _same_origin_write(request: Request) -> None:
@@ -274,6 +275,8 @@ async def hr_setup(request: Request, user: dict = Depends(_pay_view_guard)):
 
 @router.get("/employees", response_class=HTMLResponse)
 async def employees_list(request: Request, user: dict = Depends(_guard)):
+    if not _can_manage(user):
+        return RedirectResponse("/admin/hr/onboarding", status_code=303)
     employees = store.list_employees() if _can_manage(user) else [
         item for item in store.list_employees()
         if item["email"] == (user.get("email") or "").strip().lower()
@@ -565,6 +568,10 @@ async def employee_update(
                           employee_type=employee_type, team_id=team_id or None,
                           hourly_rate=hourly_rate,
                           phone=phone, status=status, actor=user.get("email", "system"))
+    if status == "inactive":
+        app_user = access_store.get_user_by_email(employee["email"])
+        if app_user:
+            access_store.set_user_status(app_user["id"], "suspended")
     if employment_changed:
         store.upsert_employment_profile(
             employee["email"], hire_date=hire_date, title=title,
@@ -598,6 +605,10 @@ async def employee_status_update(
         status=status,
         actor=user.get("email", "system"),
     )
+    if status == "inactive":
+        app_user = access_store.get_user_by_email(employee["email"])
+        if app_user:
+            access_store.set_user_status(app_user["id"], "suspended")
     return RedirectResponse(
         f"/admin/hr/employees/{emp_id}?ok=status_saved",
         status_code=303,
@@ -649,7 +660,7 @@ async def employee_onboarding(request: Request, user: dict = Depends(_guard)):
 
 @router.post("/onboarding/profile")
 async def onboarding_profile(
-    phone: str = Form(""), address_line1: str = Form(""),
+    personal_email: str = Form(""), phone: str = Form(""), address_line1: str = Form(""),
     address_line2: str = Form(""), city: str = Form(""),
     state: str = Form("UT"), zip_code: str = Form(""),
     emergency_name: str = Form(""), emergency_relationship: str = Form(""),
@@ -658,12 +669,21 @@ async def onboarding_profile(
 ):
     email = (user.get("email") or "").strip().lower()
     ok, message = store.save_employee_profile(
-        email, phone=phone, address_line1=address_line1, address_line2=address_line2,
+        email, personal_email=personal_email, phone=phone,
+        address_line1=address_line1, address_line2=address_line2,
         city=city, state=state, zip_code=zip_code, emergency_name=emergency_name,
         emergency_relationship=emergency_relationship, emergency_phone=emergency_phone,
         emergency_email=emergency_email, actor=email,
     )
     return RedirectResponse(f"/admin/hr/onboarding?{'ok' if ok else 'err'}={message}", status_code=303)
+
+
+@router.get("/access-training", response_class=HTMLResponse)
+async def access_training(
+    request: Request, user: dict = Depends(_people_guard)
+):
+    """Explain the employee access lifecycle without exposing invitation tokens."""
+    return HTMLResponse(render_hr_access_training(user=user, flash=_flash(request)))
 
 
 @router.post("/onboarding/w4")

@@ -62,10 +62,10 @@ def export_csv(
                 row.employee_email: row for row in session.query(HREmploymentProfile).all()
             }
             return _csv(
-                ["email", "full_name", "status", "employee_type", "hire_date",
+                ["email", "personal_email", "full_name", "status", "employee_type", "hire_date",
                  "termination_date", "title", "classification", "pay_basis"],
                 [[
-                    row.email, row.full_name, row.status, row.employee_type,
+                    row.email, row.personal_email, row.full_name, row.status, row.employee_type,
                     employment.get(row.email).hire_date if employment.get(row.email) else "",
                     employment.get(row.email).termination_date if employment.get(row.email) else "",
                     employment.get(row.email).title if employment.get(row.email) else "",

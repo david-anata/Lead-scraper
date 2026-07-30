@@ -450,6 +450,9 @@ def _ensure_hr_columns(engine: Any) -> None:
                 f"NOT NULL DEFAULT {default}"
             ))
     additions = {
+        "hr_employees": {
+            "personal_email": "VARCHAR(255) NOT NULL DEFAULT ''",
+        },
         "hr_time_entries": {
             "elapsed_seconds": "INTEGER NOT NULL DEFAULT 0",
         },

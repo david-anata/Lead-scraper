@@ -117,10 +117,12 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("already exists", r2.text)
 
     def test_create_team(self):
-        r = self._post("/admin/hr/teams", {"name": "Ops Team", "manager_email": "m@anatainc.com"}, self.sa)
+        import uuid
+        team_name = f"Ops Team {uuid.uuid4().hex[:8]}"
+        r = self._post("/admin/hr/teams", {"name": team_name, "manager_email": ""}, self.sa)
         self.assertIn(r.status_code, (302, 303))
         lst = self._get("/admin/hr/teams", self.sa)
-        self.assertIn("Ops Team", lst.text)
+        self.assertIn(team_name, lst.text)
 
     def test_hr_access_required(self):
         # A provisioned user with no HR tools cannot see HR.
@@ -134,7 +136,7 @@ class HRSectionTests(unittest.TestCase):
         uid = access_store.upsert_user("hronly@anatainc.com", "HROnly")
         access_store.set_user_permissions(uid, ["hr.access"])
         ck = _cookie("hronly@anatainc.com")
-        self.assertEqual(self._get("/admin/hr/employees", ck).status_code, 200)   # allowed
+        self.assertEqual(self._get("/admin/hr/employees", ck).status_code, 303)  # sent to own profile
         self.assertEqual(self._get("/admin/hr/employees/new", ck).status_code, 403)
         self.assertEqual(self._get("/admin/hr/teams", ck).status_code, 403)
         self.assertEqual(self._get("/admin/hr/payroll", ck).status_code, 403)     # blocked
@@ -401,13 +403,16 @@ class HRSectionTests(unittest.TestCase):
         uid = access_store.upsert_user(self_email, "Self Person")
         access_store.set_user_permissions(uid, ["hr.access"])
         page = self._get("/admin/hr/employees", _cookie(self_email))
-        self.assertEqual(page.status_code, 200)
-        self.assertIn(self_email, page.text)
-        self.assertNotIn(other, page.text)
+        self.assertEqual(page.status_code, 303)
+        self.assertEqual(page.headers["location"], "/admin/hr/onboarding")
 
         dashboard = self._get("/admin/hr", _cookie(self_email))
         self.assertNotIn("Active employees", dashboard.text)
         self.assertIn("Onboarding steps", dashboard.text)
+        self.assertIn("Anata employee app", dashboard.text)
+        self.assertNotIn('href="/admin/sales"', dashboard.text)
+        self.assertNotIn('href="/admin/hr/employees"', dashboard.text)
+        self.assertIn('rel="manifest" href="/app.webmanifest"', dashboard.text)
 
     def test_holiday_calendar_observes_weekend_rule_and_excludes_overtime(self):
         holidays = hr_store.paid_holidays(2026)
@@ -417,6 +422,7 @@ class HRSectionTests(unittest.TestCase):
 
     def test_secure_onboarding_saves_sealed_w4(self):
         profile = self._post("/admin/hr/onboarding/profile", {
+            "personal_email": "david.personal@example.com",
             "phone": "8015550100", "address_line1": "1 Main", "city": "Salt Lake City",
             "state": "UT", "zip_code": "84101", "emergency_name": "Val",
             "emergency_relationship": "Coworker", "emergency_phone": "8015550199",
@@ -437,7 +443,8 @@ class HRSectionTests(unittest.TestCase):
         email = f"new-w4-{uuid.uuid4().hex[:8]}@anatainc.com"
         hr_store.create_employee(email=email, full_name="New Employee")
         hr_store.save_employee_profile(
-            email, phone="", address_line1="20 State St", address_line2="",
+            email, personal_email=f"personal-{uuid.uuid4().hex[:8]}@example.com",
+            phone="", address_line1="20 State St", address_line2="",
             city="Salt Lake City", state="UT", zip_code="84111",
             emergency_name="David", emergency_relationship="Employer",
             emergency_phone="8015550100", emergency_email="",
@@ -467,8 +474,47 @@ class HRSectionTests(unittest.TestCase):
         self.assertEqual(page.status_code, 404)
         self.assertIn("Your employee record is not ready yet.", page.text)
         self.assertIn('href="/admin/hr"', page.text)
-        self.assertIn("topbar-section-band", page.text)
+        self.assertIn("employee-app-header", page.text)
+        self.assertNotIn('href="/admin/finances"', page.text)
         self.assertNotEqual(page.text.strip(), "Employee record not found.")
+
+    def test_personal_email_is_required_outside_anata_and_drives_action_list(self):
+        import uuid
+        email = f"personal-contact-{uuid.uuid4().hex[:8]}@anatainc.com"
+        hr_store.create_employee(email=email, full_name="Personal Contact")
+        uid = access_store.upsert_user(email, "Personal Contact")
+        access_store.set_user_permissions(uid, ["hr.access"])
+
+        dashboard = self._get("/admin/hr", _cookie(email))
+        self.assertIn("Add your personal contact email", dashboard.text)
+
+        invalid = self._post(
+            "/admin/hr/onboarding/profile",
+            {
+                "personal_email": "person@anatainc.com",
+                "address_line1": "1 Main", "city": "Salt Lake City",
+                "state": "UT", "zip_code": "84101",
+                "emergency_name": "Contact", "emergency_phone": "8015550100",
+            },
+            _cookie(email),
+        )
+        self.assertIn("err=personal_email_invalid", invalid.headers["location"])
+
+        valid = self._post(
+            "/admin/hr/onboarding/profile",
+            {
+                "personal_email": "person@example.com",
+                "address_line1": "1 Main", "city": "Salt Lake City",
+                "state": "UT", "zip_code": "84101",
+                "emergency_name": "Contact", "emergency_phone": "8015550100",
+            },
+            _cookie(email),
+        )
+        self.assertIn("ok=profile_saved", valid.headers["location"])
+        self.assertEqual(
+            hr_store.get_employee_by_email(email)["personal_email"],
+            "person@example.com",
+        )
 
     def test_w4_correction_prefills_safe_fields_but_never_full_ssn(self):
         saved = self._post("/admin/hr/onboarding/w4", {
@@ -558,12 +604,15 @@ class HRSectionTests(unittest.TestCase):
     def test_dedicated_status_update_does_not_require_pay_change_metadata(self):
         import uuid
         suffix = uuid.uuid4().hex[:8]
+        employee_email = f"status-only-{suffix}@anatainc.com"
         employee_id = hr_store.create_employee(
-            email=f"status-only-{suffix}@anatainc.com",
+            email=employee_email,
             full_name="Status Only",
             employee_type="salaried",
             annual_salary="90000",
         )
+        app_user_id = access_store.upsert_user(employee_email, "Status Only")
+        access_store.set_user_permissions(app_user_id, ["hr.access"])
 
         page = self._get(f"/admin/hr/employees/{employee_id}", self.sa)
         self.assertIn(
@@ -580,11 +629,58 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("ok=status_saved", saved.headers["location"])
         self.assertEqual(hr_store.get_employee(employee_id)["status"], "inactive")
         self.assertEqual(
+            access_store.get_user_by_email(employee_email)["status"], "suspended"
+        )
+        self.assertEqual(
             hr_store.list_compensation_changes(
                 f"status-only-{suffix}@anatainc.com"
             ),
             [],
         )
+
+    def test_employee_app_manifest_worker_and_access_training(self):
+        manifest = self.client.get("/app.webmanifest")
+        self.assertEqual(manifest.status_code, 200)
+        self.assertEqual(manifest.json()["start_url"], "/app")
+        self.assertEqual(manifest.json()["display"], "standalone")
+        self.assertEqual(
+            manifest.json()["icons"][0]["src"],
+            "/brand-static/agent-favicon.png",
+        )
+        worker = self.client.get("/service-worker.js")
+        self.assertEqual(worker.status_code, 200)
+        self.assertIn("does not", self.client.get("/app/offline").text.lower())
+        self.assertNotIn("admin/hr", worker.text)
+
+        app_entry = self._get("/app", self.sa)
+        self.assertEqual(app_entry.status_code, 303)
+        self.assertEqual(app_entry.headers["location"], "/admin/hr")
+
+        training = self._get("/admin/hr/access-training", self.sa)
+        self.assertEqual(training.status_code, 200)
+        self.assertIn("Give an employee secure app access", training.text)
+        self.assertIn("mark the employee inactive", training.text)
+
+        import uuid
+        employee_email = f"training-denied-{uuid.uuid4().hex[:8]}@anatainc.com"
+        uid = access_store.upsert_user(employee_email, "Employee")
+        access_store.set_user_permissions(uid, ["hr.access"])
+        denied = self._get("/admin/hr/access-training", _cookie(employee_email))
+        self.assertEqual(denied.status_code, 403)
+
+    def test_employee_invitation_preprovisions_only_hr_and_waits_for_acceptance(self):
+        import uuid
+        email = f"invite-employee-{uuid.uuid4().hex[:8]}@anatainc.com"
+        employee_id = hr_store.create_employee(
+            email=email, full_name="Invited Employee", hr_role="employee"
+        )
+        result = self._post(
+            f"/admin/hr/employees/{employee_id}/invite", {}, self.sa
+        )
+        self.assertEqual(result.status_code, 200)
+        invited = access_store.get_user_by_email(email)
+        self.assertEqual(invited["permissions"], {"hr.access"})
+        self.assertEqual(invited["status"], "suspended")
 
     def test_team_detail_can_update_leader_and_manage_membership(self):
         import uuid
@@ -746,6 +842,7 @@ class HRSectionTests(unittest.TestCase):
 
     def test_onboarding_correction_preserves_submission_and_shows_employee_reason(self):
         self._post("/admin/hr/onboarding/profile", {
+            "personal_email": "david.personal@example.com",
             "address_line1": "1 Main", "city": "Salt Lake City", "state": "UT",
             "zip_code": "84101", "emergency_name": "Val",
             "emergency_relationship": "Coworker", "emergency_phone": "8015550199",

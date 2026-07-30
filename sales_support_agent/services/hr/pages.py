@@ -72,6 +72,40 @@ _HR_STYLES = """
   .hr-setup-step__meta { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
   .hr-setup-step__owner { color:var(--agent-ink-muted); font:700 11px/1.3 Montserrat,Inter,sans-serif; }
   .hr-btn-danger { background:#8b3a32; }
+  .employee-app-header { position:sticky; top:0; z-index:60; background:var(--agent-surface); border-bottom:1px solid var(--agent-border); box-shadow:0 6px 20px var(--agent-shadow); }
+  .employee-app-header__row { width:min(100%,1320px); min-height:64px; margin:0 auto; padding:10px 24px; display:flex; align-items:center; justify-content:space-between; gap:20px; }
+  .employee-app-brand { display:inline-flex; align-items:center; gap:10px; color:var(--agent-ink); text-decoration:none; font:900 24px/1 Montserrat,Inter,sans-serif; letter-spacing:-.03em; }
+  .employee-app-brand img { display:block; width:36px; height:36px; border-radius:10px; }
+  .employee-app-brand span span { color:var(--agent-blue); }
+  .employee-app-account { display:flex; align-items:center; gap:12px; color:var(--agent-ink-muted); font-size:13px; }
+  .employee-app-account > span { max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .employee-app-account a { min-height:40px; display:inline-flex; align-items:center; padding:0 12px; border:1px solid var(--agent-border); border-radius:var(--agent-radius-control); color:var(--agent-ink); text-decoration:none; font:700 12px Montserrat,Inter,sans-serif; }
+  .employee-app-tabs { width:min(100%,1320px); margin:0 auto; padding:0 24px 10px; display:flex; gap:6px; overflow-x:auto; scrollbar-width:thin; }
+  .employee-app-tabs a { min-height:40px; display:inline-flex; align-items:center; padding:0 13px; border-radius:var(--agent-radius-control); color:var(--agent-ink-muted); text-decoration:none; white-space:nowrap; font:700 12px Montserrat,Inter,sans-serif; }
+  .employee-app-tabs a[aria-current="page"] { background:var(--agent-blue-soft); color:var(--agent-ink); box-shadow:inset 0 -2px 0 var(--agent-blue); }
+  .employee-welcome { display:flex; align-items:center; justify-content:space-between; gap:24px; padding:24px; margin-bottom:20px; border:1px solid var(--agent-border); border-radius:var(--agent-radius-card); background:var(--agent-surface); }
+  .employee-welcome h1 { margin:4px 0 6px; color:var(--agent-ink); font:800 26px/1.2 Montserrat,Inter,sans-serif; }
+  .employee-welcome p { margin:0; color:var(--agent-ink-muted); line-height:1.55; }
+  .employee-clock-cta { flex:0 0 auto; min-height:46px; display:inline-flex; align-items:center; }
+  .employee-install-help { margin:-6px 0 20px; border:1px solid var(--agent-border); border-radius:var(--agent-radius-panel); background:var(--agent-surface); }
+  .employee-install-help summary { min-height:46px; display:flex; align-items:center; padding:0 16px; color:var(--agent-ink); cursor:pointer; font:700 13px Montserrat,Inter,sans-serif; }
+  .employee-install-help summary::marker { color:var(--agent-blue-strong); }
+  .employee-install-help > div { padding:0 16px 14px; color:var(--agent-ink-muted); font-size:13px; line-height:1.5; }
+  .employee-install-help p { margin:8px 0 0; }
+  .employee-action-panel { margin-bottom:20px; padding:20px; border:1px solid var(--agent-support); border-radius:var(--agent-radius-card); background:var(--agent-surface-soft); }
+  .employee-action-panel--ready { border-color:var(--agent-good); background:var(--agent-blue-soft); }
+  .employee-action-panel h2 { margin:5px 0 5px; color:var(--agent-ink); font:800 20px/1.3 Montserrat,Inter,sans-serif; }
+  .employee-action-panel > p { margin:0; color:var(--agent-ink-muted); line-height:1.5; }
+  .employee-action-panel ul { display:grid; gap:10px; padding:0; margin:16px 0 0; list-style:none; }
+  .employee-action { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:14px; border:1px solid var(--agent-border); border-radius:var(--agent-radius-panel); background:var(--agent-surface); }
+  .employee-action strong { color:var(--agent-ink); }
+  .employee-action p { margin:3px 0 0; color:var(--agent-ink-muted); font-size:13px; line-height:1.45; }
+  .employee-action .hr-btn { flex:0 0 auto; }
+  .hr-training-steps { display:grid; gap:14px; max-width:900px; padding:0; margin:20px 0; list-style:none; counter-reset:training; }
+  .hr-training-steps li { counter-increment:training; display:grid; grid-template-columns:42px minmax(0,1fr); gap:14px; padding:18px; border:1px solid var(--agent-border); border-radius:var(--agent-radius-panel); background:var(--agent-surface); }
+  .hr-training-steps li::before { content:counter(training); width:36px; height:36px; display:grid; place-items:center; border-radius:50%; background:var(--agent-blue-soft); color:var(--agent-ink); font:800 13px Montserrat,Inter,sans-serif; }
+  .hr-training-steps h2 { margin:1px 0 5px; color:var(--agent-ink); font:800 16px/1.3 Montserrat,Inter,sans-serif; }
+  .hr-training-steps p { margin:0; color:var(--agent-ink-muted); line-height:1.5; }
   .hr-mobile-nav { display:none; }
   @media (max-width: 768px) {
     body { padding-bottom:76px; }
@@ -88,6 +122,17 @@ _HR_STYLES = """
     .hr-setup-step { grid-template-columns:38px minmax(0,1fr); padding:16px 14px; }
     .hr-setup-step__meta { grid-column:2; justify-content:flex-start; }
     .hr-setup-step__meta .hr-btn { width:100%; min-height:44px; text-align:center; box-sizing:border-box; }
+    .employee-app-header__row { min-height:58px; padding:9px 16px; }
+    .employee-app-brand { font-size:21px; }
+    .employee-app-brand img { width:34px; height:34px; }
+    .employee-app-account > span { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
+    .employee-app-tabs { padding:0 16px 8px; }
+    .employee-welcome { align-items:stretch; flex-direction:column; padding:18px 16px; }
+    .employee-welcome h1 { font-size:23px; }
+    .employee-clock-cta { justify-content:center; width:100%; }
+    .employee-action { align-items:stretch; flex-direction:column; }
+    .employee-action .hr-btn { width:100%; min-height:44px; text-align:center; }
+    .hr-training-steps li { grid-template-columns:38px minmax(0,1fr); padding:16px 14px; }
     .hr-btn { min-height:44px; }
     .hr-js .hr-tbl { display:block; width:100%; max-width:100%; overflow:visible; border:0; background:transparent; }
     .hr-js .hr-tbl thead { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
@@ -114,10 +159,48 @@ _HR_STYLES = """
 def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str:
     perms = (user or {}).get("permissions") or set()
     is_super = bool((user or {}).get("is_superadmin"))
-    nav = render_agent_nav(
-        "hr", hr_section=active, permissions=perms, is_superadmin=is_super,
-        user=user, include_content_target=False,
-    )
+    elevated_hr_permissions = {
+        "hr.people.view", "hr.people.manage", "hr.compensation.view",
+        "hr.compensation.manage", "hr.time.approve_team", "hr.payroll",
+        "hr.payroll.view", "hr.payroll.prepare", "hr.payroll.approve",
+        "hr.payroll.submit", "hr.settings.manage", "hr.audit.view",
+    }
+    employee_mode = not is_super and not elevated_hr_permissions.intersection(perms)
+    if employee_mode:
+        employee_links = (
+            ("dashboard", "Home", "/admin/hr"),
+            ("time", "Time & PTO", "/admin/hr/time"),
+            ("onboarding", "My information", "/admin/hr/onboarding"),
+            ("policies", "Policies", "/admin/hr/policies"),
+            ("pay_statements", "Pay statements", "/admin/hr/pay-statements"),
+        )
+        def _employee_link(key: str, label: str, href: str) -> str:
+            current = ' aria-current="page"' if active == key else ""
+            return f'<a href="{href}"{current}>{label}</a>'
+
+        link_html = "".join(
+            _employee_link(key, label, href)
+            for key, label, href in employee_links
+        )
+        nav = f"""
+        <header class="employee-app-header">
+          <div class="employee-app-header__row">
+            <a class="employee-app-brand" href="/admin/hr" aria-label="Anata employee home">
+              <img src="/brand-static/agent-favicon.png" alt="" width="36" height="36">
+              <span>agent<span aria-hidden="true">.</span></span>
+            </a>
+            <div class="employee-app-account">
+              <span>{_esc((user or {}).get("name") or (user or {}).get("email") or "Employee")}</span>
+              <a href="/admin/logout">Sign out</a>
+            </div>
+          </div>
+          <nav class="employee-app-tabs" aria-label="Employee app">{link_html}</nav>
+        </header>"""
+    else:
+        nav = render_agent_nav(
+            "hr", hr_section=active, permissions=perms, is_superadmin=is_super,
+            user=user, include_content_target=False,
+        )
     styles = render_agent_nav_styles()
     form_token = csrf_token(user)
     mobile_items = (
@@ -136,6 +219,11 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
     return f"""<!doctype html>
 <html lang="en"><head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#2B3644">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Anata">
+  <link rel="manifest" href="/app.webmanifest">
   <meta name="hr-csrf-token" content="{_esc(form_token)}">
   <script>document.documentElement.classList.add('hr-js');</script>
   <title>agent | HR — {_esc(title)}</title>
@@ -149,6 +237,11 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
   <main id="agent-main-content" class="hr-main app-container app-page">{body}</main>
   <nav class="hr-mobile-nav" aria-label="Employee HR shortcuts">{mobile_nav}</nav>
   <script>
+    if ('serviceWorker' in navigator) {{
+      window.addEventListener('load', function() {{
+        navigator.serviceWorker.register('/service-worker.js').catch(function() {{}});
+      }});
+    }}
     var csrfMeta = document.querySelector('meta[name="hr-csrf-token"]');
     document.querySelectorAll('form[method="post"]').forEach(function(form) {{
       if (!form.querySelector('input[name="_csrf_token"]') && csrfMeta) {{
@@ -446,6 +539,7 @@ def _flash(flash: Optional[str]) -> str:
         "invalid_request": "Check the PTO dates and requested hours.",
         "employment_saved": "Employment setup saved.",
         "profile_saved": "Personal and emergency information saved.",
+        "personal_email_invalid": "Add a valid personal email outside anatainc.com.",
         "w4_saved": "W-4 elections securely saved.",
         "attestations_saved": "Employee attestations saved.",
         "onboarding_complete": "Onboarding approved and activated.",
@@ -587,26 +681,91 @@ def render_hr_dashboard(stats: dict, *, user, flash=None, manager_view=True) -> 
     </section>
     <section class="hr-callout"><div class="hr-kicker">Action queue</div><ul>{attention}</ul></section>
     """
+    required_actions = stats.get("required_actions") or []
+    required_rows = "".join(
+        f"""<li class="employee-action">
+          <div><strong>{_esc(item.get("label"))}</strong>
+          <p>{_esc(item.get("description"))}</p></div>
+          <a class="hr-btn" href="{_esc(item.get("url"))}">Complete</a>
+        </li>"""
+        for item in required_actions
+    )
+    required_panel = (
+        f"""<section class="employee-action-panel" aria-labelledby="employee-action-title">
+          <div class="hr-kicker">Your next steps</div>
+          <h2 id="employee-action-title">Finish {len(required_actions)} required item{'s' if len(required_actions) != 1 else ''}</h2>
+          <p>Each button opens the exact place you need. Only you and authorized HR administrators can see these records.</p>
+          <ul>{required_rows}</ul>
+        </section>"""
+        if required_actions else
+        """<section class="employee-action-panel employee-action-panel--ready" role="status">
+          <div class="hr-kicker">You are up to date</div>
+          <h2>No HR information needs your attention.</h2>
+          <p>You can clock your day, request PTO, review policies, or open your pay statements.</p>
+        </section>"""
+    )
     employee_cards = f"""
+    <section class="employee-welcome">
+      <div><div class="hr-kicker">Anata employee app</div>
+      <h1>Your workday and HR, in one place.</h1>
+      <p>Clock in, finish required information, request time off, and view your own pay records.</p></div>
+      <a class="hr-btn employee-clock-cta" href="/admin/hr/time">Open today’s time</a>
+    </section>
+    <details class="employee-install-help">
+      <summary>Add Agent to your phone’s home screen</summary>
+      <div>
+        <p><strong>iPhone or iPad:</strong> Open this page in Safari, tap Share, then choose “Add to Home Screen.”</p>
+        <p><strong>Android:</strong> Open this page in Chrome, open the browser menu, then choose “Install app” or “Add to Home screen.”</p>
+        <p>The Agent icon will open this employee app. Stay signed in only on a phone you control.</p>
+      </div>
+    </details>
+    {required_panel}
     <div class="hr-cards">
       <div class="hr-card"><div class="n">{stats.get('onboarding_steps_complete',0)}/5</div><div class="l">Onboarding steps</div></div>
       <div class="hr-card"><div class="n">{stats.get('pto_available',0):.2f}</div><div class="l">PTO hours available</div></div>
       <div class="hr-card"><div class="n">{stats.get('pending_pto',0)}</div><div class="l">PTO requests pending</div></div>
       <div class="hr-card"><div class="n">{stats.get('pending_corrections',0)}</div><div class="l">Time corrections pending</div></div>
     </div>
-    <section class="hr-dashboard-action" aria-label="Your next HR action">
-      <p class="hr-sub">Complete your onboarding, clock your day, or review your own time and PTO.</p>
-      <a class="hr-btn" href="/admin/hr/onboarding">Continue onboarding</a>
-      <a class="hr-btn hr-btn-light" href="/admin/hr/time">Open time &amp; PTO</a>
-    </section>
     """
     body = f"""
     {_flash(flash)}
-    <h1 class="hr-h1">HR Dashboard.</h1>
-    <p class="hr-sub">People, time, and payroll for Anata — all in one place.</p>
+    {'' if not manager_view else '<h1 class="hr-h1">HR Dashboard.</h1><p class="hr-sub">People, time, and payroll for Anata — all in one place.</p>'}
     {manager_cards if manager_view else employee_cards}
     """
     return hr_shell("Dashboard", "dashboard", body, user=user)
+
+
+def render_hr_access_training(*, user, flash=None) -> str:
+    """Plain-English operator training for granting and ending employee access."""
+    body = f"""
+    {_flash(flash)}
+    <div class="hr-row-head">
+      <div>
+        <div class="hr-kicker">David and Val training</div>
+        <h1 class="hr-h1">Give an employee secure app access</h1>
+        <p class="hr-sub">Follow these steps in order. Employees receive only their own HR tools unless you deliberately grant more.</p>
+      </div>
+      <a class="hr-btn" href="/admin/hr/employees">Open employees</a>
+    </div>
+    <div class="hr-callout">
+      <strong>Before you begin</strong>
+      <p>Create the employee record using the exact Google account they will use to sign in. Their personal contact email is collected separately during onboarding and never gives Anata access to their inbox.</p>
+    </div>
+    <ol class="hr-training-steps">
+      <li><div><h2>Create or review the employee record</h2><p>Confirm the name, sign-in email, worker type, pay basis, team, status, and hire date. Keep contractors outside W-2 payroll.</p></div></li>
+      <li><div><h2>Create the secure invitation</h2><p>Open the employee and select “Create secure invitation.” Email the generated link only to the employee’s sign-in address. The link expires and cannot be reused after acceptance.</p></div></li>
+      <li><div><h2>Ask the employee to install the app</h2><p>They open the invitation, sign in, visit the HR home page, then use “Add to Home Screen” on iPhone or “Install app” on Android. The Agent icon appears on the phone.</p></div></li>
+      <li><div><h2>Have the employee finish required items</h2><p>Their home page lists exactly what is missing. They add a personal contact email, complete their profile, sign their W-4, finish the employee I-9 step, and acknowledge policies.</p></div></li>
+      <li><div><h2>Test employee-only access</h2><p>Ask them to open Home, Time &amp; PTO, My information, Policies, and Pay statements. They should not see coworkers, payroll preparation, company settings, reports, Sales, Finance, or other operator tools.</p></div></li>
+      <li><div><h2>Complete employer review</h2><p>David or Val reviews the employee’s original I-9 documents outside the app, records only the allowed evidence, and follows up on any remaining setup items.</p></div></li>
+      <li><div><h2>End access safely when employment ends</h2><p>Start the Offboarding checklist. If access must stop immediately, mark the employee inactive; Agent suspends their account on the next request while preserving time, pay, tax, and audit history.</p></div></li>
+    </ol>
+    <div class="hr-callout warn">
+      <strong>Never do these things</strong>
+      <p>Do not share invitation links in a group chat, request an employee’s personal-email password, upload I-9 document images, choose the employee’s W-4 elections, or reuse another person’s account.</p>
+    </div>
+    """
+    return hr_shell("Access training", "employees", body, user=user)
 
 
 def _role_badge(role: str) -> str:
@@ -651,7 +810,10 @@ def render_hr_employees(employees: list, *, user, flash=None) -> str:
     {_flash(flash)}
     <div class="hr-row-head">
       <div><h1 class="hr-h1">Employees</h1><p class="hr-sub" style="margin:0">{len(employees)} record(s)</p></div>
-      <a class="hr-btn" href="/admin/hr/employees/new">+ Add employee</a>
+      <div class="hr-inline">
+        <a class="hr-btn hr-btn-light" href="/admin/hr/access-training">How to give access</a>
+        <a class="hr-btn" href="/admin/hr/employees/new">+ Add employee</a>
+      </div>
     </div>
     <table class="hr-tbl">
       <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Type</th><th>Pay</th><th>Status</th></tr></thead>
@@ -692,6 +854,11 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         f'<option value="{value}"{" selected" if value == worker_category else ""}>{label}</option>'
         for value, label in worker_options
     ) + "</select>"
+    personal_contact_status = (
+        f'<strong>Personal contact email on file:</strong> {_esc(e.get("personal_email"))}'
+        if e.get("personal_email")
+        else "<strong>Personal contact email missing.</strong> Ask the employee to add one under My information after signing in."
+    )
     body = f"""
     {err}
     <h1 class="hr-h1">{_esc(title)}</h1>
@@ -749,6 +916,11 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         for item in compensation_history
     ) or '<tr><td colspan="5" class="hr-empty">No pay changes recorded yet.</td></tr>'}</tbody></table></section>'''}
     {"" if is_new else f'''
+    <div class="hr-callout" style="margin-top:18px">
+      <div class="hr-kicker">Employee app readiness</div>
+      <p>{personal_contact_status}</p>
+      <p><a href="/admin/hr/access-training">Open the access and installation training</a>.</p>
+    </div>
     <form class="hr-form" method="post" action="/admin/hr/employees/{e["id"]}/invite" style="margin-top:18px">
       <div class="hr-kicker">Secure onboarding</div>
       <p>Creates an expiring employee-only invitation. The employee completes personal, W-4, I-9 employee, and policy steps after signing in.</p>
@@ -1072,8 +1244,11 @@ def render_hr_onboarding(
       <div class="hr-card"><div class="n">{'Done' if onboarding.get('i9_employee_complete') else 'Needed'}</div><div class="l">I-9 employee step</div></div>
       <div class="hr-card"><div class="n">{'Done' if onboarding.get('policies_complete') else 'Needed'}</div><div class="l">Policies</div></div>
     </div>
-    <form class="hr-form" method="post" action="/admin/hr/onboarding/profile">
+    <form class="hr-form" method="post" action="/admin/hr/onboarding/profile" id="personal-contact">
       <div class="hr-kicker">Personal and emergency information</div>
+      <label>Personal contact email</label>
+      <p class="hr-help" id="personal-email-help">Use an email you control outside Anata. This is for important employment contact only—Anata cannot read or connect to your inbox.</p>
+      <input type="email" name="personal_email" value="{_esc(employee.get('personal_email'))}" autocomplete="email" required aria-describedby="personal-email-help" placeholder="you@example.com">
       <label>Phone</label><input name="phone" value="{_esc(employee.get('phone'))}">
       <label>Address</label><input name="address_line1" value="{_esc(employee.get('address_line1'))}" required>
       <label>Address line 2</label><input name="address_line2" value="{_esc(employee.get('address_line2'))}">
@@ -1086,7 +1261,7 @@ def render_hr_onboarding(
       <div class="hr-actions"><button class="hr-btn" type="submit">Save personal information</button></div>
     </form>
     {w4_saved_state}
-    <details{w4_open} style="margin-top:18px">
+    <details{w4_open} style="margin-top:18px" id="w4">
       <summary class="hr-btn hr-btn-light">{'Review or replace my W-4' if onboarding.get('w4_complete') else 'Complete my W-4'}</summary>
     <form class="hr-form" method="post" action="/admin/hr/onboarding/w4" style="margin-top:12px">
       <div class="hr-kicker">Federal W-4</div>
@@ -1115,7 +1290,7 @@ def render_hr_onboarding(
       <div class="hr-actions"><button class="hr-btn" type="submit">Sign and save W-4</button></div>
     </form>
     </details>
-    <form class="hr-form" method="post" action="/admin/hr/onboarding/attestations" style="margin-top:18px">
+    <form class="hr-form" method="post" action="/admin/hr/onboarding/attestations" style="margin-top:18px" id="employee-attestations">
       <div class="hr-kicker">Employee attestations</div>
       <h2>What the I-9 is</h2>
       <p>The I-9 is the federal form every U.S. employer uses to confirm a new employee's identity and permission to work. It is separate from taxes and payroll.</p>
@@ -1131,7 +1306,7 @@ def render_hr_onboarding(
       <div class="hr-actions"><button class="hr-btn" type="submit">Save attestations</button></div>
     </form>
     """
-    return hr_shell("Onboarding", "employees", body, user=user)
+    return hr_shell("Onboarding", "onboarding", body, user=user)
 
 
 def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:

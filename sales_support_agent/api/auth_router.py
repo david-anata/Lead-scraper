@@ -262,7 +262,14 @@ def _rbac_login(request: Request, settings, email: str, name: str, picture: str 
     if existing:
         if existing.get("status") == "suspended":
             return _HTML(render_suspended_page(email), status_code=403)
-        if should_grant_default_tools and not existing.get("is_superadmin"):
+        employee_self_service_only = set(existing.get("permissions") or set()) == {
+            "hr.access"
+        }
+        if (
+            should_grant_default_tools
+            and not existing.get("is_superadmin")
+            and not employee_self_service_only
+        ):
             _store.set_user_permissions(
                 existing["id"],
                 sorted(set(existing.get("permissions") or set()).union(default_tools)),

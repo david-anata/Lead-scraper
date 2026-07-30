@@ -175,6 +175,8 @@ app.include_router(_settings_router_)
 # HR / payroll section — /admin/hr/* (employees, teams; payroll/settings later).
 from sales_support_agent.api.hr_router import router as _hr_router  # noqa: E402
 app.include_router(_hr_router)
+from sales_support_agent.api.employee_app_router import router as _employee_app_router  # noqa: E402
+app.include_router(_employee_app_router)
 
 # Sales Priorities — HubSpot-backed deal board (/admin/sales/*).
 from sales_support_agent.api.sales_router import router as _sales_router  # noqa: E402

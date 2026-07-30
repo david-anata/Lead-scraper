@@ -552,11 +552,15 @@ class ExternalInviteTests(unittest.TestCase):
 
     def test_external_with_matching_invite_cookie_is_allowed(self) -> None:
         from datetime import datetime, timedelta
+        import uuid
         from sales_support_agent.api.auth_router import _external_login_allowed
-        store.create_invite("contractor@gmail.com", None, token="ext-tok-1",
+        suffix = uuid.uuid4().hex
+        email = f"contractor-{suffix[:8]}@gmail.com"
+        token = f"ext-{suffix}"
+        store.create_invite(email, None, token=token,
                             expires_at=datetime.utcnow() + timedelta(days=7))
-        req = self._req({"pending_invite": "ext-tok-1"})
-        self.assertTrue(_external_login_allowed(req, "contractor@gmail.com"))
+        req = self._req({"pending_invite": token})
+        self.assertTrue(_external_login_allowed(req, email))
         # Same cookie, different google account → still rejected.
         self.assertFalse(_external_login_allowed(req, "other@gmail.com"))
 
@@ -1060,6 +1064,29 @@ class GoogleSessionMintTests(unittest.TestCase):
         self.assertEqual(
             user["permissions"],
             {"finance", "website_ops.seo", "website_ops.queue", "website_ops.reports"},
+        )
+
+    def test_employee_only_user_does_not_receive_domain_default_tools(self) -> None:
+        from sales_support_agent.api import auth_router
+
+        settings = _settings()
+        email = f"employee-only-{uuid.uuid4().hex}@anatainc.com"
+        uid = store.upsert_user(email, "Employee Only")
+        store.set_user_permissions(uid, ["hr.access"])
+
+        class _URL:
+            def __str__(self): return "https://agent.anatainc.com/"
+
+        class _Req:
+            cookies = {}
+            base_url = _URL()
+            app = type("A", (), {"state": type("St", (), {"agent_settings": settings})()})()
+
+        response = auth_router._rbac_login(_Req(), settings, email, "Employee Only")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            store.get_user_by_email(email)["permissions"],
+            {"hr.access"},
         )
 
 
