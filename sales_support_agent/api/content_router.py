@@ -73,6 +73,7 @@ class ContentRunInput(BaseModel):
         "episode_harvest",
         "social_distribution",
         "personal_distribution",
+        "daily_distribution",
         "weekly_retrospective",
         "newsletter_issue",
     ] = "scheduled"
@@ -190,6 +191,9 @@ def content_status(
             "source_asset_count": data["source_asset_count"],
             "artifact_count": data["artifact_count"],
             "publication_count": data["publication_count"],
+            "coverage_missing_count": data["coverage_missing_count"],
+            "daily_backlog_days": data["daily_backlog_days"],
+            "personal_cadence": data["personal_cadence"],
             "run_count": len(data["runs"]),
             "dependencies": data["dependencies"],
         }

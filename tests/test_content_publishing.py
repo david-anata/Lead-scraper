@@ -11,6 +11,7 @@ from sales_support_agent.models.content import ContentArtifact, ContentPublicati
 from sales_support_agent.models.database import Base
 from sales_support_agent.services.content_publishing import (
     channel_publish_readiness,
+    publish_daily_portfolio,
     publish_artifact,
 )
 
@@ -115,3 +116,25 @@ def test_staging_only_channel_never_publishes() -> None:
             actor="operator@example.com",
             confirmed=True,
         )
+
+
+def test_daily_portfolio_isolates_one_channel_failure(monkeypatch) -> None:
+    session = _session()
+    now = datetime(2026, 7, 28, 16, 0, tzinfo=timezone.utc)  # Tuesday
+    monkeypatch.setattr(
+        "sales_support_agent.services.content_publishing.channel_publish_readiness",
+        lambda channel: {"ready": True, "message": "ready"},
+    )
+
+    def fake_publish(session, *, channel, actor, now):
+        if channel == "instagram":
+            raise ConnectionError("provider unavailable")
+        return None
+
+    monkeypatch.setattr(
+        "sales_support_agent.services.content_publishing.publish_best_candidate",
+        fake_publish,
+    )
+    result = publish_daily_portfolio(session, actor="scheduler", now=now)
+    assert result["linkedin_company"]["status"] == "not_eligible"
+    assert result["instagram"]["status"] == "failed"
