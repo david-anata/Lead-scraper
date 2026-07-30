@@ -39,6 +39,13 @@ def _route_paths(app) -> set[str]:
 def test_both_entrypoints_mount_complete_building_surface() -> None:
     expected = {
         "/admin/building",
+        "/admin/building/sales",
+        "/admin/building/bookings",
+        "/admin/building/operations",
+        "/admin/building/billing",
+        "/admin/building/contacts",
+        "/admin/building/catalog",
+        "/admin/building/settings",
         "/admin/building/content",
         "/admin/building/agreement-readiness",
         "/api/public/building/offerings",
@@ -116,6 +123,18 @@ def test_root_entrypoint_serves_authenticated_building_control() -> None:
         assert page.status_code == 200, page.text
         assert "Building Control" in page.text
         assert "Your Arena decisions and remaining setup" in page.text
+        for route, title in {
+            "sales": "Sales",
+            "bookings": "Bookings",
+            "operations": "Operations",
+            "billing": "Billing",
+            "contacts": "Contacts",
+            "catalog": "Spaces &amp; website",
+            "settings": "Settings",
+        }.items():
+            section_page = client.get(f"/admin/building/{route}")
+            assert section_page.status_code == 200, section_page.text
+            assert f"<h1>{title}</h1>" in section_page.text
 
         public = client.get("/api/public/building/offerings")
         assert public.status_code == 200, public.text

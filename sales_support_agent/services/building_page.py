@@ -6,12 +6,58 @@ import html
 import re
 from collections import Counter
 from typing import Any
+from uuid import uuid4
 
 from sales_support_agent.services.admin_nav import (
     render_agent_favicon_links,
     render_agent_nav,
     render_agent_nav_styles,
 )
+
+
+BUILDING_VIEWS: dict[str, tuple[str, str]] = {
+    "today": (
+        "Today",
+        "Start with the customer, revenue, and building work that needs attention now.",
+    ),
+    "sales": (
+        "Sales",
+        "Respond to inquiries, qualify opportunities, and schedule tours.",
+    ),
+    "bookings": (
+        "Bookings",
+        "Review dates, prepare holds and quotes, and move each booking through its next safe step.",
+    ),
+    "operations": (
+        "Operations",
+        "Coordinate tours, service work, calendar readiness, and event-day checklists.",
+    ),
+    "billing": (
+        "Billing",
+        "Prepare invoices, verify payments, and manage collection or adjustment work.",
+    ),
+    "contacts": (
+        "Contacts",
+        "Maintain customer relationships, communication permission, audiences, and campaigns.",
+    ),
+    "catalog": (
+        "Spaces & website",
+        "Manage spaces, offerings, public visibility, and approved media.",
+    ),
+    "settings": (
+        "Settings",
+        "Change Arena business rules, pricing, provider readiness, and governed administration.",
+    ),
+}
+
+
+def _building_view_navigation(active_view: str) -> str:
+    links = []
+    for key, (label, _) in BUILDING_VIEWS.items():
+        current = ' aria-current="page"' if key == active_view else ""
+        href = "/admin/building" if key == "today" else f"/admin/building/{key}"
+        links.append(f'<a href="{href}"{current}>{_esc(label)}</a>')
+    return "".join(links)
 
 
 def _esc(value: Any) -> str:
@@ -177,6 +223,7 @@ def render_customer_status_link_result(
 def render_building_page(
     *,
     user: dict,
+    view: str = "today",
     spaces: list[dict[str, Any]],
     offerings: list[dict[str, Any]],
     contacts: list[dict[str, Any]],
@@ -204,6 +251,15 @@ def render_building_page(
     notice: str = "",
     error: str = "",
 ) -> str:
+    view = view if view in BUILDING_VIEWS else "today"
+    page_title, page_purpose = BUILDING_VIEWS[view]
+    workspace_navigation = _building_view_navigation(view)
+    generated_segment_id = f"audience-{uuid4().hex[:12]}"
+    generated_campaign_id = f"campaign-{uuid4().hex[:12]}"
+    generated_reservation_id = f"event-{uuid4().hex[:12]}"
+    generated_review_key = f"date-review-{uuid4().hex}"
+    generated_billing_account_id = f"account-{uuid4().hex[:12]}"
+    generated_billing_schedule_id = f"schedule-{uuid4().hex[:12]}"
     analytics = dict(analytics or {})
     privacy_requests = list(privacy_requests or [])
     roster_imports = list(roster_imports or [])
@@ -260,13 +316,14 @@ def render_building_page(
 
     media_blocks = "".join(
         f"""
-        <article class="checklist-card">
-          <div class="checklist-head">
+        <details class="checklist-card media-space">
+          <summary class="checklist-head">
             <div><strong>{_esc(space.get("name"))}</strong><span class="sub">{len(space.get("media", []))} assigned asset(s)</span></div>
-          </div>
+            <span class="media-space__action">Manage media</span>
+          </summary>
           <form class="form-grid" method="post" action="/admin/building/spaces/{_esc(space.get("id"))}/media">
             <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-            <div class="field"><label>Stable media ID</label><input name="media_id" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="office-201-hero"></div>
+            <input type="hidden" name="media_id" value="media-{uuid4().hex[:12]}">
             <div class="field"><label>Asset URL or site path</label><input name="src" required placeholder="/media/office-201.webp"></div>
             <div class="field"><label>Type</label><select name="kind"><option value="image">Image</option><option value="video">Video</option></select></div>
             <div class="field"><label>Placement</label><select name="placement"><option value="card">Availability card</option><option value="hero">Page hero</option><option value="gallery">Gallery</option><option value="floor_plan">Floor plan</option></select></div>
@@ -286,7 +343,7 @@ def render_building_page(
                 for media in sorted(space.get("media", []), key=lambda item: (int(item.get("sort_order") or 0), str(item.get("id") or "")))
             ) or '<tr><td colspan="4"><div class="empty"><strong>No media assigned.</strong><br>Save a draft first, then approve it only after confirming the room and alt text.</div></td></tr>'}
           </tbody></table></div>
-        </article>
+        </details>
         """
         for space in spaces
     ) or '<div class="empty"><strong>No spaces available for media assignment.</strong><br>Add reviewed inventory first.</div>'
@@ -1265,6 +1322,7 @@ def render_building_page(
                 f" · {item.get('assigned_owner') or 'assign an owner'}"
             ),
             "next": "Triage or update the service request",
+            "href": "/admin/building/operations",
         })
     for item in inquiries:
         lifecycle_stage = str((item.get("lifecycle") or {}).get("stage") or "new")
@@ -1280,6 +1338,7 @@ def render_building_page(
                 f" · respond by {item.get('response_due_at') or 'not set'}"
             ),
             "next": "Retry HubSpot" if crm_failed else "Respond and qualify",
+            "href": "/admin/building/sales",
         })
     for item in calendar_projections:
         if item.get("status") != "error":
@@ -1290,6 +1349,7 @@ def render_building_page(
             "title": item.get("space_name") or item.get("reservation_id"),
             "detail": item.get("last_error") or "Calendar synchronization failed",
             "next": "Review and retry calendar sync",
+            "href": "/admin/building/operations",
         })
     for item in checklists:
         if item.get("status") != "open":
@@ -1306,6 +1366,7 @@ def render_building_page(
             "title": item.get("title"),
             "detail": f"{item.get('space_name') or item.get('reservation_id')} · {remaining} required remaining",
             "next": "Complete or explicitly waive required items",
+            "href": "/admin/building/operations",
         })
     for item in collections:
         if item.get("status") in {"resolved", "waived"}:
@@ -1320,10 +1381,11 @@ def render_building_page(
                 f" · {item.get('assigned_owner') or 'unassigned'}"
             ),
             "next": "Assign and schedule follow-up" if not item.get("assigned_owner") else "Complete the next collection action",
+            "href": "/admin/building/billing",
         })
     priority_items.sort(key=lambda item: (-int(item["score"]), str(item["title"])))
     priority_rows = "".join(
-        f"<tr><td>{_badge(str(item.get('type')))}</td><td><strong>{_esc(item.get('title'))}</strong><span class=\"sub\">{_esc(item.get('detail'))}</span></td><td>{_esc(item.get('next'))}</td></tr>"
+        f"<tr><td>{_badge(str(item.get('type')))}</td><td><strong>{_esc(item.get('title'))}</strong><span class=\"sub\">{_esc(item.get('detail'))}</span></td><td><a class=\"queue-action\" href=\"{_esc(item.get('href'))}\">{_esc(item.get('next'))} →</a></td></tr>"
         for item in priority_items[:12]
     ) or '<tr><td colspan="3"><div class="empty"><strong>No urgent operating actions.</strong><br>New leads, failed integrations, readiness work, and service requests will appear here.</div></td></tr>'
     segment_options = "".join(
@@ -1346,7 +1408,7 @@ def render_building_page(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Building Control · agent</title>
+  <title>{_esc(page_title)} · Building · agent</title>
   {favicons}
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
@@ -1355,28 +1417,40 @@ def render_building_page(
     :root{{--ink:#2B3644;--paper:#F9F7F3;--white:#fff;--sky:#85BBDA;--teal:#18776f;--amber:#9b650e;--border:rgba(43,54,68,.14);}}
     {nav_styles}
     body{{margin:0;background:linear-gradient(180deg,#eef6fa 0,#f9f7f3 320px);color:var(--ink);font-family:"Inter","Segoe UI",sans-serif;}}
-    .shell{{max-width:1320px;margin:0 auto;padding:42px 24px 80px;}}
-    .page-head{{display:flex;align-items:end;justify-content:space-between;gap:28px;margin-bottom:26px;}}
+    .shell{{max-width:1320px;margin:0 auto;padding:30px 24px 72px;}}
+    .page-head{{display:flex;align-items:end;justify-content:space-between;gap:28px;margin-bottom:18px;}}
     .eyebrow{{font-size:12px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:#397a9d;}}
     h1,h2{{font-family:"Montserrat",sans-serif;margin:0;letter-spacing:-.045em;}}
-    h1{{font-size:clamp(32px,4vw,52px);margin-top:8px;}} h2{{font-size:22px;}}
+    h1{{font-size:clamp(32px,3.5vw,46px);margin-top:6px;}} h2{{font-size:22px;}}
     .purpose{{max-width:700px;color:rgba(43,54,68,.7);line-height:1.6;margin:12px 0 0;}}
     .site-link{{display:inline-flex;min-height:42px;align-items:center;padding:0 16px;border:1px solid var(--border);border-radius:9px;background:#fff;color:var(--ink);font-weight:700;text-decoration:none;}}
     .metrics{{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--border);border-radius:14px;background:#fff;overflow:hidden;}}
-    .metric{{padding:22px;border-right:1px solid var(--border);}} .metric:last-child{{border:0;}}
+    .metric{{padding:16px 20px;border-right:1px solid var(--border);}} .metric:last-child{{border:0;}}
     .metric span{{display:block;font-size:12px;color:rgba(43,54,68,.6);text-transform:uppercase;letter-spacing:.08em;}}
-    .metric strong{{display:block;font-family:"Montserrat";font-size:30px;margin-top:8px;}}
+    .metric strong{{display:block;font-family:"Montserrat";font-size:26px;margin-top:5px;}}
     .notice{{margin-top:18px;padding:16px 18px;border:1px solid rgba(155,101,14,.28);border-radius:12px;background:#fff8e8;line-height:1.55;}}
-    .daily-guide{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:18px;border:1px solid var(--border);border-radius:14px;background:#fff;overflow:hidden;}}
+    .daily-guide{{display:none;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:18px;border:1px solid var(--border);border-radius:14px;background:#fff;overflow:hidden;}}
     .daily-guide__item{{padding:17px 19px;border-right:1px solid var(--border);}}
     .daily-guide__item:last-child{{border-right:0;}}
     .daily-guide__item span{{display:block;color:#397a9d;font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;}}
     .daily-guide__item strong{{display:block;margin-top:5px;font-size:14px;}}
     .daily-guide__item p{{margin:4px 0 0;color:rgba(43,54,68,.62);font-size:12px;line-height:1.45;}}
-    .workspace-nav{{position:sticky;top:0;z-index:8;display:flex;align-items:center;gap:6px;margin:18px 0 0;padding:8px;border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.96);box-shadow:0 8px 24px rgba(43,54,68,.07);overflow-x:auto;scrollbar-width:thin;}}
+    .workspace-nav{{position:sticky;top:0;z-index:8;display:flex;align-items:center;gap:6px;margin:14px 0 0;padding:8px;border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.96);box-shadow:0 8px 24px rgba(43,54,68,.07);overflow-x:auto;scrollbar-width:thin;}}
     .workspace-nav a{{display:inline-flex;align-items:center;min-height:36px;padding:0 12px;border-radius:7px;color:rgba(43,54,68,.72);font-size:13px;font-weight:700;text-decoration:none;white-space:nowrap;}}
     .workspace-nav a:hover,.workspace-nav a:focus-visible{{background:#eef6fa;color:var(--ink);}}
-    .workspace-nav a:first-child{{background:var(--ink);color:#fff;}}
+    .workspace-nav a[aria-current="page"]{{background:var(--ink);color:#fff;}}
+    .building-view{{display:none;}}
+    body.view-today .view-today,
+    body.view-sales .view-sales,
+    body.view-bookings .view-bookings,
+    body.view-operations .view-operations,
+    body.view-billing .view-billing,
+    body.view-contacts .view-contacts,
+    body.view-catalog .view-catalog,
+    body.view-settings .view-settings{{display:block;}}
+    body:not(.view-today) .today-only{{display:none;}}
+    body.view-sales #incoming-inquiries{{order:1;}} body.view-sales #add-assisted-lead{{order:2;}} body.view-sales #start-booking-workflow{{order:3;}} body.view-sales #building-tours{{order:4;}}
+    body.view-bookings #bookings-and-holds{{order:1;}} body.view-bookings #review-event-date{{order:2;}}
     .launch-command{{margin-top:20px;border:1px solid rgba(57,122,157,.28);border-radius:16px;background:linear-gradient(135deg,#fff 0,#f3f9fc 100%);overflow:hidden;}}
     .launch-command__head{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:24px;align-items:center;padding:25px 26px;border-bottom:1px solid var(--border);}}
     .launch-command h2{{font-size:25px;}} .launch-command p{{max-width:760px;margin:7px 0 0;color:rgba(43,54,68,.67);line-height:1.55;}}
@@ -1396,6 +1470,8 @@ def render_building_page(
     th{{padding:12px 18px;text-align:left;background:#f8f8f6;color:rgba(43,54,68,.62);font-size:11px;text-transform:uppercase;letter-spacing:.08em;}}
     td{{padding:15px 18px;border-top:1px solid rgba(43,54,68,.09);vertical-align:top;}}
     .sub{{display:block;margin-top:4px;color:rgba(43,54,68,.58);font-size:12px;max-width:380px;}}
+    .queue-action{{display:inline-flex;align-items:center;min-height:36px;padding:0 11px;border-radius:8px;background:#eef6fa;color:#285f7b;font-size:12px;font-weight:800;text-decoration:none;}}
+    .queue-action:hover,.queue-action:focus-visible{{background:#dcecf4;color:var(--ink);}}
     .badge{{display:inline-block;border-radius:99px;padding:5px 8px;font-size:11px;font-weight:700;text-transform:capitalize;background:#edf0f2;}}
     .badge--ok{{background:#e4f4f1;color:#11665f;}} .badge--warn{{background:#fff0d2;color:#845407;}} .badge--bad{{background:#fff0ed;color:#8b2f23;}} .badge--muted{{background:#edf0f2;color:#56616d;}}
     .empty{{padding:18px 0;color:rgba(43,54,68,.62);line-height:1.55;}}
@@ -1428,6 +1504,7 @@ def render_building_page(
     .launch-handoff__step p{{margin:5px 0 0;color:rgba(43,54,68,.66);font-size:12px;line-height:1.5;}}
     .launch-handoff__step a{{display:inline-flex;margin-top:10px;color:#397a9d;font-size:12px;font-weight:800;}}
     .advanced-tools{{border-style:dashed;}} .advanced-tools>.panel-head{{background:#fbfbf9;}} .advanced-label{{display:inline-flex;margin-left:8px;padding:3px 7px;border-radius:99px;background:#edf0f2;color:#56616d;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;vertical-align:middle;}}
+    .task-creator>summary{{display:flex;align-items:center;justify-content:space-between;min-height:48px;padding:0 22px;cursor:pointer;list-style:none;color:#397a9d;font-size:13px;font-weight:800;}} .task-creator>summary::-webkit-details-marker{{display:none;}} .task-creator>summary::after{{content:"Open";font-size:11px;color:rgba(43,54,68,.56);}} .task-creator[open]>summary{{border-bottom:1px solid var(--border);background:#f4f9fc;}} .task-creator[open]>summary::after{{content:"Close";}}
     .setup-workspace{{grid-column:1/-1;border:1px solid var(--border);border-radius:14px;background:#f7fafb;overflow:hidden;}}
     .setup-workspace>summary{{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:20px 22px;cursor:pointer;list-style:none;}}
     .setup-workspace>summary::-webkit-details-marker{{display:none;}}
@@ -1440,48 +1517,40 @@ def render_building_page(
     .advanced-disclosure>summary{{padding:16px 22px;cursor:pointer;color:#397a9d;font-size:13px;font-weight:800;list-style-position:inside;}} .advanced-disclosure[open]>summary{{border-bottom:1px solid var(--border);background:#f4f9fc;}}
     .roster-preview{{max-height:260px;overflow:auto;margin:10px 0 0;padding:10px 10px 10px 28px;border:1px solid var(--border);border-radius:8px;background:#f8f8f6;font-size:12px;line-height:1.6;min-width:320px;}}
     .checklist-list{{display:grid;gap:14px;padding:18px 22px;}} .checklist-group{{border:1px solid var(--border);border-radius:10px;overflow:hidden;}} .checklist-head{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 16px;background:#f8f8f6;}} .checklist-add{{display:grid;grid-template-columns:minmax(220px,1fr) auto auto;align-items:end;gap:10px;padding:12px 16px;border-top:1px solid var(--border);}} .checklist-add label:first-of-type{{display:grid;gap:5px;}}
+    .media-space{{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#fff;}} .media-space>summary{{cursor:pointer;list-style:none;}} .media-space>summary::-webkit-details-marker{{display:none;}} .media-space__action{{color:#397a9d;font-size:12px;font-weight:800;}} .media-space[open] .media-space__action{{color:rgba(43,54,68,.58);}} .media-space[open]>summary{{border-bottom:1px solid var(--border);}}
     .adjustment-evidence{{display:grid;grid-template-columns:repeat(2,minmax(130px,1fr));gap:6px;min-width:360px;}} .adjustment-evidence button{{justify-self:start;}}
     @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.daily-guide,.launch-handoff__steps{{grid-template-columns:1fr}}.daily-guide__item{{border-right:0;border-bottom:1px solid var(--border)}}.daily-guide__item:last-child{{border-bottom:0}}.grid,.setup-workspace__content{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}.launch-steps{{grid-template-columns:1fr 1fr}}.launch-step:nth-child(2){{border-right:0}}.launch-step:nth-child(-n+2){{border-bottom:1px solid var(--border)}}}}
     @media(max-width:700px){{.decision-card__summary{{grid-template-columns:42px minmax(0,1fr)}}.decision-card__state{{grid-column:2;justify-self:start;text-align:left;max-width:none}}.decision-card__evidence{{grid-template-columns:1fr}}.decision-card__evidence>div+div{{border-left:0;border-top:1px solid var(--border)}}}}
-    @media(max-width:600px){{.page-head{{align-items:start;flex-direction:column}}.metrics{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--border)!important}}.metric:last-child{{border-bottom:0!important}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.launch-command__head{{grid-template-columns:1fr;padding:21px}}.launch-score{{width:78px;height:78px}}.launch-steps{{grid-template-columns:1fr}}.launch-step{{border-right:0;border-bottom:1px solid var(--border)!important}}.launch-step:last-child{{border-bottom:0!important}}.form-grid,.decision-form{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
+    @media(max-width:600px){{.page-head,.panel-head{{align-items:start;flex-direction:column}}.panel-head{{gap:9px;padding:18px}}.metric{{padding:14px 15px}}.metric strong{{font-size:22px}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.launch-command__head{{grid-template-columns:1fr;padding:21px}}.launch-score{{width:78px;height:78px}}.launch-steps{{grid-template-columns:1fr}}.launch-step{{border-right:0;border-bottom:1px solid var(--border)!important}}.launch-step:last-child{{border-bottom:0!important}}.form-grid,.decision-form{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
   </style>
 </head>
-<body class="app app--operator">
+<body class="app app--operator view-{_esc(view)}">
   {nav}
   <main id="agent-main-content" class="shell app-container app-page" tabindex="-1">
     {flash}
     <header class="page-head">
       <div>
         <div class="eyebrow">Building operations</div>
-        <h1>Building Control</h1>
-        <p class="purpose">Your staff workspace for responding to leads, scheduling tours, moving bookings forward, collecting payment, and preparing the building for customers.</p>
+        <h1>{_esc(page_title)}</h1>
+        <p class="purpose">{_esc(page_purpose)}</p>
       </div>
       <a class="site-link" href="https://anatabuilding.com" target="_blank" rel="noreferrer">Open public site ↗</a>
     </header>
-    <section class="metrics" aria-label="Building summary">
+    <section class="metrics today-only" aria-label="Building summary">
       <div class="metric"><span>Available spaces</span><strong>{availability.get("available", 0)}</strong></div>
       <div class="metric"><span>Needs response</span><strong>{needs_response}</strong></div>
       <div class="metric"><span>Tenant relationships</span><strong>{active_tenants}</strong></div>
       <div class="metric"><span>Open invoicing</span><strong>${open_invoice_cents / 100:,.0f}</strong></div>
     </section>
-    <section class="daily-guide" aria-label="How Building Control helps your team">
+    <section class="daily-guide today-only" aria-label="How Building Control helps your team">
       <div class="daily-guide__item"><span>Start here</span><strong>Work the Today queue</strong><p>It brings overdue leads, customer blockers, payment follow-up, and building tasks into one list.</p></div>
       <div class="daily-guide__item"><span>Move sales forward</span><strong>Use Sales and Bookings</strong><p>Qualify inquiries, schedule tours, review dates, prepare holds, and advance approved next steps.</p></div>
       <div class="daily-guide__item"><span>Keep delivery on track</span><strong>Use Billing and Operations</strong><p>See what is unpaid, incomplete, or needs staff attention before access and event day.</p></div>
     </section>
-    <nav class="workspace-nav" aria-label="Building Control sections">
-      <a href="#operator-queue">Today</a>
-      <a href="#incoming-inquiries">Sales</a>
-      <a href="#bookings-and-holds">Bookings</a>
-      <a href="#billing-and-collections">Billing</a>
-      <a href="#service-requests">Operations</a>
-      <a href="#inventory">Inventory</a>
-      <a href="#crm-email-list">CRM &amp; email</a>
-      <a href="#building-setup">Setup</a>
-    </nav>
+    <nav class="workspace-nav" aria-label="Building Control sections">{workspace_navigation}</nav>
     <div class="grid">
-      <section class="panel panel--wide" id="operator-queue"><div class="panel-head"><div><h2>Today</h2><p>The customer, revenue, readiness, and building actions that need attention first.</p></div><span class="count">{len(priority_items)} actions</span></div><div class="table-wrap"><table><thead><tr><th>Workstream</th><th>What needs attention</th><th>Next action</th></tr></thead><tbody>{priority_rows}</tbody></table></div></section>
-      <section class="panel panel--wide" id="building-performance">
+      <section class="panel panel--wide building-view view-today" id="operator-queue"><div class="panel-head"><div><h2>Today</h2><p>The customer, revenue, readiness, and building actions that need attention first.</p></div><span class="count">{len(priority_items)} actions</span></div><div class="table-wrap"><table><thead><tr><th>Workstream</th><th>What needs attention</th><th>Next action</th></tr></thead><tbody>{priority_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-today" id="building-performance">
         <div class="panel-head"><div><h2>Building performance</h2><p>Sales, utilization, collected cash, and overdue receivables. Missing evidence stays visibly missing.</p></div><span class="count">{_esc(inquiry_metrics.get("total", 0))} inquiries</span></div>
         <div class="metrics" aria-label="Building performance summary">
           <div class="metric"><span>Median first response</span><strong>{_metric_value(inquiry_metrics.get("median_first_response_hours"), suffix=" hr")}</strong></div>
@@ -1499,7 +1568,7 @@ def render_building_page(
           <p class="sub">Hold expiration: {_pct(operation_metrics.get("hold_expiration_rate"))} · Contract cycle: {_metric_value(operation_metrics.get("median_contract_cycle_hours"), suffix=" hr")} · Deposit cycle: {_metric_value(operation_metrics.get("median_deposit_cycle_hours"), suffix=" hr")} · Delivery feedback: {_esc(str(campaign_metrics.get("delivery_feedback") or "not configured").replace("_", " "))} · Campaign engagement telemetry: {_esc(str(campaign_metrics.get("engagement_tracking") or "not configured").replace("_", " "))}</p>
         </details>
       </section>
-      <details class="setup-workspace" id="building-setup">
+      <details class="setup-workspace building-view view-settings" id="building-setup">
         <summary><span><strong>Arena setup and administration</strong><span>{launch_ready_count} of 10 launch requirements are complete. Open this only to change business rules or finish provider setup.</span></span></summary>
         <div class="setup-workspace__content">
     <section class="launch-command panel--wide" aria-labelledby="arena-command-title">
@@ -1630,8 +1699,9 @@ def render_building_page(
       </section>
         </div>
       </details>
-      <section class="panel">
+      <section class="panel building-view view-contacts">
         <div class="panel-head"><div><h2>Add a CRM relationship</h2><p>One person can be a tenant, prospect, event host, or community member without duplication.</p></div></div>
+        <details class="task-creator"><summary>Add a person or relationship</summary>
         <form class="form-grid" method="post" action="/admin/building/contacts">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="contact-name">Full name</label><input id="contact-name" name="full_name" placeholder="Taylor Morgan"></div>
@@ -1646,9 +1716,11 @@ def render_building_page(
           <div class="field"><label for="contact-marketing">Marketing permission</label><select id="contact-marketing" name="marketing_status"><option value="unknown">Unknown / no promotional email</option><option value="subscribed">Subscribed</option><option value="unsubscribed">Unsubscribed</option></select></div>
           <div class="form-actions"><label class="check"><input type="checkbox" name="consent_confirmed" value="true"> I have documented consent for “Subscribed”</label><button class="primary" type="submit">Save contact</button></div>
         </form>
+        </details>
       </section>
-      <section class="panel">
+      <section class="panel building-view view-settings">
         <div class="panel-head"><div><h2>Preview a roster import</h2><p>Stage up to 500 tenant or community contacts before anything changes.</p></div></div>
+        <details class="task-creator"><summary>Import a contact roster</summary>
         <form class="form-grid" method="post" action="/admin/building/roster-imports/preview">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="roster-filename">List name</label><input id="roster-filename" name="filename" value="tenant-roster.csv" required></div>
@@ -1660,11 +1732,12 @@ def render_building_page(
           <div class="form-actions"><span class="form-note">Previewing creates a reviewable snapshot only. Applying it requires a separate typed confirmation.</span><button class="primary" type="submit">Preview roster</button></div>
         </form>
       </section>
-      <section class="panel">
+      <section class="panel building-view view-contacts">
         <div class="panel-head"><div><h2>Build an audience</h2><p>Audience rules remain explainable and respect permission and suppression.</p></div></div>
+        <details class="task-creator"><summary>Create an audience</summary>
         <form class="form-grid" method="post" action="/admin/building/segments">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <div class="field"><label for="segment-id">Stable ID</label><input id="segment-id" name="segment_id" required placeholder="active-tenants"></div>
+          <input type="hidden" name="segment_id" value="{_esc(generated_segment_id)}">
           <div class="field"><label for="segment-name">Audience name</label><input id="segment-name" name="name" required placeholder="Active tenants"></div>
           <div class="field field--wide"><label for="segment-description">Description</label><input id="segment-description" name="description" placeholder="People currently working from the building."></div>
           <div class="field field--wide"><label>Relationships</label><div class="check-stack"><label class="check"><input type="checkbox" name="relationship_types" value="tenant"> Tenant</label><label class="check"><input type="checkbox" name="relationship_types" value="tenant_employee"> Tenant employee</label><label class="check"><input type="checkbox" name="relationship_types" value="event_host"> Event host</label><label class="check"><input type="checkbox" name="relationship_types" value="prospect"> Prospect</label><label class="check"><input type="checkbox" name="relationship_types" value="community_member"> Community member</label><label class="check"><input type="checkbox" name="relationship_types" value="former_tenant"> Former tenant</label></div></div>
@@ -1672,12 +1745,15 @@ def render_building_page(
           <div class="field"><label>Marketing status</label><div class="check-stack"><label class="check"><input type="checkbox" name="marketing_statuses" value="subscribed" checked> Subscribed</label><label class="check"><input type="checkbox" name="marketing_statuses" value="unknown"> Unknown</label><label class="check"><input type="checkbox" name="marketing_statuses" value="unsubscribed"> Unsubscribed</label></div></div>
           <div class="form-actions"><label class="check"><input type="checkbox" name="is_active" value="true" checked> Audience active</label><button class="primary" type="submit">Save and preview audience</button></div>
         </form>
+        </details>
+        </details>
       </section>
-      <section class="panel panel--wide">
+      <section class="panel panel--wide building-view view-contacts">
         <div class="panel-head"><div><h2>Draft a campaign</h2><p>Saving creates a draft only. Preview, review, approval, scheduling, and delivery remain separate gates.</p></div></div>
+        <details class="task-creator"><summary>Create a campaign draft</summary>
         <form class="form-grid" method="post" action="/admin/building/campaigns">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <div class="field"><label for="campaign-id">Stable ID</label><input id="campaign-id" name="campaign_id" required placeholder="tenant-august-update"></div>
+          <input type="hidden" name="campaign_id" value="{_esc(generated_campaign_id)}">
           <div class="field"><label for="campaign-name">Internal campaign name</label><input id="campaign-name" name="name" required placeholder="August tenant update"></div>
           <div class="field"><label for="campaign-segment">Audience</label><select id="campaign-segment" name="segment_id" required><option value="">Choose a reviewed audience</option>{segment_options}</select></div>
           <div class="field"><label for="campaign-class">Message type</label><select id="campaign-class" name="communication_class"><option value="marketing">Optional marketing</option><option value="operational">Required tenant / event operations</option></select><span class="form-note">Operational notices only work with active tenant, tenant employee, or event host audiences. They cannot be used for promotions.</span></div>
@@ -1688,9 +1764,11 @@ def render_building_page(
           <div class="field field--wide"><label for="campaign-body">Plain-text message</label><textarea id="campaign-body" name="body_text" required placeholder="Warm, useful, and specific."></textarea></div>
           <div class="form-actions"><span class="form-note">This button never sends email.</span><button class="primary" type="submit">Save campaign draft</button></div>
         </form>
+        </details>
       </section>
-      <section class="panel panel--wide">
+      <section class="panel panel--wide building-view view-sales" id="add-assisted-lead">
         <div class="panel-head"><div><h2>Add an assisted lead</h2><p>Normalize Facebook Marketplace, Eventective, referral, phone, and walk-in leads into the same inquiry and CRM recovery queue.</p></div></div>
+        <details class="task-creator"><summary>Add a lead manually</summary>
         <form class="form-grid" method="post" action="/admin/building/inquiries">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="lead-kind">Journey</label><select id="lead-kind" name="kind"><option value="workspace">Workspace</option><option value="tour">Tour</option><option value="event">Event</option></select></div>
@@ -1707,9 +1785,11 @@ def render_building_page(
             <button class="primary" type="submit">Add lead to response queue</button>
           </div>
         </form>
+        </details>
       </section>
-      <section class="panel panel--wide">
+      <section class="panel panel--wide building-view view-sales" id="start-booking-workflow">
         <div class="panel-head"><div><h2>Start a booking workflow</h2><p>Create an event or workspace inquiry. This does not hold or confirm inventory.</p></div></div>
+        <details class="task-creator"><summary>Start a booking inquiry</summary>
         <form class="form-grid" method="post" action="/admin/building/reservations">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="reservation-kind">Journey</label><select id="reservation-kind" name="kind"><option value="workspace">Workspace</option><option value="event">Event</option></select></div>
@@ -1725,13 +1805,15 @@ def render_building_page(
           <div class="field field--wide"><label for="reservation-requirements">Requirements and operator notes</label><textarea id="reservation-requirements" name="requirements"></textarea></div>
           <div class="form-actions"><label class="check"><input type="checkbox" name="deposit_required" value="true" checked> Deposit required before confirmation</label><button class="primary" type="submit">Create booking inquiry</button></div>
         </form>
+        </details>
       </section>
-      <section class="panel panel--wide">
+      <section class="panel panel--wide building-view view-bookings" id="review-event-date">
         <div class="panel-head"><div><h2>Review an event date</h2><p>Create one authoritative setup-through-teardown window, conflict-check it, place a temporary Agent hold, and freeze a quote draft from approved terms. This does not send a contract, collect payment, or confirm a booking.</p></div></div>
+        <details class="task-creator"><summary>Review a date and prepare a hold</summary>
         <form class="form-grid" method="post" action="/admin/building/event-reviews">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="review-inquiry">Qualified event inquiry</label><select id="review-inquiry" name="inquiry_id" required><option value="">Choose accepted inquiry</option>{qualified_event_inquiry_options}</select></div>
-          <div class="field"><label for="review-id">Reservation ID</label><input id="review-id" name="reservation_id" required pattern="[A-Za-z0-9_-]{{4,64}}" placeholder="event-2026-001"></div>
+          <input type="hidden" name="reservation_id" value="{_esc(generated_reservation_id)}">
           <div class="field"><label for="review-space">Event space</label><select id="review-space" name="space_id" required><option value="">Choose space</option>{linked_space_options}</select></div>
           <div class="field"><label for="review-offering">Event offering</label><select id="review-offering" name="offering_id" required><option value="">Choose offering</option>{offering_options}</select></div>
           <div class="field"><label for="review-contact">Responsible contact</label><select id="review-contact" name="contact_id"><option value="">Link later</option>{contact_options}</select></div>
@@ -1745,12 +1827,14 @@ def render_building_page(
           <div class="field"><label for="review-owner">Assigned owner</label><input id="review-owner" name="assigned_owner" required value="{_esc(user.get("email"))}"></div>
           <div class="field field--wide"><label for="review-terms">Reviewed terms summary</label><textarea id="review-terms" name="terms_summary" required></textarea></div>
           <div class="field field--wide"><label for="review-notes">Operator notes</label><textarea id="review-notes" name="operator_notes"></textarea></div>
-          <div class="field field--wide"><label for="review-key">Idempotency key</label><input id="review-key" name="idempotency_key" minlength="8" maxlength="128" required placeholder="date-review-event-2026-001-v1"><span class="form-note">Reuse this exact key only when retrying the same submission.</span></div>
+          <input type="hidden" name="idempotency_key" value="{_esc(generated_review_key)}">
           <div class="form-actions"><span class="form-note">Fails closed on conflicts or missing approved pricing.</span><button class="primary" type="submit">Create reviewed hold and quote draft</button></div>
         </form>
+        </details>
       </section>
-      <section class="panel panel--wide" id="service-requests">
+      <section class="panel panel--wide building-view view-operations" id="service-requests">
         <div class="panel-head"><div><h2>Building service</h2><p>Maintenance and tenant requests stay owned, due, auditable, and separate from commercial booking state.</p></div><span class="count">{open_service_requests} open</span></div>
+        <details class="task-creator"><summary>Add a service request</summary>
         <form class="form-grid" method="post" action="/admin/building/service-requests">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="service-category">Category</label><select id="service-category" name="category"><option value="maintenance">Maintenance</option><option value="cleaning">Cleaning</option><option value="access">Access</option><option value="internet">Internet</option><option value="furniture">Furniture</option><option value="safety">Safety</option><option value="billing_question">Billing question</option><option value="event_support">Event support</option><option value="other">Other</option></select></div>
@@ -1768,23 +1852,27 @@ def render_building_page(
         </form>
         <div class="table-wrap"><table><thead><tr><th>Request</th><th>Priority</th><th>Status</th><th>Owner and due</th><th>Action</th></tr></thead><tbody>{service_request_rows}</tbody></table></div>
       </section>
-      <section class="panel">
+      <section class="panel building-view view-billing">
         <div class="panel-head"><div><h2>Billing account</h2><p>Connect a person or company to Stripe and the current QBO record.</p></div></div>
+        <details class="task-creator"><summary>Add a billing account</summary>
         <form class="form-grid" method="post" action="/admin/building/billing/accounts">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <div class="field"><label for="billing-account-id">Stable ID</label><input id="billing-account-id" name="account_id" required placeholder="acme-studio"></div>
+          <input type="hidden" name="account_id" value="{_esc(generated_billing_account_id)}">
           <div class="field"><label for="billing-contact">CRM contact</label><select id="billing-contact" name="contact_id"><option value="">No linked contact</option>{contact_options}</select></div>
           <div class="field"><label for="billing-account-name">Account name</label><input id="billing-account-name" name="account_name" required></div>
           <div class="field"><label for="billing-email">Billing email</label><input id="billing-email" name="billing_email" type="email" required></div>
           <div class="field field--wide"><label for="billing-qbo-customer">QBO customer ID</label><input id="billing-qbo-customer" name="qbo_customer_id" placeholder="Optional during setup"></div>
           <div class="form-actions"><span class="form-note">No provider customer or invoice is created yet.</span><button class="primary" type="submit">Save billing account</button></div>
         </form>
+        </details>
+        </details>
       </section>
-      <section class="panel">
+      <section class="panel building-view view-billing">
         <div class="panel-head"><div><h2>Billing schedule</h2><p>Define why, when, and how much to collect. Approval locks the schedule.</p></div></div>
+        <details class="task-creator"><summary>Create a billing schedule</summary>
         <form class="form-grid" method="post" action="/admin/building/billing/schedules">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <div class="field"><label for="billing-schedule-id">Stable ID</label><input id="billing-schedule-id" name="schedule_id" required placeholder="acme-monthly"></div>
+          <input type="hidden" name="schedule_id" value="{_esc(generated_billing_schedule_id)}">
           <div class="field"><label for="billing-schedule-account">Billing account</label><select id="billing-schedule-account" name="billing_account_id" required><option value="">Choose an account</option>{billing_account_options}</select></div>
           <div class="field"><label for="billing-schedule-reservation">Booking</label><select id="billing-schedule-reservation" name="reservation_id"><option value="">No linked booking</option>{reservation_options}</select></div>
           <div class="field"><label for="billing-schedule-type">Schedule type</label><select id="billing-schedule-type" name="schedule_type"><option value="monthly">Monthly</option><option value="one_time">One time</option><option value="deposit">Deposit</option><option value="final_balance">Final balance</option></select></div>
@@ -1796,11 +1884,12 @@ def render_building_page(
           <div class="field"><label for="billing-end">End date</label><input id="billing-end" name="ends_on" type="date"></div>
           <div class="form-actions"><span class="form-note">Saving remains a no-write draft.</span><button class="primary" type="submit">Save schedule draft</button></div>
         </form>
+        </details>
       </section>
-      <section class="panel panel--wide" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand. Partial CRM failures stay queued without losing the lead.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th><th>CRM recovery</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
-      <section class="panel panel--wide" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/agreement-readiness">Open agreement and payment readiness →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
-      <section class="panel panel--wide">
+      <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand. Partial CRM failures stay queued without losing the lead.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th><th>CRM recovery</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-bookings" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/agreement-readiness">Open agreement and payment readiness →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-sales view-operations" id="building-tours"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-operations">
         <div class="panel-head">
           <div><h2>Calendar projection</h2><p>Agent remains authoritative. This control previews the dedicated calendar queue in dry-run mode; it never changes Google Calendar.</p></div>
           <form class="inline-send" method="post" action="/admin/building/calendar/sync">
@@ -1811,20 +1900,20 @@ def render_building_page(
         </div>
         <div class="table-wrap"><table><thead><tr><th>Booking</th><th>Desired action</th><th>Sync state</th><th>Google event</th><th>Updated</th></tr></thead><tbody>{calendar_projection_rows}</tbody></table></div>
       </section>
-      <section class="panel panel--wide">
+      <section class="panel panel--wide building-view view-operations">
         <div class="panel-head"><div><h2>Operational readiness</h2><p>Event, move-in, and move-out work stays attached to the booking. Required items must be completed or explicitly waived with a reason.</p></div><span class="count">{sum(1 for item in checklists if item.get("status") == "open")} open</span></div>
         <div class="checklist-list">{checklist_blocks}</div>
       </section>
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>Billing schedules</h2><p>Drafts are editable; approved schedules are locked and provider writes require typed confirmation.</p></div><span class="count">{len(billing_schedules)} schedules</span></div><div class="table-wrap"><table><thead><tr><th>Schedule</th><th>Amount</th><th>Next invoice</th><th>Status</th><th>Action</th></tr></thead><tbody>{billing_schedule_rows}</tbody></table></div></section>
-      <section class="panel panel--wide" id="billing-and-collections"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-billing"><div class="panel-head"><div><h2>Billing schedules</h2><p>Drafts are editable; approved schedules are locked and provider writes require typed confirmation.</p></div><span class="count">{len(billing_schedules)} schedules</span></div><div class="table-wrap"><table><thead><tr><th>Schedule</th><th>Amount</th><th>Next invoice</th><th>Status</th><th>Action</th></tr></thead><tbody>{billing_schedule_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-billing" id="billing-and-collections"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>
       {(
-        f'''<section class="panel panel--wide"><div class="panel-head"><div><h2>Collection work</h2><p>Overdue balances become owned follow-up cases. Reminders require typed confirmation and retain delivery evidence.</p></div><span class="count">{len(collections)} cases</span></div>
+        f'''<section class="panel panel--wide building-view view-billing"><div class="panel-head"><div><h2>Collection work</h2><p>Overdue balances become owned follow-up cases. Reminders require typed confirmation and retain delivery evidence.</p></div><span class="count">{len(collections)} cases</span></div>
         <form class="inline-send" method="post" action="/admin/building/billing/collections/refresh"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="default_owner" placeholder="Default collection owner"><button class="secondary secondary--small" type="submit">Refresh invoice aging</button></form>
         <div class="table-wrap"><table><thead><tr><th>Account</th><th>Outstanding</th><th>State / owner</th><th>Reminders</th><th>Action</th></tr></thead><tbody>{collection_rows}</tbody></table></div></section>'''
         if can_finance else ""
       )}
       {(
-        f'''<section class="panel panel--wide">
+        f'''<section class="panel panel--wide building-view view-billing">
           <div class="panel-head"><div><h2>Refunds, credits, and write-offs</h2><p>Finance-only, two-person approval. Provider and accounting evidence remain distinct.</p></div><span class="count">{len(adjustments)} records</span></div>
           <form class="form-grid" method="post" action="/admin/building/billing/adjustments">
             <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
@@ -1837,24 +1926,27 @@ def render_building_page(
           <div class="table-wrap"><table><thead><tr><th>Adjustment</th><th>Amount</th><th>Reason</th><th>Evidence state</th><th>Finance action</th></tr></thead><tbody>{adjustment_rows}</tbody></table></div>
         </section>'''
         if can_finance
-        else '<section class="panel panel--wide"><div class="panel-head"><div><h2>Financial adjustments</h2><p>Refunds, credits, and write-offs require both Building and Finance access.</p></div></div></section>'
+        else '<section class="panel panel--wide building-view view-billing"><div class="panel-head"><div><h2>Financial adjustments</h2><p>Refunds, credits, and write-offs require both Building and Finance access.</p></div></div></section>'
       )}
-      <section class="panel panel--wide" id="inventory"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>Media assignments</h2><p>Attach images and videos to the exact physical space. Draft assets never reach the public site; approval requires descriptive alt text.</p></div></div><div class="checklist-list">{media_blocks}</div></section>
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>Roster import reviews</h2><p>Previewed lists remain inert until an operator confirms the exact snapshot.</p></div><span class="count">{len(roster_imports)} imports</span></div><div class="table-wrap"><table><thead><tr><th>Roster</th><th>Contacts</th><th>Status</th><th>Action</th></tr></thead><tbody>{roster_import_rows}</tbody></table></div></section>
-      <section class="panel panel--wide" id="crm-email-list"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, suppression, and permissioned data controls. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th><th>Data controls</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
-      <section class="panel panel--wide">
+      <section class="panel panel--wide building-view view-catalog" id="inventory"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-catalog"><div class="panel-head"><div><h2>Media assignments</h2><p>Choose one space at a time. Draft media never reaches the public site, and approval requires descriptive alt text.</p></div></div><div class="checklist-list">{media_blocks}</div></section>
+      <section class="panel panel--wide building-view view-settings"><div class="panel-head"><div><h2>Roster import reviews</h2><p>Previewed lists remain inert until an operator confirms the exact snapshot.</p></div><span class="count">{len(roster_imports)} imports</span></div><div class="table-wrap"><table><thead><tr><th>Roster</th><th>Contacts</th><th>Status</th><th>Action</th></tr></thead><tbody>{roster_import_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-contacts" id="crm-email-list"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, suppression, and permissioned data controls. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th><th>Data controls</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-contacts">
         <div class="panel-head"><div><h2>Duplicate contact review</h2><p>Preview every move before merging. The survivor keeps the most restrictive communication permission; campaign and inquiry history remains unchanged.</p></div><span class="count">{len(contact_merges)} completed</span></div>
+        <details class="task-creator"><summary>Review a possible duplicate</summary>
         <form class="form-grid" method="post" action="/admin/building/contacts/merge/preview">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label for="merge-survivor">Surviving contact</label><select id="merge-survivor" name="survivor_contact_id" required><option value="">Choose survivor</option>{contact_options}</select></div>
           <div class="field"><label for="merge-duplicate">Duplicate contact</label><select id="merge-duplicate" name="merged_contact_id" required><option value="">Choose duplicate</option>{contact_options}</select></div>
           <div class="form-actions"><span class="form-note">Nothing changes until you review counts, conflicts, consent, and type the exact confirmation.</span><button class="secondary" type="submit">Preview merge</button></div>
         </form>
+        </details>
         <div class="table-wrap"><table><thead><tr><th>Merge</th><th>Reason</th><th>Permission result</th><th>Evidence</th></tr></thead><tbody>{merge_rows}</tbody></table></div>
       </section>
-      <section class="panel panel--wide">
+      <section class="panel panel--wide building-view view-settings">
         <div class="panel-head"><div><h2>Data governance</h2><p>Track access, correction, suppression, deletion review, and retention review with a 30-day deadline. Deletion is never automatic.</p></div><span class="count">{len(privacy_requests)} requests</span></div>
+        <details class="task-creator"><summary>Add a privacy request</summary>
         <form class="form-grid" method="post" action="/admin/building/privacy/requests">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label>Request type</label><select name="request_type"><option value="access_export">Access export</option><option value="correction">Correction</option><option value="suppression">Suppression</option><option value="deletion_review">Deletion review</option><option value="retention_review">Retention review</option></select></div>
@@ -1864,10 +1956,11 @@ def render_building_page(
           <div class="field field--wide"><label>Details</label><textarea name="details"></textarea></div>
           <div class="form-actions"><span class="form-note">Closing requires a written resolution and evidence.</span><button class="primary" type="submit">Add request</button></div>
         </form>
+        </details>
         <div class="table-wrap"><table><thead><tr><th>Request</th><th>Status</th><th>Owner</th><th>Review action</th></tr></thead><tbody>{privacy_rows}</tbody></table></div>
       </section>
-      <section class="panel"><div class="panel-head"><div><h2>Audiences</h2><p>Explainable tenant and community segments.</p></div><span class="count">{len(segments)} segments</span></div><div class="table-wrap"><table><thead><tr><th>Audience</th><th>Relationships</th><th>Eligible</th><th>Status</th></tr></thead><tbody>{segment_rows}</tbody></table></div></section>
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>Campaigns</h2><p>Draft, preview, approval, and delivery state.</p></div><span class="count">{len(campaigns)} campaigns</span></div><div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Audience</th><th>Recipients</th><th>Status</th><th>Action</th></tr></thead><tbody>{campaign_rows}</tbody></table></div></section>
+      <section class="panel building-view view-contacts"><div class="panel-head"><div><h2>Audiences</h2><p>Explainable tenant and community segments.</p></div><span class="count">{len(segments)} segments</span></div><div class="table-wrap"><table><thead><tr><th>Audience</th><th>Relationships</th><th>Eligible</th><th>Status</th></tr></thead><tbody>{segment_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-contacts"><div class="panel-head"><div><h2>Campaigns</h2><p>Draft, preview, approval, and delivery state.</p></div><span class="count">{len(campaigns)} campaigns</span></div><div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Audience</th><th>Recipients</th><th>Status</th><th>Action</th></tr></thead><tbody>{campaign_rows}</tbody></table></div></section>
     </div>
   </main>
 </body>
