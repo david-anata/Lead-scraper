@@ -8,6 +8,7 @@ are immutable; revising one means starting the next version.
 from __future__ import annotations
 
 import html
+import re
 from typing import Any, Optional
 
 from sales_support_agent.services.building_contract_templates import (
@@ -23,6 +24,21 @@ TEMPLATES_URL = "/admin/building/contracts/templates"
 CONTRACTS_URL = "/admin/building/contracts"
 #: Blank clause slots offered beyond the ones already authored.
 SPARE_CLAUSE_SLOTS = 2
+
+
+def _nested_document_html(markdown_text: str) -> str:
+    """Render contract prose without introducing a second page-level heading."""
+
+    rendered = render_document_html(markdown_text)
+    return re.sub(
+        r"</?h([1-5])>",
+        lambda match: (
+            f"</h{int(match.group(1)) + 1}>"
+            if match.group(0).startswith("</")
+            else f"<h{int(match.group(1)) + 1}>"
+        ),
+        rendered,
+    )
 
 _TEMPLATE_STATES = {
     "draft": ("Queued", "queued"),
@@ -226,7 +242,7 @@ def render_template_editor(
             "Your role can review this version but cannot edit its contract text.",
         )
         preview_body = template["body_markdown"] or "(no body text)"
-        review_html = render_document_html(preview_body)
+        review_html = _nested_document_html(preview_body)
         editor = (
             f'<div class="app-alert app-alert--blocked"><p>{reason}</p></div>'
             f'<article class="template-preview template-review">{review_html}</article>'
@@ -388,7 +404,7 @@ _TEMPLATE_STYLES = """<style>
 .building-contracts-page .app-muted{color:var(--agent-ink-muted);font-size:13px;}
 .building-contracts-page .app-table__sub{display:block;margin-top:3px;color:var(--agent-ink-muted);font-size:12px;}
 .building-contracts-page .app-command-bar__group{display:flex;flex-wrap:wrap;align-items:end;gap:10px;}
-.building-contracts-page .admin-panel{margin:18px 0;}
+.building-contracts-page .admin-panel{box-sizing:border-box;width:100%;min-width:0;margin:18px 0;}
 .building-contracts-page .admin-panel>h2{margin:0 0 12px;font:800 1.1rem/1.2 "Montserrat",sans-serif;}
 .building-contracts-page .app-detail-list{display:grid;gap:0;margin:0;}
 .building-contracts-page .app-detail-list__row{display:grid;grid-template-columns:minmax(140px,220px) minmax(0,1fr);gap:16px;padding:10px 0;border-bottom:1px solid var(--agent-border);}
@@ -405,7 +421,8 @@ _TEMPLATE_STYLES = """<style>
 .building-contracts-page .template-clause{display:grid;gap:10px;margin:0;padding:14px;border:1px dashed var(--agent-border);border-radius:var(--agent-radius-panel);}
 .building-contracts-page .template-clause legend{padding:0 6px;color:var(--agent-ink-muted);font:700 .7rem/1.3 "Montserrat",sans-serif;letter-spacing:.06em;text-transform:uppercase;}
 .building-contracts-page .template-frozen{margin:0 0 14px;padding:14px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);background:var(--agent-surface-soft);white-space:pre-wrap;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;}
-.building-contracts-page .template-preview{padding:24px 28px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-panel);background:var(--agent-surface);}
+.building-contracts-page .template-preview{box-sizing:border-box;max-width:100%;padding:24px 28px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-panel);background:var(--agent-surface);}
+.building-contracts-page .template-preview code{overflow-wrap:anywhere;}
 .building-contracts-page .template-preview table{width:100%;border-collapse:collapse;}
 .building-contracts-page .template-preview th,.building-contracts-page .template-preview td{padding:8px 10px;border:1px solid var(--agent-border);text-align:left;}
 .building-contracts-page .template-review{max-height:760px;overflow:auto;line-height:1.65;}
@@ -417,4 +434,5 @@ _TEMPLATE_STYLES = """<style>
 .building-contracts-page .app-confirmation input{width:18px;height:18px;flex:0 0 auto;}
 .building-contracts-page textarea{font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;}
 @media(max-width:900px){.building-contracts-page .template-layout{grid-template-columns:1fr;}.building-contracts-page .template-palette{position:static;}}
+@media(max-width:560px){.building-contracts-page .template-preview{padding:20px 18px;}}
 </style>"""

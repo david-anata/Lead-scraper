@@ -77,8 +77,8 @@ def _blocked_template_alert() -> str:
         "approved, and versioned. The 2025 Vivint agreement is customer-specific "
         "evidence and is not reusable.</p>"
         f'<p><a href="{TEMPLATES_URL}">Author a reusable template →</a> · '
-        f'<a href="{_LAUNCH_DECISION_URL}">Open the '
-        "<code>agreement_template</code> launch decision →</a></p>",
+        f'<a href="{_LAUNCH_DECISION_URL}">'
+        "Review the contract-template launch decision →</a></p>",
     )
 
 

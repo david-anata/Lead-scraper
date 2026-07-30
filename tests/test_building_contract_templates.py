@@ -53,7 +53,9 @@ except ModuleNotFoundError as exc:
 CONTRACTS = "/admin/building/contracts"
 TEMPLATES = "/admin/building/contracts/templates"
 
-BODY = """This agreement is between Anata Building and {{customer_name}}
+BODY = """# Event Agreement
+
+This agreement is between Anata Building and {{customer_name}}
 ({{customer_email}}) for use of {{event_space}}.
 
 Guests arrive {{guest_starts_at}} and depart {{guest_ends_at}}. Expected
@@ -337,6 +339,10 @@ class ContractTemplateEditorTests(unittest.TestCase):
             })
             self.assertEqual(moved.status_code, 303, moved.text)
             self.assertIn("notice=", moved.headers["location"])
+
+        approved_page = self.client.get(f"{TEMPLATES}/{template_id}")
+        self.assertEqual(len(re.findall(r"<h1(?:\s|>)", approved_page.text)), 1)
+        self.assertIn("<h2>Event Agreement</h2>", approved_page.text)
 
     def test_03_approved_template_is_immutable_and_offers_a_next_version(self) -> None:
         template_id = "event-agreement-v1"
