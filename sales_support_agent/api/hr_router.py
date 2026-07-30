@@ -33,6 +33,19 @@ from sales_support_agent.services.hr import store
 from sales_support_agent.services.hr import payroll_store
 from sales_support_agent.services.hr import legacy_import
 from sales_support_agent.services.hr import workforce
+
+
+def _correction_duration(payload: dict) -> float:
+    """Derive duration from visible clock values; legacy stored hours may be corrupt."""
+    try:
+        start_hour, start_minute = map(int, str(payload.get("start_time")).split(":")[:2])
+        stop_hour, stop_minute = map(int, str(payload.get("stop_time")).split(":")[:2])
+        minutes = (stop_hour * 60 + stop_minute) - (start_hour * 60 + start_minute)
+        if minutes < 0:
+            minutes += 24 * 60
+        return round(minutes / 60, 4)
+    except (TypeError, ValueError):
+        return float(payload.get("hours") or 0)
 from sales_support_agent.services.hr import reporting
 from sales_support_agent.services.hr.provider_contract import contract_descriptor
 from sales_support_agent.services.hr.pages import (
@@ -857,8 +870,8 @@ async def hr_time(
     corrections = scoped(store.list_time_corrections(None))
     for correction in corrections:
         employee = store.get_employee_by_email(correction.get("employee_email") or "")
-        original_hours = float((correction.get("original") or {}).get("hours") or 0)
-        proposed_hours = float((correction.get("proposed") or {}).get("hours") or 0)
+        original_hours = _correction_duration(correction.get("original") or {})
+        proposed_hours = _correction_duration(correction.get("proposed") or {})
         correction["hours_delta"] = round(proposed_hours - original_hours, 4)
         correction["work_date"] = (
             (correction.get("proposed") or {}).get("date")
@@ -866,7 +879,7 @@ async def hr_time(
         )
         correction["estimated_gross_impact"] = (
             round(correction["hours_delta"] * float(employee.get("hourly_rate") or 0), 2)
-            if employee and employee.get("pay_type") == "hourly"
+            if employee and int(employee.get("hourly_rate_cents") or 0) > 0
             else None
         )
     return HTMLResponse(render_hr_time(

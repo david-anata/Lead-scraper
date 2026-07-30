@@ -19,6 +19,19 @@ def _esc(v) -> str:
     return html.escape("" if v is None else str(v))
 
 
+def _correction_duration(payload: dict) -> float:
+    """Derive duration from visible times instead of untrusted legacy totals."""
+    try:
+        start_hour, start_minute = map(int, str(payload.get("start_time")).split(":")[:2])
+        stop_hour, stop_minute = map(int, str(payload.get("stop_time")).split(":")[:2])
+        minutes = (stop_hour * 60 + stop_minute) - (start_hour * 60 + start_minute)
+        if minutes < 0:
+            minutes += 24 * 60
+        return round(minutes / 60, 4)
+    except (TypeError, ValueError):
+        return float(payload.get("hours") or 0)
+
+
 _HR_STYLES = """
   .hr-main { width:min(100%,1320px); min-width:0; margin:0 auto; padding:32px 24px 64px; }
   .hr-h1 { font-family: Montserrat, Inter, sans-serif; font-weight: 800; font-size: 26px; margin: 0 0 4px; color: #1c2430; }
@@ -1331,7 +1344,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         employee_rates = {
             item.get("email"): (
                 float(item.get("hourly_rate") or 0)
-                if item.get("pay_type") == "hourly" else None
+                if int(item.get("hourly_rate_cents") or 0) > 0 else None
             )
             for item in control.get("employees", [])
         }
@@ -1339,7 +1352,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         for correction in outside_corrections:
             original = correction.get("original") or {}
             proposed = correction.get("proposed") or {}
-            delta = float(proposed.get("hours") or 0) - float(original.get("hours") or 0)
+            delta = _correction_duration(proposed) - _correction_duration(original)
             rate = employee_rates.get(correction.get("employee_email"))
             impact = delta * rate if rate is not None else None
             correction_rows += f"""<tr>
