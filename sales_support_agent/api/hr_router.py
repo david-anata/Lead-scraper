@@ -226,6 +226,17 @@ def _employee_classification_error(
     return ""
 
 
+def _hr_login_email_error(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if (
+        "@" not in normalized
+        or "." not in normalized.rsplit("@", 1)[-1]
+        or normalized.endswith("@anatainc.com")
+    ):
+        return "Use a valid personal Google-account email outside anatainc.com."
+    return ""
+
+
 def _managed_employee_emails(user: dict) -> set[str]:
     if _has_full_hr_admin(user):
         return {item["email"] for item in store.list_employees()}
@@ -235,6 +246,13 @@ def _managed_employee_emails(user: dict) -> set[str]:
         if ((item.get("employment") or {}).get("manager_email") or "")
         .strip().lower() == manager
     }
+
+
+def _employee_record_email(user: dict) -> str:
+    """Map a personal HR login back to the immutable employee record key."""
+    login_email = (user.get("email") or "").strip().lower()
+    employee = store.get_employee_by_email(login_email)
+    return (employee or {}).get("email") or login_email
 
 
 def _require_team_record(user: dict, records: list[dict], record_id: int) -> None:
@@ -266,7 +284,7 @@ def _default_payroll_date(today: date | None = None) -> date:
 async def hr_dashboard(request: Request, user: dict = Depends(_guard)):
     stats = (
         store.dashboard_stats() if _can_manage(user)
-        else store.employee_dashboard_stats(user.get("email", ""))
+        else store.employee_dashboard_stats(_employee_record_email(user))
     )
     return HTMLResponse(render_hr_dashboard(
         stats, user=user, flash=_flash(request), manager_view=_can_manage(user)
@@ -313,6 +331,7 @@ async def employee_new(request: Request, user: dict = Depends(_people_comp_guard
 async def employee_create(
     request: Request,
     email: str = Form(""),
+    hr_login_email: str = Form(""),
     full_name: str = Form(""),
     hr_role: str = Form("employee"),
     employee_type: str = Form("hourly"),
@@ -331,7 +350,8 @@ async def employee_create(
 ):
     entered = {
         "_is_new": True,
-        "email": email.strip().lower(), "full_name": full_name, "hr_role": hr_role,
+        "email": email.strip().lower(), "hr_login_email": hr_login_email.strip().lower(),
+        "full_name": full_name, "hr_role": hr_role,
         "employee_type": (
             "contractor" if employee_type == "contractor" else
             "salaried" if pay_basis == "fixed_semimonthly" else "hourly"
@@ -348,6 +368,15 @@ async def employee_create(
     if not email.strip():
         return HTMLResponse(render_hr_employee_form(entered, store.list_teams(), user=user,
                                                     error="Email is required."), status_code=422)
+    if employee_type != "contractor" and not hr_login_email.strip():
+        return HTMLResponse(render_hr_employee_form(
+            entered, store.list_teams(), user=user,
+            error="Add the employee’s personal HR sign-in email.",
+        ), status_code=422)
+    if hr_login_email.strip() and (login_error := _hr_login_email_error(hr_login_email)):
+        return HTMLResponse(render_hr_employee_form(
+            entered, store.list_teams(), user=user, error=login_error,
+        ), status_code=422)
     classification_error = _employee_classification_error(
         employee_type=employee_type, pay_basis=pay_basis,
         classification=classification,
@@ -399,7 +428,8 @@ async def employee_create(
             error="Salaried employees need one fixed semimonthly amount and no hourly rate.",
         ), status_code=422)
     new_id = store.create_employee(
-        email=email, full_name=full_name, hr_role=hr_role,
+        email=email, hr_login_email=hr_login_email,
+        full_name=full_name, hr_role=hr_role,
         employee_type=(
             "contractor" if employee_type == "contractor" else
             "salaried" if pay_basis == "fixed_semimonthly" else "hourly"
@@ -435,6 +465,7 @@ async def employee_edit(emp_id: int, request: Request, user: dict = Depends(_peo
 async def employee_update(
     emp_id: int,
     request: Request,
+    hr_login_email: str = Form(""),
     full_name: str = Form(""),
     hr_role: str = Form("employee"),
     employee_type: str = Form("hourly"),
@@ -577,14 +608,37 @@ async def employee_update(
             employee, store.list_teams(), user=user,
             error="Pay changes require an effective date and business reason.",
         ), status_code=422)
+    prior_login_email = employee.get("hr_login_email") or ""
+    login_ok, login_message = store.set_employee_hr_login_email(
+        emp_id, hr_login_email, actor=user.get("email", "system")
+    )
+    if not login_ok:
+        employee["compensation_history"] = store.list_compensation_changes(
+            employee["email"]
+        )
+        return HTMLResponse(render_hr_employee_form(
+            employee, store.list_teams(), user=user,
+            error={
+                "hr_login_email_invalid": "Use a valid personal Google-account email outside anatainc.com.",
+                "hr_login_email_in_use": "That personal HR sign-in is already assigned to another employee.",
+            }.get(login_message, "The personal HR sign-in email could not be saved."),
+        ), status_code=422)
+    if prior_login_email and prior_login_email != hr_login_email.strip().lower():
+        prior_user = access_store.get_user_by_email(prior_login_email)
+        if prior_user:
+            access_store.set_user_status(prior_user["id"], "suspended")
     store.update_employee(emp_id, full_name=full_name, hr_role=hr_role,
                           employee_type=employee_type, team_id=team_id or None,
                           hourly_rate=hourly_rate,
                           phone=phone, status=status, actor=user.get("email", "system"))
     if status == "inactive":
-        app_user = access_store.get_user_by_email(employee["email"])
-        if app_user:
-            access_store.set_user_status(app_user["id"], "suspended")
+        for identity in {
+            employee["email"], employee.get("hr_login_email") or "",
+            hr_login_email.strip().lower(),
+        }:
+            app_user = access_store.get_user_by_email(identity) if identity else None
+            if app_user:
+                access_store.set_user_status(app_user["id"], "suspended")
     if employment_changed:
         store.upsert_employment_profile(
             employee["email"], hire_date=hire_date, title=title,
@@ -619,9 +673,10 @@ async def employee_status_update(
         actor=user.get("email", "system"),
     )
     if status == "inactive":
-        app_user = access_store.get_user_by_email(employee["email"])
-        if app_user:
-            access_store.set_user_status(app_user["id"], "suspended")
+        for identity in {employee["email"], employee.get("hr_login_email") or ""}:
+            app_user = access_store.get_user_by_email(identity) if identity else None
+            if app_user:
+                access_store.set_user_status(app_user["id"], "suspended")
     return RedirectResponse(
         f"/admin/hr/employees/{emp_id}?ok=status_saved",
         status_code=303,
@@ -645,8 +700,9 @@ async def employee_invite(emp_id: int, request: Request, user: dict = Depends(_p
     invite_link = f"{base}/admin/access/invite/{result['token']}"
     email_sent = send_invite_email(
         getattr(request.app.state, "agent_settings", None),
-        to_email=employee["email"], invite_link=invite_link,
+        to_email=result["login_email"], invite_link=invite_link,
         invited_by=user.get("email", ""), role_name="HR Employee",
+        experience_name="Anata employee app",
     )
     return HTMLResponse(render_hr_invitation(
         invite_link, employee, user=user, email_sent=email_sent
@@ -657,16 +713,16 @@ async def employee_invite(emp_id: int, request: Request, user: dict = Depends(_p
 
 @router.get("/onboarding", response_class=HTMLResponse)
 async def employee_onboarding(request: Request, user: dict = Depends(_guard)):
-    email = (user.get("email") or "").strip().lower()
-    employee = store.get_employee_by_email(email)
+    login_email = (user.get("email") or "").strip().lower()
+    employee = store.get_employee_by_email(login_email)
     if not employee:
         return HTMLResponse(
             render_hr_employee_record_missing(user=user),
             status_code=404,
         )
     return HTMLResponse(render_hr_onboarding(
-        employee, store.get_onboarding(email),
-        tax_election=store.get_current_tax_election(email),
+        employee, store.get_onboarding(employee["email"]),
+        tax_election=store.get_current_tax_election(employee["email"]),
         user=user, flash=_flash(request)
     ))
 
@@ -680,7 +736,7 @@ async def onboarding_profile(
     emergency_phone: str = Form(""), emergency_email: str = Form(""),
     user: dict = Depends(_guard),
 ):
-    email = (user.get("email") or "").strip().lower()
+    email = _employee_record_email(user)
     ok, message = store.save_employee_profile(
         email, personal_email=personal_email, phone=phone,
         address_line1=address_line1, address_line2=address_line2,
@@ -708,7 +764,7 @@ async def onboarding_w4(
     attested: bool = Form(False),
     user: dict = Depends(_guard),
 ):
-    email = (user.get("email") or "").strip().lower()
+    email = _employee_record_email(user)
     ok, message = store.save_w4(
         email, ssn=ssn, filing_status=filing_status, two_jobs=two_jobs,
         dependents_credit=dependents_credit, other_income=other_income,
@@ -723,7 +779,7 @@ async def onboarding_attestations(
     i9_attested: bool = Form(False), policies_attested: bool = Form(False),
     user: dict = Depends(_guard),
 ):
-    email = (user.get("email") or "").strip().lower()
+    email = _employee_record_email(user)
     ok, message = store.save_employee_attestations(
         email, i9_attested=i9_attested, policies_attested=policies_attested,
         actor=email,
@@ -843,7 +899,7 @@ async def hr_time(
     request: Request, period_date: date | None = None, page: int = 1,
     page_size: int = 10, user: dict = Depends(_guard)
 ):
-    email = (user.get("email") or "").strip().lower()
+    email = _employee_record_email(user)
     can_review = bool(
         user.get("is_superadmin")
         or {"hr.payroll", "hr.time.approve_team"}.intersection(
@@ -900,7 +956,7 @@ async def hr_time(
 
 @router.post("/time/clock")
 async def hr_time_clock(action: str = Form(""), user: dict = Depends(_guard)):
-    email = (user.get("email") or "").strip().lower()
+    email = _employee_record_email(user)
     ok, message = (store.clock_out(email, actor=email) if action == "out"
                    else store.clock_in(email, actor=email))
     key = "ok" if ok else "err"
@@ -913,7 +969,7 @@ async def hr_time_correction(
     proposed_stop: str = Form(""), reason: str = Form(""),
     user: dict = Depends(_guard),
 ):
-    actor = (user.get("email") or "").strip().lower()
+    actor = _employee_record_email(user)
     entries = store.list_time_entries(None, limit=500)
     entry = next(
         (item for item in entries if int(item.get("id") or 0) == time_entry_id),
@@ -943,7 +999,7 @@ async def hr_time_missed_punch(
     proposed_stop: str = Form(""), reason: str = Form(""),
     user: dict = Depends(_guard),
 ):
-    email = (user.get("email") or "").strip().lower()
+    email = _employee_record_email(user)
     ok, message = store.request_missed_punch(
         email, work_date=work_date, proposed_start=proposed_start,
         proposed_stop=proposed_stop, reason=reason, actor=email,
@@ -973,7 +1029,7 @@ async def hr_timesheet_submit(
     period_start: date = Form(...), period_end: date = Form(...),
     attested: bool = Form(False), user: dict = Depends(_guard),
 ):
-    email = (user.get("email") or "").strip().lower()
+    email = _employee_record_email(user)
     if not attested:
         ok, message = False, "timesheet_attestation_required"
     else:
@@ -1020,7 +1076,7 @@ async def hr_pto_decision(request_id: int, decision: str = Form(""),
 
 @router.post("/time/pto/{request_id}/withdraw")
 async def hr_pto_withdraw(request_id: int, user: dict = Depends(_guard)):
-    email = (user.get("email") or "").strip().lower()
+    email = _employee_record_email(user)
     ok, message = store.withdraw_pto(
         request_id, employee_email=email, actor=email
     )
@@ -1033,7 +1089,7 @@ async def hr_pto_withdraw(request_id: int, user: dict = Depends(_guard)):
 async def hr_pto_request(start_date: date = Form(...), end_date: date = Form(...),
                          hours: float = Form(...), reason: str = Form(""),
                          user: dict = Depends(_guard)):
-    email = (user.get("email") or "").strip().lower()
+    email = _employee_record_email(user)
     ok, message = store.create_pto_request(email, start_date=start_date, end_date=end_date,
                                            hours=hours, reason=reason, actor=email)
     key = "ok" if ok else "err"
@@ -1129,7 +1185,7 @@ async def hr_compliance_update(
 
 @router.get("/policies", response_class=HTMLResponse)
 async def hr_policies(request: Request, user: dict = Depends(_guard)):
-    email = (user.get("email") or "").strip().lower()
+    email = _employee_record_email(user)
     return HTMLResponse(render_hr_policies(
         store.current_policy(email), user=user, flash=_flash(request)
     ))
@@ -1139,7 +1195,7 @@ async def hr_policies(request: Request, user: dict = Depends(_guard)):
 async def hr_policy_acknowledge(
     attested: bool = Form(False), user: dict = Depends(_guard),
 ):
-    email = (user.get("email") or "").strip().lower()
+    email = _employee_record_email(user)
     ok, message = store.acknowledge_current_policy(
         email, actor=email, attested=attested
     )
@@ -1514,7 +1570,7 @@ async def hr_payroll_close_run(
 
 @router.get("/pay-statements", response_class=HTMLResponse)
 async def hr_pay_statements(user: dict = Depends(_guard)):
-    email = (user.get("email") or "").strip().lower()
+    email = _employee_record_email(user)
     runs = payroll_store.employee_pay_statements(email)
     return HTMLResponse(render_hr_pay_statements(runs, user=user))
 
@@ -1522,7 +1578,7 @@ async def hr_pay_statements(user: dict = Depends(_guard)):
 @router.get("/pay-statements/{run_id}", response_class=HTMLResponse)
 async def hr_pay_statement_detail(run_id: str, request: Request,
                                   user: dict = Depends(_guard)):
-    email = (user.get("email") or "").strip().lower()
+    email = _employee_record_email(user)
     run = payroll_store.payroll_run_detail(run_id, employee_email=email)
     if not run or not run["calculations"] or run["status"] not in {"checks_issued", "closed"}:
         return RedirectResponse("/admin/hr/pay-statements", status_code=303)

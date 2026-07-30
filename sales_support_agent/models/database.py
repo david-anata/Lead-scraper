@@ -457,6 +457,7 @@ def _ensure_hr_columns(engine: Any) -> None:
     additions = {
         "hr_employees": {
             "personal_email": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "hr_login_email": "VARCHAR(255) NOT NULL DEFAULT ''",
         },
         "hr_time_entries": {
             "elapsed_seconds": "INTEGER NOT NULL DEFAULT 0",
@@ -505,6 +506,12 @@ def _ensure_hr_columns(engine: Any) -> None:
                     connection.execute(text(
                         f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}"
                     ))
+    if "hr_employees" in inspect(engine).get_table_names():
+        with engine.begin() as connection:
+            connection.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_hr_employees_login_email "
+                "ON hr_employees (hr_login_email) WHERE hr_login_email <> ''"
+            ))
 
 
 def _ensure_finance_settlement_tables(engine: Any) -> None:

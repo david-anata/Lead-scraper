@@ -268,6 +268,7 @@ def _emp_dict(e: HREmployee) -> dict:
     return {
         "id": e.id,
         "email": e.email,
+        "hr_login_email": e.hr_login_email or "",
         "personal_email": e.personal_email or "",
         "full_name": e.full_name or e.email,
         "hr_role": e.hr_role,
@@ -337,22 +338,71 @@ def get_employee(emp_id: int) -> Optional[dict]:
 def get_employee_by_email(email: str) -> Optional[dict]:
     email = (email or "").strip().lower()
     with _session() as s:
-        e = s.query(HREmployee).filter(HREmployee.email == email).first()
+        e = s.query(HREmployee).filter(
+            (HREmployee.email == email) | (HREmployee.hr_login_email == email)
+        ).first()
         return _emp_dict(e) if e else None
 
 
-def create_employee(*, email: str, full_name: str = "", hr_role: str = "employee",
+def _valid_hr_login_email(value: str) -> bool:
+    normalized = (value or "").strip().lower()
+    return (
+        "@" in normalized
+        and "." in normalized.rsplit("@", 1)[-1]
+        and not normalized.endswith("@anatainc.com")
+    )
+
+
+def set_employee_hr_login_email(
+    emp_id: int, login_email: str, *, actor: str = "system",
+) -> tuple[bool, str]:
+    """Assign a unique personal sign-in without changing historical record keys."""
+    normalized = (login_email or "").strip().lower()
+    if normalized and not _valid_hr_login_email(normalized):
+        return False, "hr_login_email_invalid"
+    with _session() as session:
+        employee = session.get(HREmployee, emp_id)
+        if not employee:
+            return False, "employee_not_found"
+        conflict = session.query(HREmployee).filter(
+            HREmployee.id != emp_id,
+            ((HREmployee.email == normalized) | (HREmployee.hr_login_email == normalized)),
+        ).first() if normalized else None
+        if conflict:
+            return False, "hr_login_email_in_use"
+        prior = employee.hr_login_email or ""
+        if prior == normalized:
+            return True, "hr_login_unchanged"
+        employee.hr_login_email = normalized
+        employee.updated_at = datetime.utcnow()
+        _audit(session, actor, "employee.hr_login_updated", "employee", emp_id, {
+            "prior_configured": bool(prior),
+            "new_configured": bool(normalized),
+        })
+        return True, "hr_login_saved"
+
+
+def create_employee(*, email: str, hr_login_email: str = "", full_name: str = "", hr_role: str = "employee",
                     employee_type: str = "hourly", team_id: Optional[str] = None,
                     hourly_rate: str = "0", annual_salary: str = "0",
                     phone: str = "", status: str = "active", actor: str = "system") -> Optional[int]:
     email = (email or "").strip().lower()
+    hr_login_email = (hr_login_email or "").strip().lower()
     if not email:
         return None
+    if hr_login_email and not _valid_hr_login_email(hr_login_email):
+        return None
     with _session() as s:
-        if s.query(HREmployee).filter(HREmployee.email == email).first():
+        conflict = (HREmployee.email == email) | (HREmployee.hr_login_email == email)
+        if hr_login_email:
+            conflict = conflict | (HREmployee.email == hr_login_email) | (
+                HREmployee.hr_login_email == hr_login_email
+            )
+        if s.query(HREmployee).filter(conflict).first():
             return None  # already exists
         e = HREmployee(
             email=email,
+            hr_login_email=hr_login_email,
             full_name=full_name.strip(),
             hr_role=hr_role if hr_role in HR_ROLES else "employee",
             employee_type=employee_type if employee_type in EMPLOYEE_TYPES else "hourly",
@@ -643,7 +693,10 @@ def create_employee_invitation(employee_email: str, *, actor: str,
             return {"ok": False, "error": "employee_not_found"}
         employee_name = employee.full_name or employee.email
         employee_hr_role = employee.hr_role
-    existing_access = access_store.get_user_by_email(email)
+        login_email = (employee.hr_login_email or "").strip().lower()
+    if not _valid_hr_login_email(login_email):
+        return {"ok": False, "error": "hr_login_email_required"}
+    existing_access = access_store.get_user_by_email(login_email)
     if existing_access:
         access_user_id = existing_access["id"]
         if employee_hr_role == "employee":
@@ -657,14 +710,14 @@ def create_employee_invitation(employee_email: str, *, actor: str,
             )
     else:
         access_user_id = access_store.upsert_user(
-            email, employee_name, status="suspended"
+            login_email, employee_name, status="suspended"
         )
         access_store.set_user_permissions(access_user_id, ["hr.access"])
     token = secrets.token_urlsafe(32)
     role_id = _ensure_employee_access_role()
     expires_at = datetime.now(timezone.utc) + timedelta(days=max(1, min(expires_days, 30)))
     invite_id = access_store.create_invite(
-        email, role_id, token=token, invited_by=actor, expires_at=expires_at
+        login_email, role_id, token=token, invited_by=actor, expires_at=expires_at
     )
     with _session() as s:
         row = s.query(HREmployeeOnboarding).filter_by(employee_email=email).first()
@@ -675,7 +728,10 @@ def create_employee_invitation(employee_email: str, *, actor: str,
         row.status = "sent"
         row.updated_at = datetime.now(timezone.utc)
         _audit(s, actor, "onboarding.invited", "employee", email, {"invite_id": invite_id})
-    return {"ok": True, "token": token, "invite_id": invite_id, "expires_at": expires_at}
+    return {
+        "ok": True, "token": token, "invite_id": invite_id,
+        "expires_at": expires_at, "login_email": login_email,
+    }
 
 
 def get_onboarding(employee_email: str) -> dict:

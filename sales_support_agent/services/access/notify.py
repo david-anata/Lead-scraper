@@ -48,17 +48,18 @@ def _send(settings, *, to_email: str, subject: str, text: str) -> bool:
 
 
 def send_invite_email(settings, *, to_email: str, invite_link: str,
-                      invited_by: str = "", role_name: str = "") -> bool:
+                      invited_by: str = "", role_name: str = "",
+                      experience_name: str = "Anata agent dashboard") -> bool:
     """Email an invite link. Returns True only if a provider sent it."""
     role_part = f" with the «{role_name}» role" if role_name else ""
     by_part = f" by {invited_by}" if invited_by else ""
     return _send(
         settings,
         to_email=to_email,
-        subject="You've been invited to the Anata agent dashboard",
+        subject=f"You've been invited to the {experience_name}",
         text=(
             f"Hi,\n\n"
-            f"You've been invited{by_part} to the Anata agent dashboard{role_part}.\n\n"
+            f"You've been invited{by_part} to the {experience_name}{role_part}.\n\n"
             f"Accept your invite (valid 7 days):\n{invite_link}\n\n"
             f"Open the link and sign in with the Google account this invite was sent to.\n"
         ),

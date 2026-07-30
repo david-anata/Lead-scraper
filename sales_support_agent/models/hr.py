@@ -34,6 +34,9 @@ class HREmployee(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     base44_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True, nullable=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    # Personal Google identity used only for employee self-service sign-in.
+    # Historical time/payroll records remain keyed to ``email``.
+    hr_login_email: Mapped[str] = mapped_column(String(255), default="", index=True)
     # Employee-owned contact address outside Anata. This is not mailbox access
     # and is kept separate from the account email used to sign in.
     personal_email: Mapped[str] = mapped_column(String(255), default="")

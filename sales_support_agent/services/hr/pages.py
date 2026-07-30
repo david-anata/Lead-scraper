@@ -557,6 +557,10 @@ def _flash(flash: Optional[str]) -> str:
         "employment_saved": "Employment setup saved.",
         "profile_saved": "Personal and emergency information saved.",
         "personal_email_invalid": "Add a valid personal email outside anatainc.com.",
+        "hr_login_saved": "Personal HR sign-in email saved. No invitation was sent.",
+        "hr_login_email_required": "Add the employee’s personal HR sign-in email before creating an invitation.",
+        "hr_login_email_invalid": "Use a valid personal Google-account email outside anatainc.com.",
+        "hr_login_email_in_use": "That HR sign-in email is already assigned to another employee.",
         "w4_saved": "W-4 elections securely saved.",
         "attestations_saved": "Employee attestations saved.",
         "onboarding_complete": "Onboarding approved and activated.",
@@ -766,11 +770,12 @@ def render_hr_access_training(*, user, flash=None) -> str:
     </div>
     <div class="hr-callout">
       <strong>Before you begin</strong>
-      <p>Create the employee record using the exact Google account they will use to sign in. Their personal contact email is collected separately during onboarding and never gives Anata access to their inbox.</p>
+      <p>Keep the employee record email for payroll history, then add the personal Google account they will use for HR sign-in. Their personal contact email is confirmed separately during onboarding. Neither field gives Anata access to an inbox.</p>
     </div>
     <ol class="hr-training-steps">
-      <li><div><h2>Create or review the employee record</h2><p>Confirm the name, sign-in email, worker type, pay basis, team, status, and hire date. Keep contractors outside W-2 payroll.</p></div></li>
-      <li><div><h2>Create the secure invitation</h2><p>Open the employee and select “Create secure invitation.” Email the generated link only to the employee’s sign-in address. The link expires and cannot be reused after acceptance.</p></div></li>
+      <li><div><h2>Create or review the employee record</h2><p>Confirm the name, record email, worker type, pay basis, team, status, and hire date. Keep contractors outside W-2 payroll.</p></div></li>
+      <li><div><h2>Add the personal HR sign-in</h2><p>Enter a personal Google-account email the employee controls. Saving it does not send anything and does not change their work-account permissions.</p></div></li>
+      <li><div><h2>Create the secure invitation</h2><p>Open the employee and select “Create secure invitation.” Send the generated link only to the personal HR sign-in address. The link expires and cannot be reused after acceptance.</p></div></li>
       <li><div><h2>Ask the employee to install the app</h2><p>They open the invitation, sign in, visit the HR home page, then use “Add to Home Screen” on iPhone or “Install app” on Android. The Agent icon appears on the phone.</p></div></li>
       <li><div><h2>Have the employee finish required items</h2><p>Their home page lists exactly what is missing. They add a personal contact email, complete their profile, sign their W-4, finish the employee I-9 step, and acknowledge policies.</p></div></li>
       <li><div><h2>Test employee-only access</h2><p>Ask them to open Home, Time &amp; PTO, My information, Policies, and Pay statements. They should not see coworkers, payroll preparation, company settings, reports, Sales, Finance, or other operator tools.</p></div></li>
@@ -813,16 +818,21 @@ def render_hr_employees(employees: list, *, user, flash=None) -> str:
             f'<a href="/admin/hr/employees/{e["id"]}" style="color:#2456b8;text-decoration:none;font-weight:600">{_esc(e["full_name"])}</a>'
             if can_manage_people else f'<strong>{_esc(e["full_name"])}</strong>'
         )
+        access_state = (
+            f'<span class="hr-badge" style="background:#e6f4ec;color:#245f49;border-color:#79b99d">Ready to invite</span><br><span class="hr-help">{_esc(e["hr_login_email"])}</span>'
+            if e.get("hr_login_email") else
+            '<span class="hr-badge" style="background:#fff8e8;color:#72510d;border-color:#e6bd62">Needs personal login</span>'
+        )
         rows += f"""<tr>
           <td>{name}</td>
-          <td class="hr-sub" style="margin:0">{_esc(e['email'])}</td>
+          <td class="hr-sub" style="margin:0">{_esc(e['email'])}</td><td>{access_state}</td>
           <td>{_role_badge(e['hr_role'])}</td>
           <td>{_esc(e['employee_type'])}</td>
           <td>{_esc(pay)}</td>
           <td>{status_dot} {_esc(e['status'])}</td>
         </tr>"""
     if not rows:
-        rows = '<tr><td colspan="6" class="hr-empty">No employees yet. Add your first one.</td></tr>'
+        rows = '<tr><td colspan="7" class="hr-empty">No employees yet. Add your first one.</td></tr>'
     body = f"""
     {_flash(flash)}
     <div class="hr-row-head">
@@ -833,7 +843,7 @@ def render_hr_employees(employees: list, *, user, flash=None) -> str:
       </div>
     </div>
     <table class="hr-tbl">
-      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Type</th><th>Pay</th><th>Status</th></tr></thead>
+      <thead><tr><th>Name</th><th>Record email</th><th>Employee app access</th><th>Role</th><th>Type</th><th>Pay</th><th>Status</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>
     """
@@ -876,6 +886,11 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         if e.get("personal_email")
         else "<strong>Personal contact email missing.</strong> Ask the employee to add one under My information after signing in."
     )
+    login_status = (
+        f'<strong>Ready to invite:</strong> {_esc(e.get("hr_login_email"))}'
+        if e.get("hr_login_email")
+        else "<strong>Personal HR sign-in missing.</strong> Add the employee’s personal Google-account email and save before creating an invitation."
+    )
     body = f"""
     {err}
     <h1 class="hr-h1">{_esc(title)}</h1>
@@ -883,9 +898,12 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
     {'' if is_new else '<p><a class="hr-btn hr-btn-light" href="/admin/hr/teams">View team roster</a></p>'}
     <form class="hr-form" method="post" action="{action}">
       <div class="hr-grid2">
-        <div><label>Email *</label>{email_field}</div>
+        <div><label>Employee record email *</label>{email_field}<p class="hr-help">Preserves the employee’s payroll and historical record key.</p></div>
         <div><label>Full name</label><input name="full_name" value="{_esc(e.get('full_name',''))}" placeholder="Jane Doe"></div>
       </div>
+      <label for="hr-login-email">Personal HR sign-in email</label>
+      <input id="hr-login-email" type="email" name="hr_login_email" value="{_esc(e.get('hr_login_email',''))}" autocomplete="off" placeholder="employee.personal@gmail.com" aria-describedby="hr-login-help">
+      <p class="hr-help" id="hr-login-help">Use the personal Google account the employee will keep if work access ends. This login receives employee-only HR access and does not replace or connect to their Anata work account. Saving it does not send an invitation.</p>
       <div class="hr-grid2">
         <div><label>HR role</label>{_sel("hr_role", HR_ROLES, e.get("hr_role","employee"))}</div>
         <div><label>Worker record</label>{worker_select}</div>
@@ -935,13 +953,14 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
     {"" if is_new else f'''
     <div class="hr-callout" style="margin-top:18px">
       <div class="hr-kicker">Employee app readiness</div>
-      <p>{personal_contact_status}</p>
+      <p>{login_status}</p><p>{personal_contact_status}</p>
       <p><a href="/admin/hr/access-training">Open the access and installation training</a>.</p>
     </div>
     <form class="hr-form" method="post" action="/admin/hr/employees/{e["id"]}/invite" style="margin-top:18px">
       <div class="hr-kicker">Secure onboarding</div>
-      <p>Creates an expiring employee-only invitation. The employee completes personal, W-4, I-9 employee, and policy steps after signing in.</p>
-      <button class="hr-btn" type="submit">Create secure invitation</button>
+      <p>Creates an expiring employee-only invitation for <strong>{_esc(e.get("hr_login_email") or "the personal HR sign-in email above")}</strong>. The work account keeps its separate Agent permissions.</p>
+      <button class="hr-btn" type="submit"{"" if e.get("hr_login_email") else " disabled"}>Create secure invitation</button>
+      {"" if e.get("hr_login_email") else '<p class="hr-help">Save a valid personal HR sign-in email first.</p>'}
     </form>
     <form class="hr-form" method="post" action="/admin/hr/employees/{e["id"]}/onboarding-review" style="margin-top:18px">
       <div class="hr-kicker">Employer I-9 review</div>
@@ -1206,7 +1225,7 @@ def render_hr_time(
 def render_hr_invitation(invite_link: str, employee: dict, *, user, email_sent: bool) -> str:
     body = f"""
     <h1 class="hr-h1">Secure invitation created</h1>
-    <p class="hr-sub">This link expires and can be used only by {_esc(employee.get('email'))}.</p>
+    <p class="hr-sub">This link expires and can be used only by {_esc(employee.get('hr_login_email'))}.</p>
     <div class="hr-flash">{'Invitation email sent.' if email_sent else 'Email delivery is not configured or failed. Copy and send the secure link below.'}</div>
     <div class="hr-callout warn"><div class="hr-kicker">Copy once</div>
       <p>Send this link through a trusted channel. It contains no employee data, but anyone holding it can begin the sign-in flow for the invited email.</p>

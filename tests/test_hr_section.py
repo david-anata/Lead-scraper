@@ -99,8 +99,9 @@ class HRSectionTests(unittest.TestCase):
     def test_create_and_list_employee(self):
         import uuid
         email = f"worker-{uuid.uuid4().hex[:8]}@anatainc.com"  # unique — persistent temp DB
+        login_email = f"worker-{uuid.uuid4().hex[:8]}@example.com"
         r = self._post("/admin/hr/employees/new",
-                       {"email": email, "full_name": "Work Er",
+                       {"email": email, "hr_login_email": login_email, "full_name": "Work Er",
                         "hr_role": "employee", "employee_type": "hourly", "hourly_rate": "27.50"},
                        self.sa)
         self.assertIn(r.status_code, (302, 303))
@@ -111,8 +112,13 @@ class HRSectionTests(unittest.TestCase):
     def test_duplicate_employee_rejected(self):
         import uuid
         email = f"dup-{uuid.uuid4().hex[:8]}@anatainc.com"
-        self._post("/admin/hr/employees/new", {"email": email}, self.sa)
-        r2 = self._post("/admin/hr/employees/new", {"email": email}, self.sa)
+        login_email = f"dup-{uuid.uuid4().hex[:8]}@example.com"
+        self._post("/admin/hr/employees/new", {
+            "email": email, "hr_login_email": login_email,
+        }, self.sa)
+        r2 = self._post("/admin/hr/employees/new", {
+            "email": email, "hr_login_email": login_email,
+        }, self.sa)
         self.assertEqual(r2.status_code, 422)
         self.assertIn("already exists", r2.text)
 
@@ -671,16 +677,89 @@ class HRSectionTests(unittest.TestCase):
     def test_employee_invitation_preprovisions_only_hr_and_waits_for_acceptance(self):
         import uuid
         email = f"invite-employee-{uuid.uuid4().hex[:8]}@anatainc.com"
+        login_email = f"invite-employee-{uuid.uuid4().hex[:8]}@example.com"
         employee_id = hr_store.create_employee(
-            email=email, full_name="Invited Employee", hr_role="employee"
+            email=email, hr_login_email=login_email,
+            full_name="Invited Employee", hr_role="employee"
         )
+        work_user_id = access_store.upsert_user(email, "Work Account")
+        access_store.set_user_permissions(work_user_id, ["sales.deals"])
         result = self._post(
             f"/admin/hr/employees/{employee_id}/invite", {}, self.sa
         )
         self.assertEqual(result.status_code, 200)
-        invited = access_store.get_user_by_email(email)
+        invited = access_store.get_user_by_email(login_email)
         self.assertEqual(invited["permissions"], {"hr.access"})
         self.assertEqual(invited["status"], "suspended")
+        self.assertEqual(
+            access_store.get_user_by_email(email)["permissions"], {"sales.deals"}
+        )
+        self.assertIn(login_email, result.text)
+
+    def test_employee_invitation_requires_personal_login_and_never_uses_work_email(self):
+        import uuid
+        email = f"no-personal-login-{uuid.uuid4().hex[:8]}@anatainc.com"
+        employee_id = hr_store.create_employee(
+            email=email, full_name="Not Ready"
+        )
+
+        result = self._post(
+            f"/admin/hr/employees/{employee_id}/invite", {}, self.sa
+        )
+
+        self.assertEqual(result.status_code, 303)
+        self.assertIn("err=hr_login_email_required", result.headers["location"])
+        self.assertIsNone(access_store.get_user_by_email(email))
+
+    def test_hr_login_must_be_personal_and_unique(self):
+        import uuid
+        first = f"login-first-{uuid.uuid4().hex[:8]}@anatainc.com"
+        second = f"login-second-{uuid.uuid4().hex[:8]}@anatainc.com"
+        shared_login = f"shared-{uuid.uuid4().hex[:8]}@example.com"
+        first_id = hr_store.create_employee(email=first, full_name="First")
+        second_id = hr_store.create_employee(email=second, full_name="Second")
+        self.assertEqual(
+            hr_store.set_employee_hr_login_email(
+                first_id, "work@anatainc.com", actor="test"
+            ),
+            (False, "hr_login_email_invalid"),
+        )
+        self.assertEqual(
+            hr_store.set_employee_hr_login_email(
+                first_id, shared_login, actor="test"
+            ),
+            (True, "hr_login_saved"),
+        )
+        self.assertEqual(
+            hr_store.set_employee_hr_login_email(
+                second_id, shared_login, actor="test"
+            ),
+            (False, "hr_login_email_in_use"),
+        )
+
+    def test_personal_hr_login_maps_to_existing_employee_history(self):
+        import uuid
+        email = f"history-{uuid.uuid4().hex[:8]}@anatainc.com"
+        login_email = f"history-{uuid.uuid4().hex[:8]}@example.com"
+        hr_store.create_employee(
+            email=email, hr_login_email=login_email, full_name="History Person"
+        )
+        uid = access_store.upsert_user(login_email, "History Person")
+        access_store.set_user_permissions(uid, ["hr.access"])
+
+        page = self._get("/admin/hr/onboarding", _cookie(login_email))
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("History Person", page.text)
+        dashboard = self._get("/admin/hr", _cookie(login_email))
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertIn("Anata employee app", dashboard.text)
+        clocked_in = self._post(
+            "/admin/hr/time/clock", {"action": "in"}, _cookie(login_email)
+        )
+        self.assertIn("ok=clocked_in", clocked_in.headers["location"])
+        self.assertIsNotNone(hr_store.current_clock(email))
+        self.assertEqual(hr_store.list_time_entries(email, limit=1)[0]["employee_email"], email)
+        self._post("/admin/hr/time/clock", {"action": "out"}, _cookie(login_email))
 
     def test_team_detail_can_update_leader_and_manage_membership(self):
         import uuid
@@ -1240,10 +1319,12 @@ class HRSectionTests(unittest.TestCase):
     def test_new_employee_setup_saves_employment_and_one_pay_basis(self):
         import uuid
         email = f"complete-{uuid.uuid4().hex[:8]}@anatainc.com"
+        login_email = f"complete-{uuid.uuid4().hex[:8]}@example.com"
         response = self._post(
             "/admin/hr/employees/new",
             {
-                "email": email, "full_name": "Complete Hire",
+                "email": email, "hr_login_email": login_email,
+                "full_name": "Complete Hire",
                 "pay_basis": "fixed_semimonthly", "hourly_rate": "0",
                 "fixed_pay_per_period": "1000.00", "hire_date": "2026-08-03",
                 "title": "Coordinator", "classification": "exempt",
@@ -1271,10 +1352,11 @@ class HRSectionTests(unittest.TestCase):
     def test_employee_money_is_rejected_instead_of_silently_becoming_zero(self):
         import uuid
         email = f"bad-money-{uuid.uuid4().hex[:8]}@anatainc.com"
+        login_email = f"bad-money-{uuid.uuid4().hex[:8]}@example.com"
         invalid = self._post(
             "/admin/hr/employees/new",
             {
-                "email": email, "pay_basis": "hourly",
+                "email": email, "hr_login_email": login_email, "pay_basis": "hourly",
                 "hourly_rate": "twenty five",
             },
             self.sa,
@@ -1286,7 +1368,7 @@ class HRSectionTests(unittest.TestCase):
         conflicting = self._post(
             "/admin/hr/employees/new",
             {
-                "email": email, "pay_basis": "hourly",
+                "email": email, "hr_login_email": login_email, "pay_basis": "hourly",
                 "hourly_rate": "25", "fixed_pay_per_period": "1000",
             },
             self.sa,
@@ -1346,10 +1428,12 @@ class HRSectionTests(unittest.TestCase):
         import uuid
         suffix = uuid.uuid4().hex[:8]
         email = f"report-{suffix}@anatainc.com"
+        login_email = f"report-{suffix}@example.com"
         invalid = self._post(
             "/admin/hr/employees/new",
             {
-                "email": email, "manager_email": f"missing-{suffix}@anatainc.com",
+                "email": email, "hr_login_email": login_email,
+                "manager_email": f"missing-{suffix}@anatainc.com",
                 "pay_basis": "hourly", "hourly_rate": "20",
             },
             self.sa,
