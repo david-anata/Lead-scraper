@@ -240,6 +240,7 @@ def render_building_page(
     service_requests: list[dict[str, Any]],
     rate_plans: list[dict[str, Any]] | None = None,
     launch_decisions: list[dict[str, Any]] | None = None,
+    launch_status: dict[str, Any] | None = None,
     collections: list[dict[str, Any]] | None = None,
     tours: list[dict[str, Any]] | None = None,
     contact_merges: list[dict[str, Any]] | None = None,
@@ -267,6 +268,7 @@ def render_building_page(
     contact_merges = list(contact_merges or [])
     rate_plans = list(rate_plans or [])
     launch_decisions = list(launch_decisions or [])
+    launch_status = dict(launch_status or {})
     collections = list(collections or [])
     nav = render_agent_nav(
         "building",
@@ -1092,6 +1094,48 @@ def render_building_page(
     launch_progress_percent = int(
         (launch_ready_count / len(launch_definitions)) * 100
     )
+    launch_status_items = list(launch_status.get("items") or [])
+    launch_external_count = int(launch_status.get("external_count") or 0)
+    launch_blocked_count = int(launch_status.get("blocked_count") or 0)
+    launch_owner_complete = int(launch_status.get("owner_complete") or 0)
+    launch_owner_total = int(launch_status.get("owner_total") or 0)
+    launch_customer_ready = bool(launch_status.get("customer_launch_ready"))
+    launch_state_labels = {
+        "complete": ("Ready", "badge--ok"),
+        "needs_review": ("Needs review", "badge--warn"),
+        "external": ("Outside setup", "badge--warn"),
+        "blocked": ("Blocked", "badge--bad"),
+        "automatic": ("Unlocks automatically", "badge--muted"),
+    }
+
+    def render_launch_checklist_item(item: dict[str, Any]) -> str:
+        state = str(item.get("state") or "blocked")
+        state_label, badge_class = launch_state_labels.get(
+            state, ("Blocked", "badge--bad")
+        )
+        href = str(item.get("href") or "")
+        action = (
+            f'<a href="{_esc(href)}">{_esc(item.get("action_label") or "Open")}'
+            " →</a>"
+            if href
+            else ""
+        )
+        return f"""<li class="launch-checklist__item launch-checklist__item--{_esc(state)}">
+          <details class="launch-checklist__details">
+            <summary>
+              <span class="launch-checklist__marker" aria-hidden="true"></span>
+              <span class="launch-checklist__body">
+                <span class="launch-checklist__title"><strong>{_esc(item.get("label"))}</strong><span class="badge {badge_class}">{_esc(state_label)}</span></span>
+                <span class="launch-checklist__summary">{_esc(item.get("summary"))}</span>
+              </span>
+            </summary>
+            <div class="launch-checklist__next"><span><strong>Next:</strong> {_esc(item.get("next_action"))}</span><span><strong>Owner:</strong> {_esc(item.get("owner"))}</span>{action}</div>
+          </details>
+        </li>"""
+
+    launch_checklist_html = "".join(
+        render_launch_checklist_item(item) for item in launch_status_items
+    )
     arena_plan_ready = any(
         item.get("offering_id") == "arena-events"
         and item.get("status") == "approved"
@@ -1509,15 +1553,24 @@ def render_building_page(
     .decision-card__action[open]>summary{{background:#eef6fa;}} .decision-form{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;padding:17px 18px;border-top:1px solid var(--border);}}
     div.decision-card__action{{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 18px;}} .decision-card__link{{display:inline-flex;align-items:center;white-space:nowrap;text-decoration:none;}}
     .technical-details{{padding:12px 14px;border:1px dashed var(--border);border-radius:8px;background:#fbfbf9;}} .technical-details summary{{cursor:pointer;color:rgba(43,54,68,.68);font-size:12px;font-weight:700;}} .technical-details p{{margin:8px 0 0;color:rgba(43,54,68,.65);font-size:12px;line-height:1.45;}}
-    .launch-handoff{{padding:20px 22px;border-top:1px solid var(--border);background:#fff;}}
-    .launch-handoff h3{{margin:0;font:800 17px "Montserrat",sans-serif;}}
-    .launch-handoff>p{{margin:5px 0 14px;color:rgba(43,54,68,.65);font-size:13px;}}
-    .launch-handoff__steps{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;}}
-    .launch-handoff__step{{padding:15px;border:1px solid var(--border);border-radius:10px;background:#fbfbf9;}}
-    .launch-handoff__step span{{display:block;color:#397a9d;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;}}
-    .launch-handoff__step strong{{display:block;margin-top:5px;font-size:14px;}}
-    .launch-handoff__step p{{margin:5px 0 0;color:rgba(43,54,68,.66);font-size:12px;line-height:1.5;}}
-    .launch-handoff__step a{{display:inline-flex;margin-top:10px;color:#397a9d;font-size:12px;font-weight:800;}}
+    .launch-checklist{{margin:0;padding:0;list-style:none;border-top:1px solid var(--border);}}
+    .launch-checklist__item{{border-bottom:1px solid var(--border);background:#fff;}}
+    .launch-checklist__item:last-child{{border-bottom:0;}}
+    .launch-checklist__details>summary{{display:grid;grid-template-columns:12px minmax(0,1fr);gap:14px;padding:15px 20px;cursor:pointer;list-style:none;}}
+    .launch-checklist__details>summary::-webkit-details-marker{{display:none;}}
+    .launch-checklist__details>summary:focus-visible{{outline:3px solid rgba(57,122,157,.35);outline-offset:-3px;}}
+    .launch-checklist__details[open]>summary{{background:#f8fbfc;}}
+    .launch-checklist__marker{{width:10px;height:10px;margin-top:7px;border-radius:50%;background:#d08b2f;box-shadow:0 0 0 4px rgba(208,139,47,.12);}}
+    .launch-checklist__item--complete .launch-checklist__marker{{background:#18776f;box-shadow:0 0 0 4px rgba(24,119,111,.12);}}
+    .launch-checklist__item--blocked .launch-checklist__marker{{background:#b94f45;box-shadow:0 0 0 4px rgba(185,79,69,.12);}}
+    .launch-checklist__item--automatic .launch-checklist__marker{{background:#6e7f8b;box-shadow:0 0 0 4px rgba(110,127,139,.12);}}
+    .launch-checklist__title{{display:flex;align-items:center;justify-content:space-between;gap:12px;}}
+    .launch-checklist__title>strong{{font:800 15px "Montserrat",sans-serif;}}
+    .launch-checklist__summary{{display:block;margin-top:5px;color:rgba(43,54,68,.72);font-size:13px;line-height:1.45;}}
+    .launch-checklist__next{{display:flex;align-items:center;flex-wrap:wrap;gap:8px 18px;padding:11px 20px 14px 46px;border-top:1px solid var(--border);background:#fbfbf9;color:rgba(43,54,68,.67);font-size:12px;line-height:1.45;}}
+    .launch-checklist__next a{{margin-left:auto;color:#397a9d;font-weight:800;white-space:nowrap;}}
+    .saved-policy-disclosure{{border-top:1px solid var(--border);}}
+    .saved-policy-disclosure>summary{{padding:16px 20px;cursor:pointer;color:#397a9d;font-size:13px;font-weight:800;}}
     .advanced-tools{{border-style:dashed;}} .advanced-tools>.panel-head{{background:#fbfbf9;}} .advanced-label{{display:inline-flex;margin-left:8px;padding:3px 7px;border-radius:99px;background:#edf0f2;color:#56616d;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;vertical-align:middle;}}
     .task-creator>summary{{display:flex;align-items:center;justify-content:space-between;min-height:48px;padding:0 22px;cursor:pointer;list-style:none;color:#397a9d;font-size:13px;font-weight:800;}} .task-creator>summary::-webkit-details-marker{{display:none;}} .task-creator>summary::after{{content:"Open";font-size:11px;color:rgba(43,54,68,.56);}} .task-creator[open]>summary{{border-bottom:1px solid var(--border);background:#f4f9fc;}} .task-creator[open]>summary::after{{content:"Close";}}
     .setup-workspace{{grid-column:1/-1;border:1px solid var(--border);border-radius:14px;background:#f7fafb;overflow:hidden;}}
@@ -1534,7 +1587,7 @@ def render_building_page(
     .checklist-list{{display:grid;gap:14px;padding:18px 22px;}} .checklist-group{{border:1px solid var(--border);border-radius:10px;overflow:hidden;}} .checklist-head{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 16px;background:#f8f8f6;}} .checklist-add{{display:grid;grid-template-columns:minmax(220px,1fr) auto auto;align-items:end;gap:10px;padding:12px 16px;border-top:1px solid var(--border);}} .checklist-add label:first-of-type{{display:grid;gap:5px;}}
     .media-space{{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#fff;}} .media-space>summary{{cursor:pointer;list-style:none;}} .media-space>summary::-webkit-details-marker{{display:none;}} .media-space__action{{color:#397a9d;font-size:12px;font-weight:800;}} .media-space[open] .media-space__action{{color:rgba(43,54,68,.58);}} .media-space[open]>summary{{border-bottom:1px solid var(--border);}}
     .adjustment-evidence{{display:grid;grid-template-columns:repeat(2,minmax(130px,1fr));gap:6px;min-width:360px;}} .adjustment-evidence button{{justify-self:start;}}
-    @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.daily-guide,.launch-handoff__steps{{grid-template-columns:1fr}}.daily-guide__item{{border-right:0;border-bottom:1px solid var(--border)}}.daily-guide__item:last-child{{border-bottom:0}}.grid,.setup-workspace__content{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}.launch-steps{{grid-template-columns:1fr 1fr}}.launch-step:nth-child(2){{border-right:0}}.launch-step:nth-child(-n+2){{border-bottom:1px solid var(--border)}}}}
+    @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.daily-guide{{grid-template-columns:1fr}}.daily-guide__item{{border-right:0;border-bottom:1px solid var(--border)}}.daily-guide__item:last-child{{border-bottom:0}}.grid,.setup-workspace__content{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}.launch-steps{{grid-template-columns:1fr 1fr}}.launch-step:nth-child(2){{border-right:0}}.launch-step:nth-child(-n+2){{border-bottom:1px solid var(--border)}}}}
     @media(max-width:700px){{.decision-card__summary{{grid-template-columns:42px minmax(0,1fr)}}.decision-card__state{{grid-column:2;justify-self:start;text-align:left;max-width:none}}.decision-card__evidence{{grid-template-columns:1fr}}.decision-card__evidence>div+div{{border-left:0;border-top:1px solid var(--border)}}}}
     @media(max-width:600px){{.page-head,.panel-head{{align-items:start;flex-direction:column}}.panel-head{{gap:9px;padding:18px}}.metric{{padding:14px 15px}}.metric strong{{font-size:22px}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.launch-command__head{{grid-template-columns:1fr;padding:21px}}.launch-score{{width:78px;height:78px}}.launch-steps{{grid-template-columns:1fr}}.launch-step{{border-right:0;border-bottom:1px solid var(--border)!important}}.launch-step:last-child{{border-bottom:0!important}}.form-grid,.decision-form{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
   </style>
@@ -1591,15 +1644,15 @@ def render_building_page(
         <div>
           <div class="eyebrow">Arena launch command center</div>
           <h2 id="arena-command-title">Private, protected, and not ready to publish</h2>
-          <p>The verified venue catalog exists, but {launch_remaining_count} governed decision{"s" if launch_remaining_count != 1 else ""} still block approved pricing, agreements, provider setup, and a truthful public launch.</p>
+          <p>{_esc(launch_status.get("headline") or "Arena launch readiness is being verified.")}. The checklist below comes from the actual pricing, agreement, payment, sender, and calendar evidence.</p>
         </div>
-        <div class="launch-score" aria-label="{launch_ready_count} of 10 launch decisions complete"><div><strong>{launch_progress_percent}%</strong><span>decided</span></div></div>
+        <div class="launch-score" aria-label="{launch_owner_complete} of {launch_owner_total} owner decisions saved"><div><strong>{launch_owner_complete}/{launch_owner_total}</strong><span>rules saved</span></div></div>
       </div>
       <div class="launch-steps" aria-label="Arena launch stages">
         <div class="launch-step"><span>1 · Catalog</span><strong>{"Prepared" if arena_catalog_ready else "Action required"}</strong><p>{"Canonical Arena records are private." if arena_catalog_ready else "Prepare the verified Arena catalog."}</p></div>
-        <div class="launch-step"><span>2 · Decisions</span><strong>{launch_ready_count} of 10 approved</strong><p>{launch_remaining_count} accountable decisions remain.</p></div>
-        <div class="launch-step"><span>3 · Rate plan</span><strong>{"Approved" if arena_plan_ready else "Blocked"}</strong><p>{"Approved plan evidence exists." if arena_plan_ready else "Cannot approve until decisions are complete."}</p></div>
-        <div class="launch-step"><span>4 · Publication</span><strong>Locked</strong><p>No availability, contract, payment, or booking claim is live.</p></div>
+        <div class="launch-step"><span>2 · Business rules</span><strong>{launch_owner_complete} of {launch_owner_total} saved</strong><p>{"No more owner questions." if launch_owner_complete == launch_owner_total else "Only missing owner-approved rules remain."}</p></div>
+        <div class="launch-step"><span>3 · Outside setup</span><strong>{launch_external_count} item{"s" if launch_external_count != 1 else ""}</strong><p>Legal, accountant, or provider evidence—not another owner questionnaire.</p></div>
+        <div class="launch-step"><span>4 · Customer launch</span><strong>{"Ready for rehearsal" if launch_customer_ready else "Safely locked"}</strong><p>{"Run the controlled booking rehearsal." if launch_customer_ready else "No binding estimate, payment, or booking claim is made."}</p></div>
       </div>
     </section>
       <section class="panel panel--wide" id="arena-catalog-readiness">
@@ -1655,18 +1708,13 @@ def render_building_page(
         </details>
       </section>
       <section class="panel panel--wide" id="arena-launch-readiness">
-        <div class="panel-head"><div><h2>Your Arena decisions and remaining setup</h2><p>Your approved policy answers are already loaded. Change them only when the business rule changes; finish the remaining provider and document setup below.</p></div><span class="count">{launch_ready_count}/10 complete</span></div>
-        <div class="alert alert--warning"><strong>{launch_remaining_count} setup steps still block launch.</strong><p>Still needed: {_esc(launch_remaining_summary)}. No customer message, payment, publication, or calendar write happens from this page.</p></div>
-        <div class="decision-list">{launch_readiness_cards}</div>
-        <div class="launch-handoff">
-          <h3>The final handoff</h3>
-          <p>Your business answers are saved. These are the only remaining external steps, in order.</p>
-          <div class="launch-handoff__steps">
-            <div class="launch-handoff__step"><span>1 · Legal review</span><strong>Business terms are prepared</strong><p>Open the versioned Arena package, register it for review, then have the designated reviewer approve the complete reusable agreement.</p><a href="/admin/building/contracts">Open contracts →</a></div>
-            <div class="launch-handoff__step"><span>2 · Google access</span><strong>Calendar permission is missing</strong><p>Reconnect Google Calendar with calendar-list access, then verify one Anata-owned dedicated Arena calendar and Agent service-account access.</p></div>
-            <div class="launch-handoff__step"><span>3 · Launch date</span><strong>Comes from approved pricing</strong><p>Agent records the launch-effective date automatically when the reviewed Arena rate plan is approved.</p></div>
-          </div>
-        </div>
+        <div class="panel-head"><div><h2>What is ready—and what still needs outside approval</h2><p>Your answers are already saved. This list updates from the real system evidence; it does not ask you to repeat decisions.</p></div><span class="count">{launch_external_count} outside item{"s" if launch_external_count != 1 else ""}</span></div>
+        <div class="alert {"alert--success" if launch_customer_ready else "alert--warning"}"><strong>{"Ready for a controlled launch rehearsal." if launch_customer_ready else "Customer launch remains safely locked."}</strong><p>{"Complete one governed rehearsal before opening the full booking path." if launch_customer_ready else f"{launch_external_count} outside approval or provider item{'s' if launch_external_count != 1 else ''} and {launch_blocked_count} internal blocker{'s' if launch_blocked_count != 1 else ''} remain. No customer message, payment, publication, or calendar write happens from this checklist."}</p></div>
+        <ol class="launch-checklist">{launch_checklist_html}</ol>
+        <details class="saved-policy-disclosure">
+          <summary>Review or change saved business rules ({launch_ready_count} of 10 governed records complete)</summary>
+          <div class="decision-list">{launch_readiness_cards}</div>
+        </details>
       </section>
       <section class="panel panel--wide" id="commercial-rate-plans">
         <div class="panel-head"><div><h2>Commercial rate plans</h2><p>Version pricing, deposits, included items, and cancellation terms. Approved versions are locked.</p></div><span class="count">{len(rate_plans)} versions</span></div>
