@@ -696,6 +696,61 @@ class HRSectionTests(unittest.TestCase):
         )
         self.assertIn(login_email, result.text)
 
+    def test_yahoo_employee_invitation_is_a_direct_single_use_login(self):
+        import uuid
+
+        record_email = f"yahoo-worker-{uuid.uuid4().hex[:8]}@anatainc.com"
+        login_email = f"yahoo-worker-{uuid.uuid4().hex[:8]}@yahoo.com"
+        employee_id = hr_store.create_employee(
+            email=record_email,
+            hr_login_email=login_email,
+            full_name="Yahoo Worker",
+            hr_role="employee",
+        )
+        invite = hr_store.create_employee_invitation(
+            record_email, actor="david@anatainc.com"
+        )
+        self.assertTrue(invite["ok"])
+
+        accepted = self.client.get(
+            f"/admin/access/invite/{invite['token']}",
+            follow_redirects=False,
+        )
+
+        self.assertEqual(accepted.status_code, 302)
+        self.assertEqual(accepted.headers["location"], "/app")
+        self.assertIn(app.state.agent_settings.admin_cookie_name, accepted.cookies)
+        user = access_store.get_user_by_email(login_email)
+        self.assertEqual(user["status"], "active")
+        self.assertEqual(user["permissions"], {"hr.access"})
+        reused = self.client.get(
+            f"/admin/access/invite/{invite['token']}",
+            follow_redirects=False,
+        )
+        self.assertEqual(reused.status_code, 410)
+
+    def test_existing_business_login_keeps_approved_tools_when_hr_is_linked(self):
+        import uuid
+
+        business_email = f"existing-business-{uuid.uuid4().hex[:8]}@anatainc.com"
+        employee_id = hr_store.create_employee(
+            email=business_email,
+            hr_login_email=business_email,
+            full_name="Existing Business User",
+        )
+        user_id = access_store.upsert_user(business_email, "Existing Business User")
+        access_store.set_user_permissions(user_id, ["sales.deals"])
+
+        invite = hr_store.create_employee_invitation(
+            business_email, actor="david@anatainc.com"
+        )
+
+        self.assertTrue(invite["ok"])
+        self.assertEqual(
+            access_store.get_user_by_email(business_email)["permissions"],
+            {"sales.deals", "hr.access"},
+        )
+
     def test_employee_invitation_requires_personal_login_and_never_uses_work_email(self):
         import uuid
         email = f"no-personal-login-{uuid.uuid4().hex[:8]}@anatainc.com"
@@ -722,7 +777,7 @@ class HRSectionTests(unittest.TestCase):
             hr_store.set_employee_hr_login_email(
                 first_id, "work@anatainc.com", actor="test"
             ),
-            (False, "hr_login_email_invalid"),
+            (True, "hr_login_saved"),
         )
         self.assertEqual(
             hr_store.set_employee_hr_login_email(

@@ -45,6 +45,7 @@ class HRSchemaTests(unittest.TestCase):
         names = set(inspect(db.get_engine()).get_table_names())
         self.assertTrue(_EXPECTED_TABLES.issubset(names),
                         f"missing HR tables: {_EXPECTED_TABLES - names}")
+        self.assertIn("app_email_login_tokens", names)
         liability_columns = {
             row["name"] for row in inspect(db.get_engine()).get_columns("hr_tax_liabilities")
         }

@@ -228,12 +228,8 @@ def _employee_classification_error(
 
 def _hr_login_email_error(value: str) -> str:
     normalized = (value or "").strip().lower()
-    if (
-        "@" not in normalized
-        or "." not in normalized.rsplit("@", 1)[-1]
-        or normalized.endswith("@anatainc.com")
-    ):
-        return "Use a valid personal Google-account email outside anatainc.com."
+    if not access_store.valid_email(normalized):
+        return "Use a valid email address."
     return ""
 
 
@@ -619,7 +615,7 @@ async def employee_update(
         return HTMLResponse(render_hr_employee_form(
             employee, store.list_teams(), user=user,
             error={
-                "hr_login_email_invalid": "Use a valid personal Google-account email outside anatainc.com.",
+                "hr_login_email_invalid": "Use a valid email address.",
                 "hr_login_email_in_use": "That personal HR sign-in is already assigned to another employee.",
             }.get(login_message, "The personal HR sign-in email could not be saved."),
         ), status_code=422)

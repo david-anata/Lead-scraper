@@ -633,6 +633,13 @@ Anata's Utah team. It is intentionally provider-independent:
 
 - Agent records employment setup, secure onboarding, W-4 elections, I-9 review,
   policy acknowledgements, exact time, corrections, PTO, and paid holidays.
+- Employee sign-in is provider-neutral. A confirmed Gmail, Yahoo, Outlook,
+  iCloud, business, or other valid address receives a hashed, single-use
+  passwordless link. The link expires after 15 minutes for returning sign-in;
+  onboarding invitations expire after seven days and become unusable after
+  acceptance. Google sign-in remains optional. Unknown and suspended addresses
+  receive the same non-identifying request confirmation, and repeated requests
+  are rate-limited.
 - Payroll is semimonthly: the 1st–15th is paid on the 20th; the 16th–month end
   is paid on the following 5th. Saturday pay dates move to Friday and Sunday pay
   dates move to Monday. The overtime week is Sunday–Saturday.

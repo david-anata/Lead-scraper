@@ -919,21 +919,24 @@ def admin_login_page(request: Request) -> HTMLResponse:
         return HTMLResponse("", status_code=302, headers={"Location": "/admin"})
     settings = request.app.state.settings
     show_google_button = google_oauth_enabled(settings)
+    from sales_support_agent.services.access.notify import email_delivery_configured
+    show_email_form = email_delivery_configured(settings)
     show_password_form = password_login_enabled(settings)
     unavailable_message = ""
-    if not show_google_button and not show_password_form:
+    if not show_google_button and not show_email_form and not show_password_form:
         unavailable_message = (
-            "Login is not configured on this deployment. Add Google OAuth or a break-glass password in Render."
+            "Login is not configured on this deployment. Add email delivery, Google OAuth, or a break-glass password in Render."
         )
-    elif not show_google_button and show_password_form:
+    elif not show_google_button and not show_email_form and show_password_form:
         unavailable_message = (
-            "Google sign-in is currently unavailable. Use the shared fallback "
+            "Email and Google sign-in are currently unavailable. Use the shared fallback "
             "password only if you already have break-glass access."
         )
     return HTMLResponse(
         render_login_page(
             error_message=unavailable_message,
             show_google_button=show_google_button,
+            show_email_form=show_email_form,
             show_password_form=show_password_form,
         )
     )

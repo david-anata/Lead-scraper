@@ -1322,6 +1322,31 @@ class AppInvite(Base):
     accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class AppEmailLoginToken(Base):
+    """Single-use passwordless sign-in token.
+
+    Raw tokens are emailed and never stored. The request fingerprint is a
+    one-way digest used only for abuse throttling; raw IP addresses and browser
+    details are not retained.
+    """
+
+    __tablename__ = "app_email_login_tokens"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    request_fingerprint: Mapped[str] = mapped_column(String(128), default="", index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class AppAccessRequest(Base):
     """A self-service access request raised when an un-provisioned (but
     domain-allowed) user signs in. An admin approves with a role, or denies."""

@@ -82,6 +82,35 @@ class StoreTests(unittest.TestCase):
         store.upsert_user("temp_user@anatainc.com", role_id=rid)
         self.assertFalse(store.delete_role(rid))  # assigned -> blocked
 
+    def test_passwordless_token_is_single_use_and_new_request_supersedes_old(self) -> None:
+        from datetime import datetime, timezone
+
+        email = f"magic-{uuid.uuid4().hex[:8]}@yahoo.com"
+        first = f"first-{uuid.uuid4().hex}"
+        second = f"second-{uuid.uuid4().hex}"
+        now = datetime.now(timezone.utc)
+        self.assertEqual(
+            store.create_email_login_token(
+                email,
+                token=first,
+                request_fingerprint="fingerprint-a",
+                now=now,
+            ),
+            (True, "created"),
+        )
+        self.assertEqual(
+            store.create_email_login_token(
+                email,
+                token=second,
+                request_fingerprint="fingerprint-a",
+                now=now,
+            ),
+            (True, "created"),
+        )
+        self.assertIsNone(store.consume_email_login_token(first, now=now))
+        self.assertEqual(store.consume_email_login_token(second, now=now), email)
+        self.assertIsNone(store.consume_email_login_token(second, now=now))
+
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
 class EnforcementTests(unittest.TestCase):
@@ -537,6 +566,19 @@ class AccessFinalizeTests(unittest.TestCase):
         self.assertIn("Continue with fallback", both)
         self.assertNotIn("GET STARTED", both)
 
+    def test_login_page_offers_provider_neutral_email_link(self) -> None:
+        from sales_support_agent.services.admin_dashboard import render_login_page
+
+        page = render_login_page(
+            show_google_button=True,
+            show_email_form=True,
+            show_password_form=False,
+        )
+        self.assertIn('action="/admin/auth/email"', page)
+        self.assertIn("Email me a one-time link", page)
+        self.assertIn("Yahoo", page)
+        self.assertIn("Or use Google", page)
+
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
 class ExternalInviteTests(unittest.TestCase):
@@ -617,6 +659,8 @@ class RootAppGuardsTest(unittest.TestCase):
                       "root app must mount the Google login-start route")
         self.assertIn("/admin/auth/callback", paths,
                       "root app must mount the Google OAuth callback route")
+        self.assertIn("/admin/auth/email", paths)
+        self.assertIn("/admin/auth/email/{token}", paths)
 
     def test_both_entrypoints_mount_public_profit_calculator_routes(self) -> None:
         import main as rootmain
@@ -694,6 +738,65 @@ class EmailSenderTests(unittest.TestCase):
             self.assertNotIn("gmail", sent)  # Gmail not touched when Resend works
         finally:
             R.ResendClient, G.GmailClient = orig_r, orig_g
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class PasswordlessEmailRouteTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+
+    def test_known_yahoo_account_receives_and_consumes_one_time_link(self) -> None:
+        from unittest import mock
+        from urllib.parse import urlparse
+        from sales_support_agent.services.access import notify
+
+        email = f"returning-{uuid.uuid4().hex[:8]}@yahoo.com"
+        user_id = store.upsert_user(email, "Returning Yahoo User")
+        store.set_user_permissions(user_id, ["hr.access"])
+        sent: dict[str, str] = {}
+
+        with (
+            mock.patch.object(notify, "email_delivery_configured", return_value=True),
+            mock.patch.object(
+                notify,
+                "send_email_login_link",
+                side_effect=lambda _settings, **kwargs: sent.update(kwargs) or True,
+            ),
+        ):
+            requested = self.client.post(
+                "/admin/auth/email",
+                data={"email": email},
+                follow_redirects=False,
+            )
+
+        self.assertEqual(requested.status_code, 200)
+        self.assertIn("Check your email", requested.text)
+        self.assertEqual(sent["to_email"], email)
+        path = urlparse(sent["login_link"]).path
+        accepted = self.client.get(path, follow_redirects=False)
+        self.assertEqual(accepted.status_code, 302)
+        self.assertEqual(accepted.headers["location"], "/admin")
+        self.assertIn(_settings().admin_cookie_name, accepted.cookies)
+        self.assertEqual(self.client.get(path, follow_redirects=False).status_code, 410)
+
+    def test_unknown_email_gets_same_confirmation_without_sending(self) -> None:
+        from unittest import mock
+        from sales_support_agent.services.access import notify
+
+        sender = mock.Mock(return_value=True)
+        with (
+            mock.patch.object(notify, "email_delivery_configured", return_value=True),
+            mock.patch.object(notify, "send_email_login_link", sender),
+        ):
+            response = self.client.post(
+                "/admin/auth/email",
+                data={"email": f"unknown-{uuid.uuid4().hex[:8]}@yahoo.com"},
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Check your email", response.text)
+        sender.assert_not_called()
 
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")

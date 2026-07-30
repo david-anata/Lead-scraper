@@ -346,11 +346,7 @@ def get_employee_by_email(email: str) -> Optional[dict]:
 
 def _valid_hr_login_email(value: str) -> bool:
     normalized = (value or "").strip().lower()
-    return (
-        "@" in normalized
-        and "." in normalized.rsplit("@", 1)[-1]
-        and not normalized.endswith("@anatainc.com")
-    )
+    return access_store.valid_email(normalized)
 
 
 def set_employee_hr_login_email(
@@ -692,22 +688,19 @@ def create_employee_invitation(employee_email: str, *, actor: str,
         if not employee:
             return {"ok": False, "error": "employee_not_found"}
         employee_name = employee.full_name or employee.email
-        employee_hr_role = employee.hr_role
         login_email = (employee.hr_login_email or "").strip().lower()
     if not _valid_hr_login_email(login_email):
         return {"ok": False, "error": "hr_login_email_required"}
     existing_access = access_store.get_user_by_email(login_email)
     if existing_access:
         access_user_id = existing_access["id"]
-        if employee_hr_role == "employee":
-            # Employee invitations deliberately remove unrelated operator tools.
-            # Extra access can be granted later as an explicit admin decision.
-            access_store.set_user_permissions(access_user_id, ["hr.access"])
-        else:
-            access_store.set_user_permissions(
-                access_user_id,
-                sorted(set(existing_access.get("permissions") or set()).union({"hr.access"})),
-            )
+        # Never erase access already granted to an existing business identity.
+        # A new personal identity starts HR-only; an existing identity gains HR
+        # alongside its explicitly approved tools.
+        access_store.set_user_permissions(
+            access_user_id,
+            sorted(set(existing_access.get("permissions") or set()).union({"hr.access"})),
+        )
     else:
         access_user_id = access_store.upsert_user(
             login_email, employee_name, status="suspended"

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import secrets
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from sales_support_agent.services.admin_auth import (
@@ -50,6 +52,23 @@ def _callback_uri(request: Request) -> str:
     if "localhost" not in base and "127.0.0.1" not in base:
         base = base.replace("http://", "https://")
     return f"{base}/admin/auth/callback"
+
+
+def _public_base(request: Request) -> str:
+    """Build authentication links without trusting an arbitrary Host header."""
+
+    hostname = (request.url.hostname or "").lower()
+    if hostname in {"localhost", "127.0.0.1", "::1", "testserver"}:
+        return str(request.base_url).rstrip("/")
+    return "https://agent.anatainc.com"
+
+
+def _request_fingerprint(request: Request) -> str:
+    settings = _session_settings(request)
+    client_host = request.client.host if request.client else ""
+    user_agent = request.headers.get("user-agent", "")[:500]
+    material = f"{settings.admin_session_secret}|{client_host}|{user_agent}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _is_seed_superadmin(settings, email: str) -> bool:
@@ -152,6 +171,91 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
     response.delete_cookie(_OAUTH_STATE_COOKIE, path="/")
     response.set_cookie(value=token, **_cookie_opts(request))
     return response
+
+
+@router.post("/admin/auth/email", response_class=HTMLResponse)
+def email_login_request(
+    request: Request,
+    email: str = Form(""),
+) -> HTMLResponse:
+    """Email a passwordless link without revealing whether an account exists."""
+
+    from sales_support_agent.services.access import store
+    from sales_support_agent.services.access.notify import (
+        email_delivery_configured,
+        send_email_login_link,
+    )
+    from sales_support_agent.services.access.pages import render_email_login_sent_page
+
+    normalized = (email or "").strip().lower()
+    settings = _auth_settings(request)
+    if (
+        store.valid_email(normalized)
+        and email_delivery_configured(settings)
+    ):
+        user = store.get_user_by_email(normalized)
+        if user and user.get("status") == "active":
+            token = secrets.token_urlsafe(32)
+            created, _ = store.create_email_login_token(
+                normalized,
+                token=token,
+                request_fingerprint=_request_fingerprint(request),
+            )
+            if created:
+                link = f"{_public_base(request)}/admin/auth/email/{token}"
+                send_email_login_link(
+                    settings,
+                    to_email=normalized,
+                    login_link=link,
+                )
+    # The response is deliberately identical for unknown, suspended,
+    # rate-limited, and deliverable addresses.
+    return HTMLResponse(render_email_login_sent_page())
+
+
+@router.get("/admin/auth/email/{token}", response_class=HTMLResponse)
+def email_login_accept(request: Request, token: str) -> Response:
+    """Consume one passwordless link and mint the ordinary signed session."""
+
+    from sales_support_agent.services.access import store
+    from sales_support_agent.services.access.pages import (
+        render_email_login_invalid_page,
+        render_suspended_page,
+    )
+
+    email = store.consume_email_login_token(token)
+    if not email:
+        return HTMLResponse(render_email_login_invalid_page(), status_code=410)
+    user = store.get_user_by_email(email)
+    if not user:
+        return HTMLResponse(render_email_login_invalid_page(), status_code=410)
+    if user.get("status") != "active":
+        return HTMLResponse(render_suspended_page(email), status_code=403)
+    store.record_login(email)
+    try:
+        from sales_support_agent.services.hr import store as hr_store
+
+        employee = hr_store.get_employee_by_email(email)
+        is_hr_login = bool(
+            employee
+            and (employee.get("hr_login_email") or "").strip().lower() == email
+        )
+        if is_hr_login and employee.get("status") != "active":
+            return HTMLResponse(render_suspended_page(email), status_code=403)
+        redirect_to = (
+            "/app"
+            if is_hr_login and employee.get("status") == "active"
+            else "/admin"
+        )
+    except Exception:
+        redirect_to = "/admin"
+    return _mint_session(
+        request,
+        _auth_settings(request),
+        email,
+        user.get("name") or email,
+        redirect_to=redirect_to,
+    )
 
 
 def _external_login_allowed(request: Request, email: str) -> bool:

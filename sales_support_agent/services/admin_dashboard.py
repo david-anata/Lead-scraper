@@ -1648,7 +1648,8 @@ def _sync_banner_primary_copy(
 
 
 def render_login_page(*, error_message: str = "", show_google_button: bool = False,
-                      show_password_form: bool = True, password_form_action: str = "/admin/login") -> str:
+                      show_password_form: bool = True, password_form_action: str = "/admin/login",
+                      show_email_form: bool = False) -> str:
     error_html = (
         f'<div class="notice error">{html.escape(error_message)}</div>'
         if error_message
@@ -1667,14 +1668,34 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
         if show_google_button
         else ""
     )
-    divider_html = (
+    email_form_html = (
+        """<form method="post" action="/admin/auth/email">
+              <label for="email-login">Email address</label>
+              <input id="email-login" name="email" type="email"
+                autocomplete="email" inputmode="email"
+                placeholder="you@example.com" required />
+              <button type="submit">Email me a one-time link</button>
+              <p class="fallback-note" style="margin-top:14px">
+                Works with Gmail, Yahoo, Outlook, iCloud, and other email providers.
+                No new password is required.
+              </p>
+            </form>"""
+        if show_email_form
+        else ""
+    )
+    google_divider_html = (
+        '<div class="login-divider"><span>Or use Google</span></div>'
+        if (show_email_form and show_google_button)
+        else ""
+    )
+    fallback_divider_html = (
         '<div class="login-divider"><span>Admin fallback</span></div>'
-        if (show_google_button and show_password_form)
+        if ((show_google_button or show_email_form) and show_password_form)
         else ""
     )
     password_form_html = (
         f"""<form method="post" action="{html.escape(password_form_action, quote=True)}">
-              <p class="fallback-note">Use the shared break-glass password for this workspace. New users must use Google sign-in when it is enabled.</p>
+              <p class="fallback-note">Use the shared break-glass password only for authorized administrator recovery. Employees use email or Google sign-in.</p>
               <label for="password">Shared fallback password</label>
               <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter shared fallback password" required />
               <button type="submit">Continue with fallback</button>
@@ -1926,16 +1947,18 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
       <div class="split">
         <section>
           <div class="eyebrow">Agent admin</div>
-          <h1>Access your <span class="highlight">sales</span> workspace.</h1>
+          <h1>Access your <span class="highlight">Agent</span> workspace.</h1>
         </section>
         <section class="copy">
-          <p>This dashboard keeps lead pulls, owner priorities, and sync controls in one place so the team can move quickly without digging through multiple tools.</p>
+          <p>Agent gives each person only the approved work and employee tools connected to their account.</p>
           <div class="login-card">
-            <h2>Enter the dashboard.</h2>
-            <p>Use your Anata Google account to sign in. New teammate? Google sign-in files an access request for an admin to approve.</p>
+            <h2>Sign in securely.</h2>
+            <p>Use the email address approved for your account. Employees can use any email provider.</p>
             {error_html}
+            {email_form_html}
+            {google_divider_html}
             {google_button_html}
-            {divider_html}
+            {fallback_divider_html}
             {password_form_html}
           </div>
         </section>

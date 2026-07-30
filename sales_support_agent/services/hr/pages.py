@@ -559,7 +559,7 @@ def _flash(flash: Optional[str]) -> str:
         "personal_email_invalid": "Add a valid personal email outside anatainc.com.",
         "hr_login_saved": "Personal HR sign-in email saved. No invitation was sent.",
         "hr_login_email_required": "Add the employee’s personal HR sign-in email before creating an invitation.",
-        "hr_login_email_invalid": "Use a valid personal Google-account email outside anatainc.com.",
+        "hr_login_email_invalid": "Use a valid email address.",
         "hr_login_email_in_use": "That HR sign-in email is already assigned to another employee.",
         "w4_saved": "W-4 elections securely saved.",
         "attestations_saved": "Employee attestations saved.",
@@ -770,13 +770,13 @@ def render_hr_access_training(*, user, flash=None) -> str:
     </div>
     <div class="hr-callout">
       <strong>Before you begin</strong>
-      <p>Keep the employee record email for payroll history, then add the personal Google account they will use for HR sign-in. Their personal contact email is confirmed separately during onboarding. Neither field gives Anata access to an inbox.</p>
+      <p>Keep the employee record email for payroll history, then add the personal email they will use for HR sign-in. Gmail, Yahoo, Outlook, iCloud, and other valid addresses work. Their personal contact email is confirmed separately during onboarding. Neither field gives Anata access to an inbox.</p>
     </div>
     <ol class="hr-training-steps">
       <li><div><h2>Create or review the employee record</h2><p>Confirm the name, record email, worker type, pay basis, team, status, and hire date. Keep contractors outside W-2 payroll.</p></div></li>
-      <li><div><h2>Add the personal HR sign-in</h2><p>Enter a personal Google-account email the employee controls. Saving it does not send anything and does not change their work-account permissions.</p></div></li>
-      <li><div><h2>Create the secure invitation</h2><p>Open the employee and select “Create secure invitation.” Send the generated link only to the personal HR sign-in address. The link expires and cannot be reused after acceptance.</p></div></li>
-      <li><div><h2>Ask the employee to install the app</h2><p>They open the invitation, sign in, visit the HR home page, then use “Add to Home Screen” on iPhone or “Install app” on Android. The Agent icon appears on the phone.</p></div></li>
+      <li><div><h2>Add the personal HR sign-in</h2><p>Enter any valid personal email the employee controls. Saving it does not send anything and does not change their work-account permissions.</p></div></li>
+      <li><div><h2>Create the secure invitation</h2><p>Open the employee and select “Create secure invitation.” The employee opens the one-time link sent only to that address. It expires, cannot be reused, and does not require Google or a new password.</p></div></li>
+      <li><div><h2>Ask the employee to install the app</h2><p>They open the invitation, arrive at their HR home page, then use “Add to Home Screen” on iPhone or “Install app” on Android. The Agent icon appears on the phone.</p></div></li>
       <li><div><h2>Have the employee finish required items</h2><p>Their home page lists exactly what is missing. They add a personal contact email, complete their profile, sign their W-4, finish the employee I-9 step, and acknowledge policies.</p></div></li>
       <li><div><h2>Test employee-only access</h2><p>Ask them to open Home, Time &amp; PTO, My information, Policies, and Pay statements. They should not see coworkers, payroll preparation, company settings, reports, Sales, Finance, or other operator tools.</p></div></li>
       <li><div><h2>Complete employer review</h2><p>David or Val reviews the employee’s original I-9 documents outside the app, records only the allowed evidence, and follows up on any remaining setup items.</p></div></li>
@@ -889,7 +889,7 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
     login_status = (
         f'<strong>Ready to invite:</strong> {_esc(e.get("hr_login_email"))}'
         if e.get("hr_login_email")
-        else "<strong>Personal HR sign-in missing.</strong> Add the employee’s personal Google-account email and save before creating an invitation."
+        else "<strong>Personal HR sign-in missing.</strong> Add the employee’s personal email and save before creating an invitation."
     )
     body = f"""
     {err}
@@ -902,8 +902,8 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         <div><label>Full name</label><input name="full_name" value="{_esc(e.get('full_name',''))}" placeholder="Jane Doe"></div>
       </div>
       <label for="hr-login-email">Personal HR sign-in email</label>
-      <input id="hr-login-email" type="email" name="hr_login_email" value="{_esc(e.get('hr_login_email',''))}" autocomplete="off" placeholder="employee.personal@gmail.com" aria-describedby="hr-login-help">
-      <p class="hr-help" id="hr-login-help">Use the personal Google account the employee will keep if work access ends. This login receives employee-only HR access and does not replace or connect to their Anata work account. Saving it does not send an invitation.</p>
+      <input id="hr-login-email" type="email" name="hr_login_email" value="{_esc(e.get('hr_login_email',''))}" autocomplete="email" placeholder="employee.personal@example.com" aria-describedby="hr-login-help">
+      <p class="hr-help" id="hr-login-help">Use an email the employee controls and can keep if work access ends. Gmail, Yahoo, Outlook, iCloud, and other providers work. The employee signs in with a one-time email link—no Google account or new password is required. Their Anata work login remains separate. Saving this field does not send an invitation.</p>
       <div class="hr-grid2">
         <div><label>HR role</label>{_sel("hr_role", HR_ROLES, e.get("hr_role","employee"))}</div>
         <div><label>Worker record</label>{worker_select}</div>

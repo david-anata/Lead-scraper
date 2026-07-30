@@ -89,6 +89,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
         Base.metadata.create_all(bind=engine)
         _ensure_building_columns(engine)
         _ensure_hr_columns(engine)
+        _ensure_email_login_table(engine)
         _apply_sqlite_compat_migrations(engine)
         ensure_finance_trust_schema(engine)
         _backfill_legacy_settlements(engine)
@@ -117,6 +118,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     _ensure_hr_tables(engine)
     _ensure_content_tables(engine)
     _ensure_hr_columns(engine)
+    _ensure_email_login_table(engine)
     _repair_legacy_building_event_inquiries(session_factory)
     ensure_job_lease_schema(engine)
     ensure_website_ops_storage_schema(engine)
@@ -132,6 +134,14 @@ def _ensure_content_tables(engine: Any) -> None:
     ]
     if tables:
         Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
+
+
+def _ensure_email_login_table(engine: Any) -> None:
+    """Create the additive passwordless-login table on existing deployments."""
+
+    table = Base.metadata.tables.get("app_email_login_tokens")
+    if table is not None:
+        Base.metadata.create_all(bind=engine, tables=[table], checkfirst=True)
 
 
 def _repair_legacy_building_event_inquiries(

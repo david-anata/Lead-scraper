@@ -61,8 +61,45 @@ def send_invite_email(settings, *, to_email: str, invite_link: str,
             f"Hi,\n\n"
             f"You've been invited{by_part} to the {experience_name}{role_part}.\n\n"
             f"Accept your invite (valid 7 days):\n{invite_link}\n\n"
-            f"Open the link and sign in with the Google account this invite was sent to.\n"
+            f"Open this one-time link using the person and device that control "
+            f"this email address. No Google account or password is required.\n"
         ),
+    )
+
+
+def send_email_login_link(settings, *, to_email: str, login_link: str) -> bool:
+    """Send a short-lived, single-use passwordless login link."""
+
+    return _send(
+        settings,
+        to_email=to_email,
+        subject="Your one-time Anata sign-in link",
+        text=(
+            "Hi,\n\n"
+            "Use this one-time link to sign in to Anata:\n"
+            f"{login_link}\n\n"
+            "The link expires in 15 minutes and stops working after one use. "
+            "If you did not request it, you can safely ignore this email.\n"
+        ),
+    )
+
+
+def email_delivery_configured(settings) -> bool:
+    """Whether the deployment has at least one supported outbound mail path."""
+
+    if settings is None:
+        return False
+    return bool(
+        (getattr(settings, "resend_api_key", "") or "").strip()
+        or (
+            (getattr(settings, "gmail_access_token", "") or "").strip()
+            and (getattr(settings, "gmail_user_id", "") or "").strip()
+        )
+        or (
+            (getattr(settings, "gmail_client_id", "") or "").strip()
+            and (getattr(settings, "gmail_client_secret", "") or "").strip()
+            and (getattr(settings, "gmail_refresh_token", "") or "").strip()
+        )
     )
 
 
@@ -78,6 +115,7 @@ def send_approval_email(settings, *, to_email: str, base_url: str = "",
         text=(
             f"Hi,\n\n"
             f"Your access request was approved{by_part}.\n\n"
-            f"Sign in with your @anatainc.com Google account:\n{login_url}\n"
+            f"Sign in with the approved email address using a one-time email "
+            f"link or Google:\n{login_url}\n"
         ),
     )
