@@ -72,7 +72,7 @@ PLAYBOOKS: tuple[dict[str, Any], ...] = (
         "cadence": "1 useful issue / week",
         "format": "Framework, breakdown, or specific operator lesson",
         "metrics": "Delivery, opens, clicks, replies, unsubscribes",
-        "state": "blocked",
+        "state": "optional",
         "dependency": "Consent-safe audience and delivery provider",
     },
     {
@@ -677,7 +677,7 @@ def render_content_control_room(
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/admin.css?v=4">
+  <link rel="stylesheet" href="/static/admin.css?v=5">
   <style>{render_agent_nav_styles()}</style>
 </head>
 <body>
@@ -698,7 +698,7 @@ def render_content_control_room(
     <section class="content-readiness content-readiness--{html.escape(data['overall_status'])}" aria-labelledby="readiness-title">
       <div>
         <p class="content-eyebrow">Operating state</p>
-        <h2 id="readiness-title">{html.escape(data['overall_status'].title())}</h2>
+        <h2 id="readiness-title">{html.escape(data['overall_status'].replace('_', ' ').title())}</h2>
         <p>{html.escape(overall_copy)}</p>
       </div>
       {_status_badge(data['overall_status'])}
