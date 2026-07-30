@@ -431,3 +431,4 @@ def test_only_corrections_that_can_change_the_period_block_payroll():
     )
     assert [item["id"] for item in relevant] == [2]
     assert [item["id"] for item in outside] == [1]
+    assert relevant[0]["reason"] == ""

@@ -574,7 +574,10 @@ def _partition_pending_corrections(
             "date": correction_date,
             "original": row.original_json or {},
             "proposed": row.proposed_json or {},
-            "reason": row.reason,
+            # Recovery and older imported correction records may predate the
+            # reason field. Keep payroll readiness available and display an
+            # empty reason instead of failing the entire control room.
+            "reason": getattr(row, "reason", "") or "",
         }
         (relevant if (
             correction_date and period_start <= correction_date <= period_end
