@@ -422,25 +422,53 @@ def render_contract_detail(
     ) or '<tr><td colspan="4">No audit history for this contract yet.</td></tr>'
 
     actions: list[str] = []
-    if contract["verified"] and can_approve:
+    agreement_next = {
+        "prepared": (
+            "in_review",
+            f"REVIEW AGREEMENT {contract['id']}",
+            "Submit contract for review",
+            "I confirm the frozen customer, event, pricing, and contract evidence is ready for formal review.",
+        ),
+        "in_review": (
+            "approved",
+            f"APPROVE AGREEMENT {contract['id']}",
+            "Approve contract package",
+            "I confirm this frozen contract package has completed the required review.",
+        ),
+    }.get(contract["preparation_status"])
+    if contract["verified"] and can_approve and agreement_next:
+        target, confirmation, action_label, confirmation_copy = agreement_next
         actions.append(f"""<form class="app-form-grid" method="post" action="{CONTRACTS_URL}/{_esc(contract['id'])}/transition">
         <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+        <input type="hidden" name="target_status" value="{_esc(target)}">
+        <input type="hidden" name="confirmation" value="{_esc(confirmation)}">
         <h3>Agreement package</h3>
-        <label class="app-field"><span>Next state</span>
-          <select name="target_status"><option value="in_review">In review</option><option value="approved">Approved</option></select></label>
-        <label class="app-field"><span>Typed confirmation</span>
-          <input name="confirmation" required placeholder="REVIEW AGREEMENT {_esc(contract['id'])}"></label>
-        <div class="app-form-grid__actions"><button class="admin-btn" type="submit">Change agreement readiness</button></div>
+        <label class="app-confirmation"><input type="checkbox" required> <span>{_esc(confirmation_copy)}</span></label>
+        <div class="app-form-grid__actions"><button class="admin-btn" type="submit">{_esc(action_label)}</button></div>
       </form>""")
-    if contract["verified"] and payment and can_prepare_payment:
+    payment_next = {
+        "prepared": (
+            "in_review",
+            f"REVIEW PAYMENT {payment.get('id')}",
+            "Submit payment request for review",
+            "I confirm the requested amount and frozen payment terms are ready for review.",
+        ),
+        "in_review": (
+            "approved",
+            f"APPROVE PAYMENT {payment.get('id')}",
+            "Approve payment request",
+            "I confirm the amount, tax treatment, and payment terms have completed review.",
+        ),
+    }.get(str(payment.get("status") or ""))
+    if contract["verified"] and payment and can_prepare_payment and payment_next:
+        target, confirmation, action_label, confirmation_copy = payment_next
         actions.append(f"""<form class="app-form-grid" method="post" action="{CONTRACTS_URL}/{_esc(contract['id'])}/payments/transition">
         <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+        <input type="hidden" name="target_status" value="{_esc(target)}">
+        <input type="hidden" name="confirmation" value="{_esc(confirmation)}">
         <h3>Payment request</h3>
-        <label class="app-field"><span>Next state</span>
-          <select name="target_status"><option value="in_review">In review</option><option value="approved">Approved</option></select></label>
-        <label class="app-field"><span>Typed confirmation</span>
-          <input name="confirmation" required placeholder="REVIEW PAYMENT {_esc(payment.get('id'))}"></label>
-        <div class="app-form-grid__actions"><button class="admin-btn" type="submit">Change payment readiness</button></div>
+        <label class="app-confirmation"><input type="checkbox" required> <span>{_esc(confirmation_copy)}</span></label>
+        <div class="app-form-grid__actions"><button class="admin-btn" type="submit">{_esc(action_label)}</button></div>
       </form>""")
     if can_manage and contract["reservation_id"]:
         actions.append(f"""<form class="app-form-grid" method="post" action="/admin/building/reservations/{_esc(contract['reservation_id'])}/agreements">
@@ -522,4 +550,6 @@ _CONTRACT_STYLES = """<style>
 .building-contracts-page .app-detail-list dd{margin:0;overflow-wrap:anywhere;}
 .building-contracts-page .app-action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;}
 .building-contracts-page .app-action-grid h3{margin:0;grid-column:1/-1;font:800 .95rem/1.2 "Montserrat",sans-serif;}
+.building-contracts-page .app-confirmation{display:flex;align-items:flex-start;gap:10px;grid-column:1/-1;padding:12px 14px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);background:var(--agent-surface-soft);}
+.building-contracts-page .app-confirmation input{width:18px;height:18px;flex:0 0 auto;}
 </style>"""

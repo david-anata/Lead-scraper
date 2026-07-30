@@ -172,14 +172,17 @@ class BuildingAgreementReadinessTests(unittest.TestCase):
         self.assertEqual(denied.status_code, 302)
         self.assertEqual(denied.headers["location"], "/admin/login")
 
-        page = self.client.get("/admin/building/agreement-readiness")
-        self.assertEqual(page.status_code, 200, page.text)
-        self.assertIn("Arena agreement review package", page.text)
-        self.assertIn("not prepared", page.text)
-        self.assertIn("PREPARE ARENA AGREEMENT REVIEW", page.text)
+        page = self.client.get(
+            "/admin/building/agreement-readiness",
+            follow_redirects=False,
+        )
+        self.assertEqual(page.status_code, 308, page.text)
+        self.assertEqual(page.headers["location"], "/admin/building/contracts")
+        templates_page = self.client.get("/admin/building/contracts/templates")
+        self.assertEqual(templates_page.status_code, 200, templates_page.text)
         csrf = re.search(
             r'name="_csrf_token" value="([^"]+)"',
-            page.text,
+            templates_page.text,
         ).group(1)
 
         download = self.client.get(

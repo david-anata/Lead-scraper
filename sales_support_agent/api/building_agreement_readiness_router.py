@@ -1010,7 +1010,7 @@ def prepare_arena_review_package(
 def agreement_readiness_page(
     request: Request,
     user: dict = Depends(require_tool("building.agreements.prepare")),
-) -> HTMLResponse | RedirectResponse:
+) -> RedirectResponse:
     """Redirect the retired identifier-driven page to the customer-first workspace."""
 
     return RedirectResponse(CONTRACTS_URL, status_code=308)

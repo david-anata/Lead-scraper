@@ -25,6 +25,7 @@ try:
     from sales_support_agent.models.entities import (
         BuildingAgreement,
         BuildingAgreementTemplate,
+        BuildingAuditEvent,
         BuildingAvailabilityBlock,
         BuildingContact,
         BuildingProposal,
@@ -32,6 +33,10 @@ try:
         BuildingSpace,
     )
     from sales_support_agent.services.admin_auth import create_user_session_token
+    from sales_support_agent.services.building_arena_agreement_seed import (
+        ARENA_TEMPLATE_ID,
+        ensure_arena_review_template,
+    )
     from sales_support_agent.services.building_contract_templates import (
         TemplateValidationError,
         document_checksum,
@@ -119,6 +124,36 @@ class ContractTemplateRenderingTests(unittest.TestCase):
         self.assertIn("Cordelia Vance", first)
         self.assertIn("4,500.00", first)
         self.assertIn("[not provided]", first)
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class ArenaAgreementSeedTests(unittest.TestCase):
+    def test_owner_approved_terms_seed_for_legal_review_idempotently(self) -> None:
+        path = os.path.join(
+            tempfile.gettempdir(), f"arena_agreement_seed_{uuid.uuid4().hex}.db"
+        )
+        factory = create_session_factory("sqlite:///" + path)
+        init_database(factory)
+
+        self.assertEqual(ensure_arena_review_template(factory), "created")
+        self.assertEqual(ensure_arena_review_template(factory), "unchanged")
+
+        with factory() as session:
+            template = session.get(BuildingAgreementTemplate, ARENA_TEMPLATE_ID)
+            self.assertIsNotNone(template)
+            self.assertEqual(template.status, "in_review")
+            self.assertEqual(template.contract_type, "event")
+            self.assertIn("$175 per paid venue hour", template.body_markdown)
+            self.assertIn("{{customer_name}}", template.body_markdown)
+            self.assertFalse(template.approval_evidence)
+            audits = (
+                session.query(BuildingAuditEvent)
+                .filter_by(entity_type="agreement_template", entity_id=ARENA_TEMPLATE_ID)
+                .all()
+            )
+            self.assertEqual(len(audits), 1)
+            self.assertFalse(audits[0].after_json["legal_approval"])
+            self.assertFalse(audits[0].after_json["provider_write"])
 
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
@@ -306,7 +341,10 @@ class ContractTemplateEditorTests(unittest.TestCase):
     def test_03_approved_template_is_immutable_and_offers_a_next_version(self) -> None:
         template_id = "event-agreement-v1"
         page = self.client.get(f"{TEMPLATES}/{template_id}")
-        self.assertIn("Approved and retired versions are immutable", page.text)
+        self.assertIn(
+            "This approved version is locked. Start the next version to revise it.",
+            page.text,
+        )
         self.assertIn("Start version 2", page.text)
 
         blocked = self._post(f"{TEMPLATES}/{template_id}", {

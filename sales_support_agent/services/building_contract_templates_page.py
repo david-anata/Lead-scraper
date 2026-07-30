@@ -14,6 +14,7 @@ from sales_support_agent.services.building_contract_templates import (
     CONTRACT_TYPES,
     MERGE_FIELD_HELP,
     merge_fields_for,
+    render_document_html,
 )
 from sales_support_agent.services.ui_shell import render_operator_document
 
@@ -209,16 +210,28 @@ def render_template_editor(
         </div>
       </form>"""
     else:
-        reason = (
-            "Approved and retired versions are immutable. Start the next version "
-            "to revise this contract."
-            if not template["editable"]
-            else "Authoring requires <code>building.agreements.prepare</code>."
+        reason = {
+            "in_review": (
+                "This version is locked while legal and owner review is underway. "
+                "Approval evidence is required before it can back a customer contract."
+            ),
+            "approved": (
+                "This approved version is locked. Start the next version to revise it."
+            ),
+            "retired": (
+                "This retired version is locked and cannot be used for new contracts."
+            ),
+        }.get(
+            template["status"],
+            "Your role can review this version but cannot edit its contract text.",
         )
         preview_body = template["body_markdown"] or "(no body text)"
+        review_html = render_document_html(preview_body)
         editor = (
             f'<div class="app-alert app-alert--blocked"><p>{reason}</p></div>'
-            f'<pre class="template-frozen">{_esc(preview_body)}</pre>'
+            f'<article class="template-preview template-review">{review_html}</article>'
+            f'<details class="template-source"><summary>View source text</summary>'
+            f'<pre class="template-frozen">{_esc(preview_body)}</pre></details>'
             + "".join(
                 f'<h3>{_esc(item["title"])}</h3><pre class="template-frozen">{_esc(item["body"])}</pre>'
                 for item in clauses
@@ -256,22 +269,26 @@ def render_template_editor(
             "in_review": [("approved", "Approved")],
             "approved": [("retired", "Retired")],
         }[template["status"]]
-        options = "".join(
-            f'<option value="{_esc(value)}">{_esc(label)}</option>'
-            for value, label in next_states
-        )
-        verb = {"draft": "IN_REVIEW", "in_review": "APPROVED", "approved": "RETIRED"}[
-            template["status"]
-        ]
+        target_status, _ = next_states[0]
+        verb = {"draft": "IN_REVIEW", "in_review": "APPROVED", "approved": "RETIRED"}[template["status"]]
+        action_label = {
+            "draft": "Submit for review",
+            "in_review": "Approve template",
+            "approved": "Retire template",
+        }[template["status"]]
+        confirmation_copy = {
+            "draft": "I confirm this draft is complete enough for formal review.",
+            "in_review": "I confirm the complete contract received the required legal and owner approval.",
+            "approved": "I confirm this version must no longer be used for new contracts.",
+        }[template["status"]]
         lifecycle = f"""<form class="app-form-grid" method="post" action="{TEMPLATES_URL}/{_esc(template['id'])}/transition">
         <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-        <label class="app-field"><span>Next state</span>
-          <select name="target_status">{options}</select></label>
-        <label class="app-field"><span>Typed confirmation</span>
-          <input name="confirmation" required placeholder="{verb} TEMPLATE {_esc(template['id'])}"></label>
+        <input type="hidden" name="target_status" value="{_esc(target_status)}">
+        <input type="hidden" name="confirmation" value="{verb} TEMPLATE {_esc(template['id'])}">
         <label class="app-field"><span>Approval evidence</span>
-          <input name="evidence" value="{_esc(template['approval_evidence'])}" placeholder="Required to approve"></label>
-        <div class="app-form-grid__actions"><button class="admin-btn" type="submit">Change template state</button></div>
+          <input name="evidence" value="{_esc(template['approval_evidence'])}" placeholder="Counsel approval, signed memo, or review reference"></label>
+        <label class="app-confirmation"><input type="checkbox" required> <span>{_esc(confirmation_copy)}</span></label>
+        <div class="app-form-grid__actions"><button class="admin-btn" type="submit">{_esc(action_label)}</button></div>
       </form>"""
     new_version = ""
     if can_author and template["status"] in {"approved", "retired"}:
@@ -283,6 +300,8 @@ def render_template_editor(
         </div>
       </form>"""
 
+    merge_palette = _merge_field_palette(template["contract_type"]) if editable else ""
+    layout_class = "template-layout" if editable else "template-layout template-layout--review"
     body = f"""<p class="app-backlink"><a href="{TEMPLATES_URL}">← All templates</a></p>
     <header class="app-page-header">
       <div>
@@ -293,9 +312,9 @@ def render_template_editor(
       <div class="app-page-actions">{_status(template['status'])}</div>
     </header>
     {_messages(notice, error)}
-    <div class="template-layout">
+    <div class="{layout_class}">
       <section class="admin-panel"><h2>Contract text</h2>{editor}</section>
-      {_merge_field_palette(template['contract_type'])}
+      {merge_palette}
     </div>
     <section class="admin-panel"><h2>Preview against a real booking</h2>
       <form class="app-command-bar" method="get" action="{TEMPLATES_URL}/{_esc(template['id'])}">
@@ -308,7 +327,7 @@ def render_template_editor(
       {preview_panel}
     </section>
     <section class="admin-panel"><h2>Lifecycle</h2>
-      {lifecycle or '<p class="app-muted">Template review and approval require <code>building.agreements.approve</code>.</p>'}
+      {lifecycle or '<p class="app-muted">Your role does not include contract-template approval.</p>'}
       {new_version}
     </section>"""
     return render_operator_document(
@@ -377,6 +396,7 @@ _TEMPLATE_STYLES = """<style>
 .building-contracts-page .app-detail-list dt{color:var(--agent-ink-muted);font:700 .75rem/1.5 "Montserrat",sans-serif;letter-spacing:.04em;text-transform:uppercase;}
 .building-contracts-page .app-detail-list dd{margin:0;overflow-wrap:anywhere;}
 .building-contracts-page .template-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(240px,300px);gap:18px;align-items:start;}
+.building-contracts-page .template-layout--review{grid-template-columns:minmax(0,1fr);}
 .building-contracts-page .template-palette{position:sticky;top:16px;padding:18px 20px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-panel);background:var(--agent-surface);}
 .building-contracts-page .template-palette h3{margin:0 0 8px;font:800 .95rem/1.2 "Montserrat",sans-serif;}
 .building-contracts-page .template-palette ul{margin:0;padding:0;list-style:none;display:grid;gap:8px;}
@@ -388,6 +408,13 @@ _TEMPLATE_STYLES = """<style>
 .building-contracts-page .template-preview{padding:24px 28px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-panel);background:var(--agent-surface);}
 .building-contracts-page .template-preview table{width:100%;border-collapse:collapse;}
 .building-contracts-page .template-preview th,.building-contracts-page .template-preview td{padding:8px 10px;border:1px solid var(--agent-border);text-align:left;}
+.building-contracts-page .template-review{max-height:760px;overflow:auto;line-height:1.65;}
+.building-contracts-page .template-review h1{font-size:1.55rem;}
+.building-contracts-page .template-review h2{margin-top:1.6rem;font-size:1.15rem;}
+.building-contracts-page .template-source{margin-top:14px;}
+.building-contracts-page .template-source>summary{cursor:pointer;color:var(--agent-ink-muted);font-weight:700;}
+.building-contracts-page .app-confirmation{display:flex;align-items:flex-start;gap:10px;grid-column:1/-1;padding:12px 14px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);background:var(--agent-surface-soft);}
+.building-contracts-page .app-confirmation input{width:18px;height:18px;flex:0 0 auto;}
 .building-contracts-page textarea{font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;}
 @media(max-width:900px){.building-contracts-page .template-layout{grid-template-columns:1fr;}.building-contracts-page .template-palette{position:static;}}
 </style>"""
