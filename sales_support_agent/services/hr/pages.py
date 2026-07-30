@@ -1088,11 +1088,14 @@ def render_hr_time(
       {f'<form class="hr-inline" method="post" action="/admin/hr/time/pto/{r["id"]}/decision"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and r['status'] == 'pending' and r['employee_email'] != viewer_email else f'<form method="post" action="/admin/hr/time/pto/{r["id"]}/withdraw"><button class="hr-btn hr-btn-light" type="submit">Withdraw request</button></form>' if r['status'] == 'pending' and r['employee_email'] == viewer_email else '—'}</td></tr>""" for r in pto_requests)
     if not requests:
         requests = '<tr><td colspan="6" class="hr-empty">No PTO requests yet.</td></tr>'
-    correction_rows = "".join(f"""<tr><td>{_esc(c['employee_email'])}</td><td>{_esc(c['original'].get('start_time'))}–{_esc(c['original'].get('stop_time'))}</td>
-      <td>{_esc(c['proposed'].get('start_time'))}–{_esc(c['proposed'].get('stop_time'))}</td><td>{_esc(c['reason'])}</td><td>{_esc(c['status'])}</td>
+    correction_rows = "".join(f"""<tr><td>#{_esc(c['id'])}</td><td>{_esc(c.get('work_date') or 'Date unavailable')}</td>
+      <td>{_esc(c['employee_email'])}</td><td>{_esc(c['original'].get('start_time') or 'Missing')}–{_esc(c['original'].get('stop_time') or 'Missing')}</td>
+      <td>{_esc(c['proposed'].get('start_time'))}–{_esc(c['proposed'].get('stop_time'))}</td>
+      <td>{float(c.get('hours_delta') or 0):+.2f} hr<br><span class="hr-help">{'Estimated gross ' + ('$' if float(c.get('estimated_gross_impact') or 0) >= 0 else '−$') + format(abs(float(c.get('estimated_gross_impact') or 0)), '.2f') if c.get('estimated_gross_impact') is not None else 'Gross impact requires pay basis review'}</span></td>
+      <td>{_esc(c['reason'])}</td><td>{_esc(c['status'])}</td>
       <td>{f'<form class="hr-inline" method="post" action="/admin/hr/time/corrections/{c["id"]}/decision"><input name="reviewer_reason" placeholder="Required review note" required><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and c['status'] == 'requested' else '—'}</td></tr>""" for c in corrections)
     if not correction_rows:
-        correction_rows = '<tr><td colspan="6" class="hr-empty">No time corrections.</td></tr>'
+        correction_rows = '<tr><td colspan="9" class="hr-empty">No time corrections.</td></tr>'
     timesheet_rows = "".join(
         f"""<tr><td>{_esc(item['employee_email'])}</td>
         <td>{_esc(item['period_start'])}–{_esc(item['period_end'])}</td>
@@ -1153,7 +1156,9 @@ def render_hr_time(
       <form class="hr-inline" method="get" action="/admin/hr/time"><input type="hidden" name="period_date" value="{_esc(period.start_date)}"><label for="punch-page-size">Rows</label><select id="punch-page-size" name="page_size"><option value="10"{' selected' if entry_page_size == 10 else ''}>10</option><option value="25"{' selected' if entry_page_size == 25 else ''}>25</option></select><button class="hr-btn hr-btn-light" type="submit">Apply</button></form></div>
     <table class="hr-tbl"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Employee</th><th>Correction</th></tr></thead><tbody>{rows}</tbody></table>
     <div class="hr-pagination"><span>Page {entry_page} of {entry_page_count}</span><div class="hr-inline">{previous_link}{next_link}</div></div>
-    <h2 style="margin-top:28px">Time corrections</h2><table class="hr-tbl"><thead><tr><th>Employee</th><th>Original</th><th>Requested</th><th>Reason</th><th>Status</th><th>Decision</th></tr></thead><tbody>{correction_rows}</tbody></table>
+    <h2 style="margin-top:28px">Time corrections</h2>
+    <p class="hr-sub">A request changes recorded hours only after a different authorized person approves it. Estimated gross impact excludes taxes and employer costs.</p>
+    <table class="hr-tbl"><thead><tr><th>Record</th><th>Work date</th><th>Employee</th><th>Current</th><th>Proposed</th><th>Change</th><th>Reason</th><th>Status</th><th>Decision</th></tr></thead><tbody>{correction_rows}</tbody></table>
     <h2 style="margin-top:28px">Missed an entire workday?</h2>
     <p class="hr-sub">Use this only when no punch exists for the date. Nothing is added to paid time until another authorized person reviews and approves it.</p>
     <form class="hr-form" method="post" action="/admin/hr/time/missed-punch">
@@ -1323,16 +1328,39 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     outside_corrections = readiness.get("outside_period_corrections") or []
     outside_correction_notice = ""
     if outside_corrections:
-        correction = outside_corrections[0]
+        employee_rates = {
+            item.get("email"): (
+                float(item.get("hourly_rate") or 0)
+                if item.get("pay_type") == "hourly" else None
+            )
+            for item in control.get("employees", [])
+        }
+        correction_rows = ""
+        for correction in outside_corrections:
+            original = correction.get("original") or {}
+            proposed = correction.get("proposed") or {}
+            delta = float(proposed.get("hours") or 0) - float(original.get("hours") or 0)
+            rate = employee_rates.get(correction.get("employee_email"))
+            impact = delta * rate if rate is not None else None
+            correction_rows += f"""<tr>
+              <td>#{_esc(correction.get('id'))}</td>
+              <td>{_esc(correction.get('date') or 'Date unavailable')}</td>
+              <td>{_esc(correction.get('employee_email'))}</td>
+              <td>{_esc(original.get('start_time') or 'Missing')}–{_esc(original.get('stop_time') or 'Missing')}</td>
+              <td>{_esc(proposed.get('start_time'))}–{_esc(proposed.get('stop_time'))}</td>
+              <td>{delta:+.2f} hr</td>
+              <td>{'Estimated gross ' + ('$' if impact >= 0 else '−$') + format(abs(impact), '.2f') if impact is not None else 'Requires pay basis review'}</td>
+              <td>{_esc(correction.get('reason') or '—')}</td>
+            </tr>"""
         outside_correction_notice = f"""
         <div class="hr-callout warn">
           <div class="hr-kicker">Separate human approval</div>
-          <h2 style="margin:6px 0">An older time correction still needs a decision</h2>
-          <p><strong>{_esc(correction.get('employee_email'))}</strong> has a correction
-          {_esc('for ' + str(correction.get('date')) if correction.get('date') else 'outside this pay period')}.
-          It does not change or block the {_esc(period.start_date)}–{_esc(period.end_date)}
-          payroll. Another authorized person must still approve or deny it; Anata will
-          not decide it automatically.</p>
+          <h2 style="margin:6px 0">{len(outside_corrections)} older time correction{'s' if len(outside_corrections) != 1 else ''} need a decision</h2>
+          <p>These requests do not change or block the {_esc(period.start_date)}–{_esc(period.end_date)}
+          payroll. Another authorized person must approve or deny each one; Anata will not decide automatically.
+          Gross impact is an estimate before withholding and employer costs.</p>
+          <table class="hr-tbl"><thead><tr><th>Record</th><th>Date</th><th>Employee</th><th>Current</th><th>Proposed</th><th>Hours</th><th>Gross impact</th><th>Reason</th></tr></thead>
+          <tbody>{correction_rows}</tbody></table>
           <a class="hr-btn hr-btn-light" href="/admin/hr/time?period_date={_esc(period.start_date)}">Review time corrections</a>
         </div>"""
     employee_options = "".join(

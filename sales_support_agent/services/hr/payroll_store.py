@@ -572,6 +572,9 @@ def _partition_pending_corrections(
             "id": row.id,
             "employee_email": row.employee_email,
             "date": correction_date,
+            "original": row.original_json or {},
+            "proposed": row.proposed_json or {},
+            "reason": row.reason,
         }
         (relevant if (
             correction_date and period_start <= correction_date <= period_end

@@ -854,10 +854,25 @@ async def hr_time(
     page_count = max(1, (len(scoped_entries) + page_size - 1) // page_size)
     page = max(1, min(page, page_count))
     entry_page = scoped_entries[(page - 1) * page_size:page * page_size]
+    corrections = scoped(store.list_time_corrections(None))
+    for correction in corrections:
+        employee = store.get_employee_by_email(correction.get("employee_email") or "")
+        original_hours = float((correction.get("original") or {}).get("hours") or 0)
+        proposed_hours = float((correction.get("proposed") or {}).get("hours") or 0)
+        correction["hours_delta"] = round(proposed_hours - original_hours, 4)
+        correction["work_date"] = (
+            (correction.get("proposed") or {}).get("date")
+            or (correction.get("original") or {}).get("date")
+        )
+        correction["estimated_gross_impact"] = (
+            round(correction["hours_delta"] * float(employee.get("hourly_rate") or 0), 2)
+            if employee and employee.get("pay_type") == "hourly"
+            else None
+        )
     return HTMLResponse(render_hr_time(
         entry_page, store.pto_summary(email),
         scoped(store.list_pto_requests(None)), store.current_clock(email),
-        scoped(store.list_time_corrections(None)),
+        corrections,
         scoped(store.time_review_flags(
             None, start_date=period.start_date, end_date=period.end_date
         )),
