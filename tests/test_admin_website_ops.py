@@ -1601,12 +1601,20 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
         intelligence["clusters"][0]["label"] = (
             '"amazon ppc" -site:reddit.com -site:youtube.com'
         )
-        self.assertIsNone(
-            build_article_action(
-                settings=settings,
-                query_intelligence=intelligence,
-                requester=requester,
-            )
+        fallback_action = build_article_action(
+            settings=settings,
+            query_intelligence=intelligence,
+            requester=requester,
+        )
+        self.assertIsNotNone(fallback_action)
+        assert fallback_action is not None
+        self.assertEqual(
+            json.loads(str(fallback_action["action_value"]))["primaryIntent"],
+            "how to calculate amazon tacos",
+        )
+        self.assertEqual(
+            fallback_action["insight_source"],
+            "Approved editorial backlog and one-page-one-intent map",
         )
 
     def test_github_metadata_validation_requires_reason_evidence_and_safe_lengths(self) -> None:
