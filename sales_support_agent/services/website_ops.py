@@ -2385,20 +2385,18 @@ def _feedback_empty_state(status_filter: str = "", *, decision_data_ready: bool 
     else:
         title = "No Website Ops records need review."
         copy = (
-            "Ranking recommendations are paused until Search Console and GA4 are connected."
+            "Ranking-led page recommendations are paused until Search Console and GA4 "
+            "are connected. Source-backed editorial production continues from the "
+            "approved service-aligned backlog."
             if not decision_data_ready
             else "No new evidence-backed actions were generated in the latest completed run."
         )
-    run_control = (
-        '<button type="button" disabled aria-disabled="true">Daily sweep unavailable</button>'
-        if not decision_data_ready
-        else """
+    run_control = """
         <form class="inline" action="/admin/api/website-ops/run" method="post">
           <input type="hidden" name="mode" value="daily">
           <button type="submit">Run Daily Sweep</button>
         </form>
         """
-    )
     return f"""
     <div class="list-card empty-state">
       <h3>{html.escape(title)}</h3>
@@ -2604,7 +2602,8 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <h1>Continuous website <span style="color:var(--accent)">optimization</span>.</h1>
             <p class="lead">Agent continuously observes, improves, verifies, and learns across the anatainc.com marketing site.</p>
             <div class="button-row">
-              {('<a class="btn" href="#data-sources">Repair Google connections</a>' if not decision_ready else '<form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit">Run Daily Sweep</button></form>')}
+              <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit">Run Daily Sweep</button></form>
+              {('<a class="btn btn--ghost" href="#data-sources">Repair Google connections</a>' if not decision_ready else '')}
               {('<button class="ghost" type="button" disabled aria-disabled="true">Weekly sweep unavailable</button>' if not decision_ready else '<form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run Weekly Sweep</button></form>')}
               <a class="btn btn--ghost" href="/admin/website-ops/reports/latest">Open Latest Report</a>
             </div>
