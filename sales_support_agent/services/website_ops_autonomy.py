@@ -1720,7 +1720,7 @@ def build_autonomy_overlay(
         run_mode=run_mode,
     )
     content_strategy = build_content_strategy(query_intelligence)
-    if run_mode in {"daily", "weekly", "monthly"} and decision_data_ready:
+    if run_mode in {"daily", "weekly", "monthly"}:
         try:
             article_action = build_article_action(
                 settings=settings,
