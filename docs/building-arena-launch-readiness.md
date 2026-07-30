@@ -46,6 +46,27 @@ approval, dedicated-calendar verification, outbound sender ownership, and the
 launch effective date.
 
 For reconciled Arena rate plans, approval additionally requires the commercial
-decision subset: cancellation, tax, setup, teardown, overtime, and effective
-date. Agreement, payment, calendar, and sender decisions remain separate launch
-blockers and are not falsely treated as rate-plan terms.
+decision subset: cancellation, tax, setup, teardown, and overtime. The effective
+date is derived from the approved plan itself. Agreement, payment, calendar,
+and sender decisions remain separate launch blockers and are not falsely
+treated as rate-plan terms.
+
+## Owner-reconciled defaults
+
+Predeploy now creates one private Arena commercial draft only when the canonical
+Arena catalog exists and no rate plan of any state exists. It preserves every
+existing operator plan. The draft records the approved $175 hourly rate,
+six-hour minimum, $250 routine cleaning, 50% booking deposit, $500 refundable
+security deposit, seven-day balance deadline, included two-hour setup and
+teardown access windows, $175 full-hour overtime, approved setup/reset tiers,
+and the minimum A/V and event-labor packages. Tax remains review-required.
+TidyCal's deposit, balance-deadline, and placeholder-payment-link conflicts
+remain blocking until provider remediation is recorded. The proposed effective
+date is visibly draft-only. Nothing is approved, published, sent, held,
+invoiced, charged, or written to a provider.
+
+The agreement-template decision is derived from the governed template registry:
+approving the reusable Arena template records the approved reference and
+retiring the last approved version returns the decision to unresolved. The
+launch-effective-date decision is similarly derived from an approved Arena rate
+plan. Staff do not answer either question a second time.

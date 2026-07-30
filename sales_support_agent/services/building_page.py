@@ -905,16 +905,16 @@ def render_building_page(
         str(item.get("decision_key") or ""): item for item in launch_decisions
     }
     launch_definitions = [
-        ("cancellation_policy", "Cancellation policy", "accepted_policy", "Approved cancellation/refund language", "Owner stated non-refundable and allowed one transfer with 14 days’ notice into a six-month window; exact legal wording and forfeiture edge cases still need confirmation.", "Confirm the complete sentence that will appear in every quote and agreement."),
+        ("cancellation_policy", "Cancellation policy", "accepted_policy", "Approved cancellation/refund language", "Owner approved non-refundable payments and one transfer requested at least 14 days before the event into a six-month window.", "Change this only if the approved customer policy changes."),
         ("tax_treatment", "Tax treatment and rate", "accepted_policy", "Taxable/non-taxable and reviewed rate", "Owner accepted a Utah recommendation, but no accountant-approved taxable categories or numeric rate are recorded.", "Obtain accountant evidence or explicitly keep tax as quote-review-required."),
-        ("setup_price", "Setup add-on price", "accepted_policy", "Approved price or explicitly included", "Owner allowed two hours before the event without charge; listing evidence describes setup as an add-on.", "Reconcile the included two-hour window with the add-on price beyond it."),
-        ("teardown_price", "Teardown add-on price", "accepted_policy", "Approved price or explicitly included", "Owner allowed two hours after the event without charge; listing evidence describes teardown as an add-on.", "Reconcile the included two-hour window with the add-on price beyond it."),
-        ("overtime_rate", "Overtime hourly rate", "accepted_policy", "Approved numeric premium rate", "Listing evidence says overtime is hourly. $150 appears only in a dated customer-specific agreement; $175 is the standard venue rate, not an approved overtime rate.", "Approve one numeric premium rate; do not infer $150 or $175."),
-        ("payment_workflow", "Venue payment workflow", "accepted_policy", "Approved methods, clearing rule, and hold gate", "Evidence conflicts: one supplied policy says venue card-only with no checks, overpayments, or third-party vendor payments; an earlier owner answer allowed ACH/check with seven additional clearing days. Both require cleared funds before a date is held.", "Choose card-only or card plus ACH/check, then confirm the clearing deadline."),
+        ("setup_price", "Setup add-on price", "accepted_policy", "Approved price or explicitly included", "Two self-service setup hours are included. Owner approved setup/reset tiers of $250, $400, and $550 by attendance.", "Change this only if the included access or setup/reset tiers change."),
+        ("teardown_price", "Teardown add-on price", "accepted_policy", "Approved price or explicitly included", "Two self-service teardown hours are included. Purchased setup/reset service includes returning tables and chairs to the staged section.", "Change this only if the included access or reset policy changes."),
+        ("overtime_rate", "Overtime hourly rate", "accepted_policy", "Approved numeric premium rate", "Owner approved $175 per full overtime hour, subject to Anata approval.", "Change this only if the approved overtime rate or billing unit changes."),
+        ("payment_workflow", "Venue payment workflow", "accepted_policy", "Approved methods, clearing rule, and hold gate", "Cards are accepted. ACH or check may be approved when received seven additional days early. No date is held until required funds clear; overpayments and third-party vendor payments are not accepted.", "Change this only if accepted methods or clearing rules change."),
         ("agreement_template", "Reusable agreement template", "approved_reference", "Approved provider-neutral template ID/version", "The 2025 Vivint agreement is customer-specific evidence and is not reusable. Dropbox Sign is recommended but not approved.", "Approve a reusable legal template, legal approver, and e-sign provider."),
         ("event_calendar", "Dedicated event calendar", "provider_verified", "Calendar ID, owner, and service-account access", "Search found one past tour on David’s primary calendar and no evidence of a dedicated Arena calendar.", "Create or identify the dedicated calendar and verify service-account access."),
-        ("transactional_sender", "Transactional sender and owner", "owner_confirmed", "Verified sender identity and accountable owner", "building@anatainc.com was specified for Building Control access; it is not yet confirmed as the outbound customer sender.", "Confirm the From address, reply-to address, and accountable inbox owner."),
-        ("effective_date", "Launch effective date", "accepted_policy", "Approved effective date", "No launch-effective date has been approved.", "Choose the first date on which approved Arena terms may be quoted."),
+        ("transactional_sender", "Transactional sender and owner", "owner_confirmed", "Verified sender identity and accountable owner", "Owner designated building@anatainc.com as the Building address. Provider/domain verification remains a separate delivery prerequisite.", "Change the sender only if the monitored customer inbox changes."),
+        ("effective_date", "Launch effective date", "accepted_policy", "Approved effective date", "Agent derives this from the effective date on the approved Arena rate plan.", "Approve the reviewed Arena rate plan; Agent records this decision automatically."),
     ]
     owner_questions = {
         "cancellation_policy": "What happens if a customer cancels?",
@@ -933,12 +933,12 @@ def render_building_page(
         "tax_treatment": "Keep tax as “review required” until your accountant confirms what is taxable and the rate to use.",
         "setup_price": "Include two hours before the event. Choose one hourly rate for any additional setup time.",
         "teardown_price": "Include two hours after the event. Choose one hourly rate for any additional teardown time.",
-        "overtime_rate": "Choose a premium hourly rate. The existing $150 and $175 references are not approved overtime prices.",
-        "payment_workflow": "Accept cards, and decide whether ACH/check remain allowed with seven extra days to clear. A date is held only after cleared funds.",
+        "overtime_rate": "Use the owner-approved rate: $175 per full overtime hour, with Anata approval required.",
+        "payment_workflow": "Accept cards; allow ACH or check only with approval and seven extra days to clear. Hold no date until required funds clear.",
         "agreement_template": "Approve a reusable Anata event agreement before choosing or connecting an e-sign provider.",
         "event_calendar": "Create a dedicated Arena calendar owned by Anata; do not use a person’s primary calendar.",
-        "transactional_sender": "Use building@anatainc.com only if it is the monitored customer-facing inbox and its sending domain is verified.",
-        "effective_date": "Choose the first future date when every approved term can be used consistently in quotes and agreements.",
+        "transactional_sender": "Use building@anatainc.com as the monitored From and reply-to inbox; keep sending disabled until provider/domain verification succeeds.",
+        "effective_date": "Agent fills this automatically from the approved Arena rate plan.",
     }
     owner_categories = {
         "cancellation_policy": "Customer policy",
@@ -1015,6 +1015,40 @@ def render_building_page(
         )
         answer_value = _esc(decision.get("value") or "")
         evidence_value = _esc(decision.get("evidence") or "")
+        derived_actions = {
+            "agreement_template": (
+                "/admin/building/contracts/templates",
+                "Review agreement templates",
+                "Agent marks this complete automatically when the reusable Arena agreement is approved.",
+            ),
+            "effective_date": (
+                "/admin/building/settings#commercial-rate-plans",
+                "Review commercial pricing",
+                "Agent records the date automatically from the approved Arena rate plan.",
+            ),
+        }
+        if key in derived_actions:
+            route, link_label, derived_copy = derived_actions[key]
+            action_panel = (
+                '<div class="decision-card__action">'
+                f'<p class="form-note">{_esc(derived_copy)}</p>'
+                f'<a class="secondary decision-card__link" href="{_esc(route)}">'
+                f'{_esc(link_label)} →</a></div>'
+            )
+        else:
+            action_panel = f"""<details class="decision-card__action">
+            <summary>{action_label}</summary>
+            <form class="decision-form" method="post" action="/admin/building/launch-readiness/decisions/{_esc(key)}">
+              <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+              <input type="hidden" name="decision_status" value="{_esc(required_status)}">
+              <input type="hidden" name="offering_id" value="{_esc(decision_offering_id)}">
+              <div class="field field--wide"><label>Your approved answer</label><textarea name="value" required placeholder="Write the exact rule the sales team should follow.">{answer_value}</textarea></div>
+              <div class="field field--wide"><label>Who approved this, or where is it documented?</label><input name="evidence" required minlength="8" value="{evidence_value}" placeholder="Example: Approved by David on July 28, 2026"></div>
+              <div class="field field--wide"><label>To prevent accidental changes, type: I APPROVE THIS DECISION</label><input name="confirmation" required autocomplete="off" placeholder="I APPROVE THIS DECISION"></div>
+              <details class="technical-details field--wide"><summary>Technical details</summary><p><strong>Stored status:</strong> {_esc(required_status.replace("_", " "))}</p><p><strong>Existing evidence:</strong> {_esc(decision.get("evidence") or known_evidence)}</p></details>
+              <div class="form-actions"><span class="form-note">Saving records the approved rule and audit history. It does not email anyone, charge a card, publish the venue, or change a calendar.</span><button class="primary" type="submit">Save my answer</button></div>
+            </form>
+          </details>"""
         return f"""<article class="decision-card{' decision-card--answered' if is_answered else ''}">
           <div class="decision-card__summary">
             <div class="decision-card__number" aria-hidden="true">{index:02d}</div>
@@ -1032,19 +1066,7 @@ def render_building_page(
             <div><span class="evidence-label">{primary_label}</span><p>{_esc(primary_copy)}</p></div>
             <div class="decision-card__next"><span class="evidence-label">{secondary_label}</span><p>{_esc(secondary_copy)}</p></div>
           </div>
-          <details class="decision-card__action">
-            <summary>{action_label}</summary>
-            <form class="decision-form" method="post" action="/admin/building/launch-readiness/decisions/{_esc(key)}">
-              <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-              <input type="hidden" name="decision_status" value="{_esc(required_status)}">
-              <input type="hidden" name="offering_id" value="{_esc(decision_offering_id)}">
-              <div class="field field--wide"><label>Your approved answer</label><textarea name="value" required placeholder="Write the exact rule the sales team should follow.">{answer_value}</textarea></div>
-              <div class="field field--wide"><label>Who approved this, or where is it documented?</label><input name="evidence" required minlength="8" value="{evidence_value}" placeholder="Example: Approved by David on July 28, 2026"></div>
-              <div class="field field--wide"><label>To prevent accidental changes, type: I APPROVE THIS DECISION</label><input name="confirmation" required autocomplete="off" placeholder="I APPROVE THIS DECISION"></div>
-              <details class="technical-details field--wide"><summary>Technical details</summary><p><strong>Stored status:</strong> {_esc(required_status.replace("_", " "))}</p><p><strong>Existing evidence:</strong> {_esc(decision.get("evidence") or known_evidence)}</p></details>
-              <div class="form-actions"><span class="form-note">Saving records the approved rule and audit history. It does not email anyone, charge a card, publish the venue, or change a calendar.</span><button class="primary" type="submit">Save my answer</button></div>
-            </form>
-          </details>
+          {action_panel}
         </article>"""
 
     launch_readiness_cards = "".join(
@@ -1485,6 +1507,7 @@ def render_building_page(
     .decision-card__next{{background:#f4f9fc;}} .evidence-label{{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#397a9d;}}
     .decision-card__action{{border-top:1px solid var(--border);}} .decision-card__action>summary{{padding:13px 18px;cursor:pointer;color:#397a9d;font-size:12px;font-weight:800;list-style-position:inside;}}
     .decision-card__action[open]>summary{{background:#eef6fa;}} .decision-form{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;padding:17px 18px;border-top:1px solid var(--border);}}
+    div.decision-card__action{{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 18px;}} .decision-card__link{{display:inline-flex;align-items:center;white-space:nowrap;text-decoration:none;}}
     .technical-details{{padding:12px 14px;border:1px dashed var(--border);border-radius:8px;background:#fbfbf9;}} .technical-details summary{{cursor:pointer;color:rgba(43,54,68,.68);font-size:12px;font-weight:700;}} .technical-details p{{margin:8px 0 0;color:rgba(43,54,68,.65);font-size:12px;line-height:1.45;}}
     .launch-handoff{{padding:20px 22px;border-top:1px solid var(--border);background:#fff;}}
     .launch-handoff h3{{margin:0;font:800 17px "Montserrat",sans-serif;}}
@@ -1641,16 +1664,16 @@ def render_building_page(
           <div class="launch-handoff__steps">
             <div class="launch-handoff__step"><span>1 · Legal review</span><strong>Business terms are prepared</strong><p>Open the versioned Arena package, register it for review, then have the designated reviewer approve the complete reusable agreement.</p><a href="/admin/building/contracts">Open contracts →</a></div>
             <div class="launch-handoff__step"><span>2 · Google access</span><strong>Calendar permission is missing</strong><p>Reconnect Google Calendar with calendar-list access, then verify one Anata-owned dedicated Arena calendar and Agent service-account access.</p></div>
-            <div class="launch-handoff__step"><span>3 · Launch date</span><strong>Set this last</strong><p>After legal and calendar approval, record the first future date when the approved terms may be quoted consistently.</p></div>
+            <div class="launch-handoff__step"><span>3 · Launch date</span><strong>Comes from approved pricing</strong><p>Agent records the launch-effective date automatically when the reviewed Arena rate plan is approved.</p></div>
           </div>
         </div>
       </section>
-      <section class="panel panel--wide">
+      <section class="panel panel--wide" id="commercial-rate-plans">
         <div class="panel-head"><div><h2>Commercial rate plans</h2><p>Version pricing, deposits, included items, and cancellation terms. Approved versions are locked.</p></div><span class="count">{len(rate_plans)} versions</span></div>
         <div class="alert alert--warning">
           <strong>Arena commercial evidence needs reconciliation.</strong>
-          <p>Verified listing baseline: 6,000 sq ft, capacity 200, $175/hour, six-hour minimum ($1,050), $250 cleaning, 50% deposit, and balance due 15 days before the event. Setup, teardown, overtime pricing, tax, and reusable legal language still require governed decisions.</p>
-          <p>TidyCal currently conflicts with a 70% deposit, 30% due 48 hours before, and a placeholder payment link. The dated Vivint-specific 2025 agreement corroborates some terms but is not a reusable legal template.</p>
+          <p>Owner-reconciled draft: 6,000 sq ft, capacity 200, $175/hour, six-hour minimum ($1,050), $250 routine cleaning, 50% booking deposit, $500 refundable security deposit, and balance due seven days before the event. Two self-service setup hours and two teardown hours are included; approved overtime is $175 per full hour.</p>
+          <p>TidyCal still conflicts with a 70% deposit, balance due 48 hours before, and a placeholder payment link. Those provider-copy items must be corrected before approval. Tax remains quote-review-required, and the reusable agreement remains under legal review.</p>
           <form class="form-grid" method="post" action="/admin/building/rate-plans/arena-commercial-baseline">
             <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
             <div class="field"><label for="arena-draft-offering">Arena event offering</label><select id="arena-draft-offering" name="offering_id" required><option value="">Choose event offering</option>{event_offering_options}</select></div>

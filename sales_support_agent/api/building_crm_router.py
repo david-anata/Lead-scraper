@@ -71,11 +71,15 @@ from sales_support_agent.services.building_security import (
     require_building_form_security,
 )
 from sales_support_agent.services.building_analytics import build_building_analytics
+from sales_support_agent.services.building_arena_rate_plan_seed import (
+    build_arena_commercial_draft,
+)
 from sales_support_agent.services.building_page import render_building_page
 from sales_support_agent.services.building_launch_readiness import (
     ARENA_LAUNCH_DECISIONS,
     arena_rate_plan_decision_blockers,
     launch_decision_id,
+    sync_arena_effective_date_decision,
 )
 
 
@@ -3220,142 +3224,12 @@ def prepare_arena_commercial_baseline(
             return _building_redirect(
                 error="That reconciliation draft already exists; review it below."
             )
-        row = BuildingRatePlan(
-            id=rate_plan_id,
+        row = build_arena_commercial_draft(
             offering_id=offering.id,
             version=version,
-            name="Arena verified commercial baseline",
-            status="draft",
-            currency="USD",
-            unit_amount_cents=17500,
-            public_price_display="$175/hour · 6-hour minimum",
-            booking_unit="hour",
-            minimum_units=6,
-            deposit_type="percent",
-            deposit_percent_bps=5000,
-            cancellation_policy="",
-            included_json=[],
-            addons_json=[
-                {
-                    "id": "cleaning",
-                    "name": "Required cleaning fee",
-                    "pricing_mode": "flat",
-                    "amount_cents": 25000,
-                },
-            ],
-            commercial_terms_json={
-                "venue_square_feet": 6000,
-                "maximum_public_capacity": 200,
-                "minimum_base_amount_cents": 105000,
-                "deposit_holds_date": True,
-                "balance_due_days_before_event": 15,
-                "setup_teardown": {
-                    "treatment": "add_on",
-                    "price_status": "operator_input_required",
-                },
-                "overtime": {
-                    "booking_unit": "hour",
-                    "price_status": "operator_input_required",
-                    "warning": "The listing copy says hourly but does not establish an approved numeric overtime rate.",
-                },
-                "legal_template_status": "provider_neutral_template_required",
-            },
-            source_evidence_json=[
-                {
-                    "source": "Anata Event Center Listing Copy Pack",
-                    "classification": "verified_commercial_baseline",
-                    "terms": [
-                        "6000_square_feet",
-                        "capacity_200",
-                        "175_per_hour",
-                        "6_hour_minimum",
-                        "250_cleaning",
-                        "50_percent_deposit",
-                        "setup_teardown_addons",
-                        "overtime_hourly",
-                    ],
-                },
-                {
-                    "source": "Current event agreement Google Doc",
-                    "classification": "corroborating_terms_not_reusable_template",
-                    "terms": [
-                        "50_percent_deposit",
-                        "250_cleaning",
-                        "balance_due_15_days_before",
-                    ],
-                    "warning": "Dated Vivint-specific 2025 agreement; not approved as a reusable legal template.",
-                },
-                {
-                    "source": "TidyCal/Calendar copy",
-                    "classification": "stale_conflicting_provider_copy",
-                    "terms": [
-                        "70_percent_deposit",
-                        "30_percent_due_48_hours_before",
-                        "placeholder_payment_link",
-                    ],
-                },
-            ],
-            conflicts_json=[
-                {
-                    "id": "tidycal-deposit",
-                    "summary": "TidyCal says 70% deposit; verified baseline says 50%.",
-                    "status": "unresolved",
-                    "blocks_rate_plan_approval": True,
-                    "allowed_resolution_statuses": [
-                        "reconciled_in_agent",
-                        "accepted_exception",
-                        "provider_remediated",
-                    ],
-                    "approval_resolution_statuses": [
-                        "accepted_exception",
-                        "provider_remediated",
-                    ],
-                },
-                {
-                    "id": "tidycal-balance",
-                    "summary": "TidyCal says 30% due 48 hours before; agreement evidence says balance due 15 days before.",
-                    "status": "unresolved",
-                    "blocks_rate_plan_approval": True,
-                    "allowed_resolution_statuses": [
-                        "reconciled_in_agent",
-                        "accepted_exception",
-                        "provider_remediated",
-                    ],
-                    "approval_resolution_statuses": [
-                        "accepted_exception",
-                        "provider_remediated",
-                    ],
-                },
-                {
-                    "id": "tidycal-payment-link",
-                    "summary": "TidyCal contains a placeholder payment link.",
-                    "status": "unresolved",
-                    "blocks_rate_plan_approval": True,
-                    "allowed_resolution_statuses": [
-                        "reconciled_in_agent",
-                        "provider_remediated",
-                    ],
-                    "approval_resolution_statuses": ["provider_remediated"],
-                },
-                {
-                    "id": "vivint-template",
-                    "summary": "The dated Vivint-specific 2025 agreement is evidence only, not a reusable legal template.",
-                    "status": "requires_legal_template",
-                    "blocks_rate_plan_approval": False,
-                },
-                {
-                    "id": "setup-teardown-price",
-                    "summary": "Setup and teardown are add-ons, but their prices still require operator input.",
-                    "status": "operator_input_required",
-                    "blocks_rate_plan_approval": False,
-                },
-            ],
-            tax_status="review_required",
-            tax_rate_bps=0,
-            tax_note="Tax treatment requires operator review before approval.",
             effective_from=effective_from,
-            created_by=actor,
-            updated_at=_now(),
+            actor=actor,
+            rate_plan_id=rate_plan_id,
         )
         session.add(row)
         session.add(BuildingAuditEvent(
@@ -3532,6 +3406,11 @@ def approve_rate_plan_from_control_room(
         row.approved_at = _now()
         row.approval_evidence = approval_evidence.strip()
         row.updated_at = _now()
+        sync_arena_effective_date_decision(
+            session,
+            rate_plan=row,
+            actor=actor,
+        )
         session.add(BuildingAuditEvent(
             entity_type="rate_plan",
             entity_id=row.id,

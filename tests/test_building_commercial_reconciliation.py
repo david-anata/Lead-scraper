@@ -134,17 +134,18 @@ class BuildingCommercialReconciliationTests(unittest.TestCase):
         for text in (
             "$175/hour",
             "six-hour minimum ($1,050)",
-            "$250 cleaning",
-            "50% deposit",
-            "balance due 15 days",
+            "$250 routine cleaning",
+            "50% booking deposit",
+            "$500 refundable security deposit",
+            "balance due seven days",
+            "$175 per full hour",
             "70% deposit",
             "placeholder payment link",
-            "Vivint-specific 2025 agreement",
-            "does not approve, publish, send, charge",
+            "reusable agreement remains under legal review",
         ):
             self.assertIn(text, page.text)
 
-    def test_02_prepare_creates_draft_only_with_noncalculable_overtime(self) -> None:
+    def test_02_prepare_uses_current_owner_rules_but_remains_a_draft(self) -> None:
         invalid = self._prepare("APPROVE")
         self.assertEqual(invalid.status_code, 303)
         self.assertIn("Type+PREPARE+ARENA+DRAFT", invalid.headers["location"])
@@ -163,20 +164,31 @@ class BuildingCommercialReconciliationTests(unittest.TestCase):
             self.assertEqual(row.deposit_percent_bps, 5000)
             self.assertEqual(
                 [item["id"] for item in row.addons_json],
-                ["cleaning"],
+                [
+                    "cleaning",
+                    "setup-reset-75",
+                    "setup-reset-150",
+                    "setup-reset-200",
+                    "av-technician",
+                    "anata-event-labor",
+                ],
             )
             self.assertEqual(
-                row.commercial_terms_json["overtime"]["price_status"],
-                "operator_input_required",
+                row.commercial_terms_json["overtime"]["amount_cents"],
+                17500,
             )
             self.assertEqual(
                 row.commercial_terms_json["balance_due_days_before_event"],
-                15,
+                7,
+            )
+            self.assertEqual(
+                row.commercial_terms_json["security_deposit"]["amount_cents"],
+                50000,
             )
             self.assertFalse(row.approval_evidence)
             self.assertTrue(
                 all(
-                    item["status"] == "unresolved"
+                    item["status"] == "provider_remediation_required"
                     for item in row.conflicts_json[:3]
                 )
             )
@@ -215,11 +227,11 @@ class BuildingCommercialReconciliationTests(unittest.TestCase):
             )
             self.assertEqual(
                 conflicts["tidycal-balance"]["status"],
-                "unresolved",
+                "provider_remediation_required",
             )
             self.assertEqual(
                 conflicts["tidycal-payment-link"]["status"],
-                "unresolved",
+                "provider_remediation_required",
             )
 
     def test_04_approval_fails_closed_until_every_blocker_is_decided(self) -> None:
@@ -259,13 +271,13 @@ class BuildingCommercialReconciliationTests(unittest.TestCase):
         for conflict_id, status, note in (
             (
                 "tidycal-deposit",
-                "accepted_exception",
-                "Pricing owner accepts stale provider copy pending separate cleanup.",
+                "provider_remediated",
+                "Operator verified the stale deposit copy was corrected.",
             ),
             (
                 "tidycal-balance",
-                "accepted_exception",
-                "Pricing owner adopts the 15-day balance term in Agent.",
+                "provider_remediated",
+                "Operator verified the stale balance deadline was corrected.",
             ),
             (
                 "tidycal-payment-link",
