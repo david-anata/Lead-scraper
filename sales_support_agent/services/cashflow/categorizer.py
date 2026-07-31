@@ -56,6 +56,7 @@ _RAW_RULES: list[tuple[str, str]] = [
 
     # ── Debt / loan repayments ─────────────────────────────────────────────
     (r"FORAFINANCIAL|FORA FINANCIAL", "debt"),
+    (r"ONDECK|ONDECK CAPITAL", "debt"),
     (r"Stripe Cap|STRIPE CAP|TYPE:\s*Stripe Cap", "debt"),
     (r"Payment to Fora|Transfer to Cap", "debt"),
 

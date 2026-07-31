@@ -54,7 +54,7 @@ _TRANSFER_TEXT_MARKERS = (
 )
 _PROTECTED_CATEGORIES = {
     "debt", "debt_service", "insurance", "payroll", "rent", "tax", "taxes",
-    "utilities", "critical_utilities",
+    "utilities", "critical_utilities", "revenue",
 }
 _HIGH_CONTROL_CATEGORIES = {
     "advertising", "bank_fees", "entertainment", "fees", "meals",

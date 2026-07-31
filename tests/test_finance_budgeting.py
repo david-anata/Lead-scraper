@@ -146,6 +146,27 @@ def test_budget_recategorizes_existing_uncategorized_plaid_rows() -> None:
     assert view["categories"][0]["recurring_saving_cents"] == 3_000
 
 
+def test_budget_protects_ondeck_debt_from_savings_targets() -> None:
+    rows = [
+        _row(
+            f"ondeck-{month}",
+            "plaid",
+            f"2026-{month}-10",
+            50_000,
+            category="uncategorized",
+            merchant="OnDeck Capital",
+        )
+        for month in ("01", "02", "03", "04", "05", "06", "07")
+    ]
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    debt = view["categories"][0]
+
+    assert debt["key"] == "debt"
+    assert debt["protected"] is True
+    assert debt["recurring_saving_cents"] == 0
+
+
 def test_protected_costs_are_not_given_a_cut_target() -> None:
     rows = [
         _row(f"rent-{month}", "plaid", f"2026-{month}-01", 200_000, category="rent")
