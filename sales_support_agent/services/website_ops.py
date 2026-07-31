@@ -28,16 +28,22 @@ from sales_support_agent.services.website_ops_candidates import (
     persist_candidate_ledger,
     select_bounded_actions,
 )
+from sales_support_agent.services.website_ops_control_panels import (
+    render_daily_portfolio_panel,
+    render_production_inventory_panel,
+)
 from sales_support_agent.services.website_ops_content_strategy import (
     load_content_strategy,
 )
 from sales_support_agent.services.website_ops_query_intelligence import (
     load_query_intelligence,
 )
+from sales_support_agent.services.website_ops_inventory import build_production_inventory
 from sales_support_agent.services.website_ops_program import (
     build_program_plan,
     load_indexing_inventory,
 )
+from sales_support_agent.services.website_ops_portfolio import build_daily_action_portfolio
 from sales_support_agent.services.website_ops_screaming_frog import (
     build_crawl_verification,
     collect_crawl_resource_observations,
@@ -525,6 +531,7 @@ def _build_operations_summary(report: Mapping[str, Any]) -> dict[str, Any]:
         "query": query,
         "candidate_states": states,
         "candidate_drilldown_url": "/admin/website-ops/candidates",
+        "daily_action_portfolio": dict(report.get("daily_action_portfolio") or {}),
         "deferred_reasons": deferred_reasons,
         "execution_coverage": [
             {
@@ -1500,6 +1507,13 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         "summary": dict(crawl_inventory.get("summary") or {}),
     }
     enriched_report["crawl_verification"] = crawl_verification
+    query_intelligence = dict(enriched_report.get("query_intelligence") or {})
+    enriched_report["production_inventory"] = build_production_inventory(
+        sitemap_urls=monitored_urls,
+        crawl_inventory=crawl_inventory,
+        indexing_inventory=indexing_inventory,
+        intent_coverage=dict(query_intelligence.get("intent_coverage") or {}),
+    )
     run_id = hashlib.sha256(
         (
             f"{mode}:{enriched_report.get('generated_at', '')}:"
@@ -1517,6 +1531,10 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         support_requests=list(enriched_report.get("support_requests") or []),
         indexing_inventory=indexing_inventory,
         crawl_verification=crawl_verification,
+    )
+    enriched_report["daily_action_portfolio"] = build_daily_action_portfolio(
+        action_queue=list(enriched_report.get("action_queue") or []),
+        candidate_ledger=dict(enriched_report.get("candidate_ledger") or {}),
     )
     enriched_report["operations_summary"] = _build_operations_summary(enriched_report)
     enriched_report["run_outcome"] = classify_run_outcome(enriched_report)
@@ -2572,6 +2590,8 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         )
     )
     decision_ready = _decision_data_ready(analytics_status)
+    production_inventory = dict(latest_payload.get("production_inventory") or {})
+    daily_action_portfolio = dict(latest_payload.get("daily_action_portfolio") or {})
     page_insights = [
         dict(item)
         for item in list(latest_payload.get("page_insights") or [])[:5]
@@ -2622,6 +2642,8 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         </section>
         {_operator_blocker_panel(analytics_status)}
         {_program_plan_panel(program_plan)}
+        {render_daily_portfolio_panel(daily_action_portfolio)}
+        {render_production_inventory_panel(production_inventory)}
         <section class="hero">
           <div id="submit-issue" class="card stack">
             <p class="eyebrow">Current scope</p>
