@@ -23,6 +23,7 @@ try:
         StripeBillingClient,
         StripeBillingError,
     )
+    from sales_support_agent.integrations.building_quickbooks import BuildingQuickBooksClient
     from sales_support_agent.main import app
     from sales_support_agent.models.database import create_session_factory, init_database
     from sales_support_agent.models.entities import (
@@ -79,8 +80,8 @@ class BuildingBillingTests(unittest.TestCase):
             json={
                 "id": "acme-monthly",
                 "billing_account_id": "acme",
-                "schedule_type": "monthly",
-                "description": "Private office membership",
+                "schedule_type": "one_time",
+                "description": "Event venue rental",
                 "amount_cents": 125000,
                 "starts_on": date.today().isoformat(),
                 "actor": "operator@example.com",
@@ -118,18 +119,16 @@ class BuildingBillingTests(unittest.TestCase):
         self.assertFalse(preview.json()["execute"])
         self.assertEqual(preview.json()["proposal"]["accounting_destination"], "quickbooks")
 
-        customer = {"id": "cus_acme"}
+        customer = {"Id": "535"}
         provider_invoice = {
-            "id": "in_acme_2026_07",
-            "status": "open",
-            "amount_due": 125000,
-            "amount_paid": 0,
-            "currency": "usd",
-            "hosted_invoice_url": "https://invoice.example/acme",
+            "Id": "11248",
+            "DueDate": (date.today() + timedelta(days=7)).isoformat(),
+            "TotalAmt": 1250,
         }
         with (
-            patch.object(StripeBillingClient, "create_customer", return_value=customer) as create_customer,
-            patch.object(StripeBillingClient, "create_invoice", return_value=provider_invoice) as create_invoice,
+            patch.object(BuildingQuickBooksClient, "is_configured", new_callable=lambda: property(lambda _self: True)),
+            patch.object(BuildingQuickBooksClient, "ensure_customer", return_value=customer) as create_customer,
+            patch.object(BuildingQuickBooksClient, "create_draft_invoice", return_value=provider_invoice) as create_invoice,
         ):
             executed = self.client.post(
                 "/api/internal/building/billing/invoices",
@@ -142,7 +141,7 @@ class BuildingBillingTests(unittest.TestCase):
                 },
             )
             self.assertEqual(executed.status_code, 200, executed.text)
-            self.assertEqual(executed.json()["invoice"]["accounting_status"], "pending_qbo")
+            self.assertEqual(executed.json()["invoice"]["accounting_status"], "synced_qbo")
             duplicate = self.client.post(
                 "/api/internal/building/billing/invoices",
                 headers=self.headers,
@@ -160,14 +159,99 @@ class BuildingBillingTests(unittest.TestCase):
         with self.factory() as session:
             invoice = session.query(BuildingInvoice).one()
             billing_schedule = session.get(BuildingBillingSchedule, "acme-monthly")
-            self.assertEqual(invoice.provider_invoice_id, "in_acme_2026_07")
-            self.assertEqual(billing_schedule.status, "approved")
-            self.assertIsNotNone(billing_schedule.next_invoice_on)
+            self.assertEqual(invoice.provider, "quickbooks")
+            self.assertEqual(invoice.provider_invoice_id, "11248")
+            self.assertEqual(invoice.qbo_invoice_id, "11248")
+            self.assertEqual(billing_schedule.status, "completed")
+            self.assertIsNone(billing_schedule.next_invoice_on)
+
+    def test_01b_non_reservation_schedule_cannot_use_event_items(self) -> None:
+        schedule = self.client.put(
+            "/api/internal/building/billing/schedules/non-event",
+            headers=self.headers,
+            json={
+                "id": "non-event",
+                "billing_account_id": "acme",
+                "schedule_type": "monthly",
+                "description": "Private office membership",
+                "amount_cents": 125000,
+                "starts_on": date.today().isoformat(),
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(schedule.status_code, 200, schedule.text)
+        approved = self.client.post(
+            "/api/internal/building/billing/schedules/non-event/approve",
+            headers=self.headers,
+            json={"actor": "approver@example.com"},
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+        response = self.client.post(
+            "/api/internal/building/billing/invoices",
+            headers=self.headers,
+            json={
+                "schedule_id": "non-event",
+                "idempotency_key": "non-event",
+                "execute": True,
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("no verified QuickBooks event item", response.json()["detail"])
 
     def test_02_paid_webhook_is_verified_and_idempotent(self) -> None:
         with self.factory() as session:
-            invoice = session.query(BuildingInvoice).one()
-            invoice_id = invoice.id
+            qbo_invoice = session.query(BuildingInvoice).one()
+            qbo_invoice_id = qbo_invoice.id
+        mismatch_event = {
+            "id": "evt_wrong_provider",
+            "type": "invoice.paid",
+            "data": {"object": {
+                "id": "in_not_qbo",
+                "status": "paid",
+                "amount_due": 125000,
+                "amount_paid": 125000,
+                "metadata": {"building_invoice_id": qbo_invoice_id},
+            }},
+        }
+        mismatch_payload = json.dumps(mismatch_event, separators=(",", ":")).encode()
+        mismatch_timestamp = int(time.time())
+        mismatch_signature = hmac.new(
+            b"whsec_building",
+            str(mismatch_timestamp).encode() + b"." + mismatch_payload,
+            hashlib.sha256,
+        ).hexdigest()
+        mismatch_response = self.client.post(
+            "/api/integrations/stripe/webhook",
+            headers={
+                "Content-Type": "application/json",
+                "Stripe-Signature": f"t={mismatch_timestamp},v1={mismatch_signature}",
+            },
+            content=mismatch_payload,
+        )
+        self.assertEqual(mismatch_response.status_code, 200, mismatch_response.text)
+        with self.factory() as session:
+            qbo_invoice = session.get(BuildingInvoice, qbo_invoice_id)
+            mismatch_row = session.get(BuildingStripeEvent, "evt_wrong_provider")
+            self.assertEqual(qbo_invoice.status, "draft")
+            self.assertEqual(qbo_invoice.amount_paid_cents, 0)
+            self.assertEqual(mismatch_row.status, "ignored")
+            self.assertEqual(session.query(BuildingPayment).count(), 0)
+            stripe_invoice = BuildingInvoice(
+                id="stripe-invoice",
+                billing_account_id="acme",
+                billing_schedule_id="acme-monthly",
+                idempotency_key="stripe-invoice",
+                provider="stripe",
+                provider_invoice_id="in_acme_2026_07",
+                description="Legacy Stripe invoice",
+                status="open",
+                amount_due_cents=125000,
+                amount_paid_cents=0,
+            )
+            session.add(stripe_invoice)
+            session.commit()
+            invoice_id = stripe_invoice.id
         event = {
             "id": "evt_invoice_paid",
             "type": "invoice.paid",
@@ -209,7 +293,7 @@ class BuildingBillingTests(unittest.TestCase):
         self.assertEqual(duplicate.status_code, 200, duplicate.text)
         self.assertTrue(duplicate.json()["duplicate"])
         with self.factory() as session:
-            invoice = session.query(BuildingInvoice).one()
+            invoice = session.get(BuildingInvoice, invoice_id)
             payment = session.query(BuildingPayment).one()
             event_row = session.get(BuildingStripeEvent, "evt_invoice_paid")
             self.assertEqual(invoice.status, "paid")
@@ -245,8 +329,35 @@ class BuildingBillingTests(unittest.TestCase):
         )
         self.assertEqual(export.status_code, 200, export.text)
         self.assertEqual(export.json()["destination"], "quickbooks")
-        self.assertEqual(len(export.json()["invoices"]), 1)
-        invoice_id = export.json()["invoices"][0]["id"]
+        self.assertEqual(
+            [row["id"] for row in export.json()["invoices"]],
+            ["stripe-invoice"],
+        )
+        with self.factory() as session:
+            session.add(BuildingInvoice(
+                id="legacy-qbo-handoff",
+                billing_account_id="acme",
+                idempotency_key="legacy-qbo-handoff",
+                provider="manual",
+                provider_invoice_id="legacy-qbo-handoff",
+                description="Legacy reviewed handoff",
+                status="draft",
+                accounting_status="pending_qbo",
+                amount_due_cents=50000,
+                currency="usd",
+                created_by="test",
+            ))
+            session.commit()
+        export = self.client.get(
+            "/api/internal/building/billing/qbo-export",
+            headers=self.headers,
+        )
+        self.assertEqual(len(export.json()["invoices"]), 2)
+        invoice_id = next(
+            row["id"]
+            for row in export.json()["invoices"]
+            if row["id"] == "legacy-qbo-handoff"
+        )
         missing_reference = self.client.put(
             f"/api/internal/building/billing/invoices/{invoice_id}/accounting-link",
             headers=self.headers,
@@ -272,7 +383,10 @@ class BuildingBillingTests(unittest.TestCase):
             "/api/internal/building/billing/qbo-export",
             headers=self.headers,
         )
-        self.assertEqual(after.json()["invoices"], [])
+        self.assertEqual(
+            [row["id"] for row in after.json()["invoices"]],
+            ["stripe-invoice"],
+        )
 
     def test_05_future_schedule_cannot_bill_early(self) -> None:
         future_date = date.today() + timedelta(days=30)

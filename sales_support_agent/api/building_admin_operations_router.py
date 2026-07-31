@@ -772,7 +772,7 @@ def create_invoice_from_control_room(
         return _redirect(error=str(exc.detail))
     if result.get("duplicate"):
         return _redirect(notice="That scheduled invoice already exists; no duplicate was created.")
-    return _redirect(notice="Stripe invoice created; QBO handoff is pending.")
+    return _redirect(notice="QuickBooks draft invoice created. Nothing was sent to the customer.")
 
 
 @router.post("/billing/collections/refresh", dependencies=FORM_DEPS)
