@@ -314,6 +314,11 @@ class HRPTORequest(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     decided_by: Mapped[str] = mapped_column(String(255), default="")
     decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewer_email: Mapped[str] = mapped_column(String(255), default="", index=True)
+    manager_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    calendar_event_id: Mapped[str] = mapped_column(String(255), default="")
+    calendar_sync_status: Mapped[str] = mapped_column(String(24), default="not_applicable")
+    calendar_sync_error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 

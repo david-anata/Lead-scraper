@@ -472,6 +472,13 @@ def _ensure_hr_columns(engine: Any) -> None:
         "hr_time_entries": {
             "elapsed_seconds": "INTEGER NOT NULL DEFAULT 0",
         },
+        "hr_pto_requests": {
+            "reviewer_email": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "manager_notified_at": "TIMESTAMP",
+            "calendar_event_id": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "calendar_sync_status": "VARCHAR(24) NOT NULL DEFAULT 'not_applicable'",
+            "calendar_sync_error": "TEXT NOT NULL DEFAULT ''",
+        },
         "hr_tax_liabilities": {
             "confirmed_amount_cents": "INTEGER",
             "filing_confirmation_number": "VARCHAR(128) NOT NULL DEFAULT ''",

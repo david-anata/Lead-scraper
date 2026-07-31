@@ -1884,8 +1884,11 @@ def create_pto_request(employee_email: str, *, start_date: date, end_date: date,
         ).first()
         if conflict:
             return False, "pto_conflict"
-        row = HRPTORequest(employee_email=email, start_date=start_date, end_date=end_date,
-                           hours=Decimal(str(round(hours, 2))), reason=(reason or "").strip())
+        row = HRPTORequest(
+            employee_email=email, start_date=start_date, end_date=end_date,
+            hours=Decimal(str(round(hours, 2))), reason=(reason or "").strip(),
+            reviewer_email=(employment.manager_email or "").strip().lower(),
+        )
         s.add(row)
         s.flush()
         _audit(s, actor, "pto.requested", "pto_request", row.id, {
@@ -1917,10 +1920,70 @@ def list_pto_requests(employee_email: Optional[str] = None) -> list:
                 "id": row.id, "employee_email": row.employee_email,
                 "start_date": row.start_date, "end_date": row.end_date,
                 "hours": float(row.hours), "reason": row.reason, "status": row.status,
+                "reviewer_email": row.reviewer_email,
+                "manager_notified": bool(row.manager_notified_at),
+                "calendar_sync_status": row.calendar_sync_status,
+                "calendar_sync_error": row.calendar_sync_error,
                 "working_day_count": len(workdays),
                 "excluded_day_count": len(dates) - len(workdays),
             })
         return result
+
+
+def latest_pto_request_id(employee_email: str) -> int | None:
+    with _session() as session:
+        row = session.query(HRPTORequest.id).filter_by(
+            employee_email=(employee_email or "").strip().lower()
+        ).order_by(HRPTORequest.id.desc()).first()
+        return int(row[0]) if row else None
+
+
+def get_pto_request(request_id: int) -> dict | None:
+    """Return the minimum workflow data needed for notification and projection."""
+    with _session() as session:
+        row = session.get(HRPTORequest, request_id)
+        if not row:
+            return None
+        employee = session.query(HREmployee).filter_by(email=row.employee_email).first()
+        login_email = (
+            (employee.hr_login_email or employee.personal_email or employee.email)
+            if employee else row.employee_email
+        )
+        return {
+            "id": row.id, "employee_email": row.employee_email,
+            "employee_login_email": login_email,
+            "employee_name": (employee.full_name if employee else "") or row.employee_email,
+            "start_date": row.start_date, "end_date": row.end_date,
+            "hours": float(row.hours), "status": row.status,
+            "reviewer_email": row.reviewer_email,
+            "calendar_event_id": row.calendar_event_id,
+        }
+
+
+def record_pto_notification(request_id: int, *, sent: bool) -> None:
+    with _session() as session:
+        row = session.get(HRPTORequest, request_id)
+        if not row:
+            return
+        if sent:
+            row.manager_notified_at = datetime.now(timezone.utc)
+        _audit(session, "system", "pto.manager_notification_sent" if sent else
+               "pto.manager_notification_failed", "pto_request", row.id,
+               {"reviewer_email": row.reviewer_email})
+
+
+def record_pto_calendar_sync(request_id: int, *, status: str, event_id: str = "",
+                             error: str = "") -> None:
+    with _session() as session:
+        row = session.get(HRPTORequest, request_id)
+        if not row:
+            return
+        row.calendar_sync_status = status
+        row.calendar_sync_error = error
+        if event_id:
+            row.calendar_event_id = event_id
+        _audit(session, "system", f"pto.calendar_{status}", "pto_request", row.id,
+               {"calendar_event_id": event_id, "error": error})
 
 
 def withdraw_pto(request_id: int, *, employee_email: str, actor: str) -> tuple[bool, str]:

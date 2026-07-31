@@ -1119,8 +1119,8 @@ def render_hr_time(
     viewer_email = ((user or {}).get("email") or "").strip().lower()
     requests = "".join(f"""<tr><td>{_esc(r['employee_email'])}</td><td>{_esc(r['start_date'])}–{_esc(r['end_date'])}
       <div class="hr-help">{r.get('working_day_count', 0)} working day(s){f"; {r.get('excluded_day_count')} weekend/holiday day(s) ignored" if r.get('excluded_day_count') else ""}</div></td>
-      <td>{r['hours']:.2f}</td><td>{_esc(r['status'].title())}</td><td>{_esc(r['reason'] or '—')}</td><td>
-      {f'<form class="hr-inline" method="post" action="/admin/hr/time/pto/{r["id"]}/decision"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and r['status'] == 'pending' and r['employee_email'] != viewer_email else f'<form method="post" action="/admin/hr/time/pto/{r["id"]}/withdraw"><button class="hr-btn hr-btn-light" type="submit">Withdraw request</button></form>' if r['status'] == 'pending' and r['employee_email'] == viewer_email else '—'}</td></tr>""" for r in pto_requests)
+      <td>{r['hours']:.2f}</td><td>{_esc(r['status'].title())}<div class="hr-help">{_esc('OOO calendar synced' if r.get('calendar_sync_status') == 'synced' else 'OOO calendar setup needed' if r.get('calendar_sync_status') == 'setup_required' else 'OOO calendar sync needs retry' if r.get('calendar_sync_status') == 'failed' else 'Manager notified' if r.get('manager_notified') else 'Manager email needs attention' if r['status'] == 'pending' else '')}</div></td><td>{_esc(r['reason'] or '—')}</td><td>
+      {f'<form class="hr-inline" method="post" action="/admin/hr/time/pto/{r["id"]}/decision"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and r['status'] == 'pending' and r['employee_email'] != viewer_email else f'<form method="post" action="/admin/hr/time/pto/{r["id"]}/calendar-sync"><button class="hr-btn hr-btn-light" type="submit">Retry OOO calendar</button></form>' if can_review and r['status'] == 'approved' and r.get('calendar_sync_status') in ('failed', 'setup_required') else f'<form method="post" action="/admin/hr/time/pto/{r["id"]}/withdraw"><button class="hr-btn hr-btn-light" type="submit">Withdraw request</button></form>' if r['status'] == 'pending' and r['employee_email'] == viewer_email else '—'}</td></tr>""" for r in pto_requests)
     if not requests:
         requests = '<tr><td colspan="6" class="hr-empty">No PTO requests yet.</td></tr>'
     correction_rows = "".join(f"""<tr><td>#{_esc(c['id'])}</td><td>{_esc(c.get('work_date') or 'Date unavailable')}</td>
@@ -1213,6 +1213,7 @@ def render_hr_time(
     </form>
     <table class="hr-tbl" style="margin-top:18px"><thead><tr><th>Employee</th><th>Period</th><th>Status</th><th>Reviewer</th><th>Decision / note</th></tr></thead><tbody>{timesheet_rows}</tbody></table>
     <h2 style="margin-top:28px">Request PTO</h2>
+    <div class="hr-callout"><div class="hr-kicker">How approval works</div><p>Your assigned manager receives an email with a secure link to review this request. The email itself cannot approve anything. After approval, Anata adds the dates to the shared OOO calendar and emails you the decision.</p></div>
     <form class="hr-form" method="post" action="/admin/hr/time/pto">
       <div class="hr-grid2"><div><label for="pto-start">Start date</label><input id="pto-start" type="date" name="start_date" required></div>
       <div><label for="pto-end">End date</label><input id="pto-end" type="date" name="end_date" required></div></div>
