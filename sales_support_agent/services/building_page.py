@@ -660,19 +660,10 @@ def render_building_page(
           <td>{_esc(item.get("preferred_date") or "—")}{tour_handoff_action(item)}</td>
           <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")} · respond by {_esc(item.get("response_due_at") or "not set")}</span>{inquiry_lifecycle_action(item)}</td>
           <td>{_esc(item.get("source"))}<span class="sub">{_esc(item.get("source_reference"))}</span></td>
-          <td>{(
-            f'<form method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/retry-hubspot"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><button class="secondary secondary--small" type="submit">Retry HubSpot</button><span class="sub">{_esc(item.get("hubspot_error"))} · {int(item.get("hubspot_attempt_count") or 0)} attempt(s)</span></form>'
-            if item.get("status") == "crm_sync_needed"
-            else (
-              f'<span class="sub">HubSpot {_esc(item.get("hubspot_contact_id"))}</span>'
-              if item.get("hubspot_contact_id")
-              else '<span class="sub">No CRM write configured</span>'
-            )
-          )}</td>
         </tr>
         """
         for item in inquiries
-    ) or '<tr><td colspan="6"><div class="empty"><strong>No building inquiries yet.</strong><br>The public forms remain usable through their safe delivery fallback.</div></td></tr>'
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No building inquiries yet.</strong><br>New website and staff-entered leads will appear here in Agent.</div></td></tr>'
 
     inquiry_metrics = dict(analytics.get("inquiries") or {})
     workspace_funnel = dict(analytics.get("workspace_funnel") or {})
@@ -1393,18 +1384,17 @@ def render_building_page(
         })
     for item in inquiries:
         lifecycle_stage = str((item.get("lifecycle") or {}).get("stage") or "new")
-        crm_failed = item.get("status") == "crm_sync_needed"
-        if lifecycle_stage != "new" and not crm_failed:
+        if lifecycle_stage != "new":
             continue
         priority_items.append({
-            "score": 95 if item.get("response_overdue") else (75 if crm_failed else 65),
+            "score": 95 if item.get("response_overdue") else 65,
             "type": "Inquiry",
             "title": item.get("name") or item.get("email"),
             "detail": (
                 f"{item.get('kind', 'lead')} · {item.get('source', 'unknown source')}"
                 f" · respond by {item.get('response_due_at') or 'not set'}"
             ),
-            "next": "Retry HubSpot" if crm_failed else "Respond and qualify",
+            "next": "Respond and qualify",
             "href": "/admin/building/sales",
         })
     for item in calendar_projections:
@@ -1839,7 +1829,7 @@ def render_building_page(
         </details>
       </section>
       <section class="panel panel--wide building-view view-sales" id="add-assisted-lead">
-        <div class="panel-head"><div><h2>Add an assisted lead</h2><p>Normalize Facebook Marketplace, Eventective, referral, phone, and walk-in leads into the same inquiry and CRM recovery queue.</p></div></div>
+        <div class="panel-head"><div><h2>Add an assisted lead</h2><p>Bring Facebook Marketplace, Eventective, referral, phone, and walk-in leads into the same Agent inquiry queue.</p></div></div>
         <details class="task-creator"><summary>Add a lead manually</summary>
         <form class="form-grid" method="post" action="/admin/building/inquiries">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
@@ -1958,7 +1948,7 @@ def render_building_page(
         </form>
         </details>
       </section>
-      <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand. Partial CRM failures stay queued without losing the lead.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th><th>CRM recovery</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>Agent owns each lead through response and qualification. Date blocking moves to Google Calendar; contracts and invoices move to QuickBooks; customer follow-up moves through email.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status and action</th><th>Source</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-bookings" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/contracts">Open contracts →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-sales view-operations" id="building-tours"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-operations">
@@ -2003,7 +1993,7 @@ def render_building_page(
       <section class="panel panel--wide building-view view-catalog" id="inventory"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-catalog"><div class="panel-head"><div><h2>Media assignments</h2><p>Choose one space at a time. Draft media never reaches the public site, and approval requires descriptive alt text.</p></div></div><div class="checklist-list">{media_blocks}</div></section>
       <section class="panel panel--wide building-view view-settings"><div class="panel-head"><div><h2>Roster import reviews</h2><p>Previewed lists remain inert until an operator confirms the exact snapshot.</p></div><span class="count">{len(roster_imports)} imports</span></div><div class="table-wrap"><table><thead><tr><th>Roster</th><th>Contacts</th><th>Status</th><th>Action</th></tr></thead><tbody>{roster_import_rows}</tbody></table></div></section>
-      <section class="panel panel--wide building-view view-contacts" id="crm-email-list"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, suppression, and permissioned data controls. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th><th>Data controls</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-contacts" id="customer-email-list"><div class="panel-head"><div><h2>Customer contacts and email permissions</h2><p>Relationships, contact permission, suppression, and customer communication controls. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th><th>Data controls</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-contacts">
         <div class="panel-head"><div><h2>Duplicate contact review</h2><p>Preview every move before merging. The survivor keeps the most restrictive communication permission; campaign and inquiry history remains unchanged.</p></div><span class="count">{len(contact_merges)} completed</span></div>
         <details class="task-creator"><summary>Review a possible duplicate</summary>
