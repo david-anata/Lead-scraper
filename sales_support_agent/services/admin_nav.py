@@ -143,6 +143,7 @@ def render_agent_nav_css() -> str:
       *, *::before, *::after { box-sizing: border-box; }
       body {
         margin: 0;
+        overflow-x: hidden;
         background: #f9f7f3;
         color: #2B3644;
         font-family: "Inter", "Roboto", "Segoe UI", sans-serif;
