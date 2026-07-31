@@ -557,7 +557,16 @@ Return only one JSON object with this exact shape:
     "eyebrow": "Topic label",
     "h1": "same as articleTitle",
     "tldr": {{"heading": "The short answer.", "answer": ["60 to 140 word direct answer"]}},
-    "sections": [{{"heading": "Heading", "paragraphs": ["paragraph"]}}],
+    "sections": [{{
+      "heading": "Heading",
+      "paragraphs": ["paragraph"],
+      "citations": [
+        {{"title": "Matching top-level source", "href": "https://authoritative-source.example/path"}}
+      ],
+      "internalLinks": [
+        {{"title": "Relevant Anata resource", "href": "/approved-route", "note": "Why this helps next"}}
+      ]
+    }}],
     "breadcrumbs": [
       {{"name": "Home", "href": "/"}},
       {{"name": "Blog", "href": "/blog"}},
@@ -574,9 +583,10 @@ Return only one JSON object with this exact shape:
   "sources": [{{"title": "Source title", "url": "https://..."}}]
 }}
 Write at least 900 useful words across at least four substantive sections with at
-least two paragraphs each. Include at least two distinct authoritative external
-sources and at least two relevant internal links. Do not pad the article to reach
-the word count.
+least two paragraphs each. Cite top-level authoritative sources contextually in
+at least two sections. Add useful internal links contextually in at least two
+sections, using only approved Anata routes. Also include the related-resource
+block. Do not pad the article to reach the word count.
 """
     article = dict((requester or _request_article)(settings=settings, prompt=prompt))
     slug = _clean(article.get("slug"))
