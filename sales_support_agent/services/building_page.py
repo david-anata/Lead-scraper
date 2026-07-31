@@ -829,7 +829,7 @@ def render_building_page(
         </tr>
         """
         for item in invoices
-    ) or '<tr><td colspan="6"><div class="empty"><strong>No native invoices yet.</strong><br>Approved billing schedules can create Stripe invoices; QBO remains the accounting destination during transition.</div></td></tr>'
+    ) or '<tr><td colspan="6"><div class="empty"><strong>No native invoices yet.</strong><br>Approved event billing schedules can create an unsent QuickBooks invoice for staff review.</div></td></tr>'
 
     collection_rows = "".join(
         f"""<tr>
@@ -1915,7 +1915,7 @@ def render_building_page(
         <div class="table-wrap"><table><thead><tr><th>Request</th><th>Priority</th><th>Status</th><th>Owner and due</th><th>Action</th></tr></thead><tbody>{service_request_rows}</tbody></table></div>
       </section>
       <section class="panel building-view view-billing">
-        <div class="panel-head"><div><h2>Billing account</h2><p>Connect a person or company to Stripe and the current QBO record.</p></div></div>
+        <div class="panel-head"><div><h2>Billing account</h2><p>Connect a person or company to its QuickBooks customer record.</p></div></div>
         <details class="task-creator"><summary>Add a billing account</summary>
         <form class="form-grid" method="post" action="/admin/building/billing/accounts">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
