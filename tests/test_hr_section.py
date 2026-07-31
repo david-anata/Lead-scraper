@@ -67,6 +67,7 @@ class HRSectionTests(unittest.TestCase):
         self.assertEqual(r.text.count('id="agent-main-content"'), 1)
         self.assertIn("field.labels && field.labels.length", r.text)
         self.assertIn("candidate.htmlFor = field.id", r.text)
+        self.assertIn(".top-actions .top-link", r.text)
 
     def test_setup_checklist_uses_live_readiness_and_is_payroll_private(self):
         page = self._get("/admin/hr/setup", self.sa)
@@ -1055,6 +1056,11 @@ class HRSectionTests(unittest.TestCase):
         }, self.sa)
         self.assertIn("correction_requested", requested.headers["location"])
         correction = hr_store.list_time_corrections("david@anatainc.com")[0]
+        review_page = self._get("/admin/hr/time", self.sa)
+        self.assertIn(
+            f'aria-label="Required review note for correction #{correction["id"]}"',
+            review_page.text,
+        )
         own = self._post(f"/admin/hr/time/corrections/{correction['id']}/decision", {
             "decision": "approved", "reviewer_reason": "Looks right",
         }, self.sa)

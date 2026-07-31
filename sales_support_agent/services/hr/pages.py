@@ -154,6 +154,9 @@ _HR_STYLES = """
     .employee-action .hr-btn { width:100%; min-height:44px; text-align:center; }
     .hr-training-steps li { grid-template-columns:38px minmax(0,1fr); padding:16px 14px; }
     .hr-btn { min-height:44px; }
+    .top-actions .top-link,
+    .topbar-section-row .top-link,
+    .user-chip { min-height:44px; }
     .hr-js .hr-tbl { display:block; width:100%; max-width:100%; overflow:visible; border:0; background:transparent; }
     .hr-js .hr-tbl thead { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
     .hr-js .hr-tbl tbody, .hr-js .hr-tbl tr, .hr-js .hr-tbl td { display:block; width:100%; box-sizing:border-box; }
@@ -1179,7 +1182,7 @@ def render_hr_time(
       <td>{_esc(c['proposed'].get('start_time'))}–{_esc(c['proposed'].get('stop_time'))}</td>
       <td>{float(c.get('hours_delta') or 0):+.2f} hr<br><span class="hr-help">{'Estimated gross ' + ('$' if float(c.get('estimated_gross_impact') or 0) >= 0 else '−$') + format(abs(float(c.get('estimated_gross_impact') or 0)), '.2f') if c.get('estimated_gross_impact') is not None else 'Gross impact requires pay basis review'}</span></td>
       <td>{_esc(c['reason'])}</td><td>{_esc(c['status'])}</td>
-      <td>{f'<form class="hr-inline" method="post" action="/admin/hr/time/corrections/{c["id"]}/decision"><input name="reviewer_reason" placeholder="Required review note" required><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and c['status'] == 'requested' else '—'}</td></tr>""" for c in corrections)
+      <td>{f'<form class="hr-inline" method="post" action="/admin/hr/time/corrections/{c["id"]}/decision"><input name="reviewer_reason" aria-label="Required review note for correction #{_esc(c["id"])}" placeholder="Required review note" required><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and c['status'] == 'requested' else '—'}</td></tr>""" for c in corrections)
     if not correction_rows:
         correction_rows = '<tr><td colspan="9" class="hr-empty">No time corrections.</td></tr>'
     timesheet_rows = "".join(
