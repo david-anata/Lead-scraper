@@ -214,6 +214,11 @@ def build_budget_view(
     current_month = _month_key(today)
     category_months: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     category_merchants: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    merchant_months: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    merchant_meta: dict[str, dict[str, str]] = {}
+    merchant_charge_signatures: dict[str, dict[tuple[str, int], int]] = defaultdict(
+        lambda: defaultdict(int)
+    )
     latest_date: date | None = None
     for row in transactions:
         occurred = row["_budget_date"]
@@ -224,6 +229,15 @@ def build_budget_view(
             category_merchants[key][row["_budget_merchant"]] += int(
                 row.get("amount_cents") or 0
             )
+            merchant_key = _slug(row["_budget_merchant"]) or "unassigned"
+            merchant_meta[merchant_key] = {
+                "name": row["_budget_merchant"], "category": key,
+            }
+            merchant_months[merchant_key][month] += int(row.get("amount_cents") or 0)
+            if month in comparison_months:
+                merchant_charge_signatures[merchant_key][
+                    (occurred.isoformat(), int(row.get("amount_cents") or 0))
+                ] += 1
         latest_date = max(latest_date or occurred, occurred)
 
     days_in_month = monthrange(today.year, today.month)[1]
@@ -305,6 +319,51 @@ def build_budget_view(
         }
         for month in comparison_months
     ]
+    investigations: list[dict[str, Any]] = []
+    for merchant_key, monthly in merchant_months.items():
+        meta = merchant_meta[merchant_key]
+        if meta["category"] in _PROTECTED_CATEGORIES:
+            continue
+        earlier = [int(monthly.get(month) or 0) for month in comparison_months[:3]]
+        recent = [int(monthly.get(month) or 0) for month in comparison_months[3:]]
+        earlier_average = sum(earlier) // 3
+        recent_average = sum(recent) // 3
+        active_recent_months = sum(1 for amount in recent if amount > 0)
+        if earlier_average == 0 and active_recent_months >= 2 and recent_average >= 2_500:
+            investigations.append({
+                "kind": "new_recurring", "merchant": meta["name"],
+                "category": meta["category"], "headline": "New recurring cost",
+                "monthly_review_cents": recent_average, "one_time_review_cents": 0,
+                "evidence": f"Appeared in {active_recent_months} of the last 3 complete months after no spend in the earlier 3.",
+                "action": "Confirm the service is still needed, then cancel, downgrade, or set an owner.",
+            })
+        elif earlier_average >= 2_500 and recent_average - earlier_average >= 5_000 and recent_average * 100 >= earlier_average * 125:
+            investigations.append({
+                "kind": "rising_vendor", "merchant": meta["name"],
+                "category": meta["category"], "headline": "Vendor cost increased",
+                "monthly_review_cents": recent_average - earlier_average,
+                "one_time_review_cents": 0,
+                "evidence": f"Recent 3-month average {_money(recent_average, exact=True)} versus {_money(earlier_average, exact=True)} in the earlier 3 months.",
+                "action": "Check usage, seats, rate changes, and contract terms before the next renewal.",
+            })
+        duplicate_cents = sum(
+            max(0, count - 1) * amount
+            for (_posted_on, amount), count in merchant_charge_signatures[merchant_key].items()
+            if count > 1
+        )
+        if duplicate_cents >= 1_000:
+            duplicate_sets = sum(1 for count in merchant_charge_signatures[merchant_key].values() if count > 1)
+            investigations.append({
+                "kind": "duplicate_looking", "merchant": meta["name"],
+                "category": meta["category"], "headline": "Duplicate-looking charges",
+                "monthly_review_cents": 0, "one_time_review_cents": duplicate_cents,
+                "evidence": f"{duplicate_sets} same-day, same-amount charge set(s) appeared in the six complete months. These may be valid and require receipt review.",
+                "action": "Match the charges to invoices or receipts and dispute only confirmed duplicates.",
+            })
+    investigations.sort(key=lambda item: (
+        -int(item["monthly_review_cents"]), -int(item["one_time_review_cents"]),
+        str(item["merchant"]).casefold(),
+    ))
     proof = {
         "source": source,
         "as_of": today.isoformat(),
@@ -313,6 +372,7 @@ def build_budget_view(
         "totals": totals,
         "monthly_totals": monthly_totals,
         "categories": categories,
+        "investigations": investigations[:12],
     }
     return {
         **proof,
@@ -613,6 +673,17 @@ def render_budget_page(
         </tr>"""
         for item in view["categories"]
     )
+    investigation_rows = "".join(
+        f"""
+        <article class="budget-investigation">
+          <div><span>{html.escape(item['headline'])} · {html.escape(str(item['category']).replace('_', ' ').title())}</span>
+          <h3>{html.escape(item['merchant'])}</h3><p>{html.escape(item['evidence'])}</p></div>
+          <div class="budget-investigation__amount"><span>{'Monthly increase to review' if item['monthly_review_cents'] else 'One-time charges to verify'}</span>
+          <strong>{_money(int(item['monthly_review_cents'] or item['one_time_review_cents']), exact=True)}</strong></div>
+          <p class="budget-saving-action"><strong>Do next:</strong> {html.escape(item['action'])}</p>
+        </article>"""
+        for item in view.get("investigations") or []
+    )
     review_status = str(review.get("status") or "empty")
     review_matches = review.get("calculation_id") == view.get("calculation_id")
     if review_status == "ready" and review_matches:
@@ -676,6 +747,14 @@ def render_budget_page(
         <th>Category</th><th>6-month average</th><th>Recent trend</th><th>Projected this month</th><th>Suggested budget</th><th>Over / under</th>
         </tr></thead><tbody>{rows}</tbody></table></div>
         <p class="budget-rule-note">Suggested budgets keep protected costs unchanged and target 10–15% reductions only in controllable categories. These are planning targets, not changes to your bank or books.</p>
+      </section>
+
+      <section class="budget-review" aria-labelledby="budget-investigation-title">
+        <div class="money-section-heading"><div><p class="finance-eyebrow">Merchant-level investigation</p>
+        <h2 id="budget-investigation-title">Where the deeper savings may be hiding</h2></div>
+        <span class="money-section-state">{len(view.get('investigations') or [])} evidence checks</span></div>
+        <p class="budget-review-summary">These are not booked savings. They identify rising vendors, newly recurring costs, and duplicate-looking charges that deserve receipt, usage, or contract review.</p>
+        <div class="budget-saving-list">{investigation_rows or '<div class="money-empty"><h3>No merchant-level leaks crossed the evidence threshold</h3><p>The category budget still applies, but no specific vendor pattern is strong enough to call out.</p></div>'}</div>
       </section>
 
       <section class="budget-review" aria-labelledby="budget-review-title">

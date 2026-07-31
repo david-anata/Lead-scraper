@@ -2242,6 +2242,20 @@ input:focus, select:focus, textarea:focus {
 .budget-saving-impact { text-align: right; }
 .budget-saving-impact strong { display: block; margin-top: 7px; font: 800 1.5rem/1 "Montserrat", sans-serif; }
 .budget-saving-action { grid-column: 1 / -1; padding-top: 14px; border-top: 1px solid var(--anata-line); }
+.budget-investigation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, auto);
+  gap: 16px 24px;
+  padding: 18px;
+  border: 1px solid var(--anata-line);
+  border-radius: var(--anata-radius-md);
+  background: var(--anata-surface);
+}
+.budget-investigation span { color: var(--anata-muted); font-size: 11px; font-weight: 700; }
+.budget-investigation h3 { margin-top: 6px; }
+.budget-investigation p { margin-top: 7px; color: var(--anata-muted); font-size: 13px; line-height: 1.55; }
+.budget-investigation__amount { text-align: right; }
+.budget-investigation__amount strong { display: block; margin-top: 7px; font: 800 1.35rem/1 "Montserrat", sans-serif; }
 
 @media (max-width: 1100px) {
   .budget-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -2285,6 +2299,8 @@ input:focus, select:focus, textarea:focus {
   .budget-saving-item { display: grid; grid-template-columns: 1fr; }
   .budget-review-ready .btn { width: 100%; }
   .budget-saving-impact { text-align: left; }
+  .budget-investigation { grid-template-columns: 1fr; }
+  .budget-investigation__amount { text-align: left; }
   .budget-saving-action { grid-column: auto; }
   .money-account-actions { display: grid; width: 100%; }
   .money-account-actions form,

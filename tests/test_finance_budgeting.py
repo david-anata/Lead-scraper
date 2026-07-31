@@ -238,6 +238,34 @@ def test_six_month_review_detects_a_rising_category_trend() -> None:
     assert software["recurring_saving_cents"] == 2_250
 
 
+def test_deep_review_finds_a_rising_vendor() -> None:
+    rows = [
+        _row(f"tool-{month}", "plaid", f"2026-{month}-10", amount, merchant="Seat Tool")
+        for month, amount in {
+            "01": 10_000, "02": 10_000, "03": 10_000,
+            "04": 20_000, "05": 20_000, "06": 20_000,
+        }.items()
+    ]
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    finding = view["investigations"][0]
+    assert finding["kind"] == "rising_vendor"
+    assert finding["merchant"] == "Seat Tool"
+    assert finding["monthly_review_cents"] == 10_000
+
+
+def test_deep_review_finds_new_recurring_and_duplicate_looking_spend() -> None:
+    rows = [
+        _row("new-04", "plaid", "2026-04-10", 8_000, merchant="New Tool"),
+        _row("new-05", "plaid", "2026-05-10", 8_000, merchant="New Tool"),
+        _row("dup-1", "plaid", "2026-06-12", 4_000, merchant="Double Bill"),
+        _row("dup-2", "plaid", "2026-06-12", 4_000, merchant="Double Bill"),
+    ]
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    by_kind = {item["kind"]: item for item in view["investigations"]}
+    assert by_kind["new_recurring"]["monthly_review_cents"] == 5_333
+    assert by_kind["duplicate_looking"]["one_time_review_cents"] == 4_000
+
+
 def test_recurring_savings_exclude_reductions_already_reflected_this_month() -> None:
     rows = [
         _row(f"software-{month}", "plaid", f"2026-{month}-10", 20_000)
@@ -324,6 +352,7 @@ def test_budget_page_is_explicitly_advisory_and_explainable() -> None:
     assert "Possible EOM improvement" in page
     assert "What operating spending is doing" in page
     assert "What should we cut or renegotiate?" in page
+    assert "Where the deeper savings may be hiding" in page
     assert "Run high spending review" in page
     assert "planning targets, not changes to your bank or books" in page
     assert "Mirrored sources and internal transfers are excluded" in page
