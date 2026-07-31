@@ -42,6 +42,8 @@ _TRANSFER_TEXT_MARKERS = (
     "transfer from share",
     "transfer to share",
     "withdrawal trans to share",
+    "withdrawal trans",
+    "withdrawal transfer to",
     "withdrawal transfer to share",
     "xfer from",
     "xfer to",
@@ -230,7 +232,7 @@ def build_budget_view(
         protected = key in _PROTECTED_CATEGORIES
         reduction_bps = 0 if protected else 1_500 if key in _HIGH_CONTROL_CATEGORIES else 1_000
         target = average * (10_000 - reduction_bps) // 10_000
-        potential = max(0, average - target)
+        potential = 0 if protected else max(0, projected - target)
         variance = projected - target
         merchants = sorted(
             category_merchants[key].items(), key=lambda item: (-item[1], item[0].casefold())
@@ -298,7 +300,10 @@ def _review_packet(view: Mapping[str, Any]) -> dict[str, Any]:
     eligible = [
         item
         for item in view.get("categories") or []
-        if not item.get("protected") and int(item.get("average_cents") or 0) > 0
+        if (
+            not item.get("protected")
+            and int(item.get("potential_saving_cents") or 0) > 0
+        )
     ][:12]
     return {
         "prompt_version": _PROMPT_VERSION,

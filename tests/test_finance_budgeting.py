@@ -47,7 +47,7 @@ def test_budget_uses_one_canonical_source_and_does_not_double_count() -> None:
     software = view["categories"][0]
     assert software["average_cents"] == 10_000
     assert software["target_cents"] == 8_500
-    assert software["potential_saving_cents"] == 1_500
+    assert software["potential_saving_cents"] == 7_000
 
 
 def test_budget_excludes_uncategorized_internal_share_transfers() -> None:
