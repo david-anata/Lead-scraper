@@ -52,6 +52,7 @@ from sales_support_agent.services.website_ops_github import (
     execute_github_metadata_action,
     github_metadata_is_configured,
 )
+from sales_support_agent.services.website_ops_outcomes import FAILED_OUTCOME, classify_run_outcome
 from sales_support_agent.services import website_ops_vendor as website_ops
 
 
@@ -64,7 +65,7 @@ class WebsiteOpsActionResult:
 
 
 RUN_MODES = ("daily", "weekly", "monthly")
-RUN_STATUSES = {"idle", "queued", "running", "succeeded", "failed"}
+RUN_STATUSES = {"idle", "queued", "running", "succeeded", "failed", "failed_outcome"}
 MVP_MODE_ACTIVE = True
 MVP_ALLOWED_ACTION_TYPES = {
     "inject_faq_block",
@@ -181,6 +182,14 @@ def _default_mode_run_state(mode: str) -> dict[str, str]:
         "last_error": "",
         "attempt_count": "0",
         "recovery_status": "",
+        "outcome_status": "",
+        "outcome_message": "",
+        "expected_output": "",
+        "actual_output": "",
+        "production_delta_count": "0",
+        "last_stage": "",
+        "next_operation": "",
+        "failure_stage": "",
     }
 
 
@@ -1510,6 +1519,7 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         crawl_verification=crawl_verification,
     )
     enriched_report["operations_summary"] = _build_operations_summary(enriched_report)
+    enriched_report["run_outcome"] = classify_run_outcome(enriched_report)
     artifacts = website_ops.write_daily_report_artifacts(enriched_report, output_dir=output_dir, config=config)
     enriched_report["email_delivery"] = send_website_ops_report_email(
         settings,
@@ -1517,8 +1527,8 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         report=enriched_report,
     )
     return WebsiteOpsActionResult(
-        ok=True,
-        message=f"{mode.title()} website ops run completed.",
+        ok=enriched_report["run_outcome"]["status"] != FAILED_OUTCOME,
+        message=str(enriched_report["run_outcome"]["summary"]),
         report=enriched_report,
     )
 
@@ -1770,10 +1780,11 @@ def _run_state_notice(state: Mapping[str, Any]) -> tuple[str, str]:
     today = date.today().isoformat()
     if status in {"queued", "running"} and run_date == today:
         return ("neutral", "Daily sweep running")
-    if status == "failed" and run_date == today:
+    if status in {"failed", "failed-outcome"} and run_date == today:
         return ("warn", f"Last daily sweep failed{': ' + last_error if last_error else ''}")
     if last_successful_date == today:
-        return ("good", "Daily sweep completed today")
+        outcome = str(state.get("outcome_message", "") or "").strip()
+        return ("good", outcome or "Daily sweep completed today")
     return ("neutral", "Daily sweep will start automatically when needed")
 
 
