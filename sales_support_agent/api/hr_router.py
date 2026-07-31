@@ -237,7 +237,9 @@ def _hr_login_email_error(value: str) -> str:
 def _managed_employee_emails(user: dict) -> set[str]:
     if _has_full_hr_admin(user):
         return {item["email"] for item in store.list_employees()}
-    manager = (user.get("email") or "").strip().lower()
+    manager_login = (user.get("email") or "").strip().lower()
+    manager_record = store.get_employee_by_email(manager_login)
+    manager = ((manager_record or {}).get("email") or manager_login).strip().lower()
     return {
         item["email"] for item in store.list_employees()
         if ((item.get("employment") or {}).get("manager_email") or "")

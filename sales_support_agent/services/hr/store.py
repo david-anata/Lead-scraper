@@ -1945,6 +1945,7 @@ def get_pto_request(request_id: int) -> dict | None:
         if not row:
             return None
         employee = session.query(HREmployee).filter_by(email=row.employee_email).first()
+        reviewer = session.query(HREmployee).filter_by(email=row.reviewer_email).first()
         login_email = (
             (employee.hr_login_email or employee.personal_email or employee.email)
             if employee else row.employee_email
@@ -1956,6 +1957,10 @@ def get_pto_request(request_id: int) -> dict | None:
             "start_date": row.start_date, "end_date": row.end_date,
             "hours": float(row.hours), "status": row.status,
             "reviewer_email": row.reviewer_email,
+            "reviewer_login_email": (
+                (reviewer.hr_login_email or reviewer.personal_email or reviewer.email)
+                if reviewer else row.reviewer_email
+            ),
             "calendar_event_id": row.calendar_event_id,
         }
 

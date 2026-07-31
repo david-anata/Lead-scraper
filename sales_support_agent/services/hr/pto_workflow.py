@@ -14,11 +14,11 @@ logger = logging.getLogger(__name__)
 
 def notify_reviewer(settings, *, request_id: int, base_url: str) -> bool:
     item = store.get_pto_request(request_id)
-    if not item or not item.get("reviewer_email"):
+    if not item or not item.get("reviewer_login_email"):
         return False
     sent = _send(
         settings,
-        to_email=item["reviewer_email"],
+        to_email=item["reviewer_login_email"],
         subject=f"Time-off request from {item['employee_name']}",
         text=(
             f"{item['employee_name']} requested {item['hours']:.2f} hours of time off "

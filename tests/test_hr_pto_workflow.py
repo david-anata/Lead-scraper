@@ -10,6 +10,7 @@ def _item(status="approved"):
         "employee_login_email": "gabe@example.com", "employee_name": "Gabe",
         "start_date": date(2026, 8, 3), "end_date": date(2026, 8, 4),
         "hours": 16.0, "status": status, "reviewer_email": "val@anatainc.com",
+        "reviewer_login_email": "val.personal@example.com",
         "calendar_event_id": "",
     }
 
@@ -21,6 +22,7 @@ def test_manager_email_links_to_authenticated_review(send, store):
     assert pto_workflow.notify_reviewer(object(), request_id=42,
                                         base_url="https://agent.anatainc.com")
     message = send.call_args.kwargs["text"]
+    assert send.call_args.kwargs["to_email"] == "val.personal@example.com"
     assert "/admin/hr/time" in message
     assert "does not approve" in message
     store.record_pto_notification.assert_called_once_with(42, sent=True)
