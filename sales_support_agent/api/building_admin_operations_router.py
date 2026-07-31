@@ -520,6 +520,9 @@ def record_proposal_from_control_room(
     status: str = Form(...),
     proposal_type: str = Form(...),
     amount: str = Form("0"),
+    pricing_subtotal: str = Form(""),
+    discount: str = Form("0"),
+    discount_reason: str = Form(""),
     rate_plan_id: str = Form(""),
     line_item: str = Form(""),
     terms_summary: str = Form(""),
@@ -533,6 +536,15 @@ def record_proposal_from_control_room(
             status=status,
             proposal_type=proposal_type,
             amount_cents=_dollars_to_cents(amount),
+            pricing_subtotal_cents=(
+                _dollars_to_cents(pricing_subtotal)
+                if proposal_type == "quote" and pricing_subtotal.strip()
+                else None
+            ),
+            discount_cents=(
+                _dollars_to_cents(discount) if proposal_type == "quote" else 0
+            ),
+            discount_reason=discount_reason.strip(),
             rate_plan_id=rate_plan_id.strip() or None,
             line_items=(
                 [{"description": line_item.strip(), "amount_cents": _dollars_to_cents(amount)}]

@@ -99,7 +99,10 @@ class ArenaRatePlanSeedTests(unittest.TestCase):
                 row.commercial_terms_json["overtime"]["amount_cents"],
                 17_500,
             )
-            self.assertEqual(row.tax_status, "review_required")
+            self.assertEqual(row.tax_status, "taxable")
+            self.assertEqual(row.tax_rate_bps, 745)
+            self.assertIn("transaction date", row.tax_note)
+            self.assertIn("Refundable security deposits are not taxable", row.tax_note)
             self.assertTrue(
                 all(
                     item["status"] == "provider_remediation_required"
