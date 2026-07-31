@@ -18,6 +18,7 @@ from typing import Any, Iterable, Mapping
 
 from sales_support_agent.models.database import kv_get_json, kv_set_json
 from sales_support_agent.services.cashflow.cashflow_helpers import _page_shell
+from sales_support_agent.services.cashflow.categorizer import categorize
 from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
 from sales_support_agent.services.cashflow.obligations import list_obligations
 
@@ -29,9 +30,22 @@ _PROMPT_VERSION = "budget-review-v1"
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 _SOURCE_PRIORITY = ("plaid", "qbo_bank", "csv")
 _TRANSFER_CATEGORIES = {
-    "account_transfer", "bank_transfer", "card_payment", "credit_card_payment",
+    "account_transfer", "bank_transfer", "card_payment", "credit_card",
+    "credit_card_payment",
     "internal_transfer", "transfer", "transfers",
 }
+_TRANSFER_TEXT_MARKERS = (
+    "account transfer",
+    "internal transfer",
+    "online transfer",
+    "transfer between",
+    "transfer from share",
+    "transfer to share",
+    "withdrawal trans to share",
+    "withdrawal transfer to share",
+    "xfer from",
+    "xfer to",
+)
 _PROTECTED_CATEGORIES = {
     "debt", "debt_service", "insurance", "payroll", "rent", "tax", "taxes",
     "utilities", "critical_utilities",
@@ -82,6 +96,17 @@ def _category(row: Mapping[str, Any]) -> str:
         or "uncategorized"
     )
     key = _slug(raw)
+    if key in {"", "other", "uncategorized", "unknown"}:
+        description = " ".join(
+            str(row.get(field) or "")
+            for field in (
+                "friendly_name",
+                "vendor_or_customer",
+                "name",
+                "description",
+            )
+        )
+        key = _slug(categorize(description, str(raw or "")))
     return key or "uncategorized"
 
 
@@ -93,6 +118,26 @@ def _merchant(row: Mapping[str, Any]) -> str:
         or row.get("description")
         or "Unassigned"
     ).strip()[:120]
+
+
+def _is_transfer(row: Mapping[str, Any], category: str) -> bool:
+    """Identify internal money movement even when Plaid leaves it uncategorized."""
+    if category in _TRANSFER_CATEGORIES:
+        return True
+    text = " ".join(
+        str(row.get(key) or "")
+        for key in (
+            "friendly_name",
+            "vendor_or_customer",
+            "name",
+            "description",
+            "subcategory",
+            "bank_transaction_type",
+            "bank_reference",
+        )
+    )
+    normalized = " ".join(text.lower().replace(",", " ").split())
+    return any(marker in normalized for marker in _TRANSFER_TEXT_MARKERS)
 
 
 def _month_key(value: date) -> str:
@@ -132,7 +177,7 @@ def _canonical_transactions(
             occurred is None
             or occurred > as_of
             or amount <= 0
-            or category in _TRANSFER_CATEGORIES
+            or _is_transfer(row, category)
         ):
             continue
         row["_budget_date"] = occurred

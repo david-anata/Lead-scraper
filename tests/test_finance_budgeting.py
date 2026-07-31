@@ -50,6 +50,51 @@ def test_budget_uses_one_canonical_source_and_does_not_double_count() -> None:
     assert software["potential_saving_cents"] == 1_500
 
 
+def test_budget_excludes_uncategorized_internal_share_transfers() -> None:
+    rows = [
+        _row(
+            "transfer-1",
+            "plaid",
+            "2026-07-10",
+            25_000_000,
+            category="uncategorized",
+            merchant="Withdrawal Trans, To Share 58",
+        ),
+        _row(
+            "fee-1",
+            "plaid",
+            "2026-07-11",
+            800,
+            category="fees",
+            merchant="Service fee",
+        ),
+    ]
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 30))
+
+    assert [item["key"] for item in view["categories"]] == ["fees"]
+    assert view["totals"]["current_cents"] == 800
+
+
+def test_budget_recategorizes_existing_uncategorized_plaid_rows() -> None:
+    rows = [
+        _row(
+            f"openai-{month}",
+            "plaid",
+            f"2026-{month}-10",
+            20_000,
+            category="uncategorized",
+            merchant="OPENAI ChatGPT",
+        )
+        for month in ("04", "05", "06", "07")
+    ]
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+
+    assert [item["key"] for item in view["categories"]] == ["software"]
+    assert view["categories"][0]["potential_saving_cents"] == 3_000
+
+
 def test_protected_costs_are_not_given_a_cut_target() -> None:
     rows = [
         _row(f"rent-{month}", "plaid", f"2026-{month}-01", 200_000, category="rent")
