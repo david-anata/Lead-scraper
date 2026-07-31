@@ -76,6 +76,39 @@ def test_budget_excludes_uncategorized_internal_share_transfers() -> None:
     assert view["totals"]["current_cents"] == 800
 
 
+def test_budget_excludes_credit_card_payments_and_named_internal_withdrawals() -> None:
+    rows = [
+        _row(
+            "chase-1",
+            "plaid",
+            "2026-07-10",
+            2_000_00,
+            category="uncategorized",
+            merchant="Payment to Chase",
+        ),
+        _row(
+            "internal-1",
+            "plaid",
+            "2026-07-11",
+            4_000_00,
+            category="other",
+            merchant="Home banking Withdrawal - Anata LLC",
+        ),
+        _row(
+            "software-1",
+            "plaid",
+            "2026-07-12",
+            2_000,
+            category="software",
+            merchant="Anthropic",
+        ),
+    ]
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+
+    assert [item["key"] for item in view["categories"]] == ["software"]
+
+
 def test_budget_recategorizes_existing_uncategorized_plaid_rows() -> None:
     rows = [
         _row(

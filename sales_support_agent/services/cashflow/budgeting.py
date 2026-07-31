@@ -36,8 +36,10 @@ _TRANSFER_CATEGORIES = {
 }
 _TRANSFER_TEXT_MARKERS = (
     "account transfer",
+    "home banking withdrawal anata llc",
     "internal transfer",
     "online transfer",
+    "payment to chase",
     "transfer between",
     "transfer from share",
     "transfer to share",
@@ -138,7 +140,9 @@ def _is_transfer(row: Mapping[str, Any], category: str) -> bool:
             "bank_reference",
         )
     )
-    normalized = " ".join(text.lower().replace(",", " ").split())
+    normalized = " ".join(
+        "".join(char if char.isalnum() else " " for char in text.lower()).split()
+    )
     return any(marker in normalized for marker in _TRANSFER_TEXT_MARKERS)
 
 
