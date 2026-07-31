@@ -18,6 +18,9 @@ from sales_support_agent.services.sales.operator_dashboard import (
     get_operator_snapshot,
     run_writeback,
 )
+from sales_support_agent.services.sales.public_tool_alerts import (
+    send_public_tool_failure_alerts,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -82,6 +85,11 @@ class SalesOperatorReviewJob:
                     session_factory=self.session_factory,
                     force_refresh=True,
                 )
+                public_tool_alerts = (
+                    {"sent": False, "skipped": True, "reason": "dry run"}
+                    if dry_run
+                    else send_public_tool_failure_alerts(session, self.settings)
+                )
                 next_action = ""
                 recent_deals = list(snapshot.get("recentDeals") or [])
                 if recent_deals:
@@ -92,6 +100,7 @@ class SalesOperatorReviewJob:
                     "status": "completed",
                     "hubspot_sync": hubspot_sync_summary,
                     "mailbox_sync": mailbox_sync_summary,
+                    "public_tool_alerts": public_tool_alerts,
                     "writeback": dict(writeback.get("summary") or {}),
                     "next_action": next_action,
                     "candidate_deals": int((writeback.get("summary") or {}).get("candidateDeals") or 0),
