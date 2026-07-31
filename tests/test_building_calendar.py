@@ -53,6 +53,9 @@ class FakeCalendarClient:
     def delete_event(self, provider_event_id: str) -> None:
         self.deletes.append(provider_event_id)
 
+    def find_conflicts(self, **_kwargs) -> list[dict]:
+        return []
+
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
 class BuildingCalendarTests(unittest.TestCase):
@@ -375,6 +378,40 @@ class BuildingCalendarTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 409, response.text)
         upsert.assert_not_called()
+
+    def test_08_calendar_authority_filters_transparent_and_own_events(self) -> None:
+        from sales_support_agent.integrations.building_google_calendar import (
+            BuildingGoogleCalendarClient,
+        )
+
+        response = mock.Mock()
+        response.json.return_value = {
+            "items": [
+                {"id": "busy", "summary": "Existing event", "start": {}, "end": {}},
+                {"id": "free", "transparency": "transparent"},
+                {
+                    "id": "own",
+                    "extendedProperties": {
+                        "private": {"anataReservationId": "calendar-event"}
+                    },
+                },
+                {"id": "gone", "status": "cancelled"},
+            ]
+        }
+        response.raise_for_status.return_value = None
+        session = mock.Mock()
+        session.get.return_value = response
+        client = BuildingGoogleCalendarClient(
+            calendar_id="anata events@example.com", service_account_json="{}"
+        )
+        client._session = session
+        conflicts = client.find_conflicts(
+            starts_at=self.start,
+            ends_at=self.start + timedelta(hours=3),
+            exclude_reservation_id="calendar-event",
+        )
+        self.assertEqual([item["id"] for item in conflicts], ["busy"])
+        self.assertIn("anata%20events%40example.com", session.get.call_args.args[0])
 
 
 if __name__ == "__main__":

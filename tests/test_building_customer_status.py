@@ -80,6 +80,8 @@ class BuildingCustomerStatusTests(unittest.TestCase):
                     contact_id="status-contact",
                     starts_at=start,
                     ends_at=start + timedelta(hours=8),
+                    guest_starts_at=start + timedelta(hours=2),
+                    guest_ends_at=start + timedelta(hours=6),
                     hold_expires_at=datetime.now(timezone.utc) + timedelta(days=2),
                     attendance=80,
                     agreement_status="draft",
@@ -156,6 +158,14 @@ class BuildingCustomerStatusTests(unittest.TestCase):
         self.assertEqual(booking["agreement"]["preparation_status"], "reviewed")
         self.assertEqual(booking["payment"]["request_status"], "prepared")
         self.assertEqual(booking["operations"]["calendar_projection"], "pending")
+        self.assertEqual(
+            booking["event_window"]["starts_at"],
+            (
+                datetime.fromisoformat(booking["access_window"]["starts_at"])
+                + timedelta(hours=2)
+            ).isoformat(),
+        )
+        self.assertIsNotNone(booking["hold_expires_at"])
         serialized = status.text
         self.assertNotIn("private-operator@example.com", serialized)
         self.assertNotIn("private_note", serialized)

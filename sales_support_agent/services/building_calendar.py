@@ -50,8 +50,8 @@ def projection_payload(
             f"Kind: {reservation.kind.title()}\n"
             f"Attendance: {reservation.attendance}\n"
             f"Owner: {reservation.assigned_owner or 'Unassigned'}\n\n"
-            "Agent is the booking source of truth. Calendar edits do not change "
-            "the reservation."
+            "The Anata Events calendar is authoritative for date occupancy. "
+            "Agent is authoritative for customer, quote, agreement, and payment evidence."
         ),
         "location": f"{space.name}{f', {space.floor}' if space.floor else ''}",
         "start": {

@@ -760,10 +760,13 @@ def render_building_page(
                   if item.get("kind") == "event"
                   else f'''<label>Amount<input name="amount" inputmode="decimal" required value="{int((item.get("proposal") or {}).get("amount_cents") or 0) / 100:.2f}"></label>'''
                 )}
-                <label>Approved rate plan<select name="rate_plan_id"><option value="">No rate plan snapshot</option>{''.join(
-                  f'<option value="{_esc(plan.get("id"))}"{" selected" if plan.get("id") == (item.get("proposal") or {}).get("rate_plan_id") else ""}>{_esc(plan.get("name"))} · v{_esc(plan.get("version"))}</option>'
+                <label>Approved rate plan<select name="rate_plan_id"><option value="">No rate plan snapshot</option>{(
+                  f'<option value="{_esc((item.get("proposal") or {}).get("rate_plan_id"))}" selected>{_esc(((item.get("proposal") or {}).get("rate_plan_snapshot") or {}).get("name") or "Current approved rate plan")} · v{_esc(((item.get("proposal") or {}).get("rate_plan_snapshot") or {}).get("version") or "saved")}</option>'
+                  if (item.get("proposal") or {}).get("rate_plan_id") else ""
+                )}{''.join(
+                  f'<option value="{_esc(plan.get("id"))}">{_esc(plan.get("name"))} · v{_esc(plan.get("version"))}</option>'
                   for plan in rate_plans
-                  if plan.get("offering_id") == item.get("offering_id") and plan.get("status") == "approved"
+                  if plan.get("offering_id") == item.get("offering_id") and plan.get("status") == "approved" and plan.get("id") != (item.get("proposal") or {}).get("rate_plan_id")
                 )}</select></label>
                 <label>Line item<input name="line_item" value="{_esc((item.get("proposal") or {}).get("line_item"))}" placeholder="Office rent or event package"></label>
                 <label>Valid until<input type="date" name="valid_until" value="{_esc((item.get("proposal") or {}).get("valid_until"))}"></label>
