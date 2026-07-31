@@ -302,6 +302,17 @@ class MarketingIntakeTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 401)
 
+    def test_oversized_body_is_rejected_before_identity_work(self) -> None:
+        with mock.patch.object(M, "_asin_identity") as identity:
+            resp = self.client.post(
+                "/api/public/marketing/intake",
+                content=b'{"identifier":"' + (b"A" * 16_384) + b'","kind":"asin"}',
+                headers={**HEADERS, "Content-Type": "application/json"},
+            )
+        self.assertEqual(resp.status_code, 413, resp.text)
+        self.assertEqual(resp.json()["detail"], "Request body is too large.")
+        identity.assert_not_called()
+
     def test_create_returns_identity_and_token(self) -> None:
         data = self._create()
         self.assertIn("intake_id", data)

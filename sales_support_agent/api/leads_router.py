@@ -15,7 +15,10 @@ from sales_support_agent.integrations.hubspot import HubSpotClient
 from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.services.audit import AuditService
-from sales_support_agent.services.public_request_guard import durable_rate_limit_response
+from sales_support_agent.services.public_request_guard import (
+    durable_rate_limit_response,
+    read_public_json_object,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -144,12 +147,10 @@ async def contact_lead(
     limited = durable_rate_limit_response(request, scope="lead:contact", limit=10)
     if limited is not None:
         return limited
-    try:
-        raw = await request.json()
-    except Exception:
-        return JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
-    if not isinstance(raw, dict):
-        return JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
+    raw, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert raw is not None
 
     payload = {
         "kind": _text(raw.get("kind"), 20),

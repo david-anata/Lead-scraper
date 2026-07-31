@@ -119,6 +119,18 @@ class FulfillmentPublicFunnelTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 401)
 
+    def test_taste_rejects_oversized_body_before_generation(self) -> None:
+        with mock.patch.object(P, "generate_rate_sheet") as generate:
+            resp = self.client.post(
+                "/api/public/fulfillment/rate-sheet/taste",
+                content=b'{"url":"https://tabco.example","padding":"'
+                + (b"A" * 16_384)
+                + b'"}',
+                headers={**_HEADERS, "Content-Type": "application/json"},
+            )
+        self.assertEqual(resp.status_code, 413, resp.text)
+        generate.assert_not_called()
+
     # ------------------------------------------------------------------
     # Taste teaser
     # ------------------------------------------------------------------

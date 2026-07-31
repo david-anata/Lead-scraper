@@ -43,7 +43,10 @@ from sales_support_agent.services.fulfillment_deck.service import (
     generate_rate_sheet,
     rerender_rate_sheet,
 )
-from sales_support_agent.services.public_request_guard import durable_rate_limit_response
+from sales_support_agent.services.public_request_guard import (
+    durable_rate_limit_response,
+    read_public_json_object,
+)
 from sales_support_agent.services.public_url_guard import public_http_url
 
 logger = logging.getLogger(__name__)
@@ -79,13 +82,7 @@ def _enforce_intake_key(request: Request, provided: Optional[str]) -> Optional[J
 
 
 async def _json_body(request: Request) -> tuple[Optional[dict], Optional[JSONResponse]]:
-    try:
-        body: Any = await request.json()
-    except Exception:  # noqa: BLE001
-        return None, JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
-    if not isinstance(body, dict):
-        return None, JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
-    return body, None
+    return await read_public_json_object(request)
 
 
 def _is_bot(body: dict) -> bool:

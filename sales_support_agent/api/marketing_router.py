@@ -36,6 +36,7 @@ from sales_support_agent.services.public_request_guard import (
     RATE_LIMIT_RUN_TYPE_PREFIX,
     durable_rate_limit_response,
     durable_rate_limited,
+    read_public_json_object,
 )
 
 
@@ -641,12 +642,10 @@ async def marketing_analysis_intake(
     if limited is not None:
         return limited
 
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
-    if not isinstance(body, dict):
-        return JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     asin = str(body.get("asin", "") or "").strip()
     email = str(body.get("email", "") or "").strip()
@@ -706,12 +705,10 @@ async def advertising_audit_intake(
     limited = durable_rate_limit_response(request, scope="advertising:create", limit=30)
     if limited is not None:
         return limited
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
-    if not isinstance(body, dict):
-        return JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     asin = _normalize_amazon_asin(body.get("product"))
     email = str(body.get("email", "") or "").strip().lower()
@@ -1570,12 +1567,10 @@ async def marketing_site_intake_create(
     if limited is not None:
         return limited
 
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
-    if not isinstance(body, dict):
-        return JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     identifier = str(body.get("identifier", "") or "").strip()
     kind = str(body.get("kind", "") or "").strip()
@@ -1775,12 +1770,10 @@ async def marketing_site_intake_needs(
     if limited is not None:
         return limited
 
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
-    if not isinstance(body, dict):
-        return JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     raw_needs = body.get("needs", [])
     if not isinstance(raw_needs, list):
@@ -1816,12 +1809,10 @@ async def marketing_site_intake_unlock(
     if limited is not None:
         return limited
 
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
-    if not isinstance(body, dict):
-        return JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     email = str(body.get("email", "") or "").strip()
     if not email or not _EMAIL_RE.match(email):
@@ -2001,18 +1992,10 @@ async def marketing_site_direct_booking(
     limited = durable_rate_limit_response(request, scope="booking:create", limit=30)
     if limited is not None:
         return limited
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Request body must be valid JSON."},
-        )
-    if not isinstance(body, dict):
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Request body must be a JSON object."},
-        )
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     email = str(body.get("email", "") or "").strip().lower()[:254]
     tool = str(body.get("tool", "") or "").strip().lower()[:24]
@@ -2131,18 +2114,10 @@ async def marketing_site_intake_booked(
     limited = durable_rate_limit_response(request, scope="booking:tokenized", limit=30)
     if limited is not None:
         return limited
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Request body must be valid JSON."},
-        )
-    if not isinstance(body, dict):
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Request body must be a JSON object."},
-        )
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     with session_scope(request.app.state.session_factory) as session:
         run, error = _load_site_intake(
