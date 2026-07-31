@@ -554,6 +554,11 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         self.assertIn("No native invoices yet.", body)
         self.assertIn("Collection work", body)
         self.assertIn("No collection cases.", body)
+        self.assertIn(
+            "The dedicated Anata Events calendar is authoritative for date occupancy.",
+            body,
+        )
+        self.assertNotIn("Agent remains authoritative.", body)
         self.assertEqual(body.count('id="agent-main-content"'), 1)
         self.assertIn(
             'id="agent-main-content" class="shell app-container app-page" tabindex="-1"',

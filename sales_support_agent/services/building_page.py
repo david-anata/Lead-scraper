@@ -1956,7 +1956,7 @@ def render_building_page(
       <section class="panel panel--wide building-view view-sales view-operations" id="building-tours"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-operations">
         <div class="panel-head">
-          <div><h2>Calendar projection</h2><p>Agent remains authoritative. This control previews the dedicated calendar queue in dry-run mode; it never changes Google Calendar.</p></div>
+          <div><h2>Calendar projection</h2><p>The dedicated Anata Events calendar is authoritative for date occupancy. This control only previews Agent's pending calendar work; it does not change Google Calendar.</p></div>
           <form class="inline-send" method="post" action="/admin/building/calendar/sync">
             <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
             <input aria-label="Calendar preview confirmation" name="confirmation" required placeholder="PREVIEW CALENDAR">
