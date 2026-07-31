@@ -334,6 +334,16 @@ def _review_packet(view: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _qualitative_text(value: Any, fallback: str, *, limit: int = 500) -> str:
+    """Keep model prose qualitative; every displayed financial figure is deterministic."""
+    text = str(value or "").strip()
+    if not text or any(char.isdigit() for char in text) or any(
+        marker in text for marker in ("$", "%")
+    ):
+        return fallback
+    return text[:limit]
+
+
 def run_budget_review(settings: Any, *, force: bool = False) -> dict[str, Any]:
     """Run a high-level LLM review over deterministic category evidence."""
     view = load_budget_view()
@@ -377,17 +387,33 @@ def run_budget_review(settings: Any, *, force: bool = False) -> dict[str, Any]:
         evidence = valid_keys.get(key)
         if not evidence:
             continue
-        text_fields = {
-            name: str(raw.get(name) or "").strip()[:500]
-            for name in ("headline", "reason", "next_action", "confidence")
-        }
-        if not all(text_fields.values()):
-            continue
+        label = key.replace("_", " ").title()
+        merchant_names = [
+            str(item.get("name") or "").strip()
+            for item in evidence.get("top_merchants") or []
+            if str(item.get("name") or "").strip()
+        ]
+        merchant_note = ", ".join(merchant_names[:3]) or f"current {label.lower()} vendors"
+        confidence = str(raw.get("confidence") or "").strip().lower()
+        if confidence not in {"high", "medium", "low"}:
+            confidence = "medium"
         recommendations.append(
             {
-                **text_fields,
+                "headline": _qualitative_text(
+                    raw.get("headline"), f"Review {label.lower()} commitments"
+                ),
+                "reason": (
+                    f"Projected {label.lower()} spending is "
+                    f"{_money(evidence['deterministic_potential_saving_cents'], exact=True)} "
+                    f"above the monthly target. The largest posted names are {merchant_note}."
+                ),
+                "next_action": _qualitative_text(
+                    raw.get("next_action"),
+                    f"Confirm which {label.lower()} costs are still necessary and remove or renegotiate avoidable commitments.",
+                ),
+                "confidence": confidence,
                 "category_key": key,
-                "category_label": key.replace("_", " ").title(),
+                "category_label": label,
                 "potential_saving_cents": evidence[
                     "deterministic_potential_saving_cents"
                 ],
@@ -396,13 +422,23 @@ def run_budget_review(settings: Any, *, force: bool = False) -> dict[str, Any]:
                 "top_merchants": evidence["top_merchants"],
             }
         )
+    total_saving = sum(
+        int(item.get("potential_saving_cents") or 0) for item in recommendations
+    )
+    category_labels = ", ".join(
+        str(item.get("category_label") or "") for item in recommendations
+    )
     stored = {
         "status": "ready",
         "packet_hash": packet_hash,
         "calculation_id": view["calculation_id"],
         "created_at": datetime.utcnow().isoformat(),
         "model": model,
-        "summary": str(result.get("summary") or "Review the savings priorities below.")[:600],
+        "summary": (
+            f"The evidence shows {_money(total_saving, exact=True)} in current controllable "
+            f"spending above target across {category_labels or 'the reviewed categories'}. "
+            "Start with the priorities below."
+        ),
         "recommendations": recommendations,
         "cached": False,
     }
@@ -455,7 +491,9 @@ def _call_anthropic(
                 "trends. Prioritize practical cuts that improve end-of-month cash. "
                 "Never invent a dollar amount, merchant, category, contract, or cancellation. "
                 "Dollar savings are calculated outside the model. Do not recommend reducing "
-                "payroll, tax, debt, rent, insurance, or utilities. Return concise advice only."
+                "payroll, tax, debt, rent, insurance, or utilities. Do not include any numbers, "
+                "currency, percentages, or calculated comparisons in your prose. Return concise "
+                "qualitative advice only."
             ),
             messages=[
                 {

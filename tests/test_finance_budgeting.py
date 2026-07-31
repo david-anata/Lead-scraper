@@ -171,13 +171,13 @@ def test_llm_can_only_prioritize_deterministic_categories(monkeypatch) -> None:
         budgeting,
         "_call_anthropic",
         lambda *_args: {
-            "summary": "Cut unused software first.",
+            "summary": "Cut $999 of unused software first.",
             "recommendations": [
                 {
                     "category_key": "software",
-                    "headline": "Audit software seats",
-                    "reason": "Posted software spending is stable.",
-                    "next_action": "List owners and cancel unused seats.",
+                    "headline": "Audit 100 software seats",
+                    "reason": "Spending is $999 above target.",
+                    "next_action": "Cancel 20 unused seats.",
                     "confidence": "high",
                 },
                 {
@@ -193,6 +193,14 @@ def test_llm_can_only_prioritize_deterministic_categories(monkeypatch) -> None:
     result = budgeting.run_budget_review(SimpleNamespace(), force=True)
     assert len(result["recommendations"]) == 1
     assert result["recommendations"][0]["potential_saving_cents"] == 1_500
+    assert result["summary"].startswith(
+        "The evidence shows $15.00 in current controllable spending above target"
+    )
+    assert result["recommendations"][0]["headline"] == "Review software commitments"
+    assert "$999" not in result["recommendations"][0]["reason"]
+    assert result["recommendations"][0]["next_action"].startswith(
+        "Confirm which software costs"
+    )
     assert stored["calculation_id"] == view["calculation_id"]
 
 
