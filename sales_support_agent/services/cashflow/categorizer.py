@@ -95,7 +95,6 @@ _RAW_RULES: list[tuple[str, str]] = [
     (r"PRINTPERFECT", "software"),
     (r"WYZE", "software"),
     (r"CANVA", "software"),
-    (r"\bINTUIT\b", "software"),
 
     # ── Insurance ─────────────────────────────────────────────────────────
     (r"CINCINNATI INSUR|Cincinnati Insur", "insurance"),
@@ -127,6 +126,10 @@ _RAW_RULES: list[tuple[str, str]] = [
     (r"INTUIT.*TRAN FEE|INTU.*TRAN FEE|Intuit Service Charges", "fees"),
     (r"VISA INTERNATIONAL SERVICE", "fees"),
     (r"Overd|OVERDRAFT", "fees"),
+
+    # Generic Intuit charges that were not already identified as deposits,
+    # payroll, tax, or fees are treated as software.
+    (r"\bINTUIT\b", "software"),
 
     # ── Meals (rarely business — flag for review) ──────────────────────────
     (r"RESTAURANT|DINING|DOORDASH|UBER EATS|GRUBHUB", "meals"),
