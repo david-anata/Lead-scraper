@@ -65,6 +65,7 @@ from sales_support_agent.services.sales.followup_draft import (
     render_send_preview_page,
 )
 from sales_support_agent.services.sales.operator_dashboard import (
+    clear_operator_snapshot_cache,
     get_operator_snapshot,
     render_operator_page,
     run_writeback,
@@ -608,6 +609,38 @@ def sales_operator_writeback(
     except Exception as exc:  # noqa: BLE001 - surface the blocker in-page instead of 500ing
         logger.exception("Sales operator write-back failed")
         return HTMLResponse(_render_sales_operator_unavailable(request, str(exc)), status_code=503)
+
+
+@router.post("/website-notes/{lead_id}/retry")
+def retry_website_note(request: Request, lead_id: int) -> Response:
+    from sales_support_agent.api.leads_router import deliver_website_note
+    from sales_support_agent.models.database import session_scope
+    from sales_support_agent.models.entities import AutomationRun
+
+    settings = _sales_settings(request)
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.get(AutomationRun, lead_id)
+        if run is None or run.run_type != "website_contact_note":
+            return HTMLResponse(_render_sales_operator_unavailable(request, "Website note not found."), status_code=404)
+        metadata = dict(run.metadata_json or {})
+        payload = {
+            key: str(metadata.get(key) or "")
+            for key in ("kind", "name", "email", "company", "role", "message", "source")
+        }
+        previous = dict(run.summary_json or {})
+    delivery = deliver_website_note(
+        settings,
+        lead_id=lead_id,
+        payload=payload,
+        previous=previous,
+    )
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.get(AutomationRun, lead_id)
+        if run is not None:
+            run.summary_json = {**(run.summary_json or {}), "accepted": True, **delivery}
+            session.add(run)
+    clear_operator_snapshot_cache()
+    return RedirectResponse(url="/admin/sales", status_code=303)
 
 
 @router.get("/deals/create", response_class=HTMLResponse)

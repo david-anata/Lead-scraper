@@ -63,6 +63,12 @@ class PublicLeadTests(unittest.TestCase):
             self.assertEqual(run.metadata_json["source"], "anatainc.com")
             self.assertNotIn("ignored", run.metadata_json)
             self.assertTrue(run.summary_json["accepted"])
+            from sales_support_agent.services.sales.operator_dashboard import _build_website_notes
+
+            queue = _build_website_notes(session)
+            self.assertEqual(queue[0]["id"], response.json()["lead_id"])
+            self.assertEqual(queue[0]["message"], "Please call me about fulfillment.")
+            self.assertFalse(queue[0]["hubspot"])
 
     def test_rejects_invalid_fields(self) -> None:
         response = self.client.post(
@@ -71,6 +77,21 @@ class PublicLeadTests(unittest.TestCase):
             json={"kind": "careers", "name": "Pat", "email": "bad", "message": "Hi"},
         )
         self.assertEqual(response.status_code, 400)
+
+    @mock.patch("sales_support_agent.api.leads_router._notify", return_value=True)
+    @mock.patch("sales_support_agent.api.leads_router._record_hubspot", return_value=True)
+    def test_retry_only_runs_missing_handoffs(self, hubspot, notify) -> None:
+        from sales_support_agent.api.leads_router import deliver_website_note
+
+        result = deliver_website_note(
+            app.state.settings,
+            lead_id=42,
+            payload={"kind": "contact", "name": "Pat", "email": "pat@example.com", "message": "Hi", "source": "anatainc.com"},
+            previous={"hubspot": True, "notified": False},
+        )
+        self.assertEqual(result, {"hubspot": True, "notified": True})
+        hubspot.assert_not_called()
+        notify.assert_called_once()
 
 
 if __name__ == "__main__":

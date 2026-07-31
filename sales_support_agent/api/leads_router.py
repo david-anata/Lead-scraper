@@ -109,6 +109,30 @@ def _record_hubspot(settings, payload: dict[str, str]) -> bool:
     return True
 
 
+def deliver_website_note(
+    settings,
+    *,
+    lead_id: int,
+    payload: dict[str, str],
+    previous: Optional[dict[str, Any]] = None,
+) -> dict[str, bool]:
+    """Retry only missing handoffs; Resend also deduplicates by lead id."""
+    prior = previous or {}
+    hubspot = prior.get("hubspot") is True
+    notified = prior.get("notified") is True
+    if not hubspot:
+        try:
+            hubspot = _record_hubspot(settings, payload)
+        except Exception:
+            logger.exception("[website_note] unexpected HubSpot failure for %s", lead_id)
+    if not notified:
+        try:
+            notified = _notify(settings, lead_id=lead_id, payload=payload)
+        except Exception:
+            logger.exception("[website_note] notification failed for %s", lead_id)
+    return {"hubspot": hubspot, "notified": notified}
+
+
 @router.post("/contact")
 async def contact_lead(
     request: Request,
@@ -151,16 +175,11 @@ async def contact_lead(
         )
         lead_id = int(run.id)
 
-    hubspot = False
-    notified = False
-    try:
-        hubspot = _record_hubspot(request.app.state.settings, payload)
-    except Exception:
-        logger.exception("[website_note] unexpected HubSpot failure for %s", lead_id)
-    try:
-        notified = _notify(request.app.state.settings, lead_id=lead_id, payload=payload)
-    except Exception:
-        logger.exception("[website_note] notification failed for %s", lead_id)
+    delivery = deliver_website_note(
+        request.app.state.settings,
+        lead_id=lead_id,
+        payload=payload,
+    )
 
     with session_scope(request.app.state.session_factory) as session:
         from sales_support_agent.models.entities import AutomationRun
@@ -170,6 +189,6 @@ async def contact_lead(
             AuditService(session).finish_run(
                 run,
                 status="success",
-                summary={"accepted": True, "hubspot": hubspot, "notified": notified},
+                summary={"accepted": True, **delivery},
             )
     return JSONResponse(status_code=201, content={"ok": True, "lead_id": lead_id})

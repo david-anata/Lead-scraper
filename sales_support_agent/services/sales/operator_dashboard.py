@@ -277,6 +277,33 @@ def _build_schedule_runs(session) -> dict[str, dict[str, Any]]:
     return latest
 
 
+def _build_website_notes(session) -> list[dict[str, Any]]:
+    from sales_support_agent.models.entities import AutomationRun
+
+    runs = session.scalars(
+        select(AutomationRun)
+        .where(AutomationRun.run_type == "website_contact_note")
+        .order_by(AutomationRun.started_at.desc())
+        .limit(20)
+    ).all()
+    return [
+        {
+            "id": int(run.id),
+            "kind": str((run.metadata_json or {}).get("kind") or "contact"),
+            "name": str((run.metadata_json or {}).get("name") or "Unknown visitor"),
+            "email": str((run.metadata_json or {}).get("email") or ""),
+            "company": str((run.metadata_json or {}).get("company") or ""),
+            "role": str((run.metadata_json or {}).get("role") or ""),
+            "message": str((run.metadata_json or {}).get("message") or ""),
+            "source": str((run.metadata_json or {}).get("source") or "anatainc.com"),
+            "startedAt": _format_run_timestamp(run.started_at),
+            "hubspot": (run.summary_json or {}).get("hubspot") is True,
+            "notified": (run.summary_json or {}).get("notified") is True,
+        }
+        for run in runs
+    ]
+
+
 def _decorate_automation_schedules(schedule_runs: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for item in AUTOMATION_SCHEDULES:
@@ -1032,18 +1059,22 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
         "notesByDeal": {},
     }
     live_mailbox_by_deal: dict[str, dict[str, Any]] = {}
-    if session_factory is not None and all_deal_ids:
+    if session_factory is not None:
         with session_scope(session_factory) as session:
-            _sync_recent_hubspot_notes(session, client, all_deal_ids)
-            local_context = _load_local_deal_context(session, all_deal_ids)
+            if all_deal_ids:
+                _sync_recent_hubspot_notes(session, client, all_deal_ids)
+                local_context = _load_local_deal_context(session, all_deal_ids)
             schedule_runs = _build_schedule_runs(session)
-        live_mailbox_by_deal = _fetch_live_mailbox_state(
-            settings,
-            {deal_id: local_context["contactEmailsByDeal"].get(deal_id, []) for deal_id in recent_deal_ids},
-            max_deals=LIVE_MAILBOX_MAX_DEALS,
-        )
+            website_notes = _build_website_notes(session)
+        if all_deal_ids:
+            live_mailbox_by_deal = _fetch_live_mailbox_state(
+                settings,
+                {deal_id: local_context["contactEmailsByDeal"].get(deal_id, []) for deal_id in recent_deal_ids},
+                max_deals=LIVE_MAILBOX_MAX_DEALS,
+            )
     else:
         schedule_runs = {}
+        website_notes = []
 
     company_ids = set()
     contact_ids = set()
@@ -1299,6 +1330,7 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
         "objectDefinitions": OBJECT_DEFINITIONS,
         "autonomy": AUTONOMY_POLICY,
         "automationSchedules": _decorate_automation_schedules(schedule_runs),
+        "websiteNotes": website_notes,
         "stageDrift": {
             "targetOnly": [label for label in TARGET_STAGE_LABELS if _normalize(label) not in normalized_live],
             "liveOnly": [label for label in live_labels if _normalize(label) not in normalized_target],
@@ -1316,6 +1348,12 @@ def get_operator_snapshot(settings: Settings, *, session_factory: Any | None = N
     _cached_snapshot = snapshot
     _cached_snapshot_expires_at = time.time() + SNAPSHOT_TTL_SECONDS
     return snapshot
+
+
+def clear_operator_snapshot_cache() -> None:
+    global _cached_snapshot, _cached_snapshot_expires_at
+    _cached_snapshot = None
+    _cached_snapshot_expires_at = 0.0
 
 
 def invalidate_operator_snapshot() -> None:
@@ -1787,6 +1825,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
     queues = snapshot.get("operatorQueues", {}) or {}
     next_best_action = _render_next_best_action(summary, queues)
     automation_schedules = list(snapshot.get("automationSchedules") or [])
+    website_notes = list(snapshot.get("websiteNotes") or [])
     stage_cards = "".join(
         f"""
         <article class="panel">
@@ -1829,6 +1868,19 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
         ]
     )
     schedule_cards = "".join(_render_schedule_panel(item) for item in automation_schedules)
+    website_note_cards = "".join(
+        f"""
+        <article class="panel">
+          <p class="eyebrow">{_esc(str(note.get("kind") or "contact").title())}</p>
+          <h3>{_esc(note.get("name") or "Unknown visitor")}</h3>
+          <p class="muted">{_esc(note.get("email") or "No email")}{(" · " + _esc(note.get("company"))) if note.get("company") else ""}</p>
+          <p>{_esc(note.get("message") or "No message")}</p>
+          <p class="muted">HubSpot: {"recorded" if note.get("hubspot") else "needs retry"} · Internal alert: {"sent" if note.get("notified") else "needs retry"} · {_esc(note.get("startedAt") or "")}</p>
+          {f'<form method="post" action="/admin/sales/website-notes/{int(note.get("id") or 0)}/retry"><button class="btn" type="submit">Retry missing handoffs</button></form>' if not note.get("hubspot") or not note.get("notified") else ""}
+        </article>
+        """
+        for note in website_notes
+    ) or "<p class='muted'>No website notes have been received.</p>"
     writeback_markup = ""
     if writeback:
         writeback_cards = "".join(
@@ -1969,6 +2021,11 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
         <h2>Scheduled automations</h2>
         <p class="muted">These are the clean scheduled jobs that should drive the operator layer instead of relying on manual refreshes.</p>
         <div class="grid">{schedule_cards}</div>
+      </section>
+      <section class="workspace section-gap">
+        <h2>Website notes</h2>
+        <p class="muted">Recent Contact, Partners, and Careers submissions are retained here even when an external handoff needs attention.</p>
+        <div class="grid">{website_note_cards}</div>
       </section>
       <details class="diagnostic section-gap">
         <summary>Pipeline diagnostics</summary>

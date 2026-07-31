@@ -7,6 +7,27 @@ from sales_support_agent.services.sales import operator_dashboard
 
 
 class SalesOperatorDashboardTests(unittest.TestCase):
+    def test_operator_page_surfaces_retryable_website_notes(self):
+        html = operator_dashboard.render_operator_page(
+            {
+                "websiteNotes": [{
+                    "id": 42,
+                    "kind": "partners",
+                    "name": "Pat Operator",
+                    "email": "pat@example.com",
+                    "message": "Interested in partnering.",
+                    "hubspot": False,
+                    "notified": True,
+                    "startedAt": "2026-07-31 20:00 UTC",
+                }],
+            }
+        )
+
+        self.assertIn("Website notes", html)
+        self.assertIn("Interested in partnering.", html)
+        self.assertIn("HubSpot: needs retry", html)
+        self.assertIn('/admin/sales/website-notes/42/retry', html)
+
     def test_infer_offer_prefers_amazon_when_agency_progress_exists(self):
         deal = {
             "id": "deal-1",
