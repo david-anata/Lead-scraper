@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -136,6 +137,20 @@ class PublicPayloadTests(unittest.TestCase):
             self.client.get("/api/public/fulfillment/rate-sheet/result/does-not-exist").status_code,
             401,
         )
+
+    def test_malformed_correlation_never_reaches_storage(self) -> None:
+        with mock.patch.object(storage, "get_run_by_public_correlation") as lookup:
+            status = self.client.get(
+                "/api/public/fulfillment/rate-sheet/status/too-short",
+                headers=HEADERS,
+            )
+            result = self.client.get(
+                "/api/public/fulfillment/rate-sheet/result/contains%20spaces-and-is-long-enough",
+                headers=HEADERS,
+            )
+        self.assertEqual(status.status_code, 400, status.text)
+        self.assertEqual(result.status_code, 400, result.text)
+        lookup.assert_not_called()
 
     def test_repeated_unlock_reuses_ready_correlation(self) -> None:
         summary = live_summary("repeat-correlation-abcdefghijk")

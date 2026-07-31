@@ -56,6 +56,7 @@ TASTE_MAX_PRODUCTS = 3
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _ATTRIBUTION_SOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9./:_-]{0,119}$", re.IGNORECASE)
+_CORRELATION_RE = re.compile(r"^[A-Za-z0-9_-]{20,80}$")
 
 
 def _sanitize_source(raw: Any) -> str:
@@ -442,6 +443,8 @@ async def rate_sheet_status(
     denied = _enforce_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    if not _CORRELATION_RE.fullmatch(correlation_id):
+        return JSONResponse(status_code=400, content={"detail": "Invalid status identifier."})
     limited = durable_rate_limit_response(request, scope="fulfillment:status", limit=240)
     if limited is not None:
         return limited
@@ -472,6 +475,8 @@ async def rate_sheet_result(
     denied = _enforce_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    if not _CORRELATION_RE.fullmatch(correlation_id):
+        return JSONResponse(status_code=400, content={"detail": "Invalid result identifier."})
     limited = durable_rate_limit_response(request, scope="fulfillment:result", limit=240)
     if limited is not None:
         return limited
