@@ -147,6 +147,7 @@ def test_excluded_history_does_not_promise_an_empty_review_queue() -> None:
     assert "Calculated with exclusions" in page
     assert "No daily review cases" in page
     assert ">Open Review<" not in page
+    assert "Excluded records remain in source history" in page
 
 
 def test_calculation_page_explains_sources_and_rules_without_actions() -> None:

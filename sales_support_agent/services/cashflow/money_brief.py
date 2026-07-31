@@ -449,7 +449,7 @@ def render_money_brief_page(
 
       <footer class="money-proof-note">
         <strong>What was left out</strong>
-        <p>{html.escape(brief.excluded_summary)} Excluded records remain available in Review and are never silently counted as verified cash.</p>
+        <p>{html.escape(brief.excluded_summary)} Excluded records remain in source history and are never silently counted as verified cash.</p>
       </footer>
     </div>"""
     return _page_shell("Your money brief", "today", body, flash=flash)
