@@ -44,6 +44,44 @@ def repair_deterministic_article_defects(
         repaired["description"] = (description.rstrip(".") + "." + suffix)[:155].strip()
         repairs.append("expanded the meta description to at least 50 characters")
 
+    content = repaired.get("content")
+    sources = repaired.get("sources")
+    if isinstance(content, dict) and isinstance(sources, list):
+        sections = content.get("sections")
+        related = content.get("related")
+        valid_sources = [
+            {"title": str(item.get("title", "")).strip(), "href": str(item.get("url", "")).strip()}
+            for item in sources
+            if isinstance(item, Mapping)
+            and str(item.get("title", "")).strip()
+            and urlparse(str(item.get("url", "")).strip()).scheme == "https"
+        ]
+        valid_related = [
+            {"title": str(item.get("title", "")).strip(), "href": str(item.get("href", "")).strip()}
+            for item in (related if isinstance(related, list) else [])
+            if isinstance(item, Mapping)
+            and str(item.get("title", "")).strip()
+            and str(item.get("href", "")).startswith("/")
+            and not str(item.get("href", "")).startswith("//")
+        ]
+        if isinstance(sections, list) and len(sections) >= 2:
+            repaired_citations = False
+            repaired_internal_links = False
+            for index in range(2):
+                section = sections[index]
+                if not isinstance(section, dict):
+                    continue
+                if not section.get("citations") and index < len(valid_sources):
+                    section["citations"] = [valid_sources[index]]
+                    repaired_citations = True
+                if not section.get("internalLinks") and index < len(valid_related):
+                    section["internalLinks"] = [valid_related[index]]
+                    repaired_internal_links = True
+            if repaired_citations:
+                repairs.append("added contextual citations from the existing source manifest")
+            if repaired_internal_links:
+                repairs.append("added contextual links from the existing related-page manifest")
+
     return repaired, repairs
 
 
