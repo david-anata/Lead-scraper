@@ -109,6 +109,13 @@ class BuildingAdminOperationsTests(unittest.TestCase):
         if contact.status_code != 200:
             raise AssertionError(contact.text)
 
+    def test_00_billing_page_describes_quickbooks_review_flow(self) -> None:
+        page = self.client.get("/admin/building/billing")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("QuickBooks customer record", page.text)
+        self.assertIn("unsent QuickBooks invoice for staff review", page.text)
+        self.assertNotIn("create Stripe invoices", page.text)
+
     def _post(self, path: str, data: dict) -> object:
         response = self.client.post(
             path,
