@@ -46,7 +46,10 @@ def durable_rate_limited(
 
     now = datetime.now(timezone.utc)
     bucket = int(now.timestamp()) // window_seconds
-    material = f"{scope}|{_client_key(request)}|{bucket}"
+    # Keep one durable row per scope and anonymized client. The active window
+    # belongs in metadata so normal traffic does not create a permanent audit
+    # row every ten minutes forever.
+    material = f"{scope}|{_client_key(request)}"
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
     run_type = f"{RATE_LIMIT_RUN_TYPE_PREFIX}{digest[:40]}"
 
@@ -82,8 +85,16 @@ def durable_rate_limited(
             return False
 
         metadata = dict(row.metadata_json or {})
-        count = int(metadata.get("count", 0) or 0) + 1
-        row.metadata_json = {**metadata, "count": count}
+        if int(metadata.get("bucket", -1) or -1) != bucket:
+            count = 1
+        else:
+            count = int(metadata.get("count", 0) or 0) + 1
+        row.metadata_json = {
+            **metadata,
+            "bucket": bucket,
+            "count": count,
+            "window_seconds": window_seconds,
+        }
         session.add(row)
         return count > limit
 

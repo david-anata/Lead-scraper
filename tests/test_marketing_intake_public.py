@@ -176,6 +176,49 @@ class MarketingIntakeTests(unittest.TestCase):
         self.assertEqual(len(matching), 2)
         self.assertNotIn("a" * 64, str([row.metadata_json for row in matching]))
 
+    def test_rate_limit_reuses_one_row_across_windows(self) -> None:
+        request = self._rate_limit_request("c" * 64)
+        scope = f"test:{self.id()}"
+        self.assertFalse(M.durable_rate_limited(request, scope=scope, limit=2))
+
+        with M.session_scope(app.state.session_factory) as session:
+            row = session.execute(
+                M.select(M.AutomationRun).where(
+                    M.AutomationRun.run_type.like(
+                        f"{M.RATE_LIMIT_RUN_TYPE_PREFIX}%"
+                    )
+                )
+            ).scalars().all()
+            matching = [
+                item
+                for item in row
+                if (item.metadata_json or {}).get("scope") == scope
+            ]
+            self.assertEqual(len(matching), 1)
+            metadata = dict(matching[0].metadata_json or {})
+            matching[0].metadata_json = {
+                **metadata,
+                "bucket": int(metadata["bucket"]) - 1,
+                "count": 999,
+            }
+            session.add(matching[0])
+
+        self.assertFalse(M.durable_rate_limited(request, scope=scope, limit=2))
+        with M.session_scope(app.state.session_factory) as session:
+            matching = [
+                item
+                for item in session.execute(
+                    M.select(M.AutomationRun).where(
+                        M.AutomationRun.run_type.like(
+                            f"{M.RATE_LIMIT_RUN_TYPE_PREFIX}%"
+                        )
+                    )
+                ).scalars().all()
+                if (item.metadata_json or {}).get("scope") == scope
+            ]
+            self.assertEqual(len(matching), 1)
+            self.assertEqual((matching[0].metadata_json or {}).get("count"), 1)
+
     def test_analysis_status_lookup_has_fixed_query_count(self) -> None:
         email = "indexed-status@example.com"
         asin = "B0INDEXED01"
