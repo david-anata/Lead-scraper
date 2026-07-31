@@ -187,6 +187,13 @@ def test_llm_can_only_prioritize_deterministic_categories(monkeypatch) -> None:
                     "next_action": "Invented",
                     "confidence": "high",
                 },
+                {
+                    "category_key": "software",
+                    "headline": "Duplicate software advice",
+                    "reason": "Duplicate software advice",
+                    "next_action": "Duplicate software advice",
+                    "confidence": "medium",
+                },
             ],
         },
     )

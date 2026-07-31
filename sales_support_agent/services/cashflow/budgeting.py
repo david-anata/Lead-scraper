@@ -380,13 +380,15 @@ def run_budget_review(settings: Any, *, force: bool = False) -> dict[str, Any]:
     result = _call_anthropic(api_key, model, packet)
     valid_keys = {item["key"]: item for item in packet["categories"]}
     recommendations: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
     for raw in list(result.get("recommendations") or [])[:6]:
         if not isinstance(raw, Mapping):
             continue
         key = str(raw.get("category_key") or "")
         evidence = valid_keys.get(key)
-        if not evidence:
+        if not evidence or key in seen_keys:
             continue
+        seen_keys.add(key)
         label = key.replace("_", " ").title()
         merchant_names = [
             str(item.get("name") or "").strip()
