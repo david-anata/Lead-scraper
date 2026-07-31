@@ -1201,6 +1201,10 @@ class HRSectionTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn('class="hr-mobile-nav"', page.text)
         self.assertIn(
+            "padding:22px 16px calc(104px + env(safe-area-inset-bottom))",
+            page.text,
+        )
+        self.assertIn(
             '<a href="/admin/hr/time" aria-current="page">Time</a>', page.text
         )
         self.assertIn('href="/admin/hr/pay-statements"', page.text)

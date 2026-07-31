@@ -122,7 +122,10 @@ _HR_STYLES = """
   .hr-mobile-nav { display:none; }
   @media (max-width: 768px) {
     body { padding-bottom:76px; }
-    .hr-main { padding:22px 16px 36px; overflow-x:hidden; }
+    .hr-main {
+      padding:22px 16px calc(104px + env(safe-area-inset-bottom));
+      overflow-x:hidden;
+    }
     .hr-h1 { font-size:23px; line-height:1.2; }
     .hr-sub { line-height:1.5; }
     .hr-row-head { align-items:stretch; flex-direction:column; gap:14px; }
