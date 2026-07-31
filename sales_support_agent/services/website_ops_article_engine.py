@@ -582,7 +582,25 @@ at least two sections. Add useful internal links contextually in at least two
 sections, using only approved Anata routes. Also include the related-resource
 block. Do not pad the article to reach the word count.
 """
-    article = dict((requester or _request_article)(settings=settings, prompt=prompt))
+    article_requester = requester or _request_article
+    article: dict[str, Any] | None = None
+    last_json_error: json.JSONDecodeError | None = None
+    for attempt in range(3):
+        retry_prompt = prompt
+        if attempt:
+            retry_prompt += (
+                "\nYour previous response was malformed JSON. Regenerate the complete article "
+                "from scratch and return one valid JSON object only. Check every quote, comma, "
+                "array, and closing brace before responding."
+            )
+        try:
+            article = dict(article_requester(settings=settings, prompt=retry_prompt))
+            break
+        except json.JSONDecodeError as exc:
+            last_json_error = exc
+    if article is None:
+        assert last_json_error is not None
+        raise last_json_error
     slug = _clean(article.get("slug"))
     content = dict(article.get("content") or {})
     article["primaryIntent"] = _clean(cluster.get("normalized_query"))
