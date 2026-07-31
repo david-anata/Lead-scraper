@@ -760,7 +760,15 @@ def render_building_page(
                 <label>{'Quote' if item.get("kind") == "event" else 'Proposal'} status<select name="status">{''.join(f'<option value="{state}"{" selected" if state == str((item.get("proposal") or {}).get("status") or "draft") else ""}>{state.title()}</option>' for state in ("draft", "approved", "sent", "accepted", "declined", "voided"))}</select></label>
                 <input type="hidden" name="proposal_type" value="{'quote' if item.get("kind") == "event" else 'proposal'}">
                 <label>Version<input type="number" name="version" min="1" value="{_esc((item.get("proposal") or {}).get("version") or 1)}"></label>
-                <label>Amount<input name="amount" inputmode="decimal" required value="{int((item.get("proposal") or {}).get("amount_cents") or 0) / 100:.2f}"></label>
+                {(
+                  f'''<label>Pre-tax event subtotal<input name="pricing_subtotal" inputmode="decimal" required value="{int(((item.get("proposal") or {}).get("pricing_adjustment") or {}).get("pricing_subtotal_cents") or (item.get("proposal") or {}).get("amount_cents") or 0) / 100:.2f}"></label>
+                  <label>Discount<input name="discount" inputmode="decimal" value="{int(((item.get("proposal") or {}).get("pricing_adjustment") or {}).get("discount_cents") or 0) / 100:.2f}"></label>
+                  <label>Discount reason<input name="discount_reason" value="{_esc(((item.get("proposal") or {}).get("pricing_adjustment") or {}).get("discount_reason"))}" placeholder="Required when a discount is used"></label>
+                  <input type="hidden" name="amount" value="0">
+                  <span class="sub">Agent calculates Lehi tax and the final total. Every discount is preserved in the quote audit.</span>'''
+                  if item.get("kind") == "event"
+                  else f'''<label>Amount<input name="amount" inputmode="decimal" required value="{int((item.get("proposal") or {}).get("amount_cents") or 0) / 100:.2f}"></label>'''
+                )}
                 <label>Approved rate plan<select name="rate_plan_id"><option value="">No rate plan snapshot</option>{''.join(
                   f'<option value="{_esc(plan.get("id"))}"{" selected" if plan.get("id") == (item.get("proposal") or {}).get("rate_plan_id") else ""}>{_esc(plan.get("name"))} · v{_esc(plan.get("version"))}</option>'
                   for plan in rate_plans

@@ -5204,6 +5204,13 @@ def building_control_room(
                             "currency": latest_proposals[item.id].currency,
                             "amount_cents": latest_proposals[item.id].amount_cents,
                             "rate_plan_id": latest_proposals[item.id].rate_plan_id,
+                            "pricing_adjustment": dict(
+                                (
+                                    latest_proposals[item.id].rate_plan_snapshot_json
+                                    or {}
+                                ).get("pricing_adjustment")
+                                or {}
+                            ),
                             "line_item": str(
                                 (
                                     list(latest_proposals[item.id].line_items_json or [{}])[0]

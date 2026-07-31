@@ -217,20 +217,27 @@ def build_arena_commercial_draft(
             {
                 "id": "tax-review",
                 "summary": (
-                    "Tax treatment and rate remain quote-review-required until "
-                    "accountant evidence is recorded."
+                    "Use the legally applicable combined Lehi sales-tax rate at "
+                    "the transaction date. The July 1, 2026 Lehi rate is 7.45%."
                 ),
-                "status": "accountant_review_required",
+                "status": "accountant_verified",
                 "blocks_rate_plan_approval": False,
                 "allowed_resolution_statuses": ["accountant_verified"],
                 "approval_resolution_statuses": ["accountant_verified"],
+                "evidence": (
+                    "Owner/accountant approval recorded 2026-07-30; Utah State "
+                    "Tax Commission 2026 Q3 rate chart, Lehi 25-066."
+                ),
             },
         ],
-        tax_status="review_required",
-        tax_rate_bps=0,
+        tax_status="taxable",
+        tax_rate_bps=745,
         tax_note=(
-            "Itemize tax separately only after accountant-confirmed taxable "
-            "categories and rate are recorded."
+            "Apply the legally applicable combined rate for 1657 N. State "
+            "Street, Lehi, Utah at the transaction date. The rate effective "
+            "2026-07-01 is 7.45%. Refundable security deposits are not taxable "
+            "unless retained or applied to taxable charges. Re-verify the "
+            "official Utah rate chart before a later effective period."
         ),
         effective_from=effective_from,
         created_by=actor,

@@ -196,6 +196,9 @@ class ProposalInput(BaseModel):
     proposal_type: Literal["proposal", "quote"] = "proposal"
     currency: str = Field(default="USD", min_length=3, max_length=3)
     amount_cents: int = Field(default=0, ge=0)
+    pricing_subtotal_cents: int | None = Field(default=None, ge=0)
+    discount_cents: int = Field(default=0, ge=0)
+    discount_reason: str = Field(default="", max_length=1000)
     line_items: list[dict[str, Any]] = Field(default_factory=list)
     rate_plan_id: str | None = Field(default=None, max_length=64)
     terms_summary: str = Field(default="", max_length=4000)
@@ -1984,8 +1987,6 @@ def record_proposal(
     x_internal_api_key: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     _require_internal_key(request, x_internal_api_key)
-    if payload.status in {"approved", "sent", "accepted"} and payload.amount_cents <= 0:
-        raise HTTPException(status_code=422, detail="Approved proposals require an amount.")
     if payload.status in {"sent", "accepted"} and not payload.document_url.strip():
         raise HTTPException(status_code=422, detail="Sent proposals require a document link.")
     if (
@@ -2006,6 +2007,13 @@ def record_proposal(
             raise HTTPException(
                 status_code=422,
                 detail=f"{reservation.kind.title()} reservations use {expected_type} records.",
+            )
+        if payload.proposal_type != "quote" and (
+            payload.pricing_subtotal_cents is not None or payload.discount_cents
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Audited event pricing adjustments apply only to event quotes.",
             )
         selected_rate_plan: BuildingRatePlan | None = None
         if payload.rate_plan_id:
@@ -2078,10 +2086,87 @@ def record_proposal(
                         status_code=409,
                         detail="Sent proposal content is immutable; create a new version.",
                     )
+        calculated_amount_cents = payload.amount_cents
+        calculated_line_items = payload.line_items
+        pricing_adjustment: dict[str, Any] = {}
+        if payload.proposal_type == "quote" and payload.pricing_subtotal_cents is not None:
+            if selected_rate_plan is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Adjusted event quotes require an approved effective rate plan.",
+                )
+            if selected_rate_plan.tax_status == "review_required":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Tax treatment must be approved before calculating an adjusted quote.",
+                )
+            if payload.discount_cents > payload.pricing_subtotal_cents:
+                raise HTTPException(
+                    status_code=422,
+                    detail="The discount cannot exceed the pre-tax subtotal.",
+                )
+            discount_reason = payload.discount_reason.strip()
+            if payload.discount_cents and not discount_reason:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A business reason is required for every discount.",
+                )
+            taxable_subtotal_cents = (
+                payload.pricing_subtotal_cents - payload.discount_cents
+            )
+            tax_cents = (
+                (taxable_subtotal_cents * selected_rate_plan.tax_rate_bps + 5000)
+                // 10000
+                if selected_rate_plan.tax_status == "taxable"
+                else 0
+            )
+            calculated_amount_cents = taxable_subtotal_cents + tax_cents
+            calculated_line_items = [
+                {
+                    "type": "pricing_subtotal",
+                    "description": "Event package before discount and tax",
+                    "amount_cents": payload.pricing_subtotal_cents,
+                }
+            ]
+            if payload.discount_cents:
+                calculated_line_items.append(
+                    {
+                        "type": "discount",
+                        "description": discount_reason,
+                        "amount_cents": -payload.discount_cents,
+                    }
+                )
+            if selected_rate_plan.tax_status == "taxable":
+                calculated_line_items.append(
+                    {
+                        "type": "tax",
+                        "description": (
+                            f"Lehi, Utah sales tax "
+                            f"({selected_rate_plan.tax_rate_bps / 100:.2f}%)"
+                        ),
+                        "amount_cents": tax_cents,
+                    }
+                )
+            pricing_adjustment = {
+                "pricing_subtotal_cents": payload.pricing_subtotal_cents,
+                "discount_cents": payload.discount_cents,
+                "discount_reason": discount_reason,
+                "tax_status": selected_rate_plan.tax_status,
+                "tax_rate_bps": selected_rate_plan.tax_rate_bps,
+                "tax_cents": tax_cents,
+                "final_amount_cents": calculated_amount_cents,
+            }
+        if (
+            payload.status in {"approved", "sent", "accepted"}
+            and calculated_amount_cents <= 0
+        ):
+            raise HTTPException(
+                status_code=422, detail="Approved proposals require an amount."
+            )
         if row.status not in {"sent", "accepted", "declined", "voided"}:
             row.currency = payload.currency.upper()
-            row.amount_cents = payload.amount_cents
-            row.line_items_json = payload.line_items
+            row.amount_cents = calculated_amount_cents
+            row.line_items_json = calculated_line_items
             if selected_rate_plan is not None:
                 row.rate_plan_id = selected_rate_plan.id
                 row.rate_plan_snapshot_json = {
@@ -2113,6 +2198,7 @@ def record_proposal(
                         if selected_rate_plan.effective_until
                         else None
                     ),
+                    "pricing_adjustment": pricing_adjustment,
                     "snapshotted_at": _now().isoformat(),
                 }
             row.terms_summary = payload.terms_summary.strip()
@@ -2152,6 +2238,7 @@ def record_proposal(
                 "rate_plan_snapshot": dict(row.rate_plan_snapshot_json or {}),
                 "document_url": row.document_url,
                 "approved_by": row.approved_by,
+                "pricing_adjustment": pricing_adjustment,
             },
         ))
         return {
