@@ -243,6 +243,46 @@ def test_lane_budget_never_promotes_an_unapproved_action() -> None:
     assert "eligibility gate" in deferred[0]["execution_reason"]
 
 
+def test_action_pauses_after_two_consecutive_verification_failures() -> None:
+    selected, deferred = select_bounded_actions(
+        [
+            {
+                "feedback_id": "meta-paused",
+                "action_type": "meta_title_update",
+                "page_url": "https://anatainc.com/services/amazon-advertising",
+                "execution_eligibility": "auto_execute",
+                "consecutive_verification_failures": 2,
+            }
+        ]
+    )
+
+    assert selected == []
+    assert "paused after 2 consecutive" in deferred[0]["execution_reason"]
+
+
+def test_two_independent_low_risk_actions_receive_distinct_locks() -> None:
+    selected, deferred = select_bounded_actions(
+        [
+            {
+                "feedback_id": "meta-one",
+                "action_type": "meta_title_update",
+                "page_url": "https://anatainc.com/services/amazon-advertising",
+                "execution_eligibility": "auto_execute",
+            },
+            {
+                "feedback_id": "meta-two",
+                "action_type": "meta_description_update",
+                "page_url": "https://anatainc.com/services/ecommerce-fulfillment",
+                "execution_eligibility": "auto_execute",
+            },
+        ]
+    )
+
+    assert deferred == []
+    assert len(selected) == 2
+    assert selected[0]["lock_key"] != selected[1]["lock_key"]
+
+
 def test_completed_action_replaces_its_queued_candidate_state() -> None:
     report = _report()
     report["executed_actions"] = [

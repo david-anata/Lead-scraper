@@ -481,12 +481,6 @@ def build_article_action(
     if not cluster:
         return None
     pillar = _clean(cluster.get("pillar")) or selected_pillar
-    if not _claim_daily_article_slot(
-        settings,
-        _clean(cluster.get("cluster_id")),
-        pillar,
-    ):
-        return None
     citations = [
         {"title": _clean(item.get("title")), "url": _clean(item.get("url"))}
         for item in dict(cluster.get("citation") or {}).get("cited_urls", []) or []
@@ -603,6 +597,12 @@ block. Do not pad the article to reach the word count.
     }
     content["route"] = f"/blog/{slug}"
     article["content"] = content
+    if not _claim_daily_article_slot(
+        settings,
+        _clean(cluster.get("cluster_id")),
+        pillar,
+    ):
+        return None
     from_editorial_backlog = cluster.get("source_kind") == "editorial_backlog"
     return {
         "page_url": f"https://anatainc.com/blog/{slug}",

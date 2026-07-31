@@ -77,7 +77,16 @@ def _tokens(value: Any) -> list[str]:
 
 def normalize_query(value: Any) -> str:
     """Normalize superficial query variation while preserving raw evidence."""
-    tokens = _tokens(value)
+    raw = _clean(value).lower()
+    raw = re.sub(r"https?://\S+", " ", raw)
+    raw = re.sub(r"(?:^|\s)-?(?:site|inurl|intitle|filetype):\S+", " ", raw)
+    raw = re.sub(
+        r"^(?:people also ask|related searches|question|query|search)\s*[:\-]\s*",
+        "",
+        raw,
+    )
+    raw = re.sub(r"^[\s\"'`\[\]{}()]+|[\s\"'`\[\]{}()?!.,;:]+$", "", raw)
+    tokens = _tokens(raw)
     replacements = {
         "advertising": "ads",
         "advertisement": "ads",

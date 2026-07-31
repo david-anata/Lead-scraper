@@ -155,6 +155,17 @@ def select_bounded_actions(
         item = dict(original)
         lane_id = action_lane(str(item.get("action_type", "") or ""))
         lane = LANE_BY_ID[lane_id]
+        verification_failures = int(
+            item.get("consecutive_verification_failures", 0) or 0
+        )
+        if verification_failures >= 2:
+            item["execution_eligibility"] = "deferred"
+            item["execution_reason"] = (
+                f"{lane.label} is paused after {verification_failures} consecutive "
+                "production verification failures."
+            )
+            deferred.append(item)
+            continue
         existing_eligibility = str(item.get("execution_eligibility", "") or "").strip()
         target = str(item.get("page_url", "") or "").strip().casefold()
         lock_key = str(item.get("lock_key", "") or target or item.get("feedback_id", "")).strip().casefold()
@@ -367,8 +378,20 @@ def lane_registry(candidates: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
         {
             **asdict(lane),
             "candidate_count": int(summary["by_lane"].get(lane.lane_id, 0) or 0),
-            "paused": False,
-            "pause_reason": "",
+            "paused": sum(
+                1
+                for item in candidates
+                if item.get("lane_id") == lane.lane_id and item.get("state") == "failed"
+            ) >= 2,
+            "pause_reason": (
+                "Paused after two production verification failures; repair and verify a canary before resuming."
+                if sum(
+                    1
+                    for item in candidates
+                    if item.get("lane_id") == lane.lane_id and item.get("state") == "failed"
+                ) >= 2
+                else ""
+            ),
         }
         for lane in LANES
     ]

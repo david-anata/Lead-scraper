@@ -12,7 +12,10 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 
 import requests
-from sales_support_agent.services.website_ops_editorial_quality import contextual_evidence_errors
+from sales_support_agent.services.website_ops_editorial_quality import (
+    contextual_evidence_errors,
+    repair_deterministic_article_defects,
+)
 
 from sales_support_agent.services import website_ops_vendor as website_ops
 
@@ -582,7 +585,24 @@ def execute_github_article_action(
     timestamp: datetime | None = None,
 ) -> dict[str, Any]:
     timestamp = timestamp or datetime.now(timezone.utc)
-    article = validate_generated_article(record)
+    try:
+        article = validate_generated_article(record)
+        deterministic_repairs: list[str] = []
+    except website_ops.ExecutionError as original_error:
+        try:
+            raw_article = json.loads(str(record.get("action_value", "") or ""))
+        except json.JSONDecodeError:
+            raise original_error
+        repaired_article, deterministic_repairs = repair_deterministic_article_defects(
+            raw_article if isinstance(raw_article, Mapping) else {}
+        )
+        if not deterministic_repairs:
+            raise original_error
+        repaired_record = {
+            **dict(record),
+            "action_value": json.dumps(repaired_article, ensure_ascii=False),
+        }
+        article = validate_generated_article(repaired_record)
     client = GitHubWebsiteClient()
     before_source, before_sha = client.get_file(GENERATED_ARTICLE_REGISTRY)
     after_source = update_generated_article_registry(before_source, article)
@@ -630,6 +650,7 @@ def execute_github_article_action(
                         "evidence_id": article["evidenceId"],
                         "primary_intent": article["primaryIntent"],
                         "source_count": len(article["sources"]),
+                        "deterministic_repairs": deterministic_repairs,
                     },
                 }
         except Exception:  # noqa: BLE001 - deployment can be briefly unavailable

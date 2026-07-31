@@ -5,6 +5,7 @@ from sales_support_agent.services.website_ops_article_engine import (
     _eligible_editorial_seed,
     _historical_cluster_ids,
     article_generation_progress,
+    build_article_action,
 )
 from sales_support_agent.api.website_ops_jobs_router import WEBSITE_OPS_PULSE_HOURS
 
@@ -61,3 +62,21 @@ def test_topic_history_prevents_republishing_an_old_daily_claim(tmp_path) -> Non
     settings = SimpleNamespace(website_ops_root=tmp_path)
 
     assert _historical_cluster_ids(settings) == {"already-published"}
+
+
+def test_failed_generation_does_not_consume_daily_topic_slot(tmp_path) -> None:
+    settings = SimpleNamespace(website_ops_root=tmp_path)
+
+    def fail_generation(**_kwargs):
+        raise RuntimeError("provider timeout")
+
+    try:
+        build_article_action(
+            settings=settings,
+            query_intelligence={"clusters": []},
+            requester=fail_generation,
+        )
+    except RuntimeError:
+        pass
+
+    assert article_generation_progress(settings)["generated_today"] == 0
