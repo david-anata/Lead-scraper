@@ -31,6 +31,7 @@ from sales_support_agent.models.entities import (
     BuildingRelationship,
     BuildingReservation,
     BuildingCalendarProjection,
+    BuildingSignatureRequestReadiness,
     BuildingSpace,
     BuildingTour,
 )
@@ -2261,6 +2262,32 @@ def record_agreement(
         raise HTTPException(status_code=422, detail="Unsupported agreement status.")
     if payload.status == "signed" and not payload.provider_reference:
         raise HTTPException(status_code=422, detail="Signed agreements require provider evidence.")
+    if payload.provider == "quickbooks_contract_builder":
+        if payload.status in {"sent", "signed"} and not payload.document_url.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="QuickBooks contract evidence requires the Contract Builder document URL.",
+            )
+        if payload.status == "signed":
+            certificate_reference = str(
+                payload.evidence.get("esign_certificate_reference") or ""
+            ).strip()
+            signed_document_checksum = str(
+                payload.evidence.get("signed_document_checksum") or ""
+            ).strip().lower()
+            if not certificate_reference:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Signed QuickBooks contracts require the e-sign certificate reference.",
+                )
+            if (
+                len(signed_document_checksum) != 64
+                or any(character not in "0123456789abcdef" for character in signed_document_checksum)
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Signed QuickBooks contracts require a SHA-256 signed-document checksum.",
+                )
     with session_scope(request.app.state.session_factory) as session:
         reservation = session.get(BuildingReservation, reservation_id)
         if reservation is None:
@@ -2298,6 +2325,29 @@ def record_agreement(
             reservation.agreement_status = payload.status
         reservation.updated_at = _now()
         session.add(row)
+        if payload.provider == "quickbooks_contract_builder":
+            signature_readiness = session.execute(
+                select(BuildingSignatureRequestReadiness).where(
+                    BuildingSignatureRequestReadiness.agreement_id == row.id
+                )
+            ).scalar_one_or_none()
+            if signature_readiness is None or signature_readiness.status != "approved":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Approve the frozen QuickBooks signature handoff first.",
+                )
+            if signature_readiness.agreement_checksum != row.package_checksum:
+                raise HTTPException(
+                    status_code=409,
+                    detail="QuickBooks evidence does not match the approved agreement checksum.",
+                )
+            signature_readiness.provider = "quickbooks_contract_builder"
+            signature_readiness.provider_reference = payload.provider_reference
+            signature_readiness.delivery_status = (
+                "completed" if payload.status == "signed" else "sent"
+            )
+            signature_readiness.updated_at = _now()
+            session.add(signature_readiness)
         session.add(BuildingAuditEvent(
             entity_type="agreement",
             entity_id=row.id,
@@ -2308,6 +2358,8 @@ def record_agreement(
                 "version": row.version,
                 "provider": row.provider,
                 "provider_reference": row.provider_reference,
+                "document_url": row.document_url,
+                "evidence": dict(row.evidence_json or {}),
             },
         ))
         return {"ok": True, "agreement_id": row.id, "status": row.status}

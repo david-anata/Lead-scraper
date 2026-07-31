@@ -490,10 +490,12 @@ def record_agreement_from_control_room(
     request: Request,
     version: int = Form(1),
     status: str = Form(...),
-    provider: str = Form(""),
+    provider: str = Form("quickbooks_contract_builder"),
     provider_reference: str = Form(""),
     template_name: str = Form(""),
     document_url: str = Form(""),
+    esign_certificate_reference: str = Form(""),
+    signed_document_checksum: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -504,7 +506,11 @@ def record_agreement_from_control_room(
             provider_reference=provider_reference.strip(),
             template_name=template_name.strip(),
             document_url=document_url.strip(),
-            evidence={"recorded_in": "building_control"},
+            evidence={
+                "recorded_in": "building_control",
+                "esign_certificate_reference": esign_certificate_reference.strip(),
+                "signed_document_checksum": signed_document_checksum.strip().lower(),
+            },
             actor=_actor(user),
         )
         record_agreement(reservation_id, payload, request, _internal_key(request))
