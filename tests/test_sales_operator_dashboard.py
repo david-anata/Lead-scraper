@@ -31,15 +31,48 @@ class SalesOperatorDashboardTests(unittest.TestCase):
             metadata_json={},
             summary_json={"kind": "store", "domain": "private.example"},
         )
+        advertising = SimpleNamespace(
+            id=3,
+            run_type="marketing_analysis_intake",
+            status="failed",
+            started_at=datetime(2026, 7, 31, 19, 0, tzinfo=timezone.utc),
+            metadata_json={
+                "email": "ads@example.com",
+                "asin": "B087654321",
+                "company": "Ads Brand",
+                "tool": "advertising_audit",
+            },
+            summary_json={"email_delivery": "pending", "error": "deck failed"},
+        )
+        rate_sheet = SimpleNamespace(
+            id=4,
+            run_type="fulfillment_rate_sheet",
+            status="draft",
+            started_at=datetime(2026, 7, 31, 18, 0, tzinfo=timezone.utc),
+            metadata_json={},
+            summary_json={
+                "prospect": "Rate Brand",
+                "public_unlock_email": "rates@example.com",
+                "public_rate_sheet_status": "failed",
+                "public_email_status": "pending",
+                "public_sales_handoff_status": "pending",
+                "public_rate_sheet_error": "publish failed",
+            },
+        )
         session = mock.Mock()
-        session.scalars.return_value.all.return_value = [unlocked, locked]
+        session.scalars.return_value.all.return_value = [unlocked, locked, advertising, rate_sheet]
 
         rows = operator_dashboard._build_website_intakes(session)
 
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 3)
         self.assertEqual(rows[0]["id"], 1)
         self.assertEqual(rows[0]["status"], "failed")
         self.assertEqual(rows[0]["hubspot"], "recorded")
+        self.assertEqual(rows[1]["kind"], "advertising_audit")
+        self.assertEqual(rows[1]["brand"], "Ads Brand")
+        self.assertEqual(rows[2]["kind"], "rate_sheet")
+        self.assertEqual(rows[2]["error"], "publish failed")
+        self.assertTrue(rows[2]["retryable"])
 
     def test_operator_page_surfaces_failed_website_analysis_and_retry(self):
         html = operator_dashboard.render_operator_page(
@@ -52,6 +85,7 @@ class SalesOperatorDashboardTests(unittest.TestCase):
                     "email": "owner@example.com",
                     "needs": ["advertising", "analytics"],
                     "status": "failed",
+                    "retryable": True,
                     "reportReady": False,
                     "emailDelivery": "pending",
                     "hubspot": "recorded",

@@ -655,37 +655,103 @@ def retry_website_intake(
         _deliver_store_unlock,
         _run_analysis_and_deliver,
     )
+    from sales_support_agent.api.fulfillment_public_router import (
+        _finish_unlock,
+        retry_rate_sheet_handoffs,
+    )
     from sales_support_agent.models.entities import AutomationRun
 
     with session_scope(request.app.state.session_factory) as session:
         run = session.get(AutomationRun, intake_id)
-        if run is None or run.run_type != "marketing_intake":
+        if run is None or run.run_type not in {
+            "marketing_intake",
+            "marketing_analysis_intake",
+            "fulfillment_rate_sheet",
+        }:
             return HTMLResponse(_render_sales_operator_unavailable(request, "Website analysis not found."), status_code=404)
         metadata = dict(run.metadata_json or {})
         summary = dict(run.summary_json or {})
-        email = str(metadata.get("email") or "").strip().lower()
+        run_type = str(run.run_type or "")
+        if run_type == "marketing_analysis_intake" and metadata.get("tool") != "advertising_audit":
+            return HTMLResponse(_render_sales_operator_unavailable(request, "Website analysis not found."), status_code=404)
+        email = str(metadata.get("email") or summary.get("public_unlock_email") or "").strip().lower()
         kind = str(summary.get("kind") or "")
-        asin = str(summary.get("asin") or "")
+        asin = str(summary.get("asin") or metadata.get("asin") or "")
         domain = str(summary.get("domain") or "")
-        if run.status != "failed" or not email or (kind == "asin" and not asin) or (kind != "asin" and not domain):
+        if run_type == "fulfillment_rate_sheet":
+            rate_status = str(summary.get("public_rate_sheet_status") or "")
+            handoff_retry = rate_status == "ready" and (
+                str(summary.get("public_email_status") or "") == "failed"
+                or str(summary.get("public_sales_handoff_status") or "") == "failed"
+            )
+            retryable = bool(email) and (rate_status == "failed" or handoff_retry)
+        else:
+            retryable = run.status == "failed" and bool(email) and bool(
+                asin if run_type == "marketing_analysis_intake" or kind == "asin" else domain
+            )
+        if not retryable:
             return HTMLResponse(
                 _render_sales_operator_unavailable(request, "Website analysis is not retryable."),
                 status_code=409,
             )
-        source = str(metadata.get("source") or "anatainc.com")
+        source = str(metadata.get("source") or summary.get("public_source") or "anatainc.com")
         qualification = dict(metadata.get("qualification") or {})
-        needs = [str(item) for item in (summary.get("needs") or [])]
+        if run_type == "marketing_analysis_intake":
+            qualification = {
+                "company": str(metadata.get("company") or qualification.get("company") or ""),
+                "storefront": str(
+                    qualification.get("storefront")
+                    or (f"https://www.amazon.com/dp/{asin}" if asin else "")
+                ),
+                "challenge": str(
+                    qualification.get("challenge")
+                    or "Advertising Audit requested from anatainc.com."
+                ),
+                "next_step": str(
+                    qualification.get("next_step")
+                    or "Call prospect and confirm the four-report handoff."
+                ),
+                "audit_run_id": str(intake_id),
+            }
+        needs = (
+            ["advertising"]
+            if run_type == "marketing_analysis_intake"
+            else [str(item) for item in (summary.get("needs") or [])]
+        )
         brand_name = str(summary.get("brand_name") or "")
-        run.status = "running"
-        run.completed_at = None
-        run.summary_json = {
-            **summary,
-            "error": "",
-            "operator_retry_queued_at": datetime.now(timezone.utc).isoformat(),
-        }
+        if run_type == "fulfillment_rate_sheet" and rate_status == "failed":
+            run.summary_json = {
+                **summary,
+                "public_rate_sheet_status": "building",
+                "public_rate_sheet_error": "",
+                "operator_retry_queued_at": datetime.now(timezone.utc).isoformat(),
+            }
+        elif run_type != "fulfillment_rate_sheet":
+            run.status = "running"
+            run.completed_at = None
+            run.summary_json = {
+                **summary,
+                "error": "",
+                "operator_retry_queued_at": datetime.now(timezone.utc).isoformat(),
+            }
         session.add(run)
 
-    if kind == "asin":
+    if run_type == "fulfillment_rate_sheet" and rate_status == "ready":
+        background_tasks.add_task(
+            retry_rate_sheet_handoffs,
+            request.app,
+            run_id=intake_id,
+        )
+    elif run_type == "fulfillment_rate_sheet":
+        background_tasks.add_task(
+            _finish_unlock,
+            request.app,
+            run_id=intake_id,
+            email=email,
+            monthly_orders=summary.get("public_unlock_monthly_orders"),
+            origin_zip=str(summary.get("public_unlock_origin_zip") or ""),
+        )
+    elif run_type == "marketing_analysis_intake" or kind == "asin":
         background_tasks.add_task(
             _run_analysis_and_deliver,
             request.app,

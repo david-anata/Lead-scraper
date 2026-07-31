@@ -309,33 +309,76 @@ def _build_website_intakes(session) -> list[dict[str, Any]]:
 
     runs = session.scalars(
         select(AutomationRun)
-        .where(AutomationRun.run_type == "marketing_intake")
+        .where(AutomationRun.run_type.in_((
+            "marketing_intake",
+            "marketing_analysis_intake",
+            "fulfillment_rate_sheet",
+        )))
         .order_by(AutomationRun.started_at.desc())
-        .limit(40)
+        .limit(80)
     ).all()
     rows: list[dict[str, Any]] = []
     for run in runs:
         metadata = dict(run.metadata_json or {})
         summary = dict(run.summary_json or {})
-        email = str(metadata.get("email") or "").strip()
+        run_type = str(run.run_type or "")
+        if run_type == "marketing_analysis_intake" and metadata.get("tool") != "advertising_audit":
+            continue
+        email = str(
+            metadata.get("email")
+            or summary.get("public_unlock_email")
+            or ""
+        ).strip()
         if not email:
             continue
-        kind = str(summary.get("kind") or "analysis")
-        identifier = str(summary.get("asin") or summary.get("domain") or "")
+        if run_type == "fulfillment_rate_sheet":
+            kind = "rate_sheet"
+            profile = dict(summary.get("prospect_profile") or {})
+            identifier = str(summary.get("website_url") or profile.get("website_url") or "")
+            status = str(summary.get("public_rate_sheet_status") or run.status or "unknown")
+            report_ready = status == "ready"
+            acknowledgement = "not_required"
+            internal_notification = "not_required"
+            hubspot = str(summary.get("public_sales_handoff_status") or "pending")
+            email_delivery = str(summary.get("public_email_status") or "pending")
+            error = str(summary.get("public_rate_sheet_error") or "")
+            brand = str(summary.get("prospect") or profile.get("brand") or identifier)
+            needs = ["fulfillment"]
+            retryable = status == "failed" or (
+                status == "ready" and (email_delivery == "failed" or hubspot == "failed")
+            )
+        else:
+            kind = (
+                "advertising_audit"
+                if run_type == "marketing_analysis_intake"
+                else str(summary.get("kind") or "analysis")
+            )
+            identifier = str(summary.get("asin") or summary.get("domain") or metadata.get("asin") or "")
+            status = str(run.status or "unknown")
+            report_ready = bool(summary.get("view_url"))
+            acknowledgement = str(summary.get("acknowledgement_email") or "unknown")
+            internal_notification = str(summary.get("internal_lead_email") or "unknown")
+            hubspot = str(summary.get("hubspot_handoff") or "unknown")
+            email_delivery = str(summary.get("email_delivery") or "pending")
+            error = str(summary.get("error") or "")
+            brand = str(summary.get("brand_name") or summary.get("product_title") or metadata.get("company") or identifier)
+            needs = [str(item) for item in (summary.get("needs") or [])][:8]
+            retryable = status == "failed"
         rows.append({
             "id": int(run.id),
             "kind": kind,
             "identifier": identifier,
-            "brand": str(summary.get("brand_name") or summary.get("product_title") or identifier),
+            "brand": brand,
             "email": email,
-            "needs": [str(item) for item in (summary.get("needs") or [])][:8],
-            "status": str(run.status or "unknown"),
-            "reportReady": bool(summary.get("view_url")),
-            "acknowledgement": str(summary.get("acknowledgement_email") or "unknown"),
-            "internalNotification": str(summary.get("internal_lead_email") or "unknown"),
-            "hubspot": str(summary.get("hubspot_handoff") or "unknown"),
-            "emailDelivery": str(summary.get("email_delivery") or "pending"),
-            "error": str(summary.get("error") or "")[:240],
+            "needs": needs,
+            "status": status,
+            "reportReady": report_ready,
+            "acknowledgement": acknowledgement,
+            "internalNotification": internal_notification,
+            "hubspot": hubspot,
+            "emailDelivery": email_delivery,
+            "error": error[:240],
+            "retryable": retryable,
             "startedAt": _format_run_timestamp(run.started_at),
         })
         if len(rows) >= 20:
@@ -1934,7 +1977,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
           <p class="muted">Report: {"ready" if intake.get("reportReady") else "not ready"} · Final email: {_esc(intake.get("emailDelivery") or "pending")} · HubSpot: {_esc(intake.get("hubspot") or "unknown")}</p>
           <p class="muted">Acknowledgement: {_esc(intake.get("acknowledgement") or "unknown")} · Internal alert: {_esc(intake.get("internalNotification") or "unknown")}</p>
           {f'<p class="flash">Blocker: {_esc(intake.get("error"))}</p>' if intake.get("error") else ""}
-          {f'<form method="post" action="/admin/sales/website-intakes/{int(intake.get("id") or 0)}/retry"><button class="btn" type="submit">Retry analysis delivery</button></form>' if str(intake.get("status") or "") == "failed" else ""}
+          {f'<form method="post" action="/admin/sales/website-intakes/{int(intake.get("id") or 0)}/retry"><button class="btn" type="submit">Retry analysis delivery</button></form>' if intake.get("retryable") else ""}
         </article>
         """
         for intake in website_intakes

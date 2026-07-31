@@ -18,6 +18,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -260,6 +261,34 @@ class FulfillmentPublicFunnelTests(unittest.TestCase):
             headers=_HEADERS,
         )
         self.assertEqual(resp.status_code, 404)
+
+    def test_unlock_persists_retry_context_before_background_delivery(self) -> None:
+        run = SimpleNamespace(summary_json={
+            "export_token": "valid-token",
+            "rates_source": P.RATE_SOURCE_WMS,
+            "public_source": "hero",
+        })
+        with mock.patch.object(P.storage, "get_run", return_value=run), mock.patch.object(
+            P.storage, "update_summary"
+        ) as update, mock.patch.object(P, "_finish_unlock"):
+            response = self.client.post(
+                "/api/public/fulfillment/rate-sheet/unlock",
+                json={
+                    "run_id": 987654,
+                    "token": "valid-token",
+                    "email": "rates@example.com",
+                    "monthly_orders": 1200,
+                    "origin_zip": "84043",
+                },
+                headers=_HEADERS,
+            )
+
+        self.assertEqual(response.status_code, 202, response.text)
+        persisted = update.call_args_list[-1].args[1]
+        self.assertEqual(persisted["public_unlock_email"], "rates@example.com")
+        self.assertEqual(persisted["public_unlock_monthly_orders"], 1200)
+        self.assertEqual(persisted["public_unlock_origin_zip"], "84043")
+        self.assertEqual(persisted["public_rate_sheet_status"], "building")
 
     def test_unlock_requires_valid_email(self) -> None:
         taste = self._taste("dfy")

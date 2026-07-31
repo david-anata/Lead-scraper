@@ -205,7 +205,7 @@ def _absolute_view_url(settings, view_path: str) -> str:
     return f"{base}{path}" if base else path
 
 
-def _send_unlock_email(settings, *, email: str, brand: str, view_url: str) -> bool:
+def _send_unlock_email(settings, *, run_id: int, email: str, brand: str, view_url: str) -> bool:
     client = ResendClient(settings)
     if not client.is_configured():
         logger.warning("[fulfillment_public] Resend not configured; skipping email to %s", email)
@@ -230,6 +230,7 @@ def _send_unlock_email(settings, *, email: str, brand: str, view_url: str) -> bo
         to=email,
         subject="Your Anata rate sheet is ready",
         text="\n".join(lines),
+        idempotency_key=f"public-rate-sheet-{run_id}-ready",
     )
     return True
 
@@ -251,6 +252,7 @@ def _finish_unlock(
             "public_rate_sheet_status": "building",
             "public_email_status": "pending",
             "public_sales_handoff_status": "pending",
+            "public_rate_sheet_error": "",
         },
     )
     try:
@@ -267,7 +269,10 @@ def _finish_unlock(
             rerender_rate_sheet(run_id, settings=settings)
     except Exception:  # noqa: BLE001
         logger.exception("[fulfillment_public] refinement/rerender failed for run %d", run_id)
-        storage.update_summary(run_id, {"public_rate_sheet_status": "failed"})
+        storage.update_summary(run_id, {
+            "public_rate_sheet_status": "failed",
+            "public_rate_sheet_error": "Rate-sheet refinement or rerender failed.",
+        })
         return
 
     refreshed = storage.get_run(run_id)
@@ -277,7 +282,10 @@ def _finish_unlock(
             "[fulfillment_public] live rates unavailable after rerender for run %d; skipping publish and delivery",
             run_id,
         )
-        storage.update_summary(run_id, {"public_rate_sheet_status": "failed"})
+        storage.update_summary(run_id, {
+            "public_rate_sheet_status": "failed",
+            "public_rate_sheet_error": "Live carrier rates were unavailable after rerender.",
+        })
         return
 
     published = False
@@ -287,7 +295,10 @@ def _finish_unlock(
         logger.exception("[fulfillment_public] publish failed for run %d", run_id)
     if not published:
         logger.warning("[fulfillment_public] run %d not published; skipping delivery", run_id)
-        storage.update_summary(run_id, {"public_rate_sheet_status": "failed"})
+        storage.update_summary(run_id, {
+            "public_rate_sheet_status": "failed",
+            "public_rate_sheet_error": "The private rate sheet could not be published.",
+        })
         return
 
     run = storage.get_run(run_id)
@@ -300,6 +311,7 @@ def _finish_unlock(
         {
             "public_rate_sheet_status": "ready",
             "public_shared_url": view_url,
+            "public_rate_sheet_error": "",
         },
     )
 
@@ -311,7 +323,7 @@ def _finish_unlock(
 
     if view_url:
         try:
-            sent = _send_unlock_email(settings, email=email, brand=brand, view_url=view_url)
+            sent = _send_unlock_email(settings, run_id=run_id, email=email, brand=brand, view_url=view_url)
             storage.update_summary(run_id, {"public_email_status": "sent" if sent else "failed"})
         except Exception:  # noqa: BLE001
             logger.exception("[fulfillment_public] unlock email failed for %s", email)
@@ -332,6 +344,49 @@ def _finish_unlock(
     except Exception:  # noqa: BLE001
         logger.exception("[fulfillment_public] hubspot sync_new_prospect failed for run %d", run_id)
         storage.update_summary(run_id, {"public_sales_handoff_status": "failed"})
+
+
+def retry_rate_sheet_handoffs(app, *, run_id: int) -> bool:
+    """Retry only missing delivery writes for an already-ready public sheet."""
+    settings = getattr(app.state, "settings", None) or load_settings()
+    run = storage.get_run(run_id)
+    summary = dict(run.summary_json or {}) if run is not None else {}
+    if str(summary.get("public_rate_sheet_status") or "") != "ready":
+        return False
+    email = str(summary.get("public_unlock_email") or "").strip().lower()
+    view_url = str(summary.get("public_shared_url") or "").strip()
+    brand = str(summary.get("prospect") or "")
+    profile = dict(summary.get("prospect_profile") or {})
+
+    if str(summary.get("public_email_status") or "") != "sent" and email and view_url:
+        try:
+            sent = _send_unlock_email(
+                settings,
+                run_id=run_id,
+                email=email,
+                brand=brand,
+                view_url=view_url,
+            )
+            storage.update_summary(run_id, {"public_email_status": "sent" if sent else "failed"})
+        except Exception:  # noqa: BLE001
+            logger.exception("[fulfillment_public] rate-sheet email retry failed for run %d", run_id)
+            storage.update_summary(run_id, {"public_email_status": "failed"})
+
+    if str(summary.get("public_sales_handoff_status") or "") != "complete":
+        try:
+            from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_new_prospect
+
+            sync_new_prospect(run_id, summary, profile)
+            synced = storage.get_run(run_id)
+            synced_summary = dict(synced.summary_json or {}) if synced is not None else {}
+            storage.update_summary(
+                run_id,
+                {"public_sales_handoff_status": "complete" if synced_summary.get("hubspot_deal_id") else "failed"},
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[fulfillment_public] rate-sheet sales retry failed for run %d", run_id)
+            storage.update_summary(run_id, {"public_sales_handoff_status": "failed"})
+    return True
 
 
 @router.post("/rate-sheet/unlock")
@@ -413,6 +468,10 @@ async def rate_sheet_unlock(
             "public_rate_sheet_status": "building",
             "public_email_status": "pending",
             "public_sales_handoff_status": "pending",
+            "public_rate_sheet_error": "",
+            "public_unlock_email": email.lower(),
+            "public_unlock_monthly_orders": monthly_orders,
+            "public_unlock_origin_zip": origin_zip,
         },
     )
 

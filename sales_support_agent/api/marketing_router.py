@@ -741,6 +741,12 @@ async def advertising_audit_intake(
                 "source": source,
                 "tool": "advertising_audit",
                 "status_token": status_token,
+                "qualification": {
+                    "company": company,
+                    "storefront": f"https://www.amazon.com/dp/{asin}",
+                    "challenge": "Advertising Audit requested from anatainc.com.",
+                    "next_step": "Call prospect and confirm the four-report handoff.",
+                },
             },
         )
         intake_run.summary_json = {
