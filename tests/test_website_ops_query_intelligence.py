@@ -76,6 +76,12 @@ def test_simulated_search_operator_prompt_is_quarantined() -> None:
     assert records[0]["quality_status"] == "quarantined"
 
 
+def test_query_normalization_removes_synthetic_wrappers_and_raw_operators() -> None:
+    assert normalize_query(
+        'People also ask: "How do I structure Amazon PPC?" site:reddit.com https://example.com'
+    ) == "do structure amazon ppc"
+
+
 def test_article_pipeline_uses_source_gate_without_week_delay() -> None:
     cluster = {
         "validation_status": "validated",

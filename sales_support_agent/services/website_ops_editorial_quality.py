@@ -2,8 +2,49 @@
 
 from __future__ import annotations
 
+import copy
+import re
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
+
+
+def repair_deterministic_article_defects(
+    article: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Repair bounded formatting defects without changing factual claims."""
+
+    repaired = copy.deepcopy(dict(article))
+    repairs: list[str] = []
+
+    def replace_em_dashes(value: Any) -> Any:
+        if isinstance(value, str):
+            return value.replace("\u2014", ";")
+        if isinstance(value, list):
+            return [replace_em_dashes(item) for item in value]
+        if isinstance(value, dict):
+            return {key: replace_em_dashes(item) for key, item in value.items()}
+        return value
+
+    serialized_before = str(repaired)
+    repaired = replace_em_dashes(repaired)
+    if "\u2014" in serialized_before:
+        repairs.append("replaced prohibited em dashes")
+
+    description = re.sub(r"\s+", " ", str(repaired.get("description", ""))).strip()
+    if len(description) > 155:
+        shortened = description[:155].rsplit(" ", 1)[0].rstrip(" ,;:-")
+        if len(shortened) < 50:
+            shortened = description[:155].rstrip(" ,;:-")
+        repaired["description"] = shortened.rstrip(".") + "."
+        if len(str(repaired["description"])) > 155:
+            repaired["description"] = str(repaired["description"])[:155].rstrip(" ,;:-.") + "."
+        repairs.append("shortened the meta description to 155 characters")
+    elif description and len(description) < 50:
+        suffix = " Practical guidance for ecommerce operators."
+        repaired["description"] = (description.rstrip(".") + "." + suffix)[:155].strip()
+        repairs.append("expanded the meta description to at least 50 characters")
+
+    return repaired, repairs
 
 
 def contextual_evidence_errors(
