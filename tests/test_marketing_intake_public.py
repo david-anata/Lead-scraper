@@ -687,6 +687,37 @@ class MarketingIntakeTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 502, response.text)
 
+    def test_direct_booking_sanitizes_source_and_audit_reference(self) -> None:
+        with mock.patch.object(
+            M,
+            "_record_hubspot_booking",
+            return_value=(True, "deal-source-safe"),
+        ) as record, mock.patch.object(
+            M,
+            "_send_internal_booking_email",
+            return_value=True,
+        ):
+            response = self.client.post(
+                "/api/public/marketing/booking",
+                json={
+                    "email": "source-safe@example.com",
+                    "tool": "ads",
+                    "source": "person@example.com?campaign=visitor text",
+                    "booking_reference": "meeting-source-safe",
+                    "qualification": {
+                        "company": "Safe Source Brand",
+                        "audit_run_id": "12345",
+                    },
+                },
+                headers=HEADERS,
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(record.call_args.kwargs["source"], "booking-page")
+        self.assertEqual(record.call_args.kwargs["qualification"]["audit_run_id"], "12345")
+
+        sanitized = M._sanitize_qualification({"audit_run_id": "123@example.com"})
+        self.assertNotIn("audit_run_id", sanitized)
+
     def test_booking_updates_only_matching_strategy_deal(self) -> None:
         client = mock.Mock()
         client.is_configured = True

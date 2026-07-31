@@ -66,6 +66,7 @@ _AMAZON_ASIN_RE = re.compile(
     re.IGNORECASE,
 )
 _BARE_AMAZON_ASIN_RE = re.compile(r"\b(B0[A-Z0-9]{8})\b", re.IGNORECASE)
+_ATTRIBUTION_SOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9./:_-]{0,119}$", re.IGNORECASE)
 
 # Needs chips the site can send; anything else is dropped silently.
 _KNOWN_NEEDS = {"analytics", "advertising", "strategy", "catalog", "creative", "fulfillment"}
@@ -85,11 +86,21 @@ _QUALIFICATION_FIELDS = {
 def _sanitize_qualification(raw: Any) -> dict[str, str]:
     if not isinstance(raw, dict):
         return {}
-    return {
+    sanitized = {
         key: str(raw.get(key, "") or "").strip()[:limit]
         for key, limit in _QUALIFICATION_FIELDS.items()
         if str(raw.get(key, "") or "").strip()
     }
+    audit_run_id = sanitized.get("audit_run_id", "")
+    if audit_run_id and not re.fullmatch(r"\d{1,20}", audit_run_id):
+        sanitized.pop("audit_run_id", None)
+    return sanitized
+
+
+def _sanitize_source(raw: Any, fallback: str) -> str:
+    """Keep attribution route-like so visitor text and PII never enter CRM metadata."""
+    candidate = str(raw or "").strip()
+    return candidate if _ATTRIBUTION_SOURCE_RE.fullmatch(candidate) else fallback
 
 # Hard ceiling on the cheap identity lookups so the intake endpoint stays fast.
 _IDENTITY_TIMEOUT_SECONDS = 25
@@ -639,7 +650,7 @@ async def marketing_analysis_intake(
 
     asin = str(body.get("asin", "") or "").strip()
     email = str(body.get("email", "") or "").strip()
-    source = str(body.get("source", "") or "").strip()
+    source = _sanitize_source(body.get("source"), "anatainc.com/tools/strategy-audit")
     if not asin or len(asin) > 2048:
         return JSONResponse(status_code=400, content={"detail": "asin is required (ASIN or Amazon URL)."})
     if not email or not _EMAIL_RE.match(email):
@@ -705,7 +716,7 @@ async def advertising_audit_intake(
     asin = _normalize_amazon_asin(body.get("product"))
     email = str(body.get("email", "") or "").strip().lower()
     company = str(body.get("company", "") or "").strip()[:160]
-    source = str(body.get("source", "") or "").strip()[:120]
+    source = _sanitize_source(body.get("source"), "anatainc.com/tools/advertising-audit")
     if not asin:
         return JSONResponse(
             status_code=400,
@@ -1543,7 +1554,7 @@ async def marketing_site_intake_create(
 
     identifier = str(body.get("identifier", "") or "").strip()
     kind = str(body.get("kind", "") or "").strip()
-    source = str(body.get("source", "") or "").strip()
+    source = _sanitize_source(body.get("source"), "site")
     if not identifier or len(identifier) > 2048:
         return JSONResponse(status_code=400, content={"detail": "identifier is required."})
     if kind not in {"asin", "store"}:
@@ -1980,7 +1991,7 @@ async def marketing_site_direct_booking(
 
     email = str(body.get("email", "") or "").strip().lower()[:254]
     tool = str(body.get("tool", "") or "").strip().lower()[:24]
-    source = str(body.get("source", "") or "").strip()[:120]
+    source = _sanitize_source(body.get("source"), "booking-page")
     booking_reference = str(body.get("booking_reference", "") or "").strip()[:160]
     if not email or not _EMAIL_RE.fullmatch(email):
         return JSONResponse(
@@ -2128,7 +2139,10 @@ async def marketing_site_intake_booked(
             )
         email = str(metadata.get("email", "") or "").strip().lower()
         brand_name = str(summary.get("brand_name", "") or "")
-        source = str(body.get("source", "") or metadata.get("source", "") or "")
+        source = _sanitize_source(
+            body.get("source") or metadata.get("source"),
+            "booking-page",
+        )
         qualification = _sanitize_qualification(metadata.get("qualification"))
 
     if not email:
