@@ -41,6 +41,7 @@ _TRANSFER_TEXT_MARKERS = (
     "internal transfer",
     "online transfer",
     "payment to chase",
+    "payment to jpmorganchase",
     "transfer between",
     "transfer from share",
     "transfer to share",

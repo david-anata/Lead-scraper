@@ -87,6 +87,14 @@ def test_budget_excludes_credit_card_payments_and_named_internal_withdrawals() -
             merchant="Payment to Chase",
         ),
         _row(
+            "jpm-chase-1",
+            "plaid",
+            "2026-07-10",
+            2_000_00,
+            category="other",
+            merchant="Payment to JPMorganChase",
+        ),
+        _row(
             "internal-1",
             "plaid",
             "2026-07-11",
