@@ -91,7 +91,21 @@ def preview_writeback(event_id: str, settings: Any) -> dict[str, Any]:
     current_ref = account_lines[0]["AccountBasedExpenseLineDetail"].get("AccountRef") or {}
     current_name = str(current_ref.get("name") or "")
     if _category_from_account(current_name):
-        raise ValueError(f"QuickBooks already files this under {current_name}. Refresh the page.")
+        with get_engine().begin() as connection:
+            connection.execute(text("""
+                UPDATE cash_events
+                SET subcategory=:account, category=:category, updated_at=:now
+                WHERE id=:id
+            """), {
+                "account": current_name[:64],
+                "category": _category_from_account(current_name),
+                "now": datetime.now(timezone.utc),
+                "id": event_id,
+            })
+        raise ValueError(
+            f"QuickBooks already files this under {current_name}. "
+            "Anata refreshed its copy, so it will leave this list."
+        )
     return {
         "event": event,
         "purchase": purchase,
@@ -158,7 +172,7 @@ def confirm_writeback(
 
 
 def list_ready_for_qbo(limit: int = 50) -> list[dict[str, Any]]:
-    """Locally filed QBO purchases whose QBO account is still unresolved."""
+    """Possible QBO cleanup candidates, confirmed remotely only at preview."""
     with get_engine().connect() as connection:
         rows = connection.execute(text("""
             SELECT id, name, description, amount_cents, category,

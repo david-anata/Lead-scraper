@@ -69,6 +69,11 @@ def test_preview_refuses_an_already_booked_purchase(monkeypatch):
 
     with pytest.raises(ValueError, match="already files this under Software"):
         qbo_bookkeeping.preview_writeback("qbo-purchase-8", object())
+    with engine.connect() as connection:
+        account = connection.execute(text(
+            "SELECT subcategory FROM cash_events WHERE id='qbo-purchase-8'"
+        )).scalar_one()
+    assert account == "Software"
 
 
 def test_preview_refuses_multiline_purchase(monkeypatch):

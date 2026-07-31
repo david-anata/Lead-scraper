@@ -2929,7 +2929,7 @@ def _render_bookkeeping() -> str:
         '<a href="/admin/finances/collections">Who owes you</a> handle that side.</p>'
     )
     writeback = (
-        '<div class="finance-bookkeeping-next"><h3>Ready to finish in QuickBooks</h3>'
+        '<div class="finance-bookkeeping-next"><h3>Possible QuickBooks cleanups</h3>'
         '<p>QuickBooks runs the books. Anata may prepare familiar expenses automatically, '
         'but it never changes your real '
         'books without showing you the transaction and the QuickBooks account first. '
@@ -2943,7 +2943,7 @@ def _render_bookkeeping() -> str:
                 + ' on ' + html.escape(str(row.get("posted_on") or "")[:10]) + '</small></td>'
                 + '<td>' + html.escape(str(row.get("category") or "").title()) + '</td>'
                 + '<td><a class="btn btn-secondary btn-sm" href="/admin/finances/bookkeeping/qbo/'
-                + html.escape(str(row["id"]), quote=True) + '/review">Review and send</a></td></tr>'
+                + html.escape(str(row["id"]), quote=True) + '/review">Check details</a></td></tr>'
                 for row in ready_for_qbo[:20]
             )
             + '</tbody></table>'
