@@ -1620,6 +1620,8 @@ input:focus, select:focus, textarea:focus {
 .money-brief {
   display: grid;
   gap: 24px;
+  min-width: 0;
+  width: 100%;
 }
 
 .money-brief .finance-nav {
@@ -2107,6 +2109,7 @@ input:focus, select:focus, textarea:focus {
 }
 .budget-workspace,
 .budget-review {
+  min-width: 0;
   padding: 28px;
   background: rgba(255, 253, 249, .94);
   border: 1px solid var(--anata-line);
