@@ -425,7 +425,7 @@ example
             self.assertIn("Run Daily Sweep", html)
             self.assertIn("Weekly sweep unavailable", html)
             self.assertIn("/admin/api/website-ops/feedback", html)
-            self.assertIn("8:00 AM, 1:00 PM, and 6:00 PM America/Denver", html)
+            self.assertIn("hourly pulses from 8:00 AM through 3:00 PM America/Denver", html)
 
     def test_query_map_renders_evidence_ownership_and_shadow_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

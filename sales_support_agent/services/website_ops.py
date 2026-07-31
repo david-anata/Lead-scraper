@@ -1426,6 +1426,27 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         executed_actions=executed_actions,
     )
     enriched_report = dict(pipeline["report"])
+    # Persist a truthful sitemap-backed inventory before slower analytics,
+    # article generation, or external publishing can fail. Later enrichment
+    # replaces this checkpoint with the fully joined intent projection.
+    checkpoint_indexing_inventory = load_indexing_inventory(settings.website_ops_root)
+    checkpoint_crawl_inventory = load_crawl_inventory(settings.website_ops_root)
+    checkpoint_query_intelligence = dict(
+        enriched_report.get("query_intelligence") or {}
+    )
+    enriched_report["production_inventory"] = build_production_inventory(
+        sitemap_urls=monitored_urls,
+        crawl_inventory=checkpoint_crawl_inventory,
+        indexing_inventory=checkpoint_indexing_inventory,
+        intent_coverage=dict(
+            checkpoint_query_intelligence.get("intent_coverage") or {}
+        ),
+    )
+    website_ops.write_daily_report_artifacts(
+        enriched_report,
+        output_dir=output_dir,
+        config=config,
+    )
     enriched_report.update(
         build_autonomy_overlay(
             settings=settings,
@@ -2621,7 +2642,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     article_pipeline = dict(query_intelligence.get("article_pipeline") or {})
     monitored_count = int(latest_payload.get("pages_reviewed", 0) or len(settings.website_ops_site_urls))
     schedule_note = (
-        "<p class='muted'>Scheduled pulses at 8:00 AM, 1:00 PM, and 6:00 PM America/Denver. "
+        "<p class='muted'>Scheduled hourly pulses from 8:00 AM through 3:00 PM America/Denver. "
         "Email is sent when completed work or the action state changes.</p>"
     )
     body = f"""
@@ -2663,7 +2684,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <div class="summary-grid">
               {_summary_chip("Writable host", "anatainc.com", tone="good")}
               {_summary_chip("Daily email", "Changes and your to-do list", tone="neutral")}
-              {_summary_chip("Schedule", "8 AM · 1 PM · 6 PM", tone="neutral")}
+              {_summary_chip("Schedule", "Hourly · 8 AM–3 PM", tone="neutral")}
               {_summary_chip("Query validation", f"{query_summary.get('validated_clusters', 0)} validated", tone="good" if query_summary.get('validated_clusters') else "neutral")}
             </div>
             <a class="text-link" href="/admin/website-ops/queries">Inspect query ownership and citations</a>
