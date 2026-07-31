@@ -93,6 +93,27 @@ class PublicPayloadTests(unittest.TestCase):
         summary["rate_matrix"]["products"][0]["zones"][0]["quotes"][0]["source"] = "mock"
         self.assertIsNone(serialize_public_matrix(summary, preview=True))
 
+    def test_serializer_excludes_unrated_packages_and_destinations(self) -> None:
+        summary = live_summary()
+        summary["rate_matrix"]["products"].append(
+            {
+                "product": {"name": "Unrated Widget", "weight_lb": 2},
+                "zones": [
+                    {
+                        "zone": 8,
+                        "dest_zip": "98101",
+                        "dest_label": "Seattle, WA",
+                        "quotes": [],
+                    }
+                ],
+            }
+        )
+        payload = serialize_public_matrix(summary, preview=False)
+        self.assertIsNotNone(payload)
+        self.assertEqual([item["name"] for item in (payload or {})["products"]], ["Widget"])
+        self.assertEqual([item["zone"] for item in (payload or {})["destinations"]], [5])
+        self.assertEqual((payload or {})["preview_product_count"], 1)
+
     def test_status_and_result_routes_return_only_safe_contract(self) -> None:
         summary = live_summary()
         run_id = storage.create_run(trigger="public_funnel")
