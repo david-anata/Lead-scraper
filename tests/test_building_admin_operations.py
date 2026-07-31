@@ -20,7 +20,7 @@ os.environ.setdefault(
 try:
     from fastapi.testclient import TestClient
 
-    from sales_support_agent.integrations.stripe_billing import StripeBillingClient
+    from sales_support_agent.integrations.building_quickbooks import BuildingQuickBooksClient
     from sales_support_agent.main import app
     from sales_support_agent.models.database import create_session_factory, init_database
     from sales_support_agent.models.entities import (
@@ -514,22 +514,24 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             {},
         ))
         provider_invoice = {
-            "id": "in_admin_deposit",
-            "status": "open",
-            "amount_due": 50000,
-            "amount_paid": 0,
-            "currency": "usd",
-            "hosted_invoice_url": "https://invoice.example/admin",
+            "Id": "11249",
+            "DueDate": (date.today() + timedelta(days=7)).isoformat(),
+            "TotalAmt": 500,
         }
         with (
             patch.object(
-                StripeBillingClient,
-                "create_customer",
-                return_value={"id": "cus_admin"},
+                BuildingQuickBooksClient,
+                "is_configured",
+                new_callable=lambda: property(lambda _self: True),
             ),
             patch.object(
-                StripeBillingClient,
-                "create_invoice",
+                BuildingQuickBooksClient,
+                "ensure_customer",
+                return_value={"Id": "535"},
+            ),
+            patch.object(
+                BuildingQuickBooksClient,
+                "create_draft_invoice",
                 return_value=provider_invoice,
             ) as create_invoice,
         ):
@@ -548,7 +550,8 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             schedule = session.get(BuildingBillingSchedule, "admin-deposit")
             invoice = session.query(BuildingInvoice).one()
             self.assertEqual(schedule.status, "completed")
-            self.assertEqual(invoice.accounting_status, "pending_qbo")
+            self.assertEqual(invoice.accounting_status, "synced_qbo")
+            self.assertEqual(invoice.provider, "quickbooks")
 
 
 if __name__ == "__main__":
