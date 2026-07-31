@@ -1,28 +1,18 @@
-"""Finance navigation with live counts.
-
-Eight tools were living inside one dialog, three of which produce hundreds of
-rows. They belong on pages. The counts sit in the nav so the operator can see
-where the work is without opening anything, and so a wrong number is visible
-immediately rather than hidden behind a click.
-"""
+"""The four-destination navigation for the replacement Finance experience."""
 
 from __future__ import annotations
 
 import html
 from typing import Any
 
-# (key, label, href). Order follows how often each is actually used.
+# The replacement Finance experience has four destinations.  Older routes stay
+# available during the stabilization release, but they no longer compete with
+# the owner's daily money workflow.
 NAV_ITEMS = (
     ("today", "Today", "/admin/finances"),
+    ("plan", "Cash plan", "/admin/finances/plan"),
     ("review", "Review", "/admin/finances/review"),
-    ("bookkeeping", "Bookkeeping", "/admin/finances/bookkeeping"),
-    ("audit", "Bill audit", "/admin/finances/audit"),
-    ("collections", "Who owes you", "/admin/finances/collections"),
-    ("schedules", "Schedules", "/admin/finances/recurring"),
-    # No apostrophe in the label: the strip escapes it, and a nav item nobody
-    # can find by reading it is worse than slightly stiff wording.
-    ("whats_coming", "What is coming", "/admin/finances/whats-coming"),
-    ("setup", "Setup", "/admin/finances/setup"),
+    ("accounts", "Accounts & setup", "/admin/finances/accounts"),
 )
 
 

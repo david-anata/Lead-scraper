@@ -149,9 +149,8 @@ def test_what_is_coming_opens_with_nothing_found(books):
     assert response.status_code == 200
     assert "<h1>What is coming</h1>" in response.text
     assert "no regular payment" in response.text
-    assert 'is-active" href="/admin/finances/whats-coming"' in response.text, (
-        "the operator has to be able to see which page they are on"
-    )
+    assert 'href="/admin/finances/review"' in response.text
+    assert 'href="/admin/finances/whats-coming"' not in response.text
 
 
 def test_a_bill_found_in_the_bank_history_is_offered_with_its_evidence(books):
