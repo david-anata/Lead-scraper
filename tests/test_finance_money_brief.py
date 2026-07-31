@@ -74,6 +74,50 @@ def test_same_evidence_produces_same_calculation_id() -> None:
     assert _brief().calculation_id == _brief().calculation_id
 
 
+def test_live_brief_uses_spendable_plaid_cash_not_reserves() -> None:
+    from sales_support_agent.services.cashflow.money_brief import load_finance_brief
+
+    with (
+        patch(
+            "sales_support_agent.services.cashflow.money_brief.list_obligations",
+            return_value=[],
+        ),
+        patch(
+            "sales_support_agent.services.cashflow.money_brief._load_settlement_context",
+            return_value=([], []),
+        ),
+        patch(
+            "sales_support_agent.services.cashflow.money_brief._resolve_current_balance",
+            return_value=(2_554_402, "2026-07-30", "plaid"),
+        ),
+        patch(
+            "sales_support_agent.services.cashflow.money_brief.load_accounts_overview",
+            return_value={
+                "spendable_cents": 2_552_539,
+                "reserve_cents": 1_863,
+                "account_count": 4,
+                "as_of": "2026-07-30",
+            },
+        ),
+        patch(
+            "sales_support_agent.services.cashflow.money_brief._load_finance_control_inputs",
+            return_value=(None, None),
+        ),
+        patch(
+            "sales_support_agent.services.cashflow.money_brief._build_renderer_state",
+            return_value=({}, {}, False),
+        ),
+        patch(
+            "sales_support_agent.services.cashflow.money_brief._normalise_renderer_state",
+            return_value=_state(),
+        ) as normalise,
+    ):
+        normalise.return_value["cash"]["cash_on_hand_cents"] = 2_552_539
+        brief = load_finance_brief(object())
+
+    assert brief.amount("cash").cents == 2_552_539
+
+
 def test_today_is_a_five_number_brief_without_old_dashboard_surfaces() -> None:
     page = render_money_brief_page(_brief(trust_ready=False))
     for label in (

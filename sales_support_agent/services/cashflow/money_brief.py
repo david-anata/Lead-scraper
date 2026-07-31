@@ -277,6 +277,14 @@ def load_finance_brief(settings: Any) -> FinanceBrief:
             rows,
             plaid_environment=str(getattr(settings, "plaid_environment", "sandbox") or "sandbox"),
         )
+        if str(balance_source).lower() == "plaid":
+            accounts = load_accounts_overview()
+            if int(accounts.get("account_count") or 0) > 0:
+                # The headline and Accounts page must use the exact same role
+                # selection. Savings/reserve balances stay visible but are not
+                # silently added to spendable cash.
+                balance_cents = int(accounts.get("spendable_cents") or 0)
+                balance_as_of = str(accounts.get("as_of") or balance_as_of)
         income_decisions, source_connections = _load_finance_control_inputs(settings)
         return build_finance_brief(
             rows=rows,
