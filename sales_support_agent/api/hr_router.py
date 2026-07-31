@@ -296,6 +296,7 @@ async def hr_setup(request: Request, user: dict = Depends(_pay_view_guard)):
     return HTMLResponse(render_hr_setup(
         payroll_store.control_room(_default_payroll_date()),
         payroll_store.get_company_profile(),
+        pto_workflow.calendar_readiness(),
         user=user,
         flash=_flash(request),
     ))
@@ -1096,10 +1097,57 @@ async def hr_pto_withdraw(request_id: int, user: dict = Depends(_guard)):
 @router.post("/time/pto/{request_id}/calendar-sync")
 async def hr_pto_calendar_sync(request_id: int, user: dict = Depends(_time_review_guard)):
     _require_team_record(user, store.list_pto_requests(None), request_id)
-    ok, message = pto_workflow.sync_approved_request(request_id)
+    item = store.get_pto_request(request_id)
+    ok, message = (
+        pto_workflow.sync_revoked_request(request_id)
+        if item and item.get("status") == "revoked"
+        else pto_workflow.sync_approved_request(request_id)
+    )
     return RedirectResponse(
         f"/admin/hr/time?{'ok' if ok else 'err'}=pto_calendar_{message}",
         status_code=303,
+    )
+
+
+@router.post("/time/pto/{request_id}/notify-reviewer")
+async def hr_pto_notify_reviewer(
+    request: Request, request_id: int, user: dict = Depends(_time_review_guard)
+):
+    _require_team_record(user, store.list_pto_requests(None), request_id)
+    item = store.get_pto_request(request_id)
+    if not item or item.get("status") != "pending":
+        return RedirectResponse(
+            "/admin/hr/time?err=pto_notification_not_allowed", status_code=303
+        )
+    sent = pto_workflow.notify_reviewer(
+        getattr(request.app.state, "agent_settings", None),
+        request_id=request_id, base_url=str(request.base_url),
+    )
+    return RedirectResponse(
+        "/admin/hr/time?" + (
+            "ok=pto_manager_notified" if sent else "err=pto_notification_failed"
+        ), status_code=303,
+    )
+
+
+@router.post("/time/pto/{request_id}/revoke")
+async def hr_pto_revoke(
+    request: Request, request_id: int, reason: str = Form(""),
+    user: dict = Depends(_time_review_guard),
+):
+    _require_team_record(user, store.list_pto_requests(None), request_id)
+    actor = (user.get("email") or "").strip().lower()
+    ok, message = store.revoke_pto(
+        request_id, reason=reason, actor=actor
+    )
+    if ok:
+        pto_workflow.sync_revoked_request(request_id)
+        pto_workflow.notify_employee(
+            getattr(request.app.state, "agent_settings", None),
+            request_id=request_id, base_url=str(request.base_url),
+        )
+    return RedirectResponse(
+        f"/admin/hr/time?{'ok' if ok else 'err'}={message}", status_code=303
     )
 
 
@@ -1621,6 +1669,7 @@ async def hr_settings(request: Request, user: dict = Depends(_settings_guard)):
     )
     return HTMLResponse(render_hr_settings(
         payroll_store.get_payroll_settings(), payroll_store.get_company_profile(),
+        pto_workflow.calendar_readiness(),
         store.list_employees(),
         [
             account for account in access_store.list_users()

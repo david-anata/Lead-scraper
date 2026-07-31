@@ -82,6 +82,22 @@ def update_operator() -> None:
         "Reports are permission-filtered CSV exports. Store exports only where authorized HR administrators can access them.",
         "Reports are permission-filtered CSV exports. Quarterly and year-to-date registers support accountant reconciliation. The verified HR backup ZIP includes a checksum manifest but excludes full SSNs and sealed tax-form payloads. Store every download securely.",
     )
+    replace(
+        document,
+        "The requester cannot approve their own request. The decision posts to the PTO record and later payroll treatment.",
+        "The requester cannot approve their own request. The assigned manager receives a privacy-safe email that links back to the authenticated Time & PTO page; the email itself cannot approve anything. Approval reserves the PTO balance and adds an all-day event to the dedicated Anata OOO calendar. Denial creates no calendar event. The employee receives the decision by email.",
+    )
+    insert_before(
+        document,
+        "Holiday handling",
+        [
+            ("OOO calendar setup, revocation, and recovery", "Heading 2"),
+            ("Open HR → Settings → Time-off calendar. A Ready status means the dedicated calendar ID and service account are configured. Never paste the service-account JSON into an HR form or email; it belongs only in Render’s secret environment settings.", "Normal"),
+            ("If a pending request says the manager email needs attention, use Resend manager email. The reviewer still signs in to approve or deny; email never grants approval authority.", "Normal"),
+            ("If approved time must be canceled, an authorized reviewer enters a revocation reason and selects Revoke approved PTO. Anata preserves the approval history, releases the reserved hours, removes the OOO event, and emails the employee.", "Normal"),
+            ("If Google is unavailable, the PTO decision remains valid and the row shows that calendar attention is needed. After restoring the connection, select Retry OOO calendar. Do not edit the Google event manually as a substitute for the HR record.", "Normal"),
+        ],
+    )
     insert_before(
         document,
         "9. Authoritative payroll-service handoff",
@@ -205,6 +221,11 @@ def update_employee() -> None:
         document,
         "Confirm you signed in with the exact work email used for your employee record.",
         "Confirm you used the exact personal HR sign-in email where your invitation was sent.",
+    )
+    replace(
+        document,
+        "David or Val approves or denies the request. Do not assume time off is approved until the status changes.",
+        "Your assigned manager receives an email and must sign in to Anata to approve or deny the request. Email alone never approves time off. Do not assume time off is approved until the status changes. After approval, Anata adds the dates to the shared OOO calendar and emails you the decision. If approved plans change, contact your manager; an authorized reviewer must revoke the request so your PTO balance and calendar are corrected together.",
     )
     insert_before(
         document,

@@ -42,6 +42,16 @@ class HRGoogleCalendarClient:
     def configured(self) -> bool:
         return not self.readiness_error
 
+    @property
+    def service_account_email(self) -> str:
+        """Return only the non-secret account identity used for calendar sharing."""
+        if not self.service_account_json:
+            return ""
+        try:
+            return str(json.loads(self.service_account_json).get("client_email") or "")
+        except (json.JSONDecodeError, TypeError):
+            return ""
+
     def _authorized_session(self) -> Any:
         if not self.configured:
             raise RuntimeError(self.readiness_error)

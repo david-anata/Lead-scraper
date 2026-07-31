@@ -12,6 +12,18 @@ from sales_support_agent.services.hr import store
 logger = logging.getLogger(__name__)
 
 
+def calendar_readiness() -> dict:
+    """Expose safe OOO-calendar setup state without returning credentials."""
+    client = HRGoogleCalendarClient()
+    return {
+        "configured": client.configured,
+        "status": "Ready" if client.configured else "Setup needed",
+        "reason": client.readiness_error,
+        "calendar_id": client.calendar_id,
+        "service_account_email": client.service_account_email,
+    }
+
+
 def notify_reviewer(settings, *, request_id: int, base_url: str) -> bool:
     item = store.get_pto_request(request_id)
     if not item or not item.get("reviewer_login_email"):
@@ -75,3 +87,34 @@ def sync_approved_request(request_id: int) -> tuple[bool, str]:
         return False, "failed"
     store.record_pto_calendar_sync(request_id, status="synced", event_id=event_id)
     return True, "synced"
+
+
+def sync_revoked_request(request_id: int) -> tuple[bool, str]:
+    """Remove a revoked request from OOO; deletion is safe and idempotent."""
+    item = store.get_pto_request(request_id)
+    if not item or item["status"] != "revoked":
+        return False, "not_revoked"
+    event_id = item.get("calendar_event_id", "")
+    if not event_id:
+        store.record_pto_calendar_sync(
+            request_id, status="deleted", clear_event=True
+        )
+        return True, "deleted"
+    client = HRGoogleCalendarClient()
+    if not client.configured:
+        store.record_pto_calendar_sync(
+            request_id, status="failed", error=client.readiness_error
+        )
+        return False, "setup_required"
+    try:
+        client.delete_event(event_id)
+    except Exception as exc:
+        logger.exception("OOO calendar delete failed for PTO request %s", request_id)
+        store.record_pto_calendar_sync(
+            request_id, status="failed", error=str(exc)[:500]
+        )
+        return False, "failed"
+    store.record_pto_calendar_sync(
+        request_id, status="deleted", clear_event=True
+    )
+    return True, "deleted"

@@ -312,7 +312,8 @@ def render_hr_employee_record_missing(*, user: Optional[dict]) -> str:
     )
 
 
-def render_hr_setup(control: dict, company_profile: dict, *, user, flash=None) -> str:
+def render_hr_setup(control: dict, company_profile: dict, calendar: dict,
+                    *, user, flash=None) -> str:
     """Render the approved company-to-payroll setup journey from live readiness."""
     readiness = control.get("readiness") or {}
     blockers = readiness.get("blockers") or []
@@ -386,6 +387,18 @@ def render_hr_setup(control: dict, company_profile: dict, *, user, flash=None) -
             ),
             "ready": True, "owner": "System",
             "href": "/admin/hr/compliance", "action": "View payroll calendar",
+        },
+        {
+            "title": "Connect the shared OOO calendar",
+            "description": (
+                "Approved PTO is synchronized to the dedicated Anata OOO calendar."
+                if calendar.get("configured") else
+                "Connect the dedicated Anata OOO Google Calendar so approved leave "
+                "is visible to the team. PTO approval remains valid if sync is down."
+            ),
+            "ready": bool(calendar.get("configured")), "owner": "David or Val",
+            "href": "/admin/hr/settings#ooo-calendar",
+            "action": "Review calendar connection",
         },
         {
             "title": "Verify Utah payroll registrations",
@@ -1117,10 +1130,40 @@ def render_hr_time(
     if not rows:
         rows = '<tr><td colspan="6" class="hr-empty">No time recorded yet.</td></tr>'
     viewer_email = ((user or {}).get("email") or "").strip().lower()
+    def pto_actions(item: dict) -> str:
+        actions = []
+        if can_review and item["status"] == "pending" and item["employee_email"] != viewer_email:
+            actions.append(
+                f'<form class="hr-inline" method="post" action="/admin/hr/time/pto/{item["id"]}/decision">'
+                '<button class="hr-btn" name="decision" value="approved">Approve</button>'
+                '<button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>'
+            )
+            if not item.get("manager_notified"):
+                actions.append(
+                    f'<form method="post" action="/admin/hr/time/pto/{item["id"]}/notify-reviewer">'
+                    '<button class="hr-btn hr-btn-light" type="submit">Resend manager email</button></form>'
+                )
+        elif can_review and item["status"] == "approved":
+            actions.append(
+                f'<form class="hr-form" method="post" action="/admin/hr/time/pto/{item["id"]}/revoke">'
+                '<label>Revocation reason</label><input name="reason" required maxlength="500">'
+                '<button class="hr-btn hr-btn-light" type="submit">Revoke approved PTO</button></form>'
+            )
+        elif item["status"] == "pending" and item["employee_email"] == viewer_email:
+            actions.append(
+                f'<form method="post" action="/admin/hr/time/pto/{item["id"]}/withdraw">'
+                '<button class="hr-btn hr-btn-light" type="submit">Withdraw request</button></form>'
+            )
+        if can_review and item["status"] in ("approved", "revoked") and item.get("calendar_sync_status") in ("failed", "setup_required"):
+            actions.append(
+                f'<form method="post" action="/admin/hr/time/pto/{item["id"]}/calendar-sync">'
+                '<button class="hr-btn hr-btn-light" type="submit">Retry OOO calendar</button></form>'
+            )
+        return "".join(actions) or "—"
     requests = "".join(f"""<tr><td>{_esc(r['employee_email'])}</td><td>{_esc(r['start_date'])}–{_esc(r['end_date'])}
       <div class="hr-help">{r.get('working_day_count', 0)} working day(s){f"; {r.get('excluded_day_count')} weekend/holiday day(s) ignored" if r.get('excluded_day_count') else ""}</div></td>
-      <td>{r['hours']:.2f}</td><td>{_esc(r['status'].title())}<div class="hr-help">{_esc('OOO calendar synced' if r.get('calendar_sync_status') == 'synced' else 'OOO calendar setup needed' if r.get('calendar_sync_status') == 'setup_required' else 'OOO calendar sync needs retry' if r.get('calendar_sync_status') == 'failed' else 'Manager notified' if r.get('manager_notified') else 'Manager email needs attention' if r['status'] == 'pending' else '')}</div></td><td>{_esc(r['reason'] or '—')}</td><td>
-      {f'<form class="hr-inline" method="post" action="/admin/hr/time/pto/{r["id"]}/decision"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and r['status'] == 'pending' and r['employee_email'] != viewer_email else f'<form method="post" action="/admin/hr/time/pto/{r["id"]}/calendar-sync"><button class="hr-btn hr-btn-light" type="submit">Retry OOO calendar</button></form>' if can_review and r['status'] == 'approved' and r.get('calendar_sync_status') in ('failed', 'setup_required') else f'<form method="post" action="/admin/hr/time/pto/{r["id"]}/withdraw"><button class="hr-btn hr-btn-light" type="submit">Withdraw request</button></form>' if r['status'] == 'pending' and r['employee_email'] == viewer_email else '—'}</td></tr>""" for r in pto_requests)
+      <td>{r['hours']:.2f}</td><td>{_esc(r['status'].title())}<div class="hr-help">{_esc('OOO calendar synced' if r.get('calendar_sync_status') == 'synced' else 'Removed from OOO calendar' if r.get('calendar_sync_status') == 'deleted' else 'OOO calendar setup needed' if r.get('calendar_sync_status') == 'setup_required' else 'OOO calendar sync needs retry' if r.get('calendar_sync_status') == 'failed' else 'Manager notified' if r.get('manager_notified') else 'Manager email needs attention' if r['status'] == 'pending' else '')}</div></td><td>{_esc(r['reason'] or '—')}</td><td>
+      {pto_actions(r)}</td></tr>""" for r in pto_requests)
     if not requests:
         requests = '<tr><td colspan="6" class="hr-empty">No PTO requests yet.</td></tr>'
     correction_rows = "".join(f"""<tr><td>#{_esc(c['id'])}</td><td>{_esc(c.get('work_date') or 'Date unavailable')}</td>
@@ -2010,7 +2053,7 @@ def render_hr_policies(policy: dict, *, user, flash=None) -> str:
 
 
 def render_hr_settings(
-    settings: dict, company: dict, employees: list, payroll_approvers: list,
+    settings: dict, company: dict, calendar: dict, employees: list, payroll_approvers: list,
     opening_balances: list, handbooks: list, *, user, flash=None,
 ) -> str:
     checked = lambda key: " checked" if settings.get(key) else ""
@@ -2091,6 +2134,19 @@ def render_hr_settings(
       automatic money movement. A future internal service cannot claim any of those
       outcomes until it passes the published authority and security contract.</p>
       <a class="hr-btn hr-btn-light" href="/admin/hr/settings/provider-contract.json">View future service requirements</a>
+    </section>
+    <section class="hr-card" id="ooo-calendar">
+      <div class="hr-kicker">Time-off calendar</div>
+      <h2>Anata OOO Google Calendar · {_esc(calendar.get('status'))}</h2>
+      <p class="hr-sub">Only approved PTO is added. Pending and denied requests never appear. Revoking approved PTO releases the reserved hours and removes its event.</p>
+      {f'<div class="hr-callout"><strong>Ready.</strong> Calendar: {_esc(calendar.get("calendar_id"))}<br>Service account: {_esc(calendar.get("service_account_email"))}</div>' if calendar.get('configured') else f'<div class="hr-callout warn"><strong>Setup needed.</strong> {_esc(calendar.get("reason"))}</div>'}
+      <ol class="hr-sub">
+        <li>Create or open the dedicated Google Calendar named <strong>Anata OOO</strong>.</li>
+        <li>Share it with the service-account email shown here using “Make changes to events.”</li>
+        <li>In Render, set <code>HR_OOO_GOOGLE_CALENDAR_ID</code> and <code>HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON</code>, then deploy.</li>
+        <li>Return to Time &amp; PTO and retry any item marked as needing calendar attention.</li>
+      </ol>
+      <p class="hr-help">Never paste the service-account JSON into an HR form, email, or employee record. It belongs only in Render’s secret environment settings.</p>
     </section>
     <section class="hr-card">
       <div class="hr-kicker">Base44 recovery</div>

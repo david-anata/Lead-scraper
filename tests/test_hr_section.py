@@ -974,6 +974,56 @@ class HRSectionTests(unittest.TestCase):
             hr_store.list_pto_requests(employee_email)[0]["status"], "withdrawn"
         )
 
+    def test_authorized_revoke_releases_approved_pto_without_erasing_history(self):
+        import uuid
+        email = f"pto-revoke-{uuid.uuid4().hex[:8]}@anatainc.com"
+        personal_login = f"pto-revoke-{uuid.uuid4().hex[:8]}@example.com"
+        hr_store.create_employee(
+            email=email, hr_login_email=personal_login, full_name="PTO Revoke"
+        )
+        hr_store.upsert_employment_profile(
+            email, hire_date=date(2025, 1, 1), pay_basis="fixed_semimonthly",
+            fixed_pay_per_period="1000", standard_weekly_hours=40, actor="test",
+        )
+        self.assertEqual(
+            hr_store.create_pto_request(
+                email, start_date=date(2026, 8, 3), end_date=date(2026, 8, 3),
+                hours=8, reason="Personal", actor=email,
+            ),
+            (True, "pto_requested"),
+        )
+        request_id = hr_store.list_pto_requests(email)[0]["id"]
+        self.assertFalse(hr_store.decide_pto(
+            request_id, decision="approved", actor=personal_login
+        ))
+        self.assertTrue(hr_store.decide_pto(
+            request_id, decision="approved", actor="david@anatainc.com"
+        ))
+        after_approval = hr_store.pto_summary(email)["available"]
+        self.assertEqual(
+            hr_store.revoke_pto(
+                request_id, reason="Self revoke", actor=personal_login
+            ),
+            (False, "pto_revocation_not_allowed"),
+        )
+        self.assertEqual(
+            hr_store.revoke_pto(
+                request_id, reason="Employee no longer needs the day",
+                actor="valeria@anatainc.com",
+            ),
+            (True, "pto_revoked"),
+        )
+        self.assertEqual(
+            hr_store.list_pto_requests(email)[0]["status"], "revoked"
+        )
+        self.assertEqual(hr_store.pto_summary(email)["available"], after_approval + 8)
+        self.assertEqual(
+            hr_store.revoke_pto(
+                request_id, reason="Duplicate", actor="david@anatainc.com"
+            ),
+            (False, "pto_revocation_not_allowed"),
+        )
+
     def test_onboarding_correction_preserves_submission_and_shows_employee_reason(self):
         self._post("/admin/hr/onboarding/profile", {
             "personal_email": "david.personal@example.com",

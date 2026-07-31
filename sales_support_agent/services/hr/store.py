@@ -1978,7 +1978,7 @@ def record_pto_notification(request_id: int, *, sent: bool) -> None:
 
 
 def record_pto_calendar_sync(request_id: int, *, status: str, event_id: str = "",
-                             error: str = "") -> None:
+                             error: str = "", clear_event: bool = False) -> None:
     with _session() as session:
         row = session.get(HRPTORequest, request_id)
         if not row:
@@ -1987,8 +1987,49 @@ def record_pto_calendar_sync(request_id: int, *, status: str, event_id: str = ""
         row.calendar_sync_error = error
         if event_id:
             row.calendar_event_id = event_id
+        elif clear_event:
+            row.calendar_event_id = ""
         _audit(session, "system", f"pto.calendar_{status}", "pto_request", row.id,
                {"calendar_event_id": event_id, "error": error})
+
+
+def revoke_pto(request_id: int, *, reason: str, actor: str) -> tuple[bool, str]:
+    """Revoke approved PTO, release its reservation, and preserve all evidence."""
+    explanation = (reason or "").strip()
+    if not explanation:
+        return False, "pto_revocation_reason_required"
+    with _session() as session:
+        row = session.get(HRPTORequest, request_id)
+        if not row or row.status != "approved":
+            return False, "pto_revocation_not_allowed"
+        actor_identity = (actor or "").strip().lower()
+        actor_employee = session.query(HREmployee).filter(
+            (HREmployee.email == actor_identity)
+            | (HREmployee.hr_login_email == actor_identity)
+        ).first()
+        actor_record_email = (
+            actor_employee.email if actor_employee else actor_identity
+        )
+        if row.employee_email == actor_record_email:
+            return False, "pto_revocation_not_allowed"
+        row.status = "revoked"
+        row.decided_by = actor
+        row.decided_at = datetime.now(timezone.utc)
+        session.add(HRPTOLedger(
+            employee_email=row.employee_email, entry_type="released",
+            hours=row.hours, effective_date=row.start_date,
+            source_type="pto_request", source_id=str(row.id),
+            note=f"Released when approved PTO was revoked: {explanation}",
+            created_by=actor,
+        ))
+        _supersede_open_payrolls(
+            session, actor=actor, effective_start=row.start_date,
+            effective_end=row.end_date, reason="Approved PTO revoked",
+        )
+        _audit(session, actor, "pto.revoked", "pto_request", row.id, {
+            "reason": explanation, "hours_released": float(row.hours),
+        })
+        return True, "pto_revoked"
 
 
 def withdraw_pto(request_id: int, *, employee_email: str, actor: str) -> tuple[bool, str]:
@@ -2017,7 +2058,14 @@ def decide_pto(request_id: int, *, decision: str, actor: str) -> bool:
         row = s.get(HRPTORequest, request_id)
         if not row or row.status != "pending":
             return False
-        if row.employee_email == actor.strip().lower():
+        actor_identity = actor.strip().lower()
+        actor_employee = s.query(HREmployee).filter(
+            (HREmployee.email == actor_identity)
+            | (HREmployee.hr_login_email == actor_identity)
+        ).first()
+        if row.employee_email == (
+            actor_employee.email if actor_employee else actor_identity
+        ):
             return False
         row.status, row.decided_by, row.decided_at = decision, actor, datetime.now(timezone.utc)
         if decision == "approved":

@@ -99,6 +99,7 @@ def test_settings_lists_authorized_owner_without_employee_record():
     html = render_hr_settings(
         {},
         {"final_approver_email": ""},
+        {"configured": False, "status": "Setup needed", "reason": "Missing."},
         [],
         [{
             "email": "david@anatainc.com",

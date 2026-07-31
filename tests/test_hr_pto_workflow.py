@@ -47,3 +47,32 @@ def test_only_approved_request_is_projected_and_end_date_is_exclusive(store, cli
 def test_pending_request_never_reaches_calendar(store):
     store.get_pto_request.return_value = _item("pending")
     assert pto_workflow.sync_approved_request(42) == (False, "not_approved")
+
+
+@patch("sales_support_agent.services.hr.pto_workflow.HRGoogleCalendarClient")
+@patch("sales_support_agent.services.hr.pto_workflow.store")
+def test_revoked_request_deletes_calendar_event_idempotently(store, client_type):
+    item = _item("revoked")
+    item["calendar_event_id"] = "event-42"
+    store.get_pto_request.return_value = item
+    client = MagicMock(configured=True)
+    client_type.return_value = client
+    assert pto_workflow.sync_revoked_request(42) == (True, "deleted")
+    client.delete_event.assert_called_once_with("event-42")
+    store.record_pto_calendar_sync.assert_called_once_with(
+        42, status="deleted", clear_event=True
+    )
+
+
+@patch("sales_support_agent.services.hr.pto_workflow.HRGoogleCalendarClient")
+def test_calendar_readiness_exposes_identity_but_never_credentials(client_type):
+    client_type.return_value = MagicMock(
+        configured=False, readiness_error="Calendar ID missing",
+        calendar_id="", service_account_email="calendar-agent@example.com",
+    )
+    result = pto_workflow.calendar_readiness()
+    assert result == {
+        "configured": False, "status": "Setup needed",
+        "reason": "Calendar ID missing", "calendar_id": "",
+        "service_account_email": "calendar-agent@example.com",
+    }
