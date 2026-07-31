@@ -65,6 +65,8 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn('aria-label="HR pages"', r.text)
         self.assertNotIn('class="hr-side"', r.text)
         self.assertEqual(r.text.count('id="agent-main-content"'), 1)
+        self.assertIn("field.labels && field.labels.length", r.text)
+        self.assertIn("candidate.htmlFor = field.id", r.text)
 
     def test_setup_checklist_uses_live_readiness_and_is_payroll_private(self):
         page = self._get("/admin/hr/setup", self.sa)

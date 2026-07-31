@@ -272,6 +272,14 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
         form.appendChild(csrfInput);
       }}
     }});
+    document.querySelectorAll('input:not([type="hidden"]), select, textarea').forEach(function(field, index) {{
+      if ((field.labels && field.labels.length) || field.hasAttribute('aria-label') || field.hasAttribute('aria-labelledby')) return;
+      var candidate = field.previousElementSibling;
+      while (candidate && candidate.tagName !== 'LABEL') candidate = candidate.previousElementSibling;
+      if (!candidate) return;
+      if (!field.id) field.id = 'hr-field-' + index;
+      candidate.htmlFor = field.id;
+    }});
     document.querySelectorAll('.hr-tbl').forEach(function(table) {{
       var headers = Array.from(table.querySelectorAll('thead th')).map(function(th) {{
         return th.textContent.trim();
