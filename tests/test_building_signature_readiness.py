@@ -138,7 +138,7 @@ class BuildingSignatureReadinessTests(unittest.TestCase):
             row = rows[0]
             self.assertEqual(row.status, "prepared")
             self.assertEqual(row.delivery_status, "not_sent")
-            self.assertEqual(row.provider, "")
+            self.assertEqual(row.provider, "quickbooks_contract_builder")
             self.assertEqual(row.provider_reference, "")
             self.assertEqual(row.signer_email, "signer@example.com")
             audit = session.query(BuildingAuditEvent).filter_by(
@@ -190,9 +190,10 @@ class BuildingSignatureReadinessTests(unittest.TestCase):
         self.assertIn("Taylor Morgan", page.text)
         self.assertIn("Not Sent", page.text)
         self.assertIn(
-            "no provider request or customer message exists",
+            "does not claim a QuickBooks request exists",
             page.text,
         )
+        self.assertIn("QuickBooks Contract Builder", page.text)
         self.assertNotIn("Send for signature", page.text)
 
     def test_04_csrf_and_auth_fail_closed(self) -> None:
@@ -253,6 +254,47 @@ class BuildingSignatureReadinessTests(unittest.TestCase):
                 .count(),
                 0,
             )
+
+    def test_06_quickbooks_signature_requires_and_records_strong_evidence(self) -> None:
+        endpoint = "/api/internal/building/bookings/signature-reservation/agreements"
+        base = {
+            "id": "signature-agreement",
+            "version": 1,
+            "status": "signed",
+            "provider": "quickbooks_contract_builder",
+            "provider_reference": "QB-CONTRACT-1042",
+            "document_url": "https://qbo.intuit.com/contracts/QB-CONTRACT-1042",
+            "actor": "david@anatainc.com",
+        }
+        missing_certificate = self.client.post(
+            endpoint,
+            headers={"X-Internal-API-Key": "signature-internal"},
+            json={**base, "evidence": {}},
+        )
+        self.assertEqual(missing_certificate.status_code, 422)
+        recorded = self.client.post(
+            endpoint,
+            headers={"X-Internal-API-Key": "signature-internal"},
+            json={
+                **base,
+                "evidence": {
+                    "esign_certificate_reference": "QB-CERT-1042",
+                    "signed_document_checksum": "d" * 64,
+                },
+            },
+        )
+        self.assertEqual(recorded.status_code, 201, recorded.text)
+        with self.factory() as session:
+            agreement = session.get(BuildingAgreement, "signature-agreement")
+            readiness = session.query(BuildingSignatureRequestReadiness).filter_by(
+                agreement_id="signature-agreement"
+            ).one()
+            reservation = session.get(BuildingReservation, "signature-reservation")
+            self.assertEqual(agreement.status, "signed")
+            self.assertEqual(agreement.provider, "quickbooks_contract_builder")
+            self.assertEqual(readiness.delivery_status, "completed")
+            self.assertEqual(readiness.provider_reference, "QB-CONTRACT-1042")
+            self.assertEqual(reservation.agreement_status, "signed")
 
 
 if __name__ == "__main__":

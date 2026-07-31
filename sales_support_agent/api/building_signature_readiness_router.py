@@ -1,8 +1,10 @@
-"""Governed provider-neutral signature-request readiness.
+"""Governed QuickBooks Contract Builder signature-request readiness.
 
 This module freezes who would sign which approved agreement. It never calls an
 e-sign provider, sends email, creates a provider request, or records a
-signature. Provider delivery remains a separate future adapter.
+signature. QuickBooks Contract Builder does not expose a supported public API,
+so delivery is a deliberate operator handoff and completion is recorded only
+from QuickBooks evidence.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ TRANSITIONS = {
     "expired": set(),
     "cancelled": set(),
 }
+QUICKBOOKS_CONTRACT_PROVIDER = "quickbooks_contract_builder"
 
 
 def _now() -> datetime:
@@ -143,7 +146,7 @@ def prepare_signature_readiness(
                 "email": contact.email,
                 "role": "customer",
             },
-            "provider": "unselected",
+            "provider": QUICKBOOKS_CONTRACT_PROVIDER,
             "delivery": "not_sent",
         }
         checksum = _checksum(snapshot)
@@ -182,6 +185,7 @@ def prepare_signature_readiness(
             agreement_checksum=agreement.package_checksum,
             snapshot_json=snapshot,
             checksum=checksum,
+            provider=QUICKBOOKS_CONTRACT_PROVIDER,
             delivery_status="not_sent",
             created_by=actor,
             created_at=now,
@@ -200,13 +204,16 @@ def prepare_signature_readiness(
                 "readiness_checksum": checksum,
                 "status": "prepared",
                 "delivery_status": "not_sent",
+                "provider": QUICKBOOKS_CONTRACT_PROVIDER,
                 "provider_write": False,
                 "message_sent": False,
             },
         ))
     return _redirect(
         agreement_id,
-        notice="Signature request prepared for review; nothing was sent.",
+        notice=(
+            "QuickBooks contract handoff prepared for review; nothing was sent."
+        ),
     )
 
 
