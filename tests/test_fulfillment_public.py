@@ -194,6 +194,23 @@ class FulfillmentPublicFunnelTests(unittest.TestCase):
         data = self._taste("dfy")
         self.assertTrue(data["run_id"])
 
+    def test_taste_sanitizes_persisted_attribution(self) -> None:
+        resp = self.client.post(
+            "/api/public/fulfillment/rate-sheet/taste",
+            json={
+                "url": "https://tabco.example",
+                "segment": "dfy",
+                "source": "person@example.com?campaign=visitor text",
+            },
+            headers=_HEADERS,
+        )
+        self.assertEqual(resp.status_code, 202, resp.text)
+        run = storage.get_run(resp.json()["run_id"])
+        self.assertEqual(
+            dict(run.summary_json or {}).get("public_source"),
+            "anatainc.com/tools/fulfillment-rate-sheet",
+        )
+
     def test_diy_taste_requires_valid_origin_zip(self) -> None:
         resp = self.client.post(
             "/api/public/fulfillment/rate-sheet/taste",

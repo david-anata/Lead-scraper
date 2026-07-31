@@ -55,6 +55,16 @@ router = APIRouter(prefix="/api/public/fulfillment", tags=["fulfillment-public"]
 TASTE_MAX_PRODUCTS = 3
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_ATTRIBUTION_SOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9./:_-]{0,119}$", re.IGNORECASE)
+
+
+def _sanitize_source(raw: Any) -> str:
+    candidate = str(raw or "").strip()
+    return (
+        candidate
+        if _ATTRIBUTION_SOURCE_RE.fullmatch(candidate)
+        else "anatainc.com/tools/fulfillment-rate-sheet"
+    )
 
 
 def _enforce_intake_key(request: Request, provided: Optional[str]) -> Optional[JSONResponse]:
@@ -126,7 +136,7 @@ async def rate_sheet_taste(
             status_code=400,
             content={"detail": "A valid ship-from ZIP is required when you ship from your own dock."},
         )
-    source = str(body.get("source", "") or "").strip()[:120]
+    source = _sanitize_source(body.get("source"))
 
     try:
         result = generate_rate_sheet(
