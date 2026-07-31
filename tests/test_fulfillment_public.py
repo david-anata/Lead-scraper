@@ -311,6 +311,35 @@ class FulfillmentPublicFunnelTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
+    def test_unlock_rejects_invalid_refinements_before_storage_lookup(self) -> None:
+        cases = (
+            ({"run_id": 0}, "run_id"),
+            ({"run_id": 1, "token": "x" * 257}, "token"),
+            ({"run_id": 1, "monthly_orders": 0}, "monthly_orders"),
+            ({"run_id": 1, "monthly_orders": "12.5"}, "monthly_orders"),
+            ({"run_id": 1, "monthly_orders": 1_000_000_000}, "monthly_orders"),
+            ({"run_id": 1, "origin_zip": "8404"}, "origin_zip"),
+            ({"run_id": 1, "consent_version": "future-v2"}, "consent"),
+        )
+        for overrides, expected_detail in cases:
+            with self.subTest(overrides=overrides), mock.patch.object(
+                P.storage, "get_run"
+            ) as lookup:
+                payload = {
+                    "run_id": 1,
+                    "token": "valid-token",
+                    "email": "rates@example.com",
+                    **overrides,
+                }
+                response = self.client.post(
+                    "/api/public/fulfillment/rate-sheet/unlock",
+                    json=payload,
+                    headers=_HEADERS,
+                )
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIn(expected_detail, response.json()["detail"].lower())
+                lookup.assert_not_called()
+
     # ------------------------------------------------------------------
     # DIY variant
     # ------------------------------------------------------------------

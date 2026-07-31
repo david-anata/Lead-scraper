@@ -409,41 +409,52 @@ async def rate_sheet_unlock(
         run_id = int(body.get("run_id"))
     except (TypeError, ValueError):
         return JSONResponse(status_code=400, content={"detail": "run_id is required."})
+    if run_id <= 0:
+        return JSONResponse(status_code=400, content={"detail": "run_id must be a positive integer."})
     token = str(body.get("token", "") or "").strip()
-    email = str(body.get("email", "") or "").strip()
-    if not token:
+    email = str(body.get("email", "") or "").strip().lower()
+    if not token or len(token) > 256:
         return JSONResponse(status_code=400, content={"detail": "token is required."})
     if not email or not _EMAIL_RE.match(email) or len(email) > 200:
         return JSONResponse(status_code=400, content={"detail": "A valid email is required."})
+
+    consent_version = str(body.get("consent_version", "") or "").strip()
+    if consent_version and consent_version != "sales-tools-v1":
+        return JSONResponse(status_code=400, content={"detail": "Unsupported consent version."})
+    monthly_orders: Optional[int] = None
+    raw_orders = body.get("monthly_orders")
+    if raw_orders is not None and str(raw_orders).strip() != "":
+        normalized_orders = str(raw_orders).strip()
+        if not re.fullmatch(r"[1-9]\d{0,8}", normalized_orders):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "monthly_orders must be a positive whole number."},
+            )
+        monthly_orders = int(normalized_orders)
+    origin_zip = str(body.get("origin_zip", "") or "").strip()
+    if origin_zip and clean_zip(origin_zip) is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "origin_zip must be a five-digit ZIP."},
+        )
 
     run = storage.get_run(run_id)
     if run is None:
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
     summary = dict(run.summary_json or {})
-    if token != str(summary.get("export_token") or ""):
+    expected_token = str(summary.get("export_token") or "")
+    if not expected_token or not secrets.compare_digest(token, expected_token):
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
     if str(summary.get("rates_source") or "") != RATE_SOURCE_WMS:
         return JSONResponse(
             status_code=503,
             content={"detail": "Live carrier rates are temporarily unavailable. Please build a new preview and try again."},
         )
-    consent_version = str(body.get("consent_version", "") or "").strip()[:64]
     if consent_version:
         try:
             storage.update_summary(run_id, {"consent_version": consent_version})
         except Exception:  # noqa: BLE001
             logger.debug("[fulfillment_public] consent persist failed", exc_info=True)
-
-    monthly_orders: Optional[int] = None
-    raw_orders = body.get("monthly_orders")
-    if raw_orders is not None and str(raw_orders).strip() != "":
-        try:
-            monthly_orders = int(raw_orders)
-        except (TypeError, ValueError):
-            monthly_orders = None
-        if monthly_orders is not None and monthly_orders <= 0:
-            monthly_orders = None
-    origin_zip = str(body.get("origin_zip", "") or "").strip()
 
     correlation_id = str(summary.get("public_correlation_id") or "").strip()
     existing_status = str(summary.get("public_rate_sheet_status") or "").strip()
