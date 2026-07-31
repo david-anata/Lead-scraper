@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import json
 
 from sales_support_agent.services.website_ops_article_engine import (
     _claim_daily_article_slot,
@@ -80,3 +81,25 @@ def test_failed_generation_does_not_consume_daily_topic_slot(tmp_path) -> None:
         pass
 
     assert article_generation_progress(settings)["generated_today"] == 0
+
+
+def test_malformed_json_generation_is_retried_before_claiming_slot(tmp_path) -> None:
+    settings = SimpleNamespace(website_ops_root=tmp_path)
+    attempts = []
+
+    def retry_generation(**kwargs):
+        attempts.append(kwargs["prompt"])
+        if len(attempts) < 3:
+            raise json.JSONDecodeError("bad object", "{", 1)
+        return {"slug": "recovered-article", "title": "Recovered article", "content": {}}
+
+    action = build_article_action(
+        settings=settings,
+        query_intelligence={"clusters": []},
+        requester=retry_generation,
+    )
+
+    assert action is not None
+    assert len(attempts) == 3
+    assert "previous response was malformed JSON" in attempts[1]
+    assert article_generation_progress(settings)["generated_today"] == 1
