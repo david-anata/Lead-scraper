@@ -844,6 +844,29 @@ class MarketingIntakeTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_advertising_audit_status_rejects_corrupt_lifecycle(self) -> None:
+        with mock.patch.object(M, "_run_analysis_and_deliver"):
+            body = self.client.post(
+                "/api/public/marketing/advertising-audit",
+                json={
+                    "product": "B09239YTZQ",
+                    "email": "ads-corrupt@example.com",
+                    "company": "Ocean Rx",
+                },
+                headers=HEADERS,
+            ).json()
+        with M.session_scope(app.state.session_factory) as session:
+            run = session.get(M.AutomationRun, int(body["run_id"]))
+            run.summary_json = {**(run.summary_json or {}), "email_delivery": "mystery"}
+            session.add(run)
+        response = self.client.get(
+            f"/api/public/marketing/advertising-audit/{body['run_id']}",
+            params={"token": body["token"]},
+            headers=HEADERS,
+        )
+        self.assertEqual(response.status_code, 500, response.text)
+        self.assertEqual(response.json()["detail"], "Invalid advertising audit lifecycle.")
+
     def test_advertising_hubspot_note_names_tool_and_next_step(self) -> None:
         client = mock.Mock()
         client.is_configured = True

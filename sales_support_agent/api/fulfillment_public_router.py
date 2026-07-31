@@ -453,10 +453,25 @@ async def rate_sheet_status(
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
     summary = dict(run.summary_json or {})
     rate_status = str(summary.get("public_rate_sheet_status") or "building")
+    email_status = str(summary.get("public_email_status") or "pending")
+    sales_status = str(summary.get("public_sales_handoff_status") or "pending")
+    if (
+        rate_status not in {"building", "ready", "failed"}
+        or email_status not in {"pending", "sent", "failed"}
+        or sales_status not in {"pending", "complete", "failed"}
+    ):
+        logger.error(
+            "[fulfillment_public] invalid public lifecycle for correlation %s: rate=%r email=%r sales=%r",
+            correlation_id,
+            rate_status,
+            email_status,
+            sales_status,
+        )
+        return JSONResponse(status_code=500, content={"detail": "Invalid rate sheet lifecycle."})
     response: dict[str, Any] = {
-        "rate_sheet": {"status": rate_status if rate_status in {"building", "ready", "failed"} else "building"},
-        "email": {"status": str(summary.get("public_email_status") or "pending")},
-        "sales_handoff": {"status": str(summary.get("public_sales_handoff_status") or "pending")},
+        "rate_sheet": {"status": rate_status},
+        "email": {"status": email_status},
+        "sales_handoff": {"status": sales_status},
     }
     if rate_status == "ready":
         response["result_path"] = f"/api/public/fulfillment/rate-sheet/result/{correlation_id}"

@@ -813,11 +813,23 @@ def advertising_audit_status(
         if not expected or not secrets.compare_digest(str(token or ""), expected):
             return JSONResponse(status_code=403, content={"detail": "Invalid status token."})
         summary = run.summary_json or {}
+        delivery = str(summary.get("email_delivery", "pending") or "pending")
+        if run.status not in {"running", "success", "failed"} or delivery not in {
+            "pending",
+            "delivered",
+            "failed",
+        }:
+            logger.error(
+                "[marketing_advertising] invalid public lifecycle for run %s: run=%r email=%r",
+                run_id,
+                run.status,
+                delivery,
+            )
+            return JSONResponse(status_code=500, content={"detail": "Invalid advertising audit lifecycle."})
         if run.status == "failed":
             public_status = "failed"
             strategy_status = "failed"
         elif run.status == "success":
-            delivery = str(summary.get("email_delivery", "pending") or "pending")
             public_status = "delivered" if delivery == "delivered" else (
                 "delivery_failed" if delivery == "failed" else "ready"
             )
@@ -830,7 +842,7 @@ def advertising_audit_status(
                 "status": public_status,
                 "strategy_audit": strategy_status,
                 "advertising_audit": "reports_required",
-                "email_delivery": str(summary.get("email_delivery", "pending") or "pending"),
+                "email_delivery": delivery,
             }
         )
 
@@ -859,7 +871,14 @@ def marketing_analysis_status(
             return JSONResponse(content={"status": "ready"})
         if run.status == "failed":
             return JSONResponse(content={"status": "failed"})
-        return JSONResponse(content={"status": "building"})
+        if run.status == "running":
+            return JSONResponse(content={"status": "building"})
+        logger.error(
+            "[marketing_analysis] invalid public lifecycle for run %s: %r",
+            run.id,
+            run.status,
+        )
+        return JSONResponse(status_code=500, content={"detail": "Invalid analysis lifecycle."})
 
 
 # ---------------------------------------------------------------------------

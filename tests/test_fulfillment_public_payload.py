@@ -131,6 +131,18 @@ class PublicPayloadTests(unittest.TestCase):
         self.assertNotIn("fulfillment_quote", result.json())
         self.assertEqual(result.json()["quotes"][0]["rate_usd"], 8.25)
 
+    def test_status_rejects_corrupt_lifecycle_instead_of_claiming_building(self) -> None:
+        summary = live_summary("corrupt-status-correlation-abcdef")
+        summary["public_rate_sheet_status"] = "mystery"
+        run_id = storage.create_run(trigger="public_funnel")
+        storage.save_draft(run_id, summary)
+        response = self.client.get(
+            f"/api/public/fulfillment/rate-sheet/status/{summary['public_correlation_id']}",
+            headers=HEADERS,
+        )
+        self.assertEqual(response.status_code, 500, response.text)
+        self.assertEqual(response.json()["detail"], "Invalid rate sheet lifecycle.")
+
     def test_indexed_correlation_lookup_has_fixed_query_count(self) -> None:
         summary = live_summary("query-budget-correlation-abcdefgh")
         run_id = storage.create_run(trigger="public_funnel")
