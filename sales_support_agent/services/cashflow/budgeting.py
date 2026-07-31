@@ -35,6 +35,7 @@ _TRANSFER_CATEGORIES = {
     "internal_transfer", "transfer", "transfers",
 }
 _TRANSFER_TEXT_MARKERS = (
+    "a2a transfer",
     "account transfer",
     "home banking withdrawal anata llc",
     "internal transfer",
@@ -567,7 +568,7 @@ def render_budget_page(
 
       <section class="budget-workspace" aria-labelledby="budget-table-title">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Monthly controls</p>
-        <h2 id="budget-table-title">Where spending is above the target</h2></div>
+        <h2 id="budget-table-title">Your monthly spending guardrails</h2></div>
         <span class="money-section-state">{len(view['categories'])} categories</span></div>
         <div class="money-table-wrap"><table class="budget-table"><thead><tr>
         <th>Category</th><th>3-month average</th><th>Projected this month</th><th>Suggested budget</th><th>Over / under</th>

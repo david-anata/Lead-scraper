@@ -95,6 +95,14 @@ def test_budget_excludes_credit_card_payments_and_named_internal_withdrawals() -
             merchant="Home banking Withdrawal - Anata LLC",
         ),
         _row(
+            "a2a-1",
+            "plaid",
+            "2026-07-11",
+            5_000_00,
+            category="other",
+            merchant="Withdrawal Home A2A Transfer: ****5196",
+        ),
+        _row(
             "software-1",
             "plaid",
             "2026-07-12",
