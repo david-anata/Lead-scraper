@@ -68,6 +68,7 @@ _RAW_RULES: list[tuple[str, str]] = [
     (r"QuestarGas|QUESTAR|Questar Gas", "utilities"),
     (r"CITY OF SARATOGA|SARATOGA.*CITY", "utilities"),
     (r"ROCKY.*MTN.*POWER|ROCKYMTN|PACIFIC POWER", "utilities"),
+    (r"DOMINION ENERGY|DOMINIONENERGY", "utilities"),
     (r"COMCAST|XFINITY|CABLE SVCS", "utilities"),
     (r"SPI\*ENB GAS|ENB GAS", "utilities"),
     (r"Payment to Questar|Payment to xfinity|Payment to Rocky Mountain", "utilities"),
@@ -94,6 +95,7 @@ _RAW_RULES: list[tuple[str, str]] = [
     (r"PRINTPERFECT", "software"),
     (r"WYZE", "software"),
     (r"CANVA", "software"),
+    (r"\bINTUIT\b", "software"),
 
     # ── Insurance ─────────────────────────────────────────────────────────
     (r"CINCINNATI INSUR|Cincinnati Insur", "insurance"),

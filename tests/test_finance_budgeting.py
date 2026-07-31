@@ -167,6 +167,39 @@ def test_budget_protects_ondeck_debt_from_savings_targets() -> None:
     assert debt["recurring_saving_cents"] == 0
 
 
+def test_budget_protects_dominion_and_classifies_generic_intuit_as_software() -> None:
+    rows = []
+    for month in ("01", "02", "03", "04", "05", "06", "07"):
+        rows.extend(
+            [
+                _row(
+                    f"dominion-{month}",
+                    "plaid",
+                    f"2026-{month}-10",
+                    20_000,
+                    category="uncategorized",
+                    merchant="Dominion Energy",
+                ),
+                _row(
+                    f"intuit-{month}",
+                    "plaid",
+                    f"2026-{month}-12",
+                    10_000,
+                    category="uncategorized",
+                    merchant="Intuit",
+                ),
+            ]
+        )
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    by_key = {item["key"]: item for item in view["categories"]}
+
+    assert by_key["utilities"]["protected"] is True
+    assert by_key["utilities"]["recurring_saving_cents"] == 0
+    assert by_key["software"]["protected"] is False
+    assert by_key["software"]["recurring_saving_cents"] == 1_500
+
+
 def test_protected_costs_are_not_given_a_cut_target() -> None:
     rows = [
         _row(f"rent-{month}", "plaid", f"2026-{month}-01", 200_000, category="rent")
