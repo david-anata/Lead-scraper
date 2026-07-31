@@ -246,7 +246,8 @@ def build_budget_view(
         reduction_bps = 0 if protected else 1_500 if key in _HIGH_CONTROL_CATEGORIES else 1_000
         target = average * (10_000 - reduction_bps) // 10_000
         potential = 0 if protected else max(0, projected - target)
-        recurring_saving = 0 if protected else max(0, average - target)
+        historical_reduction = 0 if protected else max(0, average - target)
+        recurring_saving = min(historical_reduction, potential)
         variance = projected - target
         merchants = sorted(
             category_merchants[key].items(), key=lambda item: (-item[1], item[0].casefold())
@@ -262,6 +263,7 @@ def build_budget_view(
                 "projected_cents": projected,
                 "target_cents": target,
                 "potential_saving_cents": potential,
+                "historical_reduction_cents": historical_reduction,
                 "recurring_saving_cents": recurring_saving,
                 "variance_cents": variance,
                 "earlier_average_cents": earlier_average,
@@ -653,7 +655,8 @@ def render_budget_page(
         <article><span>Projected spending this month</span><strong>{_money(totals['projected_cents'], exact=True)}</strong></article>
         <article><span>Six-month monthly average</span><strong>{_money(totals['average_cents'], exact=True)}</strong></article>
         <article><span>Suggested monthly budget</span><strong>{_money(totals['target_cents'], exact=True)}</strong></article>
-        <article class="budget-summary__saving"><span>Recurring savings target</span><strong>{_money(totals['recurring_saving_cents'], exact=True)}</strong></article>
+        <article><span>Possible EOM improvement</span><strong>{_money(totals['potential_saving_cents'], exact=True)}</strong></article>
+        <article class="budget-summary__saving"><span>Recurring savings still to capture</span><strong>{_money(totals['recurring_saving_cents'], exact=True)}</strong></article>
       </section>
       <p class="budget-proof">Source: {html.escape(str(view['source']).replace('_', ' ').title())} posted transactions · Six complete months: {html.escape(', '.join(view['comparison_months']))} · Latest evidence {html.escape(str(view.get('latest_date') or 'unavailable'))}. Mirrored sources and internal transfers are excluded.</p>
 

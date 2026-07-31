@@ -238,6 +238,21 @@ def test_six_month_review_detects_a_rising_category_trend() -> None:
     assert software["recurring_saving_cents"] == 2_250
 
 
+def test_recurring_savings_exclude_reductions_already_reflected_this_month() -> None:
+    rows = [
+        _row(f"software-{month}", "plaid", f"2026-{month}-10", 20_000)
+        for month in ("01", "02", "03", "04", "05", "06")
+    ]
+    rows.append(_row("software-07", "plaid", "2026-07-10", 5_000))
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    software = view["categories"][0]
+
+    assert software["historical_reduction_cents"] == 3_000
+    assert software["projected_cents"] < software["target_cents"]
+    assert software["recurring_saving_cents"] == 0
+
+
 def test_llm_can_only_prioritize_deterministic_categories(monkeypatch) -> None:
     rows = [
         _row(f"tool-{month}", "plaid", f"2026-{month}-10", 10_000)
@@ -305,7 +320,8 @@ def test_budget_page_is_explicitly_advisory_and_explainable() -> None:
     )
     assert "Stop the monthly cash leak" in page
     assert "Six-month monthly average" in page
-    assert "Recurring savings target" in page
+    assert "Recurring savings still to capture" in page
+    assert "Possible EOM improvement" in page
     assert "What operating spending is doing" in page
     assert "What should we cut or renegotiate?" in page
     assert "Run high spending review" in page
