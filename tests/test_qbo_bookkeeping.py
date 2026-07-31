@@ -43,6 +43,13 @@ def test_list_ready_for_qbo_only_returns_locally_filed_qbo_purchases(monkeypatch
     assert [row["id"] for row in rows] == ["qbo-purchase-8"]
 
 
+def test_transfers_are_never_offered_as_quickbooks_expenses(monkeypatch):
+    engine = _setup(monkeypatch)
+    _purchase(engine, "8", "Transfer to Wise", "transfer", "Uncategorized Expense")
+
+    assert qbo_bookkeeping.list_ready_for_qbo() == []
+
+
 def test_preview_refuses_an_already_booked_purchase(monkeypatch):
     engine = _setup(monkeypatch)
     _purchase(engine, "8", "Adobe", "software", "Uncategorized Expense")

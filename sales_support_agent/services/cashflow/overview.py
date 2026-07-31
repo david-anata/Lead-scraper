@@ -2861,9 +2861,9 @@ def _render_bookkeeping() -> str:
             + '<p class="finance-accounts-asof">Deciding once per merchant clears the queue far faster '
             + 'than one row at a time. Each group also teaches a rule, so it never asks again. '
             + 'The sample descriptions show what you are filing together.</p>'
-            + '<table class="finance-accounts-table finance-book-table"><thead><tr>'
+            + '<div class="finance-book-table-wrap"><table class="finance-accounts-table finance-book-table"><thead><tr>'
             + '<th>Merchant</th><th>Count</th><th>Total</th><th>File all as</th>'
-            + '</tr></thead><tbody>' + "".join(group_rows) + '</tbody></table>'
+            + '</tr></thead><tbody>' + "".join(group_rows) + '</tbody></table></div>'
         )
 
     if pending:
@@ -2894,11 +2894,11 @@ def _render_bookkeeping() -> str:
             )
         queue = (
             grouped_html
-            + '<h3 class="finance-book-subhead">Or one at a time</h3>'
+            + '<details class="finance-vendor-edit finance-book-one"><summary>Need to inspect one transaction at a time?</summary>'
             + '<table class="finance-accounts-table finance-book-table"><thead><tr>'
             + '<th>Transaction</th><th>File it as</th></tr></thead><tbody>'
             + "".join(rows) + '</tbody></table>'
-            + '<p class="finance-accounts-asof">Tick "always" to teach a rule so this merchant files itself next time.</p>'
+            + '<p class="finance-accounts-asof">Tick "always" to teach a rule so this merchant files itself next time.</p></details>'
         )
     else:
         queue = '<p class="finance-plan-ok">Everything is filed. Nothing needs a decision.</p>'
@@ -2956,7 +2956,7 @@ def _render_bookkeeping() -> str:
         '<section class="finance-source-row finance-bookkeeping"><div style="width:100%">'
         + '<strong>Bookkeeping</strong><span>Only money going out is sorted here. '
         + 'QuickBooks decides the category; this page only chases what it has not booked yet.</span>'
-        + head + queue + rules_html + money_in_note + writeback + '</div></section>'
+        + head + writeback + queue + rules_html + money_in_note + '</div></section>'
     )
 
 

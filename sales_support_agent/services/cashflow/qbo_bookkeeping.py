@@ -166,7 +166,9 @@ def list_ready_for_qbo(limit: int = 50) -> list[dict[str, Any]]:
             FROM cash_events
             WHERE source='qbo_bank' AND record_kind='transaction'
               AND event_type='outflow' AND source_id LIKE 'purchase-%'
-              AND LOWER(COALESCE(category,'')) NOT IN ('', 'uncategorized', 'other')
+              AND LOWER(COALESCE(category,'')) NOT IN (
+                '', 'uncategorized', 'other', 'transfer', 'revenue', 'loan', 'debt'
+              )
               AND (
                 COALESCE(subcategory,'')='' OR LOWER(subcategory) LIKE '%uncategor%'
                 OR LOWER(subcategory) LIKE '%suspense%'
