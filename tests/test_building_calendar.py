@@ -274,6 +274,31 @@ class BuildingCalendarTests(unittest.TestCase):
         self.assertFalse(primary.configured)
         self.assertIn("primary calendar alias is prohibited", primary.readiness_error)
 
+    def test_04b_delegated_subject_is_applied_to_service_account(self) -> None:
+        from sales_support_agent.integrations.building_google_calendar import (
+            BuildingGoogleCalendarClient,
+        )
+
+        credentials = mock.Mock()
+        delegated = mock.Mock()
+        credentials.with_subject.return_value = delegated
+        with patch(
+            "google.oauth2.service_account.Credentials.from_service_account_info",
+            return_value=credentials,
+        ) as from_info, patch(
+            "google.auth.transport.requests.AuthorizedSession"
+        ) as authorized_session:
+            client = BuildingGoogleCalendarClient(
+                calendar_id="events@example.com",
+                service_account_json='{"type":"service_account"}',
+                delegated_subject="building@anatainc.com",
+            )
+            client._authorized_session()
+
+        from_info.assert_called_once()
+        credentials.with_subject.assert_called_once_with("building@anatainc.com")
+        authorized_session.assert_called_once_with(delegated)
+
     def test_05_write_gate_fails_closed_without_provider_call(self) -> None:
         fake = FakeCalendarClient()
         with patch(

@@ -349,6 +349,10 @@ that calendar with the service-account email. The separate
 `BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED` gate defaults to false. Stable event
 IDs, committed claims, reconciliation evidence, and retry backoff prevent
 duplicate delivery and keep provider failures visible.
+If Workspace policy blocks direct write access for service accounts, authorize
+the service account OAuth client for only the Google Calendar scope and set
+`BUILDING_GOOGLE_CALENDAR_DELEGATED_SUBJECT` to the approved Anata calendar
+operator that already has write access to the dedicated calendar.
 After a controlled read/write/delete verification, enable
 `BUILDING_GOOGLE_CALENDAR_AVAILABILITY_AUTHORITY`. Event review then checks the
 full setup-through-teardown window and writes the hold synchronously, failing

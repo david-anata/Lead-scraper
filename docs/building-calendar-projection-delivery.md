@@ -12,6 +12,10 @@ either both Calendar and Agent succeed or Agent creates no hold.
   `primary` alias is rejected.
 - `BUILDING_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON` must be present before the
   adapter is ready.
+- When Workspace blocks direct write sharing to a service account, set
+  `BUILDING_GOOGLE_CALENDAR_DELEGATED_SUBJECT` to the approved Anata calendar
+  operator after authorizing only the Calendar scope for the service account's
+  OAuth client in Workspace Admin.
 - `BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED` defaults to false.
 - `BUILDING_GOOGLE_CALENDAR_AVAILABILITY_AUTHORITY` defaults to false during
   rollout. Enable it only with writes after controlled read/write verification.

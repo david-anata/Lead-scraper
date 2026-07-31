@@ -52,6 +52,7 @@ class BuildingGoogleCalendarClient:
         *,
         calendar_id: str | None = None,
         service_account_json: str | None = None,
+        delegated_subject: str | None = None,
         api_base_url: str | None = None,
     ) -> None:
         self.calendar_id = (
@@ -60,6 +61,11 @@ class BuildingGoogleCalendarClient:
         self.service_account_json = (
             service_account_json
             or os.getenv("BUILDING_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "")
+        ).strip()
+        self.delegated_subject = (
+            delegated_subject
+            if delegated_subject is not None
+            else os.getenv("BUILDING_GOOGLE_CALENDAR_DELEGATED_SUBJECT", "")
         ).strip()
         self.api_base_url = (
             api_base_url
@@ -111,6 +117,8 @@ class BuildingGoogleCalendarClient:
             credentials = service_account.Credentials.from_service_account_info(
                 info, scopes=[CALENDAR_SCOPE]
             )
+            if self.delegated_subject:
+                credentials = credentials.with_subject(self.delegated_subject)
             self._session = AuthorizedSession(credentials)
         return self._session
 
