@@ -304,6 +304,45 @@ def _build_website_notes(session) -> list[dict[str, Any]]:
     ]
 
 
+def _build_website_intakes(session) -> list[dict[str, Any]]:
+    from sales_support_agent.models.entities import AutomationRun
+
+    runs = session.scalars(
+        select(AutomationRun)
+        .where(AutomationRun.run_type == "marketing_intake")
+        .order_by(AutomationRun.started_at.desc())
+        .limit(40)
+    ).all()
+    rows: list[dict[str, Any]] = []
+    for run in runs:
+        metadata = dict(run.metadata_json or {})
+        summary = dict(run.summary_json or {})
+        email = str(metadata.get("email") or "").strip()
+        if not email:
+            continue
+        kind = str(summary.get("kind") or "analysis")
+        identifier = str(summary.get("asin") or summary.get("domain") or "")
+        rows.append({
+            "id": int(run.id),
+            "kind": kind,
+            "identifier": identifier,
+            "brand": str(summary.get("brand_name") or summary.get("product_title") or identifier),
+            "email": email,
+            "needs": [str(item) for item in (summary.get("needs") or [])][:8],
+            "status": str(run.status or "unknown"),
+            "reportReady": bool(summary.get("view_url")),
+            "acknowledgement": str(summary.get("acknowledgement_email") or "unknown"),
+            "internalNotification": str(summary.get("internal_lead_email") or "unknown"),
+            "hubspot": str(summary.get("hubspot_handoff") or "unknown"),
+            "emailDelivery": str(summary.get("email_delivery") or "pending"),
+            "error": str(summary.get("error") or "")[:240],
+            "startedAt": _format_run_timestamp(run.started_at),
+        })
+        if len(rows) >= 20:
+            break
+    return rows
+
+
 def _decorate_automation_schedules(schedule_runs: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for item in AUTOMATION_SCHEDULES:
@@ -1066,6 +1105,7 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
                 local_context = _load_local_deal_context(session, all_deal_ids)
             schedule_runs = _build_schedule_runs(session)
             website_notes = _build_website_notes(session)
+            website_intakes = _build_website_intakes(session)
         if all_deal_ids:
             live_mailbox_by_deal = _fetch_live_mailbox_state(
                 settings,
@@ -1075,6 +1115,7 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
     else:
         schedule_runs = {}
         website_notes = []
+        website_intakes = []
 
     company_ids = set()
     contact_ids = set()
@@ -1331,6 +1372,7 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
         "autonomy": AUTONOMY_POLICY,
         "automationSchedules": _decorate_automation_schedules(schedule_runs),
         "websiteNotes": website_notes,
+        "websiteIntakes": website_intakes,
         "stageDrift": {
             "targetOnly": [label for label in TARGET_STAGE_LABELS if _normalize(label) not in normalized_live],
             "liveOnly": [label for label in live_labels if _normalize(label) not in normalized_target],
@@ -1826,6 +1868,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
     next_best_action = _render_next_best_action(summary, queues)
     automation_schedules = list(snapshot.get("automationSchedules") or [])
     website_notes = list(snapshot.get("websiteNotes") or [])
+    website_intakes = list(snapshot.get("websiteIntakes") or [])
     stage_cards = "".join(
         f"""
         <article class="panel">
@@ -1881,6 +1924,21 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
         """
         for note in website_notes
     ) or "<p class='muted'>No website notes have been received.</p>"
+    website_intake_cards = "".join(
+        f"""
+        <article class="panel">
+          <p class="eyebrow">{_esc(str(intake.get("kind") or "analysis").title())} · {_esc(str(intake.get("status") or "unknown").title())}</p>
+          <h3>{_esc(intake.get("brand") or intake.get("identifier") or "Website analysis")}</h3>
+          <p class="muted">{_esc(intake.get("email") or "No email")} · {_esc(intake.get("identifier") or "No identifier")} · {_esc(intake.get("startedAt") or "")}</p>
+          <p>Needs: {_esc(", ".join(intake.get("needs") or []) or "Not selected")}</p>
+          <p class="muted">Report: {"ready" if intake.get("reportReady") else "not ready"} · Final email: {_esc(intake.get("emailDelivery") or "pending")} · HubSpot: {_esc(intake.get("hubspot") or "unknown")}</p>
+          <p class="muted">Acknowledgement: {_esc(intake.get("acknowledgement") or "unknown")} · Internal alert: {_esc(intake.get("internalNotification") or "unknown")}</p>
+          {f'<p class="flash">Blocker: {_esc(intake.get("error"))}</p>' if intake.get("error") else ""}
+          {f'<form method="post" action="/admin/sales/website-intakes/{int(intake.get("id") or 0)}/retry"><button class="btn" type="submit">Retry analysis delivery</button></form>' if str(intake.get("status") or "") == "failed" else ""}
+        </article>
+        """
+        for intake in website_intakes
+    ) or "<p class='muted'>No unlocked website analyses have been received.</p>"
     writeback_markup = ""
     if writeback:
         writeback_cards = "".join(
@@ -2026,6 +2084,11 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
         <h2>Website notes</h2>
         <p class="muted">Recent Contact, Partners, and Careers submissions are retained here even when an external handoff needs attention.</p>
         <div class="grid">{website_note_cards}</div>
+      </section>
+      <section class="workspace section-gap">
+        <h2>Website analysis delivery</h2>
+        <p class="muted">Recent unlocked Strategy Audit requests stay visible here with report, email, HubSpot, acknowledgement, and internal-alert state.</p>
+        <div class="grid">{website_intake_cards}</div>
       </section>
       <details class="diagnostic section-gap">
         <summary>Pipeline diagnostics</summary>

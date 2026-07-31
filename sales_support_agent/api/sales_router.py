@@ -14,7 +14,7 @@ import html
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from sales_support_agent.integrations.hubspot import HubSpotAPIError, HubSpotClient
@@ -639,6 +639,76 @@ def retry_website_note(request: Request, lead_id: int) -> Response:
         if run is not None:
             run.summary_json = {**(run.summary_json or {}), "accepted": True, **delivery}
             session.add(run)
+    clear_operator_snapshot_cache()
+    return RedirectResponse(url="/admin/sales", status_code=303)
+
+
+@router.post("/website-intakes/{intake_id}/retry")
+def retry_website_intake(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    intake_id: int,
+) -> Response:
+    from datetime import datetime, timezone
+
+    from sales_support_agent.api.marketing_router import (
+        _deliver_store_unlock,
+        _run_analysis_and_deliver,
+    )
+    from sales_support_agent.models.entities import AutomationRun
+
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.get(AutomationRun, intake_id)
+        if run is None or run.run_type != "marketing_intake":
+            return HTMLResponse(_render_sales_operator_unavailable(request, "Website analysis not found."), status_code=404)
+        metadata = dict(run.metadata_json or {})
+        summary = dict(run.summary_json or {})
+        email = str(metadata.get("email") or "").strip().lower()
+        kind = str(summary.get("kind") or "")
+        asin = str(summary.get("asin") or "")
+        domain = str(summary.get("domain") or "")
+        if run.status != "failed" or not email or (kind == "asin" and not asin) or (kind != "asin" and not domain):
+            return HTMLResponse(
+                _render_sales_operator_unavailable(request, "Website analysis is not retryable."),
+                status_code=409,
+            )
+        source = str(metadata.get("source") or "anatainc.com")
+        qualification = dict(metadata.get("qualification") or {})
+        needs = [str(item) for item in (summary.get("needs") or [])]
+        brand_name = str(summary.get("brand_name") or "")
+        run.status = "running"
+        run.completed_at = None
+        run.summary_json = {
+            **summary,
+            "error": "",
+            "operator_retry_queued_at": datetime.now(timezone.utc).isoformat(),
+        }
+        session.add(run)
+
+    if kind == "asin":
+        background_tasks.add_task(
+            _run_analysis_and_deliver,
+            request.app,
+            intake_run_id=intake_id,
+            asin=asin,
+            email=email,
+            source=source,
+            trigger="sales_operator_retry",
+            needs=needs,
+            qualification=qualification,
+        )
+    else:
+        background_tasks.add_task(
+            _deliver_store_unlock,
+            request.app,
+            intake_run_id=intake_id,
+            email=email,
+            domain=domain,
+            brand_name=brand_name,
+            needs=needs,
+            source=source,
+            qualification=qualification,
+        )
     clear_operator_snapshot_cache()
     return RedirectResponse(url="/admin/sales", status_code=303)
 

@@ -31,6 +31,62 @@ class SalesRouterTests(unittest.TestCase):
         finally:
             self.client.cookies.clear()
 
+    def _post(self, path: str):
+        self.client.cookies.set(self.cookie_name, self.cookie_token)
+        try:
+            return self.client.post(path, follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+
+    def test_failed_website_intake_can_be_queued_for_operator_retry(self) -> None:
+        from sales_support_agent.models.database import session_scope
+        from sales_support_agent.models.entities import AutomationRun
+        from sales_support_agent.services.audit import AuditService
+
+        with session_scope(app.state.session_factory) as session:
+            run = AuditService(session).start_run(
+                "marketing_intake",
+                trigger="test",
+                metadata={
+                    "email": "retry@example.com",
+                    "source": "anatainc.com",
+                    "qualification": {"company": "Retry Brand"},
+                },
+            )
+            AuditService(session).finish_run(
+                run,
+                status="failed",
+                summary={
+                    "kind": "asin",
+                    "asin": "B012345678",
+                    "brand_name": "Retry Brand",
+                    "needs": ["advertising"],
+                    "error": "provider timed out",
+                },
+            )
+            run_id = int(run.id)
+
+        try:
+            with mock.patch(
+                "sales_support_agent.api.marketing_router._run_analysis_and_deliver"
+            ) as retry:
+                response = self._post(f"/admin/sales/website-intakes/{run_id}/retry")
+
+            self.assertEqual(response.status_code, 303)
+            retry.assert_called_once()
+            self.assertEqual(retry.call_args.kwargs["intake_run_id"], run_id)
+            self.assertEqual(retry.call_args.kwargs["trigger"], "sales_operator_retry")
+            with session_scope(app.state.session_factory) as session:
+                persisted = session.get(AutomationRun, run_id)
+                self.assertEqual(persisted.status, "running")
+                self.assertEqual((persisted.summary_json or {}).get("error"), "")
+                self.assertTrue((persisted.summary_json or {}).get("operator_retry_queued_at"))
+        finally:
+            with session_scope(app.state.session_factory) as session:
+                persisted = session.get(AutomationRun, run_id)
+                if persisted is not None:
+                    session.delete(persisted)
+
     def test_sales_operator_shows_unavailable_page_when_snapshot_fails(self) -> None:
         with mock.patch(
             "sales_support_agent.api.sales_router.get_operator_snapshot",
