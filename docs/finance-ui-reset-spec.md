@@ -8,16 +8,18 @@ settlement matching, and the deterministic calculation rules.
 
 ## Daily experience
 
-Finance has four destinations:
+Finance has five destinations:
 
 1. **Today** — verified cash, confirmed and expected money in, confirmed and
    expected money out, three 14-day outlooks, and no more than three next
    actions.
 2. **Cash plan** — a read-only comparison of conservative, likely, and
    optimistic cash positions.
-3. **Review** — a guided inbox. One case opens on a normal page; the list never
+3. **Budget & savings** — posted-spending budgets, deterministic savings
+   targets, and an evidence-bound LLM review that recommends but never acts.
+4. **Review** — a guided inbox. One case opens on a normal page; the list never
    saves an answer.
-4. **Accounts & setup** — connected Plaid accounts, counted and excluded cash,
+5. **Accounts & setup** — connected Plaid accounts, counted and excluded cash,
    freshness, refresh, and bank connection.
 
 ## Trust contract

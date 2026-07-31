@@ -78,8 +78,9 @@ Confirmed, Delivered, Failed, Blocked, and Stale.
 
 ## Layout And Hierarchy
 
-- Finance Control uses four plain-language destinations: Today, Cash plan,
-  Review, and Accounts & setup. Today is a short money brief, not a dashboard.
+- Finance Control uses five plain-language destinations: Today, Cash plan,
+  Budget & savings, Review, and Accounts & setup. Today is a short money brief,
+  not a dashboard.
   It must show source readiness, decision trust, current cash, the 14-day
   outlook, and the next action within one scan.
 - Review work always opens as a normal page. Consequential answers use a

@@ -44,6 +44,13 @@ from sales_support_agent.services.cashflow.money_brief import (
     render_cash_plan_page,
     render_money_brief_page,
 )
+from sales_support_agent.services.cashflow.budgeting import (
+    BudgetReviewProviderError,
+    load_budget_review,
+    load_budget_view,
+    render_budget_page,
+    run_budget_review,
+)
 from sales_support_agent.services.cashflow.recurring import (
     parse_template_form,
     render_recurring_edit_page,
@@ -446,6 +453,38 @@ async def finance_overview(request: Request, flash: str = ""):
 async def finance_cash_plan(request: Request):
     brief = await asyncio.to_thread(load_finance_brief, _finance_settings(request))
     return HTMLResponse(render_cash_plan_page(brief))
+
+
+@router.get("/budget", response_class=HTMLResponse)
+async def finance_budget(request: Request, flash: str = ""):
+    view, review = await asyncio.gather(
+        asyncio.to_thread(load_budget_view),
+        asyncio.to_thread(load_budget_review),
+    )
+    return HTMLResponse(render_budget_page(view, review, flash=flash))
+
+
+@router.post("/budget/review")
+async def finance_budget_review(request: Request):
+    """Run advisory-only LLM analysis; never alter cash, books, or budgets."""
+    try:
+        result = await asyncio.to_thread(
+            run_budget_review, _finance_settings(request), force=True,
+        )
+    except BudgetReviewProviderError:
+        logger.exception("The high spending review failed")
+        return RedirectResponse(
+            "/admin/finances/budget?flash="
+            + quote("err:The high spending review could not finish. Nothing changed."),
+            status_code=303,
+        )
+    if result.get("status") == "not_configured":
+        message = "warn:The high spending review is not configured. The budget calculation is still available."
+    else:
+        message = "ok:High spending review completed. No bank or accounting records changed."
+    return RedirectResponse(
+        f"/admin/finances/budget?flash={quote(message)}", status_code=303,
+    )
 
 
 @router.get("/accounts", response_class=HTMLResponse)

@@ -216,7 +216,7 @@ def test_the_nav_keeps_predicted_bills_out_of_the_daily_four_destinations():
     assert "/admin/finances/whats-coming" not in strip
     assert "Cash plan" in strip
     assert "Review" in strip
-    assert len(NAV_ITEMS) == 4
+    assert len(NAV_ITEMS) == 5
 
 
 def test_the_nav_badges_only_the_predicted_bills_still_waiting_on_him():

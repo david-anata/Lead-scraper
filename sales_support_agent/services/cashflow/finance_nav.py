@@ -1,16 +1,17 @@
-"""The four-destination navigation for the replacement Finance experience."""
+"""The plain-language navigation for the replacement Finance experience."""
 
 from __future__ import annotations
 
 import html
 from typing import Any
 
-# The replacement Finance experience has four destinations.  Older routes stay
+# The replacement Finance experience has five destinations.  Older routes stay
 # available during the stabilization release, but they no longer compete with
 # the owner's daily money workflow.
 NAV_ITEMS = (
     ("today", "Today", "/admin/finances"),
     ("plan", "Cash plan", "/admin/finances/plan"),
+    ("budget", "Budget & savings", "/admin/finances/budget"),
     ("review", "Review", "/admin/finances/review"),
     ("accounts", "Accounts & setup", "/admin/finances/accounts"),
 )
