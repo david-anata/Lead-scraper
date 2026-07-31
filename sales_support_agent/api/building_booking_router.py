@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import base64
+import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 from uuid import uuid4
@@ -36,6 +37,9 @@ from sales_support_agent.models.entities import (
     BuildingTour,
 )
 from sales_support_agent.services.building_calendar import queue_calendar_projection
+from sales_support_agent.integrations.building_google_calendar import (
+    BuildingGoogleCalendarClient,
+)
 from sales_support_agent.services.building_checklists import (
     ensure_operational_checklist,
 )
@@ -399,33 +403,49 @@ def _customer_status_projection(
         )
     ).scalar_one_or_none()
     status = _customer_event_status(reservation)
+    terminal = reservation.status in {"cancelled", "expired"}
     return {
         "reservation_id": reservation.id,
         "event_window": {
+            "starts_at": (
+                reservation.guest_starts_at or reservation.starts_at
+            ).isoformat(),
+            "ends_at": (
+                reservation.guest_ends_at or reservation.ends_at
+            ).isoformat(),
+        },
+        "access_window": {
             "starts_at": reservation.starts_at.isoformat(),
             "ends_at": reservation.ends_at.isoformat(),
         },
+        "hold_expires_at": (
+            reservation.hold_expires_at.isoformat()
+            if reservation.status == "soft_hold" and reservation.hold_expires_at
+            else None
+        ),
         "status": status,
         "quote": {
-            "status": proposal.status if proposal else "not_started",
+            "status": "closed" if terminal else proposal.status if proposal else "not_started",
             "version": proposal.version if proposal else None,
         },
         "agreement": {
-            "status": reservation.agreement_status,
+            "status": "closed" if terminal else reservation.agreement_status,
             "preparation_status": (
                 agreement.preparation_status if agreement else "not_started"
             ),
             "signature_verified": reservation.agreement_status == "signed",
         },
         "payment": {
-            "status": reservation.deposit_status,
+            "status": "closed" if terminal else reservation.deposit_status,
             "request_status": payment.status if payment else "not_started",
             "payment_verified": reservation.deposit_status == "paid",
             "invoice_status": invoice.status if invoice else "not_created",
         },
         "operations": {
             "calendar_projection": (
-                "ready"
+                "closed"
+                if terminal
+                else "ready"
                 if calendar and calendar.status == "synced"
                 else "pending"
                 if calendar
@@ -757,6 +777,41 @@ def _active_conflicts(
     return conflicts
 
 
+def _calendar_is_authoritative() -> bool:
+    return os.getenv(
+        "BUILDING_GOOGLE_CALENDAR_AVAILABILITY_AUTHORITY", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_calendar_availability(
+    *, starts_at: datetime, ends_at: datetime, reservation_id: str = ""
+) -> BuildingGoogleCalendarClient | None:
+    """Fail closed against the Anata Events calendar when authority is enabled."""
+
+    if not _calendar_is_authoritative():
+        return None
+    client = BuildingGoogleCalendarClient()
+    if not client.configured:
+        raise HTTPException(status_code=503, detail=client.readiness_error)
+    try:
+        conflicts = client.find_conflicts(
+            starts_at=starts_at,
+            ends_at=ends_at,
+            exclude_reservation_id=reservation_id,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Anata Events calendar availability could not be verified; no hold was created.",
+        ) from exc
+    if conflicts:
+        raise HTTPException(
+            status_code=409,
+            detail="The full setup-through-teardown window is occupied on the Anata Events calendar.",
+        )
+    return client
+
+
 def _availability_block(
     session,
     reservation: BuildingReservation,
@@ -844,6 +899,11 @@ def create_event_review(
                 status_code=409,
                 detail="The full setup-through-teardown window conflicts with Agent availability.",
             )
+        calendar_client = _require_calendar_availability(
+            starts_at=payload.setup_starts_at,
+            ends_at=payload.teardown_ends_at,
+            reservation_id=payload.reservation_id,
+        )
 
         event_date = payload.guest_starts_at.date()
         plans = session.execute(
@@ -1040,6 +1100,37 @@ def create_event_review(
         )
         session.add(command)
         session.flush()
+        if calendar_client is not None:
+            if os.getenv(
+                "BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED", ""
+            ).strip().lower() not in {"1", "true", "yes", "on"}:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Anata Events calendar writes are disabled; no hold was created.",
+                )
+            projection = session.execute(
+                select(BuildingCalendarProjection).where(
+                    BuildingCalendarProjection.reservation_id == row.id
+                )
+            ).scalar_one()
+            try:
+                event_id = calendar_client.upsert_event(
+                    reservation_id=row.id,
+                    payload=dict(projection.payload_json or {}),
+                    provider_event_id=row.calendar_event_id or "",
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Anata Events calendar hold could not be written; no Agent hold was created.",
+                ) from exc
+            row.calendar_event_id = event_id
+            projection.provider = calendar_client.provider
+            projection.provider_event_id = event_id
+            projection.target_calendar_id = calendar_client.target_calendar_id
+            projection.status = "synced"
+            projection.synced_at = _now()
+            projection.last_error = ""
         return _event_review_response(row, proposal, replayed=False)
 
 
@@ -1365,6 +1456,11 @@ def transition_reservation(
                 raise HTTPException(status_code=409, detail="A signed agreement is required.")
             if row.deposit_required and row.deposit_status != "paid":
                 raise HTTPException(status_code=409, detail="A verified deposit is required.")
+            _require_calendar_availability(
+                starts_at=row.starts_at,
+                ends_at=row.ends_at,
+                reservation_id=row.id,
+            )
             if row.kind == "event":
                 _activate_event_host_relationship(
                     session,

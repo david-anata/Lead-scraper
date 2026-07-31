@@ -340,14 +340,19 @@ during the permission transition. Every content create, edit, and review-state
 change writes a Building audit event.
 
 Approved holds and confirmed reservations enter a durable calendar projection
-queue. Agent remains the booking source of truth: a Google Calendar edit or
-deletion never changes a reservation. Building Control and the internal API are
-dry-run by default. Set a dedicated `BUILDING_GOOGLE_CALENDAR_ID` (never
+queue. The dedicated Anata Events calendar is authoritative for date occupancy;
+Agent remains authoritative for commercial and customer evidence. Building
+Control and the internal API are dry-run by default. Set a dedicated
+`BUILDING_GOOGLE_CALENDAR_ID` (never
 `primary`) and `BUILDING_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON`, then share only
 that calendar with the service-account email. The separate
 `BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED` gate defaults to false. Stable event
 IDs, committed claims, reconciliation evidence, and retry backoff prevent
 duplicate delivery and keep provider failures visible.
+After a controlled read/write/delete verification, enable
+`BUILDING_GOOGLE_CALENDAR_AVAILABILITY_AUTHORITY`. Event review then checks the
+full setup-through-teardown window and writes the hold synchronously, failing
+closed without creating an Agent hold when Calendar is unavailable.
 
 Confirming an event creates an event-readiness and closeout checklist.
 Confirming a workspace creates a move-in checklist, and moving an occupied

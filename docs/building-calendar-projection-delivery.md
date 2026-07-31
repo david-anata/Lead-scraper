@@ -1,8 +1,10 @@
 # Building calendar projection delivery
 
-Agent remains the booking source of truth. This slice projects approved holds
-and reservation changes to one dedicated calendar through a provider-neutral
-adapter boundary. It does not read calendar edits back into Agent.
+The dedicated Anata Events Google Calendar is the source of truth for date
+occupancy. Agent remains the source of truth for the customer, quote, agreement,
+payment, and operational evidence. When calendar authority is enabled, a new
+event hold reads Calendar availability and writes its opaque hold synchronously;
+either both Calendar and Agent succeed or Agent creates no hold.
 
 ## Safe defaults
 
@@ -11,6 +13,8 @@ adapter boundary. It does not read calendar edits back into Agent.
 - `BUILDING_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON` must be present before the
   adapter is ready.
 - `BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED` defaults to false.
+- `BUILDING_GOOGLE_CALENDAR_AVAILABILITY_AUTHORITY` defaults to false during
+  rollout. Enable it only with writes after controlled read/write verification.
 - `POST /api/internal/building/calendar/sync` is a dry run unless the request
   explicitly sets both `execute=true` and `dry_run=false`.
 - Building Control only performs a dry-run preview.
@@ -49,8 +53,9 @@ only with the approved service account, and the readiness response is reviewed.
 3. Share only that calendar with the service-account email.
 4. Verify readiness and dry-run output.
 5. Review duplicate, error, retry, and mixed-calendar evidence.
-6. Enabling live writes is a separate production decision and is not part of
-   this PR.
+6. Enable writes, run a controlled hold/create/delete verification, and then
+   enable calendar availability authority. New event holds now fail closed when
+   Calendar cannot be read or written.
 
 Rollback is application-only: the additive columns can remain. Pending,
 claimed, or error rows remain inert while writes are disabled.
