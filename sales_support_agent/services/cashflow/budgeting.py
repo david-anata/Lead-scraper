@@ -26,7 +26,7 @@ from sales_support_agent.services.cashflow.obligations import list_obligations
 logger = logging.getLogger(__name__)
 
 _CACHE_KEY = "finance_budget_spending_review"
-_PROMPT_VERSION = "budget-review-v1"
+_PROMPT_VERSION = "budget-review-v2-six-month"
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 _SOURCE_PRIORITY = ("plaid", "qbo_bank", "csv")
 _TRANSFER_CATEGORIES = {
@@ -210,7 +210,7 @@ def build_budget_view(
     """Build the monthly budget from one canonical posted-transaction source."""
     today = as_of or date.today()
     source, transactions = _canonical_transactions(rows, as_of=today)
-    comparison_months = _previous_months(today)
+    comparison_months = _previous_months(today, count=6)
     current_month = _month_key(today)
     category_months: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     category_merchants: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
@@ -233,12 +233,20 @@ def build_budget_view(
         monthly = category_months[key]
         historical = [int(monthly.get(month) or 0) for month in comparison_months]
         average = sum(historical) // len(comparison_months)
+        earlier_average = sum(historical[:3]) // 3
+        recent_average = sum(historical[3:]) // 3
+        trend_cents = recent_average - earlier_average
+        trend_bps = trend_cents * 10_000 // max(earlier_average, 1)
+        trend_direction = (
+            "up" if trend_bps >= 500 else "down" if trend_bps <= -500 else "flat"
+        )
         current = int(monthly.get(current_month) or 0)
         projected = current * days_in_month // elapsed_days
         protected = key in _PROTECTED_CATEGORIES
         reduction_bps = 0 if protected else 1_500 if key in _HIGH_CONTROL_CATEGORIES else 1_000
         target = average * (10_000 - reduction_bps) // 10_000
         potential = 0 if protected else max(0, projected - target)
+        recurring_saving = 0 if protected else max(0, average - target)
         variance = projected - target
         merchants = sorted(
             category_merchants[key].items(), key=lambda item: (-item[1], item[0].casefold())
@@ -254,7 +262,13 @@ def build_budget_view(
                 "projected_cents": projected,
                 "target_cents": target,
                 "potential_saving_cents": potential,
+                "recurring_saving_cents": recurring_saving,
                 "variance_cents": variance,
+                "earlier_average_cents": earlier_average,
+                "recent_average_cents": recent_average,
+                "trend_cents": trend_cents,
+                "trend_bps": trend_bps,
+                "trend_direction": trend_direction,
                 "top_merchants": [
                     {"name": name, "amount_cents": amount} for name, amount in merchants
                 ],
@@ -276,13 +290,26 @@ def build_budget_view(
         "potential_saving_cents": sum(
             item["potential_saving_cents"] for item in categories
         ),
+        "recurring_saving_cents": sum(
+            item["recurring_saving_cents"] for item in categories
+        ),
     }
+    monthly_totals = [
+        {
+            "month": month,
+            "amount_cents": sum(
+                int(item["historical_months"].get(month) or 0) for item in categories
+            ),
+        }
+        for month in comparison_months
+    ]
     proof = {
         "source": source,
         "as_of": today.isoformat(),
         "latest_date": latest_date.isoformat() if latest_date else "",
         "comparison_months": comparison_months,
         "totals": totals,
+        "monthly_totals": monthly_totals,
         "categories": categories,
     }
     return {
@@ -308,7 +335,7 @@ def _review_packet(view: Mapping[str, Any]) -> dict[str, Any]:
         for item in view.get("categories") or []
         if (
             not item.get("protected")
-            and int(item.get("potential_saving_cents") or 0) > 0
+            and int(item.get("recurring_saving_cents") or 0) > 0
         )
     ][:12]
     return {
@@ -326,6 +353,11 @@ def _review_packet(view: Mapping[str, Any]) -> dict[str, Any]:
                 "projected_cents": item["projected_cents"],
                 "target_cents": item["target_cents"],
                 "deterministic_potential_saving_cents": item["potential_saving_cents"],
+                "deterministic_recurring_saving_cents": item[
+                    "recurring_saving_cents"
+                ],
+                "trend_direction": item["trend_direction"],
+                "trend_bps": item["trend_bps"],
                 "historical_months": item["historical_months"],
                 "top_merchants": item["top_merchants"],
             }
@@ -405,9 +437,11 @@ def run_budget_review(settings: Any, *, force: bool = False) -> dict[str, Any]:
                     raw.get("headline"), f"Review {label.lower()} commitments"
                 ),
                 "reason": (
-                    f"Projected {label.lower()} spending is "
-                    f"{_money(evidence['deterministic_potential_saving_cents'], exact=True)} "
-                    f"above the monthly target. The largest posted names are {merchant_note}."
+                    f"The six-month {label.lower()} average supports a recurring "
+                    f"{_money(evidence['deterministic_recurring_saving_cents'], exact=True)} "
+                    f"monthly reduction target. Recent spending is "
+                    f"{str(evidence['trend_direction']).replace('_', ' ')} versus the earlier "
+                    f"three months. The largest posted names are {merchant_note}."
                 ),
                 "next_action": _qualitative_text(
                     raw.get("next_action"),
@@ -419,14 +453,15 @@ def run_budget_review(settings: Any, *, force: bool = False) -> dict[str, Any]:
                 "potential_saving_cents": evidence[
                     "deterministic_potential_saving_cents"
                 ],
+                "recurring_saving_cents": evidence[
+                    "deterministic_recurring_saving_cents"
+                ],
                 "average_cents": evidence["average_cents"],
                 "projected_cents": evidence["projected_cents"],
                 "top_merchants": evidence["top_merchants"],
             }
         )
-    total_saving = sum(
-        int(item.get("potential_saving_cents") or 0) for item in recommendations
-    )
+    total_saving = int(packet.get("totals", {}).get("recurring_saving_cents") or 0)
     category_labels = ", ".join(
         str(item.get("category_label") or "") for item in recommendations
     )
@@ -437,9 +472,9 @@ def run_budget_review(settings: Any, *, force: bool = False) -> dict[str, Any]:
         "created_at": datetime.utcnow().isoformat(),
         "model": model,
         "summary": (
-            f"The evidence shows {_money(total_saving, exact=True)} in current controllable "
-            f"spending above target across {category_labels or 'the reviewed categories'}. "
-            "Start with the priorities below."
+            f"The six-month review supports {_money(total_saving, exact=True)} in recurring "
+            f"monthly savings targets across controllable spending. Start with "
+            f"{category_labels or 'the reviewed categories'} below."
         ),
         "recommendations": recommendations,
         "cached": False,
@@ -550,12 +585,26 @@ def render_budget_page(
         return _page_shell("Budget", "budget", body, flash=flash)
 
     totals = view["totals"]
+    month_totals = list(view.get("monthly_totals") or [])
+    trend_max = max(
+        [int(item.get("amount_cents") or 0) for item in month_totals] or [1]
+    )
+    trend_columns = "".join(
+        f"""
+        <div class="budget-trend-column">
+          <strong>{_money(int(item['amount_cents']))}</strong>
+          <div class="budget-trend-track"><span style="height:{max(8, int(item['amount_cents']) * 100 // trend_max)}%"></span></div>
+          <span>{html.escape(date.fromisoformat(str(item['month']) + '-01').strftime('%b'))}</span>
+        </div>"""
+        for item in month_totals
+    )
     rows = "".join(
         f"""
         <tr>
           <td><strong>{html.escape(item['label'])}</strong>
           <span>{'Protected cost' if item['protected'] else ', '.join(html.escape(m['name']) for m in item['top_merchants'][:2]) or 'Posted transactions'}</span></td>
           <td>{_money(item['average_cents'])}</td>
+          <td><span class="budget-trend-label budget-trend-label--{item['trend_direction']}">{item['trend_direction'].title()}</span></td>
           <td>{_money(item['projected_cents'])}</td>
           <td>{_money(item['target_cents'])}</td>
           <td class="{'is-over' if item['variance_cents'] > 0 else 'is-under'}">{'+' if item['variance_cents'] > 0 else ''}{_money(item['variance_cents'])}</td>
@@ -570,8 +619,8 @@ def render_budget_page(
             <article class="budget-saving-item">
               <div><span>{html.escape(str(item['confidence']).title())} confidence · {html.escape(item['category_label'])}</span>
               <h3>{html.escape(item['headline'])}</h3><p>{html.escape(item['reason'])}</p></div>
-              <div class="budget-saving-impact"><span>Possible monthly saving</span>
-              <strong>{_money(int(item['potential_saving_cents']), exact=True)}</strong></div>
+              <div class="budget-saving-impact"><span>Recurring monthly target</span>
+              <strong>{_money(int(item['recurring_saving_cents']), exact=True)}</strong></div>
               <p class="budget-saving-action"><strong>Do next:</strong> {html.escape(item['next_action'])}</p>
             </article>"""
             for item in review.get("recommendations") or []
@@ -602,24 +651,33 @@ def render_budget_page(
 
       <section class="budget-summary" aria-label="Monthly budget summary">
         <article><span>Projected spending this month</span><strong>{_money(totals['projected_cents'], exact=True)}</strong></article>
+        <article><span>Six-month monthly average</span><strong>{_money(totals['average_cents'], exact=True)}</strong></article>
         <article><span>Suggested monthly budget</span><strong>{_money(totals['target_cents'], exact=True)}</strong></article>
-        <article class="budget-summary__saving"><span>Possible EOM cash improvement</span><strong>{_money(totals['potential_saving_cents'], exact=True)}</strong></article>
+        <article class="budget-summary__saving"><span>Recurring savings target</span><strong>{_money(totals['recurring_saving_cents'], exact=True)}</strong></article>
       </section>
-      <p class="budget-proof">Source: {html.escape(str(view['source']).replace('_', ' ').title())} posted transactions · Compared {html.escape(', '.join(view['comparison_months']))} · Latest evidence {html.escape(str(view.get('latest_date') or 'unavailable'))}. Mirrored sources are excluded.</p>
+      <p class="budget-proof">Source: {html.escape(str(view['source']).replace('_', ' ').title())} posted transactions · Six complete months: {html.escape(', '.join(view['comparison_months']))} · Latest evidence {html.escape(str(view.get('latest_date') or 'unavailable'))}. Mirrored sources and internal transfers are excluded.</p>
+
+      <section class="budget-trend" aria-labelledby="budget-trend-title">
+        <div class="money-section-heading"><div><p class="finance-eyebrow">Six-month trend</p>
+        <h2 id="budget-trend-title">What operating spending is doing</h2></div>
+        <span class="money-section-state">Complete months only</span></div>
+        <div class="budget-trend-scroll"><div class="budget-trend-chart" role="img" aria-label="Posted operating spending for each of the last six complete months">{trend_columns}</div></div>
+        <p class="budget-rule-note">The current partial month is kept out of this trend. It appears only as a separate projection above.</p>
+      </section>
 
       <section class="budget-workspace" aria-labelledby="budget-table-title">
-        <div class="money-section-heading"><div><p class="finance-eyebrow">Monthly controls</p>
-        <h2 id="budget-table-title">Your monthly spending guardrails</h2></div>
+        <div class="money-section-heading"><div><p class="finance-eyebrow">Six-month controls</p>
+        <h2 id="budget-table-title">Where recurring savings can come from</h2></div>
         <span class="money-section-state">{len(view['categories'])} categories</span></div>
         <div class="money-table-wrap"><table class="budget-table"><thead><tr>
-        <th>Category</th><th>3-month average</th><th>Projected this month</th><th>Suggested budget</th><th>Over / under</th>
+        <th>Category</th><th>6-month average</th><th>Recent trend</th><th>Projected this month</th><th>Suggested budget</th><th>Over / under</th>
         </tr></thead><tbody>{rows}</tbody></table></div>
         <p class="budget-rule-note">Suggested budgets keep protected costs unchanged and target 10–15% reductions only in controllable categories. These are planning targets, not changes to your bank or books.</p>
       </section>
 
       <section class="budget-review" aria-labelledby="budget-review-title">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Savings review</p>
-        <h2 id="budget-review-title">What and where can we save?</h2></div><span class="money-status money-status--ready">Advice only</span></div>
+        <h2 id="budget-review-title">What should we cut or renegotiate?</h2></div><span class="money-status money-status--ready">Advice only</span></div>
         {review_content}
       </section>
     </div>"""

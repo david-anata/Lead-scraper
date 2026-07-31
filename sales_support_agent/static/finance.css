@@ -2079,7 +2079,7 @@ input:focus, select:focus, textarea:focus {
 
 .budget-summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 .budget-summary article {
@@ -2108,6 +2108,7 @@ input:focus, select:focus, textarea:focus {
   line-height: 1.6;
 }
 .budget-workspace,
+.budget-trend,
 .budget-review {
   min-width: 0;
   padding: 28px;
@@ -2116,9 +2117,54 @@ input:focus, select:focus, textarea:focus {
   border-radius: 28px;
   box-shadow: 0 14px 32px var(--anata-shadow);
 }
+.budget-trend-scroll {
+  margin-top: 22px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+.budget-trend-chart {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(92px, 1fr));
+  gap: 12px;
+  min-width: 650px;
+  height: 210px;
+  align-items: end;
+}
+.budget-trend-column {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 8px;
+  height: 100%;
+  text-align: center;
+}
+.budget-trend-column > strong {
+  font: 800 13px/1.2 "Montserrat", sans-serif;
+  color: var(--anata-ink);
+}
+.budget-trend-column > span {
+  color: var(--anata-muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.budget-trend-track {
+  display: flex;
+  align-items: end;
+  min-height: 130px;
+  overflow: hidden;
+  background: rgba(74, 134, 199, .08);
+  border-radius: 12px 12px 5px 5px;
+}
+.budget-trend-track span {
+  display: block;
+  width: 100%;
+  min-height: 8px;
+  background: var(--anata-sky);
+  border-radius: 12px 12px 5px 5px;
+}
 .budget-table {
   width: 100%;
-  min-width: 820px;
+  min-width: 930px;
   border-collapse: collapse;
 }
 .budget-table th,
@@ -2147,6 +2193,18 @@ input:focus, select:focus, textarea:focus {
 }
 .budget-table .is-over { color: var(--bad); font-weight: 800; }
 .budget-table .is-under { color: var(--good); font-weight: 800; }
+.budget-trend-label {
+  display: inline-flex;
+  justify-content: center;
+  min-width: 54px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+}
+.budget-trend-label--up { color: var(--bad); background: rgba(185, 28, 28, .08); }
+.budget-trend-label--down { color: var(--good); background: rgba(15, 118, 110, .1); }
+.budget-trend-label--flat { color: var(--anata-muted); background: rgba(100, 116, 139, .1); }
 .budget-rule-note {
   margin-top: 16px;
   color: var(--anata-muted);
@@ -2190,12 +2248,13 @@ input:focus, select:focus, textarea:focus {
   .money-metrics > .money-brief-metric { grid-column: 1 / -1; min-height: 180px; }
   .money-outlooks,
   .money-plan-grid { grid-template-columns: 1fr; }
-  .budget-summary { grid-template-columns: 1fr; }
+  .budget-summary { grid-template-columns: 1fr 1fr; }
 }
 
 @media (max-width: 620px) {
   .shell { padding: 18px 14px 48px; }
   .money-brief { gap: 16px; }
+  .budget-summary { grid-template-columns: 1fr; }
   .money-brief .finance-nav {
     display: grid;
     grid-template-columns: 1fr 1fr;
