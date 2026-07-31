@@ -44,6 +44,7 @@ from sales_support_agent.services.fulfillment_deck.service import (
     rerender_rate_sheet,
 )
 from sales_support_agent.services.public_request_guard import durable_rate_limit_response
+from sales_support_agent.services.public_url_guard import public_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -109,9 +110,15 @@ async def rate_sheet_taste(
         # Look like success without doing any work.
         return JSONResponse(status_code=202, content={"status": "building"})
 
-    url = str(body.get("url", "") or "").strip()
-    if not url or len(url) > 2048:
+    raw_url = str(body.get("url", "") or "").strip()
+    if not raw_url or len(raw_url) > 2048:
         return JSONResponse(status_code=400, content={"detail": "url is required (your store or product page)."})
+    url = public_http_url(raw_url)
+    if not url:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Enter a public website URL."},
+        )
     segment = clean_segment(body.get("segment"))
     origin_zip = str(body.get("origin_zip", "") or "").strip()
     if segment == "diy" and clean_zip(origin_zip) is None:

@@ -81,6 +81,11 @@ class FulfillmentPublicFunnelTests(unittest.TestCase):
                 svc, "build_extraction_context", return_value=(_CONTEXT, [], [])
             ),
             mock.patch.object(svc, "fetch_brand_assets", return_value={}),
+            mock.patch.object(P, "durable_rate_limit_response", return_value=None),
+            mock.patch(
+                "sales_support_agent.services.public_url_guard.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", ("93.184.216.34", 443))],
+            ),
         ]
         for p in patchers:
             p.start()
@@ -154,6 +159,40 @@ class FulfillmentPublicFunnelTests(unittest.TestCase):
             headers=_HEADERS,
         )
         self.assertEqual(resp.status_code, 400)
+
+    def test_taste_rejects_private_and_non_http_targets(self) -> None:
+        for unsafe in (
+            "http://127.0.0.1:8000/admin",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::1]/",
+            "file:///etc/passwd",
+            "https://user:password@example.com",
+        ):
+            with self.subTest(url=unsafe):
+                resp = self.client.post(
+                    "/api/public/fulfillment/rate-sheet/taste",
+                    json={"url": unsafe, "segment": "dfy"},
+                    headers=_HEADERS,
+                )
+                self.assertEqual(resp.status_code, 400, resp.text)
+                self.assertEqual(resp.json()["detail"], "Enter a public website URL.")
+
+    @mock.patch(
+        "sales_support_agent.services.public_url_guard.socket.getaddrinfo",
+        return_value=[(2, 1, 6, "", ("10.0.0.8", 443))],
+    )
+    def test_taste_rejects_hostname_resolving_to_private_network(self, _resolve) -> None:
+        resp = self.client.post(
+            "/api/public/fulfillment/rate-sheet/taste",
+            json={"url": "https://internal.example", "segment": "dfy"},
+            headers=_HEADERS,
+        )
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertEqual(resp.json()["detail"], "Enter a public website URL.")
+
+    def test_taste_accepts_a_public_hostname(self) -> None:
+        data = self._taste("dfy")
+        self.assertTrue(data["run_id"])
 
     def test_diy_taste_requires_valid_origin_zip(self) -> None:
         resp = self.client.post(
