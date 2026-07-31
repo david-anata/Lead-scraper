@@ -241,7 +241,9 @@ def _request_article(*, settings: Any, prompt: str) -> dict[str, Any]:
             },
             json={
                 "model": config.model,
-                "max_tokens": 5000,
+                # A 900+ word article plus structured citations can exceed 5,000
+                # output tokens. Truncation produces terminally malformed JSON.
+                "max_tokens": 8000,
                 "messages": [{"role": "user", "content": prompt}],
                 "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 8}],
             },
