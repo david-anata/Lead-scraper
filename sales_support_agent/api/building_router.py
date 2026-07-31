@@ -13,10 +13,6 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import delete, select
 
-from sales_support_agent.integrations.hubspot import HubSpotClient
-from sales_support_agent.services.building_hubspot_sync import (
-    sync_building_inquiry_to_hubspot,
-)
 from sales_support_agent.services.building_analytics import (
     apply_attribution,
     build_attribution,
@@ -834,15 +830,6 @@ def create_inquiry(
             },
         ))
 
-        client = HubSpotClient(request.app.state.settings)
-        if client.is_configured:
-            sync_building_inquiry_to_hubspot(
-                session=session,
-                inquiry=inquiry,
-                contact=contact,
-                client=client,
-                actor=actor,
-            )
         return {"ok": True, "inquiry_id": inquiry.id, "status": inquiry.status, "duplicate": False}
 
 
@@ -853,7 +840,14 @@ def retry_inquiry_hubspot(
     request: Request,
     x_internal_api_key: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
+    """Legacy-only recovery endpoint; Building no longer syncs new leads here."""
+
     _require_internal_key(request, x_internal_api_key)
+    from sales_support_agent.integrations.hubspot import HubSpotClient
+    from sales_support_agent.services.building_hubspot_sync import (
+        sync_building_inquiry_to_hubspot,
+    )
+
     client = HubSpotClient(request.app.state.settings)
     if not client.is_configured:
         raise HTTPException(
@@ -897,7 +891,7 @@ def update_inquiry_lifecycle(
     request: Request,
     x_internal_api_key: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    """Record customer-response and qualification evidence without changing CRM sync state."""
+    """Record customer-response and qualification evidence in Agent."""
 
     _require_internal_key(request, x_internal_api_key)
     transitions = {

@@ -252,12 +252,8 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             "details": "Company gathering for 40 people.",
             "consent_to_contact": "true",
         }
-        with patch(
-            "sales_support_agent.api.building_router.HubSpotClient"
-        ) as hubspot:
-            hubspot.return_value.is_configured = False
-            first = self._post("/admin/building/inquiries", payload)
-            second = self._post("/admin/building/inquiries", payload)
+        first = self._post("/admin/building/inquiries", payload)
+        second = self._post("/admin/building/inquiries", payload)
         self._assert_notice(first)
         self._assert_notice(second)
         with self.factory() as session:
@@ -333,7 +329,7 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             self.assertEqual(row.status, "completed")
             self.assertTrue(row.resolution)
 
-    def test_00a_operator_records_response_without_hiding_crm_sync_state(self) -> None:
+    def test_00a_operator_records_response_in_agent(self) -> None:
         with self.factory() as session:
             inquiry = session.query(BuildingInquiry).filter(
                 BuildingInquiry.email == "assisted-event@example.com"
@@ -355,6 +351,11 @@ class BuildingAdminOperationsTests(unittest.TestCase):
         self.assertIn("Building performance", page.text)
         self.assertIn("Posted collected cash", page.text)
         self.assertIn("/admin/building/contracts", page.text)
+        sales_page = self.client.get("/admin/building/sales")
+        self.assertEqual(sales_page.status_code, 200, sales_page.text)
+        self.assertIn("Agent owns each lead", sales_page.text)
+        self.assertNotIn("HubSpot", sales_page.text)
+        self.assertNotIn("CRM recovery", sales_page.text)
         contracts_page = self.client.get("/admin/building/contracts")
         self.assertEqual(contracts_page.status_code, 200, contracts_page.text)
         self.assertIn("Contracts", contracts_page.text)
