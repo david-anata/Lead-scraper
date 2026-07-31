@@ -409,6 +409,134 @@
   gap: 16px;
 }
 
+.content-command-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--agent-border);
+  border-radius: var(--agent-radius-card) var(--agent-radius-card) 0 0;
+  background: var(--agent-surface-soft);
+  color: var(--agent-ink-muted);
+  font-size: .82rem;
+}
+
+.content-queue {
+  border: 1px solid var(--agent-border);
+  border-top: 0;
+  border-radius: 0 0 var(--agent-radius-card) var(--agent-radius-card);
+  background: var(--agent-surface);
+  overflow: hidden;
+}
+
+.content-queue-item {
+  padding: 18px;
+  border-bottom: 1px solid var(--agent-border);
+}
+
+.content-queue-item:last-child { border-bottom: 0; }
+
+.content-queue-item__lead {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+}
+
+.content-queue-item__lead h3,
+.content-queue-item__lead p {
+  margin: 3px 0;
+}
+
+.content-queue-item__lead h3 {
+  font: 800 1rem/1.35 "Montserrat", sans-serif;
+}
+
+.content-rank {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--agent-blue-soft);
+  color: var(--agent-ink);
+  font: 800 .82rem/1 "Montserrat", sans-serif;
+}
+
+.content-destinations {
+  margin: 16px 0 0 52px;
+  padding: 0;
+  border: 1px solid var(--agent-border);
+  border-radius: var(--agent-radius-card);
+  list-style: none;
+  overflow: hidden;
+}
+
+.content-destination {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(260px, 1.3fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--agent-border);
+}
+
+.content-destination:last-child { border-bottom: 0; }
+.content-destination strong,
+.content-destination span { display: block; }
+.content-destination span {
+  margin-top: 2px;
+  color: var(--agent-ink-muted);
+  font-size: .76rem;
+}
+
+.content-destination summary {
+  color: var(--agent-ink);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.content-copy {
+  white-space: pre-line;
+  color: var(--agent-ink);
+  line-height: 1.55;
+}
+
+.content-row-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.content-row-actions form { margin: 0; }
+.admin-btn--small {
+  min-height: 32px;
+  padding-inline: 11px;
+  font-size: .72rem;
+}
+
+.content-personal-drafts {
+  display: grid;
+  gap: 12px;
+}
+
+.content-personal-draft {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 18px;
+  padding: 18px;
+  border: 1px solid var(--agent-border);
+  border-radius: var(--agent-radius-card);
+  background: var(--agent-surface);
+}
+
+.content-personal-draft h3,
+.content-personal-draft p { margin: 3px 0; }
+.content-personal-draft .content-copy,
+.content-personal-draft .content-muted { grid-column: 1 / -1; }
+
 @media (max-width: 900px) {
   .content-pipeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .content-pipeline li:nth-child(4n) { border-right: 1px solid var(--agent-border); }
@@ -417,12 +545,16 @@
   .content-pipeline li:nth-last-child(-n+2) { border-bottom: 0; }
   .content-six-cs dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .content-detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .content-destination { grid-template-columns: minmax(0, 1fr) auto; }
+  .content-destination details,
+  .content-row-actions { grid-column: 1 / -1; }
 }
 
 @media (max-width: 620px) {
   .content-page { padding-block: 22px 48px; }
   .content-readiness,
-  .content-section__head { align-items: flex-start; flex-direction: column; }
+  .content-section__head,
+  .content-command-bar { align-items: flex-start; flex-direction: column; }
   .content-section__head > p { text-align: left; }
   .content-pipeline,
   .content-six-cs dl,
@@ -435,6 +567,9 @@
     border-bottom: 1px solid var(--agent-border);
   }
   .content-pipeline li:last-child { border-bottom: 0; }
+  .content-queue-item__lead { grid-template-columns: 34px minmax(0, 1fr); }
+  .content-source-actions { grid-column: 2; }
+  .content-destinations { margin-left: 0; }
 }
 
 .admin-workspace,

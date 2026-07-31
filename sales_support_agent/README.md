@@ -16,6 +16,36 @@ This FastAPI app handles post-creation sales support inside your existing ClickU
 - Daily SDR email digest with grouped action items and draft replies
 - SQLite-backed audit logs for every automation run and external write
 
+## Content Operations
+
+`GET /admin/content` is the operator UI for the Riverside content relay. A
+trusted relay posts one normalized episode package to
+`POST /api/jobs/content/episodes` with `X-Internal-Api-Key`. The service creates
+an idempotent, ranked clip queue and independent destination variants for
+TikTok, Instagram Reels, YouTube Shorts, LinkedIn company, and Google Business.
+One failed destination never stops another.
+
+The hourly scheduled job polls `CONTENT_RIVERSIDE_RELAY_URL` when enabled and
+dispatches due variants through destination-specific authenticated webhooks.
+Personal LinkedIn, X, and the full horizontal YouTube episode remain manual or
+staging-only by policy.
+
+Content integration variables:
+
+- `CONTENT_RIVERSIDE_RELAY_ENABLED`
+- `CONTENT_RIVERSIDE_RELAY_URL`
+- `CONTENT_RIVERSIDE_RELAY_KEY`
+- `CONTENT_LINKEDIN_COMPANY_CONNECTOR_URL`
+- `CONTENT_LINKEDIN_COMPANY_CONNECTOR_KEY`
+- `CONTENT_GOOGLE_BUSINESS_CONNECTOR_URL`
+- `CONTENT_GOOGLE_BUSINESS_CONNECTOR_KEY`
+- `CONTENT_TIKTOK_CONNECTOR_URL`
+- `CONTENT_TIKTOK_CONNECTOR_KEY`
+- `CONTENT_INSTAGRAM_CONNECTOR_URL`
+- `CONTENT_INSTAGRAM_CONNECTOR_KEY`
+- `CONTENT_YOUTUBE_SHORTS_CONNECTOR_URL`
+- `CONTENT_YOUTUBE_SHORTS_CONNECTOR_KEY`
+
 ## Folder Structure
 
 ```text

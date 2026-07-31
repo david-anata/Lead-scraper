@@ -93,11 +93,31 @@ services:
       - key: GOOGLE_SERVICE_ACCOUNT_JSON
         sync: false
       - key: CONTENT_DRIVE_PARENT_ID
-        value: 0APLEjKQW8NZlUk9PVA
+        value: 14HsXUKMjDjbEznmjMzjvFg4AC-DY_9-2
       - key: CONTENT_DRIVE_VERIFIED
         value: "false"
       - key: CONTENT_RIVERSIDE_RELAY_ENABLED
         value: "false"
+      - key: CONTENT_RIVERSIDE_RELAY_URL
+        sync: false
+      - key: CONTENT_RIVERSIDE_RELAY_KEY
+        sync: false
+      - key: CONTENT_LINKEDIN_COMPANY_CONNECTOR_URL
+        sync: false
+      - key: CONTENT_LINKEDIN_COMPANY_CONNECTOR_KEY
+        sync: false
+      - key: CONTENT_GOOGLE_BUSINESS_CONNECTOR_URL
+        sync: false
+      - key: CONTENT_GOOGLE_BUSINESS_CONNECTOR_KEY
+        sync: false
+      - key: CONTENT_TIKTOK_CONNECTOR_URL
+        sync: false
+      - key: CONTENT_TIKTOK_CONNECTOR_KEY
+        sync: false
+      - key: CONTENT_YOUTUBE_SHORTS_CONNECTOR_URL
+        sync: false
+      - key: CONTENT_YOUTUBE_SHORTS_CONNECTOR_KEY
+        sync: false
       - key: CONTENT_LINKEDIN_CONNECTOR_URL
         sync: false
       - key: CONTENT_LINKEDIN_CONNECTOR_KEY

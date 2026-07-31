@@ -24,53 +24,64 @@ from sales_support_agent.services.admin_nav import (
     render_agent_nav,
     render_agent_nav_styles,
 )
+from sales_support_agent.services.content_security import csrf_token
+from sales_support_agent.services.content_workflow import DENVER, queue_workspace
 
 
 PLAYBOOKS: tuple[dict[str, Any], ...] = (
     {
         "channel": "LinkedIn personal",
         "priority": "Primary authority",
-        "cadence": "3 strong posts / week",
-        "format": "Operator lesson, framework, or informed contrarian take",
+        "cadence": "2–3 manual posts / week",
+        "format": "Evidence-led post derived from the clips and channels that are resonating",
         "metrics": "Comments, qualified actions, leads",
-        "state": "blocked",
-        "dependency": "Production publisher and analytics read",
+        "state": "manual",
+        "dependency": "David posts from the Personal LinkedIn desk",
     },
     {
         "channel": "LinkedIn company",
         "priority": "B2B proof",
-        "cadence": "2 posts / week",
-        "format": "Useful operating insight with Anata evidence",
+        "cadence": "3 vertical posts / week",
+        "format": "Native vertical clip with a useful operating insight",
         "metrics": "Engagement, qualified visits, leads",
-        "state": "blocked",
-        "dependency": "Company publisher and analytics read",
+        "state": "ready",
+        "dependency": "Buffer company Page relay",
     },
     {
-        "channel": "YouTube",
+        "channel": "YouTube Shorts",
         "priority": "Depth and search",
-        "cadence": "1 episode + up to 3 Shorts / week",
-        "format": "Full episode, story-led education, qualified vertical clip",
+        "cadence": "5 vertical posts / week",
+        "format": "Native Short from every usable Magic Clip",
         "metrics": "CTR, retention, watch time, conversion",
         "state": "blocked",
-        "dependency": "Upload relay and analytics read",
+        "dependency": "Shorts publisher; horizontal episode remains manual",
     },
     {
         "channel": "Instagram",
         "priority": "Discovery and relationship",
-        "cadence": "Up to 3 Reels or carousels / week",
-        "format": "Native Reel, carousel, or visible-action moment",
+        "cadence": "5 Reels / week",
+        "format": "Native 9:16 Magic Clip",
         "metrics": "Watch %, shares, saves, qualified actions",
         "state": "blocked",
         "dependency": "Publisher and analytics read",
     },
     {
-        "channel": "Newsletter",
-        "priority": "Owned collection",
-        "cadence": "1 useful issue / week",
-        "format": "Framework, breakdown, or specific operator lesson",
-        "metrics": "Delivery, opens, clicks, replies, unsubscribes",
+        "channel": "TikTok",
+        "priority": "Discovery",
+        "cadence": "5 vertical posts / week",
+        "format": "Native 9:16 Magic Clip",
+        "metrics": "Watch %, completion, shares, profile actions",
         "state": "blocked",
-        "dependency": "Consent-safe audience and delivery provider",
+        "dependency": "TikTok publisher",
+    },
+    {
+        "channel": "Google Business",
+        "priority": "Local proof",
+        "cadence": "3 updates / week",
+        "format": "Native text update derived from the strongest operator moments",
+        "metrics": "Views, calls, website actions",
+        "state": "ready",
+        "dependency": "Buffer Google Business relay",
     },
     {
         "channel": "X",
@@ -161,7 +172,9 @@ def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dic
             "key": "riverside",
             "label": "Riverside source",
             "status": "ready"
-            if _enabled("CONTENT_RIVERSIDE_RELAY_ENABLED") and source_asset_count
+            if _enabled("CONTENT_RIVERSIDE_RELAY_ENABLED")
+            and _configured("CONTENT_RIVERSIDE_RELAY_URL", "CONTENT_RIVERSIDE_RELAY_KEY")
+            and source_asset_count
             else ("stale" if source_asset_count else "blocked"),
             "message": f"{source_asset_count} normalized source asset(s) available."
             if source_asset_count
@@ -169,18 +182,32 @@ def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dic
         },
         {
             "key": "linkedin",
-            "label": "LinkedIn",
+            "label": "LinkedIn company via Buffer",
             "status": "ready"
-            if _configured("CONTENT_LINKEDIN_CONNECTOR_URL", "CONTENT_LINKEDIN_CONNECTOR_KEY")
+            if (
+                _configured("CONTENT_LINKEDIN_COMPANY_CONNECTOR_URL", "CONTENT_LINKEDIN_COMPANY_CONNECTOR_KEY")
+                or _configured("CONTENT_LINKEDIN_CONNECTOR_URL", "CONTENT_LINKEDIN_CONNECTOR_KEY")
+            )
             and _enabled("CONTENT_LINKEDIN_CONNECTOR_VERIFIED")
             else "blocked",
-            "message": "Personal and company destinations must verify separately.",
+            "message": "Company publishing is automated; David's personal profile remains manual.",
+        },
+        {
+            "key": "google_business",
+            "label": "Google Business Profile via Buffer",
+            "status": "ready"
+            if _configured("CONTENT_GOOGLE_BUSINESS_CONNECTOR_URL", "CONTENT_GOOGLE_BUSINESS_CONNECTOR_KEY")
+            else "blocked",
+            "message": "Image-only Google Business Profile publishing through the verified Buffer destination.",
         },
         {
             "key": "youtube",
             "label": "YouTube",
             "status": "ready"
-            if _configured("CONTENT_YOUTUBE_CONNECTOR_URL", "CONTENT_YOUTUBE_CONNECTOR_KEY")
+            if (
+                _configured("CONTENT_YOUTUBE_SHORTS_CONNECTOR_URL", "CONTENT_YOUTUBE_SHORTS_CONNECTOR_KEY")
+                or _configured("CONTENT_YOUTUBE_CONNECTOR_URL", "CONTENT_YOUTUBE_CONNECTOR_KEY")
+            )
             and _enabled("CONTENT_YOUTUBE_CONNECTOR_VERIFIED")
             else "blocked",
             "message": "Upload and analytics-read contracts are required.",
@@ -369,6 +396,12 @@ def _status_badge(status: str) -> str:
         "needs review": "review",
         "failed": "failed",
         "blocked": "blocked",
+        "accepted": "confirmed",
+        "published": "delivered",
+        "verified": "delivered",
+        "paused": "stale",
+        "skipped": "stale",
+        "draft": "review",
     }.get(normalized, "blocked")
     return f'<span class="app-status app-status--{css}">{html.escape(normalized.title())}</span>'
 
@@ -410,6 +443,107 @@ def control_room_data(session: Session, settings: Any) -> dict[str, Any]:
     }
 
 
+def _channel_label(channel: str) -> str:
+    return {
+        "tiktok": "TikTok",
+        "instagram": "Instagram Reels",
+        "youtube_shorts": "YouTube Shorts",
+        "linkedin_company": "LinkedIn company",
+        "google_business": "Google Business Profile",
+    }.get(channel, channel.replace("_", " ").title())
+
+
+def _render_queue_workspace(session: Session, user: dict) -> tuple[str, str, dict[str, int]]:
+    workspace = queue_workspace(session)
+    can_operate = bool({"content.operate", "content.admin"} & set(user.get("permissions") or ()))
+    token = csrf_token(user)
+    queue_rows: list[str] = []
+    for item in workspace["items"]:
+        variants = workspace["variants_by_item"].get(item.id, [])
+        destinations = "".join(
+            f"""
+            <li class="content-destination">
+              <div>
+                <strong>{html.escape(_channel_label(variant.channel))}</strong>
+                <span>{html.escape(variant.destination)} · {_format_time(variant.scheduled_for)}</span>
+              </div>
+              {_status_badge(variant.status)}
+              <details>
+                <summary>Native copy</summary>
+                <p class="content-copy">{html.escape(variant.copy_text or 'Copy will be produced by the channel playbook.')}</p>
+                {f'<a href="{html.escape(variant.public_url)}" target="_blank" rel="noopener">Open published post</a>' if variant.public_url else ''}
+              </details>
+              {
+                (
+                    f'''<div class="content-row-actions">
+                    <form method="post" action="/admin/content/variants/{html.escape(variant.id)}/{'resume' if variant.status == 'paused' else 'pause'}">
+                      <input type="hidden" name="_csrf_token" value="{html.escape(token)}">
+                      <button class="admin-btn admin-btn--secondary admin-btn--small" type="submit">{'Resume' if variant.status == 'paused' else 'Pause'}</button>
+                    </form>
+                    <form method="post" action="/admin/content/variants/{html.escape(variant.id)}/skip">
+                      <input type="hidden" name="_csrf_token" value="{html.escape(token)}">
+                      <button class="admin-btn admin-btn--secondary admin-btn--small" type="submit">Skip</button>
+                    </form>
+                    {'<form method="post" action="/admin/content/variants/' + html.escape(variant.id) + '/retry"><input type="hidden" name="_csrf_token" value="' + html.escape(token) + '"><button class="admin-btn admin-btn--secondary admin-btn--small" type="submit">Retry</button></form>' if variant.status in {'failed', 'blocked'} else ''}
+                    </div>'''
+                )
+                if can_operate else ''
+              }
+            </li>
+            """
+            for variant in variants
+        ) or '<li class="content-destination content-muted">No destinations created yet.</li>'
+        six_c = item.six_c_json or {}
+        score_text = " · ".join(
+            f"{key.replace('_', ' ').title()} {value}"
+            for key, value in six_c.items()
+            if isinstance(value, (int, float, str))
+        )
+        queue_rows.append(
+            f"""
+            <article class="content-queue-item" id="content-{html.escape(item.id)}">
+              <div class="content-queue-item__lead">
+                <div class="content-rank">{item.rank}</div>
+                <div>
+                  <p class="content-eyebrow">{html.escape(item.episode_external_id)}</p>
+                  <h3>{html.escape(item.title)}</h3>
+                  <p>{round(item.duration_ms / 1000)} seconds · {_status_badge(item.status)}</p>
+                  <p class="content-muted">{html.escape(score_text or 'Six C evaluation pending')}</p>
+                </div>
+                <div class="content-source-actions">
+                  {f'<a class="admin-btn admin-btn--secondary" href="{html.escape(item.preview_url)}" target="_blank" rel="noopener">Review video</a>' if item.preview_url else ''}
+                </div>
+              </div>
+              <ul class="content-destinations">{destinations}</ul>
+            </article>
+            """
+        )
+    queue_html = "".join(queue_rows) or """
+      <div class="app-state-panel">
+        <h3>No clips in the publishing queue</h3>
+        <p>The recurring Riverside relay will add the next processed recording automatically.</p>
+      </div>
+    """
+
+    draft_rows = "".join(
+        f"""
+        <article class="content-personal-draft">
+          <div><p class="content-eyebrow">Manual LinkedIn · {_format_time(draft.suggested_for)}</p><h3>{html.escape(draft.title)}</h3></div>
+          {_status_badge(draft.status)}
+          <p class="content-copy">{html.escape(draft.copy_text)}</p>
+          <p class="content-muted">{html.escape(str((draft.evidence_json or {}).get('summary') or 'Performance evidence pending.'))}</p>
+        </article>
+        """
+        for draft in workspace["drafts"]
+    ) or """
+      <div class="app-state-panel">
+        <h3>Waiting for cross-channel signal</h3>
+        <p>Personal LinkedIn drafts appear here only after a published idea shows enough evidence to justify a founder post.</p>
+      </div>
+    """
+    return queue_html, draft_rows, workspace["counts"]
+
+
 def render_content_control_room(
     session: Session,
     settings: Any,
@@ -419,6 +553,20 @@ def render_content_control_room(
     """Render the canonical authenticated Content Operations control room."""
 
     data = control_room_data(session, settings)
+    queue_html, personal_drafts_html, queue_counts = _render_queue_workspace(session, user)
+    queue_data = queue_workspace(session)
+    schedule_rows = "".join(
+        f"""
+        <tr>
+          <td>{_format_time(variant.scheduled_for)}</td>
+          <td>{html.escape(_channel_label(variant.channel))}</td>
+          <td>{html.escape(variant.title)}</td>
+          <td>{html.escape(variant.destination)}</td>
+          <td>{_status_badge(variant.status)}</td>
+        </tr>
+        """
+        for variant in queue_data["variants"][:80]
+    ) or "<tr><td colspan='5'>No destination schedule exists yet.</td></tr>"
     runs = data["runs"]
     run_rows = "".join(
         f"""
@@ -528,15 +676,45 @@ def render_content_control_room(
     </section>
 
     <section class="app-metric-strip" aria-label="Content engine summary">
-      <div class="app-metric"><div class="app-metric__value">{data['source_asset_count']}</div><div class="app-metric__label">Riverside source assets</div></div>
-      <div class="app-metric"><div class="app-metric__value">{len(runs)}</div><div class="app-metric__label">Recorded runs</div></div>
-      <div class="app-metric"><div class="app-metric__value">{data['publication_count']}</div><div class="app-metric__label">Verified publications</div></div>
-      <div class="app-metric"><div class="app-metric__value">{len(data['blockers'])}</div><div class="app-metric__label">Dependencies blocked</div></div>
+      <a class="app-metric" href="#queue"><div class="app-metric__value">{queue_counts['items']}</div><div class="app-metric__label">Clips in system</div></a>
+      <a class="app-metric" href="#schedule"><div class="app-metric__value">{queue_counts['scheduled']}</div><div class="app-metric__label">Destination posts queued</div></a>
+      <a class="app-metric" href="#personal-linkedin"><div class="app-metric__value">{queue_counts['manual']}</div><div class="app-metric__label">Personal drafts ready</div></a>
+      <a class="app-metric" href="#dependencies"><div class="app-metric__value">{queue_counts['attention'] + len(data['blockers'])}</div><div class="app-metric__label">Needs attention</div></a>
     </section>
 
     <section class="content-section" aria-labelledby="pipeline-title">
       <div class="content-section__head"><div><p class="content-eyebrow">Automation</p><h2 id="pipeline-title">Riverside-to-growth production line</h2></div><p>Research → creation → native distribution → learning</p></div>
       <ol class="content-pipeline">{pipeline}</ol>
+    </section>
+
+    <section id="queue" class="content-section" aria-labelledby="queue-title">
+      <div class="content-section__head">
+        <div><p class="content-eyebrow">Review</p><h2 id="queue-title">Publishing queue</h2></div>
+        <p>{queue_counts['items']} clip(s) · {queue_counts['scheduled']} destination post(s) waiting</p>
+      </div>
+      <div class="content-command-bar" aria-label="Publishing queue controls">
+        <span>Every destination has independent state and retry behavior.</span>
+        <a class="admin-btn admin-btn--secondary" href="#schedule">View calendar</a>
+      </div>
+      <div class="content-queue">{queue_html}</div>
+    </section>
+
+    <section id="schedule" class="content-section" aria-labelledby="schedule-title">
+      <div class="content-section__head"><div><p class="content-eyebrow">Calendar</p><h2 id="schedule-title">Destination schedule</h2></div><p>America/Denver operating timezone</p></div>
+      <div class="app-data-workspace">
+        <table class="app-table app-table--sticky">
+          <thead><tr><th>Scheduled</th><th>Channel</th><th>Creative</th><th>Destination</th><th>State</th></tr></thead>
+          <tbody>{schedule_rows}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="personal-linkedin" class="content-section" aria-labelledby="personal-title">
+      <div class="content-section__head">
+        <div><p class="content-eyebrow">Manual primary channel</p><h2 id="personal-title">David's LinkedIn desk</h2></div>
+        <p>2–3 evidence-led drafts per week · never auto-posted</p>
+      </div>
+      <div class="content-personal-drafts">{personal_drafts_html}</div>
     </section>
 
     <section class="content-section" aria-labelledby="runs-title">

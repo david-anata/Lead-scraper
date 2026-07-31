@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -10,7 +11,9 @@ from sqlalchemy.pool import StaticPool
 
 from sales_support_agent.models.content import (
     ContentAuditEvent,
+    ContentChannelVariant,
     ContentJobRun,
+    ContentQueueItem,
     ContentSourceAsset,
 )
 from sales_support_agent.models.database import (
@@ -24,6 +27,12 @@ from sales_support_agent.services.content_engine import (
     ingest_source_assets,
     record_orchestration_check,
     render_content_control_room,
+)
+from sales_support_agent.services.content_workflow import (
+    dispatch_due_variants,
+    ingest_episode_package,
+    queue_workspace,
+    update_variant_state,
 )
 from sales_support_agent.api.content_router import CONTENT_VIEW, router
 
@@ -204,3 +213,146 @@ def test_content_routes_require_trusted_key_and_render_for_authorized_user() -> 
     assert run.json()["status"] == "blocked"
     run_id = run.json()["details"]["social_distribution"]["run_id"]
     assert client.get(f"/admin/content/runs/{run_id}").status_code == 200
+
+
+def test_episode_package_creates_dense_independent_destination_schedule() -> None:
+    factory = _factory()
+    clips = [
+        {
+            "asset_id": f"clip-{index}",
+            "title": f"Clip {index}",
+            "duration_ms": 30_000,
+            "preview_url": f"https://riverside.example/{index}",
+            "media_url": f"https://media.example/{index}.mp4",
+            "rank": index,
+            "six_c": {"channel": 4, "credibility": 5},
+            "channel_copy": {"tiktok": {"copy": f"TikTok copy {index}"}},
+        }
+        for index in range(1, 11)
+    ]
+    with session_scope(factory) as session:
+        first = ingest_episode_package(
+            session,
+            episode_id="episode-2026-07-30",
+            episode_title="Gabe & David",
+            episode_url="https://riverside.example/episode",
+            clips=clips,
+            actor="test",
+        )
+        second = ingest_episode_package(
+            session,
+            episode_id="episode-2026-07-30",
+            episode_title="Gabe & David",
+            episode_url="https://riverside.example/episode",
+            clips=clips,
+            actor="test",
+        )
+        workspace = queue_workspace(session)
+        assert first == {"queue_items_created": 10, "variants_created": 42}
+        assert second == {"queue_items_created": 0, "variants_created": 0}
+        assert workspace["counts"]["items"] == 10
+        assert workspace["counts"]["scheduled"] == 42
+        assert [item.rank for item in workspace["items"]] == list(range(1, 11))
+        assert len(list(session.scalars(select(ContentChannelVariant)))) == 42
+
+
+def test_one_destination_failure_does_not_stop_other_destinations(monkeypatch) -> None:
+    factory = _factory()
+    with session_scope(factory) as session:
+        ingest_episode_package(
+            session,
+            episode_id="episode-1",
+            episode_title="Episode",
+            episode_url="https://riverside.example/episode",
+            clips=[
+                {
+                    "asset_id": "clip-1",
+                    "title": "Clip",
+                    "duration_ms": 10_000,
+                    "media_url": "https://media.example/clip.mp4",
+                }
+            ],
+            actor="test",
+        )
+        variants = list(session.scalars(select(ContentChannelVariant)))
+        for variant in variants:
+            variant.scheduled_for = datetime.now(timezone.utc) - timedelta(minutes=1)
+        session.flush()
+
+        class _Result:
+            def __init__(self, accepted: bool):
+                self.accepted = accepted
+                self.receipt = "receipt" if accepted else ""
+                self.public_url = ""
+                self.safe_error = "" if accepted else "failed safely"
+
+        class _Connector:
+            def __init__(self, accepted: bool):
+                self.accepted = accepted
+
+            def publish(self, payload, idempotency_key):
+                return _Result(self.accepted)
+
+        monkeypatch.setattr(
+            "sales_support_agent.services.content_workflow._connector_for",
+            lambda channel: _Connector(channel != "instagram"),
+        )
+        result = dispatch_due_variants(session)
+        states = {row.channel: row.status for row in variants}
+        assert result["attempted"] == 5
+        assert result["accepted"] == 4
+        assert result["failed"] == 1
+        assert states["instagram"] == "failed"
+        assert states["tiktok"] == "accepted"
+
+
+def test_operator_can_pause_and_resume_one_destination() -> None:
+    factory = _factory()
+    with session_scope(factory) as session:
+        item = ContentQueueItem(
+            id="item",
+            episode_external_id="episode",
+            source_external_id="clip",
+            title="Clip",
+        )
+        variant = ContentChannelVariant(
+            id="variant",
+            queue_item_id="item",
+            channel="tiktok",
+            destination="Anata",
+            idempotency_key="key",
+        )
+        session.add_all([item, variant])
+        session.flush()
+        update_variant_state(session, variant_id="variant", action="pause", actor="operator")
+        assert variant.status == "paused"
+        update_variant_state(session, variant_id="variant", action="resume", actor="operator")
+        assert variant.status == "queued"
+
+
+def test_episode_package_route_is_idempotent() -> None:
+    factory = _factory()
+    settings = _settings()
+    settings.internal_api_key = "internal-test-key"
+    app = FastAPI()
+    app.state.session_factory = factory
+    app.state.settings = settings
+    app.include_router(router)
+    app.dependency_overrides[CONTENT_VIEW] = lambda: {
+        "email": "david@anatainc.com",
+        "permissions": {"content.view", "content.operate"},
+    }
+    client = TestClient(app)
+    payload = {
+        "episode_id": "episode-1",
+        "episode_title": "Gabe & David",
+        "episode_url": "https://riverside.example/episode",
+        "clips": [{"asset_id": "clip-1", "title": "A clip"}],
+    }
+    response = client.post(
+        "/api/jobs/content/episodes",
+        headers={"X-Internal-Api-Key": "internal-test-key"},
+        json=payload,
+    )
+    assert response.status_code == 200
+    assert response.json()["queue_items_created"] == 1

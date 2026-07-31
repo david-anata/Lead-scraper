@@ -7,8 +7,8 @@ from datetime import datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from sales_support_agent.models.database import session_scope
@@ -21,10 +21,18 @@ from sales_support_agent.services.content_engine import (
     render_content_control_room,
     render_run_detail,
 )
+from sales_support_agent.services.content_security import require_content_form_security
+from sales_support_agent.services.content_workflow import (
+    dispatch_due_variants,
+    ingest_episode_package,
+    poll_relay_payload,
+    update_variant_state,
+)
 
 
 router = APIRouter(tags=["content-operations"])
 CONTENT_VIEW = require_any_tool("content.view", "content.operate", "content.admin")
+CONTENT_OPERATE = require_any_tool("content.operate", "content.admin")
 
 
 class SourceAssetInput(BaseModel):
@@ -66,6 +74,34 @@ class ContentRunInput(BaseModel):
         "weekly_retrospective",
     ] = "scheduled"
     force: bool = False
+
+
+class EpisodeClipInput(BaseModel):
+    """One normalized Riverside clip supplied by the production relay."""
+
+    asset_id: str = Field(min_length=1, max_length=255)
+    title: str = Field(min_length=1, max_length=500)
+    duration_ms: int = Field(default=0, ge=0)
+    source_url: str = Field(default="", max_length=4000)
+    preview_url: str = Field(default="", max_length=4000)
+    media_url: str = Field(default="", max_length=4000)
+    transcript_excerpt: str = Field(default="", max_length=8000)
+    rank: int = Field(default=1, ge=1)
+    aspect_ratio: str = Field(default="9:16", max_length=16)
+    recycle_eligible: bool = True
+    six_c: dict[str, Any] = Field(default_factory=dict)
+    channel_copy: dict[str, Any] = Field(default_factory=dict)
+    default_copy: str = Field(default="", max_length=10000)
+
+
+class EpisodePackageInput(BaseModel):
+    """Complete normalized queue package for one Riverside episode."""
+
+    episode_id: str = Field(min_length=1, max_length=255)
+    episode_title: str = Field(min_length=1, max_length=500)
+    episode_url: str = Field(default="", max_length=4000)
+    schedule_from: datetime | None = None
+    clips: list[EpisodeClipInput] = Field(min_length=1, max_length=250)
 
 
 def _require_internal_key(request: Request) -> None:
@@ -145,6 +181,64 @@ def content_source_assets(
     return {"status": "ok", **result}
 
 
+@router.post("/api/jobs/content/episodes")
+def content_episode_package(
+    payload: EpisodePackageInput,
+    request: Request,
+) -> dict[str, Any]:
+    """Accept one idempotent episode package from the recurring relay."""
+
+    _require_internal_key(request)
+    with session_scope(request.app.state.session_factory) as session:
+        result = ingest_episode_package(
+            session,
+            episode_id=payload.episode_id,
+            episode_title=payload.episode_title,
+            episode_url=payload.episode_url,
+            clips=[item.model_dump() for item in payload.clips],
+            actor="trusted:riverside-relay",
+            schedule_from=payload.schedule_from,
+        )
+    return {"status": "ok", **result}
+
+
+@router.post(
+    "/admin/content/variants/{variant_id}/{action}",
+    dependencies=[Depends(require_content_form_security)],
+)
+def content_variant_action(
+    variant_id: str,
+    action: str,
+    request: Request,
+    scheduled_for: str = Form(default=""),
+    user: dict = Depends(CONTENT_OPERATE),
+) -> RedirectResponse:
+    """Pause, resume, skip, retry, or reschedule one destination."""
+
+    parsed_schedule = None
+    if scheduled_for.strip():
+        try:
+            parsed_schedule = datetime.fromisoformat(scheduled_for)
+            if parsed_schedule.tzinfo is None:
+                parsed_schedule = parsed_schedule.replace(tzinfo=ZoneInfo("America/Denver"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Scheduled time is invalid.") from exc
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            update_variant_state(
+                session,
+                variant_id=variant_id,
+                action=action,
+                actor=str(user.get("email") or "operator"),
+                scheduled_for=parsed_schedule,
+            )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return RedirectResponse("/admin/content#queue", status_code=303)
+
+
 @router.post("/api/jobs/content/run")
 def content_run(
     payload: ContentRunInput,
@@ -154,11 +248,30 @@ def content_run(
 
     _require_internal_key(request)
     local_now = datetime.now(ZoneInfo("America/Denver"))
+    relay_results: list[dict[str, Any]] = []
+    with session_scope(request.app.state.session_factory) as session:
+        for episode in poll_relay_payload():
+            try:
+                relay_results.append(
+                    ingest_episode_package(
+                        session,
+                        episode_id=str(episode["episode_id"]),
+                        episode_title=str(episode.get("episode_title") or "Riverside episode"),
+                        episode_url=str(episode.get("episode_url") or ""),
+                        clips=list(episode.get("clips") or []),
+                        actor="job:riverside-relay",
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        dispatch_result = dispatch_due_variants(session)
     if payload.mode == "scheduled" and local_now.hour != 6:
         return {
-            "status": "skipped",
-            "message": "Content scheduler is waiting for 6:00 AM America/Denver.",
+            "status": "active",
+            "message": "Hourly relay and destination dispatch completed; the daily planning job waits for 6:00 AM America/Denver.",
             "local_time": local_now.isoformat(),
+            "relay": relay_results,
+            "dispatch": dispatch_result,
         }
 
     job_keys = (
@@ -220,4 +333,6 @@ def content_run(
             else "ready"
         ),
         "details": results,
+        "relay": relay_results,
+        "dispatch": dispatch_result,
     }

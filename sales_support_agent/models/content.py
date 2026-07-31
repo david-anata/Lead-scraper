@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, JSON, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from sales_support_agent.models.database import Base
@@ -157,4 +157,105 @@ class ContentAuditEvent(Base):
     details_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
+
+
+class ContentQueueItem(Base):
+    """One Riverside-derived creative moving through the publishing queue."""
+
+    __tablename__ = "content_queue_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "episode_external_id",
+            "source_external_id",
+            name="uq_content_queue_episode_source",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    episode_external_id: Mapped[str] = mapped_column(String(255), index=True)
+    source_external_id: Mapped[str] = mapped_column(String(255))
+    title: Mapped[str] = mapped_column(String(500))
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    source_url: Mapped[str] = mapped_column(Text, default="")
+    preview_url: Mapped[str] = mapped_column(Text, default="")
+    transcript_excerpt: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    rank: Mapped[int] = mapped_column(Integer, default=0)
+    six_c_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    recycle_eligible: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
+class ContentChannelVariant(Base):
+    """A channel-native treatment and its independent delivery state."""
+
+    __tablename__ = "content_channel_variants"
+    __table_args__ = (
+        UniqueConstraint(
+            "queue_item_id",
+            "channel",
+            "cycle_key",
+            name="uq_content_variant_item_channel_cycle",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    queue_item_id: Mapped[str] = mapped_column(String(64), index=True)
+    channel: Mapped[str] = mapped_column(String(32), index=True)
+    destination: Mapped[str] = mapped_column(String(255), default="")
+    provider: Mapped[str] = mapped_column(String(32), default="")
+    cycle_key: Mapped[str] = mapped_column(String(64), default="launch")
+    title: Mapped[str] = mapped_column(String(500), default="")
+    copy_text: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    scheduled_for: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    manual_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    idempotency_key: Mapped[str] = mapped_column(String(160), default="", index=True)
+    provider_receipt: Mapped[str] = mapped_column(String(500), default="")
+    public_url: Mapped[str] = mapped_column(Text, default="")
+    safe_error_message: Mapped[str] = mapped_column(Text, default="")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    published_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
+class ContentPersonalDraft(Base):
+    """A performance-led draft that David posts manually on LinkedIn."""
+
+    __tablename__ = "content_personal_drafts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    queue_item_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    title: Mapped[str] = mapped_column(String(500), default="")
+    copy_text: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    suggested_for: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    posted_url: Mapped[str] = mapped_column(Text, default="")
+    posted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
     )
