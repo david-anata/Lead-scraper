@@ -135,10 +135,44 @@ def _run_due_modes(
             }
             continue
         completed_at = datetime.now(ZoneInfo("UTC"))
+        outcome = dict((getattr(result, "report", None) or {}).get("run_outcome") or {})
+        outcome_status = str(outcome.get("status", "") or "").strip()
+        outcome_updates = {
+            "outcome_status": outcome_status,
+            "outcome_message": str(outcome.get("summary", "") or ""),
+            "expected_output": str(outcome.get("expected_output", "") or ""),
+            "actual_output": str(outcome.get("actual_output", "") or ""),
+            "production_delta_count": str(outcome.get("production_delta_count", 0) or 0),
+            "last_stage": str(outcome.get("last_stage", "") or ""),
+            "next_operation": str(outcome.get("next_operation", "") or ""),
+            "failure_stage": str(outcome.get("failure_stage", "") or ""),
+        }
+        if not bool(getattr(result, "ok", True)) or outcome_status == "failed_outcome":
+            message = result.message or "Website Ops completed without the required outcome."
+            write_website_ops_run_state(
+                settings,
+                mode,
+                {
+                    **outcome_updates,
+                    "status": "failed_outcome",
+                    "last_completed_at": completed_at.isoformat(),
+                    "last_error": message,
+                    "recovery_status": "outcome_failed",
+                },
+            )
+            send_website_ops_failure_email(settings, mode=mode, error=message)
+            results[mode] = {
+                "status": "failed_outcome",
+                "message": message,
+                "outcome": outcome,
+                "attempts": int(get_website_ops_run_state(settings, mode).get("attempt_count", "1") or "1"),
+            }
+            continue
         write_website_ops_run_state(
             settings,
             mode,
             {
+                **outcome_updates,
                 "status": "succeeded",
                 "last_completed_at": completed_at.isoformat(),
                 "last_successful_date": completed_at.date().isoformat(),
@@ -151,6 +185,7 @@ def _run_due_modes(
         results[mode] = {
             "status": "succeeded",
             "message": result.message,
+            "outcome": outcome,
             "attempts": int(
                 get_website_ops_run_state(settings, mode).get("attempt_count", "1") or "1"
             ),
@@ -249,6 +284,14 @@ def website_ops_runtime_health(request: Request) -> dict:
                 "last_started_at",
                 "last_completed_at",
                 "last_successful_date",
+                "outcome_status",
+                "outcome_message",
+                "expected_output",
+                "actual_output",
+                "production_delta_count",
+                "last_stage",
+                "next_operation",
+                "failure_stage",
             }
         }
         for mode, run in state.get("runs", {}).items()

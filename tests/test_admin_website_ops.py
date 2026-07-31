@@ -309,12 +309,24 @@ example
                         "and contribution margin rather than treating clicks as the final outcome. "
                         "Teams should also record exclusions, placement assumptions, inventory limits, "
                         "and the exact date when the next evidence review will change the operating decision. "
+                        "A useful review note should explain the decision in plain language, name the evidence that changed it, and preserve the previous setting so the team can compare outcomes without losing operational context. "
                     )
                     for paragraph_index in range(2)
                 ],
             }
-            for heading in section_names
+            for section_index, heading in enumerate(section_names)
         ]
+        for section_index, section in enumerate(sections):
+            source_title = "Amazon Ads campaign guidance" if section_index % 2 == 0 else "Google Search documentation"
+            source_url = "https://advertising.amazon.com/library/guides" if section_index % 2 == 0 else "https://developers.google.com/search/docs"
+            link_title = "Amazon advertising management" if section_index % 2 == 0 else "Amazon PPC management"
+            link_href = "/services/amazon-advertising" if section_index % 2 == 0 else "/services/amazon-ppc-management"
+            section["citations"] = [
+                {"title": source_title, "href": source_url}
+            ]
+            section["internalLinks"] = [
+                {"title": link_title, "href": link_href}
+            ]
         article = {
             "slug": "amazon-ppc-account-structure",
             "primaryIntent": "how to structure an amazon ppc account",

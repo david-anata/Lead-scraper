@@ -12,6 +12,7 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 
 import requests
+from sales_support_agent.services.website_ops_editorial_quality import contextual_evidence_errors
 
 from sales_support_agent.services import website_ops_vendor as website_ops
 
@@ -164,6 +165,12 @@ def validate_generated_article(record: Mapping[str, Any]) -> dict[str, Any]:
         raise website_ops.ExecutionError(
             "Every generated article section needs a heading and at least two paragraphs."
         )
+    contextual_errors = contextual_evidence_errors(
+        sections=sections,
+        sources=sources,
+    )
+    if contextual_errors:
+        raise website_ops.ExecutionError(contextual_errors[0])
     paragraphs = [
         str(paragraph).strip()
         for section in sections
@@ -194,9 +201,9 @@ def validate_generated_article(record: Mapping[str, Any]) -> dict[str, Any]:
         raise website_ops.ExecutionError(
             "Generated article direct answer must be 60 to 160 words."
         )
-    if word_count < 700:
+    if word_count < 900:
         raise website_ops.ExecutionError(
-            "Generated article must contain at least 700 useful words."
+            "Generated article must contain at least 900 useful words."
         )
     related = content.get("related")
     if not isinstance(related, list) or len(related) < 2:
