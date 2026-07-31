@@ -2129,6 +2129,12 @@ def render_hr_settings(
         f'{_esc(account.get("name") or account["email"])} — {_esc(account["email"])}</option>'
         for account in payroll_approvers
     )
+    calendar_identity = (
+        '<p class="hr-help"><strong>Service account to share the calendar with:</strong> '
+        f'{_esc(calendar.get("service_account_email"))}</p>'
+        if calendar.get("service_account_email") else
+        '<p class="hr-help"><strong>Service account:</strong> Add the protected calendar credential in Render first; its safe sharing email will appear here after deployment.</p>'
+    )
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">HR & payroll settings</h1><p class="hr-sub">The policies currently approved for Anata.</p>
@@ -2151,9 +2157,10 @@ def render_hr_settings(
       <h2>Anata OOO Google Calendar · {_esc(calendar.get('status'))}</h2>
       <p class="hr-sub">Only approved PTO is added. Pending and denied requests never appear. Revoking approved PTO releases the reserved hours and removes its event.</p>
       {f'<div class="hr-callout"><strong>Ready.</strong> Calendar: {_esc(calendar.get("calendar_id"))}<br>Service account: {_esc(calendar.get("service_account_email"))}</div>' if calendar.get('configured') else f'<div class="hr-callout warn"><strong>Setup needed.</strong> {_esc(calendar.get("reason"))}</div>'}
+      {calendar_identity}
       <ol class="hr-sub">
         <li>Create or open the dedicated Google Calendar named <strong>Anata OOO</strong>.</li>
-        <li>Share it with the service-account email shown here using “Make changes to events.”</li>
+        <li>Share it with the service-account email listed above using “Make changes to events.”</li>
         <li>In Render, set <code>HR_OOO_GOOGLE_CALENDAR_ID</code> and <code>HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON</code>, then deploy.</li>
         <li>Return to Time &amp; PTO and retry any item marked as needing calendar attention.</li>
       </ol>

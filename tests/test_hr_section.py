@@ -84,6 +84,31 @@ class HRSectionTests(unittest.TestCase):
         denied = self._get("/admin/hr/setup", _cookie(email))
         self.assertEqual(denied.status_code, 403)
 
+    def test_calendar_setup_shows_safe_service_account_identity(self):
+        import os
+
+        old_calendar = os.environ.get("HR_OOO_GOOGLE_CALENDAR_ID")
+        old_credential = os.environ.get("HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON")
+        os.environ.pop("HR_OOO_GOOGLE_CALENDAR_ID", None)
+        os.environ["HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON"] = (
+            '{"client_email":"ooo-calendar-agent@example.com"}'
+        )
+        try:
+            page = self._get("/admin/hr/settings", self.sa)
+        finally:
+            if old_calendar is None:
+                os.environ.pop("HR_OOO_GOOGLE_CALENDAR_ID", None)
+            else:
+                os.environ["HR_OOO_GOOGLE_CALENDAR_ID"] = old_calendar
+            if old_credential is None:
+                os.environ.pop("HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", None)
+            else:
+                os.environ["HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON"] = old_credential
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Service account to share the calendar with", page.text)
+        self.assertIn("ooo-calendar-agent@example.com", page.text)
+        self.assertNotIn("client_email", page.text)
+
     def test_prelaunch_payroll_defaults_to_approved_first_live_period(self):
         from sales_support_agent.api.hr_router import _default_payroll_date
 
