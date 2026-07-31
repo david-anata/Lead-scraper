@@ -595,3 +595,12 @@
     animation-iteration-count: 1 !important;
   }
 }
+.finance-bookkeeping-next{margin-top:24px;padding-top:20px;border-top:1px solid var(--border, #d9e1e8)}
+.finance-bookkeeping-next h3{margin:0 0 6px}
+.finance-bookkeeping-next p{max-width:760px}
+.finance-confirm-card{max-width:760px}
+.finance-confirm-list{margin:18px 0;display:grid;gap:0}
+.finance-confirm-list>div{display:grid;grid-template-columns:minmax(160px,220px) 1fr;gap:16px;padding:12px 0;border-bottom:1px solid var(--border, #d9e1e8)}
+.finance-confirm-list dt{font-weight:700;color:var(--muted, #607084)}
+.finance-confirm-list dd{margin:0;font-weight:600}
+@media (max-width:640px){.finance-confirm-list>div{grid-template-columns:1fr;gap:4px}.finance-bookkeeping-next table{min-width:620px}}

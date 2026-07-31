@@ -2800,6 +2800,8 @@ def _render_bookkeeping() -> str:
         summary = bookkeeping_summary()
         pending = list_needs_decision(limit=25)
         rules = list_rules()
+        from sales_support_agent.services.cashflow.qbo_bookkeeping import list_ready_for_qbo
+        ready_for_qbo = list_ready_for_qbo()
     except Exception:
         return ""
 
@@ -2927,11 +2929,28 @@ def _render_bookkeeping() -> str:
         '<a href="/admin/finances/collections">Who owes you</a> handle that side.</p>'
     )
     writeback = (
-        '<p class="finance-accounts-asof">QuickBooks runs the books. Anything it has already '
-        + 'posted arrives here with the account it was booked to, so it never asks you again. '
-        + 'Nothing is written back the other way: the '
-        + str(summary.get("filed_here_only", 0)) + ' transaction(s) filed here only are still '
-        + 'uncategorised in QuickBooks. Book those in QuickBooks and they will come back filed.</p>'
+        '<div class="finance-bookkeeping-next"><h3>Ready to finish in QuickBooks</h3>'
+        '<p>QuickBooks runs the books. Anata may prepare familiar expenses automatically, '
+        'but it never changes your real '
+        'books without showing you the transaction and the QuickBooks account first. '
+        'Review and send them here. Book those in QuickBooks directly if you prefer.</p>'
+        + (
+            '<table class="finance-accounts-table"><thead><tr><th>Transaction</th>'
+            '<th>Suggested type</th><th></th></tr></thead><tbody>'
+            + "".join(
+                '<tr><td><strong>' + html.escape(str(row.get("name") or row.get("description") or "Purchase"))
+                + '</strong><br><small>' + _money(int(row.get("amount_cents") or 0))
+                + ' on ' + html.escape(str(row.get("posted_on") or "")[:10]) + '</small></td>'
+                + '<td>' + html.escape(str(row.get("category") or "").title()) + '</td>'
+                + '<td><a class="btn btn-secondary btn-sm" href="/admin/finances/bookkeeping/qbo/'
+                + html.escape(str(row["id"]), quote=True) + '/review">Review and send</a></td></tr>'
+                for row in ready_for_qbo[:20]
+            )
+            + '</tbody></table>'
+            if ready_for_qbo else
+            '<p class="finance-plan-ok">Nothing is waiting to be sent to QuickBooks.</p>'
+        )
+        + '</div>'
     )
     return (
         '<section class="finance-source-row finance-bookkeeping"><div style="width:100%">'

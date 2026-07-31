@@ -870,6 +870,35 @@ async def finance_bookkeeping_page(request: Request, flash: str = ""):
     return HTMLResponse(await asyncio.to_thread(render_bookkeeping_page, flash=flash))
 
 
+@router.get("/bookkeeping/qbo/{event_id}/review", response_class=HTMLResponse)
+async def finance_qbo_bookkeeping_review(request: Request, event_id: str, flash: str = ""):
+    from sales_support_agent.services.cashflow.finance_pages import render_qbo_bookkeeping_review
+    return HTMLResponse(await asyncio.to_thread(
+        render_qbo_bookkeeping_review,
+        event_id=event_id, settings=_finance_settings(request), flash=flash,
+    ))
+
+
+@router.post("/bookkeeping/qbo/{event_id}/confirm")
+async def finance_qbo_bookkeeping_confirm(
+    request: Request, event_id: str,
+    account_id: str = Form(...),
+):
+    from sales_support_agent.services.cashflow.qbo_bookkeeping import confirm_writeback
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        result = await asyncio.to_thread(
+            confirm_writeback, event_id, account_id,
+            settings=_finance_settings(request), actor=actor,
+        )
+    except Exception as exc:
+        return _redirect_finance_error(f"QuickBooks was not changed: {exc}")
+    return _redirect_finance_home(
+        f"QuickBooks updated. This purchase is now filed under {result['account_name']}."
+    )
+
+
 @router.get("/collections", response_class=HTMLResponse)
 async def finance_collections_page(request: Request, flash: str = ""):
     from sales_support_agent.services.cashflow.finance_pages import render_collections_page
