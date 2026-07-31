@@ -410,7 +410,7 @@ def render_building_page(
         </tr>
         """
         for item in contacts
-    ) or '<tr><td colspan="5"><div class="empty"><strong>No building contacts yet.</strong><br>Connected website inquiries will create CRM contacts automatically.</div></td></tr>'
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No building contacts yet.</strong><br>Connected website inquiries will create Agent contacts automatically.</div></td></tr>'
 
     privacy_rows = "".join(
         f"""
@@ -575,7 +575,7 @@ def render_building_page(
         </tr>
         """
         for item in roster_imports
-    ) or '<tr><td colspan="4"><div class="empty"><strong>No roster previews yet.</strong><br>Paste a reviewed CSV above to stage tenant or community contacts without changing CRM data.</div></td></tr>'
+    ) or '<tr><td colspan="4"><div class="empty"><strong>No roster previews yet.</strong><br>Paste a reviewed CSV above to stage tenant or community contacts without changing customer data.</div></td></tr>'
 
     inquiry_stage_transitions = {
         "new": ("responded", "qualified", "closed_lost"),
@@ -1762,7 +1762,7 @@ def render_building_page(
         </div>
       </details>
       <section class="panel building-view view-contacts">
-        <div class="panel-head"><div><h2>Add a CRM relationship</h2><p>One person can be a tenant, prospect, event host, or community member without duplication.</p></div></div>
+        <div class="panel-head"><div><h2>Add a customer relationship</h2><p>One person can be a tenant, prospect, event host, or community member without duplication.</p></div></div>
         <details class="task-creator"><summary>Add a person or relationship</summary>
         <form class="form-grid" method="post" action="/admin/building/contacts">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
@@ -1920,7 +1920,7 @@ def render_building_page(
         <form class="form-grid" method="post" action="/admin/building/billing/accounts">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <input type="hidden" name="account_id" value="{_esc(generated_billing_account_id)}">
-          <div class="field"><label for="billing-contact">CRM contact</label><select id="billing-contact" name="contact_id"><option value="">No linked contact</option>{contact_options}</select></div>
+          <div class="field"><label for="billing-contact">Agent contact</label><select id="billing-contact" name="contact_id"><option value="">No linked contact</option>{contact_options}</select></div>
           <div class="field"><label for="billing-account-name">Account name</label><input id="billing-account-name" name="account_name" required></div>
           <div class="field"><label for="billing-email">Billing email</label><input id="billing-email" name="billing_email" type="email" required></div>
           <div class="field field--wide"><label for="billing-qbo-customer">QBO customer ID</label><input id="billing-qbo-customer" name="qbo_customer_id" placeholder="Optional during setup"></div>
@@ -2013,7 +2013,7 @@ def render_building_page(
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label>Request type</label><select name="request_type"><option value="access_export">Access export</option><option value="correction">Correction</option><option value="suppression">Suppression</option><option value="deletion_review">Deletion review</option><option value="retention_review">Retention review</option></select></div>
           <div class="field"><label>Requestor email</label><input name="requestor_email" type="email" required></div>
-          <div class="field"><label>CRM contact</label><select name="contact_id"><option value="">Not yet matched</option>{contact_options}</select></div>
+          <div class="field"><label>Agent contact</label><select name="contact_id"><option value="">Not yet matched</option>{contact_options}</select></div>
           <div class="field"><label>Owner</label><input name="assigned_owner"></div>
           <div class="field field--wide"><label>Details</label><textarea name="details"></textarea></div>
           <div class="form-actions"><span class="form-note">Closing requires a written resolution and evidence.</span><button class="primary" type="submit">Add request</button></div>
