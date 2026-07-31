@@ -10,12 +10,23 @@ OPERATOR = ROOT / "docs/training/Anata-HR-Operator-Training-Guide.docx"
 EMPLOYEE = ROOT / "docs/training/Anata-Employee-HR-Quick-Start.docx"
 
 
+def iter_paragraphs(container):
+    """Yield body and table-cell paragraphs without rebuilding document structure."""
+
+    yield from container.paragraphs
+    for table in container.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                yield from iter_paragraphs(cell)
+
+
 def replace(document: Document, old: str, new: str) -> None:
-    for paragraph in document.paragraphs:
+    paragraphs = list(iter_paragraphs(document))
+    for paragraph in paragraphs:
         if paragraph.text == old:
             paragraph.text = new
             return
-    if any(paragraph.text == new for paragraph in document.paragraphs):
+    if any(paragraph.text == new for paragraph in paragraphs):
         return
     raise ValueError(f"Paragraph not found: {old}")
 
@@ -41,6 +52,16 @@ def insert_before(document: Document, anchor: str, items: list[tuple[str, str]])
 
 def update_operator() -> None:
     document = Document(OPERATOR)
+    replace(
+        document,
+        "Go to HR → Employees → Add employee. Enter the employee’s work email, legal name, role, team, employee type, pay basis, compensation, phone, and active status.",
+        "Go to HR → Employees → Add employee. Enter the employee’s record email, legal name, role, team, employee type, pay basis, compensation, phone, and active status. Then add a personal HR sign-in email the employee controls and can keep if work access ends. Gmail, Yahoo, Outlook, iCloud, and other valid addresses work.",
+    )
+    replace(
+        document,
+        "Choose Send invitation. If email delivery succeeds, the employee receives the link. If not, copy the one-time link and send it through a trusted channel.",
+        "Choose Create secure invitation. The employee opens the one-time link sent only to their personal HR sign-in address. The link expires, cannot be reused, and does not require Google or a new password. Their separate work login keeps its existing Agent permissions.",
+    )
     replace(
         document,
         "A qualified payroll or tax professional reviews the 2026 setup and opening balances. Mark the review complete only after that review actually occurs.",
@@ -170,6 +191,21 @@ def update_operator() -> None:
 
 def update_employee() -> None:
     document = Document(EMPLOYEE)
+    replace(
+        document,
+        "Your invitation is tied to your work email. Do not forward it. David or Val will never ask you to email your Social Security number or identity documents.",
+        "Your invitation is tied to your personal HR sign-in email. Do not forward it. David or Val will never ask you to email your Social Security number or identity documents.",
+    )
+    replace(
+        document,
+        "Use the link sent by Val or David and sign in with the same work email listed on your employee record.",
+        "Open the one-time link sent by Val or David to your personal HR sign-in email. Gmail, Yahoo, Outlook, iCloud, and other valid addresses work. You do not need a Google account or a new password, and your work login remains separate.",
+    )
+    replace(
+        document,
+        "Confirm you signed in with the exact work email used for your employee record.",
+        "Confirm you used the exact personal HR sign-in email where your invitation was sent.",
+    )
     insert_before(
         document,
         "3. Request PTO",
