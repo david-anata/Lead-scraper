@@ -71,6 +71,7 @@ class FinanceBrief:
     source_label: str
     balance_available: bool
     trust_ready: bool | None
+    review_count: int
     amounts: tuple[EvidenceAmount, ...]
     outlooks: tuple[Outlook, ...]
     attention: tuple[AttentionCase, ...]
@@ -81,7 +82,7 @@ class FinanceBrief:
 
 
 def _attention_cases(
-    state: Mapping[str, Any], *, balance_available: bool
+    state: Mapping[str, Any], *, balance_available: bool, review_count: int
 ) -> tuple[AttentionCase, ...]:
     cases: list[AttentionCase] = []
     trust = state["trust_gate"]
@@ -96,7 +97,9 @@ def _attention_cases(
                 severity="blocked",
             )
         )
-    for index, issue in enumerate(list(trust.get("issues") or [])[:2]):
+    for index, issue in enumerate(
+        list(trust.get("issues") or [])[:2] if review_count else []
+    ):
         cases.append(
             AttentionCase(
                 key=f"trust-{index}",
@@ -255,15 +258,26 @@ def build_finance_brief(
     calculation_id = hashlib.sha256(
         json.dumps(proof, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]
+    try:
+        from sales_support_agent.services.cashflow.bulk_resolve import list_review_items
+
+        review_count = int(list_review_items().get("total") or 0)
+    except Exception:
+        review_count = 0
     return FinanceBrief(
         calculation_id=calculation_id,
         as_of=today.isoformat(),
         source_label=source_label,
         balance_available=bool(cash["balance_available"]),
         trust_ready=state["trust_gate"]["ready"],
+        review_count=review_count,
         amounts=amounts,
         outlooks=outlooks,
-        attention=_attention_cases(state, balance_available=bool(cash["balance_available"])),
+        attention=_attention_cases(
+            state,
+            balance_available=bool(cash["balance_available"]),
+            review_count=review_count,
+        ),
         excluded_summary=state["data_quality"]["summary"],
     )
 
@@ -318,6 +332,7 @@ def load_finance_brief(settings: Any) -> FinanceBrief:
             source_label="Bank source unavailable",
             balance_available=False,
             trust_ready=False,
+            review_count=0,
             amounts=amounts,
             outlooks=outlooks,
             attention=(
@@ -376,7 +391,12 @@ def render_money_brief_page(
     status = (
         '<span class="money-status money-status--ready">Sources ready</span>'
         if brief.trust_ready is True
-        else '<span class="money-status money-status--review">Review needed</span>'
+        else '<span class="money-status money-status--review">Calculated with exclusions</span>'
+    )
+    review_link = (
+        '<a href="/admin/finances/review">Open Review</a>'
+        if brief.review_count
+        else '<span class="money-section-state">No daily review cases</span>'
     )
     body = f"""
     <div class="money-brief">
@@ -422,7 +442,7 @@ def render_money_brief_page(
       <section class="money-attention-section" aria-labelledby="money-attention-title">
         <div class="money-section-heading">
           <div><p class="finance-eyebrow">Needs attention</p><h2 id="money-attention-title">Handle these next</h2></div>
-          <a href="/admin/finances/review">Open Review</a>
+          {review_link}
         </div>
         <ol class="money-attention-list">{attention_html}</ol>
       </section>

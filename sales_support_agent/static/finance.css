@@ -1739,6 +1739,7 @@ input:focus, select:focus, textarea:focus {
   font-weight: 800;
   text-underline-offset: 4px;
 }
+.money-section-state { color: var(--anata-muted); font-size: 12px; font-weight: 700; }
 
 .money-metrics {
   display: grid;

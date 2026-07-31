@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import patch
 
 from sales_support_agent.services.cashflow.money_brief import (
@@ -47,6 +48,10 @@ def _brief(*, trust_ready: bool = True):
         patch(
             "sales_support_agent.services.cashflow.money_brief._normalise_renderer_state",
             return_value=state,
+        ),
+        patch(
+            "sales_support_agent.services.cashflow.bulk_resolve.list_review_items",
+            return_value={"total": 1 if not trust_ready else 0, "groups": []},
         ),
     ):
         return build_finance_brief(
@@ -134,6 +139,14 @@ def test_today_is_a_five_number_brief_without_old_dashboard_surfaces() -> None:
     assert "Smart brief" not in page
     assert "Savings opportunities" not in page
     assert "finance-recommendation-drawer" not in page
+
+
+def test_excluded_history_does_not_promise_an_empty_review_queue() -> None:
+    brief = replace(_brief(trust_ready=False), review_count=0)
+    page = render_money_brief_page(brief)
+    assert "Calculated with exclusions" in page
+    assert "No daily review cases" in page
+    assert ">Open Review<" not in page
 
 
 def test_calculation_page_explains_sources_and_rules_without_actions() -> None:
