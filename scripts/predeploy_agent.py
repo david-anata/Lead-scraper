@@ -85,6 +85,7 @@ def main() -> None:
         )
         from sales_support_agent.services.building_arena_rate_plan_seed import (
             ensure_arena_commercial_draft,
+            reconcile_approved_arena_tax,
         )
 
         access_store.seed_superadmins(
@@ -102,6 +103,14 @@ def main() -> None:
         logger.info(
             "predeploy milestone=arena_commercial_draft result=%s",
             arena_rate_plan_result,
+        )
+        arena_tax_result = reconcile_approved_arena_tax(
+            factory,
+            actor=configured_owner,
+        )
+        logger.info(
+            "predeploy milestone=arena_tax_decision result=%s",
+            arena_tax_result,
         )
     logger.info(
         "predeploy milestone=schema_ready elapsed_ms=%.1f",

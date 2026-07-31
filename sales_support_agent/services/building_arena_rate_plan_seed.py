@@ -15,13 +15,24 @@ from sqlalchemy import select
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
+    BuildingLaunchDecision,
     BuildingOffering,
     BuildingRatePlan,
     BuildingSpace,
 )
+from sales_support_agent.services.building_launch_readiness import (
+    ARENA_LAUNCH_DECISIONS,
+    ARENA_RATE_PLAN_DECISION_KEYS,
+    launch_decision_id,
+)
 
 
 ARENA_RATE_PLAN_NAME = "Arena owner-reconciled commercial draft"
+ARENA_TAX_EVIDENCE = (
+    "Owner/accountant approval recorded 2026-07-30; Utah State Tax Commission "
+    "2026 Q3 combined sales and use tax rate chart, Lehi 25-066, effective "
+    "2026-07-01."
+)
 ARENA_TIMEZONE = ZoneInfo("America/Denver")
 ARENA_CANCELLATION_POLICY = (
     "All payments are non-refundable. One transfer may be approved when "
@@ -302,3 +313,148 @@ def ensure_arena_commercial_draft(
             )
         )
         return "created"
+
+
+def reconcile_approved_arena_tax(
+    session_factory,
+    *,
+    actor: str,
+) -> str:
+    """Apply the dated owner/accountant tax decision to the canonical draft.
+
+    The operation is deliberately narrow: it will not alter an approved plan,
+    a noncanonical plan, or a plan with conflicting tax evidence. It approves
+    the rate plan only when every saved commercial decision and every blocking
+    provider conflict is already resolved.
+    """
+
+    with session_scope(session_factory) as session:
+        plan = session.execute(
+            select(BuildingRatePlan).where(
+                BuildingRatePlan.offering_id == "arena-events",
+                BuildingRatePlan.name == ARENA_RATE_PLAN_NAME,
+            )
+        ).scalars().first()
+        if plan is None:
+            return "catalog_missing"
+        if plan.status == "approved":
+            return "already_approved"
+        if plan.status != "draft":
+            return "non_draft_preserved"
+        if (plan.tax_status, plan.tax_rate_bps) not in {
+            ("review_required", 0),
+            ("taxable", 745),
+        }:
+            raise RuntimeError(
+                "Arena tax evidence conflicts with the approved 7.45% Lehi "
+                "decision; operator review is required."
+            )
+
+        conflicts = [dict(item) for item in list(plan.conflicts_json or [])]
+        tax_found = False
+        for item in conflicts:
+            if str(item.get("id") or "") == "tax-review":
+                item.update(
+                    {
+                        "status": "accountant_verified",
+                        "summary": (
+                            "Use the legally applicable combined Lehi sales-tax "
+                            "rate at the transaction date. The July 1, 2026 rate "
+                            "is 7.45%."
+                        ),
+                        "evidence": ARENA_TAX_EVIDENCE,
+                    }
+                )
+                tax_found = True
+        if not tax_found:
+            raise RuntimeError(
+                "Canonical Arena draft is missing its tax-review evidence row."
+            )
+
+        now = datetime.now(timezone.utc)
+        plan.tax_status = "taxable"
+        plan.tax_rate_bps = 745
+        plan.tax_note = (
+            "Apply the legally applicable combined rate for 1657 N. State "
+            "Street, Lehi, Utah at the transaction date. The rate effective "
+            "2026-07-01 is 7.45%. Refundable security deposits are not taxable "
+            "unless retained or applied to taxable charges. Re-verify the "
+            "official Utah rate chart before a later effective period."
+        )
+        plan.conflicts_json = conflicts
+        plan.updated_at = now
+
+        decision = session.get(
+            BuildingLaunchDecision,
+            launch_decision_id("arena-events", "tax_treatment"),
+        )
+        if decision is None:
+            decision = BuildingLaunchDecision(
+                id=launch_decision_id("arena-events", "tax_treatment"),
+                offering_id="arena-events",
+                decision_key="tax_treatment",
+            )
+        decision.status = "accepted_policy"
+        decision.value = (
+            "Tax all quoted event charges at the legally applicable combined "
+            "Lehi rate; 7.45% is effective 2026-07-01. Exclude refundable "
+            "security deposits unless retained or applied to taxable charges."
+        )
+        decision.evidence = ARENA_TAX_EVIDENCE
+        decision.decided_by = actor
+        decision.decided_at = now
+        decision.updated_at = now
+        session.add(decision)
+        session.flush()
+
+        decision_rows = {
+            item.decision_key: item.status
+            for item in session.execute(
+                select(BuildingLaunchDecision).where(
+                    BuildingLaunchDecision.offering_id == "arena-events"
+                )
+            ).scalars()
+        }
+        decision_blockers = [
+            key
+            for key in ARENA_RATE_PLAN_DECISION_KEYS
+            if decision_rows.get(key) != ARENA_LAUNCH_DECISIONS[key][1]
+        ]
+        conflict_blockers = [
+            str(item.get("id") or "unknown")
+            for item in conflicts
+            if bool(item.get("blocks_rate_plan_approval"))
+            and str(item.get("status") or "unresolved")
+            not in set(item.get("approval_resolution_statuses") or [])
+        ]
+        outcome = "tax_reconciled"
+        if not decision_blockers and not conflict_blockers:
+            plan.status = "approved"
+            plan.approved_by = actor
+            plan.approved_at = now
+            plan.approval_evidence = (
+                "Owner, legal, accounting, TidyCal administration, and IT "
+                "approval recorded in the Agent production-readiness task on "
+                f"2026-07-30. {ARENA_TAX_EVIDENCE}"
+            )
+            outcome = "approved"
+
+        session.add(
+            BuildingAuditEvent(
+                entity_type="rate_plan",
+                entity_id=plan.id,
+                action=f"arena_tax_{outcome}",
+                actor=actor,
+                after_json={
+                    "status": plan.status,
+                    "tax_status": plan.tax_status,
+                    "tax_rate_bps": plan.tax_rate_bps,
+                    "tax_evidence": ARENA_TAX_EVIDENCE,
+                    "decision_blockers": decision_blockers,
+                    "conflict_blockers": conflict_blockers,
+                    "published": False,
+                    "provider_write": False,
+                },
+            )
+        )
+        return outcome
