@@ -72,6 +72,7 @@ from sales_support_agent.api.website_ops_jobs_router import (
 )
 from sales_support_agent.services.website_ops_github import (
     execute_github_metadata_action,
+    generated_article_identities,
     route_source_path,
     update_generated_article_registry,
     update_static_metadata_source,
@@ -170,6 +171,19 @@ class AdminWebsiteOpsTests(unittest.TestCase):
         self.assertEqual(result["daily"]["status"], "failed_outcome")
         self.assertEqual(result["daily"]["attempts"], 3)
         failure_email.assert_called_once()
+
+    def test_generated_article_identity_parser_reads_registry_contract(self) -> None:
+        source = '''
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES = [
+  {"slug":"existing","primaryIntent":"Existing Intent","evidenceId":"evidence-1"}
+];
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+'''
+        identities = generated_article_identities(source)
+        self.assertEqual(identities["slugs"], {"existing"})
+        self.assertEqual(identities["evidence_ids"], {"evidence-1"})
+        self.assertEqual(identities["primary_intents"], {"existing intent"})
 
     def test_health_selects_latest_autonomous_execution_error(self) -> None:
         with mock.patch(

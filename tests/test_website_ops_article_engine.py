@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 import json
+from unittest import mock
 
 from sales_support_agent.services.website_ops_article_engine import (
     _claim_daily_article_slot,
@@ -115,3 +116,46 @@ def test_malformed_json_generation_is_retried_before_claiming_slot(tmp_path) -> 
     assert len(attempts) == 3
     assert "previous response was malformed JSON" in attempts[1]
     assert article_generation_progress(settings)["generated_today"] == 1
+
+
+def test_published_registry_identity_is_excluded_from_new_generation(tmp_path) -> None:
+    settings = SimpleNamespace(website_ops_root=tmp_path)
+    with (
+        mock.patch(
+            "sales_support_agent.services.website_ops_github.github_metadata_is_configured",
+            return_value=True,
+        ),
+        mock.patch(
+            "sales_support_agent.services.website_ops_github.load_generated_article_identities",
+            return_value={
+                "evidence_ids": {
+                    "editorial-amazon-ppc-structure",
+                    "editorial-amazon-tacos",
+                    "editorial-amazon-listing-audit",
+                },
+                "primary_intents": {
+                    "how to structure amazon ppc campaigns",
+                    "how to calculate amazon tacos",
+                    "how to audit an amazon product listing",
+                },
+                "slugs": set(),
+            },
+        ),
+    ):
+        action = build_article_action(
+            settings=settings,
+            query_intelligence={"clusters": []},
+            requester=lambda **_kwargs: {
+                "slug": "next-distinct-topic",
+                "title": "Next distinct topic",
+                "content": {},
+            },
+        )
+
+    assert action is not None
+    article = json.loads(action["action_value"])
+    assert article["evidenceId"] not in {
+        "editorial-amazon-ppc-structure",
+        "editorial-amazon-tacos",
+        "editorial-amazon-listing-audit",
+    }
