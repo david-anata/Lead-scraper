@@ -715,9 +715,11 @@ def execute_github_article_action(
     while time.monotonic() < deadline:
         try:
             observation = website_ops.collect_page_observation(page_url, config=config)
+            observed_title = str(observation.get("title", "")).strip()
+            expected_title = str(article["title"]).strip()
             if (
                 int(observation.get("status_code", 0) or 0) == 200
-                and str(observation.get("title", "")).strip() == str(article["title"]).strip()
+                and observed_title in {expected_title, f"{expected_title} | Anata"}
                 and str(observation.get("canonical_url", "")).rstrip("/") == page_url
                 and str(article["content"]["h1"]).strip()
                 in [str(value).strip() for value in observation.get("h1", []) or []]
