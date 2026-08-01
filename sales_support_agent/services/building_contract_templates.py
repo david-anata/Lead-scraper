@@ -205,6 +205,22 @@ def format_merge_value(field: str, value: Any) -> str:
         return parsed.astimezone(MOUNTAIN).strftime("%B %d, %Y at %I:%M %p MT")
     if field in {"term_start", "term_end"}:
         return str(value)[:10]
+    if field == "tax_terms" and isinstance(value, dict):
+        # A customer signs this. "status: non_taxable; rate bps: 0" is not a
+        # sentence, so the three known treatments read as one.
+        status = str(value.get("status") or "").strip()
+        note = str(value.get("note") or "").strip()
+        if status in {"non_taxable", "not taxable"}:
+            sentence = "No sales tax is applied to this booking."
+        elif status == "taxable":
+            rate = int(value.get("rate_bps") or 0) / 100
+            sentence = f"Sales tax of {rate:.2f}% is applied to this booking."
+        elif status == "review_required":
+            sentence = "Tax is confirmed on your final invoice."
+        else:
+            sentence = ""
+        parts = [part for part in (sentence, note) if part]
+        return " ".join(parts) if parts else "[not provided]"
     if isinstance(value, bool):
         return "yes" if value else "no"
     if isinstance(value, list):
