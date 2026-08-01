@@ -809,9 +809,9 @@ def render_budget_page(
           <button type="button" data-trim-filter="waste">Waste <strong>{trim_counts['waste']}</strong></button>
           <button type="button" data-trim-filter="needed">Needed <strong>{trim_counts['needed']}</strong></button>
         </div>
-        <form method="post" action="/admin/finances/savings/reviews/batch" data-trim-batch-form>
+        <form method="post" action="/admin/finances/savings/reviews/batch" data-trim-batch-form data-trim-calculation="{html.escape(str(view['calculation_id']), quote=True)}">
         <input type="hidden" name="changes_json" data-trim-changes value="[]">
-        <div class="trim-savebar"><span data-trim-unsaved>No unsaved changes</span><button class="btn btn-primary" type="submit" data-trim-save disabled>Save all changes</button></div>
+        <div class="trim-savebar"><span data-trim-unsaved>No unsaved changes</span><div class="trim-savebar__actions"><button class="btn btn-secondary" type="button" data-trim-discard disabled>Discard draft</button><button class="btn btn-primary" type="submit" data-trim-save disabled>Save all changes</button></div></div>
         <div class="money-table-wrap trim-table-wrap"><table class="budget-table trim-table"><thead><tr>
           <th>Vendor</th><th>Monthly average</th><th>Six-month spend</th><th>Status</th><th>Decision and note</th>
         </tr></thead><tbody>{trim_rows}</tbody></table></div>
@@ -860,7 +860,15 @@ def render_budget_page(
       const form = document.querySelector('[data-trim-batch-form]');
       const changesInput = document.querySelector('[data-trim-changes]');
       const saveButton = document.querySelector('[data-trim-save]');
+      const discardButton = document.querySelector('[data-trim-discard]');
       const unsaved = document.querySelector('[data-trim-unsaved]');
+      let submitting = false;
+      const draftKey = `anata-finance-trim-draft:${form?.dataset.trimCalculation || 'current'}`;
+      const storage = {
+        get: () => { try { return JSON.parse(localStorage.getItem(draftKey) || 'null'); } catch (_) { return null; } },
+        set: value => { try { localStorage.setItem(draftKey, JSON.stringify(value)); } catch (_) {} },
+        clear: () => { try { localStorage.removeItem(draftKey); } catch (_) {} },
+      };
       const stagedChanges = () => rows.flatMap(row => {
         const note = row.querySelector('[data-trim-note]')?.value.trim() || '';
         const changed = row.dataset.trimState !== row.dataset.trimOriginalState || note !== row.dataset.trimOriginalNote;
@@ -871,22 +879,27 @@ def render_budget_page(
         const changes = stagedChanges();
         if (changesInput) changesInput.value = JSON.stringify(changes);
         if (saveButton) saveButton.disabled = changes.length === 0;
+        if (discardButton) discardButton.disabled = changes.length === 0;
         if (unsaved) unsaved.textContent = changes.length ? `${changes.length} unsaved change${changes.length === 1 ? '' : 's'}` : 'No unsaved changes';
+        if (changes.length) storage.set({changes, savedAt: new Date().toISOString()}); else storage.clear();
+      };
+      const showRowState = (row, state) => {
+        row.dataset.trimState = state;
+        const badge = row.querySelector('.trim-state');
+        if (badge) {
+          badge.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+          badge.className = `trim-state trim-state--${state}`;
+        }
+        row.querySelectorAll('[data-trim-choice]').forEach(item => {
+          const selected = item.dataset.trimChoice === state;
+          item.classList.toggle('is-selected', selected);
+          item.setAttribute('aria-pressed', selected ? 'true' : 'false');
+        });
       };
       rows.forEach(row => {
         row.querySelectorAll('[data-trim-choice]').forEach(button => button.addEventListener('click', () => {
           const state = button.dataset.trimChoice;
-          row.dataset.trimState = state;
-          const badge = row.querySelector('.trim-state');
-          if (badge) {
-            badge.textContent = state.charAt(0).toUpperCase() + state.slice(1);
-            badge.className = `trim-state trim-state--${state}`;
-          }
-          row.querySelectorAll('[data-trim-choice]').forEach(item => {
-            const selected = item === button;
-            item.classList.toggle('is-selected', selected);
-            item.setAttribute('aria-pressed', selected ? 'true' : 'false');
-          });
+          showRowState(row, state);
           updateSaveState();
         }));
         row.querySelector('[data-trim-note]')?.addEventListener('input', updateSaveState);
@@ -907,10 +920,42 @@ def render_budget_page(
         const changes = stagedChanges();
         if (!changes.length) { event.preventDefault(); return; }
         changesInput.value = JSON.stringify(changes);
+        submitting = true;
         saveButton.disabled = true;
         saveButton.textContent = 'Saving changes…';
       });
-      updateSaveState();
+      discardButton?.addEventListener('click', () => {
+        rows.forEach(row => {
+          showRowState(row, row.dataset.trimOriginalState);
+          const note = row.querySelector('[data-trim-note]');
+          if (note) note.value = row.dataset.trimOriginalNote;
+        });
+        storage.clear();
+        updateSaveState();
+      });
+      const flash = new URLSearchParams(window.location.search).get('flash') || '';
+      if (flash.startsWith('ok:Saved ')) storage.clear();
+      const draft = storage.get();
+      if (draft && Array.isArray(draft.changes)) {
+        const byKey = new Map(rows.map(row => [JSON.parse(row.dataset.trimOpportunity).opportunity_key, row]));
+        let restored = 0;
+        draft.changes.forEach(change => {
+          const key = change?.opportunity?.opportunity_key;
+          const row = byKey.get(key);
+          if (!row || !['needed', 'unknown', 'investigate', 'waste'].includes(change.action)) return;
+          showRowState(row, change.action);
+          const note = row.querySelector('[data-trim-note]');
+          if (note) note.value = String(change.reason || '');
+          restored += 1;
+        });
+        updateSaveState();
+        if (restored && unsaved) unsaved.textContent = `Recovered ${restored} unsaved change${restored === 1 ? '' : 's'}`;
+      } else updateSaveState();
+      window.addEventListener('beforeunload', event => {
+        if (submitting || !stagedChanges().length) return;
+        event.preventDefault();
+        event.returnValue = '';
+      });
     })();
     </script>"""
     return _page_shell("Budget & savings", "budget", body, flash=flash)

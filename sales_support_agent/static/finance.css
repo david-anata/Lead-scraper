@@ -2278,6 +2278,7 @@ input:focus, select:focus, textarea:focus {
 .trim-choice.is-selected { border-color: var(--anata-ink); background: var(--anata-ink); color: #fff; box-shadow: 0 0 0 1px var(--anata-ink); }
 .trim-savebar { position: sticky; bottom: 14px; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; padding: 14px 16px; border: 1px solid var(--anata-line); border-radius: 14px; background: rgba(255, 255, 255, .96); box-shadow: 0 12px 30px rgba(15, 23, 42, .13); backdrop-filter: blur(10px); }
 .trim-savebar span { color: var(--anata-muted); font-size: 12px; font-weight: 700; }
+.trim-savebar__actions { display: flex; gap: 8px; }
 .trim-savebar .btn:disabled { cursor: not-allowed; opacity: .45; }
 
 @media (max-width: 1100px) {
@@ -2340,6 +2341,7 @@ input:focus, select:focus, textarea:focus {
   .trim-choice { min-height: 38px; }
   .trim-workspace [data-trim-batch-form] { padding-bottom: 108px; }
   .trim-savebar { position: fixed; left: 12px; right: 12px; bottom: 8px; display: grid; margin: 0; }
+  .trim-savebar__actions { display: grid; grid-template-columns: 1fr 1fr; }
   .trim-savebar .btn { width: 100%; }
   .budget-saving-action { grid-column: auto; }
   .money-account-actions { display: grid; width: 100%; }

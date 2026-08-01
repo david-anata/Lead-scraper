@@ -370,6 +370,10 @@ def test_budget_page_is_explicitly_advisory_and_explainable() -> None:
     assert "Decide what stays and what goes" in page
     assert "Needed" in page and "Unknown" in page and "Investigate" in page and "Waste" in page
     assert "Save all changes" in page
+    assert "Discard draft" in page
+    assert "localStorage" in page
+    assert "beforeunload" in page
+    assert "Recovered ${restored} unsaved change" in page
     assert 'data-trim-batch-form' in page
     assert "save immediately" not in page
     assert "Run high spending review" in page
