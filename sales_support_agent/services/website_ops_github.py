@@ -35,33 +35,28 @@ def generated_article_identities(source: str) -> dict[str, set[str]]:
     """Read durable article identity from the generated registry source."""
 
     marker = "// WEBSITE_OPS_GENERATED_ARTICLES_START"
+    end_marker = "// WEBSITE_OPS_GENERATED_ARTICLES_END"
     marker_index = source.find(marker)
-    start = source.find("[", marker_index)
-    end = source.find("];", start)
-    if marker_index < 0 or start < 0 or end < 0:
+    end = source.find(end_marker, marker_index)
+    if marker_index < 0 or end < 0:
         raise website_ops.ExecutionError("Generated article registry markers are missing.")
-    try:
-        articles = json.loads(source[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise website_ops.ExecutionError("Generated article registry is not valid JSON.") from exc
-    if not isinstance(articles, list):
-        raise website_ops.ExecutionError("Generated article registry must contain an array.")
+    registry = source[marker_index:end]
+
+    def values(field: str, *, normalize: bool = False) -> set[str]:
+        extracted = {
+            match.group(1).strip()
+            for match in re.finditer(
+                rf'["\']{re.escape(field)}["\']\s*:\s*["\']([^"\']+)["\']',
+                registry,
+            )
+            if match.group(1).strip()
+        }
+        return {value.casefold() for value in extracted} if normalize else extracted
+
     return {
-        "evidence_ids": {
-            str(item.get("evidenceId", "")).strip()
-            for item in articles
-            if isinstance(item, Mapping) and str(item.get("evidenceId", "")).strip()
-        },
-        "primary_intents": {
-            str(item.get("primaryIntent", "")).strip().casefold()
-            for item in articles
-            if isinstance(item, Mapping) and str(item.get("primaryIntent", "")).strip()
-        },
-        "slugs": {
-            str(item.get("slug", "")).strip()
-            for item in articles
-            if isinstance(item, Mapping) and str(item.get("slug", "")).strip()
-        },
+        "evidence_ids": values("evidenceId"),
+        "primary_intents": values("primaryIntent", normalize=True),
+        "slugs": values("slug"),
     }
 
 
