@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from sales_support_agent.services.website_ops_query_intelligence import citation_config
+from sales_support_agent.services.website_ops_vendor.core import load_feedback_entries
 
 
 DAILY_ARTICLE_MINIMUM = 8
@@ -361,6 +362,37 @@ def _historical_cluster_ids(settings: Any) -> set[str]:
         legacy = _clean(payload.get("cluster_id"))
         if legacy:
             history.add(legacy)
+    feedback_dir = Path(getattr(settings, "website_ops_root", "")) / "feedback"
+    for record in load_feedback_entries(feedback_dir=feedback_dir):
+        action_type = _clean(
+            record.get("action_type") or record.get("suggested_action_type")
+        )
+        if action_type != "publish_blog_article":
+            continue
+        status = _clean(record.get("status")).lower()
+        execution_error = _clean(record.get("execution_error")).lower()
+        already_owned = any(
+            marker in execution_error
+            for marker in (
+                "slug already exists",
+                "primary intent already has an owner",
+            )
+        )
+        if status != "done" and not already_owned:
+            continue
+        try:
+            article = json.loads(
+                _clean(
+                    record.get("action_value")
+                    or record.get("suggested_action_value")
+                )
+            )
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(article, Mapping):
+            evidence_id = _clean(article.get("evidenceId"))
+            if evidence_id:
+                history.add(evidence_id)
     return history
 
 

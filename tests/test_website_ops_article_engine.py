@@ -66,6 +66,51 @@ def test_topic_history_prevents_republishing_an_old_daily_claim(tmp_path) -> Non
     assert _historical_cluster_ids(settings) == {"already-published"}
 
 
+def test_topic_history_reconciles_existing_production_article_feedback(tmp_path) -> None:
+    feedback = tmp_path / "feedback"
+    feedback.mkdir(parents=True)
+    (feedback / "existing.json").write_text(
+        json.dumps(
+            {
+                "status": "error",
+                "suggested_action_type": "publish_blog_article",
+                "suggested_action_value": json.dumps(
+                    {
+                        "slug": "existing-article",
+                        "evidenceId": "existing-production-topic",
+                    }
+                ),
+                "execution_error": "Generated article slug already exists.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(website_ops_root=tmp_path)
+
+    assert "existing-production-topic" in _historical_cluster_ids(settings)
+
+
+def test_topic_history_does_not_suppress_retryable_article_failure(tmp_path) -> None:
+    feedback = tmp_path / "feedback"
+    feedback.mkdir(parents=True)
+    (feedback / "retry.json").write_text(
+        json.dumps(
+            {
+                "status": "error",
+                "action_type": "publish_blog_article",
+                "action_value": json.dumps(
+                    {"slug": "retry-me", "evidenceId": "retryable-topic"}
+                ),
+                "execution_error": "Production verification timed out.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(website_ops_root=tmp_path)
+
+    assert "retryable-topic" not in _historical_cluster_ids(settings)
+
+
 def test_failed_generation_does_not_consume_daily_topic_slot(tmp_path) -> None:
     settings = SimpleNamespace(website_ops_root=tmp_path)
 
