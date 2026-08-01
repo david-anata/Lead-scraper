@@ -19,6 +19,7 @@ def _row(status: dict, key: str) -> dict:
 
 
 READY_PROVIDERS = {
+    "quickbooks_connected": True,
     "esign_verified": True,
     "payment_credentials": True,
     "payment_webhook": True,
@@ -72,6 +73,54 @@ class CalendarRowTests(unittest.TestCase):
                 provider_readiness=providers,
             )
             self.assertEqual(_row(status, "calendar")["state"], expected)
+
+
+class PaymentRailTests(unittest.TestCase):
+    """Anata bills on QuickBooks. Stripe is only the optional auto-confirm path."""
+
+    def _payment(self, **providers) -> dict:
+        status = build_arena_launch_status(
+            launch_decisions=[],
+            rate_plans=[],
+            agreement_templates=[],
+            provider_readiness=providers,
+        )
+        return _row(status, "payment")
+
+    def test_quickbooks_alone_satisfies_the_payment_row(self) -> None:
+        row = self._payment(
+            quickbooks_connected=True,
+            payment_credentials=False,
+            payment_webhook=False,
+        )
+        self.assertEqual(row["state"], "complete")
+        self.assertIn("QuickBooks issues the invoice", row["summary"])
+        self.assertIn("by hand", row["summary"])
+
+    def test_stripe_alone_also_satisfies_it(self) -> None:
+        row = self._payment(
+            quickbooks_connected=False,
+            payment_credentials=True,
+            payment_webhook=True,
+        )
+        self.assertEqual(row["state"], "complete")
+
+    def test_neither_leaves_it_outstanding(self) -> None:
+        row = self._payment(
+            quickbooks_connected=False,
+            payment_credentials=False,
+            payment_webhook=False,
+        )
+        self.assertEqual(row["state"], "external")
+        self.assertIn("Connect QuickBooks", row["next_action"])
+
+    def test_half_configured_stripe_is_not_enough_on_its_own(self) -> None:
+        row = self._payment(
+            quickbooks_connected=False,
+            payment_credentials=True,
+            payment_webhook=False,
+        )
+        self.assertEqual(row["state"], "external")
 
 
 class LaunchGateTests(unittest.TestCase):
