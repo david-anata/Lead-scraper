@@ -21,7 +21,10 @@ from sales_support_agent.api.employee_app_router import router as employee_app_r
 from sales_support_agent.api.hr_jobs_router import router as hr_jobs_router
 from sales_support_agent.api.marketing_router import router as marketing_router
 from sales_support_agent.api.leads_router import router as leads_router
-from sales_support_agent.api.website_ops_jobs_router import router as website_ops_jobs_router
+from sales_support_agent.api.website_ops_jobs_router import (
+    install_embedded_website_ops_scheduler,
+    router as website_ops_jobs_router,
+)
 from sales_support_agent.api.content_router import router as content_router
 from sales_support_agent.api.outbound_jobs import router as outbound_jobs_router
 from sales_support_agent.api.sales_jobs_router import router as sales_jobs_router
@@ -125,6 +128,7 @@ def create_app() -> FastAPI:
                 storage_stats["files"],
                 storage_stats["bytes"],
             )
+        install_embedded_website_ops_scheduler(app)
         app.state.ready = True
         logger.info(
             "lifecycle milestone=app_ready commit=%s elapsed_ms=%.1f",

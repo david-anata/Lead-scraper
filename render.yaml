@@ -19,7 +19,7 @@ services:
       - key: WEBSITE_OPS_DATABASE_MIRROR
         value: "true"
       - key: WEBSITE_OPS_EMBEDDED_SCHEDULER
-        value: "false"
+        value: "true"
       - key: OUTBOUND_EMBEDDED_SCHEDULER
         value: "false"
       - key: CLICKUP_API_TOKEN
@@ -113,15 +113,15 @@ services:
       - key: CONTENT_LINKEDIN_CONNECTOR_KEY
         sync: false
       - key: CONTENT_LINKEDIN_CONNECTOR_VERIFIED
-        value: "false"
+        sync: false
       - key: CONTENT_LINKEDIN_COMPANY_ID
         sync: false
       - key: CONTENT_LINKEDIN_PERSON_ID
         sync: false
       - key: CONTENT_LINKEDIN_COMPANY_LIVE_APPROVED
-        value: "false"
+        sync: false
       - key: CONTENT_LINKEDIN_COMPANY_AUTO_PUBLISH_ENABLED
-        value: "false"
+        sync: false
       - key: CONTENT_LINKEDIN_PERSONAL_LIVE_APPROVED
         value: "false"
       - key: CONTENT_LINKEDIN_PERSONAL_AUTO_PUBLISH_ENABLED
@@ -131,13 +131,13 @@ services:
       - key: CONTENT_GOOGLE_BUSINESS_CONNECTOR_KEY
         sync: false
       - key: CONTENT_GOOGLE_BUSINESS_CONNECTOR_VERIFIED
-        value: "false"
+        sync: false
       - key: CONTENT_GOOGLE_BUSINESS_PROFILE_ID
         sync: false
       - key: CONTENT_GOOGLE_BUSINESS_LIVE_APPROVED
-        value: "false"
+        sync: false
       - key: CONTENT_GOOGLE_BUSINESS_AUTO_PUBLISH_ENABLED
-        value: "false"
+        sync: false
       - key: CONTENT_YOUTUBE_CONNECTOR_URL
         sync: false
       - key: CONTENT_YOUTUBE_CONNECTOR_KEY
@@ -173,7 +173,7 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       - key: CONTENT_PUBLISHING_MODE
-        value: shadow
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: WEBSITE_OPS_CITATION_TESTING_ENABLED

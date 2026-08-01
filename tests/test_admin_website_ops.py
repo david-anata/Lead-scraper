@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -60,6 +61,8 @@ from sales_support_agent.services.website_ops_vendor.executor import (
     resolve_insertion_point,
 )
 from sales_support_agent.api.website_ops_jobs_router import (
+    _daily_run_is_fresh,
+    _run_embedded_pulse,
     _scheduled_modes,
     router as website_ops_jobs_router,
 )
@@ -638,7 +641,8 @@ example
                 {
                     "status": "succeeded",
                     "trigger": "render_cron",
-                    "last_successful_date": "2026-07-27",
+                    "run_date": datetime.now(ZoneInfo("America/Denver")).date().isoformat(),
+                    "last_successful_date": datetime.now(ZoneInfo("America/Denver")).date().isoformat(),
                 },
             )
             report_dir = Path(tmpdir) / "reports" / "daily"
@@ -664,6 +668,7 @@ example
             )
             app = FastAPI()
             app.state.settings = settings
+            app.state.website_ops_scheduler_thread = SimpleNamespace(is_alive=lambda: True)
             app.include_router(website_ops_jobs_router)
             with mock.patch.dict(
                 os.environ,
@@ -690,10 +695,127 @@ example
             self.assertEqual(payload["status"], "ready")
             self.assertTrue(all(payload["checks"].values()))
             self.assertEqual(payload["schedule"]["hour"], 8)
+            self.assertEqual(payload["schedule"]["source"], "embedded_scheduler")
             self.assertEqual(payload["runs"]["daily"]["status"], "succeeded")
             self.assertNotIn("last_error", payload["runs"]["daily"])
             self.assertEqual(payload["states"]["decision_data"], "ready")
             self.assertEqual(payload["user_todo"], [])
+
+    def test_daily_run_freshness_blocks_stale_state_after_first_pulse(self) -> None:
+        stale = {
+            "runs": {
+                "daily": {
+                    "run_date": "2026-07-31",
+                    "status": "succeeded",
+                }
+            }
+        }
+        self.assertFalse(
+            _daily_run_is_fresh(
+                stale,
+                datetime(2026, 8, 1, 11, 0, tzinfo=timezone.utc),
+            )
+        )
+        self.assertTrue(
+            _daily_run_is_fresh(
+                stale,
+                datetime(2026, 8, 1, 7, 59, tzinfo=timezone.utc),
+            )
+        )
+
+    def test_embedded_scheduler_catches_up_current_hour_once(self) -> None:
+        settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))
+        local_now = datetime(2026, 8, 1, 11, 37, tzinfo=timezone.utc)
+        with (
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                return_value={"last_pulse_slot": "2026-08-01:10"},
+            ),
+            mock.patch(
+                "sales_support_agent.models.database.get_engine",
+                side_effect=RuntimeError("isolated test"),
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router._run_due_modes",
+                return_value={"daily": {"status": "succeeded"}},
+            ) as run,
+        ):
+            result = _run_embedded_pulse(settings, local_now)
+        self.assertEqual(result["status"], "succeeded")
+        run.assert_called_once_with(
+            settings,
+            ["daily"],
+            trigger="embedded_scheduler",
+            pulse_slot="2026-08-01:11",
+        )
+
+    def test_embedded_scheduler_does_not_repeat_completed_slot(self) -> None:
+        settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))
+        local_now = datetime(2026, 8, 1, 11, 52, tzinfo=timezone.utc)
+        with (
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                return_value={"last_pulse_slot": "2026-08-01:11"},
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router._run_due_modes",
+            ) as run,
+        ):
+            result = _run_embedded_pulse(settings, local_now)
+        self.assertEqual(result["status"], "skipped")
+        run.assert_not_called()
+
+    def test_embedded_scheduler_restores_then_persists_database_mirror(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            settings = SimpleNamespace(website_ops_root=root)
+            local_now = datetime(2026, 8, 1, 12, 7, tzinfo=timezone.utc)
+            engine = object()
+
+            def run_due_modes(*args, **kwargs):
+                (root / "state.json").write_text(
+                    '{"last_pulse_slot":"2026-08-01:12"}',
+                    encoding="utf-8",
+                )
+                return {"daily": {"status": "succeeded"}}
+
+            with (
+                mock.patch(
+                    "sales_support_agent.models.database.get_engine",
+                    return_value=engine,
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.database_mirror_enabled",
+                    return_value=True,
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.restore_website_ops_root",
+                ) as restore,
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.snapshot_website_ops_root",
+                ) as snapshot,
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                    return_value={"last_pulse_slot": "2026-08-01:11"},
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.claim_scheduled_job",
+                    return_value=object(),
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.finish_scheduled_job",
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router._run_due_modes",
+                    side_effect=run_due_modes,
+                ),
+            ):
+                result = _run_embedded_pulse(settings, local_now)
+
+            self.assertEqual(result["status"], "succeeded")
+            restore.assert_called_once_with(engine, root)
+            snapshot.assert_called_once_with(engine, root)
+            self.assertTrue((root / "state.json").exists())
 
     def test_operating_state_uses_latest_live_evidence_not_secret_presence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
