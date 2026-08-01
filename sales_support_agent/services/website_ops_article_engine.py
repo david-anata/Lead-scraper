@@ -623,7 +623,9 @@ Create a source-backed Anata blog article for the informational query:
 Service pillar: {pillar}
 
 This is a high-utility SEO/AEO publishing task. Search and verify the web. Use only
-factual claims supported by authoritative HTTPS sources. Do not invent Anata results,
+official first-party platform, carrier, or government HTTPS documentation as external
+sources. Never cite agencies, competitors, software vendors, affiliate sites, or generic
+SEO blogs. Factual claims must be supported by the visible official sources. Do not invent Anata results,
 clients, metrics, prices, capabilities, testimonials, or proprietary data. Do not use
 em dashes. Do not mention Basic Research, "reveal the gap", or any demo URL.
 Write for an operator who needs a useful answer, not for a content quota. Ban filler,

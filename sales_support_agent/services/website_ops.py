@@ -58,6 +58,7 @@ from sales_support_agent.services.website_ops_github import (
     execute_github_article_action,
     execute_github_metadata_action,
     github_metadata_is_configured,
+    load_generated_article_identities,
 )
 from sales_support_agent.services.website_ops_outcomes import FAILED_OUTCOME, classify_run_outcome
 from sales_support_agent.services import website_ops_vendor as website_ops
@@ -1252,6 +1253,65 @@ def _release_failed_article_claim(settings: Settings, record: Mapping[str, Any])
         release_daily_article_slot(settings, str(article.get("evidenceId", "")))
 
 
+def reconcile_missing_generated_articles(settings: Settings) -> list[dict[str, Any]]:
+    """Reopen verified article records whose durable registry entry disappeared.
+
+    A later website deployment can replace a direct-to-main registry commit when
+    it was prepared from an older branch.  Production verification at publish
+    time cannot prevent that later regression.  Each pulse therefore compares
+    completed publication records with the current repository registry and
+    automatically requeues any missing article from its already validated
+    payload.
+    """
+
+    if not github_metadata_is_configured():
+        return []
+    try:
+        published = load_generated_article_identities()
+    except website_ops.ExecutionError:
+        return []
+    reopened: list[dict[str, Any]] = []
+    for record in load_feedback_records(settings):
+        action_type = str(
+            record.get("action_type", "")
+            or record.get("suggested_action_type", "")
+        ).strip()
+        if action_type != "publish_blog_article" or str(
+            record.get("status", "")
+        ).strip().lower() != "done":
+            continue
+        action_value = str(
+            record.get("action_value", "")
+            or record.get("suggested_action_value", "")
+        ).strip()
+        try:
+            article = json.loads(action_value)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(article, Mapping):
+            continue
+        slug = str(article.get("slug", "")).strip()
+        if not slug or slug in set(published.get("slugs") or set()):
+            continue
+        updated = website_ops.update_feedback_entry(
+            record,
+            {
+                "status": "approved",
+                "action_type": "publish_blog_article",
+                "action_value": action_value,
+                "execution_error": "",
+                "execution_result": {},
+                "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                "review_notes": (
+                    "Automatically requeued because the previously verified "
+                    "article is missing from the durable production registry."
+                ),
+            },
+        )
+        reopened.append(updated)
+    return reopened
+
+
 def _autofill_review_updates(existing: Mapping[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     updates = dict(payload)
     status = _feedback_status(str(updates.get("status", "")))
@@ -1398,6 +1458,7 @@ def execute_approved_website_ops_actions(settings: Settings) -> WebsiteOpsAction
 def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsActionResult:
     config = _config(settings)
     has_baseline = bool(_report_entries(settings))
+    reconcile_missing_generated_articles(settings)
     feedback_entries = load_feedback_records(settings)
     visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
     executed_actions: list[dict[str, Any]] = []

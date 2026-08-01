@@ -45,6 +45,7 @@ from sales_support_agent.services.website_ops import (
     render_query_map_page,
     render_queue_page,
     render_report_page,
+    reconcile_missing_generated_articles,
     review_feedback_record,
     run_website_ops,
     save_feedback_record,
@@ -71,6 +72,7 @@ from sales_support_agent.api.website_ops_jobs_router import (
     router as website_ops_jobs_router,
 )
 from sales_support_agent.services.website_ops_github import (
+    execute_github_article_action,
     execute_github_metadata_action,
     generated_article_identities,
     route_source_path,
@@ -86,6 +88,59 @@ from sales_support_agent.services.website_ops_program import (
 
 
 class AdminWebsiteOpsTests(unittest.TestCase):
+    def test_missing_verified_article_is_requeued_from_validated_payload(self) -> None:
+        article = json.loads(str(self._generated_article_record()["action_value"]))
+        record = {
+            "feedback_id": "published-article",
+            "status": "done",
+            "action_type": "publish_blog_article",
+            "action_value": json.dumps(article),
+            "execution_result": {"verification_status": "verified"},
+        }
+        updated = {**record, "status": "approved"}
+        with mock.patch(
+            "sales_support_agent.services.website_ops.github_metadata_is_configured",
+            return_value=True,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops.load_generated_article_identities",
+            return_value={"slugs": set(), "evidence_ids": set(), "primary_intents": set()},
+        ), mock.patch(
+            "sales_support_agent.services.website_ops.load_feedback_records",
+            return_value=[record],
+        ), mock.patch.object(
+            website_ops,
+            "update_feedback_entry",
+            return_value=updated,
+        ) as update:
+            reopened = reconcile_missing_generated_articles(SimpleNamespace())
+
+        self.assertEqual(reopened, [updated])
+        self.assertEqual(update.call_args.args[1]["status"], "approved")
+        self.assertIn("missing from the durable production registry", update.call_args.args[1]["review_notes"])
+
+    def test_durable_article_registry_entry_is_not_requeued(self) -> None:
+        article = json.loads(str(self._generated_article_record()["action_value"]))
+        record = {
+            "feedback_id": "published-article",
+            "status": "done",
+            "action_type": "publish_blog_article",
+            "action_value": json.dumps(article),
+        }
+        with mock.patch(
+            "sales_support_agent.services.website_ops.github_metadata_is_configured",
+            return_value=True,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops.load_generated_article_identities",
+            return_value={"slugs": {article["slug"]}},
+        ), mock.patch(
+            "sales_support_agent.services.website_ops.load_feedback_records",
+            return_value=[record],
+        ), mock.patch.object(website_ops, "update_feedback_entry") as update:
+            reopened = reconcile_missing_generated_articles(SimpleNamespace())
+
+        self.assertEqual(reopened, [])
+        update.assert_not_called()
+
     def test_daily_pulse_retries_zero_delta_until_production_is_verified(self) -> None:
         settings = SimpleNamespace()
         active = SimpleNamespace(
@@ -1950,6 +2005,21 @@ example
                 {**record, "action_value": json.dumps(invalid_dates)}
             )
 
+    def test_generated_article_rejects_competitor_and_low_authority_sources(self) -> None:
+        record = self._generated_article_record()
+        article = json.loads(str(record["action_value"]))
+        article["sources"][1] = {
+            "title": "Competing agency guide",
+            "url": "https://competitor.example/blog/amazon-ppc",
+        }
+        with self.assertRaisesRegex(
+            ExecutionError,
+            "first-party platform, carrier, or government documentation",
+        ):
+            validate_generated_article(
+                {**record, "action_value": json.dumps(article)}
+            )
+
     def test_generated_article_registry_enforces_one_page_one_intent(self) -> None:
         source = """import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
 export type GeneratedArticle = { content: ArticlePageContent };
@@ -2136,6 +2206,47 @@ export default function Page() {
         self.assertEqual(result["verification_status"], "verified")
         self.assertEqual(result["commit_sha"], "commit-sha")
         self.assertEqual(result["source_path"], "src/app/services/amazon-advertising/page.tsx")
+        client.put_file.assert_called_once()
+
+    def test_article_timeout_preserves_durable_commit_for_reconciliation(self) -> None:
+        record = self._generated_article_record()
+        source = '''import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
+export type GeneratedArticle = { content: ArticlePageContent };
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+'''
+        client = mock.Mock()
+        client.repository = "david-anata/anata-website"
+        client.branch = "main"
+        client.get_file.return_value = (source, "source-sha")
+        client.put_file.return_value = {"commit": {"sha": "commit-sha"}}
+        with mock.patch(
+            "sales_support_agent.services.website_ops_github.GitHubWebsiteClient",
+            return_value=client,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.website_ops.collect_page_observation",
+            return_value={"status_code": 404},
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.time.monotonic",
+            side_effect=[0, 0, 901],
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.time.sleep"
+        ), mock.patch.dict(
+            os.environ,
+            {"WEBSITE_OPS_DEPLOY_VERIFY_TIMEOUT_SECONDS": "1"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(
+                ExecutionError,
+                "durable publication commit was preserved",
+            ):
+                execute_github_article_action(
+                    record,
+                    config=SimpleNamespace(),
+                    timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                )
+
         client.put_file.assert_called_once()
 
     def test_missing_canonical_creates_high_confidence_github_action(self) -> None:
