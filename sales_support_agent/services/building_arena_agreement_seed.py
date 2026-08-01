@@ -20,16 +20,16 @@ from sales_support_agent.services.building_contract_templates import (
 )
 
 
-ARENA_TEMPLATE_ID = "arena-event-agreement-business-terms-v1"
+ARENA_TEMPLATE_ID = "arena-event-agreement-business-terms-v2"
 ARENA_TEMPLATE_KEY = "arena-event-agreement"
-ARENA_TEMPLATE_VERSION = 1
+ARENA_TEMPLATE_VERSION = 2
 ARENA_TEMPLATE_NAME = "Arena event agreement business terms"
 ARENA_DOCUMENT_PATH = (
     Path(__file__).resolve().parents[2]
     / "docs"
     / "building"
     / "agreements"
-    / "arena-event-agreement-business-terms-v1.md"
+    / "arena-event-agreement-business-terms-v2.md"
 )
 
 
@@ -38,7 +38,7 @@ def _artifact() -> tuple[str, str, str, list[str]]:
     checksum = hashlib.sha256(body.encode("utf-8")).hexdigest()
     reference = (
         "repository:docs/building/agreements/"
-        f"arena-event-agreement-business-terms-v1.md#sha256={checksum}"
+        f"arena-event-agreement-business-terms-v2.md#sha256={checksum}"
     )
     merge_fields = validate_template_content(
         contract_type="event",
