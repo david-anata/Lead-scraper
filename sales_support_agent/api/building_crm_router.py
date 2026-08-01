@@ -5095,6 +5095,11 @@ def building_control_room(
                     str(request.app.state.settings.stripe_webhook_secret or "").strip()
                 ),
                 "calendar_configured": calendar_adapter.configured,
+                # Shown on the page so an operator asked to record the calendar
+                # as verified can see whether it actually is, rather than
+                # attesting to something invisible.
+                "calendar_target_id": calendar_adapter.target_calendar_id,
+                "calendar_readiness_error": calendar_adapter.readiness_error,
                 "calendar_writes_enabled": os.getenv(
                     "BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED", ""
                 ).strip().lower() in {"1", "true", "yes", "on"},

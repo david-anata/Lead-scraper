@@ -123,6 +123,55 @@ class PaymentRailTests(unittest.TestCase):
         self.assertEqual(row["state"], "external")
 
 
+class CalendarDiagnosticTests(unittest.TestCase):
+    """The row must say which of the three conditions is missing.
+
+    David could not complete this task and the row told him nothing beyond
+    "outside setup".
+    """
+
+    def _calendar(self, decisions=(), **providers) -> dict:
+        status = build_arena_launch_status(
+            launch_decisions=list(decisions),
+            rate_plans=[],
+            agreement_templates=[],
+            provider_readiness={**READY_PROVIDERS, **providers},
+        )
+        return _row(status, "calendar")
+
+    def test_a_connection_problem_is_named(self) -> None:
+        row = self._calendar(
+            calendar_readiness_error="Dedicated Building calendar ID is missing."
+        )
+        self.assertIn("calendar ID is missing", row["summary"])
+        self.assertIn("before recording it as verified", row["next_action"])
+
+    def test_writes_off_says_so_and_names_the_switch(self) -> None:
+        row = self._calendar(
+            calendar_writes_enabled=False,
+            calendar_target_id="anata-events@group.calendar.google.com",
+            calendar_readiness_error="",
+        )
+        self.assertIn("writes are switched off", row["summary"])
+        self.assertIn("BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED", row["next_action"])
+
+    def test_only_the_decision_missing_says_exactly_that(self) -> None:
+        row = self._calendar(
+            calendar_target_id="anata-events@group.calendar.google.com",
+            calendar_readiness_error="",
+        )
+        self.assertIn("Not yet recorded as verified", row["summary"])
+        self.assertIn("anata-events@group.calendar.google.com", row["summary"])
+
+    def test_all_three_met_reads_as_done(self) -> None:
+        row = self._calendar(
+            decisions=[{"decision_key": "event_calendar", "status": "provider_verified"}],
+            calendar_readiness_error="",
+        )
+        self.assertEqual(row["state"], "complete")
+        self.assertIn("verified", row["summary"])
+
+
 class LaunchGateTests(unittest.TestCase):
     def test_the_gate_opens_when_every_condition_is_met(self) -> None:
         """Proves the end state is reachable, which the hardcoded False prevented."""
