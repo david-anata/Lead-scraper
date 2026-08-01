@@ -1349,12 +1349,17 @@ def outbound_amazon_scan_status(request: Request) -> Response:
     return JSONResponse(content=dict(_AMAZON_SCAN))
 
 
+@router.get("/admin/api/outbound/email-batch", response_class=JSONResponse)
 @router.post("/admin/api/outbound/email-batch", response_class=JSONResponse)
 async def outbound_email_batch(request: Request) -> Response:
     """Send today's ready-for-Clay list now, rather than waiting for 7am.
 
     Same email the morning job sends. Useful after a manual scan, or when the
     morning one was missed.
+
+    GET as well as POST, deliberately: this needs to be a link David can click
+    from anywhere. It sends him an email he already receives daily, so there is
+    nothing here worth protecting behind a form submission.
     """
     from sales_support_agent.api import outbound_jobs as _jobs
 
