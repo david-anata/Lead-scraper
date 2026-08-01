@@ -32,6 +32,11 @@ from sales_support_agent.services.job_lease import (
     claim_scheduled_job,
     finish_scheduled_job,
 )
+from sales_support_agent.services.website_ops_storage import (
+    database_mirror_enabled,
+    restore_website_ops_root,
+    snapshot_website_ops_root,
+)
 
 
 router = APIRouter(prefix="/api/jobs/website-ops", tags=["website-ops-jobs"])
@@ -48,10 +53,6 @@ def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
 
     if local_now.hour not in WEBSITE_OPS_PULSE_HOURS:
         return {"status": "skipped", "message": "Outside the Website Ops pulse window."}
-    pulse_slot = _pulse_slot(local_now)
-    current_state = get_website_ops_run_state(settings, "daily")
-    if current_state.get("last_pulse_slot") == pulse_slot:
-        return {"status": "skipped", "message": "This Website Ops pulse already completed."}
 
     from sales_support_agent.models.database import get_engine
 
@@ -59,6 +60,15 @@ def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
         engine = get_engine()
     except RuntimeError:
         engine = None
+    mirror_enabled = engine is not None and database_mirror_enabled()
+    if mirror_enabled:
+        restore_website_ops_root(engine, settings.website_ops_root)
+
+    pulse_slot = _pulse_slot(local_now)
+    current_state = get_website_ops_run_state(settings, "daily")
+    if current_state.get("last_pulse_slot") == pulse_slot:
+        return {"status": "skipped", "message": "This Website Ops pulse already completed."}
+
     run_key = f"{local_now.date().isoformat()}:scheduled:{pulse_slot}"
     lease = (
         claim_scheduled_job(
@@ -101,6 +111,11 @@ def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
                 details={"error": str(exc)},
             )
         raise
+    finally:
+        # Embedded jobs bypass request middleware. Persist their filesystem
+        # output before a later request hydrates an older database snapshot.
+        if mirror_enabled:
+            snapshot_website_ops_root(engine, settings.website_ops_root)
 
 
 def _require_internal_key(request: Request) -> None:

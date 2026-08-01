@@ -740,6 +740,58 @@ example
         self.assertEqual(result["status"], "skipped")
         run.assert_not_called()
 
+    def test_embedded_scheduler_restores_then_persists_database_mirror(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            settings = SimpleNamespace(website_ops_root=root)
+            local_now = datetime(2026, 8, 1, 12, 7, tzinfo=timezone.utc)
+            engine = object()
+
+            def run_due_modes(*args, **kwargs):
+                (root / "state.json").write_text(
+                    '{"last_pulse_slot":"2026-08-01:12"}',
+                    encoding="utf-8",
+                )
+                return {"daily": {"status": "succeeded"}}
+
+            with (
+                mock.patch(
+                    "sales_support_agent.models.database.get_engine",
+                    return_value=engine,
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.database_mirror_enabled",
+                    return_value=True,
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.restore_website_ops_root",
+                ) as restore,
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.snapshot_website_ops_root",
+                ) as snapshot,
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                    return_value={"last_pulse_slot": "2026-08-01:11"},
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.claim_scheduled_job",
+                    return_value=object(),
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.finish_scheduled_job",
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router._run_due_modes",
+                    side_effect=run_due_modes,
+                ),
+            ):
+                result = _run_embedded_pulse(settings, local_now)
+
+            self.assertEqual(result["status"], "succeeded")
+            restore.assert_called_once_with(engine, root)
+            snapshot.assert_called_once_with(engine, root)
+            self.assertTrue((root / "state.json").exists())
+
     def test_operating_state_uses_latest_live_evidence_not_secret_presence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir))
