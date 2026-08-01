@@ -114,3 +114,37 @@ def test_relay_does_not_label_acceptance_as_delivery_without_live_evidence() -> 
     assert result.accepted is True
     assert result.verified is False
     assert result.status == "running"
+
+
+def test_zapier_catch_hook_receives_flat_buffer_fields() -> None:
+    transport = FakeTransport([(200, {"status": "success", "request_id": "zap-1"})])
+    client = ContentRelayClient(
+        base_url="https://hooks.zapier.com/hooks/catch/123/example/",
+        api_key="connector-secret",
+        transport=transport,
+    )
+    result = client.execute(
+        action_key="google_business_create_post",
+        destination_identity="anata inc. Google Business Profile",
+        idempotency_key="episode-1:clip-1:google-business",
+        payload={
+            "title": "Amazon launch credits",
+            "body": "Check the inventory terms before committing capital.",
+            "media_url": "",
+        },
+        allow_write=True,
+    )
+    assert result.accepted is True
+    assert result.verified is False
+    assert result.status == "running"
+    assert transport.calls[0]["url"] == (
+        "https://hooks.zapier.com/hooks/catch/123/example"
+    )
+    assert transport.calls[0]["payload"] == {
+        "title": "Amazon launch credits",
+        "copy": "Check the inventory terms before committing capital.",
+        "media_url": "",
+        "scheduled_for": "",
+        "destination": "anata inc. Google Business Profile",
+        "idempotency_key": "episode-1:clip-1:google-business",
+    }

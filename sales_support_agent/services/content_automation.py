@@ -157,6 +157,26 @@ DEFAULT_PLAYBOOKS: tuple[dict[str, Any], ...] = (
         },
     },
     {
+        "channel": "google_business",
+        "version": "v2",
+        "priority": "local_business_presence",
+        "cadence": {"max_per_week": 3, "minimum_spacing_hours": 24},
+        "format": {
+            "treatment": "concise_local_business_update",
+            "cta_limit": 1,
+            "cross_post_copy": False,
+            "cta": "follow_business",
+        },
+        "quality": {
+            "requires_specific_takeaway": True,
+            "prohibits_em_dash": True,
+        },
+        "metrics": {
+            "primary": ["views", "website_actions", "calls"],
+            "minimum_sample": 3,
+        },
+    },
+    {
         "channel": "youtube",
         "version": "v2",
         "priority": "depth_and_search",
@@ -341,7 +361,7 @@ def quality_gate(
         "no_em_dash": EM_DASH not in body,
         "has_content": bool(body.strip()),
         "native_channel": channel
-        in {"linkedin_company", "linkedin_personal", "youtube", "instagram", "x"},
+        in {"linkedin_company", "linkedin_personal", "google_business", "youtube", "instagram", "x"},
         "source_lineage": source_asset is not None,
         "transcript_interval_valid": bool(
             source_asset is not None
@@ -608,8 +628,8 @@ def stage_native_candidates(
                 )
             )
         )
-        if len(existing_channels) == 5:
-            existing += 5
+        if len(existing_channels) == 6:
+            existing += 6
             continue
         bundle = generate_native_bundle(
             title=source.title or "Anata operator lesson",
@@ -628,6 +648,7 @@ def stage_native_candidates(
         for channel in (
             "linkedin_personal",
             "linkedin_company",
+            "google_business",
             "youtube",
             "instagram",
             "x",

@@ -206,6 +206,15 @@ def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dic
             "message": channel_publish_readiness("linkedin_personal")["message"],
         },
         {
+            "key": "google_business",
+            "label": "Google Business",
+            "status": "ready"
+            if channel_publish_readiness("google_business")["ready"]
+            else "blocked",
+            "required_for": ["Google Business publishing"],
+            "message": channel_publish_readiness("google_business")["message"],
+        },
+        {
             "key": "youtube",
             "label": "YouTube",
             "status": "ready"

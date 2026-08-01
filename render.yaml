@@ -126,6 +126,18 @@ services:
         value: "false"
       - key: CONTENT_LINKEDIN_PERSONAL_AUTO_PUBLISH_ENABLED
         value: "false"
+      - key: CONTENT_GOOGLE_BUSINESS_CONNECTOR_URL
+        sync: false
+      - key: CONTENT_GOOGLE_BUSINESS_CONNECTOR_KEY
+        sync: false
+      - key: CONTENT_GOOGLE_BUSINESS_CONNECTOR_VERIFIED
+        value: "false"
+      - key: CONTENT_GOOGLE_BUSINESS_PROFILE_ID
+        sync: false
+      - key: CONTENT_GOOGLE_BUSINESS_LIVE_APPROVED
+        value: "false"
+      - key: CONTENT_GOOGLE_BUSINESS_AUTO_PUBLISH_ENABLED
+        value: "false"
       - key: CONTENT_YOUTUBE_CONNECTOR_URL
         sync: false
       - key: CONTENT_YOUTUBE_CONNECTOR_KEY

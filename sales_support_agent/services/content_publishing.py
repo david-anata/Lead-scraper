@@ -44,6 +44,15 @@ CHANNEL_CONFIG: dict[str, dict[str, str]] = {
         "activation": "CONTENT_LINKEDIN_PERSONAL_LIVE_APPROVED",
         "auto": "CONTENT_LINKEDIN_PERSONAL_AUTO_PUBLISH_ENABLED",
     },
+    "google_business": {
+        "action": ALLOWED_ACTIONS["google_business"],
+        "url": "CONTENT_GOOGLE_BUSINESS_CONNECTOR_URL",
+        "key": "CONTENT_GOOGLE_BUSINESS_CONNECTOR_KEY",
+        "verified": "CONTENT_GOOGLE_BUSINESS_CONNECTOR_VERIFIED",
+        "destination": "CONTENT_GOOGLE_BUSINESS_PROFILE_ID",
+        "activation": "CONTENT_GOOGLE_BUSINESS_LIVE_APPROVED",
+        "auto": "CONTENT_GOOGLE_BUSINESS_AUTO_PUBLISH_ENABLED",
+    },
     "youtube": {
         "action": ALLOWED_ACTIONS["youtube_upload"],
         "url": "CONTENT_YOUTUBE_CONNECTOR_URL",
@@ -67,16 +76,17 @@ CHANNEL_CONFIG: dict[str, dict[str, str]] = {
 WEEKLY_CAPS = {
     "linkedin_personal": 3,
     "linkedin_company": 2,
+    "google_business": 3,
     "youtube": 4,
     "instagram": 3,
 }
 DAILY_PORTFOLIO = {
     0: ("linkedin_personal", "youtube"),
-    1: ("linkedin_company", "instagram"),
+    1: ("linkedin_company", "google_business", "instagram"),
     2: ("linkedin_personal", "youtube"),
-    3: ("linkedin_company", "instagram"),
+    3: ("linkedin_company", "google_business", "instagram"),
     4: ("linkedin_personal", "youtube"),
-    5: ("instagram",),
+    5: ("google_business", "instagram"),
     6: ("youtube",),
 }
 

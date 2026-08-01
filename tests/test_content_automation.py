@@ -62,7 +62,7 @@ def _factory():
 def test_default_playbooks_are_versioned_and_idempotent() -> None:
     factory = _factory()
     with session_scope(factory) as session:
-        assert seed_default_playbooks(session) == 5
+        assert seed_default_playbooks(session) == 6
         assert seed_default_playbooks(session) == 0
         rows = list(
             session.scalars(
@@ -71,7 +71,7 @@ def test_default_playbooks_are_versioned_and_idempotent() -> None:
                 )
             )
         )
-        assert len(rows) == 5
+        assert len(rows) == 6
         assert {row.version for row in rows} == {"v2"}
         linkedin = next(row for row in rows if row.channel == "linkedin_personal")
         assert linkedin.priority == "primary_authority"
@@ -142,7 +142,7 @@ def test_shadow_cycle_records_dependencies_and_cross_instance_deduplication() ->
             session.scalar(
                 select(func.count()).select_from(ContentDependencyCheck)
             )
-            == 22
+            == 24
         )
         run = session.scalar(select(ContentJobRun))
         assert run is not None
@@ -185,7 +185,7 @@ def test_social_cycle_stages_separate_native_candidates_with_lineage(
     )
     assert result["status"] == "needs_review"
     assert result["details"]["social_distribution"]["staged_candidates"] == {
-        "created": 5,
+        "created": 6,
         "existing": 0,
         "rejected": 0,
     }
@@ -196,13 +196,14 @@ def test_social_cycle_stages_separate_native_candidates_with_lineage(
             )
         )
         assert {row.channel for row in artifacts} == {
+            "google_business",
             "instagram",
             "linkedin_company",
             "linkedin_personal",
             "x",
             "youtube",
         }
-        assert len({row.body for row in artifacts}) == 5
+        assert len({row.body for row in artifacts}) == 6
         assert {row.status for row in artifacts} == {"needs_review"}
         assert all(row.playbook_version == "v2" for row in artifacts)
         assert all(
@@ -271,9 +272,9 @@ def test_transformation_covers_every_untransformed_episode() -> None:
         )
         first = stage_native_candidates(session, run=run, actor="test")
         second = stage_native_candidates(session, run=run, actor="test")
-        assert first == {"created": 10, "existing": 0, "rejected": 0}
-        assert second == {"created": 0, "existing": 10, "rejected": 0}
-        assert session.scalar(select(func.count()).select_from(ContentArtifact)) == 10
+        assert first == {"created": 12, "existing": 0, "rejected": 0}
+        assert second == {"created": 0, "existing": 12, "rejected": 0}
+        assert session.scalar(select(func.count()).select_from(ContentArtifact)) == 12
 
 
 def _daily_payload(theme: str = "Inventory accuracy protects cash") -> dict:

@@ -57,6 +57,16 @@ def test_channel_readiness_requires_identity_and_live_mode(monkeypatch) -> None:
     assert channel_publish_readiness("linkedin_company")["ready"] is True
 
 
+def test_google_business_readiness_is_independent(monkeypatch) -> None:
+    monkeypatch.setenv("CONTENT_GOOGLE_BUSINESS_CONNECTOR_URL", "https://relay.example.com")
+    monkeypatch.setenv("CONTENT_GOOGLE_BUSINESS_CONNECTOR_KEY", "secret")
+    monkeypatch.setenv("CONTENT_GOOGLE_BUSINESS_CONNECTOR_VERIFIED", "true")
+    monkeypatch.setenv("CONTENT_GOOGLE_BUSINESS_PROFILE_ID", "anata-profile")
+    monkeypatch.setenv("CONTENT_GOOGLE_BUSINESS_LIVE_APPROVED", "true")
+    monkeypatch.setenv("CONTENT_PUBLISHING_MODE", "live")
+    assert channel_publish_readiness("google_business")["ready"] is True
+
+
 def test_publish_requires_explicit_confirmation() -> None:
     session = _session()
     row = _artifact(session)
