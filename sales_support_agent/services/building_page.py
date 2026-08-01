@@ -2030,7 +2030,7 @@ def render_building_page(
       )}
       <section class="panel panel--wide building-view view-catalog" id="inventory"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-catalog"><div class="panel-head"><div><h2>Media assignments</h2><p>Choose one space at a time. Draft media never reaches the public site, and approval requires descriptive alt text.</p></div></div><div class="checklist-list">{media_blocks}</div></section>
-      <section class="panel panel--wide building-view view-settings"><div class="panel-head"><div><h2>Roster import reviews</h2><p>Previewed lists remain inert until an operator confirms the exact snapshot.</p></div><span class="count">{len(roster_imports)} imports</span></div><div class="table-wrap"><table><thead><tr><th>Roster</th><th>Contacts</th><th>Status</th><th>Action</th></tr></thead><tbody>{roster_import_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-contacts"><div class="panel-head"><div><h2>Roster import reviews</h2><p>Previewed lists remain inert until an operator confirms the exact snapshot.</p></div><span class="count">{len(roster_imports)} imports</span></div><div class="table-wrap"><table><thead><tr><th>Roster</th><th>Contacts</th><th>Status</th><th>Action</th></tr></thead><tbody>{roster_import_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-contacts" id="customer-email-list"><div class="panel-head"><div><h2>Customer contacts and email permissions</h2><p>Relationships, contact permission, suppression, and customer communication controls. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th><th>Data controls</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-contacts">
         <div class="panel-head"><div><h2>Duplicate contact review</h2><p>Preview every move before merging. The survivor keeps the most restrictive communication permission; campaign and inquiry history remains unchanged.</p></div><span class="count">{len(contact_merges)} completed</span></div>
@@ -2045,7 +2045,9 @@ def render_building_page(
         <div class="table-wrap"><table><thead><tr><th>Merge</th><th>Reason</th><th>Permission result</th><th>Evidence</th></tr></thead><tbody>{merge_rows}</tbody></table></div>
       </section>
       <section class="panel panel--wide building-view view-settings">
-        <div class="panel-head"><div><h2>Data governance</h2><p>Track access, correction, suppression, deletion review, and retention review with a 30-day deadline. Deletion is never automatic.</p></div><span class="count">{len(privacy_requests)} requests</span></div>
+        <details class="advanced-disclosure">
+          <summary>Data and privacy requests ({len(privacy_requests)})</summary>
+          <p class="form-note">Access, correction, suppression, deletion review, and retention review. Each one gets a 30-day deadline. Deletion is never automatic.</p>
         <details class="task-creator"><summary>Add a privacy request</summary>
         <form class="form-grid" method="post" action="/admin/building/privacy/requests">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
@@ -2058,6 +2060,7 @@ def render_building_page(
         </form>
         </details>
         <div class="table-wrap"><table><thead><tr><th>Request</th><th>Status</th><th>Owner</th><th>Review action</th></tr></thead><tbody>{privacy_rows}</tbody></table></div>
+        </details>
       </section>
       <section class="panel building-view view-contacts"><div class="panel-head"><div><h2>Audiences</h2><p>Explainable tenant and community segments.</p></div><span class="count">{len(segments)} segments</span></div><div class="table-wrap"><table><thead><tr><th>Audience</th><th>Relationships</th><th>Eligible</th><th>Status</th></tr></thead><tbody>{segment_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-contacts"><div class="panel-head"><div><h2>Campaigns</h2><p>Draft, preview, approval, and delivery state.</p></div><span class="count">{len(campaigns)} campaigns</span></div><div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Audience</th><th>Recipients</th><th>Status</th><th>Action</th></tr></thead><tbody>{campaign_rows}</tbody></table></div></section>
