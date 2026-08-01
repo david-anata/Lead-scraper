@@ -598,11 +598,18 @@ def build_article_action(
         SERVICE_PILLARS,
         key=lambda pillar: (int(pillar_counts.get(pillar, 0)), SERVICE_PILLARS.index(pillar)),
     )
-    cluster = _eligible_cluster(
-        query_intelligence,
-        excluded_cluster_ids=excluded_cluster_ids,
-        excluded_primary_intents=excluded_primary_intents,
-    )
+    cluster = None
+    if int(pillar_counts.get(selected_pillar, 0)) < PILLAR_DAILY_MINIMUM:
+        cluster = _eligible_editorial_seed(
+            excluded_cluster_ids,
+            pillar=selected_pillar,
+        )
+    if not cluster:
+        cluster = _eligible_cluster(
+            query_intelligence,
+            excluded_cluster_ids=excluded_cluster_ids,
+            excluded_primary_intents=excluded_primary_intents,
+        )
     if not cluster:
         cluster = _eligible_editorial_seed(
             excluded_cluster_ids,

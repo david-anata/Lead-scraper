@@ -118,6 +118,32 @@ def test_article_batch_size_catches_up_as_daily_deadline_approaches(tmp_path) ->
     ) == 2
 
 
+def test_daily_generation_fills_each_service_pillar_before_extra_topics(tmp_path) -> None:
+    settings = SimpleNamespace(website_ops_root=tmp_path)
+    generated = 0
+
+    def generate_article(**_kwargs):
+        nonlocal generated
+        generated += 1
+        return {
+            "slug": f"balanced-topic-{generated}",
+            "title": f"Balanced topic {generated}",
+            "content": {},
+        }
+
+    for _ in range(8):
+        action = build_article_action(
+            settings=settings,
+            query_intelligence={"clusters": []},
+            requester=generate_article,
+        )
+        assert action is not None
+
+    progress = article_generation_progress(settings)
+    assert progress["generated_today"] == 8
+    assert set(progress["pillar_counts"].values()) == {2}
+
+
 def test_topic_history_prevents_republishing_an_old_daily_claim(tmp_path) -> None:
     history = tmp_path / "content-strategy" / "article-generation"
     history.mkdir(parents=True)

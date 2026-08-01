@@ -1455,6 +1455,25 @@ def execute_approved_website_ops_actions(settings: Settings) -> WebsiteOpsAction
     )
 
 
+def _checkpoint_website_ops_cache(settings: Settings) -> bool:
+    """Mirror approved work before an external write can restart the service."""
+
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services.website_ops_storage import (
+        database_mirror_enabled,
+        snapshot_website_ops_root,
+    )
+
+    if not database_mirror_enabled():
+        return False
+    try:
+        engine = get_engine()
+    except RuntimeError:
+        return False
+    snapshot_website_ops_root(engine, settings.website_ops_root)
+    return True
+
+
 def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsActionResult:
     config = _config(settings)
     has_baseline = bool(_report_entries(settings))
@@ -1564,6 +1583,11 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
     }
     if settings.website_ops_execute_approved and has_baseline:
         current_records = {str(item.get("feedback_id", "")): item for item in _mvp_filter_feedback_records(load_feedback_records(settings))}
+        approval_checkpoint_needed = False
+        # Persist approval for the entire bounded batch before the first
+        # external write. A deploy can restart Agent while Vercel is
+        # validating an earlier article; later articles must remain durable
+        # approved work that the recovery pulse can resume immediately.
         for item in enriched_report["action_queue"]:
             feedback_id = str(item.get("feedback_id", "")).strip()
             record = current_records.get(feedback_id)
@@ -1582,6 +1606,17 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
                         "review_notes": "Auto-approved by Website Ops: high-confidence deterministic action.",
                     },
                 )
+                current_records[feedback_id] = record
+                approval_checkpoint_needed = True
+        if approval_checkpoint_needed:
+            _checkpoint_website_ops_cache(settings)
+        for item in enriched_report["action_queue"]:
+            feedback_id = str(item.get("feedback_id", "")).strip()
+            if feedback_id not in bounded_feedback_ids:
+                continue
+            record = current_records.get(feedback_id)
+            if not record:
+                continue
             if record.get("status") == "approved" and _record_is_auto_executable(record):
                 result = _execute_record(
                     settings,

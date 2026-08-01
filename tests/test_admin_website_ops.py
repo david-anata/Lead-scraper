@@ -2345,6 +2345,42 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
 
         client.put_file.assert_called_once()
 
+    def test_article_verification_accepts_the_site_title_suffix(self) -> None:
+        record = self._generated_article_record()
+        article = json.loads(str(record["action_value"]))
+        source = '''import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
+export type GeneratedArticle = { content: ArticlePageContent };
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+'''
+        client = mock.Mock()
+        client.repository = "david-anata/anata-website"
+        client.branch = "main"
+        client.get_file.return_value = (source, "source-sha")
+        client.put_file.return_value = {"commit": {"sha": "commit-sha"}}
+        page_url = f"https://anatainc.com/blog/{article['slug']}"
+        with mock.patch(
+            "sales_support_agent.services.website_ops_github.GitHubWebsiteClient",
+            return_value=client,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.website_ops.collect_page_observation",
+            return_value={
+                "status_code": 200,
+                "title": f"{article['title']} | Anata",
+                "canonical_url": page_url,
+                "h1": [article["content"]["h1"]],
+            },
+        ):
+            result = execute_github_article_action(
+                record,
+                config=SimpleNamespace(),
+                timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(result["verification_status"], "verified")
+        self.assertEqual(result["production_url"], page_url)
+
     def test_missing_canonical_creates_high_confidence_github_action(self) -> None:
         page = {
             "url": "https://anatainc.com/services/amazon-advertising/",
@@ -2677,6 +2713,78 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["status"], "new")
             self.assertEqual(records[0]["action_type"], "")
+
+    def test_run_website_ops_approves_entire_bounded_batch_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir), execute_approved=True)
+            report_dir = settings.website_ops_root / "reports" / "daily"
+            report_dir.mkdir(parents=True)
+            (report_dir / "prior-report.md").write_text("# Prior report\n", encoding="utf-8")
+            actions = [
+                {
+                    "page_url": f"https://anatainc.com/services/service-{index}/",
+                    "page_title": f"Service {index}",
+                    "action_type": "meta_title_update",
+                    "section_name": "Title",
+                    "before_state": f"Old title {index}",
+                    "after_state": f"New title {index}",
+                    "reason": "The canonical intent owner needs a specific title.",
+                    "insight_source": "Validated intent map",
+                    "expected_impact": "Clearer intent ownership.",
+                    "confidence": "high",
+                    "evidence": ["Rendered title", "Repository owner map"],
+                    "execution_eligibility": "auto_execute",
+                    "action_value": f"New title {index}",
+                }
+                for index in range(2)
+            ]
+            fake_pipeline = {
+                "report": self._fake_report(),
+                "observations": [],
+                "artifacts": {},
+            }
+            fake_overlay = {
+                "goal": {"primary": "Increase qualified leads."},
+                "action_queue": actions,
+                "analytics_status": {
+                    "search_console": True,
+                    "ga4": True,
+                    "notes": [],
+                    "ga4_trust_status": "trusted",
+                    "primary_lead_event": "generate_lead",
+                },
+                "support_requests": [],
+                "page_insights": [],
+            }
+            events: list[str] = []
+
+            def interrupted_execution(*args: object, **kwargs: object) -> None:
+                self.assertEqual(events, ["checkpoint"])
+                raise website_ops.ExecutionError("deploy interrupted")
+
+            with mock.patch(
+                "sales_support_agent.services.website_ops.website_ops.run_daily_report_pipeline",
+                return_value=fake_pipeline,
+            ), mock.patch(
+                "sales_support_agent.services.website_ops.build_autonomy_overlay",
+                return_value=fake_overlay,
+            ), mock.patch(
+                "sales_support_agent.services.website_ops._checkpoint_website_ops_cache",
+                side_effect=lambda _settings: events.append("checkpoint") or True,
+            ), mock.patch(
+                "sales_support_agent.services.website_ops._execute_record",
+                side_effect=interrupted_execution,
+            ):
+                with self.assertRaises(website_ops.ExecutionError):
+                    run_website_ops(settings, mode="daily")
+
+            records = load_feedback_records(settings)
+            self.assertEqual(len(records), 2)
+            self.assertEqual({record["status"] for record in records}, {"approved"})
+            self.assertEqual(
+                {record["action_type"] for record in records},
+                {"meta_title_update"},
+            )
 
     def test_latest_report_entry_reads_generated_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
