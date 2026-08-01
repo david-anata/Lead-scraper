@@ -12,6 +12,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
 from sales_support_agent.services.website_ops import (
     get_website_ops_run_state,
@@ -650,7 +651,8 @@ async def run_scheduled_website_ops(request: Request) -> dict:
             if requested_mode != "scheduled"
             else _scheduled_modes(local_now)
         )
-        results = _run_due_modes(
+        results = await run_in_threadpool(
+            _run_due_modes,
             request.app.state.settings,
             modes,
             trigger="internal_force" if force else "render_cron",
