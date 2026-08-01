@@ -76,6 +76,7 @@ from sales_support_agent.services.building_security import (
     require_building_form_security,
 )
 from sales_support_agent.services.building_analytics import build_building_analytics
+from sales_support_agent.services.building_sender import building_from_address
 from sales_support_agent.services.building_money import (
     cents_to_dollars,
     dollars_to_cents,
@@ -5072,7 +5073,15 @@ def building_control_room(
                 for item in agreement_template_rows
             ],
             provider_readiness={
-                "esign_verified": False,
+                # Was hardcoded False, so this row could never go green however
+                # much setup was done. The agreement_template decision is the
+                # record that names the approved template and the e-sign
+                # provider, so it is what "verified" actually means here.
+                "esign_verified": any(
+                    item.decision_key == "agreement_template"
+                    and item.status == "approved_reference"
+                    for item in launch_decision_rows
+                ),
                 "payment_credentials": bool(
                     str(request.app.state.settings.stripe_secret_key or "").strip()
                 ),
@@ -5089,9 +5098,11 @@ def building_control_room(
                 "sender_webhook": bool(
                     str(request.app.state.settings.resend_webhook_secret or "").strip()
                 ),
+                # Building mail sends from its own address regardless of the
+                # agent-wide default, so this checks the Building sender rather
+                # than forcing every other part of the agent onto building@.
                 "sender_matches_owner_choice": (
-                    "building@anatainc.com"
-                    in str(request.app.state.settings.resend_from or "").lower()
+                    building_from_address().strip().lower() == "building@anatainc.com"
                 ),
             },
         )
