@@ -2064,6 +2064,29 @@ example
                 {**record, "action_value": json.dumps(article)}
             )
 
+    def test_generated_article_requires_official_source_for_each_named_platform(self) -> None:
+        record = self._generated_article_record()
+        article = json.loads(str(record["action_value"]))
+        article["content"]["sections"][0]["paragraphs"][0] += (
+            " Walmart marketplace fees require separate planning."
+        )
+        with self.assertRaisesRegex(
+            ExecutionError,
+            "Walmart without an official walmart.com source",
+        ):
+            validate_generated_article(
+                {**record, "action_value": json.dumps(article)}
+            )
+
+    def test_generated_article_rejects_malformed_semicolon_joins(self) -> None:
+        record = self._generated_article_record()
+        article = json.loads(str(record["action_value"]))
+        article["content"]["sections"][0]["paragraphs"][0] += " costs;platform"
+        with self.assertRaisesRegex(ExecutionError, "malformed punctuation joins"):
+            validate_generated_article(
+                {**record, "action_value": json.dumps(article)}
+            )
+
     def test_generated_article_registry_enforces_one_page_one_intent(self) -> None:
         source = """import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
 export type GeneratedArticle = { content: ArticlePageContent };

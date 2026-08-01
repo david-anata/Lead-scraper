@@ -32,6 +32,7 @@ OFFICIAL_RESEARCH_DOMAINS = [
     "amazon.com",
     "census.gov",
     "dhl.com",
+    "ebay.com",
     "fedex.com",
     "ftc.gov",
     "google.com",
@@ -41,6 +42,7 @@ OFFICIAL_RESEARCH_DOMAINS = [
     "tiktok.com",
     "ups.com",
     "usps.com",
+    "walmart.com",
 ]
 
 EDITORIAL_TOPIC_SEEDS: tuple[dict[str, Any], ...] = (
@@ -647,8 +649,11 @@ Service pillar: {pillar}
 This is a high-utility SEO/AEO publishing task. Search and verify the web. Use only
 official first-party platform, carrier, or government HTTPS documentation as external
 sources. Never cite agencies, competitors, software vendors, affiliate sites, or generic
-SEO blogs. Factual claims must be supported by the visible official sources. Do not invent Anata results,
-clients, metrics, prices, capabilities, testimonials, or proprietary data. Do not use
+SEO blogs. Factual claims must be supported by the visible official sources.
+Do not discuss a named marketplace, carrier, or platform unless that organization has
+an official source in the top-level sources list and in the relevant section citations.
+Do not invent Anata results, clients, metrics, prices, capabilities, testimonials, or
+proprietary data. Do not use
 em dashes. Do not mention Basic Research, "reveal the gap", or any demo URL.
 Write for an operator who needs a useful answer, not for a content quota. Ban filler,
 generic scene-setting, fake urgency, repetition, vague superlatives, and phrases such
