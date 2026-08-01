@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import secrets
 import logging
+import hashlib
 from datetime import datetime, timedelta
 from threading import Event, Thread
 from typing import Any
@@ -143,7 +144,18 @@ def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
             "failed",
             "failed_outcome",
         }
-        if current_state.get("last_pulse_slot") == pulse_slot and not failed_status:
+        stalled_running = (
+            str(current_state.get("status", "")) == "running"
+            and not _daily_run_is_fresh(
+                {"runs": {"daily": current_state}},
+                local_now,
+            )
+        )
+        recoverable_status = failed_status or stalled_running
+        if (
+            current_state.get("last_pulse_slot") == pulse_slot
+            and not recoverable_status
+        ):
             return {"status": "skipped", "message": "This Website Ops pulse already completed."}
 
         run_key = f"{local_now.date().isoformat()}:scheduled:{pulse_slot}"
@@ -162,15 +174,22 @@ def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
             and lease is None
             and (
                 str(current_state.get("run_date", "")) != local_now.date().isoformat()
-                or failed_status
+                or recoverable_status
             )
         ):
-            # One bounded same-slot recovery is allowed when the durable run
-            # state proves the earlier lease produced no current-day outcome.
+            # Recover one failed or stale attempt. Key the recovery lease to
+            # that attempt's start timestamp so a deploy interruption cannot
+            # permanently consume the slot's only recovery opportunity.
+            recovery_attempt = str(
+                current_state.get("last_started_at", "") or "missing-start"
+            )
+            recovery_key = hashlib.sha256(
+                recovery_attempt.encode("utf-8")
+            ).hexdigest()[:12]
             lease = claim_scheduled_job(
                 engine,
                 job_key="website_ops",
-                run_key=f"{run_key}:stale-or-failed-recovery-v1",
+                run_key=f"{run_key}:stale-or-failed-recovery:{recovery_key}",
                 lease_minutes=180,
             )
         if engine is not None and lease is None:

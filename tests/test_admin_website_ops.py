@@ -1093,10 +1093,54 @@ example
 
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(claim.call_count, 2)
-        self.assertTrue(
-            claim.call_args_list[1].kwargs["run_key"].endswith(
-                "stale-or-failed-recovery-v1"
-            )
+        self.assertIn(
+            "stale-or-failed-recovery:",
+            claim.call_args_list[1].kwargs["run_key"],
+        )
+        run.assert_called_once()
+
+    def test_embedded_scheduler_recovers_stalled_same_slot_after_restart(self) -> None:
+        settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))
+        local_now = datetime(2026, 8, 1, 11, 5, tzinfo=timezone.utc)
+        lease = object()
+        stalled = {
+            "run_date": "2026-08-01",
+            "status": "running",
+            "last_pulse_slot": "2026-08-01:11",
+            "last_started_at": "2026-08-01T10:00:00+00:00",
+        }
+        with (
+            mock.patch(
+                "sales_support_agent.models.database.get_engine",
+                return_value=object(),
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.database_mirror_enabled",
+                return_value=False,
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                return_value=stalled,
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.claim_scheduled_job",
+                side_effect=[None, lease],
+            ) as claim,
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.finish_scheduled_job",
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router._run_due_modes",
+                return_value={"daily": {"status": "succeeded"}},
+            ) as run,
+        ):
+            result = _run_embedded_pulse(settings, local_now)
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(claim.call_count, 2)
+        self.assertIn(
+            "stale-or-failed-recovery:",
+            claim.call_args_list[1].kwargs["run_key"],
         )
         run.assert_called_once()
 
