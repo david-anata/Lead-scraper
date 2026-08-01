@@ -2320,8 +2320,20 @@ input:focus, select:focus, textarea:focus {
   .budget-saving-impact { text-align: left; }
   .budget-investigation { grid-template-columns: 1fr; }
   .budget-investigation__amount { text-align: left; }
-  .trim-table-wrap { overflow-x: auto; }
-  .trim-table { min-width: 900px; }
+  .trim-table-wrap { overflow: visible; }
+  .trim-table { display: block; min-width: 0; }
+  .trim-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .trim-table tbody { display: grid; gap: 12px; }
+  .trim-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 14px; padding: 16px; border: 1px solid var(--anata-line); border-radius: 14px; }
+  .trim-table td { display: block; width: auto; padding: 0; border: 0; }
+  .trim-table td:nth-child(2),
+  .trim-table td:nth-child(3),
+  .trim-table td:nth-child(4) { text-align: right; }
+  .trim-table td:nth-child(3)::before { content: "Six months "; color: var(--anata-muted); font-size: 10px; font-weight: 700; }
+  .trim-table td:nth-child(4) { justify-self: end; }
+  .trim-table td:nth-child(5) { grid-column: 1 / -1; padding-top: 6px; }
+  .trim-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .trim-choice { min-height: 38px; }
   .budget-saving-action { grid-column: auto; }
   .money-account-actions { display: grid; width: 100%; }
   .money-account-actions form,
