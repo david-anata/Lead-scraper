@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ from sales_support_agent.services.website_ops_vendor.core import load_feedback_e
 
 DAILY_ARTICLE_MINIMUM = 8
 DAILY_ARTICLE_TARGET = 8
+DAILY_PUBLISH_HOURS = (8, 9, 10, 11, 12, 13, 14, 15)
 PILLAR_DAILY_MINIMUM = 2
 SERVICE_PILLARS = (
     "Ecommerce Marketing Management",
@@ -447,6 +449,24 @@ def article_generation_progress(settings: Any) -> dict[str, Any]:
             for pillar, count in pillar_counts.items()
         },
     }
+
+
+def article_batch_size(
+    settings: Any,
+    *,
+    local_now: datetime | None = None,
+) -> int:
+    """Return the work needed now to stay on pace for eight daily articles."""
+
+    progress = article_generation_progress(settings)
+    remaining = int(progress["remaining_to_target"])
+    if remaining <= 0:
+        return 0
+    local_now = local_now or datetime.now(ZoneInfo("America/Denver"))
+    remaining_pulses = sum(hour >= local_now.hour for hour in DAILY_PUBLISH_HOURS)
+    if remaining_pulses <= 0:
+        remaining_pulses = 1
+    return min(remaining, max(1, math.ceil(remaining / remaining_pulses)))
 
 
 def _claim_daily_article_slot(settings: Any, cluster_id: str, pillar: str = "") -> bool:
