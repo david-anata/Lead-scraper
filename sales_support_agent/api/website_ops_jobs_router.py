@@ -259,7 +259,9 @@ def _run_due_modes(
         )
         result = None
         final_error: Exception | None = None
+        last_attempt = 0
         for attempt in range(1, max_attempts + 1):
+            last_attempt = attempt
             write_website_ops_run_state(
                 settings,
                 mode,
@@ -271,6 +273,26 @@ def _run_due_modes(
             try:
                 result = run_website_ops(settings, mode=mode)
                 final_error = None
+                attempt_outcome = dict(
+                    (getattr(result, "report", None) or {}).get("run_outcome") or {}
+                )
+                attempt_status = str(attempt_outcome.get("status", "") or "").strip()
+                attempt_delta = int(
+                    attempt_outcome.get("production_delta_count", 0) or 0
+                )
+                retryable_zero_delta = (
+                    mode == "daily"
+                    and attempt_status in {"work_in_progress", "failed_outcome"}
+                    and attempt_delta == 0
+                    and attempt < max_attempts
+                )
+                if retryable_zero_delta:
+                    logger.warning(
+                        "Website Ops daily attempt %s/%s produced no verified delta; retrying.",
+                        attempt,
+                        max_attempts,
+                    )
+                    continue
                 break
             except Exception as exc:  # noqa: BLE001
                 final_error = exc
@@ -302,17 +324,25 @@ def _run_due_modes(
         completed_at = datetime.now(ZoneInfo("UTC"))
         outcome = dict((getattr(result, "report", None) or {}).get("run_outcome") or {})
         outcome_status = str(outcome.get("status", "") or "").strip()
+        production_delta_count = int(outcome.get("production_delta_count", 0) or 0)
         outcome_updates = {
             "outcome_status": outcome_status,
             "outcome_message": str(outcome.get("summary", "") or ""),
             "expected_output": str(outcome.get("expected_output", "") or ""),
             "actual_output": str(outcome.get("actual_output", "") or ""),
-            "production_delta_count": str(outcome.get("production_delta_count", 0) or 0),
+            "production_delta_count": str(production_delta_count),
             "last_stage": str(outcome.get("last_stage", "") or ""),
             "next_operation": str(outcome.get("next_operation", "") or ""),
             "failure_stage": str(outcome.get("failure_stage", "") or ""),
         }
-        if not bool(getattr(result, "ok", True)) or outcome_status == "failed_outcome":
+        daily_target_missed = mode == "daily" and not (
+            outcome_status == "production_verified" and production_delta_count > 0
+        )
+        if (
+            not bool(getattr(result, "ok", True))
+            or outcome_status == "failed_outcome"
+            or daily_target_missed
+        ):
             message = result.message or "Website Ops completed without the required outcome."
             write_website_ops_run_state(
                 settings,
@@ -330,7 +360,7 @@ def _run_due_modes(
                 "status": "failed_outcome",
                 "message": message,
                 "outcome": outcome,
-                "attempts": int(get_website_ops_run_state(settings, mode).get("attempt_count", "1") or "1"),
+                "attempts": last_attempt,
             }
             continue
         write_website_ops_run_state(
@@ -342,18 +372,14 @@ def _run_due_modes(
                 "last_completed_at": completed_at.isoformat(),
                 "last_successful_date": completed_at.date().isoformat(),
                 "last_error": "",
-                "recovery_status": "recovered"
-                if int(get_website_ops_run_state(settings, mode).get("attempt_count", "1") or "1") > 1
-                else "not_needed",
+                "recovery_status": "recovered" if last_attempt > 1 else "not_needed",
             },
         )
         results[mode] = {
             "status": "succeeded",
             "message": result.message,
             "outcome": outcome,
-            "attempts": int(
-                get_website_ops_run_state(settings, mode).get("attempt_count", "1") or "1"
-            ),
+            "attempts": last_attempt,
         }
     return results
 
