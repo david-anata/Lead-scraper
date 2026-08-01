@@ -72,6 +72,29 @@ def _daily_run_is_fresh(state: dict[str, Any], local_now: datetime) -> bool:
     ) <= WEBSITE_OPS_RUNNING_STALE_AFTER
 
 
+def _daily_run_has_verified_outcome(
+    state: dict[str, Any], local_now: datetime
+) -> bool:
+    """Do not call a completed pulse healthy until production changed."""
+
+    if local_now.hour < WEBSITE_OPS_PULSE_HOURS[0]:
+        return True
+    daily = dict((state.get("runs") or {}).get("daily") or {})
+    if str(daily.get("run_date", "")) != local_now.date().isoformat():
+        return False
+    if str(daily.get("status", "")) == "running":
+        return True
+    try:
+        production_delta_count = int(daily.get("production_delta_count", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return (
+        str(daily.get("status", "")) == "succeeded"
+        and str(daily.get("outcome_status", "")) == "production_verified"
+        and production_delta_count > 0
+    )
+
+
 def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
     """Run one missed hourly slot with the same durable lease as Render cron."""
 
@@ -389,6 +412,9 @@ def website_ops_runtime_health(request: Request) -> dict:
     state = load_website_ops_run_state(settings)
     local_now = datetime.now(ZoneInfo("America/Denver"))
     checks["daily_run_fresh"] = _daily_run_is_fresh(state, local_now)
+    checks["daily_production_outcome"] = _daily_run_has_verified_outcome(
+        state, local_now
+    )
     sanitized_runs = {
         mode: {
             key: str(value or "")
@@ -450,6 +476,13 @@ def website_ops_runtime_health(request: Request) -> dict:
             else [
                 "The embedded scheduler has not persisted a successful Website Ops run "
                 f"for {local_now.date().isoformat()}."
+            ]
+        )
+        + (
+            []
+            if checks["daily_production_outcome"]
+            else [
+                "The latest completed Website Ops pulse has no production-verified change."
             ]
         ),
         "schedule": {
