@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import json
 from typing import Any
 
@@ -26,6 +28,9 @@ from sales_support_agent.models.schemas import CommunicationEventRequest
 from sales_support_agent.services.audit import AuditService
 from sales_support_agent.services.communications import CommunicationService
 from sales_support_agent.services.matching import LeadMatchingService
+
+
+logger = logging.getLogger(__name__)
 
 
 class InstantlyWebhookService:
@@ -54,6 +59,12 @@ class InstantlyWebhookService:
         lead_email = extract_email(payload)
         if not lead_email:
             return {"status": "ignored", "reason": "missing_lead_email", "event_type": event_type}
+
+        # Update the LinkedIn queue BEFORE the ClickUp lookup below. Outbound
+        # brands are not ClickUp tasks, so that lookup returns early for exactly
+        # the leads this queue is for - doing it after would mean the join
+        # between the two channels never happened for anyone.
+        self._update_linkedin_queue(event_type, lead_email)
 
         matcher = LeadMatchingService(self.settings, self.clickup_client, self.session)
         lead = matcher.find_by_email(lead_email, sync_on_miss=True)
@@ -87,6 +98,30 @@ class InstantlyWebhookService:
             "lead_email": lead_email,
             "result": result,
         }
+
+
+    def _update_linkedin_queue(self, event_type: str, lead_email: str) -> None:
+        """Let the email decide whether a LinkedIn touch is still wanted.
+
+        Best-effort and silent: a webhook that fails here must still record the
+        communication event, because losing a reply is worse than losing a
+        queue update.
+        """
+        try:
+            from sales_support_agent.models.database import get_engine
+            from sales_support_agent.services import (
+                outbound_linkedin_queue as queue,
+                outbound_memory,
+                outbound_settings,
+            )
+
+            engine = get_engine()
+            decision = queue.decide(
+                event_type, settings=outbound_settings.effective(engine, {}))
+            if decision is not None:
+                outbound_memory.apply_queue_decision(engine, lead_email, decision)
+        except Exception:  # noqa: BLE001
+            logger.exception("[instantly] could not update the LinkedIn queue")
 
     def _normalize_payload(self, payload: dict[str, Any], task_id: str) -> CommunicationEventRequest:
         return CommunicationEventRequest(

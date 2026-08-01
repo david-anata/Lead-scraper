@@ -121,6 +121,31 @@ def prepare(rows: Iterable[dict[str, Any]], *, campaign_id: str,
     return leads, keys, stats
 
 
+def contacts_from(rows: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+    """Every person in the file, whether or not they have a LinkedIn profile.
+
+    Wider than prepare(): the email queue needs to know about email-only
+    contacts too, so that when Instantly says one of them replied we can stop
+    chasing them rather than never having heard of them.
+    """
+    out = []
+    for row in rows:
+        email = _text(row, "email", "work_email", "Work Email")
+        if not email:
+            continue
+        url = _text(row, "linkedin_url", "linkedin", "profile_url", "LinkedIn Profile", "LinkedIn")
+        out.append({
+            "email": email,
+            # Only a real profile is stored. A company page here would put
+            # someone in the LinkedIn queue that nobody can actually message.
+            "linkedin_url": normalize_profile_url(url) if is_profile_url(url) else "",
+            "first_name": _text(row, "first_name", "firstname", "First Name"),
+            "last_name": _text(row, "last_name", "lastname", "Last Name", "surname", "Surname"),
+            "company": _text(row, "company_name", "company", "brand", "Merchant Name"),
+        })
+    return out
+
+
 def check_key(api_key: str, *, session: Any = None) -> tuple[bool, str]:
     """Confirm the key works before sending anyone anywhere."""
     if not str(api_key or "").strip():

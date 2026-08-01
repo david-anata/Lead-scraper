@@ -684,3 +684,168 @@ def record_heyreach_sent(engine, keys: Iterable[str], campaign_id: str = "") -> 
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-memory] could not record %s HeyReach sends", len(rows))
         return 0
+
+
+# --- Contacts and the LinkedIn queue -----------------------------------------
+# People, not companies. The leads table holds brands; this holds the humans
+# Clay found inside them, because the email/LinkedIn join is keyed on a person.
+_CT_TABLE = "outbound_contacts"
+_CT_CREATE = f"""
+CREATE TABLE IF NOT EXISTS {_CT_TABLE} (
+    email TEXT PRIMARY KEY,
+    linkedin_url TEXT,
+    first_name TEXT,
+    last_name TEXT,
+    company TEXT,
+    state TEXT,
+    eligible_at TEXT,
+    reason TEXT,
+    email_blocked INTEGER,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+_CT_COLS = ("email", "linkedin_url", "first_name", "last_name", "company",
+            "state", "eligible_at", "reason", "email_blocked")
+
+
+def ensure_contacts_table(engine) -> None:
+    if engine is None:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(_CT_CREATE))
+
+
+def _email(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def record_contacts(engine, contacts: Iterable[dict[str, Any]]) -> int:
+    """Remember the people we are about to email, so a webhook can find them.
+
+    Upsert on the profile fields only. The queue state is deliberately NOT
+    touched here: re-uploading the same Clay export must not reset someone who
+    has already replied back to "waiting", which would queue a LinkedIn request
+    at a person who already said no.
+    """
+    if engine is None:
+        return 0
+    rows = []
+    for c in contacts:
+        addr = _email(c.get("email"))
+        if not addr:
+            continue
+        rows.append({
+            "email": addr,
+            "linkedin_url": _text(c.get("linkedin_url")),
+            "first_name": _text(c.get("first_name")),
+            "last_name": _text(c.get("last_name")),
+            "company": _text(c.get("company")),
+        })
+    if not rows:
+        return 0
+    try:
+        ensure_contacts_table(engine)
+        with engine.begin() as conn:
+            for row in rows:
+                conn.execute(text(
+                    f"INSERT INTO {_CT_TABLE} "
+                    f"(email, linkedin_url, first_name, last_name, company, state) "
+                    f"VALUES (:email, :linkedin_url, :first_name, :last_name, :company, 'new') "
+                    f"ON CONFLICT (email) DO UPDATE SET "
+                    f"linkedin_url = :linkedin_url, first_name = :first_name, "
+                    f"last_name = :last_name, company = :company"), row)
+        return len(rows)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] could not record %s contacts", len(rows))
+        return 0
+
+
+def load_contacts(engine, limit: int = 2000) -> list[dict[str, Any]]:
+    if engine is None:
+        return []
+    try:
+        ensure_contacts_table(engine)
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                f"SELECT {', '.join(_CT_COLS)} FROM {_CT_TABLE} "
+                f"ORDER BY updated_at DESC")).fetchall()
+        out = []
+        for r in rows[:limit]:
+            d = dict(zip(_CT_COLS, r))
+            d["email_blocked"] = bool(_flag(d.get("email_blocked")))
+            for k in ("linkedin_url", "first_name", "last_name", "company", "state",
+                      "eligible_at", "reason"):
+                d[k] = _text(d.get(k))
+            out.append(d)
+        return out
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] could not read contacts")
+        return []
+
+
+def apply_queue_decision(engine, email: str, decision: dict[str, Any]) -> bool:
+    """Move one contact along the LinkedIn state machine.
+
+    Creates the row if the webhook arrives for someone we have not stored, so a
+    contact uploaded straight into Instantly is still tracked - just without a
+    LinkedIn URL, which keeps them out of the queue rather than losing them.
+
+    A stop never un-stops: once someone has replied or declined, a later
+    email_sent from a different campaign must not put them back in the queue.
+    """
+    if engine is None or not isinstance(decision, dict):
+        return False
+    addr = _email(email)
+    if not addr:
+        return False
+    try:
+        ensure_contacts_table(engine)
+        with engine.begin() as conn:
+            current = conn.execute(
+                text(f"SELECT state FROM {_CT_TABLE} WHERE email = :e"), {"e": addr}
+            ).fetchone()
+            if current is not None and str(current[0] or "") in ("stopped", "sent") \
+                    and decision.get("state") == "waiting":
+                return False
+            params = {
+                "e": addr,
+                "state": _text(decision.get("state")),
+                "eligible_at": _text(decision.get("eligible_at")),
+                "reason": _text(decision.get("reason")),
+                "blocked": 1 if decision.get("block_email") else 0,
+            }
+            if current is None:
+                conn.execute(text(
+                    f"INSERT INTO {_CT_TABLE} "
+                    f"(email, state, eligible_at, reason, email_blocked) "
+                    f"VALUES (:e, :state, :eligible_at, :reason, :blocked)"), params)
+            else:
+                conn.execute(text(
+                    f"UPDATE {_CT_TABLE} SET state = :state, eligible_at = :eligible_at, "
+                    f"reason = :reason, email_blocked = "
+                    f"CASE WHEN :blocked = 1 THEN 1 ELSE email_blocked END "
+                    f"WHERE email = :e"), params)
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] could not apply queue decision for %s", addr)
+        return False
+
+
+def mark_linkedin_sent(engine, emails: Iterable[str]) -> int:
+    """Close the loop after a HeyReach push, so they leave the queue."""
+    if engine is None:
+        return 0
+    addrs = [_email(e) for e in emails if _email(e)]
+    if not addrs:
+        return 0
+    try:
+        ensure_contacts_table(engine)
+        with engine.begin() as conn:
+            for addr in addrs:
+                conn.execute(text(
+                    f"UPDATE {_CT_TABLE} SET state = 'sent', eligible_at = '' "
+                    f"WHERE email = :e"), {"e": addr})
+        return len(addrs)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] could not mark %s contacts sent", len(addrs))
+        return 0

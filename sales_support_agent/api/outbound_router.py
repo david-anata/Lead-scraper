@@ -490,6 +490,10 @@ _AMAZON_SCAN_CONTROL = """
       real LinkedIn profile go into the campaign. Anyone already sent is skipped against our own
       record, so nobody gets a second request even if the campaign is rebuilt.</p>
       <div class="am-row">
+        <button class="am-btn am-ghost" id="hr-queue" type="button">Who is ready for LinkedIn?</button>
+        <span id="hr-qmsg" style="font-size:14px;font-weight:700"></span>
+      </div>
+      <div class="am-row" style="margin-top:10px">
         <button class="am-btn am-ghost" id="hr-check" type="button">Check connection</button>
         <input type="file" id="hr-file" accept=".csv,text/csv">
         <button class="am-btn am-ghost" id="hr-prev" type="button">Preview</button>
@@ -514,6 +518,21 @@ _AMAZON_SCAN_CONTROL = """
         }
         var hrF=document.getElementById('hr-file'), hrB=document.getElementById('hr-go'),
             hrM=document.getElementById('hr-msg');
+        var hrQ=document.getElementById('hr-queue'), hrQM=document.getElementById('hr-qmsg');
+        if(hrQ) hrQ.addEventListener('click', function(){
+          hrQ.disabled=true; hrQM.textContent='Checking...';
+          fetch('/admin/api/outbound/linkedin-queue')
+            .then(function(r){return r.json();})
+            .then(function(d){
+              var t=d.reason||'';
+              if(d.ready && d.ready.length){
+                t += '  ' + d.ready.map(function(p){return p.name;}).slice(0,6).join(', ');
+                if(d.ready.length>6) t += ' and more';
+              }
+              hrQM.textContent=t; hrQ.disabled=false;
+            })
+            .catch(function(){ hrQM.textContent='Could not reach the server.'; hrQ.disabled=false; });
+        });
         var hrC=document.getElementById('hr-check'), hrP=document.getElementById('hr-prev');
         if(hrC) hrC.addEventListener('click', function(){
           hrC.disabled=true; hrM.textContent='Checking...';
@@ -1456,6 +1475,45 @@ def outbound_amazon_scan_status(request: Request) -> Response:
     return JSONResponse(content=dict(_AMAZON_SCAN))
 
 
+@router.get("/admin/api/outbound/linkedin-queue", response_class=JSONResponse)
+def outbound_linkedin_queue(request: Request) -> JSONResponse:
+    """Who is ready for a LinkedIn touch, and who is deliberately not.
+
+    Read-only. The whole point of this queue is that it decides eligibility and
+    a person decides to send, because a connection request has no undo.
+    """
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_linkedin_queue as q, outbound_memory
+
+    try:
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={"ok": False, "reason": "No database."})
+
+    rows = outbound_memory.load_contacts(engine)
+    stats = q.summarise(rows)
+    due = [r for r in rows if q.is_due(r)]
+    due.sort(key=lambda r: str(r.get("eligible_at") or ""))
+
+    if not rows:
+        reason = "Nobody tracked yet. Upload a Clay export to start."
+    elif stats["due"]:
+        reason = (f"{stats['due']} ready for LinkedIn. "
+                  f"{stats['waiting']} still waiting, {stats['stopped']} stopped after a reply.")
+    else:
+        reason = (f"Nobody ready yet. {stats['waiting']} waiting on the {q.wait_days()}-day gap, "
+                  f"{stats['stopped']} stopped after a reply, "
+                  f"{stats['no_profile']} "
+                  f"{'is' if stats['no_profile'] == 1 else 'are'} email only.")
+
+    return JSONResponse(content={
+        "ok": True, "reason": reason, "wait_days": q.wait_days(), **stats,
+        "ready": [{"name": f"{r['first_name']} {r['last_name']}".strip() or r["email"],
+                   "company": r["company"], "linkedin_url": r["linkedin_url"]}
+                  for r in due[:25]],
+    })
+
+
 @router.get("/admin/api/outbound/heyreach/status", response_class=JSONResponse)
 def outbound_heyreach_status(request: Request) -> JSONResponse:
     """Is HeyReach connected? Asks HeyReach, sends nobody.
@@ -1526,6 +1584,10 @@ async def outbound_push_heyreach(request: Request,
     except Exception:  # noqa: BLE001
         engine = None
 
+    # Remember the people either way. Done on preview too, because the queue
+    # has to know about them before the first email goes out, not after.
+    outbound_memory.record_contacts(engine, hr.contacts_from(rows))
+
     already = outbound_memory.load_heyreach_sent(engine, campaign)
 
     # Preview: work out exactly who would go, contact nobody. The default the
@@ -1544,6 +1606,9 @@ async def outbound_push_heyreach(request: Request,
         rows, api_key=api_key, campaign_id=campaign, already=already,
         record=lambda keys: outbound_memory.record_heyreach_sent(engine, keys, campaign),
     )
+    if result.get("sent"):
+        outbound_memory.mark_linkedin_sent(
+            engine, [c["email"] for c in hr.contacts_from(rows) if c["linkedin_url"]])
     return JSONResponse(status_code=200 if result.get("ok") else 502, content=result)
 
 
