@@ -658,7 +658,7 @@ AMAZON_FACT_COLUMNS = (
 # reads "19 sellers" and counts 14 stops reading. Send words, not counts.
 CLAY_CSV_COLUMNS = (
     "tier", "brand", "domain", "niche", "country", "reason", "recipe", "score",
-    "revenue_usd", "categories",
+    "revenue_usd", "categories", "video_url",
 ) + AMAZON_FACT_COLUMNS
 
 # The CSV header we WRITE for each field. These are named to match the Clay table's

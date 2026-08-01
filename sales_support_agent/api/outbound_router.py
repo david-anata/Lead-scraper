@@ -10,6 +10,7 @@ this router just exposes them. Read-only and dry-run: nothing sends, nothing pus
 from __future__ import annotations
 
 import html
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -1010,6 +1011,11 @@ def outbound_leads(request: Request) -> Response:
 
 
 _LEAK_CSS = """
+  .lk-tape { margin:22px 0 0; padding:16px 18px; border:1px solid var(--border); border-radius:10px; }
+  .lk-tape-lab { font-size:13px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+  .lk-tape-note { font-size:14px; margin:6px 0 12px; max-width:60ch; }
+  .lk-tape-in { flex:1; min-width:260px; padding:9px 11px; font-size:14px;
+                border:1px solid var(--border); border-radius:8px; }
   .lk-meta { display:flex; gap:34px; flex-wrap:wrap; margin:0 0 18px; }
   .lk-m { display:flex; flex-direction:column; gap:3px; }
   .lk-m span { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; font-weight:700; }
@@ -1257,7 +1263,38 @@ def outbound_leak_report(request: Request, domain: str, refresh: int = 0) -> Res
           <a class="lk-btn" href="/admin/outbound/leads" style="background:rgba(43,54,68,.12);color:#2B3644">Back to leads</a>
         </div>
         <textarea class="lk-plain" id="lk-plain" readonly>{html.escape(chr(10).join(plain))}</textarea>
+
+        <div class="lk-tape">
+          <div class="lk-tape-lab">Tape recording for {html.escape(brand)}</div>
+          <p class="lk-tape-note">Record this report in Tape, press Copy share link, and paste it
+          here. It travels out with the brand on every future export, so it is typed once.
+          Send it as the reply when they answer, never in the first email: a link in a cold
+          opener is a deliverability hit, and this one points at anatainc.com.</p>
+          <div class="lk-bar">
+            <input class="lk-tape-in" id="lk-tape" type="url" spellcheck="false"
+                   placeholder="https://tape.anatainc.com/share/..."
+                   value="{html.escape(str(lead.get('video_url') or ''))}">
+            <button class="lk-btn" id="lk-tape-save" type="button">Save link</button>
+            <span id="lk-tape-msg" style="font-size:14px;font-weight:700"></span>
+          </div>
+        </div>
         {_LEAK_COPY_JS}
+        <script>
+          (function(){{
+            var i=document.getElementById('lk-tape'), b=document.getElementById('lk-tape-save'),
+                m=document.getElementById('lk-tape-msg');
+            if(!i||!b) return;
+            b.addEventListener('click', function(){{
+              b.disabled=true; m.textContent='Saving...';
+              fetch('/admin/api/outbound/video-url',{{method:'POST',
+                headers:{{'Content-Type':'application/json'}},
+                body:JSON.stringify({{domain:{json.dumps(wanted)}, url:i.value}})}})
+                .then(function(r){{return r.json();}})
+                .then(function(d){{ m.textContent=d.reason||''; b.disabled=false; }})
+                .catch(function(){{ m.textContent='Could not reach the server.'; b.disabled=false; }});
+            }});
+          }})();
+        </script>
     """
     return HTMLResponse(_shell_page(
         request, active="outbound_leads", title="Leak Report",
@@ -1365,6 +1402,40 @@ async def outbound_amazon_scan(request: Request) -> Response:
 def outbound_amazon_scan_status(request: Request) -> Response:
     """Where the running scan has got to."""
     return JSONResponse(content=dict(_AMAZON_SCAN))
+
+
+@router.post("/admin/api/outbound/video-url", response_class=JSONResponse)
+async def outbound_set_video_url(request: Request) -> JSONResponse:
+    """Attach a Tape share link to one brand, or clear it with an empty value.
+
+    The store rejects any host other than tape.anatainc.com. This is the one
+    field on the whole pipeline where a person types a URL that later goes out
+    inside an email, so it is checked there rather than trusted here.
+    """
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_memory
+
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        payload = {}
+    domain = str((payload or {}).get("domain") or "").strip()
+    url = str((payload or {}).get("url") or "").strip()
+    if not domain:
+        return JSONResponse(status_code=400, content={"ok": False, "reason": "No brand given."})
+
+    try:
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={"ok": False, "reason": "No database."})
+
+    if outbound_memory.set_video_url(engine, domain, url):
+        return JSONResponse(content={"ok": True, "saved": bool(url),
+                                     "reason": "Saved." if url else "Link removed."})
+    return JSONResponse(status_code=400, content={
+        "ok": False,
+        "reason": "Not saved. The link has to be a tape.anatainc.com address, "
+                  "and the brand has to be one we already hold."})
 
 
 @router.post("/admin/api/outbound/run-morning", response_class=JSONResponse)

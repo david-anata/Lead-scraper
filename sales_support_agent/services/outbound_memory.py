@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS {_TABLE} (
     amazon_absent INTEGER,
     amazon_sellers_unknown INTEGER,
     amazon_skipped_reason TEXT,
+    video_url TEXT,
     first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
@@ -61,6 +62,10 @@ _CORE_LEAD_COLS = ("domain", "source", "tier", "signals", "brand", "niche", "cou
 _AMAZON_LEAD_COLS = ("amazon_facts", "amazon_confidence", "amazon_marketplace", "amazon_checked_at",
                      "amazon_absent", "amazon_sellers_unknown", "amazon_skipped_reason")
 _LEAD_COLS = _CORE_LEAD_COLS + _AMAZON_LEAD_COLS
+# Read but never inserted. A Tape link is pasted in by hand long after the lead
+# was sourced, so it belongs to the update path, not the insert one - keeping it
+# out of _LEAD_COLS means record_leads does not have to invent a value for it.
+_SELECT_LEAD_COLS = _LEAD_COLS + ("video_url",)
 
 
 def _insert_lead_sql(cols: tuple[str, ...]) -> str:
@@ -79,7 +84,7 @@ def _select_leads_sql(cols: tuple[str, ...]) -> str:
 
 _INSERT_LEAD_SQL = _insert_lead_sql(_LEAD_COLS)
 _INSERT_LEAD_CORE_SQL = _insert_lead_sql(_CORE_LEAD_COLS)
-_SELECT_LEADS_SQL = _select_leads_sql(_LEAD_COLS)
+_SELECT_LEADS_SQL = _select_leads_sql(_SELECT_LEAD_COLS)
 _SELECT_LEADS_CORE_SQL = _select_leads_sql(_CORE_LEAD_COLS)
 # Best-effort upgrade for tables created before tier/signals existed. SQLite and
 # Postgres both accept ADD COLUMN; we swallow the "already exists" error.
@@ -102,6 +107,7 @@ _ALTERS = (
     f"ALTER TABLE {_TABLE} ADD COLUMN amazon_absent INTEGER",
     f"ALTER TABLE {_TABLE} ADD COLUMN amazon_sellers_unknown INTEGER",
     f"ALTER TABLE {_TABLE} ADD COLUMN amazon_skipped_reason TEXT",
+    f"ALTER TABLE {_TABLE} ADD COLUMN video_url TEXT",
 )
 
 
@@ -381,7 +387,7 @@ def _read_leads(engine) -> tuple[list[Any], tuple[str, ...]]:
     """Rows plus the column names they carry, narrowing on an older table."""
     try:
         with engine.connect() as conn:
-            return conn.execute(text(_SELECT_LEADS_SQL)).fetchall(), _LEAD_COLS
+            return conn.execute(text(_SELECT_LEADS_SQL)).fetchall(), _SELECT_LEAD_COLS
     except Exception:  # noqa: BLE001, table predates the Amazon columns
         with engine.connect() as conn:
             return conn.execute(text(_SELECT_LEADS_CORE_SQL)).fetchall(), _CORE_LEAD_COLS
@@ -465,6 +471,7 @@ def load_leads(engine, limit: int = 500) -> list[dict[str, Any]]:
             d["amazon_absent"] = bool(_flag(d.get("amazon_absent")))
             d["amazon_sellers_unknown"] = _whole(d.get("amazon_sellers_unknown"))
             d["amazon_skipped_reason"] = _text(d.get("amazon_skipped_reason"))
+            d["video_url"] = _text(d.get("video_url"))
             # Flatten the facts blob back onto the lead so leads_to_csv finds the
             # amz_* columns exactly where a freshly built lead would have them.
             try:
@@ -583,3 +590,33 @@ def load_pushed(engine) -> list[dict[str, Any]]:
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-memory] load_pushed failed; returning empty")
         return []
+
+
+def set_video_url(engine, domain: str, url: str) -> bool:
+    """Attach a Tape recording to a brand we already hold.
+
+    Stored against the brand rather than pasted into Clay, so the link survives
+    a re-import and rides out on every future export instead of being retyped.
+    An empty url clears it, which is how a bad link gets taken back out.
+    """
+    if engine is None:
+        return False
+    key = _norm(domain)
+    if not key:
+        return False
+    link = _text(url)
+    # Only our own recordings. A pasted link is the one place someone could put
+    # an arbitrary URL into an email we send, so the host is checked, not trusted.
+    if link and not link.lower().startswith(("https://tape.anatainc.com/", "http://tape.anatainc.com/")):
+        return False
+    try:
+        ensure_table(engine)
+        with engine.begin() as conn:
+            result = conn.execute(
+                text(f"UPDATE {_TABLE} SET video_url = :v WHERE domain = :d"),
+                {"v": link, "d": key},
+            )
+            return bool(getattr(result, "rowcount", 0))
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] could not set video_url for %s", key)
+        return False
