@@ -32,6 +32,7 @@ from sales_support_agent.services.website_ops_autonomy import (
 from sales_support_agent.services.website_ops_content import clean_generated_content
 from sales_support_agent.services.website_ops_article_engine import build_article_action
 from sales_support_agent.services.website_ops import (
+    _execute_record,
     discover_website_ops_urls,
     execute_approved_website_ops_actions,
     get_website_ops_run_state,
@@ -82,6 +83,37 @@ from sales_support_agent.services.website_ops_program import (
 
 
 class AdminWebsiteOpsTests(unittest.TestCase):
+    def test_autonomous_execution_error_is_recorded_and_rethrown_for_retry(self) -> None:
+        settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))
+        record = {
+            "feedback_id": "article-retry",
+            "status": "approved",
+            "action_type": "publish_blog_article",
+            "suggested_action_type": "publish_blog_article",
+            "execution_eligibility": "auto_execute",
+            "action_value": json.dumps({"evidenceId": "retry-topic"}),
+        }
+        with (
+            mock.patch(
+                "sales_support_agent.services.website_ops._execute_feedback_action",
+                side_effect=website_ops.ExecutionError("production verification failed"),
+            ),
+            mock.patch(
+                "sales_support_agent.services.website_ops._release_failed_article_claim",
+            ) as release,
+            mock.patch.object(website_ops, "update_feedback_entry") as update,
+            self.assertRaises(website_ops.ExecutionError),
+        ):
+            _execute_record(
+                settings,
+                SimpleNamespace(),
+                record,
+                raise_on_error=True,
+            )
+
+        release.assert_called_once_with(settings, record)
+        self.assertEqual(update.call_args.args[1]["status"], "error")
+
     def test_google_credential_loader_accepts_render_multiline_object_format(self) -> None:
         payload = _load_service_account_info(
             """{

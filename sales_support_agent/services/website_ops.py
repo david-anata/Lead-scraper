@@ -1324,6 +1324,7 @@ def _execute_record(
     record: Mapping[str, Any],
     *,
     require_auto_executable: bool = True,
+    raise_on_error: bool = False,
 ) -> dict[str, Any] | None:
     if record.get("status") != "approved" or not record.get("action_type"):
         return None
@@ -1343,6 +1344,8 @@ def _execute_record(
                 "last_execution_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+        if raise_on_error:
+            raise
         return None
     website_ops.update_feedback_entry(
         record,
@@ -1412,7 +1415,12 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         ]
         bounded_approved, _ = select_bounded_actions(approved_candidates)
         for record in bounded_approved:
-            result = _execute_record(settings, config, record)
+            result = _execute_record(
+                settings,
+                config,
+                record,
+                raise_on_error=True,
+            )
             if result:
                 executed_actions.append(result)
         feedback_entries = load_feedback_records(settings)
@@ -1502,7 +1510,7 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
                 continue
             if feedback_id not in bounded_feedback_ids:
                 continue
-            if record.get("status") == "new" and _record_is_auto_executable(record):
+            if record.get("status") in {"new", "error"} and _record_is_auto_executable(record):
                 record = website_ops.update_feedback_entry(
                     record,
                     {
@@ -1513,7 +1521,13 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
                         "review_notes": "Auto-approved by Website Ops: high-confidence deterministic action.",
                     },
                 )
-                result = _execute_record(settings, config, record)
+            if record.get("status") == "approved" and _record_is_auto_executable(record):
+                result = _execute_record(
+                    settings,
+                    config,
+                    record,
+                    raise_on_error=True,
+                )
                 if result:
                     executed_actions.append(result)
         if executed_actions:
