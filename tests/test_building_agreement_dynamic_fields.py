@@ -23,7 +23,7 @@ DOCUMENT = (
     / "docs"
     / "building"
     / "agreements"
-    / "arena-event-agreement-business-terms-v1.md"
+    / "arena-event-agreement-business-terms-v2.md"
 )
 TOKEN_RE = re.compile(r"\{\{\s*([a-z0-9_]+)\s*\}\}")
 

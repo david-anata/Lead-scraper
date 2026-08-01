@@ -87,16 +87,16 @@ TEMPLATE_TRANSITIONS = {
 }
 #: Event merge fields, kept as one source of truth with the template editor.
 ALLOWED_MERGE_FIELDS = set(EVENT_MERGE_FIELDS)
-ARENA_REVIEW_TEMPLATE_ID = "arena-event-agreement-business-terms-v1"
+ARENA_REVIEW_TEMPLATE_ID = "arena-event-agreement-business-terms-v2"
 ARENA_REVIEW_TEMPLATE_KEY = "arena-event-agreement"
-ARENA_REVIEW_TEMPLATE_VERSION = 1
+ARENA_REVIEW_TEMPLATE_VERSION = 2
 ARENA_REVIEW_TEMPLATE_NAME = "Arena event agreement business terms"
 ARENA_REVIEW_DOCUMENT = (
     Path(__file__).resolve().parents[2]
     / "docs"
     / "building"
     / "agreements"
-    / "arena-event-agreement-business-terms-v1.md"
+    / "arena-event-agreement-business-terms-v2.md"
 )
 ARENA_REVIEW_MERGE_FIELDS = [
     "customer_name",
@@ -899,7 +899,7 @@ def download_arena_review_package(
         media_type="text/markdown; charset=utf-8",
         headers={
             "Content-Disposition": (
-                'attachment; filename="anata-arena-agreement-business-terms-v1.md"'
+                'attachment; filename="anata-arena-agreement-business-terms-v2.md"'
             ),
             "X-Content-SHA256": checksum,
             "Cache-Control": "private, no-store",
