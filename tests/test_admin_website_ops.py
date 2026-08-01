@@ -2171,6 +2171,35 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
             "Approved editorial backlog and one-page-one-intent map",
         )
 
+    def test_article_engine_regenerates_contract_failure_before_queueing(self) -> None:
+        valid = json.loads(str(self._generated_article_record()["action_value"]))
+        invalid = json.loads(json.dumps(valid))
+        invalid["content"]["sections"][0]["paragraphs"][0] += (
+            " Walmart marketplace fees require separate planning."
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch(
+            "sales_support_agent.services.website_ops_github.github_metadata_is_configured",
+            return_value=False,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_article_engine._request_article",
+            side_effect=[invalid, valid],
+        ) as request:
+            action = build_article_action(
+                settings=SimpleNamespace(website_ops_root=Path(tmpdir)),
+                query_intelligence={"clusters": []},
+            )
+
+        self.assertIsNotNone(action)
+        self.assertEqual(request.call_count, 2)
+        self.assertIn(
+            "failed the publication contract",
+            request.call_args_list[1].kwargs["prompt"],
+        )
+        self.assertIn(
+            "Walmart without an official walmart.com source",
+            request.call_args_list[1].kwargs["prompt"],
+        )
+
     def test_github_metadata_validation_requires_reason_evidence_and_safe_lengths(self) -> None:
         record = {
             "action_type": "meta_update",
