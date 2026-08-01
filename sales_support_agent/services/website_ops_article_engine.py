@@ -738,20 +738,59 @@ block. Do not pad the article to reach the word count.
     if article is None:
         assert last_json_error is not None
         raise last_json_error
+    def normalize_generated_article(candidate: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = dict(candidate)
+        slug_value = _clean(normalized.get("slug"))
+        content_value = dict(normalized.get("content") or {})
+        normalized["primaryIntent"] = _clean(cluster.get("normalized_query"))
+        normalized["evidenceId"] = _clean(cluster.get("cluster_id"))
+        normalized["generatedAt"] = publication_timestamp
+        normalized["publishedAt"] = publication_timestamp
+        normalized["modifiedAt"] = publication_timestamp
+        normalized["author"] = {
+            "type": "Organization",
+            "name": "Anata Inc.",
+            "url": "https://anatainc.com",
+        }
+        content_value["route"] = f"/blog/{slug_value}"
+        normalized["content"] = content_value
+        return normalized
+
+    article = normalize_generated_article(article)
+    if requester is None:
+        from sales_support_agent.services.website_ops_github import (
+            validate_generated_article,
+        )
+        from sales_support_agent.services.website_ops_vendor import ExecutionError
+
+        for validation_attempt in range(3):
+            try:
+                validate_generated_article(
+                    {
+                        "action_value": json.dumps(article, ensure_ascii=False),
+                        "confidence": "high",
+                        "reason": "Validated service-aligned informational content opportunity.",
+                        "evidence": [
+                            f"Approved or validated cluster: {_clean(cluster.get('cluster_id'))}.",
+                            f"Selected service pillar: {pillar}.",
+                        ],
+                    }
+                )
+                break
+            except ExecutionError as exc:
+                if validation_attempt >= 2:
+                    raise
+                repair_prompt = (
+                    prompt
+                    + "\nThe previous draft failed the publication contract for this exact reason: "
+                    + str(exc)
+                    + " Regenerate the complete article from scratch, correct that failure, "
+                    "and return one valid JSON object only."
+                )
+                article = normalize_generated_article(
+                    dict(article_requester(settings=settings, prompt=repair_prompt))
+                )
     slug = _clean(article.get("slug"))
-    content = dict(article.get("content") or {})
-    article["primaryIntent"] = _clean(cluster.get("normalized_query"))
-    article["evidenceId"] = _clean(cluster.get("cluster_id"))
-    article["generatedAt"] = publication_timestamp
-    article["publishedAt"] = publication_timestamp
-    article["modifiedAt"] = publication_timestamp
-    article["author"] = {
-        "type": "Organization",
-        "name": "Anata Inc.",
-        "url": "https://anatainc.com",
-    }
-    content["route"] = f"/blog/{slug}"
-    article["content"] = content
     if not _claim_daily_article_slot(
         settings,
         _clean(cluster.get("cluster_id")),
