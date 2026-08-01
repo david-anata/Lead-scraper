@@ -39,6 +39,7 @@ class ResendClient:
         reply_to: str = "",
         idempotency_key: str = "",
         from_address: str = "",
+        cc=None,
     ) -> str:
         """Send a plain-text email. Raises on transport/HTTP error so the caller
         (notify.py) can log and fall through to the next sender."""
@@ -51,6 +52,19 @@ class ResendClient:
         }
         if reply_to:
             payload["reply_to"] = reply_to
+        # Copies are dropped when they duplicate a recipient, so nobody gets the
+        # same message twice and no address is silently added twice.
+        if cc:
+            wanted = [cc] if isinstance(cc, str) else list(cc)
+            seen = {address.strip().lower() for address in recipients}
+            copies = []
+            for address in wanted:
+                cleaned = str(address or "").strip()
+                if cleaned and cleaned.lower() not in seen:
+                    copies.append(cleaned)
+                    seen.add(cleaned.lower())
+            if copies:
+                payload["cc"] = copies
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
