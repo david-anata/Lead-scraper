@@ -1536,9 +1536,18 @@ def render_building_page(
     .badge--ok{{background:#e4f4f1;color:#11665f;}} .badge--warn{{background:#fff0d2;color:#845407;}} .badge--bad{{background:#fff0ed;color:#8b2f23;}} .badge--muted{{background:#edf0f2;color:#56616d;}}
     .empty{{padding:18px 0;color:rgba(43,54,68,.62);line-height:1.55;}}
     .form-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding:20px 22px;}} .field{{display:grid;gap:6px;}} .field--wide{{grid-column:1/-1;}}
-    .field-help{{color:var(--agent-ink-muted,#667);font-size:12px;line-height:1.45;}}
+    .field-help{{color:var(--agent-ink-muted,#5d6977);font-size:12px;line-height:1.45;}}
     details.advanced-disclosure>summary{{cursor:pointer;font-weight:600;font-size:13px;padding:6px 0;}}
     details.advanced-disclosure .form-grid{{padding:12px 0 0;}}
+    .req{{color:#9a5a4e;font-weight:700;}}
+    /* display:block, because .field is a grid and would put the asterisk on its own row. */
+    .form-legend{{display:block;margin:0;color:var(--agent-ink-muted,#5d6977);font-size:12px;}}
+    /* A dollar sign inside the box, so nobody has to read the hint to know the unit. */
+    .money-input{{position:relative;display:block;}}
+    .money-input__symbol{{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--agent-ink-muted,#5d6977);pointer-events:none;}}
+    .money-input>input{{width:100%;padding-left:26px;}}
+    /* Conditional fields start visible so the form still works without JavaScript. */
+    .field[hidden]{{display:none;}}
     label{{font-size:12px;font-weight:700;color:rgba(43,54,68,.72);}} input,select,textarea{{box-sizing:border-box;width:100%;min-height:42px;border:1px solid rgba(43,54,68,.22);border-radius:8px;background:#fff;padding:10px 11px;color:var(--ink);font:inherit;}} textarea{{min-height:92px;resize:vertical;}} input:focus,select:focus,textarea:focus{{outline:3px solid rgba(133,187,218,.34);border-color:#397a9d;}}
     .check{{display:flex;align-items:center;gap:9px;font-size:13px;}} .check input{{width:18px;min-height:18px;}} .check-stack{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;padding:11px;border:1px solid rgba(43,54,68,.14);border-radius:8px;}} .form-actions{{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid var(--border);padding-top:16px;}} .form-note{{font-size:12px;color:rgba(43,54,68,.62);line-height:1.45;}} .primary,.secondary{{min-height:42px;border:0;border-radius:8px;background:var(--ink);color:#fff;padding:0 17px;font-weight:700;cursor:pointer;}} .primary:hover{{background:#17222d;}} .secondary{{border:1px solid var(--border);background:#fff;color:var(--ink);}} .secondary--small{{min-height:34px;padding:0 11px;font-size:12px;white-space:nowrap;}} .action-stack{{display:grid;gap:7px;min-width:210px;}} .inline-send{{display:flex;gap:6px;align-items:center;}} .inline-send input{{min-height:34px;padding:7px 8px;font-size:12px;}}
     .row-actions{{min-width:220px;}} .row-actions summary{{cursor:pointer;font-weight:700;color:#397a9d;}} .row-actions form{{display:grid;gap:7px;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:9px;background:#f8f8f6;}} .row-actions label{{display:grid;gap:4px;}} .row-actions input,.row-actions select{{min-height:34px;padding:7px 8px;font-size:12px;}}
@@ -1740,21 +1749,22 @@ def render_building_page(
           <summary>Open manual rate-plan editor</summary>
         <form class="form-grid" method="post" action="/admin/building/rate-plans">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <div class="field"><label for="rate-offering">What are you pricing?</label><select id="rate-offering" name="offering_id" required><option value="">Choose one</option>{offering_options}</select></div>
-          <div class="field"><label for="rate-name">Name this price list</label><input id="rate-name" name="name" required placeholder="Arena standard"><small class="field-help">Only your team sees this.</small></div>
-          <div class="field"><label for="rate-amount">Price</label><input id="rate-amount" name="unit_amount" inputmode="decimal" placeholder="175.00" required><small class="field-help">In dollars. Type 175 for $175, not 17500.</small></div>
-          <div class="field"><label for="rate-unit">Charged per</label><select id="rate-unit" name="booking_unit"><option value="hour">Hour</option><option value="day">Day</option><option value="month">Month</option><option value="event">Event</option><option value="term">Term</option><option value="custom">Something else</option></select><small class="field-help">Conference rooms are hourly, offices monthly, The Arena per event.</small></div>
-          <div class="field"><label for="rate-minimum">Smallest booking you will take</label><input id="rate-minimum" name="minimum_units" type="number" min="1" value="1"><small class="field-help">In the unit above. The Arena is 6, meaning a six hour minimum.</small></div>
-          <div class="field"><label for="rate-public-price">What customers see</label><input id="rate-public-price" name="public_price_display" placeholder="From $1,050 per event"><small class="field-help">Your words, shown on the website.</small></div>
+          <p class="field field--wide form-legend" id="rate-required-note">Fields marked <span class="req">*</span> are needed before you can save.</p>
+          <div class="field"><label for="rate-offering">What are you pricing? <span class="req" aria-hidden="true">*</span></label><select id="rate-offering" name="offering_id" required><option value="">Choose one</option>{offering_options}</select></div>
+          <div class="field"><label for="rate-name">Name this price list <span class="req" aria-hidden="true">*</span></label><input id="rate-name" name="name" required placeholder="Arena standard" aria-describedby="rate-name-help"><small class="field-help" id="rate-name-help">Only your team sees this.</small></div>
+          <div class="field"><label for="rate-amount">Price <span class="req" aria-hidden="true">*</span></label><div class="money-input"><span class="money-input__symbol" aria-hidden="true">$</span><input id="rate-amount" name="unit_amount" inputmode="decimal" placeholder="175.00" required aria-describedby="rate-amount-help"></div><small class="field-help" id="rate-amount-help">In dollars. Type 175 for $175, not 17500.</small></div>
+          <div class="field"><label for="rate-unit">Charged per</label><select id="rate-unit" name="booking_unit" aria-describedby="rate-unit-help"><option value="hour">Hour</option><option value="day">Day</option><option value="month">Month</option><option value="event">Event</option><option value="term">Term</option><option value="custom">Something else</option></select><small class="field-help" id="rate-unit-help">Conference rooms are hourly, offices monthly, The Arena per event.</small></div>
+          <div class="field"><label for="rate-minimum">Smallest booking you will take</label><input id="rate-minimum" name="minimum_units" type="number" min="1" value="1" aria-describedby="rate-minimum-help"><small class="field-help" id="rate-minimum-help">In the unit above. The Arena is 6, meaning a six hour minimum.</small></div>
+          <div class="field"><label for="rate-public-price">What customers see</label><input id="rate-public-price" name="public_price_display" placeholder="From $1,050 per event" aria-describedby="rate-public-price-help"><small class="field-help" id="rate-public-price-help">Your words, shown on the website.</small></div>
           <div class="field"><label for="rate-deposit-type">Do you take a deposit?</label><select id="rate-deposit-type" name="deposit_type"><option value="none">No deposit</option><option value="percent">Yes, a percentage</option><option value="fixed">Yes, a set amount</option></select></div>
-          <div class="field"><label for="rate-deposit-percent">Deposit percentage</label><input id="rate-deposit-percent" name="deposit_percent" type="number" min="0" max="100" step="0.01" value="0"><small class="field-help">The Arena is 50. Leave at 0 if you chose a set amount.</small></div>
-          <div class="field"><label for="rate-deposit-amount">Deposit amount</label><input id="rate-deposit-amount" name="deposit_amount" inputmode="decimal" placeholder="0.00"><small class="field-help">In dollars. Leave blank if you chose a percentage.</small></div>
-          <div class="field"><label for="rate-tax-status">Tax</label><select id="rate-tax-status" name="tax_status"><option value="review_required">Decide later, per quote</option><option value="non_taxable">Not taxable</option><option value="taxable">Taxable</option></select><small class="field-help">Discounts stay switched off until this is decided.</small></div>
-          <div class="field"><label for="rate-tax-percent">Tax rate</label><input id="rate-tax-percent" name="tax_rate_percent" type="number" min="0" max="100" step="0.01" value="0"><small class="field-help">A percentage. Leave at 0 unless you chose taxable.</small></div>
-          <div class="field"><label for="rate-from">Prices start</label><input id="rate-from" name="effective_from" type="date" required></div>
-          <div class="field"><label for="rate-until">Prices end</label><input id="rate-until" name="effective_until" type="date"><small class="field-help">Leave blank to run until you replace it.</small></div>
-          <div class="field field--wide"><label for="rate-included">What is included</label><textarea id="rate-included" name="included" rows="4" placeholder="Tables and chairs&#10;Built-in stage&#10;Guest wifi"></textarea><small class="field-help">One per line.</small></div>
-          <div class="field field--wide"><label for="rate-addons">Paid extras</label><textarea id="rate-addons" name="addons" rows="4" placeholder="Setup and reset&#10;A/V technician&#10;Extra event staff"></textarea><small class="field-help">One per line.</small></div>
+          <div class="field" data-show-when-deposit="percent"><label for="rate-deposit-percent">Deposit percentage</label><input id="rate-deposit-percent" name="deposit_percent" type="number" min="0" max="100" step="0.01" value="0" aria-describedby="rate-deposit-percent-help"><small class="field-help" id="rate-deposit-percent-help">The Arena is 50, meaning half up front.</small></div>
+          <div class="field" data-show-when-deposit="fixed"><label for="rate-deposit-amount">Deposit amount</label><div class="money-input"><span class="money-input__symbol" aria-hidden="true">$</span><input id="rate-deposit-amount" name="deposit_amount" inputmode="decimal" placeholder="0.00" aria-describedby="rate-deposit-amount-help"></div><small class="field-help" id="rate-deposit-amount-help">In dollars.</small></div>
+          <div class="field"><label for="rate-tax-status">Tax</label><select id="rate-tax-status" name="tax_status" aria-describedby="rate-tax-status-help"><option value="review_required">Decide later, per quote</option><option value="non_taxable">Not taxable</option><option value="taxable">Taxable</option></select><small class="field-help" id="rate-tax-status-help">Discounts stay switched off until this is decided.</small></div>
+          <div class="field" data-show-when-tax="taxable"><label for="rate-tax-percent">Tax rate</label><input id="rate-tax-percent" name="tax_rate_percent" type="number" min="0" max="100" step="0.01" value="0" aria-describedby="rate-tax-percent-help"><small class="field-help" id="rate-tax-percent-help">A percentage, for example 7.25.</small></div>
+          <div class="field"><label for="rate-from">Prices start <span class="req" aria-hidden="true">*</span></label><input id="rate-from" name="effective_from" type="date" required></div>
+          <div class="field"><label for="rate-until">Prices end</label><input id="rate-until" name="effective_until" type="date" aria-describedby="rate-until-help"><small class="field-help" id="rate-until-help">Leave blank to run until you replace it.</small></div>
+          <div class="field field--wide"><label for="rate-included">What is included</label><textarea id="rate-included" name="included" rows="4" placeholder="Tables and chairs&#10;Built-in stage&#10;Guest wifi" aria-describedby="rate-included-help"></textarea><small class="field-help" id="rate-included-help">One per line.</small></div>
+          <div class="field field--wide"><label for="rate-addons">Paid extras</label><textarea id="rate-addons" name="addons" rows="4" placeholder="Setup and reset&#10;A/V technician&#10;Extra event staff" aria-describedby="rate-addons-help"></textarea><small class="field-help" id="rate-addons-help">One per line.</small></div>
           <details class="field field--wide advanced-disclosure">
             <summary>Technical settings (set for you; open only if you need to change them)</summary>
             <div class="form-grid">
@@ -1764,6 +1774,27 @@ def render_building_page(
               <div class="field"><label for="rate-currency">Currency</label><input id="rate-currency" name="currency" value="USD" maxlength="3" required></div>
             </div>
           </details>
+          <script>
+            (() => {{
+              // Progressive enhancement only. Without this the fields all show,
+              // which is the behaviour that shipped, so nothing depends on it.
+              const deposit = document.getElementById("rate-deposit-type");
+              const tax = document.getElementById("rate-tax-status");
+              const sync = () => {{
+                document.querySelectorAll("[data-show-when-deposit]").forEach((field) => {{
+                  field.hidden = field.dataset.showWhenDeposit !== deposit.value;
+                }});
+                document.querySelectorAll("[data-show-when-tax]").forEach((field) => {{
+                  field.hidden = field.dataset.showWhenTax !== tax.value;
+                }});
+              }};
+              if (deposit && tax) {{
+                deposit.addEventListener("change", sync);
+                tax.addEventListener("change", sync);
+                sync();
+              }}
+            }})();
+          </script>
           <div class="field field--wide"><label for="rate-cancellation">Cancellation policy</label><textarea id="rate-cancellation" name="cancellation_policy" placeholder="Required before approval."></textarea></div>
           <div class="field field--wide"><label for="rate-tax-note">Customer tax note</label><textarea id="rate-tax-note" name="tax_note" placeholder="State whether tax is included, calculated, or pending review. Required before approval."></textarea></div>
           <div class="form-actions"><span class="form-note">Submit for review here. A pricing approver must separately provide evidence and type the approval phrase before the plan becomes public.</span><button class="primary" type="submit">Save rate plan</button></div>
