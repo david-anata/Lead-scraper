@@ -2338,7 +2338,8 @@ input:focus, select:focus, textarea:focus {
   .trim-table td:nth-child(5) { grid-column: 1 / -1; padding-top: 6px; }
   .trim-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .trim-choice { min-height: 38px; }
-  .trim-savebar { bottom: 8px; display: grid; }
+  .trim-workspace [data-trim-batch-form] { padding-bottom: 108px; }
+  .trim-savebar { position: fixed; left: 12px; right: 12px; bottom: 8px; display: grid; margin: 0; }
   .trim-savebar .btn { width: 100%; }
   .budget-saving-action { grid-column: auto; }
   .money-account-actions { display: grid; width: 100%; }
