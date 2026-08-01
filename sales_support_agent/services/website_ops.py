@@ -1482,7 +1482,7 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
     visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
     executed_actions: list[dict[str, Any]] = []
     if settings.website_ops_execute_approved and has_baseline:
-        approved_candidates = [
+        resumable_candidates = [
             {
                 **dict(record),
                 "action_type": str(
@@ -1491,15 +1491,54 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
                 ),
             }
             for record in visible_feedback_entries
-            if str(record.get("status", "")).strip().lower() == "approved"
+            if str(record.get("status", "")).strip().lower()
+            in {"new", "approved", "error"}
+            and _record_is_auto_executable(record)
         ]
-        bounded_approved, _ = select_bounded_actions(approved_candidates)
-        for record in bounded_approved:
+        bounded_resumable, _ = select_bounded_actions(resumable_candidates)
+        current_records = {
+            str(record.get("feedback_id", "")): record
+            for record in visible_feedback_entries
+        }
+        approval_checkpoint_needed = False
+        for candidate in bounded_resumable:
+            feedback_id = str(candidate.get("feedback_id", "")).strip()
+            record = current_records.get(feedback_id)
+            if not record:
+                continue
+            if str(record.get("status", "")).strip().lower() in {"new", "error"}:
+                record = website_ops.update_feedback_entry(
+                    record,
+                    {
+                        "status": "approved",
+                        "action_type": str(
+                            record.get("suggested_action_type", "")
+                        ).strip(),
+                        "action_value": str(
+                            record.get("suggested_action_value", "")
+                        ).strip(),
+                        "execution_error": "",
+                        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                        "review_notes": (
+                            "Auto-approved by Website Ops recovery: durable "
+                            "high-confidence action resumed before fresh analysis."
+                        ),
+                    },
+                )
+                current_records[feedback_id] = record
+                approval_checkpoint_needed = True
+        if approval_checkpoint_needed:
+            _checkpoint_website_ops_cache(settings)
+        for candidate in bounded_resumable:
+            feedback_id = str(candidate.get("feedback_id", "")).strip()
+            record = current_records.get(feedback_id)
+            if not record:
+                continue
             result = _execute_record(
                 settings,
                 config,
                 record,
-                raise_on_error=True,
+                raise_on_error=False,
             )
             if result:
                 executed_actions.append(result)
