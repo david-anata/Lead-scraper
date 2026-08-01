@@ -771,6 +771,7 @@ example
             settings = SimpleNamespace(website_ops_root=root)
             local_now = datetime(2026, 8, 1, 12, 7, tzinfo=timezone.utc)
             engine = object()
+            transaction = mock.MagicMock()
 
             def run_due_modes(*args, **kwargs):
                 (root / "state.json").write_text(
@@ -789,11 +790,9 @@ example
                     return_value=True,
                 ),
                 mock.patch(
-                    "sales_support_agent.api.website_ops_jobs_router.restore_website_ops_root",
-                ) as restore,
-                mock.patch(
-                    "sales_support_agent.api.website_ops_jobs_router.snapshot_website_ops_root",
-                ) as snapshot,
+                    "sales_support_agent.api.website_ops_jobs_router.website_ops_cache_transaction",
+                    return_value=transaction,
+                ) as cache_transaction,
                 mock.patch(
                     "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
                     return_value={"last_pulse_slot": "2026-08-01:11"},
@@ -813,8 +812,9 @@ example
                 result = _run_embedded_pulse(settings, local_now)
 
             self.assertEqual(result["status"], "succeeded")
-            restore.assert_called_once_with(engine, root)
-            snapshot.assert_called_once_with(engine, root)
+            cache_transaction.assert_called_once_with(engine, root)
+            transaction.__enter__.assert_called_once()
+            transaction.__exit__.assert_called_once()
             self.assertTrue((root / "state.json").exists())
 
     def test_operating_state_uses_latest_live_evidence_not_secret_presence(self) -> None:
