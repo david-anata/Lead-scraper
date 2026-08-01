@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -60,6 +61,7 @@ from sales_support_agent.services.website_ops_vendor.executor import (
     resolve_insertion_point,
 )
 from sales_support_agent.api.website_ops_jobs_router import (
+    _daily_run_is_fresh,
     _run_embedded_pulse,
     _scheduled_modes,
     router as website_ops_jobs_router,
@@ -639,7 +641,8 @@ example
                 {
                     "status": "succeeded",
                     "trigger": "render_cron",
-                    "last_successful_date": "2026-07-27",
+                    "run_date": datetime.now(ZoneInfo("America/Denver")).date().isoformat(),
+                    "last_successful_date": datetime.now(ZoneInfo("America/Denver")).date().isoformat(),
                 },
             )
             report_dir = Path(tmpdir) / "reports" / "daily"
@@ -697,6 +700,28 @@ example
             self.assertNotIn("last_error", payload["runs"]["daily"])
             self.assertEqual(payload["states"]["decision_data"], "ready")
             self.assertEqual(payload["user_todo"], [])
+
+    def test_daily_run_freshness_blocks_stale_state_after_first_pulse(self) -> None:
+        stale = {
+            "runs": {
+                "daily": {
+                    "run_date": "2026-07-31",
+                    "status": "succeeded",
+                }
+            }
+        }
+        self.assertFalse(
+            _daily_run_is_fresh(
+                stale,
+                datetime(2026, 8, 1, 11, 0, tzinfo=timezone.utc),
+            )
+        )
+        self.assertTrue(
+            _daily_run_is_fresh(
+                stale,
+                datetime(2026, 8, 1, 7, 59, tzinfo=timezone.utc),
+            )
+        )
 
     def test_embedded_scheduler_catches_up_current_hour_once(self) -> None:
         settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))

@@ -48,6 +48,18 @@ def _pulse_slot(local_now: datetime) -> str:
     return f"{local_now.date().isoformat()}:{local_now.hour:02d}"
 
 
+def _daily_run_is_fresh(state: dict[str, Any], local_now: datetime) -> bool:
+    """Require a durable current-day run once the first pulse is due."""
+
+    if local_now.hour < WEBSITE_OPS_PULSE_HOURS[0]:
+        return True
+    daily = dict((state.get("runs") or {}).get("daily") or {})
+    return (
+        str(daily.get("run_date", "")) == local_now.date().isoformat()
+        and str(daily.get("status", "")) in {"running", "succeeded"}
+    )
+
+
 def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
     """Run one missed hourly slot with the same durable lease as Render cron."""
 
@@ -351,6 +363,8 @@ def website_ops_runtime_health(request: Request) -> dict:
     )
     query_intelligence = load_query_intelligence(settings)
     state = load_website_ops_run_state(settings)
+    local_now = datetime.now(ZoneInfo("America/Denver"))
+    checks["daily_run_fresh"] = _daily_run_is_fresh(state, local_now)
     sanitized_runs = {
         mode: {
             key: str(value or "")
@@ -405,6 +419,14 @@ def website_ops_runtime_health(request: Request) -> dict:
             []
             if checks["citation_testing"]
             else ["Citation testing needs OPENAI_API_KEY or ANTHROPIC_API_KEY."]
+        )
+        + (
+            []
+            if checks["daily_run_fresh"]
+            else [
+                "The embedded scheduler has not persisted a successful Website Ops run "
+                f"for {local_now.date().isoformat()}."
+            ]
         ),
         "schedule": {
             "timezone": "America/Denver",
