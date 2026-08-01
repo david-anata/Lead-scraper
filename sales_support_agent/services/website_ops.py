@@ -20,6 +20,7 @@ from sales_support_agent.config import Settings
 from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.services.admin_nav import render_agent_favicon_links, render_agent_nav, render_agent_nav_styles
 from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
+from sales_support_agent.services.website_ops_article_engine import release_daily_article_slot
 from sales_support_agent.services.website_ops_candidates import (
     build_candidates,
     candidate_summary,
@@ -1235,6 +1236,22 @@ def _execute_feedback_action(
     return website_ops.execute_feedback_action(record, config=config)
 
 
+def _release_failed_article_claim(settings: Settings, record: Mapping[str, Any]) -> None:
+    action_type = str(
+        record.get("action_type", "") or record.get("suggested_action_type", "")
+    ).strip()
+    if action_type != "publish_blog_article":
+        return
+    try:
+        article = json.loads(
+            str(record.get("action_value", "") or record.get("suggested_action_value", ""))
+        )
+    except (TypeError, json.JSONDecodeError):
+        return
+    if isinstance(article, Mapping):
+        release_daily_article_slot(settings, str(article.get("evidenceId", "")))
+
+
 def _autofill_review_updates(existing: Mapping[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     updates = dict(payload)
     status = _feedback_status(str(updates.get("status", "")))
@@ -1317,6 +1334,7 @@ def _execute_record(
     try:
         result = _execute_feedback_action(settings, record, config=config)
     except website_ops.ExecutionError as exc:
+        _release_failed_article_claim(settings, record)
         website_ops.update_feedback_entry(
             record,
             {
