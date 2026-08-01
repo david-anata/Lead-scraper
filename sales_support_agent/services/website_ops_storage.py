@@ -155,10 +155,14 @@ def synchronize_website_ops_cache(settings: Any, engine: Any) -> dict[str, int]:
 
 @contextmanager
 def website_ops_cache_transaction(engine: Any, root: Path):
-    """Own a cache hydration/write/snapshot cycle without request clobbering."""
+    """Own a cache write/snapshot cycle without request clobbering.
+
+    Startup performs the one authoritative hydration. Production intentionally
+    runs a single Website Ops writer, so request-time hydration can only replace
+    newer in-process work with an older database snapshot.
+    """
 
     with _CACHE_SYNC_LOCK:
-        restore_website_ops_root(engine, root)
         try:
             yield
         finally:
@@ -195,7 +199,6 @@ class WebsiteOpsStorageMiddleware(BaseHTTPMiddleware):
                 )
             return await call_next(request)
         try:
-            restore_website_ops_root(engine, Path(settings.website_ops_root))
             response = await call_next(request)
             if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
                 snapshot_website_ops_root(engine, Path(settings.website_ops_root))

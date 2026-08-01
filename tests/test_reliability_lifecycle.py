@@ -19,6 +19,7 @@ from sales_support_agent.services.website_ops_storage import (
     ensure_website_ops_storage_schema,
     restore_website_ops_root,
     snapshot_website_ops_root,
+    website_ops_cache_transaction,
     website_ops_storage_status,
 )
 
@@ -162,3 +163,24 @@ def test_website_ops_disk_mirror_round_trip(tmp_path: Path) -> None:
     assert restored["files"] == 1
     assert (target / "state" / "run.json").read_text() == '{"status":"ready"}'
     engine.dispose()
+
+
+def test_runtime_cache_transaction_never_rehydrates_stale_database_state(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "runtime"
+    root.mkdir()
+    engine = object()
+    with (
+        patch(
+            "sales_support_agent.services.website_ops_storage.restore_website_ops_root"
+        ) as restore,
+        patch(
+            "sales_support_agent.services.website_ops_storage.snapshot_website_ops_root"
+        ) as snapshot,
+    ):
+        with website_ops_cache_transaction(engine, root):
+            (root / "run.json").write_text('{"status":"running"}')
+
+    restore.assert_not_called()
+    snapshot.assert_called_once_with(engine, root)
