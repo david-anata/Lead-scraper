@@ -75,19 +75,19 @@ CHANNEL_CONFIG: dict[str, dict[str, str]] = {
 
 WEEKLY_CAPS = {
     "linkedin_personal": 3,
-    "linkedin_company": 2,
-    "google_business": 3,
+    "linkedin_company": 7,
+    "google_business": 7,
     "youtube": 4,
     "instagram": 3,
 }
 DAILY_PORTFOLIO = {
-    0: ("linkedin_personal", "youtube"),
+    0: ("linkedin_personal", "linkedin_company", "google_business", "youtube"),
     1: ("linkedin_company", "google_business", "instagram"),
-    2: ("linkedin_personal", "youtube"),
+    2: ("linkedin_personal", "linkedin_company", "google_business", "youtube"),
     3: ("linkedin_company", "google_business", "instagram"),
-    4: ("linkedin_personal", "youtube"),
-    5: ("google_business", "instagram"),
-    6: ("youtube",),
+    4: ("linkedin_personal", "linkedin_company", "google_business", "youtube"),
+    5: ("linkedin_company", "google_business", "instagram"),
+    6: ("linkedin_company", "google_business", "youtube"),
 }
 
 

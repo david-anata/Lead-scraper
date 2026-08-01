@@ -10,10 +10,20 @@ from sales_support_agent.integrations.content_relay import RelayResult
 from sales_support_agent.models.content import ContentArtifact, ContentPublication
 from sales_support_agent.models.database import Base
 from sales_support_agent.services.content_publishing import (
+    DAILY_PORTFOLIO,
+    WEEKLY_CAPS,
     channel_publish_readiness,
     publish_daily_portfolio,
     publish_artifact,
 )
+
+
+def test_company_destinations_run_seven_days_per_week() -> None:
+    assert WEEKLY_CAPS["linkedin_company"] == 7
+    assert WEEKLY_CAPS["google_business"] == 7
+    for channels in DAILY_PORTFOLIO.values():
+        assert "linkedin_company" in channels
+        assert "google_business" in channels
 
 
 def _session() -> Session:

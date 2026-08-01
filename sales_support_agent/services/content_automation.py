@@ -139,7 +139,7 @@ DEFAULT_PLAYBOOKS: tuple[dict[str, Any], ...] = (
         "channel": "linkedin_company",
         "version": "v2",
         "priority": "b2b_proof",
-        "cadence": {"max_per_week": 2, "minimum_spacing_hours": 48},
+        "cadence": {"max_per_week": 7, "minimum_spacing_hours": 24},
         "format": {
             "treatment": "useful_operating_insight",
             "cta_limit": 1,
@@ -160,7 +160,7 @@ DEFAULT_PLAYBOOKS: tuple[dict[str, Any], ...] = (
         "channel": "google_business",
         "version": "v2",
         "priority": "local_business_presence",
-        "cadence": {"max_per_week": 3, "minimum_spacing_hours": 24},
+        "cadence": {"max_per_week": 7, "minimum_spacing_hours": 24},
         "format": {
             "treatment": "concise_local_business_update",
             "cta_limit": 1,
