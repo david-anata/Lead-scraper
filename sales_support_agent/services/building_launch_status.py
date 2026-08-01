@@ -109,7 +109,7 @@ def build_arena_launch_status(
                 else "Record only the missing owner-approved business rules."
             ),
             owner="Anata",
-            href="#arena-launch-readiness",
+            href="/admin/building/settings#arena-launch-readiness",
             action_label="Review saved rules",
         )
     ]
@@ -133,7 +133,7 @@ def build_arena_launch_status(
         summary=pricing_summary,
         next_action=pricing_next,
         owner="Anata",
-        href="#commercial-rate-plans",
+        href="/admin/building/settings#commercial-rate-plans",
         action_label="Open pricing",
     ))
 
@@ -160,7 +160,7 @@ def build_arena_launch_status(
             else "Ask the accountant which Arena charges are taxable and the rate to apply."
         ),
         owner="Accountant",
-        href="#commercial-rate-plans",
+        href="/admin/building/settings#commercial-rate-plans",
         action_label="Review tax field",
     ))
 
@@ -199,7 +199,7 @@ def build_arena_launch_status(
             )
         ),
         owner="Booking-page administrator",
-        href="#commercial-rate-plans",
+        href="/admin/building/settings#commercial-rate-plans",
         action_label="Review conflicts",
     ))
 
@@ -329,8 +329,10 @@ def build_arena_launch_status(
         summary=calendar_summary,
         next_action=calendar_next,
         owner="Google Workspace and platform administrator",
-        href="#calendar-projection",
-        action_label="Review calendar",
+        # This pointed at a section that lives on the Operations tab, so the
+        # link did nothing from Settings. Send it to the card that records it.
+        href="/admin/building/settings#decision-event_calendar",
+        action_label="Record the calendar",
     ))
 
     sender_ready = bool(

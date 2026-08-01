@@ -1053,7 +1053,7 @@ def render_building_page(
               <div class="form-actions"><span class="form-note">Saving records the approved rule and audit history. It does not email anyone, charge a card, publish the venue, or change a calendar.</span><button class="primary" type="submit">Save my answer</button></div>
             </form>
           </details>"""
-        return f"""<article class="decision-card{' decision-card--answered' if is_answered else ''}">
+        return f"""<article id="decision-{_esc(key)}" class="decision-card{' decision-card--answered' if is_answered else ''}">
           <div class="decision-card__summary">
             <div class="decision-card__number" aria-hidden="true">{index:02d}</div>
             <div class="decision-card__title">
@@ -2066,6 +2066,26 @@ def render_building_page(
       <section class="panel panel--wide building-view view-contacts"><div class="panel-head"><div><h2>Campaigns</h2><p>Draft, preview, approval, and delivery state.</p></div><span class="count">{len(campaigns)} campaigns</span></div><div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Audience</th><th>Recipients</th><th>Status</th><th>Action</th></tr></thead><tbody>{campaign_rows}</tbody></table></div></section>
     </div>
   </main>
+  <script>
+    (() => {{
+      // Deep links from the launch checklist point inside collapsed
+      // <details>. Open every ancestor first or the link does nothing.
+      const reveal = () => {{
+        const id = decodeURIComponent(window.location.hash.slice(1));
+        if (!id) return;
+        const target = document.getElementById(id);
+        if (!target) return;
+        let node = target.parentElement;
+        while (node) {{
+          if (node.tagName === "DETAILS") node.open = true;
+          node = node.parentElement;
+        }}
+        target.scrollIntoView({{block: "center"}});
+      }};
+      window.addEventListener("hashchange", reveal);
+      reveal();
+    }})();
+  </script>
 </body>
 </html>"""
     return _with_accessible_control_names(document)
