@@ -318,6 +318,11 @@ def _ensure_building_columns(engine: Any) -> None:
         "building_relationships": {
             "billing_account_id": "VARCHAR(64)",
         },
+        "building_billing_schedules": {
+            "source_proposal_id": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "source_proposal_version": "INTEGER NOT NULL DEFAULT 0",
+            "source_amount_cents": "INTEGER NOT NULL DEFAULT 0",
+        },
         "building_communication_preferences": {
             "operational_source": "VARCHAR(64) NOT NULL DEFAULT ''",
             "operational_evidence_reference": "VARCHAR(1024) NOT NULL DEFAULT ''",

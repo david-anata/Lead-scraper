@@ -2515,6 +2515,12 @@ class BuildingBillingSchedule(Base):
     schedule_type: Mapped[str] = mapped_column(String(32), index=True)
     description: Mapped[str] = mapped_column(String(512))
     amount_cents: Mapped[int] = mapped_column(Integer)
+    # When a schedule is derived from an accepted quote these record which quote
+    # and what it said, so an invoice can never quietly disagree with the number
+    # the customer accepted. Empty on schedules entered by hand.
+    source_proposal_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    source_proposal_version: Mapped[int] = mapped_column(Integer, default=0)
+    source_amount_cents: Mapped[int] = mapped_column(Integer, default=0)
     currency: Mapped[str] = mapped_column(String(8), default="usd")
     collection_method: Mapped[str] = mapped_column(String(32), default="send_invoice")
     days_until_due: Mapped[int] = mapped_column(Integer, default=7)

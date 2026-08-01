@@ -31,6 +31,7 @@ from sales_support_agent.models.entities import (
     BuildingDepositEvidence,
     BuildingInvoice,
     BuildingPayment,
+    BuildingProposal,
     BuildingReservation,
     BuildingStripeEvent,
     BuildingSuppression,
@@ -103,6 +104,34 @@ class BillingScheduleInput(BaseModel):
     days_until_due: int = Field(default=7, ge=1, le=90)
     starts_on: date
     ends_on: date | None = None
+    actor: str = Field(min_length=1, max_length=255)
+
+    @field_validator("schedule_type")
+    @classmethod
+    def valid_schedule_type(cls, value: str) -> str:
+        if value not in SCHEDULE_TYPES:
+            raise ValueError("Unsupported schedule type.")
+        return value
+
+    @field_validator("collection_method")
+    @classmethod
+    def valid_collection_method(cls, value: str) -> str:
+        if value not in COLLECTION_METHODS:
+            raise ValueError("Unsupported collection method.")
+        return value
+
+
+class ScheduleFromProposalInput(BaseModel):
+    """Everything except the money, which only the accepted quote may set."""
+
+    id: str = Field(min_length=1, max_length=64)
+    proposal_id: str = Field(min_length=1, max_length=64)
+    billing_account_id: str = Field(min_length=1, max_length=64)
+    schedule_type: str = "one_time"
+    description: str = Field(default="", max_length=512)
+    collection_method: str = "send_invoice"
+    days_until_due: int = Field(default=7, ge=1, le=90)
+    starts_on: date
     actor: str = Field(min_length=1, max_length=255)
 
     @field_validator("schedule_type")
@@ -351,6 +380,113 @@ def upsert_billing_schedule(
         return {"ok": True, "schedule_id": row.id, "status": row.status}
 
 
+@internal_router.post("/schedules/from-proposal", status_code=201)
+def create_schedule_from_proposal(
+    payload: ScheduleFromProposalInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Bill exactly what the customer accepted.
+
+    The amount is read from the accepted quote and never from the caller, so a
+    discount recorded on the quote reaches the invoice without anyone retyping
+    it. The quote's identity and total are stored alongside the schedule; the
+    invoice run re-checks them, so a later revision cannot be billed at the old
+    number by accident.
+    """
+
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        proposal = session.get(BuildingProposal, payload.proposal_id)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="Proposal not found.")
+        if proposal.status != "accepted":
+            raise HTTPException(
+                status_code=409,
+                detail="Only an accepted quote can be billed. Send it and record acceptance first.",
+            )
+        if proposal.amount_cents <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="The accepted quote has no billable total.",
+            )
+
+        account = session.get(BuildingBillingAccount, payload.billing_account_id)
+        if account is None or account.status != "active":
+            raise HTTPException(status_code=422, detail="Billing account is unavailable.")
+
+        existing = session.execute(
+            select(BuildingBillingSchedule).where(
+                BuildingBillingSchedule.source_proposal_id == proposal.id
+            )
+        ).scalars().all()
+        for row in existing:
+            if row.source_proposal_version == proposal.version:
+                # Idempotent: the same accepted quote yields the same schedule.
+                return {
+                    "ok": True,
+                    "duplicate": True,
+                    "schedule_id": row.id,
+                    "status": row.status,
+                    "amount_cents": row.amount_cents,
+                }
+            if row.status not in {"cancelled", "paused"}:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Schedule {row.id} still bills version {row.source_proposal_version} "
+                        "of this quote. Cancel or pause it before billing a new version."
+                    ),
+                )
+
+        if session.get(BuildingBillingSchedule, payload.id) is not None:
+            raise HTTPException(status_code=409, detail="Schedule ID already exists.")
+
+        description = payload.description.strip() or (
+            proposal.terms_summary.strip()[:512]
+            or f"Event quote {proposal.id} v{proposal.version}"
+        )
+        row = BuildingBillingSchedule(
+            id=payload.id,
+            billing_account_id=account.id,
+            reservation_id=proposal.reservation_id,
+            schedule_type=payload.schedule_type,
+            description=description,
+            amount_cents=proposal.amount_cents,
+            currency=(proposal.currency or "usd").lower(),
+            collection_method=payload.collection_method,
+            days_until_due=payload.days_until_due,
+            starts_on=payload.starts_on,
+            next_invoice_on=payload.starts_on,
+            status="draft",
+            created_by=payload.actor,
+            source_proposal_id=proposal.id,
+            source_proposal_version=proposal.version,
+            source_amount_cents=proposal.amount_cents,
+        )
+        session.add(row)
+        session.add(BuildingAuditEvent(
+            entity_type="billing_schedule",
+            entity_id=row.id,
+            action="drafted_from_proposal",
+            actor=payload.actor,
+            after_json={
+                "proposal_id": proposal.id,
+                "proposal_version": proposal.version,
+                "amount_cents": row.amount_cents,
+                "line_items": proposal.line_items_json or [],
+            },
+        ))
+        return {
+            "ok": True,
+            "schedule_id": row.id,
+            "status": row.status,
+            "amount_cents": row.amount_cents,
+            "proposal_id": proposal.id,
+            "proposal_version": proposal.version,
+        }
+
+
 @internal_router.post("/schedules/{schedule_id}/approve")
 def approve_billing_schedule(
     schedule_id: str,
@@ -407,6 +543,33 @@ def create_invoice_from_schedule(
                     "Change the reviewed schedule instead of billing early."
                 ),
             )
+        if schedule.source_proposal_id:
+            # The quote is the authority. If it moved after this schedule was
+            # drafted, stop rather than bill a number nobody agreed to.
+            proposal = session.get(BuildingProposal, schedule.source_proposal_id)
+            if proposal is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The quote behind this schedule no longer exists.",
+                )
+            if (
+                proposal.version != schedule.source_proposal_version
+                or proposal.amount_cents != schedule.source_amount_cents
+                or schedule.amount_cents != schedule.source_amount_cents
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "This schedule no longer matches its accepted quote. "
+                        "Re-draft the schedule from the current quote before invoicing."
+                    ),
+                )
+            if proposal.status != "accepted":
+                raise HTTPException(
+                    status_code=409,
+                    detail="The quote behind this schedule is no longer accepted.",
+                )
+
         account = session.get(BuildingBillingAccount, schedule.billing_account_id)
         if account is None or account.status != "active":
             raise HTTPException(status_code=409, detail="Billing account is unavailable.")
