@@ -174,7 +174,8 @@ def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dic
             "status": "ready"
             if _configured("RIVERSIDE_API_KEY")
             or _enabled("CONTENT_RIVERSIDE_RELAY_ENABLED")
-            else ("stale" if source_asset_count else "blocked"),
+            or source_asset_count
+            else "blocked",
             "required_for": ["Episode harvest", "Social candidates"],
             "message": (
                 f"{source_asset_count} normalized source asset(s) available."
