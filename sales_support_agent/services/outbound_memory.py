@@ -620,3 +620,67 @@ def set_video_url(engine, domain: str, url: str) -> bool:
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-memory] could not set video_url for %s", key)
         return False
+
+
+# --- HeyReach: who has already been sent a LinkedIn request -------------------
+# Separate table from the leads, because these are PEOPLE and the leads are
+# COMPANIES. One brand can have several contacts, and a contact can move brand.
+_HR_TABLE = "outbound_heyreach_sent"
+_HR_CREATE = f"""
+CREATE TABLE IF NOT EXISTS {_HR_TABLE} (
+    lead_key TEXT PRIMARY KEY,
+    campaign_id TEXT,
+    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+
+def ensure_heyreach_table(engine) -> None:
+    if engine is None:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(_HR_CREATE))
+
+
+def load_heyreach_sent(engine, campaign_id: str = "") -> set[str]:
+    """Every profile we have already pushed. Empty on any error.
+
+    Failing open here would mean re-sending everyone, so a read failure must
+    never look like "nobody has been contacted". Callers treat an empty set as
+    a reason to be careful, not as permission.
+    """
+    if engine is None:
+        return set()
+    try:
+        ensure_heyreach_table(engine)
+        sql = f"SELECT lead_key FROM {_HR_TABLE}"
+        params: dict[str, Any] = {}
+        if str(campaign_id or "").strip():
+            sql += " WHERE campaign_id = :c"
+            params["c"] = str(campaign_id).strip()
+        with engine.connect() as conn:
+            return {r[0] for r in conn.execute(text(sql), params).fetchall() if r[0]}
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] could not read the HeyReach sent list")
+        return set()
+
+
+def record_heyreach_sent(engine, keys: Iterable[str], campaign_id: str = "") -> int:
+    """Mark profiles as contacted. Idempotent, so a replay adds nothing."""
+    if engine is None:
+        return 0
+    rows = [{"k": str(k).strip(), "c": str(campaign_id or "").strip()}
+            for k in keys if str(k or "").strip()]
+    if not rows:
+        return 0
+    try:
+        ensure_heyreach_table(engine)
+        with engine.begin() as conn:
+            for row in rows:
+                conn.execute(text(
+                    f"INSERT INTO {_HR_TABLE} (lead_key, campaign_id) "
+                    f"VALUES (:k, :c) ON CONFLICT (lead_key) DO NOTHING"), row)
+        return len(rows)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] could not record %s HeyReach sends", len(rows))
+        return 0

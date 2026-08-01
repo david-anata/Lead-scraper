@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from sales_support_agent.services.auth_deps import get_current_user
@@ -371,6 +371,10 @@ _AMAZON_CSS = """
     font-weight:800; font-size:14px; cursor:pointer; }
   .am-btn:disabled { opacity:.55; cursor:default; }
   .am-ghost { background:#fff; color:#2B3644; border:1px solid var(--border); }
+  .am-hr { margin-top:16px; padding-top:14px; border-top:1px solid var(--border); }
+  .am-hr-lab { font-size:13px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+  .am-hr-note { font-size:14px; margin:6px 0 10px; max-width:64ch; }
+  .am-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .am-note { font-size:13px; color:rgba(43,54,68,0.65); }
   .am-empty { margin:0; font-size:15px; }
   .am-badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:800; letter-spacing:.04em; }
@@ -479,6 +483,17 @@ _AMAZON_SCAN_CONTROL = """
       <button class="am-btn" id="am-go" type="button">Check next 3 brands</button>
       <button class="am-btn am-ghost" id="am-run" type="button">Run the whole morning now</button>
       <button class="am-btn am-ghost" id="am-mail" type="button">Email me what is ready</button>
+    </div>
+    <div class="am-hr">
+      <div class="am-hr-lab">LinkedIn (HeyReach)</div>
+      <p class="am-hr-note">Export Found Contacts from Clay and drop the file here. Contacts with a
+      real LinkedIn profile go into the campaign. Anyone already sent is skipped against our own
+      record, so nobody gets a second request even if the campaign is rebuilt.</p>
+      <div class="am-row">
+        <input type="file" id="hr-file" accept=".csv,text/csv">
+        <button class="am-btn am-ghost" id="hr-go" type="button">Send to HeyReach</button>
+        <span id="hr-msg" style="font-size:14px;font-weight:700"></span>
+      </div>
       <span class="am-note" id="am-msg">Checks the best brands we have not looked at yet.
         Roughly two minutes each, so this runs in the background.</span>
     </div>
@@ -495,6 +510,23 @@ _AMAZON_SCAN_CONTROL = """
                      b.disabled=false; b.textContent='Check next 3 brands'; }
             }).catch(function(){ m.textContent='Lost track of the scan. Refresh the page.'; });
         }
+        var hrF=document.getElementById('hr-file'), hrB=document.getElementById('hr-go'),
+            hrM=document.getElementById('hr-msg');
+        if(hrB) hrB.addEventListener('click', function(){
+          if(!hrF.files || !hrF.files.length){ hrM.textContent='Pick the Clay export first.'; return; }
+          hrB.disabled=true; hrM.textContent='Sending...';
+          var fd=new FormData(); fd.append('file', hrF.files[0]);
+          fetch('/admin/api/outbound/heyreach',{method:'POST',body:fd})
+            .then(function(r){return r.json();})
+            .then(function(d){
+              var extra='';
+              if(d.duplicate||d.no_profile){
+                extra=' ('+(d.duplicate||0)+' already sent, '+(d.no_profile||0)+' with no profile)';
+              }
+              hrM.textContent=(d.reason||'')+extra; hrB.disabled=false;
+            })
+            .catch(function(){ hrM.textContent='Could not reach the server.'; hrB.disabled=false; });
+        });
         var runB=document.getElementById('am-run'), mailB=document.getElementById('am-mail');
         if(runB) runB.addEventListener('click', function(){
           runB.disabled=true; m.textContent='Starting the full run...';
@@ -1402,6 +1434,52 @@ async def outbound_amazon_scan(request: Request) -> Response:
 def outbound_amazon_scan_status(request: Request) -> Response:
     """Where the running scan has got to."""
     return JSONResponse(content=dict(_AMAZON_SCAN))
+
+
+@router.post("/admin/api/outbound/heyreach", response_class=JSONResponse)
+async def outbound_push_heyreach(request: Request,
+                                 file: UploadFile = File(...)) -> JSONResponse:
+    """Send Clay's exported contacts into the HeyReach campaign.
+
+    Takes the CSV straight off Clay's Found Contacts export, so there is nothing
+    to reformat by hand. Rows without a real LinkedIn profile are counted and
+    dropped rather than sent, and anyone we have pushed before is skipped
+    against our own record, not HeyReach's.
+    """
+    import csv
+    import io
+    import os
+
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_heyreach as hr, outbound_memory
+
+    api_key = os.getenv("HEYREACH_API_KEY", "").strip()
+    campaign = os.getenv("HEYREACH_CAMPAIGN_ID", "").strip()
+    if not api_key or not campaign:
+        return JSONResponse(status_code=503, content={
+            "ok": False,
+            "reason": "HeyReach is not connected yet. HEYREACH_API_KEY and "
+                      "HEYREACH_CAMPAIGN_ID need to be set on this service."})
+
+    try:
+        raw = (await file.read()).decode("utf-8-sig", errors="replace")
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"ok": False, "reason": "Could not read that file."})
+    rows = list(csv.DictReader(io.StringIO(raw)))
+    if not rows:
+        return JSONResponse(status_code=400, content={"ok": False, "reason": "That file had no rows."})
+
+    try:
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        engine = None
+
+    already = outbound_memory.load_heyreach_sent(engine, campaign)
+    result = hr.push(
+        rows, api_key=api_key, campaign_id=campaign, already=already,
+        record=lambda keys: outbound_memory.record_heyreach_sent(engine, keys, campaign),
+    )
+    return JSONResponse(status_code=200 if result.get("ok") else 502, content=result)
 
 
 @router.post("/admin/api/outbound/video-url", response_class=JSONResponse)
