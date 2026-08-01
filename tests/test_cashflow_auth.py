@@ -98,6 +98,9 @@ def _get_finances_response(path: str, token: str | None):
     ), patch(
         "sales_support_agent.services.cashflow.overview.list_obligations",
         return_value=[],
+    ), patch(
+        "sales_support_agent.services.cashflow.recurring.list_recurring_templates",
+        return_value=[],
     ):
         return client.get(path)
 
@@ -130,13 +133,14 @@ class TestFinanceRoleGate(unittest.TestCase):
         self.assertEqual(resp.status_code, 303)
         self.assertIn("/admin/login", resp.headers["location"])
 
-    def test_finance_root_renders_single_page_control_room(self) -> None:
+    def test_finance_root_renders_money_brief(self) -> None:
         resp = _get_finances_response("/admin/finances", "finance")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("Finance Control", resp.text)
-        self.assertIn("Money queue", resp.text)
-        self.assertIn("Safe to commit", resp.text)
-        self.assertIn("Update money", resp.text)
+        self.assertIn("Your money brief", resp.text)
+        self.assertIn("Verified cash now", resp.text)
+        self.assertIn("Three honest possibilities", resp.text)
+        self.assertNotIn("Money queue", resp.text)
+        self.assertNotIn("finance-recommendation-drawer", resp.text)
         self.assertNotIn("Payables (AP)", resp.text)
         self.assertNotIn("Receivables (AR)", resp.text)
         self.assertNotIn(">Ledger<", resp.text)

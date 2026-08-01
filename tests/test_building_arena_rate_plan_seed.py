@@ -20,6 +20,7 @@ try:
     from sales_support_agent.services.building_arena_rate_plan_seed import (
         ARENA_CANCELLATION_POLICY,
         ensure_arena_commercial_draft,
+        reconcile_approved_arena_tax,
     )
     from sales_support_agent.services.building_launch_readiness import (
         launch_decision_id,
@@ -99,7 +100,10 @@ class ArenaRatePlanSeedTests(unittest.TestCase):
                 row.commercial_terms_json["overtime"]["amount_cents"],
                 17_500,
             )
-            self.assertEqual(row.tax_status, "review_required")
+            self.assertEqual(row.tax_status, "taxable")
+            self.assertEqual(row.tax_rate_bps, 745)
+            self.assertIn("transaction date", row.tax_note)
+            self.assertIn("Refundable security deposits are not taxable", row.tax_note)
             self.assertTrue(
                 all(
                     item["status"] == "provider_remediation_required"
@@ -168,6 +172,64 @@ class ArenaRatePlanSeedTests(unittest.TestCase):
             self.assertEqual([(row.id, row.unit_amount_cents) for row in rows], [
                 ("existing-plan", 99)
             ])
+
+    def test_reconciles_tax_and_approves_only_after_saved_blockers_clear(self) -> None:
+        self._catalog()
+        ensure_arena_commercial_draft(
+            self.factory,
+            actor="david@anatainc.com",
+            effective_from=date(2026, 7, 30),
+        )
+        with self.factory() as session:
+            plan = session.execute(select(BuildingRatePlan)).scalar_one()
+            conflicts = [dict(item) for item in plan.conflicts_json]
+            for item in conflicts:
+                if item["id"].startswith("tidycal-"):
+                    item["status"] = "provider_remediated"
+            plan.conflicts_json = conflicts
+            for key in (
+                "cancellation_policy",
+                "setup_price",
+                "teardown_price",
+                "overtime_rate",
+            ):
+                session.add(
+                    BuildingLaunchDecision(
+                        id=launch_decision_id("arena-events", key),
+                        offering_id="arena-events",
+                        decision_key=key,
+                        status="accepted_policy",
+                        value="Owner-approved value",
+                        evidence="Owner decision evidence",
+                        decided_by="david@anatainc.com",
+                    )
+                )
+            session.commit()
+
+        result = reconcile_approved_arena_tax(
+            self.factory,
+            actor="david@anatainc.com",
+        )
+        self.assertEqual(result, "approved")
+        with self.factory() as session:
+            plan = session.execute(select(BuildingRatePlan)).scalar_one()
+            self.assertEqual(plan.status, "approved")
+            self.assertEqual(plan.tax_status, "taxable")
+            self.assertEqual(plan.tax_rate_bps, 745)
+            self.assertEqual(plan.approved_by, "david@anatainc.com")
+            decision = session.get(
+                BuildingLaunchDecision,
+                launch_decision_id("arena-events", "tax_treatment"),
+            )
+            self.assertEqual(decision.status, "accepted_policy")
+            audit = session.execute(
+                select(BuildingAuditEvent).where(
+                    BuildingAuditEvent.entity_id == plan.id,
+                    BuildingAuditEvent.action == "arena_tax_approved",
+                )
+            ).scalar_one()
+            self.assertFalse(audit.after_json["published"])
+            self.assertFalse(audit.after_json["provider_write"])
 
     def test_agreement_readiness_is_derived_from_template_approval(self) -> None:
         self._catalog()

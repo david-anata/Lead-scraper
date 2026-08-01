@@ -14,7 +14,7 @@ import html
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from sales_support_agent.integrations.hubspot import HubSpotAPIError, HubSpotClient
@@ -65,6 +65,7 @@ from sales_support_agent.services.sales.followup_draft import (
     render_send_preview_page,
 )
 from sales_support_agent.services.sales.operator_dashboard import (
+    clear_operator_snapshot_cache,
     get_operator_snapshot,
     render_operator_page,
     run_writeback,
@@ -608,6 +609,174 @@ def sales_operator_writeback(
     except Exception as exc:  # noqa: BLE001 - surface the blocker in-page instead of 500ing
         logger.exception("Sales operator write-back failed")
         return HTMLResponse(_render_sales_operator_unavailable(request, str(exc)), status_code=503)
+
+
+@router.post("/website-notes/{lead_id}/retry")
+def retry_website_note(request: Request, lead_id: int) -> Response:
+    from sales_support_agent.api.leads_router import deliver_website_note
+    from sales_support_agent.models.database import session_scope
+    from sales_support_agent.models.entities import AutomationRun
+
+    settings = _sales_settings(request)
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.get(AutomationRun, lead_id)
+        if run is None or run.run_type != "website_contact_note":
+            return HTMLResponse(_render_sales_operator_unavailable(request, "Website note not found."), status_code=404)
+        metadata = dict(run.metadata_json or {})
+        payload = {
+            key: str(metadata.get(key) or "")
+            for key in ("kind", "name", "email", "company", "role", "message", "source")
+        }
+        previous = dict(run.summary_json or {})
+    delivery = deliver_website_note(
+        settings,
+        lead_id=lead_id,
+        payload=payload,
+        previous=previous,
+    )
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.get(AutomationRun, lead_id)
+        if run is not None:
+            run.summary_json = {**(run.summary_json or {}), "accepted": True, **delivery}
+            session.add(run)
+    clear_operator_snapshot_cache()
+    return RedirectResponse(url="/admin/sales", status_code=303)
+
+
+@router.post("/website-intakes/{intake_id}/retry")
+def retry_website_intake(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    intake_id: int,
+) -> Response:
+    from datetime import datetime, timezone
+
+    from sales_support_agent.api.marketing_router import (
+        _deliver_store_unlock,
+        _run_analysis_and_deliver,
+    )
+    from sales_support_agent.api.fulfillment_public_router import (
+        _finish_unlock,
+        retry_rate_sheet_handoffs,
+    )
+    from sales_support_agent.models.entities import AutomationRun
+
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.get(AutomationRun, intake_id)
+        if run is None or run.run_type not in {
+            "marketing_intake",
+            "marketing_analysis_intake",
+            "fulfillment_rate_sheet",
+        }:
+            return HTMLResponse(_render_sales_operator_unavailable(request, "Website analysis not found."), status_code=404)
+        metadata = dict(run.metadata_json or {})
+        summary = dict(run.summary_json or {})
+        run_type = str(run.run_type or "")
+        if run_type == "marketing_analysis_intake" and metadata.get("tool") != "advertising_audit":
+            return HTMLResponse(_render_sales_operator_unavailable(request, "Website analysis not found."), status_code=404)
+        email = str(metadata.get("email") or summary.get("public_unlock_email") or "").strip().lower()
+        kind = str(summary.get("kind") or "")
+        asin = str(summary.get("asin") or metadata.get("asin") or "")
+        domain = str(summary.get("domain") or "")
+        if run_type == "fulfillment_rate_sheet":
+            rate_status = str(summary.get("public_rate_sheet_status") or "")
+            handoff_retry = rate_status == "ready" and (
+                str(summary.get("public_email_status") or "") == "failed"
+                or str(summary.get("public_sales_handoff_status") or "") == "failed"
+            )
+            retryable = bool(email) and (rate_status == "failed" or handoff_retry)
+        else:
+            retryable = run.status == "failed" and bool(email) and bool(
+                asin if run_type == "marketing_analysis_intake" or kind == "asin" else domain
+            )
+        if not retryable:
+            return HTMLResponse(
+                _render_sales_operator_unavailable(request, "Website analysis is not retryable."),
+                status_code=409,
+            )
+        source = str(metadata.get("source") or summary.get("public_source") or "anatainc.com")
+        qualification = dict(metadata.get("qualification") or {})
+        if run_type == "marketing_analysis_intake":
+            qualification = {
+                "company": str(metadata.get("company") or qualification.get("company") or ""),
+                "storefront": str(
+                    qualification.get("storefront")
+                    or (f"https://www.amazon.com/dp/{asin}" if asin else "")
+                ),
+                "challenge": str(
+                    qualification.get("challenge")
+                    or "Advertising Audit requested from anatainc.com."
+                ),
+                "next_step": str(
+                    qualification.get("next_step")
+                    or "Call prospect and confirm the four-report handoff."
+                ),
+                "audit_run_id": str(intake_id),
+            }
+        needs = (
+            ["advertising"]
+            if run_type == "marketing_analysis_intake"
+            else [str(item) for item in (summary.get("needs") or [])]
+        )
+        brand_name = str(summary.get("brand_name") or "")
+        if run_type == "fulfillment_rate_sheet" and rate_status == "failed":
+            run.summary_json = {
+                **summary,
+                "public_rate_sheet_status": "building",
+                "public_rate_sheet_error": "",
+                "operator_retry_queued_at": datetime.now(timezone.utc).isoformat(),
+            }
+        elif run_type != "fulfillment_rate_sheet":
+            run.status = "running"
+            run.completed_at = None
+            run.summary_json = {
+                **summary,
+                "error": "",
+                "operator_retry_queued_at": datetime.now(timezone.utc).isoformat(),
+            }
+        session.add(run)
+
+    if run_type == "fulfillment_rate_sheet" and rate_status == "ready":
+        background_tasks.add_task(
+            retry_rate_sheet_handoffs,
+            request.app,
+            run_id=intake_id,
+        )
+    elif run_type == "fulfillment_rate_sheet":
+        background_tasks.add_task(
+            _finish_unlock,
+            request.app,
+            run_id=intake_id,
+            email=email,
+            monthly_orders=summary.get("public_unlock_monthly_orders"),
+            origin_zip=str(summary.get("public_unlock_origin_zip") or ""),
+        )
+    elif run_type == "marketing_analysis_intake" or kind == "asin":
+        background_tasks.add_task(
+            _run_analysis_and_deliver,
+            request.app,
+            intake_run_id=intake_id,
+            asin=asin,
+            email=email,
+            source=source,
+            trigger="sales_operator_retry",
+            needs=needs,
+            qualification=qualification,
+        )
+    else:
+        background_tasks.add_task(
+            _deliver_store_unlock,
+            request.app,
+            intake_run_id=intake_id,
+            email=email,
+            domain=domain,
+            brand_name=brand_name,
+            needs=needs,
+            source=source,
+            qualification=qualification,
+        )
+    clear_operator_snapshot_cache()
+    return RedirectResponse(url="/admin/sales", status_code=303)
 
 
 @router.get("/deals/create", response_class=HTMLResponse)

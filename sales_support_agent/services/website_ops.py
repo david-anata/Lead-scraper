@@ -28,16 +28,22 @@ from sales_support_agent.services.website_ops_candidates import (
     persist_candidate_ledger,
     select_bounded_actions,
 )
+from sales_support_agent.services.website_ops_control_panels import (
+    render_daily_portfolio_panel,
+    render_production_inventory_panel,
+)
 from sales_support_agent.services.website_ops_content_strategy import (
     load_content_strategy,
 )
 from sales_support_agent.services.website_ops_query_intelligence import (
     load_query_intelligence,
 )
+from sales_support_agent.services.website_ops_inventory import build_production_inventory
 from sales_support_agent.services.website_ops_program import (
     build_program_plan,
     load_indexing_inventory,
 )
+from sales_support_agent.services.website_ops_portfolio import build_daily_action_portfolio
 from sales_support_agent.services.website_ops_screaming_frog import (
     build_crawl_verification,
     collect_crawl_resource_observations,
@@ -52,6 +58,7 @@ from sales_support_agent.services.website_ops_github import (
     execute_github_metadata_action,
     github_metadata_is_configured,
 )
+from sales_support_agent.services.website_ops_outcomes import FAILED_OUTCOME, classify_run_outcome
 from sales_support_agent.services import website_ops_vendor as website_ops
 
 
@@ -64,7 +71,7 @@ class WebsiteOpsActionResult:
 
 
 RUN_MODES = ("daily", "weekly", "monthly")
-RUN_STATUSES = {"idle", "queued", "running", "succeeded", "failed"}
+RUN_STATUSES = {"idle", "queued", "running", "succeeded", "failed", "failed_outcome"}
 MVP_MODE_ACTIVE = True
 MVP_ALLOWED_ACTION_TYPES = {
     "inject_faq_block",
@@ -181,6 +188,14 @@ def _default_mode_run_state(mode: str) -> dict[str, str]:
         "last_error": "",
         "attempt_count": "0",
         "recovery_status": "",
+        "outcome_status": "",
+        "outcome_message": "",
+        "expected_output": "",
+        "actual_output": "",
+        "production_delta_count": "0",
+        "last_stage": "",
+        "next_operation": "",
+        "failure_stage": "",
     }
 
 
@@ -504,9 +519,9 @@ def _build_operations_summary(report: Mapping[str, Any]) -> dict[str, Any]:
             "researching_sources": int(content_summary.get("researching_sources", 0) or 0),
             "scheduled_for_validation": int(content_summary.get("scheduled_for_validation", 0) or 0),
             "improve_existing": int(content_summary.get("improve_existing", 0) or 0),
-            "daily_article_minimum": int(content_strategy.get("daily_article_minimum", 2) or 2),
-            "daily_article_target": int(content_strategy.get("daily_article_target", 3) or 3),
-            "weekly_article_budget": int(content_strategy.get("weekly_article_budget", 1) or 1),
+            "daily_article_minimum": int(content_strategy.get("daily_article_minimum", 8) or 8),
+            "daily_article_target": int(content_strategy.get("daily_article_target", 8) or 8),
+            "weekly_article_budget": int(content_strategy.get("weekly_article_budget", 56) or 56),
             "next_topic": str(content_next.get("topic", "") or ""),
             "next_operation": str(content_next.get("next_operation", "") or ""),
             "earliest_publish_date": str(content_next.get("earliest_publish_date", "") or ""),
@@ -516,6 +531,7 @@ def _build_operations_summary(report: Mapping[str, Any]) -> dict[str, Any]:
         "query": query,
         "candidate_states": states,
         "candidate_drilldown_url": "/admin/website-ops/candidates",
+        "daily_action_portfolio": dict(report.get("daily_action_portfolio") or {}),
         "deferred_reasons": deferred_reasons,
         "execution_coverage": [
             {
@@ -700,8 +716,8 @@ def send_website_ops_report_email(
             f"Actions requiring review: {int(operations.get('review_required_actions', 0) or 0)}",
             f"Content briefs: {int(content_strategy.get('total_briefs', 0) or 0)}",
             f"Articles ready: {int(content_strategy.get('ready_to_publish', 0) or 0)}",
-            f"Article daily minimum: {int(content_strategy.get('daily_article_minimum', 2) or 2)}",
-            f"Article daily target: {int(content_strategy.get('daily_article_target', 3) or 3)}",
+            f"Article daily minimum: {int(content_strategy.get('daily_article_minimum', 8) or 8)}",
+            f"Article daily target: {int(content_strategy.get('daily_article_target', 8) or 8)}",
             (
                 "Priority: "
                 + ", ".join(
@@ -1410,6 +1426,27 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         executed_actions=executed_actions,
     )
     enriched_report = dict(pipeline["report"])
+    # Persist a truthful sitemap-backed inventory before slower analytics,
+    # article generation, or external publishing can fail. Later enrichment
+    # replaces this checkpoint with the fully joined intent projection.
+    checkpoint_indexing_inventory = load_indexing_inventory(settings.website_ops_root)
+    checkpoint_crawl_inventory = load_crawl_inventory(settings.website_ops_root)
+    checkpoint_query_intelligence = dict(
+        enriched_report.get("query_intelligence") or {}
+    )
+    enriched_report["production_inventory"] = build_production_inventory(
+        sitemap_urls=monitored_urls,
+        crawl_inventory=checkpoint_crawl_inventory,
+        indexing_inventory=checkpoint_indexing_inventory,
+        intent_coverage=dict(
+            checkpoint_query_intelligence.get("intent_coverage") or {}
+        ),
+    )
+    website_ops.write_daily_report_artifacts(
+        enriched_report,
+        output_dir=output_dir,
+        config=config,
+    )
     enriched_report.update(
         build_autonomy_overlay(
             settings=settings,
@@ -1491,6 +1528,13 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         "summary": dict(crawl_inventory.get("summary") or {}),
     }
     enriched_report["crawl_verification"] = crawl_verification
+    query_intelligence = dict(enriched_report.get("query_intelligence") or {})
+    enriched_report["production_inventory"] = build_production_inventory(
+        sitemap_urls=monitored_urls,
+        crawl_inventory=crawl_inventory,
+        indexing_inventory=indexing_inventory,
+        intent_coverage=dict(query_intelligence.get("intent_coverage") or {}),
+    )
     run_id = hashlib.sha256(
         (
             f"{mode}:{enriched_report.get('generated_at', '')}:"
@@ -1509,7 +1553,12 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         indexing_inventory=indexing_inventory,
         crawl_verification=crawl_verification,
     )
+    enriched_report["daily_action_portfolio"] = build_daily_action_portfolio(
+        action_queue=list(enriched_report.get("action_queue") or []),
+        candidate_ledger=dict(enriched_report.get("candidate_ledger") or {}),
+    )
     enriched_report["operations_summary"] = _build_operations_summary(enriched_report)
+    enriched_report["run_outcome"] = classify_run_outcome(enriched_report)
     artifacts = website_ops.write_daily_report_artifacts(enriched_report, output_dir=output_dir, config=config)
     enriched_report["email_delivery"] = send_website_ops_report_email(
         settings,
@@ -1517,8 +1566,8 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         report=enriched_report,
     )
     return WebsiteOpsActionResult(
-        ok=True,
-        message=f"{mode.title()} website ops run completed.",
+        ok=enriched_report["run_outcome"]["status"] != FAILED_OUTCOME,
+        message=str(enriched_report["run_outcome"]["summary"]),
         report=enriched_report,
     )
 
@@ -1770,10 +1819,11 @@ def _run_state_notice(state: Mapping[str, Any]) -> tuple[str, str]:
     today = date.today().isoformat()
     if status in {"queued", "running"} and run_date == today:
         return ("neutral", "Daily sweep running")
-    if status == "failed" and run_date == today:
+    if status in {"failed", "failed-outcome"} and run_date == today:
         return ("warn", f"Last daily sweep failed{': ' + last_error if last_error else ''}")
     if last_successful_date == today:
-        return ("good", "Daily sweep completed today")
+        outcome = str(state.get("outcome_message", "") or "").strip()
+        return ("good", outcome or "Daily sweep completed today")
     return ("neutral", "Daily sweep will start automatically when needed")
 
 
@@ -2561,6 +2611,8 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         )
     )
     decision_ready = _decision_data_ready(analytics_status)
+    production_inventory = dict(latest_payload.get("production_inventory") or {})
+    daily_action_portfolio = dict(latest_payload.get("daily_action_portfolio") or {})
     page_insights = [
         dict(item)
         for item in list(latest_payload.get("page_insights") or [])[:5]
@@ -2590,7 +2642,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     article_pipeline = dict(query_intelligence.get("article_pipeline") or {})
     monitored_count = int(latest_payload.get("pages_reviewed", 0) or len(settings.website_ops_site_urls))
     schedule_note = (
-        "<p class='muted'>Scheduled pulses at 8:00 AM, 1:00 PM, and 6:00 PM America/Denver. "
+        "<p class='muted'>Scheduled hourly pulses from 8:00 AM through 3:00 PM America/Denver. "
         "Email is sent when completed work or the action state changes.</p>"
     )
     body = f"""
@@ -2611,6 +2663,8 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         </section>
         {_operator_blocker_panel(analytics_status)}
         {_program_plan_panel(program_plan)}
+        {render_daily_portfolio_panel(daily_action_portfolio)}
+        {render_production_inventory_panel(production_inventory)}
         <section class="hero">
           <div id="submit-issue" class="card stack">
             <p class="eyebrow">Current scope</p>
@@ -2630,7 +2684,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <div class="summary-grid">
               {_summary_chip("Writable host", "anatainc.com", tone="good")}
               {_summary_chip("Daily email", "Changes and your to-do list", tone="neutral")}
-              {_summary_chip("Schedule", "8 AM · 1 PM · 6 PM", tone="neutral")}
+              {_summary_chip("Schedule", "Hourly · 8 AM–3 PM", tone="neutral")}
               {_summary_chip("Query validation", f"{query_summary.get('validated_clusters', 0)} validated", tone="good" if query_summary.get('validated_clusters') else "neutral")}
             </div>
             <a class="text-link" href="/admin/website-ops/queries">Inspect query ownership and citations</a>
@@ -2647,13 +2701,13 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <span class="status-pill {'status-ok' if article_pipeline.get('status') == 'eligible' else 'status-warn'}">{html.escape(str(article_pipeline.get("status", "not calculated")).replace("_", " ").title())}</span>
           </div>
           <div class="summary-grid">
-            {_summary_chip("Daily article minimum", "2", tone="good")}
-            {_summary_chip("Daily article target", "3", tone="neutral")}
+            {_summary_chip("Daily article minimum", "8", tone="good")}
+            {_summary_chip("Daily article target", "8", tone="neutral")}
             {_summary_chip("Validated content gaps", article_pipeline.get("validated_informational_gaps", 0), tone="neutral")}
             {_summary_chip("Source-qualified candidates", article_pipeline.get("source_qualified_candidates", 0), tone="good" if article_pipeline.get("source_qualified_candidates") else "neutral")}
             {_summary_chip("Publishing policy", "Validated autopush", tone="good")}
           </div>
-          <p class="muted">Each scheduled pulse audits the site, researches promising questions, advances briefs, completes eligible fixes, and verifies production. Agent must publish at least two source-qualified educational articles per day and targets three.</p>
+          <p class="muted">Each scheduled pulse audits the site, researches promising questions, advances briefs, completes eligible fixes, and verifies production. Agent targets eight qualified daily SEO actions, including two source-qualified educational articles for each service pillar when eight publishable intents pass every quality gate.</p>
           <div class="button-row">
             <a class="text-link" href="/admin/website-ops/strategy">Open content strategy and briefs</a>
             <a class="text-link" href="/admin/website-ops/queries">Inspect query evidence</a>
@@ -3319,7 +3373,7 @@ def render_content_strategy_page(
         and str(item.get("status", "")).strip().lower() == "done"
         and str(item.get("last_execution_at", "")).startswith(current_day)
     )
-    daily_minimum = int(strategy.get("daily_article_minimum", 2) or 2)
+    daily_minimum = int(strategy.get("daily_article_minimum", 8) or 8)
     quota_met = published_today >= daily_minimum
     next_operation = dict(strategy.get("next_operation") or {})
     briefs = [
@@ -3378,7 +3432,7 @@ def render_content_strategy_page(
           <div class="summary-grid">
             {_summary_chip("Published today", published_today, tone="good" if quota_met else "warn")}
             {_summary_chip("Daily minimum", daily_minimum, tone="neutral")}
-            {_summary_chip("Daily target", int(strategy.get('daily_article_target', 3) or 3), tone="neutral")}
+            {_summary_chip("Daily target", int(strategy.get('daily_article_target', 8) or 8), tone="neutral")}
             {_summary_chip("Generated today", int(production_quota.get('generated_today', summary.get('generated_today', 0)) or 0), tone="neutral")}
           </div>
           <div class="alert {'alert--success' if quota_met else 'alert--error'}">
@@ -3402,7 +3456,7 @@ def render_content_strategy_page(
               <li>Collect query, page, citation, and conversion evidence.</li>
               <li>Assign one canonical owner and decide improve-versus-create.</li>
               <li>Maintain a source and internal-link brief.</li>
-              <li>Generate and publish at least two eligible source-backed articles per day and target three.</li>
+              <li>Generate and publish eight eligible source-backed articles per day, balanced as two articles across each of the four service pillars.</li>
               <li>Publish through GitHub, verify production, roll back failures, and measure outcomes.</li>
             </ol>
           </div>

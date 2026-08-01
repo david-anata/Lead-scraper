@@ -10,12 +10,23 @@ OPERATOR = ROOT / "docs/training/Anata-HR-Operator-Training-Guide.docx"
 EMPLOYEE = ROOT / "docs/training/Anata-Employee-HR-Quick-Start.docx"
 
 
+def iter_paragraphs(container):
+    """Yield body and table-cell paragraphs without rebuilding document structure."""
+
+    yield from container.paragraphs
+    for table in container.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                yield from iter_paragraphs(cell)
+
+
 def replace(document: Document, old: str, new: str) -> None:
-    for paragraph in document.paragraphs:
+    paragraphs = list(iter_paragraphs(document))
+    for paragraph in paragraphs:
         if paragraph.text == old:
             paragraph.text = new
             return
-    if any(paragraph.text == new for paragraph in document.paragraphs):
+    if any(paragraph.text == new for paragraph in paragraphs):
         return
     raise ValueError(f"Paragraph not found: {old}")
 
@@ -43,6 +54,16 @@ def update_operator() -> None:
     document = Document(OPERATOR)
     replace(
         document,
+        "Go to HR → Employees → Add employee. Enter the employee’s work email, legal name, role, team, employee type, pay basis, compensation, phone, and active status.",
+        "Go to HR → Employees → Add employee. Enter the employee’s record email, legal name, role, team, employee type, pay basis, compensation, phone, and active status. Then add a personal HR sign-in email the employee controls and can keep if work access ends. Gmail, Yahoo, Outlook, iCloud, and other valid addresses work.",
+    )
+    replace(
+        document,
+        "Choose Send invitation. If email delivery succeeds, the employee receives the link. If not, copy the one-time link and send it through a trusted channel.",
+        "Choose Create secure invitation. The employee opens the one-time link sent only to their personal HR sign-in address. The link expires, cannot be reused, and does not require Google or a new password. Their separate work login keeps its existing Agent permissions.",
+    )
+    replace(
+        document,
         "A qualified payroll or tax professional reviews the 2026 setup and opening balances. Mark the review complete only after that review actually occurs.",
         "A qualified payroll or tax professional reviews the 2026 setup and opening balances. Record the reviewer’s name, email, review date, evidence reference, note, and attestation. A checkbox alone does not complete this control.",
     )
@@ -60,6 +81,22 @@ def update_operator() -> None:
         document,
         "Reports are permission-filtered CSV exports. Store exports only where authorized HR administrators can access them.",
         "Reports are permission-filtered CSV exports. Quarterly and year-to-date registers support accountant reconciliation. The verified HR backup ZIP includes a checksum manifest but excludes full SSNs and sealed tax-form payloads. Store every download securely.",
+    )
+    replace(
+        document,
+        "The requester cannot approve their own request. The decision posts to the PTO record and later payroll treatment.",
+        "The requester cannot approve their own request. The assigned manager receives a privacy-safe email that links back to the authenticated Time & PTO page; the email itself cannot approve anything. Approval reserves the PTO balance and adds an all-day event to the dedicated Anata OOO calendar. Denial creates no calendar event. The employee receives the decision by email.",
+    )
+    insert_before(
+        document,
+        "Holiday handling",
+        [
+            ("OOO calendar setup, revocation, and recovery", "Heading 2"),
+            ("Open HR → Settings → Time-off calendar. A Ready status means the dedicated calendar ID and service account are configured. Never paste the service-account JSON into an HR form or email; it belongs only in Render’s secret environment settings.", "Normal"),
+            ("If a pending request says the manager email needs attention, use Resend manager email. The reviewer still signs in to approve or deny; email never grants approval authority.", "Normal"),
+            ("If approved time must be canceled, an authorized reviewer enters a revocation reason and selects Revoke approved PTO. Anata preserves the approval history, releases the reserved hours, removes the OOO event, and emails the employee.", "Normal"),
+            ("If Google is unavailable, the PTO decision remains valid and the row shows that calendar attention is needed. After restoring the connection, select Retry OOO calendar. Do not edit the Google event manually as a substitute for the HR record.", "Normal"),
+        ],
     )
     insert_before(
         document,
@@ -170,6 +207,26 @@ def update_operator() -> None:
 
 def update_employee() -> None:
     document = Document(EMPLOYEE)
+    replace(
+        document,
+        "Your invitation is tied to your work email. Do not forward it. David or Val will never ask you to email your Social Security number or identity documents.",
+        "Your invitation is tied to your personal HR sign-in email. Do not forward it. David or Val will never ask you to email your Social Security number or identity documents.",
+    )
+    replace(
+        document,
+        "Use the link sent by Val or David and sign in with the same work email listed on your employee record.",
+        "Open the one-time link sent by Val or David to your personal HR sign-in email. Gmail, Yahoo, Outlook, iCloud, and other valid addresses work. You do not need a Google account or a new password, and your work login remains separate.",
+    )
+    replace(
+        document,
+        "Confirm you signed in with the exact work email used for your employee record.",
+        "Confirm you used the exact personal HR sign-in email where your invitation was sent.",
+    )
+    replace(
+        document,
+        "David or Val approves or denies the request. Do not assume time off is approved until the status changes.",
+        "Your assigned manager receives an email and must sign in to Anata to approve or deny the request. Email alone never approves time off. Do not assume time off is approved until the status changes. After approval, Anata adds the dates to the shared OOO calendar and emails you the decision. If approved plans change, contact your manager; an authorized reviewer must revoke the request so your PTO balance and calendar are corrected together.",
+    )
     insert_before(
         document,
         "3. Request PTO",

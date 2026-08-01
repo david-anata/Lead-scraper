@@ -41,6 +41,9 @@ class SalesOperatorReviewJobTests(unittest.TestCase):
                     }
                 ]
             },
+        ), mock.patch(
+            "sales_support_agent.jobs.sales_operator_review.send_public_tool_failure_alerts",
+            return_value={"sent": False, "skipped": True},
         ):
             result = SalesOperatorReviewJob(settings, session_factory).run(dry_run=False, limit=10)
 

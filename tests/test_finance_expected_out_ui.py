@@ -210,12 +210,13 @@ def test_the_new_card_is_the_one_the_page_renders():
     assert _money(83_793_00) in card, "the total must be the two added together"
 
 
-def test_the_nav_offers_the_predicted_bills_page_on_every_finance_page():
+def test_the_nav_keeps_predicted_bills_out_of_the_daily_four_destinations():
     strip = render_finance_nav("today", counts={})
 
-    assert "/admin/finances/whats-coming" in strip
-    assert "What is coming" in strip
-    assert ("whats_coming", "What is coming", "/admin/finances/whats-coming") in NAV_ITEMS
+    assert "/admin/finances/whats-coming" not in strip
+    assert "Cash plan" in strip
+    assert "Review" in strip
+    assert len(NAV_ITEMS) == 5
 
 
 def test_the_nav_badges_only_the_predicted_bills_still_waiting_on_him():
@@ -241,7 +242,7 @@ def test_the_nav_badges_only_the_predicted_bills_still_waiting_on_him():
         bill_patterns.list_bill_patterns = original
 
     assert counts["whats_coming"] == 2, "answered predictions must not keep badging"
-    assert ">2<" in render_finance_nav("today", counts=counts)
+    assert ">2<" not in render_finance_nav("today", counts=counts)
 
 
 def test_a_broken_count_never_takes_the_nav_down():
@@ -257,7 +258,7 @@ def test_a_broken_count_never_takes_the_nav_down():
 
     assert "whats_coming" not in counts
     strip = render_finance_nav("today", counts=counts)
-    assert "/admin/finances/whats-coming" in strip, "the link survives a dead count"
+    assert "/admin/finances/review" in strip, "the four-destination navigation survives a dead legacy count"
 
 
 def test_the_filing_queue_says_money_coming_in_is_handled_elsewhere():

@@ -37,6 +37,17 @@ ACTION_LABELS = {
     "uncollectible": "written off as uncollectible",
     "invoiced_in_error": "invoiced in error",
 }
+
+
+def get_batch_summary(batch_id: str) -> Optional[dict[str, Any]]:
+    """Return the receipt-safe fields for one audited review batch."""
+    with get_engine().connect() as connection:
+        row = connection.execute(text("""
+            SELECT id, action, reason, actor, item_count, amount_cents, created_at
+            FROM finance_bulk_batches
+            WHERE id=:id
+        """), {"id": str(batch_id)}).fetchone()
+    return dict(row._mapping) if row else None
 # Actions the operator may take on money owed TO us, kept separate so a
 # receivable is never quietly resolved with a payables action.
 RECEIVABLE_ACTIONS = ("uncollectible", "invoiced_in_error")

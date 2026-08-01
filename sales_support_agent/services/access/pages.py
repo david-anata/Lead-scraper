@@ -563,6 +563,37 @@ def render_invite_invalid_page() -> str:
     return _standalone_page("Invalid invite", "🔗", "Invalid invite link", body)
 
 
+def render_email_login_sent_page() -> str:
+    """Account-enumeration-safe confirmation for passwordless requests."""
+
+    body = """
+      <p class="muted">
+        If that email belongs to an active Anata account, a one-time sign-in
+        link is on its way.<br><br>
+        Check spam or junk if it does not arrive. The link expires in 15 minutes
+        and can be used once.
+      </p>
+      <a class="btn" href="/admin/login" style="margin-top:22px">Back to sign in</a>
+    """
+    return _standalone_page(
+        "Check your email", "✉", "Check your email", body
+    )
+
+
+def render_email_login_invalid_page() -> str:
+    body = """
+      <p class="muted">
+        This sign-in link is invalid, expired, was replaced by a newer link, or
+        has already been used.<br><br>
+        Request a new link from the sign-in page.
+      </p>
+      <a class="btn" href="/admin/login" style="margin-top:22px">Request a new link</a>
+    """
+    return _standalone_page(
+        "Sign-in link unavailable", "!", "This link no longer works", body
+    )
+
+
 # ---------------------------------------------------------------------------
 # Phase 3: Invite created confirmation (shown inline after POST)
 # ---------------------------------------------------------------------------

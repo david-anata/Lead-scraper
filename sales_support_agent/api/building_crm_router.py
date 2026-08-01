@@ -5192,7 +5192,9 @@ def building_control_room(
                     "space_id": item.space_id,
                     "space_name": space_names.get(item.space_id, item.space_id),
                     "kind": item.kind,
-                    "starts_at": item.starts_at.strftime("%b %d, %Y · %I:%M %p"),
+                    "starts_at": _mountain(item.starts_at).strftime(
+                        "%b %d, %Y · %I:%M %p MT"
+                    ),
                     "status": item.status,
                     "agreement_status": item.agreement_status,
                     "deposit_status": item.deposit_status,
@@ -5204,6 +5206,16 @@ def building_control_room(
                             "currency": latest_proposals[item.id].currency,
                             "amount_cents": latest_proposals[item.id].amount_cents,
                             "rate_plan_id": latest_proposals[item.id].rate_plan_id,
+                            "rate_plan_snapshot": dict(
+                                latest_proposals[item.id].rate_plan_snapshot_json or {}
+                            ),
+                            "pricing_adjustment": dict(
+                                (
+                                    latest_proposals[item.id].rate_plan_snapshot_json
+                                    or {}
+                                ).get("pricing_adjustment")
+                                or {}
+                            ),
                             "line_item": str(
                                 (
                                     list(latest_proposals[item.id].line_items_json or [{}])[0]

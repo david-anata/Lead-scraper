@@ -56,6 +56,7 @@ _RAW_RULES: list[tuple[str, str]] = [
 
     # ── Debt / loan repayments ─────────────────────────────────────────────
     (r"FORAFINANCIAL|FORA FINANCIAL", "debt"),
+    (r"ONDECK|ONDECK CAPITAL", "debt"),
     (r"Stripe Cap|STRIPE CAP|TYPE:\s*Stripe Cap", "debt"),
     (r"Payment to Fora|Transfer to Cap", "debt"),
 
@@ -67,6 +68,7 @@ _RAW_RULES: list[tuple[str, str]] = [
     (r"QuestarGas|QUESTAR|Questar Gas", "utilities"),
     (r"CITY OF SARATOGA|SARATOGA.*CITY", "utilities"),
     (r"ROCKY.*MTN.*POWER|ROCKYMTN|PACIFIC POWER", "utilities"),
+    (r"DOMINION ENERGY|DOMINIONENERGY", "utilities"),
     (r"COMCAST|XFINITY|CABLE SVCS", "utilities"),
     (r"SPI\*ENB GAS|ENB GAS", "utilities"),
     (r"Payment to Questar|Payment to xfinity|Payment to Rocky Mountain", "utilities"),
@@ -124,6 +126,10 @@ _RAW_RULES: list[tuple[str, str]] = [
     (r"INTUIT.*TRAN FEE|INTU.*TRAN FEE|Intuit Service Charges", "fees"),
     (r"VISA INTERNATIONAL SERVICE", "fees"),
     (r"Overd|OVERDRAFT", "fees"),
+
+    # Generic Intuit charges that were not already identified as deposits,
+    # payroll, tax, or fees are treated as software.
+    (r"\bINTUIT\b", "software"),
 
     # ── Meals (rarely business — flag for review) ──────────────────────────
     (r"RESTAURANT|DINING|DOORDASH|UBER EATS|GRUBHUB", "meals"),

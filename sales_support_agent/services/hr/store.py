@@ -346,11 +346,7 @@ def get_employee_by_email(email: str) -> Optional[dict]:
 
 def _valid_hr_login_email(value: str) -> bool:
     normalized = (value or "").strip().lower()
-    return (
-        "@" in normalized
-        and "." in normalized.rsplit("@", 1)[-1]
-        and not normalized.endswith("@anatainc.com")
-    )
+    return access_store.valid_email(normalized)
 
 
 def set_employee_hr_login_email(
@@ -692,22 +688,19 @@ def create_employee_invitation(employee_email: str, *, actor: str,
         if not employee:
             return {"ok": False, "error": "employee_not_found"}
         employee_name = employee.full_name or employee.email
-        employee_hr_role = employee.hr_role
         login_email = (employee.hr_login_email or "").strip().lower()
     if not _valid_hr_login_email(login_email):
         return {"ok": False, "error": "hr_login_email_required"}
     existing_access = access_store.get_user_by_email(login_email)
     if existing_access:
         access_user_id = existing_access["id"]
-        if employee_hr_role == "employee":
-            # Employee invitations deliberately remove unrelated operator tools.
-            # Extra access can be granted later as an explicit admin decision.
-            access_store.set_user_permissions(access_user_id, ["hr.access"])
-        else:
-            access_store.set_user_permissions(
-                access_user_id,
-                sorted(set(existing_access.get("permissions") or set()).union({"hr.access"})),
-            )
+        # Never erase access already granted to an existing business identity.
+        # A new personal identity starts HR-only; an existing identity gains HR
+        # alongside its explicitly approved tools.
+        access_store.set_user_permissions(
+            access_user_id,
+            sorted(set(existing_access.get("permissions") or set()).union({"hr.access"})),
+        )
     else:
         access_user_id = access_store.upsert_user(
             login_email, employee_name, status="suspended"
@@ -1891,8 +1884,11 @@ def create_pto_request(employee_email: str, *, start_date: date, end_date: date,
         ).first()
         if conflict:
             return False, "pto_conflict"
-        row = HRPTORequest(employee_email=email, start_date=start_date, end_date=end_date,
-                           hours=Decimal(str(round(hours, 2))), reason=(reason or "").strip())
+        row = HRPTORequest(
+            employee_email=email, start_date=start_date, end_date=end_date,
+            hours=Decimal(str(round(hours, 2))), reason=(reason or "").strip(),
+            reviewer_email=(employment.manager_email or "").strip().lower(),
+        )
         s.add(row)
         s.flush()
         _audit(s, actor, "pto.requested", "pto_request", row.id, {
@@ -1924,10 +1920,116 @@ def list_pto_requests(employee_email: Optional[str] = None) -> list:
                 "id": row.id, "employee_email": row.employee_email,
                 "start_date": row.start_date, "end_date": row.end_date,
                 "hours": float(row.hours), "reason": row.reason, "status": row.status,
+                "reviewer_email": row.reviewer_email,
+                "manager_notified": bool(row.manager_notified_at),
+                "calendar_sync_status": row.calendar_sync_status,
+                "calendar_sync_error": row.calendar_sync_error,
                 "working_day_count": len(workdays),
                 "excluded_day_count": len(dates) - len(workdays),
             })
         return result
+
+
+def latest_pto_request_id(employee_email: str) -> int | None:
+    with _session() as session:
+        row = session.query(HRPTORequest.id).filter_by(
+            employee_email=(employee_email or "").strip().lower()
+        ).order_by(HRPTORequest.id.desc()).first()
+        return int(row[0]) if row else None
+
+
+def get_pto_request(request_id: int) -> dict | None:
+    """Return the minimum workflow data needed for notification and projection."""
+    with _session() as session:
+        row = session.get(HRPTORequest, request_id)
+        if not row:
+            return None
+        employee = session.query(HREmployee).filter_by(email=row.employee_email).first()
+        reviewer = session.query(HREmployee).filter_by(email=row.reviewer_email).first()
+        login_email = (
+            (employee.hr_login_email or employee.personal_email or employee.email)
+            if employee else row.employee_email
+        )
+        return {
+            "id": row.id, "employee_email": row.employee_email,
+            "employee_login_email": login_email,
+            "employee_name": (employee.full_name if employee else "") or row.employee_email,
+            "start_date": row.start_date, "end_date": row.end_date,
+            "hours": float(row.hours), "status": row.status,
+            "reviewer_email": row.reviewer_email,
+            "reviewer_login_email": (
+                (reviewer.hr_login_email or reviewer.personal_email or reviewer.email)
+                if reviewer else row.reviewer_email
+            ),
+            "calendar_event_id": row.calendar_event_id,
+        }
+
+
+def record_pto_notification(request_id: int, *, sent: bool) -> None:
+    with _session() as session:
+        row = session.get(HRPTORequest, request_id)
+        if not row:
+            return
+        if sent:
+            row.manager_notified_at = datetime.now(timezone.utc)
+        _audit(session, "system", "pto.manager_notification_sent" if sent else
+               "pto.manager_notification_failed", "pto_request", row.id,
+               {"reviewer_email": row.reviewer_email})
+
+
+def record_pto_calendar_sync(request_id: int, *, status: str, event_id: str = "",
+                             error: str = "", clear_event: bool = False) -> None:
+    with _session() as session:
+        row = session.get(HRPTORequest, request_id)
+        if not row:
+            return
+        row.calendar_sync_status = status
+        row.calendar_sync_error = error
+        if event_id:
+            row.calendar_event_id = event_id
+        elif clear_event:
+            row.calendar_event_id = ""
+        _audit(session, "system", f"pto.calendar_{status}", "pto_request", row.id,
+               {"calendar_event_id": event_id, "error": error})
+
+
+def revoke_pto(request_id: int, *, reason: str, actor: str) -> tuple[bool, str]:
+    """Revoke approved PTO, release its reservation, and preserve all evidence."""
+    explanation = (reason or "").strip()
+    if not explanation:
+        return False, "pto_revocation_reason_required"
+    with _session() as session:
+        row = session.get(HRPTORequest, request_id)
+        if not row or row.status != "approved":
+            return False, "pto_revocation_not_allowed"
+        actor_identity = (actor or "").strip().lower()
+        actor_employee = session.query(HREmployee).filter(
+            (HREmployee.email == actor_identity)
+            | (HREmployee.hr_login_email == actor_identity)
+        ).first()
+        actor_record_email = (
+            actor_employee.email if actor_employee else actor_identity
+        )
+        if row.employee_email == actor_record_email:
+            return False, "pto_revocation_not_allowed"
+        row.status = "revoked"
+        row.decided_by = actor
+        row.decided_at = datetime.now(timezone.utc)
+        session.add(HRPTOLedger(
+            employee_email=row.employee_email, entry_type="released",
+            hours=row.hours, effective_date=row.start_date,
+            source_type="pto_request", source_id=str(row.id),
+            note=f"Released when approved PTO was revoked: {explanation}",
+            created_by=actor,
+        ))
+        _supersede_open_payrolls(
+            session, actor=actor, effective_start=row.start_date,
+            effective_end=row.end_date, reason="Approved PTO revoked",
+        )
+        _audit(session, actor, "pto.revoked", "pto_request", row.id, {
+            "reason": explanation, "hours_released": float(row.hours),
+        })
+        return True, "pto_revoked"
 
 
 def withdraw_pto(request_id: int, *, employee_email: str, actor: str) -> tuple[bool, str]:
@@ -1956,7 +2058,14 @@ def decide_pto(request_id: int, *, decision: str, actor: str) -> bool:
         row = s.get(HRPTORequest, request_id)
         if not row or row.status != "pending":
             return False
-        if row.employee_email == actor.strip().lower():
+        actor_identity = actor.strip().lower()
+        actor_employee = s.query(HREmployee).filter(
+            (HREmployee.email == actor_identity)
+            | (HREmployee.hr_login_email == actor_identity)
+        ).first()
+        if row.employee_email == (
+            actor_employee.email if actor_employee else actor_identity
+        ):
             return False
         row.status, row.decided_by, row.decided_at = decision, actor, datetime.now(timezone.utc)
         if decision == "approved":

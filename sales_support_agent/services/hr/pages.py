@@ -122,7 +122,10 @@ _HR_STYLES = """
   .hr-mobile-nav { display:none; }
   @media (max-width: 768px) {
     body { padding-bottom:76px; }
-    .hr-main { padding:22px 16px 36px; overflow-x:hidden; }
+    .hr-main {
+      padding:22px 16px calc(104px + env(safe-area-inset-bottom));
+      overflow-x:hidden;
+    }
     .hr-h1 { font-size:23px; line-height:1.2; }
     .hr-sub { line-height:1.5; }
     .hr-row-head { align-items:stretch; flex-direction:column; gap:14px; }
@@ -151,6 +154,9 @@ _HR_STYLES = """
     .employee-action .hr-btn { width:100%; min-height:44px; text-align:center; }
     .hr-training-steps li { grid-template-columns:38px minmax(0,1fr); padding:16px 14px; }
     .hr-btn { min-height:44px; }
+    .top-actions .top-link,
+    .topbar-section-row .top-link,
+    .user-chip { min-height:44px; }
     .hr-js .hr-tbl { display:block; width:100%; max-width:100%; overflow:visible; border:0; background:transparent; }
     .hr-js .hr-tbl thead { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
     .hr-js .hr-tbl tbody, .hr-js .hr-tbl tr, .hr-js .hr-tbl td { display:block; width:100%; box-sizing:border-box; }
@@ -269,6 +275,14 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
         form.appendChild(csrfInput);
       }}
     }});
+    document.querySelectorAll('input:not([type="hidden"]), select, textarea').forEach(function(field, index) {{
+      if ((field.labels && field.labels.length) || field.hasAttribute('aria-label') || field.hasAttribute('aria-labelledby')) return;
+      var candidate = field.previousElementSibling;
+      while (candidate && candidate.tagName !== 'LABEL') candidate = candidate.previousElementSibling;
+      if (!candidate) return;
+      if (!field.id) field.id = 'hr-field-' + index;
+      candidate.htmlFor = field.id;
+    }});
     document.querySelectorAll('.hr-tbl').forEach(function(table) {{
       var headers = Array.from(table.querySelectorAll('thead th')).map(function(th) {{
         return th.textContent.trim();
@@ -309,7 +323,8 @@ def render_hr_employee_record_missing(*, user: Optional[dict]) -> str:
     )
 
 
-def render_hr_setup(control: dict, company_profile: dict, *, user, flash=None) -> str:
+def render_hr_setup(control: dict, company_profile: dict, calendar: dict,
+                    *, user, flash=None) -> str:
     """Render the approved company-to-payroll setup journey from live readiness."""
     readiness = control.get("readiness") or {}
     blockers = readiness.get("blockers") or []
@@ -383,6 +398,18 @@ def render_hr_setup(control: dict, company_profile: dict, *, user, flash=None) -
             ),
             "ready": True, "owner": "System",
             "href": "/admin/hr/compliance", "action": "View payroll calendar",
+        },
+        {
+            "title": "Connect the shared OOO calendar",
+            "description": (
+                "Approved PTO is synchronized to the dedicated Anata OOO calendar."
+                if calendar.get("configured") else
+                "Connect the dedicated Anata OOO Google Calendar so approved leave "
+                "is visible to the team. PTO approval remains valid if sync is down."
+            ),
+            "ready": bool(calendar.get("configured")), "owner": "David or Val",
+            "href": "/admin/hr/settings#ooo-calendar",
+            "action": "Review calendar connection",
         },
         {
             "title": "Verify Utah payroll registrations",
@@ -559,7 +586,7 @@ def _flash(flash: Optional[str]) -> str:
         "personal_email_invalid": "Add a valid personal email outside anatainc.com.",
         "hr_login_saved": "Personal HR sign-in email saved. No invitation was sent.",
         "hr_login_email_required": "Add the employee’s personal HR sign-in email before creating an invitation.",
-        "hr_login_email_invalid": "Use a valid personal Google-account email outside anatainc.com.",
+        "hr_login_email_invalid": "Use a valid email address.",
         "hr_login_email_in_use": "That HR sign-in email is already assigned to another employee.",
         "w4_saved": "W-4 elections securely saved.",
         "attestations_saved": "Employee attestations saved.",
@@ -770,13 +797,13 @@ def render_hr_access_training(*, user, flash=None) -> str:
     </div>
     <div class="hr-callout">
       <strong>Before you begin</strong>
-      <p>Keep the employee record email for payroll history, then add the personal Google account they will use for HR sign-in. Their personal contact email is confirmed separately during onboarding. Neither field gives Anata access to an inbox.</p>
+      <p>Keep the employee record email for payroll history, then add the personal email they will use for HR sign-in. Gmail, Yahoo, Outlook, iCloud, and other valid addresses work. Their personal contact email is confirmed separately during onboarding. Neither field gives Anata access to an inbox.</p>
     </div>
     <ol class="hr-training-steps">
       <li><div><h2>Create or review the employee record</h2><p>Confirm the name, record email, worker type, pay basis, team, status, and hire date. Keep contractors outside W-2 payroll.</p></div></li>
-      <li><div><h2>Add the personal HR sign-in</h2><p>Enter a personal Google-account email the employee controls. Saving it does not send anything and does not change their work-account permissions.</p></div></li>
-      <li><div><h2>Create the secure invitation</h2><p>Open the employee and select “Create secure invitation.” Send the generated link only to the personal HR sign-in address. The link expires and cannot be reused after acceptance.</p></div></li>
-      <li><div><h2>Ask the employee to install the app</h2><p>They open the invitation, sign in, visit the HR home page, then use “Add to Home Screen” on iPhone or “Install app” on Android. The Agent icon appears on the phone.</p></div></li>
+      <li><div><h2>Add the personal HR sign-in</h2><p>Enter any valid personal email the employee controls. Saving it does not send anything and does not change their work-account permissions.</p></div></li>
+      <li><div><h2>Create the secure invitation</h2><p>Open the employee and select “Create secure invitation.” The employee opens the one-time link sent only to that address. It expires, cannot be reused, and does not require Google or a new password.</p></div></li>
+      <li><div><h2>Ask the employee to install the app</h2><p>They open the invitation, arrive at their HR home page, then use “Add to Home Screen” on iPhone or “Install app” on Android. The Agent icon appears on the phone.</p></div></li>
       <li><div><h2>Have the employee finish required items</h2><p>Their home page lists exactly what is missing. They add a personal contact email, complete their profile, sign their W-4, finish the employee I-9 step, and acknowledge policies.</p></div></li>
       <li><div><h2>Test employee-only access</h2><p>Ask them to open Home, Time &amp; PTO, My information, Policies, and Pay statements. They should not see coworkers, payroll preparation, company settings, reports, Sales, Finance, or other operator tools.</p></div></li>
       <li><div><h2>Complete employer review</h2><p>David or Val reviews the employee’s original I-9 documents outside the app, records only the allowed evidence, and follows up on any remaining setup items.</p></div></li>
@@ -889,7 +916,7 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
     login_status = (
         f'<strong>Ready to invite:</strong> {_esc(e.get("hr_login_email"))}'
         if e.get("hr_login_email")
-        else "<strong>Personal HR sign-in missing.</strong> Add the employee’s personal Google-account email and save before creating an invitation."
+        else "<strong>Personal HR sign-in missing.</strong> Add the employee’s personal email and save before creating an invitation."
     )
     body = f"""
     {err}
@@ -902,8 +929,8 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         <div><label>Full name</label><input name="full_name" value="{_esc(e.get('full_name',''))}" placeholder="Jane Doe"></div>
       </div>
       <label for="hr-login-email">Personal HR sign-in email</label>
-      <input id="hr-login-email" type="email" name="hr_login_email" value="{_esc(e.get('hr_login_email',''))}" autocomplete="off" placeholder="employee.personal@gmail.com" aria-describedby="hr-login-help">
-      <p class="hr-help" id="hr-login-help">Use the personal Google account the employee will keep if work access ends. This login receives employee-only HR access and does not replace or connect to their Anata work account. Saving it does not send an invitation.</p>
+      <input id="hr-login-email" type="email" name="hr_login_email" value="{_esc(e.get('hr_login_email',''))}" autocomplete="email" placeholder="employee.personal@example.com" aria-describedby="hr-login-help">
+      <p class="hr-help" id="hr-login-help">Use an email the employee controls and can keep if work access ends. Gmail, Yahoo, Outlook, iCloud, and other providers work. The employee signs in with a one-time email link—no Google account or new password is required. Their Anata work login remains separate. Saving this field does not send an invitation.</p>
       <div class="hr-grid2">
         <div><label>HR role</label>{_sel("hr_role", HR_ROLES, e.get("hr_role","employee"))}</div>
         <div><label>Worker record</label>{worker_select}</div>
@@ -1114,10 +1141,40 @@ def render_hr_time(
     if not rows:
         rows = '<tr><td colspan="6" class="hr-empty">No time recorded yet.</td></tr>'
     viewer_email = ((user or {}).get("email") or "").strip().lower()
+    def pto_actions(item: dict) -> str:
+        actions = []
+        if can_review and item["status"] == "pending" and item["employee_email"] != viewer_email:
+            actions.append(
+                f'<form class="hr-inline" method="post" action="/admin/hr/time/pto/{item["id"]}/decision">'
+                '<button class="hr-btn" name="decision" value="approved">Approve</button>'
+                '<button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>'
+            )
+            if not item.get("manager_notified"):
+                actions.append(
+                    f'<form method="post" action="/admin/hr/time/pto/{item["id"]}/notify-reviewer">'
+                    '<button class="hr-btn hr-btn-light" type="submit">Resend manager email</button></form>'
+                )
+        elif can_review and item["status"] == "approved":
+            actions.append(
+                f'<form class="hr-form" method="post" action="/admin/hr/time/pto/{item["id"]}/revoke">'
+                '<label>Revocation reason</label><input name="reason" required maxlength="500">'
+                '<button class="hr-btn hr-btn-light" type="submit">Revoke approved PTO</button></form>'
+            )
+        elif item["status"] == "pending" and item["employee_email"] == viewer_email:
+            actions.append(
+                f'<form method="post" action="/admin/hr/time/pto/{item["id"]}/withdraw">'
+                '<button class="hr-btn hr-btn-light" type="submit">Withdraw request</button></form>'
+            )
+        if can_review and item["status"] in ("approved", "revoked") and item.get("calendar_sync_status") in ("failed", "setup_required"):
+            actions.append(
+                f'<form method="post" action="/admin/hr/time/pto/{item["id"]}/calendar-sync">'
+                '<button class="hr-btn hr-btn-light" type="submit">Retry OOO calendar</button></form>'
+            )
+        return "".join(actions) or "—"
     requests = "".join(f"""<tr><td>{_esc(r['employee_email'])}</td><td>{_esc(r['start_date'])}–{_esc(r['end_date'])}
       <div class="hr-help">{r.get('working_day_count', 0)} working day(s){f"; {r.get('excluded_day_count')} weekend/holiday day(s) ignored" if r.get('excluded_day_count') else ""}</div></td>
-      <td>{r['hours']:.2f}</td><td>{_esc(r['status'].title())}</td><td>{_esc(r['reason'] or '—')}</td><td>
-      {f'<form class="hr-inline" method="post" action="/admin/hr/time/pto/{r["id"]}/decision"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and r['status'] == 'pending' and r['employee_email'] != viewer_email else f'<form method="post" action="/admin/hr/time/pto/{r["id"]}/withdraw"><button class="hr-btn hr-btn-light" type="submit">Withdraw request</button></form>' if r['status'] == 'pending' and r['employee_email'] == viewer_email else '—'}</td></tr>""" for r in pto_requests)
+      <td>{r['hours']:.2f}</td><td>{_esc(r['status'].title())}<div class="hr-help">{_esc('OOO calendar synced' if r.get('calendar_sync_status') == 'synced' else 'Removed from OOO calendar' if r.get('calendar_sync_status') == 'deleted' else 'OOO calendar setup needed' if r.get('calendar_sync_status') == 'setup_required' else 'OOO calendar sync needs retry' if r.get('calendar_sync_status') == 'failed' else 'Manager notified' if r.get('manager_notified') else 'Manager email needs attention' if r['status'] == 'pending' else '')}</div></td><td>{_esc(r['reason'] or '—')}</td><td>
+      {pto_actions(r)}</td></tr>""" for r in pto_requests)
     if not requests:
         requests = '<tr><td colspan="6" class="hr-empty">No PTO requests yet.</td></tr>'
     correction_rows = "".join(f"""<tr><td>#{_esc(c['id'])}</td><td>{_esc(c.get('work_date') or 'Date unavailable')}</td>
@@ -1125,7 +1182,7 @@ def render_hr_time(
       <td>{_esc(c['proposed'].get('start_time'))}–{_esc(c['proposed'].get('stop_time'))}</td>
       <td>{float(c.get('hours_delta') or 0):+.2f} hr<br><span class="hr-help">{'Estimated gross ' + ('$' if float(c.get('estimated_gross_impact') or 0) >= 0 else '−$') + format(abs(float(c.get('estimated_gross_impact') or 0)), '.2f') if c.get('estimated_gross_impact') is not None else 'Gross impact requires pay basis review'}</span></td>
       <td>{_esc(c['reason'])}</td><td>{_esc(c['status'])}</td>
-      <td>{f'<form class="hr-inline" method="post" action="/admin/hr/time/corrections/{c["id"]}/decision"><input name="reviewer_reason" placeholder="Required review note" required><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and c['status'] == 'requested' else '—'}</td></tr>""" for c in corrections)
+      <td>{f'<form class="hr-inline" method="post" action="/admin/hr/time/corrections/{c["id"]}/decision"><input name="reviewer_reason" aria-label="Required review note for correction #{_esc(c["id"])}" placeholder="Required review note" required><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and c['status'] == 'requested' else '—'}</td></tr>""" for c in corrections)
     if not correction_rows:
         correction_rows = '<tr><td colspan="9" class="hr-empty">No time corrections.</td></tr>'
     timesheet_rows = "".join(
@@ -1210,6 +1267,7 @@ def render_hr_time(
     </form>
     <table class="hr-tbl" style="margin-top:18px"><thead><tr><th>Employee</th><th>Period</th><th>Status</th><th>Reviewer</th><th>Decision / note</th></tr></thead><tbody>{timesheet_rows}</tbody></table>
     <h2 style="margin-top:28px">Request PTO</h2>
+    <div class="hr-callout"><div class="hr-kicker">How approval works</div><p>Your assigned manager receives an email with a secure link to review this request. The email itself cannot approve anything. After approval, Anata adds the dates to the shared OOO calendar and emails you the decision.</p></div>
     <form class="hr-form" method="post" action="/admin/hr/time/pto">
       <div class="hr-grid2"><div><label for="pto-start">Start date</label><input id="pto-start" type="date" name="start_date" required></div>
       <div><label for="pto-end">End date</label><input id="pto-end" type="date" name="end_date" required></div></div>
@@ -2006,7 +2064,7 @@ def render_hr_policies(policy: dict, *, user, flash=None) -> str:
 
 
 def render_hr_settings(
-    settings: dict, company: dict, employees: list, payroll_approvers: list,
+    settings: dict, company: dict, calendar: dict, employees: list, payroll_approvers: list,
     opening_balances: list, handbooks: list, *, user, flash=None,
 ) -> str:
     checked = lambda key: " checked" if settings.get(key) else ""
@@ -2071,6 +2129,12 @@ def render_hr_settings(
         f'{_esc(account.get("name") or account["email"])} — {_esc(account["email"])}</option>'
         for account in payroll_approvers
     )
+    calendar_identity = (
+        '<p class="hr-help"><strong>Service account to share the calendar with:</strong> '
+        f'{_esc(calendar.get("service_account_email"))}</p>'
+        if calendar.get("service_account_email") else
+        '<p class="hr-help"><strong>Service account:</strong> Add the protected calendar credential in Render first; its safe sharing email will appear here after deployment.</p>'
+    )
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">HR & payroll settings</h1><p class="hr-sub">The policies currently approved for Anata.</p>
@@ -2087,6 +2151,20 @@ def render_hr_settings(
       automatic money movement. A future internal service cannot claim any of those
       outcomes until it passes the published authority and security contract.</p>
       <a class="hr-btn hr-btn-light" href="/admin/hr/settings/provider-contract.json">View future service requirements</a>
+    </section>
+    <section class="hr-card" id="ooo-calendar">
+      <div class="hr-kicker">Time-off calendar</div>
+      <h2>Anata OOO Google Calendar · {_esc(calendar.get('status'))}</h2>
+      <p class="hr-sub">Only approved PTO is added. Pending and denied requests never appear. Revoking approved PTO releases the reserved hours and removes its event.</p>
+      {f'<div class="hr-callout"><strong>Ready.</strong> Calendar: {_esc(calendar.get("calendar_id"))}<br>Service account: {_esc(calendar.get("service_account_email"))}</div>' if calendar.get('configured') else f'<div class="hr-callout warn"><strong>Setup needed.</strong> {_esc(calendar.get("reason"))}</div>'}
+      {calendar_identity}
+      <ol class="hr-sub">
+        <li>Create or open the dedicated Google Calendar named <strong>Anata OOO</strong>.</li>
+        <li>Share it with the service-account email listed above using “Make changes to events.”</li>
+        <li>In Render, set <code>HR_OOO_GOOGLE_CALENDAR_ID</code> and <code>HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON</code>, then deploy.</li>
+        <li>Return to Time &amp; PTO and retry any item marked as needing calendar attention.</li>
+      </ol>
+      <p class="hr-help">Never paste the service-account JSON into an HR form, email, or employee record. It belongs only in Render’s secret environment settings.</p>
     </section>
     <section class="hr-card">
       <div class="hr-kicker">Base44 recovery</div>

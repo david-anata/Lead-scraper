@@ -37,6 +37,20 @@ from sales_support_agent.services.cashflow.obligations import (
     update_recurring_template,
 )
 from sales_support_agent.services.cashflow.overview import render_cashflow_overview_page
+from sales_support_agent.services.cashflow.money_brief import (
+    load_finance_brief,
+    render_accounts_page,
+    render_calculation_page,
+    render_cash_plan_page,
+    render_money_brief_page,
+)
+from sales_support_agent.services.cashflow.budgeting import (
+    BudgetReviewProviderError,
+    load_budget_review,
+    load_budget_view,
+    render_budget_page,
+    run_budget_review,
+)
 from sales_support_agent.services.cashflow.recurring import (
     parse_template_form,
     render_recurring_edit_page,
@@ -430,13 +444,89 @@ async def finance_overview(request: Request, flash: str = ""):
         except Exception as exc:
             _forecast_logger.warning("[overview] background Plaid refresh failed: %s", exc)
     asyncio.create_task(_refresh_stale_plaid())
-    return await render_cashflow_overview_page(flash=flash, settings=_finance_settings(request))
+    settings = _finance_settings(request)
+    brief = await asyncio.to_thread(load_finance_brief, settings)
+    return HTMLResponse(render_money_brief_page(brief, flash=flash))
+
+
+@router.get("/plan", response_class=HTMLResponse)
+async def finance_cash_plan(request: Request):
+    brief = await asyncio.to_thread(load_finance_brief, _finance_settings(request))
+    return HTMLResponse(render_cash_plan_page(brief))
+
+
+@router.get("/budget", response_class=HTMLResponse)
+async def finance_budget(request: Request, flash: str = ""):
+    view, review = await asyncio.gather(
+        asyncio.to_thread(load_budget_view),
+        asyncio.to_thread(load_budget_review),
+    )
+    return HTMLResponse(render_budget_page(view, review, flash=flash))
+
+
+@router.post("/budget/review")
+async def finance_budget_review(request: Request):
+    """Run advisory-only LLM analysis; never alter cash, books, or budgets."""
+    try:
+        result = await asyncio.to_thread(
+            run_budget_review, _finance_settings(request), force=True,
+        )
+    except BudgetReviewProviderError:
+        logger.exception("The high spending review failed")
+        return RedirectResponse(
+            "/admin/finances/budget?flash="
+            + quote("err:The high spending review could not finish. Nothing changed."),
+            status_code=303,
+        )
+    if result.get("status") == "not_configured":
+        message = "warn:The high spending review is not configured. The budget calculation is still available."
+    else:
+        message = "ok:High spending review completed. No bank or accounting records changed."
+    return RedirectResponse(
+        f"/admin/finances/budget?flash={quote(message)}", status_code=303,
+    )
+
+
+@router.get("/accounts", response_class=HTMLResponse)
+async def finance_accounts(request: Request):
+    settings = _finance_settings(request)
+    brief = await asyncio.to_thread(load_finance_brief, settings)
+    return HTMLResponse(render_accounts_page(brief, settings))
+
+
+@router.post("/accounts/refresh")
+async def finance_accounts_refresh(request: Request):
+    """Refresh connected banks, then return to the visible Accounts workflow."""
+    from sales_support_agent.services.cashflow.plaid import sync_connected_items
+
+    result = await asyncio.to_thread(
+        sync_connected_items, settings=_finance_settings(request),
+    )
+    if result.get("failed"):
+        message = quote("err:Some bank accounts could not be refreshed. Review the connection status.")
+    else:
+        message = quote("ok:Connected bank balances and transactions refreshed.")
+    return RedirectResponse(f"/admin/finances/accounts?flash={message}", status_code=303)
+
+
+@router.get("/calculations/{calculation_id}", response_class=HTMLResponse)
+async def finance_calculation(request: Request, calculation_id: str):
+    brief = await asyncio.to_thread(load_finance_brief, _finance_settings(request))
+    flash = ""
+    if calculation_id != brief.calculation_id:
+        flash = (
+            "warn:The source data changed after that calculation. "
+            "This page shows the newest calculation and its new ID."
+        )
+    return HTMLResponse(render_calculation_page(brief, flash=flash))
 
 
 @router.get("/plaid/oauth-return", response_class=HTMLResponse)
 async def plaid_oauth_return(request: Request):
     """Render Finance at Plaid's exact OAuth return URL so Link can resume."""
-    return await render_cashflow_overview_page(settings=_finance_settings(request))
+    settings = _finance_settings(request)
+    brief = await asyncio.to_thread(load_finance_brief, settings)
+    return HTMLResponse(render_accounts_page(brief, settings))
 
 
 @router.post("/plaid/link-token")
@@ -780,6 +870,35 @@ async def finance_bookkeeping_page(request: Request, flash: str = ""):
     return HTMLResponse(await asyncio.to_thread(render_bookkeeping_page, flash=flash))
 
 
+@router.get("/bookkeeping/qbo/{event_id}/review", response_class=HTMLResponse)
+async def finance_qbo_bookkeeping_review(request: Request, event_id: str, flash: str = ""):
+    from sales_support_agent.services.cashflow.finance_pages import render_qbo_bookkeeping_review
+    return HTMLResponse(await asyncio.to_thread(
+        render_qbo_bookkeeping_review,
+        event_id=event_id, settings=_finance_settings(request), flash=flash,
+    ))
+
+
+@router.post("/bookkeeping/qbo/{event_id}/confirm")
+async def finance_qbo_bookkeeping_confirm(
+    request: Request, event_id: str,
+    account_id: str = Form(...),
+):
+    from sales_support_agent.services.cashflow.qbo_bookkeeping import confirm_writeback
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        result = await asyncio.to_thread(
+            confirm_writeback, event_id, account_id,
+            settings=_finance_settings(request), actor=actor,
+        )
+    except Exception as exc:
+        return _redirect_finance_error(f"QuickBooks was not changed: {exc}")
+    return _redirect_finance_home(
+        f"QuickBooks updated. This purchase is now filed under {result['account_name']}."
+    )
+
+
 @router.get("/collections", response_class=HTMLResponse)
 async def finance_collections_page(request: Request, flash: str = ""):
     from sales_support_agent.services.cashflow.finance_pages import render_collections_page
@@ -867,6 +986,27 @@ async def review_page_endpoint(request: Request, flash: str = ""):
     from sales_support_agent.services.cashflow.review_page import render_review_page
 
     return HTMLResponse(await asyncio.to_thread(render_review_page, flash=flash))
+
+
+@router.get("/review/receipt/{batch_id}", response_class=HTMLResponse)
+async def review_receipt_endpoint(request: Request, batch_id: str):
+    from sales_support_agent.services.cashflow.bulk_resolve import get_batch_summary
+    from sales_support_agent.services.cashflow.review_page import render_review_receipt
+
+    batch = await asyncio.to_thread(get_batch_summary, batch_id)
+    if not batch:
+        return RedirectResponse(
+            f"/admin/finances/review?flash={quote('err:That saved review could not be found.')}",
+            status_code=303,
+        )
+    return HTMLResponse(await asyncio.to_thread(render_review_receipt, batch))
+
+
+@router.get("/review/{event_id}", response_class=HTMLResponse)
+async def review_case_endpoint(request: Request, event_id: str, flash: str = ""):
+    from sales_support_agent.services.cashflow.review_page import render_review_case
+
+    return HTMLResponse(await asyncio.to_thread(render_review_case, event_id, flash=flash))
 
 
 @router.post("/review/preview", response_class=HTMLResponse)
@@ -971,10 +1111,12 @@ async def review_apply_endpoint(request: Request):
         )
     except ValueError as exc:
         return _redirect_review_error(str(exc))
-    message = f"{result['applied']} item(s) resolved."
-    if result["skipped"]:
-        message += f" {result['skipped']} skipped."
-    return _redirect_review_home(message)
+    if result.get("batch_id"):
+        return RedirectResponse(
+            f"/admin/finances/review/receipt/{quote(str(result['batch_id']))}",
+            status_code=303,
+        )
+    return _redirect_review_home("Nothing changed.")
 
 
 @router.post("/review/undo/{batch_id}")

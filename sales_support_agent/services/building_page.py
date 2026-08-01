@@ -410,7 +410,7 @@ def render_building_page(
         </tr>
         """
         for item in contacts
-    ) or '<tr><td colspan="5"><div class="empty"><strong>No building contacts yet.</strong><br>Connected website inquiries will create CRM contacts automatically.</div></td></tr>'
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No building contacts yet.</strong><br>Connected website inquiries will create Agent contacts automatically.</div></td></tr>'
 
     privacy_rows = "".join(
         f"""
@@ -575,7 +575,7 @@ def render_building_page(
         </tr>
         """
         for item in roster_imports
-    ) or '<tr><td colspan="4"><div class="empty"><strong>No roster previews yet.</strong><br>Paste a reviewed CSV above to stage tenant or community contacts without changing CRM data.</div></td></tr>'
+    ) or '<tr><td colspan="4"><div class="empty"><strong>No roster previews yet.</strong><br>Paste a reviewed CSV above to stage tenant or community contacts without changing customer data.</div></td></tr>'
 
     inquiry_stage_transitions = {
         "new": ("responded", "qualified", "closed_lost"),
@@ -660,19 +660,10 @@ def render_building_page(
           <td>{_esc(item.get("preferred_date") or "—")}{tour_handoff_action(item)}</td>
           <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")} · respond by {_esc(item.get("response_due_at") or "not set")}</span>{inquiry_lifecycle_action(item)}</td>
           <td>{_esc(item.get("source"))}<span class="sub">{_esc(item.get("source_reference"))}</span></td>
-          <td>{(
-            f'<form method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/retry-hubspot"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><button class="secondary secondary--small" type="submit">Retry HubSpot</button><span class="sub">{_esc(item.get("hubspot_error"))} · {int(item.get("hubspot_attempt_count") or 0)} attempt(s)</span></form>'
-            if item.get("status") == "crm_sync_needed"
-            else (
-              f'<span class="sub">HubSpot {_esc(item.get("hubspot_contact_id"))}</span>'
-              if item.get("hubspot_contact_id")
-              else '<span class="sub">No CRM write configured</span>'
-            )
-          )}</td>
         </tr>
         """
         for item in inquiries
-    ) or '<tr><td colspan="6"><div class="empty"><strong>No building inquiries yet.</strong><br>The public forms remain usable through their safe delivery fallback.</div></td></tr>'
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No building inquiries yet.</strong><br>New website and staff-entered leads will appear here in Agent.</div></td></tr>'
 
     inquiry_metrics = dict(analytics.get("inquiries") or {})
     workspace_funnel = dict(analytics.get("workspace_funnel") or {})
@@ -722,6 +713,7 @@ def render_building_page(
           <td>{_badge(str(item.get("agreement_status") or "not started"))}</td>
           <td>{_badge(str(item.get("deposit_status") or "not started"))}</td>
           <td>
+            <a class="secondary secondary--small" href="/admin/building/bookings/{_esc(item.get("id"))}">View booking</a>
             <details class="row-actions"><summary>Manage</summary>
               <form method="post" action="/admin/building/reservations/{_esc(item.get("id"))}/transition">
                 <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
@@ -759,11 +751,22 @@ def render_building_page(
                 <label>{'Quote' if item.get("kind") == "event" else 'Proposal'} status<select name="status">{''.join(f'<option value="{state}"{" selected" if state == str((item.get("proposal") or {}).get("status") or "draft") else ""}>{state.title()}</option>' for state in ("draft", "approved", "sent", "accepted", "declined", "voided"))}</select></label>
                 <input type="hidden" name="proposal_type" value="{'quote' if item.get("kind") == "event" else 'proposal'}">
                 <label>Version<input type="number" name="version" min="1" value="{_esc((item.get("proposal") or {}).get("version") or 1)}"></label>
-                <label>Amount<input name="amount" inputmode="decimal" required value="{int((item.get("proposal") or {}).get("amount_cents") or 0) / 100:.2f}"></label>
-                <label>Approved rate plan<select name="rate_plan_id"><option value="">No rate plan snapshot</option>{''.join(
-                  f'<option value="{_esc(plan.get("id"))}"{" selected" if plan.get("id") == (item.get("proposal") or {}).get("rate_plan_id") else ""}>{_esc(plan.get("name"))} · v{_esc(plan.get("version"))}</option>'
+                {(
+                  f'''<label>Pre-tax event subtotal<input name="pricing_subtotal" inputmode="decimal" required value="{int(((item.get("proposal") or {}).get("pricing_adjustment") or {}).get("pricing_subtotal_cents") or (item.get("proposal") or {}).get("amount_cents") or 0) / 100:.2f}"></label>
+                  <label>Discount<input name="discount" inputmode="decimal" value="{int(((item.get("proposal") or {}).get("pricing_adjustment") or {}).get("discount_cents") or 0) / 100:.2f}"></label>
+                  <label>Discount reason<input name="discount_reason" value="{_esc(((item.get("proposal") or {}).get("pricing_adjustment") or {}).get("discount_reason"))}" placeholder="Required when a discount is used"></label>
+                  <input type="hidden" name="amount" value="0">
+                  <span class="sub">Agent calculates Lehi tax and the final total. Every discount is preserved in the quote audit.</span>'''
+                  if item.get("kind") == "event"
+                  else f'''<label>Amount<input name="amount" inputmode="decimal" required value="{int((item.get("proposal") or {}).get("amount_cents") or 0) / 100:.2f}"></label>'''
+                )}
+                <label>Approved rate plan<select name="rate_plan_id"><option value="">No rate plan snapshot</option>{(
+                  f'<option value="{_esc((item.get("proposal") or {}).get("rate_plan_id"))}" selected>{_esc(((item.get("proposal") or {}).get("rate_plan_snapshot") or {}).get("name") or "Current approved rate plan")} · v{_esc(((item.get("proposal") or {}).get("rate_plan_snapshot") or {}).get("version") or "saved")}</option>'
+                  if (item.get("proposal") or {}).get("rate_plan_id") else ""
+                )}{''.join(
+                  f'<option value="{_esc(plan.get("id"))}">{_esc(plan.get("name"))} · v{_esc(plan.get("version"))}</option>'
                   for plan in rate_plans
-                  if plan.get("offering_id") == item.get("offering_id") and plan.get("status") == "approved"
+                  if plan.get("offering_id") == item.get("offering_id") and plan.get("status") == "approved" and plan.get("id") != (item.get("proposal") or {}).get("rate_plan_id")
                 )}</select></label>
                 <label>Line item<input name="line_item" value="{_esc((item.get("proposal") or {}).get("line_item"))}" placeholder="Office rent or event package"></label>
                 <label>Valid until<input type="date" name="valid_until" value="{_esc((item.get("proposal") or {}).get("valid_until"))}"></label>
@@ -829,7 +832,7 @@ def render_building_page(
         </tr>
         """
         for item in invoices
-    ) or '<tr><td colspan="6"><div class="empty"><strong>No native invoices yet.</strong><br>Approved billing schedules can create Stripe invoices; QBO remains the accounting destination during transition.</div></td></tr>'
+    ) or '<tr><td colspan="6"><div class="empty"><strong>No native invoices yet.</strong><br>Approved event billing schedules can create an unsent QuickBooks invoice for staff review.</div></td></tr>'
 
     collection_rows = "".join(
         f"""<tr>
@@ -1384,18 +1387,17 @@ def render_building_page(
         })
     for item in inquiries:
         lifecycle_stage = str((item.get("lifecycle") or {}).get("stage") or "new")
-        crm_failed = item.get("status") == "crm_sync_needed"
-        if lifecycle_stage != "new" and not crm_failed:
+        if lifecycle_stage != "new":
             continue
         priority_items.append({
-            "score": 95 if item.get("response_overdue") else (75 if crm_failed else 65),
+            "score": 95 if item.get("response_overdue") else 65,
             "type": "Inquiry",
             "title": item.get("name") or item.get("email"),
             "detail": (
                 f"{item.get('kind', 'lead')} · {item.get('source', 'unknown source')}"
                 f" · respond by {item.get('response_due_at') or 'not set'}"
             ),
-            "next": "Retry HubSpot" if crm_failed else "Respond and qualify",
+            "next": "Respond and qualify",
             "href": "/admin/building/sales",
         })
     for item in calendar_projections:
@@ -1763,7 +1765,7 @@ def render_building_page(
         </div>
       </details>
       <section class="panel building-view view-contacts">
-        <div class="panel-head"><div><h2>Add a CRM relationship</h2><p>One person can be a tenant, prospect, event host, or community member without duplication.</p></div></div>
+        <div class="panel-head"><div><h2>Add a customer relationship</h2><p>One person can be a tenant, prospect, event host, or community member without duplication.</p></div></div>
         <details class="task-creator"><summary>Add a person or relationship</summary>
         <form class="form-grid" method="post" action="/admin/building/contacts">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
@@ -1830,7 +1832,7 @@ def render_building_page(
         </details>
       </section>
       <section class="panel panel--wide building-view view-sales" id="add-assisted-lead">
-        <div class="panel-head"><div><h2>Add an assisted lead</h2><p>Normalize Facebook Marketplace, Eventective, referral, phone, and walk-in leads into the same inquiry and CRM recovery queue.</p></div></div>
+        <div class="panel-head"><div><h2>Add an assisted lead</h2><p>Bring Facebook Marketplace, Eventective, referral, phone, and walk-in leads into the same Agent inquiry queue.</p></div></div>
         <details class="task-creator"><summary>Add a lead manually</summary>
         <form class="form-grid" method="post" action="/admin/building/inquiries">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
@@ -1916,12 +1918,12 @@ def render_building_page(
         <div class="table-wrap"><table><thead><tr><th>Request</th><th>Priority</th><th>Status</th><th>Owner and due</th><th>Action</th></tr></thead><tbody>{service_request_rows}</tbody></table></div>
       </section>
       <section class="panel building-view view-billing">
-        <div class="panel-head"><div><h2>Billing account</h2><p>Connect a person or company to Stripe and the current QBO record.</p></div></div>
+        <div class="panel-head"><div><h2>Billing account</h2><p>Connect a person or company to its QuickBooks customer record.</p></div></div>
         <details class="task-creator"><summary>Add a billing account</summary>
         <form class="form-grid" method="post" action="/admin/building/billing/accounts">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <input type="hidden" name="account_id" value="{_esc(generated_billing_account_id)}">
-          <div class="field"><label for="billing-contact">CRM contact</label><select id="billing-contact" name="contact_id"><option value="">No linked contact</option>{contact_options}</select></div>
+          <div class="field"><label for="billing-contact">Agent contact</label><select id="billing-contact" name="contact_id"><option value="">No linked contact</option>{contact_options}</select></div>
           <div class="field"><label for="billing-account-name">Account name</label><input id="billing-account-name" name="account_name" required></div>
           <div class="field"><label for="billing-email">Billing email</label><input id="billing-email" name="billing_email" type="email" required></div>
           <div class="field field--wide"><label for="billing-qbo-customer">QBO customer ID</label><input id="billing-qbo-customer" name="qbo_customer_id" placeholder="Optional during setup"></div>
@@ -1949,12 +1951,12 @@ def render_building_page(
         </form>
         </details>
       </section>
-      <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand. Partial CRM failures stay queued without losing the lead.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th><th>CRM recovery</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>Agent owns each lead through response and qualification. Date blocking moves to Google Calendar; contracts and invoices move to QuickBooks; customer follow-up moves through email.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status and action</th><th>Source</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-bookings" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/contracts">Open contracts →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-sales view-operations" id="building-tours"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-operations">
         <div class="panel-head">
-          <div><h2>Calendar projection</h2><p>Agent remains authoritative. This control previews the dedicated calendar queue in dry-run mode; it never changes Google Calendar.</p></div>
+          <div><h2>Calendar projection</h2><p>The dedicated Anata Events calendar is authoritative for date occupancy. This control only previews Agent's pending calendar work; it does not change Google Calendar.</p></div>
           <form class="inline-send" method="post" action="/admin/building/calendar/sync">
             <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
             <input aria-label="Calendar preview confirmation" name="confirmation" required placeholder="PREVIEW CALENDAR">
@@ -1994,7 +1996,7 @@ def render_building_page(
       <section class="panel panel--wide building-view view-catalog" id="inventory"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-catalog"><div class="panel-head"><div><h2>Media assignments</h2><p>Choose one space at a time. Draft media never reaches the public site, and approval requires descriptive alt text.</p></div></div><div class="checklist-list">{media_blocks}</div></section>
       <section class="panel panel--wide building-view view-settings"><div class="panel-head"><div><h2>Roster import reviews</h2><p>Previewed lists remain inert until an operator confirms the exact snapshot.</p></div><span class="count">{len(roster_imports)} imports</span></div><div class="table-wrap"><table><thead><tr><th>Roster</th><th>Contacts</th><th>Status</th><th>Action</th></tr></thead><tbody>{roster_import_rows}</tbody></table></div></section>
-      <section class="panel panel--wide building-view view-contacts" id="crm-email-list"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, suppression, and permissioned data controls. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th><th>Data controls</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-contacts" id="customer-email-list"><div class="panel-head"><div><h2>Customer contacts and email permissions</h2><p>Relationships, contact permission, suppression, and customer communication controls. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th><th>Data controls</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-contacts">
         <div class="panel-head"><div><h2>Duplicate contact review</h2><p>Preview every move before merging. The survivor keeps the most restrictive communication permission; campaign and inquiry history remains unchanged.</p></div><span class="count">{len(contact_merges)} completed</span></div>
         <details class="task-creator"><summary>Review a possible duplicate</summary>
@@ -2014,7 +2016,7 @@ def render_building_page(
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <div class="field"><label>Request type</label><select name="request_type"><option value="access_export">Access export</option><option value="correction">Correction</option><option value="suppression">Suppression</option><option value="deletion_review">Deletion review</option><option value="retention_review">Retention review</option></select></div>
           <div class="field"><label>Requestor email</label><input name="requestor_email" type="email" required></div>
-          <div class="field"><label>CRM contact</label><select name="contact_id"><option value="">Not yet matched</option>{contact_options}</select></div>
+          <div class="field"><label>Agent contact</label><select name="contact_id"><option value="">Not yet matched</option>{contact_options}</select></div>
           <div class="field"><label>Owner</label><input name="assigned_owner"></div>
           <div class="field field--wide"><label>Details</label><textarea name="details"></textarea></div>
           <div class="form-actions"><span class="form-note">Closing requires a written resolution and evidence.</span><button class="primary" type="submit">Add request</button></div>

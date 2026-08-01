@@ -33,6 +33,7 @@ from sales_support_agent.services.hr import store
 from sales_support_agent.services.hr import payroll_store
 from sales_support_agent.services.hr import legacy_import
 from sales_support_agent.services.hr import workforce
+from sales_support_agent.services.hr import pto_workflow
 
 
 def _correction_duration(payload: dict) -> float:
@@ -228,19 +229,17 @@ def _employee_classification_error(
 
 def _hr_login_email_error(value: str) -> str:
     normalized = (value or "").strip().lower()
-    if (
-        "@" not in normalized
-        or "." not in normalized.rsplit("@", 1)[-1]
-        or normalized.endswith("@anatainc.com")
-    ):
-        return "Use a valid personal Google-account email outside anatainc.com."
+    if not access_store.valid_email(normalized):
+        return "Use a valid email address."
     return ""
 
 
 def _managed_employee_emails(user: dict) -> set[str]:
     if _has_full_hr_admin(user):
         return {item["email"] for item in store.list_employees()}
-    manager = (user.get("email") or "").strip().lower()
+    manager_login = (user.get("email") or "").strip().lower()
+    manager_record = store.get_employee_by_email(manager_login)
+    manager = ((manager_record or {}).get("email") or manager_login).strip().lower()
     return {
         item["email"] for item in store.list_employees()
         if ((item.get("employment") or {}).get("manager_email") or "")
@@ -297,6 +296,7 @@ async def hr_setup(request: Request, user: dict = Depends(_pay_view_guard)):
     return HTMLResponse(render_hr_setup(
         payroll_store.control_room(_default_payroll_date()),
         payroll_store.get_company_profile(),
+        pto_workflow.calendar_readiness(),
         user=user,
         flash=_flash(request),
     ))
@@ -619,7 +619,7 @@ async def employee_update(
         return HTMLResponse(render_hr_employee_form(
             employee, store.list_teams(), user=user,
             error={
-                "hr_login_email_invalid": "Use a valid personal Google-account email outside anatainc.com.",
+                "hr_login_email_invalid": "Use a valid email address.",
                 "hr_login_email_in_use": "That personal HR sign-in is already assigned to another employee.",
             }.get(login_message, "The personal HR sign-in email could not be saved."),
         ), status_code=422)
@@ -1065,12 +1065,21 @@ async def hr_timesheet_decision(
 
 
 @router.post("/time/pto/{request_id}/decision")
-async def hr_pto_decision(request_id: int, decision: str = Form(""),
+async def hr_pto_decision(request: Request, request_id: int, decision: str = Form(""),
                           user: dict = Depends(_time_review_guard)):
     actor = (user.get("email") or "").strip().lower()
     _require_team_record(user, store.list_pto_requests(None), request_id)
     ok = store.decide_pto(request_id, decision=decision, actor=actor)
-    return RedirectResponse(f"/admin/hr/time?{'ok=updated' if ok else 'err=invalid_request'}",
+    message = "updated"
+    if ok:
+        settings = getattr(request.app.state, "agent_settings", None)
+        pto_workflow.notify_employee(
+            settings, request_id=request_id, base_url=str(request.base_url)
+        )
+        if decision == "approved":
+            synced, sync_message = pto_workflow.sync_approved_request(request_id)
+            message = "pto_approved_calendar_synced" if synced else f"pto_approved_{sync_message}"
+    return RedirectResponse(f"/admin/hr/time?{'ok=' + message if ok else 'err=invalid_request'}",
                             status_code=303)
 
 
@@ -1085,13 +1094,78 @@ async def hr_pto_withdraw(request_id: int, user: dict = Depends(_guard)):
     )
 
 
+@router.post("/time/pto/{request_id}/calendar-sync")
+async def hr_pto_calendar_sync(request_id: int, user: dict = Depends(_time_review_guard)):
+    _require_team_record(user, store.list_pto_requests(None), request_id)
+    item = store.get_pto_request(request_id)
+    ok, message = (
+        pto_workflow.sync_revoked_request(request_id)
+        if item and item.get("status") == "revoked"
+        else pto_workflow.sync_approved_request(request_id)
+    )
+    return RedirectResponse(
+        f"/admin/hr/time?{'ok' if ok else 'err'}=pto_calendar_{message}",
+        status_code=303,
+    )
+
+
+@router.post("/time/pto/{request_id}/notify-reviewer")
+async def hr_pto_notify_reviewer(
+    request: Request, request_id: int, user: dict = Depends(_time_review_guard)
+):
+    _require_team_record(user, store.list_pto_requests(None), request_id)
+    item = store.get_pto_request(request_id)
+    if not item or item.get("status") != "pending":
+        return RedirectResponse(
+            "/admin/hr/time?err=pto_notification_not_allowed", status_code=303
+        )
+    sent = pto_workflow.notify_reviewer(
+        getattr(request.app.state, "agent_settings", None),
+        request_id=request_id, base_url=str(request.base_url),
+    )
+    return RedirectResponse(
+        "/admin/hr/time?" + (
+            "ok=pto_manager_notified" if sent else "err=pto_notification_failed"
+        ), status_code=303,
+    )
+
+
+@router.post("/time/pto/{request_id}/revoke")
+async def hr_pto_revoke(
+    request: Request, request_id: int, reason: str = Form(""),
+    user: dict = Depends(_time_review_guard),
+):
+    _require_team_record(user, store.list_pto_requests(None), request_id)
+    actor = (user.get("email") or "").strip().lower()
+    ok, message = store.revoke_pto(
+        request_id, reason=reason, actor=actor
+    )
+    if ok:
+        pto_workflow.sync_revoked_request(request_id)
+        pto_workflow.notify_employee(
+            getattr(request.app.state, "agent_settings", None),
+            request_id=request_id, base_url=str(request.base_url),
+        )
+    return RedirectResponse(
+        f"/admin/hr/time?{'ok' if ok else 'err'}={message}", status_code=303
+    )
+
+
 @router.post("/time/pto")
-async def hr_pto_request(start_date: date = Form(...), end_date: date = Form(...),
+async def hr_pto_request(request: Request, start_date: date = Form(...), end_date: date = Form(...),
                          hours: float = Form(...), reason: str = Form(""),
                          user: dict = Depends(_guard)):
     email = _employee_record_email(user)
     ok, message = store.create_pto_request(email, start_date=start_date, end_date=end_date,
                                            hours=hours, reason=reason, actor=email)
+    if ok:
+        request_id = store.latest_pto_request_id(email)
+        if request_id:
+            sent = pto_workflow.notify_reviewer(
+                getattr(request.app.state, "agent_settings", None),
+                request_id=request_id, base_url=str(request.base_url),
+            )
+            message = "pto_requested_manager_notified" if sent else "pto_requested_notification_pending"
     key = "ok" if ok else "err"
     return RedirectResponse(f"/admin/hr/time?{key}={message}", status_code=303)
 
@@ -1595,6 +1669,7 @@ async def hr_settings(request: Request, user: dict = Depends(_settings_guard)):
     )
     return HTMLResponse(render_hr_settings(
         payroll_store.get_payroll_settings(), payroll_store.get_company_profile(),
+        pto_workflow.calendar_readiness(),
         store.list_employees(),
         [
             account for account in access_store.list_users()

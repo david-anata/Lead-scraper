@@ -241,7 +241,9 @@ def _request_article(*, settings: Any, prompt: str) -> dict[str, Any]:
             },
             json={
                 "model": config.model,
-                "max_tokens": 5000,
+                # A 900+ word article plus structured citations can exceed 5,000
+                # output tokens. Truncation produces terminally malformed JSON.
+                "max_tokens": 8000,
                 "messages": [{"role": "user", "content": prompt}],
                 "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 8}],
             },
@@ -481,12 +483,6 @@ def build_article_action(
     if not cluster:
         return None
     pillar = _clean(cluster.get("pillar")) or selected_pillar
-    if not _claim_daily_article_slot(
-        settings,
-        _clean(cluster.get("cluster_id")),
-        pillar,
-    ):
-        return None
     citations = [
         {"title": _clean(item.get("title")), "url": _clean(item.get("url"))}
         for item in dict(cluster.get("citation") or {}).get("cited_urls", []) or []
@@ -557,7 +553,16 @@ Return only one JSON object with this exact shape:
     "eyebrow": "Topic label",
     "h1": "same as articleTitle",
     "tldr": {{"heading": "The short answer.", "answer": ["60 to 140 word direct answer"]}},
-    "sections": [{{"heading": "Heading", "paragraphs": ["paragraph"]}}],
+    "sections": [{{
+      "heading": "Heading",
+      "paragraphs": ["paragraph"],
+      "citations": [
+        {{"title": "Matching top-level source", "href": "https://authoritative-source.example/path"}}
+      ],
+      "internalLinks": [
+        {{"title": "Relevant Anata resource", "href": "/approved-route", "note": "Why this helps next"}}
+      ]
+    }}],
     "breadcrumbs": [
       {{"name": "Home", "href": "/"}},
       {{"name": "Blog", "href": "/blog"}},
@@ -574,11 +579,30 @@ Return only one JSON object with this exact shape:
   "sources": [{{"title": "Source title", "url": "https://..."}}]
 }}
 Write at least 900 useful words across at least four substantive sections with at
-least two paragraphs each. Include at least two distinct authoritative external
-sources and at least two relevant internal links. Do not pad the article to reach
-the word count.
+least two paragraphs each. Cite top-level authoritative sources contextually in
+at least two sections. Add useful internal links contextually in at least two
+sections, using only approved Anata routes. Also include the related-resource
+block. Do not pad the article to reach the word count.
 """
-    article = dict((requester or _request_article)(settings=settings, prompt=prompt))
+    article_requester = requester or _request_article
+    article: dict[str, Any] | None = None
+    last_json_error: json.JSONDecodeError | None = None
+    for attempt in range(3):
+        retry_prompt = prompt
+        if attempt:
+            retry_prompt += (
+                "\nYour previous response was malformed JSON. Regenerate the complete article "
+                "from scratch and return one valid JSON object only. Check every quote, comma, "
+                "array, and closing brace before responding."
+            )
+        try:
+            article = dict(article_requester(settings=settings, prompt=retry_prompt))
+            break
+        except json.JSONDecodeError as exc:
+            last_json_error = exc
+    if article is None:
+        assert last_json_error is not None
+        raise last_json_error
     slug = _clean(article.get("slug"))
     content = dict(article.get("content") or {})
     article["primaryIntent"] = _clean(cluster.get("normalized_query"))
@@ -593,6 +617,12 @@ the word count.
     }
     content["route"] = f"/blog/{slug}"
     article["content"] = content
+    if not _claim_daily_article_slot(
+        settings,
+        _clean(cluster.get("cluster_id")),
+        pillar,
+    ):
+        return None
     from_editorial_backlog = cluster.get("source_kind") == "editorial_backlog"
     return {
         "page_url": f"https://anatainc.com/blog/{slug}",

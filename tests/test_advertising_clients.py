@@ -160,10 +160,13 @@ def _make_test_client(*, is_superadmin: bool = True):
     from fastapi.testclient import TestClient
     from types import SimpleNamespace
     from sales_support_agent.api import advertising_router as ar
+    from sqlalchemy.orm import sessionmaker
+    from sales_support_agent.models.database import get_engine
     app = FastAPI()
     app.include_router(ar.router)
     app.include_router(ar.public_router)
     app.state.settings = SimpleNamespace(amazon_profit_api_base_url="https://profit.test")
+    app.state.session_factory = sessionmaker(bind=get_engine(), expire_on_commit=False)
     app.dependency_overrides[ar.router.dependencies[0].dependency] = lambda: {
         "email": "test@anatainc.com", "is_superadmin": is_superadmin, "permissions": {"advertising.audit"},
     }
@@ -337,6 +340,8 @@ class ClientHttpTest(_Base):
         try:
             app = FastAPI()
             app.include_router(ar.public_router)
+            from sqlalchemy.orm import sessionmaker
+            app.state.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
             app.state.settings = SimpleNamespace()
             app.state.agent_settings = SimpleNamespace(amazon_profit_api_base_url="https://profit.test")
             client = TestClient(app)
@@ -370,6 +375,81 @@ class ClientHttpTest(_Base):
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["net_profit"], 12.34)
+
+    def test_profit_calculator_rejects_invalid_asin_before_upstream(self):
+        client = self._client()
+        response = client.get("/api/public/amazon-profit-calculator/catalog/not-an-asin")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("10 letters or numbers", response.json()["detail"])
+
+    def test_profit_calculator_rejects_negative_extreme_and_unknown_inputs(self):
+        client = self._client()
+        for payload in (
+            {"price": -1},
+            {"price": 1_000_001},
+            {"price": 10, "unexpected": 1},
+            {"price": "10"},
+        ):
+            with self.subTest(payload=payload):
+                response = client.post(
+                    "/api/public/amazon-profit-calculator/profitability/estimate",
+                    json=payload,
+                )
+                self.assertEqual(response.status_code, 400)
+
+    def test_profit_calculator_accepts_zero_values_without_fabricating_defaults(self):
+        from sales_support_agent.api import advertising_router as ar
+
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            ok = True
+
+            def json(self):
+                return {"net_profit": 0, "net_margin_pct": 0}
+
+        original_post = ar.requests.post
+
+        def fake_post(*args, **kwargs):
+            captured.update(kwargs["json"])
+            return _Resp()
+
+        ar.requests.post = fake_post
+        try:
+            response = self._client().post(
+                "/api/public/amazon-profit-calculator/profitability/estimate",
+                json={"price": 0, "cogs": 0, "is_apparel": False},
+            )
+        finally:
+            ar.requests.post = original_post
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured, {"price": 0.0, "cogs": 0.0, "is_apparel": False})
+
+    def test_profit_calculator_rate_limit_stops_upstream_work(self):
+        from fastapi.responses import JSONResponse
+        from sales_support_agent.api import advertising_router as ar
+
+        original_limit = ar.durable_rate_limit_response
+        original_post = ar.requests.post
+        ar.durable_rate_limit_response = lambda *args, **kwargs: JSONResponse(
+            status_code=429,
+            headers={"Retry-After": "600"},
+            content={"reason": "rate_limited"},
+        )
+        ar.requests.post = lambda *args, **kwargs: self.fail("upstream should not run")
+        try:
+            response = self._client().post(
+                "/api/public/amazon-profit-calculator/profitability/estimate",
+                json={"price": 10},
+            )
+        finally:
+            ar.durable_rate_limit_response = original_limit
+            ar.requests.post = original_post
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.headers["retry-after"], "600")
 
     def test_bulk_profitability_catalog_proxy(self):
         from sales_support_agent.api import advertising_router as ar

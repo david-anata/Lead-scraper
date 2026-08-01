@@ -11,14 +11,16 @@ import hashlib
 import logging
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from sales_support_agent.models.database import get_engine
 from sales_support_agent.models.entities import (
     AppAccessRequest,
+    AppEmailLoginToken,
     AppInvite,
     AppRole,
     AppUser,
@@ -38,6 +40,24 @@ def _norm_email(email: str) -> str:
 
 def hash_token(token: str) -> str:
     return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def valid_email(value: str) -> bool:
+    """Conservative provider-neutral email validation for login identities."""
+
+    email = _norm_email(value)
+    if not email or len(email) > 254 or email.count("@") != 1:
+        return False
+    local, domain = email.rsplit("@", 1)
+    return bool(
+        local
+        and len(local) <= 64
+        and domain
+        and "." in domain
+        and not domain.startswith(".")
+        and not domain.endswith(".")
+        and " " not in email
+    )
 
 
 @contextmanager
@@ -310,6 +330,105 @@ def revoke_invite(invite_id: str) -> None:
         inv = s.get(AppInvite, invite_id)
         if inv and inv.status == "pending":
             inv.status = "revoked"
+
+
+# ---------------------------------------------------------------------------
+# Passwordless email login
+# ---------------------------------------------------------------------------
+
+
+def create_email_login_token(
+    email: str,
+    *,
+    token: str,
+    request_fingerprint: str,
+    now: Optional[datetime] = None,
+    ttl_minutes: int = 15,
+    max_per_email: int = 3,
+    max_per_fingerprint: int = 10,
+) -> tuple[bool, str]:
+    """Store one passwordless token while enforcing non-identifying rate limits."""
+
+    normalized = _norm_email(email)
+    if not valid_email(normalized) or not token:
+        return False, "invalid"
+    created_at = _as_aware_utc(now or datetime.now(timezone.utc))
+    cutoff = created_at - timedelta(minutes=15)
+    expires_at = created_at + timedelta(minutes=max(5, min(ttl_minutes, 30)))
+    with _session() as s:
+        email_count = (
+            s.query(AppEmailLoginToken)
+            .filter(
+                AppEmailLoginToken.email == normalized,
+                AppEmailLoginToken.created_at >= cutoff,
+            )
+            .count()
+        )
+        fingerprint_count = (
+            s.query(AppEmailLoginToken)
+            .filter(
+                AppEmailLoginToken.request_fingerprint == request_fingerprint,
+                AppEmailLoginToken.created_at >= cutoff,
+            )
+            .count()
+            if request_fingerprint
+            else 0
+        )
+        if email_count >= max_per_email or fingerprint_count >= max_per_fingerprint:
+            return False, "rate_limited"
+        # A fresh request supersedes earlier pending links for this address.
+        s.query(AppEmailLoginToken).filter(
+            AppEmailLoginToken.email == normalized,
+            AppEmailLoginToken.status == "pending",
+        ).update({"status": "superseded"}, synchronize_session=False)
+        s.add(
+            AppEmailLoginToken(
+                id=_new_id(),
+                email=normalized,
+                token_hash=hash_token(token),
+                request_fingerprint=request_fingerprint,
+                status="pending",
+                created_at=created_at,
+                expires_at=expires_at,
+            )
+        )
+    return True, "created"
+
+
+def consume_email_login_token(
+    token: str, *, now: Optional[datetime] = None
+) -> Optional[str]:
+    """Atomically consume one unexpired passwordless token and return its email."""
+
+    if not token:
+        return None
+    current = _as_aware_utc(now or datetime.now(timezone.utc))
+    with _session() as s:
+        row = (
+            s.query(AppEmailLoginToken)
+            .filter(
+                AppEmailLoginToken.token_hash == hash_token(token),
+                AppEmailLoginToken.status == "pending",
+            )
+            .first()
+        )
+        if not row:
+            return None
+        expires_at = _as_aware_utc(row.expires_at)
+        if not expires_at or current > expires_at:
+            row.status = "expired"
+            return None
+        result = s.execute(
+            update(AppEmailLoginToken)
+            .where(
+                AppEmailLoginToken.id == row.id,
+                AppEmailLoginToken.status == "pending",
+            )
+            .values(status="accepted", consumed_at=current)
+        )
+        if result.rowcount != 1:
+            return None
+        return row.email
 
 
 # ---------------------------------------------------------------------------

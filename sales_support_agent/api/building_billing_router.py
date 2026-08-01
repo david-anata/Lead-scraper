@@ -16,6 +16,10 @@ from sales_support_agent.integrations.stripe_billing import (
     StripeBillingClient,
     StripeBillingError,
 )
+from sales_support_agent.integrations.building_quickbooks import (
+    BuildingQuickBooksClient,
+    BuildingQuickBooksError,
+)
 from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
@@ -420,62 +424,62 @@ def create_invoice_from_schedule(
         }
         if not payload.execute:
             return {"ok": True, "execute": False, "proposal": proposal}
+        if schedule.schedule_type == "monthly":
+            raise HTTPException(
+                status_code=409,
+                detail="Monthly Building billing has no verified QuickBooks event item.",
+            )
 
-        client = StripeBillingClient(request.app.state.settings)
+        client = BuildingQuickBooksClient()
         if not client.is_configured:
-            raise HTTPException(status_code=503, detail="Stripe billing is not configured.")
+            raise HTTPException(status_code=503, detail="QuickBooks billing is not configured.")
         invoice_id = str(uuid5(NAMESPACE_URL, f"building-invoice:{payload.idempotency_key}"))
-        if not account.stripe_customer_id:
+        if not account.qbo_customer_id:
             try:
-                customer = client.create_customer(
+                customer = client.ensure_customer(
                     email=account.billing_email,
                     name=account.account_name,
-                    internal_account_id=account.id,
-                    idempotency_key=f"{payload.idempotency_key}:customer",
                 )
-            except StripeBillingError as exc:
+            except BuildingQuickBooksError as exc:
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
-            account.stripe_customer_id = str(customer.get("id") or "")
-            if not account.stripe_customer_id:
-                raise HTTPException(status_code=502, detail="Stripe customer creation returned no ID.")
+            account.qbo_customer_id = str(customer.get("Id") or "")
+            if not account.qbo_customer_id:
+                raise HTTPException(status_code=502, detail="QuickBooks customer creation returned no ID.")
         try:
-            provider_invoice = client.create_invoice(
-                customer_id=account.stripe_customer_id,
+            provider_invoice = client.create_draft_invoice(
+                customer_id=account.qbo_customer_id,
                 amount_cents=schedule.amount_cents,
-                currency=schedule.currency,
                 description=schedule.description,
-                collection_method=schedule.collection_method,
-                days_until_due=schedule.days_until_due,
-                internal_invoice_id=invoice_id,
+                schedule_type=schedule.schedule_type,
+                due_date=_now().date() + timedelta(days=schedule.days_until_due),
                 idempotency_key=payload.idempotency_key,
             )
-        except StripeBillingError as exc:
+        except BuildingQuickBooksError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        provider_id = str(provider_invoice.get("id") or "")
+        provider_id = str(provider_invoice.get("Id") or "")
         if not provider_id:
-            raise HTTPException(status_code=502, detail="Stripe invoice creation returned no ID.")
-        due_timestamp = provider_invoice.get("due_date")
-        due_at = (
-            datetime.fromtimestamp(int(due_timestamp), tz=timezone.utc)
-            if due_timestamp
-            else _now() + timedelta(days=schedule.days_until_due)
+            raise HTTPException(status_code=502, detail="QuickBooks invoice creation returned no ID.")
+        due_date = date.fromisoformat(
+            str(provider_invoice.get("DueDate") or (_now().date() + timedelta(days=schedule.days_until_due)).isoformat())
         )
+        due_at = datetime.combine(due_date, datetime.min.time(), tzinfo=timezone.utc)
         row = BuildingInvoice(
             id=invoice_id,
             billing_account_id=account.id,
             billing_schedule_id=schedule.id,
             reservation_id=schedule.reservation_id,
             idempotency_key=payload.idempotency_key,
-            provider="stripe",
+            provider="quickbooks",
             provider_invoice_id=provider_id,
+            qbo_invoice_id=provider_id,
             description=schedule.description,
-            status=str(provider_invoice.get("status") or "draft"),
-            accounting_status="pending_qbo",
-            amount_due_cents=int(provider_invoice.get("amount_due") or schedule.amount_cents),
-            amount_paid_cents=int(provider_invoice.get("amount_paid") or 0),
-            currency=str(provider_invoice.get("currency") or schedule.currency),
+            status="draft",
+            accounting_status="synced_qbo",
+            amount_due_cents=round(float(provider_invoice.get("TotalAmt") or schedule.amount_cents / 100) * 100),
+            amount_paid_cents=0,
+            currency=schedule.currency,
             due_at=due_at,
-            hosted_invoice_url=str(provider_invoice.get("hosted_invoice_url") or ""),
+            hosted_invoice_url=f"https://qbo.intuit.com/app/invoice?txnId={provider_id}",
             provider_payload_json=provider_invoice,
             created_by=payload.actor,
         )
@@ -493,12 +497,13 @@ def create_invoice_from_schedule(
         session.add(BuildingAuditEvent(
             entity_type="invoice",
             entity_id=row.id,
-            action="created_in_stripe",
+            action="draft_created_in_quickbooks",
             actor=payload.actor,
             after_json={
                 "provider_invoice_id": row.provider_invoice_id,
                 "amount_due_cents": row.amount_due_cents,
                 "accounting_status": row.accounting_status,
+                "sent": False,
             },
         ))
         return {"ok": True, "duplicate": False, "invoice": _invoice_payload(row)}
@@ -899,7 +904,28 @@ async def stripe_webhook(
                 )
             ).scalar_one_or_none()
         try:
-            if event_type.startswith("invoice.") and invoice is not None:
+            if (
+                event_type.startswith("invoice.")
+                and invoice is not None
+                and invoice.provider != "stripe"
+            ):
+                event_row.status = "ignored"
+                event_row.error_message = (
+                    f"Provider mismatch: Stripe event cannot update {invoice.provider} invoice."
+                )
+                event_row.processed_at = _now()
+                session.add(BuildingAuditEvent(
+                    entity_type="invoice",
+                    entity_id=invoice.id,
+                    action="stripe_event_ignored",
+                    actor="stripe-webhook",
+                    after_json={
+                        "invoice_provider": invoice.provider,
+                        "provider_event_id": event_id,
+                        "reason": "provider_mismatch",
+                    },
+                ))
+            elif event_type.startswith("invoice.") and invoice is not None:
                 status_map = {
                     "invoice.finalized": "open",
                     "invoice.paid": "paid",
@@ -1025,8 +1051,9 @@ async def stripe_webhook(
                         "provider_event_id": event_id,
                     },
                 ))
-            event_row.status = "processed"
-            event_row.processed_at = _now()
+            if event_row.status != "ignored":
+                event_row.status = "processed"
+                event_row.processed_at = _now()
         except Exception as exc:  # noqa: BLE001 - persist provider event for retry
             event_row.status = "failed"
             event_row.error_message = str(exc)[:1000]

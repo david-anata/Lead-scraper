@@ -36,6 +36,7 @@ from sales_support_agent.services.public_request_guard import (
     RATE_LIMIT_RUN_TYPE_PREFIX,
     durable_rate_limit_response,
     durable_rate_limited,
+    read_public_json_object,
 )
 
 
@@ -66,6 +67,7 @@ _AMAZON_ASIN_RE = re.compile(
     re.IGNORECASE,
 )
 _BARE_AMAZON_ASIN_RE = re.compile(r"\b(B0[A-Z0-9]{8})\b", re.IGNORECASE)
+_ATTRIBUTION_SOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9./:_-]{0,119}$", re.IGNORECASE)
 
 # Needs chips the site can send; anything else is dropped silently.
 _KNOWN_NEEDS = {"analytics", "advertising", "strategy", "catalog", "creative", "fulfillment"}
@@ -85,11 +87,21 @@ _QUALIFICATION_FIELDS = {
 def _sanitize_qualification(raw: Any) -> dict[str, str]:
     if not isinstance(raw, dict):
         return {}
-    return {
+    sanitized = {
         key: str(raw.get(key, "") or "").strip()[:limit]
         for key, limit in _QUALIFICATION_FIELDS.items()
         if str(raw.get(key, "") or "").strip()
     }
+    audit_run_id = sanitized.get("audit_run_id", "")
+    if audit_run_id and not re.fullmatch(r"\d{1,20}", audit_run_id):
+        sanitized.pop("audit_run_id", None)
+    return sanitized
+
+
+def _sanitize_source(raw: Any, fallback: str) -> str:
+    """Keep attribution route-like so visitor text and PII never enter CRM metadata."""
+    candidate = str(raw or "").strip()
+    return candidate if _ATTRIBUTION_SOURCE_RE.fullmatch(candidate) else fallback
 
 # Hard ceiling on the cheap identity lookups so the intake endpoint stays fast.
 _IDENTITY_TIMEOUT_SECONDS = 25
@@ -630,16 +642,14 @@ async def marketing_analysis_intake(
     if limited is not None:
         return limited
 
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
-    if not isinstance(body, dict):
-        return JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     asin = str(body.get("asin", "") or "").strip()
     email = str(body.get("email", "") or "").strip()
-    source = str(body.get("source", "") or "").strip()
+    source = _sanitize_source(body.get("source"), "anatainc.com/tools/strategy-audit")
     if not asin or len(asin) > 2048:
         return JSONResponse(status_code=400, content={"detail": "asin is required (ASIN or Amazon URL)."})
     if not email or not _EMAIL_RE.match(email):
@@ -695,17 +705,15 @@ async def advertising_audit_intake(
     limited = durable_rate_limit_response(request, scope="advertising:create", limit=30)
     if limited is not None:
         return limited
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
-    if not isinstance(body, dict):
-        return JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     asin = _normalize_amazon_asin(body.get("product"))
     email = str(body.get("email", "") or "").strip().lower()
     company = str(body.get("company", "") or "").strip()[:160]
-    source = str(body.get("source", "") or "").strip()[:120]
+    source = _sanitize_source(body.get("source"), "anatainc.com/tools/advertising-audit")
     if not asin:
         return JSONResponse(
             status_code=400,
@@ -730,6 +738,12 @@ async def advertising_audit_intake(
                 "source": source,
                 "tool": "advertising_audit",
                 "status_token": status_token,
+                "qualification": {
+                    "company": company,
+                    "storefront": f"https://www.amazon.com/dp/{asin}",
+                    "challenge": "Advertising Audit requested from anatainc.com.",
+                    "next_step": "Call prospect and confirm the four-report handoff.",
+                },
             },
         )
         intake_run.summary_json = {
@@ -802,11 +816,23 @@ def advertising_audit_status(
         if not expected or not secrets.compare_digest(str(token or ""), expected):
             return JSONResponse(status_code=403, content={"detail": "Invalid status token."})
         summary = run.summary_json or {}
+        delivery = str(summary.get("email_delivery", "pending") or "pending")
+        if run.status not in {"running", "success", "failed"} or delivery not in {
+            "pending",
+            "delivered",
+            "failed",
+        }:
+            logger.error(
+                "[marketing_advertising] invalid public lifecycle for run %s: run=%r email=%r",
+                run_id,
+                run.status,
+                delivery,
+            )
+            return JSONResponse(status_code=500, content={"detail": "Invalid advertising audit lifecycle."})
         if run.status == "failed":
             public_status = "failed"
             strategy_status = "failed"
         elif run.status == "success":
-            delivery = str(summary.get("email_delivery", "pending") or "pending")
             public_status = "delivered" if delivery == "delivered" else (
                 "delivery_failed" if delivery == "failed" else "ready"
             )
@@ -819,7 +845,7 @@ def advertising_audit_status(
                 "status": public_status,
                 "strategy_audit": strategy_status,
                 "advertising_audit": "reports_required",
-                "email_delivery": str(summary.get("email_delivery", "pending") or "pending"),
+                "email_delivery": delivery,
             }
         )
 
@@ -848,7 +874,14 @@ def marketing_analysis_status(
             return JSONResponse(content={"status": "ready"})
         if run.status == "failed":
             return JSONResponse(content={"status": "failed"})
-        return JSONResponse(content={"status": "building"})
+        if run.status == "running":
+            return JSONResponse(content={"status": "building"})
+        logger.error(
+            "[marketing_analysis] invalid public lifecycle for run %s: %r",
+            run.id,
+            run.status,
+        )
+        return JSONResponse(status_code=500, content={"detail": "Invalid analysis lifecycle."})
 
 
 # ---------------------------------------------------------------------------
@@ -1534,16 +1567,14 @@ async def marketing_site_intake_create(
     if limited is not None:
         return limited
 
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
-    if not isinstance(body, dict):
-        return JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     identifier = str(body.get("identifier", "") or "").strip()
     kind = str(body.get("kind", "") or "").strip()
-    source = str(body.get("source", "") or "").strip()
+    source = _sanitize_source(body.get("source"), "site")
     if not identifier or len(identifier) > 2048:
         return JSONResponse(status_code=400, content={"detail": "identifier is required."})
     if kind not in {"asin", "store"}:
@@ -1739,12 +1770,10 @@ async def marketing_site_intake_needs(
     if limited is not None:
         return limited
 
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
-    if not isinstance(body, dict):
-        return JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     raw_needs = body.get("needs", [])
     if not isinstance(raw_needs, list):
@@ -1780,12 +1809,10 @@ async def marketing_site_intake_unlock(
     if limited is not None:
         return limited
 
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
-    if not isinstance(body, dict):
-        return JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     email = str(body.get("email", "") or "").strip()
     if not email or not _EMAIL_RE.match(email):
@@ -1965,22 +1992,14 @@ async def marketing_site_direct_booking(
     limited = durable_rate_limit_response(request, scope="booking:create", limit=30)
     if limited is not None:
         return limited
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Request body must be valid JSON."},
-        )
-    if not isinstance(body, dict):
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Request body must be a JSON object."},
-        )
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     email = str(body.get("email", "") or "").strip().lower()[:254]
     tool = str(body.get("tool", "") or "").strip().lower()[:24]
-    source = str(body.get("source", "") or "").strip()[:120]
+    source = _sanitize_source(body.get("source"), "booking-page")
     booking_reference = str(body.get("booking_reference", "") or "").strip()[:160]
     if not email or not _EMAIL_RE.fullmatch(email):
         return JSONResponse(
@@ -2095,18 +2114,10 @@ async def marketing_site_intake_booked(
     limited = durable_rate_limit_response(request, scope="booking:tokenized", limit=30)
     if limited is not None:
         return limited
-    try:
-        body: dict[str, Any] = await request.json()
-    except Exception:  # noqa: BLE001
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Request body must be valid JSON."},
-        )
-    if not isinstance(body, dict):
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Request body must be a JSON object."},
-        )
+    body, bad = await read_public_json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
 
     with session_scope(request.app.state.session_factory) as session:
         run, error = _load_site_intake(
@@ -2128,7 +2139,10 @@ async def marketing_site_intake_booked(
             )
         email = str(metadata.get("email", "") or "").strip().lower()
         brand_name = str(summary.get("brand_name", "") or "")
-        source = str(body.get("source", "") or metadata.get("source", "") or "")
+        source = _sanitize_source(
+            body.get("source") or metadata.get("source"),
+            "booking-page",
+        )
         qualification = _sanitize_qualification(metadata.get("qualification"))
 
     if not email:

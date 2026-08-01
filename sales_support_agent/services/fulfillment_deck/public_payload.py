@@ -38,6 +38,44 @@ def serialize_public_matrix(summary: dict[str, Any], *, preview: bool) -> dict[s
 
     for product_index, product_rates in enumerate(matrix.products, start=1):
         product_id = f"product-{product_index}"
+        product_quotes: list[dict[str, Any]] = []
+        for zone_rates in product_rates.zones:
+            zone = int(zone_rates.zone)
+            destination_id = f"zone-{zone}"
+            live_quotes = [quote for quote in zone_rates.quotes if quote.source == RATE_SOURCE_WMS and quote.rate_usd > 0]
+            if not live_quotes:
+                continue
+            if zone not in destinations_by_zone:
+                destination: dict[str, Any] = {
+                    "id": destination_id,
+                    "label": zone_rates.dest_label or f"Zone {zone}",
+                    "zone": zone,
+                    "zip": str(zone_rates.dest_zip or "")[:5],
+                }
+                coordinate = _coordinate(zone_rates.dest_zip)
+                if coordinate:
+                    destination.update(coordinate)
+                destinations_by_zone[zone] = destination
+            lowest = min(quote.rate_usd for quote in live_quotes)
+            transit_values = [quote.transit_days for quote in live_quotes if quote.transit_days is not None]
+            fastest = min(transit_values) if transit_values else None
+            for quote in live_quotes:
+                product_quotes.append(
+                    {
+                        "product_id": product_id,
+                        "destination_id": destination_id,
+                        "zone": zone,
+                        "carrier": quote.carrier,
+                        "service": quote.service,
+                        "rate_usd": round(float(quote.rate_usd), 2),
+                        "transit_days": quote.transit_days,
+                        "is_lowest_cost": quote.rate_usd == lowest,
+                        "is_fastest": fastest is not None and quote.transit_days == fastest,
+                    }
+                )
+
+        if not product_quotes:
+            continue
         product = product_rates.product
         products.append(
             {
@@ -52,43 +90,9 @@ def serialize_public_matrix(summary: dict[str, Any], *, preview: bool) -> dict[s
                 },
             }
         )
-        for zone_rates in product_rates.zones:
-            zone = int(zone_rates.zone)
-            destination_id = f"zone-{zone}"
-            if zone not in destinations_by_zone:
-                destination: dict[str, Any] = {
-                    "id": destination_id,
-                    "label": zone_rates.dest_label or f"Zone {zone}",
-                    "zone": zone,
-                    "zip": str(zone_rates.dest_zip or "")[:5],
-                }
-                coordinate = _coordinate(zone_rates.dest_zip)
-                if coordinate:
-                    destination.update(coordinate)
-                destinations_by_zone[zone] = destination
+        quotes.extend(product_quotes)
 
-            live_quotes = [quote for quote in zone_rates.quotes if quote.source == RATE_SOURCE_WMS and quote.rate_usd > 0]
-            if not live_quotes:
-                continue
-            lowest = min(quote.rate_usd for quote in live_quotes)
-            transit_values = [quote.transit_days for quote in live_quotes if quote.transit_days is not None]
-            fastest = min(transit_values) if transit_values else None
-            for quote in live_quotes:
-                quotes.append(
-                    {
-                        "product_id": product_id,
-                        "destination_id": destination_id,
-                        "zone": zone,
-                        "carrier": quote.carrier,
-                        "service": quote.service,
-                        "rate_usd": round(float(quote.rate_usd), 2),
-                        "transit_days": quote.transit_days,
-                        "is_lowest_cost": quote.rate_usd == lowest,
-                        "is_fastest": fastest is not None and quote.transit_days == fastest,
-                    }
-                )
-
-    if not quotes:
+    if not products or not destinations_by_zone or not quotes:
         return None
 
     origin_zip = str(matrix.origin_zip or summary.get("origin_zip") or "")

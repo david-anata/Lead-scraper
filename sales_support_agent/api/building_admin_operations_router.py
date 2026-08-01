@@ -6,7 +6,7 @@ import hashlib
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -103,9 +103,15 @@ FORM_DEPS = [Depends(require_building_form_security)]
 MOUNTAIN = ZoneInfo("America/Denver")
 
 
-def _redirect(*, notice: str = "", error: str = "") -> RedirectResponse:
+def _redirect(
+    *,
+    notice: str = "",
+    error: str = "",
+    target: str = "/admin/building",
+) -> RedirectResponse:
     query = urlencode({"notice": notice} if notice else {"error": error})
-    return RedirectResponse(f"/admin/building?{query}", status_code=303)
+    separator = "&" if "?" in target else "?"
+    return RedirectResponse(f"{target}{separator}{query}", status_code=303)
 
 
 def _internal_key(request: Request) -> str:
@@ -148,7 +154,12 @@ def _dollars_to_cents(value: str) -> int:
     return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def _run_form_action(action: Callable[[], object], success: str) -> RedirectResponse:
+def _run_form_action(
+    action: Callable[[], object],
+    success: str,
+    *,
+    success_target: str = "/admin/building",
+) -> RedirectResponse:
     try:
         action()
     except (ValidationError, ValueError) as exc:
@@ -159,7 +170,7 @@ def _run_form_action(action: Callable[[], object], success: str) -> RedirectResp
         return _redirect(error=message)
     except HTTPException as exc:
         return _redirect(error=str(exc.detail))
-    return _redirect(notice=success)
+    return _redirect(notice=success, target=success_target)
 
 
 @router.post("/inquiries", dependencies=FORM_DEPS)
@@ -272,9 +283,11 @@ def create_reservation_from_control_room(
     source_reference: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
+    reservation_id = str(uuid4())
+
     def action() -> None:
         payload = ReservationInput(
-            id=str(uuid4()),
+            id=reservation_id,
             kind=kind,
             space_id=space_id.strip(),
             offering_id=offering_id.strip() or None,
@@ -292,7 +305,11 @@ def create_reservation_from_control_room(
         )
         create_reservation(payload, request, _internal_key(request))
 
-    return _run_form_action(action, "Booking workflow created as an inquiry.")
+    return _run_form_action(
+        action,
+        "Booking workflow created as an inquiry.",
+        success_target=f"/admin/building/bookings/{reservation_id}",
+    )
 
 
 @router.post("/event-reviews", dependencies=FORM_DEPS)
@@ -344,6 +361,9 @@ def create_event_review_from_control_room(
     return _run_form_action(
         action,
         "Authoritative event window reviewed; temporary hold and quote draft created.",
+        success_target=(
+            f"/admin/building/bookings/{quote(reservation_id.strip(), safe='')}"
+        ),
     )
 
 
@@ -470,10 +490,12 @@ def record_agreement_from_control_room(
     request: Request,
     version: int = Form(1),
     status: str = Form(...),
-    provider: str = Form(""),
+    provider: str = Form("quickbooks_contract_builder"),
     provider_reference: str = Form(""),
     template_name: str = Form(""),
     document_url: str = Form(""),
+    esign_certificate_reference: str = Form(""),
+    signed_document_checksum: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -484,7 +506,11 @@ def record_agreement_from_control_room(
             provider_reference=provider_reference.strip(),
             template_name=template_name.strip(),
             document_url=document_url.strip(),
-            evidence={"recorded_in": "building_control"},
+            evidence={
+                "recorded_in": "building_control",
+                "esign_certificate_reference": esign_certificate_reference.strip(),
+                "signed_document_checksum": signed_document_checksum.strip().lower(),
+            },
             actor=_actor(user),
         )
         record_agreement(reservation_id, payload, request, _internal_key(request))
@@ -500,6 +526,9 @@ def record_proposal_from_control_room(
     status: str = Form(...),
     proposal_type: str = Form(...),
     amount: str = Form("0"),
+    pricing_subtotal: str = Form(""),
+    discount: str = Form("0"),
+    discount_reason: str = Form(""),
     rate_plan_id: str = Form(""),
     line_item: str = Form(""),
     terms_summary: str = Form(""),
@@ -513,6 +542,15 @@ def record_proposal_from_control_room(
             status=status,
             proposal_type=proposal_type,
             amount_cents=_dollars_to_cents(amount),
+            pricing_subtotal_cents=(
+                _dollars_to_cents(pricing_subtotal)
+                if proposal_type == "quote" and pricing_subtotal.strip()
+                else None
+            ),
+            discount_cents=(
+                _dollars_to_cents(discount) if proposal_type == "quote" else 0
+            ),
+            discount_reason=discount_reason.strip(),
             rate_plan_id=rate_plan_id.strip() or None,
             line_items=(
                 [{"description": line_item.strip(), "amount_cents": _dollars_to_cents(amount)}]
@@ -734,7 +772,7 @@ def create_invoice_from_control_room(
         return _redirect(error=str(exc.detail))
     if result.get("duplicate"):
         return _redirect(notice="That scheduled invoice already exists; no duplicate was created.")
-    return _redirect(notice="Stripe invoice created; QBO handoff is pending.")
+    return _redirect(notice="QuickBooks draft invoice created. Nothing was sent to the customer.")
 
 
 @router.post("/billing/collections/refresh", dependencies=FORM_DEPS)

@@ -20,7 +20,7 @@ os.environ.setdefault(
 try:
     from fastapi.testclient import TestClient
 
-    from sales_support_agent.integrations.stripe_billing import StripeBillingClient
+    from sales_support_agent.integrations.building_quickbooks import BuildingQuickBooksClient
     from sales_support_agent.main import app
     from sales_support_agent.models.database import create_session_factory, init_database
     from sales_support_agent.models.entities import (
@@ -108,6 +108,13 @@ class BuildingAdminOperationsTests(unittest.TestCase):
         )
         if contact.status_code != 200:
             raise AssertionError(contact.text)
+
+    def test_00_billing_page_describes_quickbooks_review_flow(self) -> None:
+        page = self.client.get("/admin/building/billing")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("QuickBooks customer record", page.text)
+        self.assertIn("unsent QuickBooks invoice for staff review", page.text)
+        self.assertNotIn("create Stripe invoices", page.text)
 
     def _post(self, path: str, data: dict) -> object:
         response = self.client.post(
@@ -252,12 +259,8 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             "details": "Company gathering for 40 people.",
             "consent_to_contact": "true",
         }
-        with patch(
-            "sales_support_agent.api.building_router.HubSpotClient"
-        ) as hubspot:
-            hubspot.return_value.is_configured = False
-            first = self._post("/admin/building/inquiries", payload)
-            second = self._post("/admin/building/inquiries", payload)
+        first = self._post("/admin/building/inquiries", payload)
+        second = self._post("/admin/building/inquiries", payload)
         self._assert_notice(first)
         self._assert_notice(second)
         with self.factory() as session:
@@ -333,7 +336,7 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             self.assertEqual(row.status, "completed")
             self.assertTrue(row.resolution)
 
-    def test_00a_operator_records_response_without_hiding_crm_sync_state(self) -> None:
+    def test_00a_operator_records_response_in_agent(self) -> None:
         with self.factory() as session:
             inquiry = session.query(BuildingInquiry).filter(
                 BuildingInquiry.email == "assisted-event@example.com"
@@ -355,6 +358,15 @@ class BuildingAdminOperationsTests(unittest.TestCase):
         self.assertIn("Building performance", page.text)
         self.assertIn("Posted collected cash", page.text)
         self.assertIn("/admin/building/contracts", page.text)
+        sales_page = self.client.get("/admin/building/sales")
+        self.assertEqual(sales_page.status_code, 200, sales_page.text)
+        self.assertIn("Agent owns each lead", sales_page.text)
+        self.assertNotIn("HubSpot", sales_page.text)
+        self.assertNotIn("CRM recovery", sales_page.text)
+        contacts_page = self.client.get("/admin/building/contacts")
+        self.assertEqual(contacts_page.status_code, 200, contacts_page.text)
+        self.assertIn("Customer contacts and email permissions", contacts_page.text)
+        self.assertNotIn("CRM", contacts_page.text)
         contracts_page = self.client.get("/admin/building/contracts")
         self.assertEqual(contracts_page.status_code, 200, contracts_page.text)
         self.assertIn("Contracts", contracts_page.text)
@@ -388,6 +400,10 @@ class BuildingAdminOperationsTests(unittest.TestCase):
                 "source": "eventective",
                 "source_reference": "eventective-pilot",
             },
+        )
+        self.assertRegex(
+            created.headers["location"],
+            r"^/admin/building/bookings/[^?]+\?notice=",
         )
         self._assert_notice(created)
         with self.factory() as session:
@@ -505,22 +521,24 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             {},
         ))
         provider_invoice = {
-            "id": "in_admin_deposit",
-            "status": "open",
-            "amount_due": 50000,
-            "amount_paid": 0,
-            "currency": "usd",
-            "hosted_invoice_url": "https://invoice.example/admin",
+            "Id": "11249",
+            "DueDate": (date.today() + timedelta(days=7)).isoformat(),
+            "TotalAmt": 500,
         }
         with (
             patch.object(
-                StripeBillingClient,
-                "create_customer",
-                return_value={"id": "cus_admin"},
+                BuildingQuickBooksClient,
+                "is_configured",
+                new_callable=lambda: property(lambda _self: True),
             ),
             patch.object(
-                StripeBillingClient,
-                "create_invoice",
+                BuildingQuickBooksClient,
+                "ensure_customer",
+                return_value={"Id": "535"},
+            ),
+            patch.object(
+                BuildingQuickBooksClient,
+                "create_draft_invoice",
                 return_value=provider_invoice,
             ) as create_invoice,
         ):
@@ -539,7 +557,8 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             schedule = session.get(BuildingBillingSchedule, "admin-deposit")
             invoice = session.query(BuildingInvoice).one()
             self.assertEqual(schedule.status, "completed")
-            self.assertEqual(invoice.accounting_status, "pending_qbo")
+            self.assertEqual(invoice.accounting_status, "synced_qbo")
+            self.assertEqual(invoice.provider, "quickbooks")
 
 
 if __name__ == "__main__":

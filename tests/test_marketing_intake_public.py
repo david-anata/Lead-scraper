@@ -176,6 +176,49 @@ class MarketingIntakeTests(unittest.TestCase):
         self.assertEqual(len(matching), 2)
         self.assertNotIn("a" * 64, str([row.metadata_json for row in matching]))
 
+    def test_rate_limit_reuses_one_row_across_windows(self) -> None:
+        request = self._rate_limit_request("c" * 64)
+        scope = f"test:{self.id()}"
+        self.assertFalse(M.durable_rate_limited(request, scope=scope, limit=2))
+
+        with M.session_scope(app.state.session_factory) as session:
+            row = session.execute(
+                M.select(M.AutomationRun).where(
+                    M.AutomationRun.run_type.like(
+                        f"{M.RATE_LIMIT_RUN_TYPE_PREFIX}%"
+                    )
+                )
+            ).scalars().all()
+            matching = [
+                item
+                for item in row
+                if (item.metadata_json or {}).get("scope") == scope
+            ]
+            self.assertEqual(len(matching), 1)
+            metadata = dict(matching[0].metadata_json or {})
+            matching[0].metadata_json = {
+                **metadata,
+                "bucket": int(metadata["bucket"]) - 1,
+                "count": 999,
+            }
+            session.add(matching[0])
+
+        self.assertFalse(M.durable_rate_limited(request, scope=scope, limit=2))
+        with M.session_scope(app.state.session_factory) as session:
+            matching = [
+                item
+                for item in session.execute(
+                    M.select(M.AutomationRun).where(
+                        M.AutomationRun.run_type.like(
+                            f"{M.RATE_LIMIT_RUN_TYPE_PREFIX}%"
+                        )
+                    )
+                ).scalars().all()
+                if (item.metadata_json or {}).get("scope") == scope
+            ]
+            self.assertEqual(len(matching), 1)
+            self.assertEqual((matching[0].metadata_json or {}).get("count"), 1)
+
     def test_analysis_status_lookup_has_fixed_query_count(self) -> None:
         email = "indexed-status@example.com"
         asin = "B0INDEXED01"
@@ -258,6 +301,17 @@ class MarketingIntakeTests(unittest.TestCase):
             json={"identifier": "B0TESTASIN1", "kind": "asin"},
         )
         self.assertEqual(resp.status_code, 401)
+
+    def test_oversized_body_is_rejected_before_identity_work(self) -> None:
+        with mock.patch.object(M, "_asin_identity") as identity:
+            resp = self.client.post(
+                "/api/public/marketing/intake",
+                content=b'{"identifier":"' + (b"A" * 16_384) + b'","kind":"asin"}',
+                headers={**HEADERS, "Content-Type": "application/json"},
+            )
+        self.assertEqual(resp.status_code, 413, resp.text)
+        self.assertEqual(resp.json()["detail"], "Request body is too large.")
+        identity.assert_not_called()
 
     def test_create_returns_identity_and_token(self) -> None:
         data = self._create()
@@ -644,6 +698,37 @@ class MarketingIntakeTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 502, response.text)
 
+    def test_direct_booking_sanitizes_source_and_audit_reference(self) -> None:
+        with mock.patch.object(
+            M,
+            "_record_hubspot_booking",
+            return_value=(True, "deal-source-safe"),
+        ) as record, mock.patch.object(
+            M,
+            "_send_internal_booking_email",
+            return_value=True,
+        ):
+            response = self.client.post(
+                "/api/public/marketing/booking",
+                json={
+                    "email": "source-safe@example.com",
+                    "tool": "ads",
+                    "source": "person@example.com?campaign=visitor text",
+                    "booking_reference": "meeting-source-safe",
+                    "qualification": {
+                        "company": "Safe Source Brand",
+                        "audit_run_id": "12345",
+                    },
+                },
+                headers=HEADERS,
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(record.call_args.kwargs["source"], "booking-page")
+        self.assertEqual(record.call_args.kwargs["qualification"]["audit_run_id"], "12345")
+
+        sanitized = M._sanitize_qualification({"audit_run_id": "123@example.com"})
+        self.assertNotIn("audit_run_id", sanitized)
+
     def test_booking_updates_only_matching_strategy_deal(self) -> None:
         client = mock.Mock()
         client.is_configured = True
@@ -769,6 +854,29 @@ class MarketingIntakeTests(unittest.TestCase):
             headers=HEADERS,
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_advertising_audit_status_rejects_corrupt_lifecycle(self) -> None:
+        with mock.patch.object(M, "_run_analysis_and_deliver"):
+            body = self.client.post(
+                "/api/public/marketing/advertising-audit",
+                json={
+                    "product": "B09239YTZQ",
+                    "email": "ads-corrupt@example.com",
+                    "company": "Ocean Rx",
+                },
+                headers=HEADERS,
+            ).json()
+        with M.session_scope(app.state.session_factory) as session:
+            run = session.get(M.AutomationRun, int(body["run_id"]))
+            run.summary_json = {**(run.summary_json or {}), "email_delivery": "mystery"}
+            session.add(run)
+        response = self.client.get(
+            f"/api/public/marketing/advertising-audit/{body['run_id']}",
+            params={"token": body["token"]},
+            headers=HEADERS,
+        )
+        self.assertEqual(response.status_code, 500, response.text)
+        self.assertEqual(response.json()["detail"], "Invalid advertising audit lifecycle.")
 
     def test_advertising_hubspot_note_names_tool_and_next_step(self) -> None:
         client = mock.Mock()

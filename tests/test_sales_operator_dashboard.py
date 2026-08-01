@@ -7,6 +7,144 @@ from sales_support_agent.services.sales import operator_dashboard
 
 
 class SalesOperatorDashboardTests(unittest.TestCase):
+    def test_website_intake_queue_is_bounded_and_excludes_locked_visitors(self):
+        unlocked = SimpleNamespace(
+            id=1,
+            run_type="marketing_intake",
+            status="failed",
+            started_at=datetime(2026, 7, 31, 21, 0, tzinfo=timezone.utc),
+            metadata_json={"email": "owner@example.com", "source": "anatainc.com"},
+            summary_json={
+                "kind": "asin",
+                "asin": "B012345678",
+                "brand_name": "Test Brand",
+                "needs": ["advertising"],
+                "error": "provider failed",
+                "hubspot_handoff": "recorded",
+            },
+        )
+        locked = SimpleNamespace(
+            id=2,
+            run_type="marketing_intake",
+            status="running",
+            started_at=datetime(2026, 7, 31, 20, 0, tzinfo=timezone.utc),
+            metadata_json={},
+            summary_json={"kind": "store", "domain": "private.example"},
+        )
+        advertising = SimpleNamespace(
+            id=3,
+            run_type="marketing_analysis_intake",
+            status="failed",
+            started_at=datetime(2026, 7, 31, 19, 0, tzinfo=timezone.utc),
+            metadata_json={
+                "email": "ads@example.com",
+                "asin": "B087654321",
+                "company": "Ads Brand",
+                "tool": "advertising_audit",
+            },
+            summary_json={"email_delivery": "pending", "error": "deck failed"},
+        )
+        rate_sheet = SimpleNamespace(
+            id=4,
+            run_type="fulfillment_rate_sheet",
+            status="draft",
+            started_at=datetime(2026, 7, 31, 18, 0, tzinfo=timezone.utc),
+            metadata_json={},
+            summary_json={
+                "prospect": "Rate Brand",
+                "public_unlock_email": "rates@example.com",
+                "public_rate_sheet_status": "failed",
+                "public_email_status": "pending",
+                "public_sales_handoff_status": "pending",
+                "public_rate_sheet_error": "publish failed",
+            },
+        )
+        session = mock.Mock()
+        session.scalars.return_value.all.return_value = [unlocked, locked, advertising, rate_sheet]
+
+        rows = operator_dashboard._build_website_intakes(session)
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0]["id"], 1)
+        self.assertEqual(rows[0]["status"], "failed")
+        self.assertEqual(rows[0]["hubspot"], "recorded")
+        self.assertEqual(rows[1]["kind"], "advertising_audit")
+        self.assertEqual(rows[1]["brand"], "Ads Brand")
+        self.assertEqual(rows[2]["kind"], "rate_sheet")
+        self.assertEqual(rows[2]["error"], "publish failed")
+        self.assertTrue(rows[2]["retryable"])
+
+    def test_operator_page_surfaces_failed_website_analysis_and_retry(self):
+        html = operator_dashboard.render_operator_page(
+            {
+                "websiteIntakes": [{
+                    "id": 73,
+                    "kind": "asin",
+                    "brand": "Test Brand",
+                    "identifier": "B012345678",
+                    "email": "owner@example.com",
+                    "needs": ["advertising", "analytics"],
+                    "status": "failed",
+                    "retryable": True,
+                    "reportReady": False,
+                    "emailDelivery": "pending",
+                    "hubspot": "recorded",
+                    "acknowledgement": "delivered",
+                    "internalNotification": "delivered",
+                    "error": "Deck provider timed out",
+                    "startedAt": "2026-07-31 21:00 UTC",
+                }],
+            }
+        )
+
+        self.assertIn("Website analysis delivery", html)
+        self.assertIn("Deck provider timed out", html)
+        self.assertIn("Report: not ready", html)
+        self.assertIn("HubSpot: recorded", html)
+        self.assertIn('/admin/sales/website-intakes/73/retry', html)
+
+    def test_operator_page_does_not_offer_retry_for_completed_analysis(self):
+        html = operator_dashboard.render_operator_page(
+            {
+                "websiteIntakes": [{
+                    "id": 74,
+                    "kind": "store",
+                    "brand": "Ready Brand",
+                    "identifier": "ready.example",
+                    "email": "owner@example.com",
+                    "needs": [],
+                    "status": "success",
+                    "reportReady": True,
+                    "emailDelivery": "delivered",
+                    "hubspot": "recorded",
+                }],
+            }
+        )
+
+        self.assertIn("Report: ready", html)
+        self.assertNotIn('/admin/sales/website-intakes/74/retry', html)
+
+    def test_operator_page_surfaces_retryable_website_notes(self):
+        html = operator_dashboard.render_operator_page(
+            {
+                "websiteNotes": [{
+                    "id": 42,
+                    "kind": "partners",
+                    "name": "Pat Operator",
+                    "email": "pat@example.com",
+                    "message": "Interested in partnering.",
+                    "hubspot": False,
+                    "notified": True,
+                    "startedAt": "2026-07-31 20:00 UTC",
+                }],
+            }
+        )
+
+        self.assertIn("Website notes", html)
+        self.assertIn("Interested in partnering.", html)
+        self.assertIn("HubSpot: needs retry", html)
+        self.assertIn('/admin/sales/website-notes/42/retry', html)
+
     def test_infer_offer_prefers_amazon_when_agency_progress_exists(self):
         deal = {
             "id": "deal-1",

@@ -122,6 +122,7 @@ def _fetch_website(url: str, warnings: list) -> str:
             url,
             timeout=10,
             headers={"User-Agent": "Mozilla/5.0 (compatible; AnataRateSheet/1.0)"},
+            allow_redirects=False,
         )
         html = resp.text or ""
         html = _SCRIPT_STYLE_RE.sub(" ", html)
@@ -208,6 +209,7 @@ def fetch_brand_assets(website_url: str) -> dict:
             page_url,
             timeout=_BRAND_FETCH_TIMEOUT,
             headers={"User-Agent": "Mozilla/5.0 (compatible; AnataRateSheet/1.0)"},
+            allow_redirects=False,
         )
         html = resp.text or ""
 
@@ -266,6 +268,7 @@ def _fetch_logo_data_uri(img_url: str) -> str:
             timeout=_BRAND_FETCH_TIMEOUT,
             headers={"User-Agent": "Mozilla/5.0 (compatible; AnataRateSheet/1.0)"},
             stream=True,
+            allow_redirects=False,
         )
         if resp.status_code != 200:
             return ""

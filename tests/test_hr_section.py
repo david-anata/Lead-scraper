@@ -65,6 +65,9 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn('aria-label="HR pages"', r.text)
         self.assertNotIn('class="hr-side"', r.text)
         self.assertEqual(r.text.count('id="agent-main-content"'), 1)
+        self.assertIn("field.labels && field.labels.length", r.text)
+        self.assertIn("candidate.htmlFor = field.id", r.text)
+        self.assertIn(".top-actions .top-link", r.text)
 
     def test_setup_checklist_uses_live_readiness_and_is_payroll_private(self):
         page = self._get("/admin/hr/setup", self.sa)
@@ -80,6 +83,31 @@ class HRSectionTests(unittest.TestCase):
         access_store.set_user_permissions(uid, ["hr.access"])
         denied = self._get("/admin/hr/setup", _cookie(email))
         self.assertEqual(denied.status_code, 403)
+
+    def test_calendar_setup_shows_safe_service_account_identity(self):
+        import os
+
+        old_calendar = os.environ.get("HR_OOO_GOOGLE_CALENDAR_ID")
+        old_credential = os.environ.get("HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON")
+        os.environ.pop("HR_OOO_GOOGLE_CALENDAR_ID", None)
+        os.environ["HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON"] = (
+            '{"client_email":"ooo-calendar-agent@example.com"}'
+        )
+        try:
+            page = self._get("/admin/hr/settings", self.sa)
+        finally:
+            if old_calendar is None:
+                os.environ.pop("HR_OOO_GOOGLE_CALENDAR_ID", None)
+            else:
+                os.environ["HR_OOO_GOOGLE_CALENDAR_ID"] = old_calendar
+            if old_credential is None:
+                os.environ.pop("HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", None)
+            else:
+                os.environ["HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON"] = old_credential
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Service account to share the calendar with", page.text)
+        self.assertIn("ooo-calendar-agent@example.com", page.text)
+        self.assertNotIn("client_email", page.text)
 
     def test_prelaunch_payroll_defaults_to_approved_first_live_period(self):
         from sales_support_agent.api.hr_router import _default_payroll_date
@@ -696,6 +724,61 @@ class HRSectionTests(unittest.TestCase):
         )
         self.assertIn(login_email, result.text)
 
+    def test_yahoo_employee_invitation_is_a_direct_single_use_login(self):
+        import uuid
+
+        record_email = f"yahoo-worker-{uuid.uuid4().hex[:8]}@anatainc.com"
+        login_email = f"yahoo-worker-{uuid.uuid4().hex[:8]}@yahoo.com"
+        employee_id = hr_store.create_employee(
+            email=record_email,
+            hr_login_email=login_email,
+            full_name="Yahoo Worker",
+            hr_role="employee",
+        )
+        invite = hr_store.create_employee_invitation(
+            record_email, actor="david@anatainc.com"
+        )
+        self.assertTrue(invite["ok"])
+
+        accepted = self.client.get(
+            f"/admin/access/invite/{invite['token']}",
+            follow_redirects=False,
+        )
+
+        self.assertEqual(accepted.status_code, 302)
+        self.assertEqual(accepted.headers["location"], "/app")
+        self.assertIn(app.state.agent_settings.admin_cookie_name, accepted.cookies)
+        user = access_store.get_user_by_email(login_email)
+        self.assertEqual(user["status"], "active")
+        self.assertEqual(user["permissions"], {"hr.access"})
+        reused = self.client.get(
+            f"/admin/access/invite/{invite['token']}",
+            follow_redirects=False,
+        )
+        self.assertEqual(reused.status_code, 410)
+
+    def test_existing_business_login_keeps_approved_tools_when_hr_is_linked(self):
+        import uuid
+
+        business_email = f"existing-business-{uuid.uuid4().hex[:8]}@anatainc.com"
+        employee_id = hr_store.create_employee(
+            email=business_email,
+            hr_login_email=business_email,
+            full_name="Existing Business User",
+        )
+        user_id = access_store.upsert_user(business_email, "Existing Business User")
+        access_store.set_user_permissions(user_id, ["sales.deals"])
+
+        invite = hr_store.create_employee_invitation(
+            business_email, actor="david@anatainc.com"
+        )
+
+        self.assertTrue(invite["ok"])
+        self.assertEqual(
+            access_store.get_user_by_email(business_email)["permissions"],
+            {"sales.deals", "hr.access"},
+        )
+
     def test_employee_invitation_requires_personal_login_and_never_uses_work_email(self):
         import uuid
         email = f"no-personal-login-{uuid.uuid4().hex[:8]}@anatainc.com"
@@ -722,7 +805,7 @@ class HRSectionTests(unittest.TestCase):
             hr_store.set_employee_hr_login_email(
                 first_id, "work@anatainc.com", actor="test"
             ),
-            (False, "hr_login_email_invalid"),
+            (True, "hr_login_saved"),
         )
         self.assertEqual(
             hr_store.set_employee_hr_login_email(
@@ -919,6 +1002,56 @@ class HRSectionTests(unittest.TestCase):
             hr_store.list_pto_requests(employee_email)[0]["status"], "withdrawn"
         )
 
+    def test_authorized_revoke_releases_approved_pto_without_erasing_history(self):
+        import uuid
+        email = f"pto-revoke-{uuid.uuid4().hex[:8]}@anatainc.com"
+        personal_login = f"pto-revoke-{uuid.uuid4().hex[:8]}@example.com"
+        hr_store.create_employee(
+            email=email, hr_login_email=personal_login, full_name="PTO Revoke"
+        )
+        hr_store.upsert_employment_profile(
+            email, hire_date=date(2025, 1, 1), pay_basis="fixed_semimonthly",
+            fixed_pay_per_period="1000", standard_weekly_hours=40, actor="test",
+        )
+        self.assertEqual(
+            hr_store.create_pto_request(
+                email, start_date=date(2026, 8, 3), end_date=date(2026, 8, 3),
+                hours=8, reason="Personal", actor=email,
+            ),
+            (True, "pto_requested"),
+        )
+        request_id = hr_store.list_pto_requests(email)[0]["id"]
+        self.assertFalse(hr_store.decide_pto(
+            request_id, decision="approved", actor=personal_login
+        ))
+        self.assertTrue(hr_store.decide_pto(
+            request_id, decision="approved", actor="david@anatainc.com"
+        ))
+        after_approval = hr_store.pto_summary(email)["available"]
+        self.assertEqual(
+            hr_store.revoke_pto(
+                request_id, reason="Self revoke", actor=personal_login
+            ),
+            (False, "pto_revocation_not_allowed"),
+        )
+        self.assertEqual(
+            hr_store.revoke_pto(
+                request_id, reason="Employee no longer needs the day",
+                actor="valeria@anatainc.com",
+            ),
+            (True, "pto_revoked"),
+        )
+        self.assertEqual(
+            hr_store.list_pto_requests(email)[0]["status"], "revoked"
+        )
+        self.assertEqual(hr_store.pto_summary(email)["available"], after_approval + 8)
+        self.assertEqual(
+            hr_store.revoke_pto(
+                request_id, reason="Duplicate", actor="david@anatainc.com"
+            ),
+            (False, "pto_revocation_not_allowed"),
+        )
+
     def test_onboarding_correction_preserves_submission_and_shows_employee_reason(self):
         self._post("/admin/hr/onboarding/profile", {
             "personal_email": "david.personal@example.com",
@@ -948,6 +1081,11 @@ class HRSectionTests(unittest.TestCase):
         }, self.sa)
         self.assertIn("correction_requested", requested.headers["location"])
         correction = hr_store.list_time_corrections("david@anatainc.com")[0]
+        review_page = self._get("/admin/hr/time", self.sa)
+        self.assertIn(
+            f'aria-label="Required review note for correction #{correction["id"]}"',
+            review_page.text,
+        )
         own = self._post(f"/admin/hr/time/corrections/{correction['id']}/decision", {
             "decision": "approved", "reviewer_reason": "Looks right",
         }, self.sa)
@@ -1145,6 +1283,10 @@ class HRSectionTests(unittest.TestCase):
         page = self._get("/admin/hr/time", self.sa)
         self.assertEqual(page.status_code, 200)
         self.assertIn('class="hr-mobile-nav"', page.text)
+        self.assertIn(
+            "padding:22px 16px calc(104px + env(safe-area-inset-bottom))",
+            page.text,
+        )
         self.assertIn(
             '<a href="/admin/hr/time" aria-current="page">Time</a>', page.text
         )

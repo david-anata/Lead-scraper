@@ -8,7 +8,9 @@ round-tripped bulk sheet. Mounted in-process by the frontend via include_router.
 from __future__ import annotations
 
 import base64
+import json
 import logging
+import math
 import re
 from typing import Optional
 from urllib.parse import quote_plus
@@ -40,6 +42,7 @@ from sales_support_agent.services.advertising.intake import route_files
 from sales_support_agent.services.advertising.schema import ExternalCostRow, Goals
 from sales_support_agent.services.auth_deps import get_session_user_from_request, require_tool
 from sales_support_agent.services.access.pages import render_forbidden_page
+from sales_support_agent.services.public_request_guard import durable_rate_limit_response
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,66 @@ _PUBLIC_CALCULATOR_PATH = "/amazon-profit-calculator/runtime"
 _PUBLIC_CALCULATOR_API_BASE = "/api/public/amazon-profit-calculator"
 _PUBLIC_BULK_PROFITABILITY_PATH = "/amazon-bulk-profitability/runtime"
 _PUBLIC_BULK_PROFITABILITY_API_BASE = "/api/public/amazon-bulk-profitability"
+_ASIN_RE = re.compile(r"^[A-Z0-9]{10}$")
+_PROFIT_PAYLOAD_MAX_BYTES = 16_384
+_PROFIT_NUMERIC_FIELDS = {
+    "price", "buyer_shipping", "length", "width", "height", "weight_lb",
+    "months_stored", "inbound_fee", "other_amazon_fees", "cogs", "prep_cost",
+    "misc_cost", "marketing_pct", "agency_pct", "fbm_pick_pack",
+    "fbm_outbound", "fbm_storage", "fbm_other",
+}
+_PROFIT_TEXT_FIELDS = {"category_key", "season"}
+_PROFIT_BOOLEAN_FIELDS = {"is_apparel"}
+
+
+async def _read_profitability_payload(request: Request) -> dict:
+    content_length = request.headers.get("content-length", "").strip()
+    if content_length.isdigit() and int(content_length) > _PROFIT_PAYLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Profitability request is too large.")
+    body = await request.body()
+    if len(body) > _PROFIT_PAYLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Profitability request is too large.")
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Profitability request must be valid JSON.")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Profitability request must be an object.")
+
+    allowed = _PROFIT_NUMERIC_FIELDS | _PROFIT_TEXT_FIELDS | _PROFIT_BOOLEAN_FIELDS
+    if any(key not in allowed for key in payload):
+        raise HTTPException(status_code=400, detail="Profitability request contains unsupported fields.")
+
+    normalized: dict[str, object] = {}
+    for key in _PROFIT_NUMERIC_FIELDS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise HTTPException(status_code=400, detail=f"{key} must be a number.")
+        try:
+            number = float(value)
+        except (OverflowError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{key} is outside the supported range.")
+        if not math.isfinite(number) or number < 0 or number > 1_000_000:
+            raise HTTPException(status_code=400, detail=f"{key} is outside the supported range.")
+        normalized[key] = number
+    for key in _PROFIT_TEXT_FIELDS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if not isinstance(value, str) or not value.strip() or len(value.strip()) > 80:
+            raise HTTPException(status_code=400, detail=f"{key} is invalid.")
+        normalized[key] = value.strip()
+    for key in _PROFIT_BOOLEAN_FIELDS:
+        if key not in payload:
+            continue
+        if not isinstance(payload[key], bool):
+            raise HTTPException(status_code=400, detail=f"{key} must be true or false.")
+        normalized[key] = payload[key]
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Profitability request is empty.")
+    return normalized
 
 
 def _dollars_to_cents(raw: str) -> Optional[int]:
@@ -246,8 +309,11 @@ def profit_calculator_app() -> HTMLResponse:
 @public_router.get(f"{_PUBLIC_CALCULATOR_API_BASE}/catalog/{{asin}}")
 def profit_calculator_catalog_proxy(asin: str, request: Request) -> JSONResponse:
     normalized_asin = (asin or "").strip().upper()
-    if not normalized_asin:
-        raise HTTPException(status_code=400, detail="ASIN is required.")
+    if not _ASIN_RE.fullmatch(normalized_asin):
+        raise HTTPException(status_code=400, detail="ASIN must be 10 letters or numbers.")
+    limited = durable_rate_limit_response(request, scope="profit:catalog", limit=30)
+    if limited is not None:
+        return limited
     upstream_base = _profit_api_base_url(request)
     if not upstream_base:
         raise HTTPException(status_code=503, detail="Profit API base URL is not configured.")
@@ -270,8 +336,11 @@ def bulk_profitability_app() -> HTMLResponse:
 @public_router.get(f"{_PUBLIC_BULK_PROFITABILITY_API_BASE}/catalog/{{asin}}")
 def bulk_profitability_catalog_proxy(asin: str, request: Request) -> JSONResponse:
     normalized_asin = (asin or "").strip().upper()
-    if not normalized_asin:
-        raise HTTPException(status_code=400, detail="ASIN is required.")
+    if not _ASIN_RE.fullmatch(normalized_asin):
+        raise HTTPException(status_code=400, detail="ASIN must be 10 letters or numbers.")
+    limited = durable_rate_limit_response(request, scope="profit:catalog", limit=30)
+    if limited is not None:
+        return limited
     upstream_base = _profit_api_base_url(request)
     if not upstream_base:
         raise HTTPException(status_code=503, detail="Profit API base URL is not configured.")
@@ -287,10 +356,13 @@ def bulk_profitability_catalog_proxy(asin: str, request: Request) -> JSONRespons
 
 @public_router.post(f"{_PUBLIC_BULK_PROFITABILITY_API_BASE}/profitability/estimate")
 async def bulk_profitability_estimate_proxy(request: Request) -> JSONResponse:
+    limited = durable_rate_limit_response(request, scope="profit:estimate", limit=120)
+    if limited is not None:
+        return limited
     upstream_base = _profit_api_base_url(request)
     if not upstream_base:
         raise HTTPException(status_code=503, detail="Profit API base URL is not configured.")
-    payload = await request.json()
+    payload = await _read_profitability_payload(request)
     response = requests.post(
         f"{upstream_base}/api/public/amazon/profitability/estimate",
         headers={"accept": "application/json", "content-type": "application/json"},
@@ -304,10 +376,13 @@ async def bulk_profitability_estimate_proxy(request: Request) -> JSONResponse:
 
 @public_router.post(f"{_PUBLIC_CALCULATOR_API_BASE}/profitability/estimate")
 async def profit_calculator_estimate_proxy(request: Request) -> JSONResponse:
+    limited = durable_rate_limit_response(request, scope="profit:estimate", limit=120)
+    if limited is not None:
+        return limited
     upstream_base = _profit_api_base_url(request)
     if not upstream_base:
         raise HTTPException(status_code=503, detail="Profit API base URL is not configured.")
-    payload = await request.json()
+    payload = await _read_profitability_payload(request)
     response = requests.post(
         f"{upstream_base}/api/public/amazon/profitability/estimate",
         headers={"accept": "application/json", "content-type": "application/json"},

@@ -340,14 +340,23 @@ during the permission transition. Every content create, edit, and review-state
 change writes a Building audit event.
 
 Approved holds and confirmed reservations enter a durable calendar projection
-queue. Agent remains the booking source of truth: a Google Calendar edit or
-deletion never changes a reservation. Building Control and the internal API are
-dry-run by default. Set a dedicated `BUILDING_GOOGLE_CALENDAR_ID` (never
+queue. The dedicated Anata Events calendar is authoritative for date occupancy;
+Agent remains authoritative for commercial and customer evidence. Building
+Control and the internal API are dry-run by default. Set a dedicated
+`BUILDING_GOOGLE_CALENDAR_ID` (never
 `primary`) and `BUILDING_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON`, then share only
 that calendar with the service-account email. The separate
 `BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED` gate defaults to false. Stable event
 IDs, committed claims, reconciliation evidence, and retry backoff prevent
 duplicate delivery and keep provider failures visible.
+If Workspace policy blocks direct write access for service accounts, authorize
+the service account OAuth client for only the Google Calendar scope and set
+`BUILDING_GOOGLE_CALENDAR_DELEGATED_SUBJECT` to the approved Anata calendar
+operator that already has write access to the dedicated calendar.
+After a controlled read/write/delete verification, enable
+`BUILDING_GOOGLE_CALENDAR_AVAILABILITY_AUTHORITY`. Event review then checks the
+full setup-through-teardown window and writes the hold synchronously, failing
+closed without creating an Agent hold when Calendar is unavailable.
 
 Confirming an event creates an event-readiness and closeout checklist.
 Confirming a workspace creates a move-in checklist, and moving an occupied
@@ -633,6 +642,13 @@ Anata's Utah team. It is intentionally provider-independent:
 
 - Agent records employment setup, secure onboarding, W-4 elections, I-9 review,
   policy acknowledgements, exact time, corrections, PTO, and paid holidays.
+- Employee sign-in is provider-neutral. A confirmed Gmail, Yahoo, Outlook,
+  iCloud, business, or other valid address receives a hashed, single-use
+  passwordless link. The link expires after 15 minutes for returning sign-in;
+  onboarding invitations expire after seven days and become unusable after
+  acceptance. Google sign-in remains optional. Unknown and suspended addresses
+  receive the same non-identifying request confirmation, and repeated requests
+  are rate-limited.
 - Payroll is semimonthly: the 1st–15th is paid on the 20th; the 16th–month end
   is paid on the following 5th. Saturday pay dates move to Friday and Sunday pay
   dates move to Monday. The overtime week is Sunday–Saturday.

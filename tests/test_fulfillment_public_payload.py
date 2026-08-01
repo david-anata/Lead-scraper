@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -92,6 +93,27 @@ class PublicPayloadTests(unittest.TestCase):
         summary["rate_matrix"]["products"][0]["zones"][0]["quotes"][0]["source"] = "mock"
         self.assertIsNone(serialize_public_matrix(summary, preview=True))
 
+    def test_serializer_excludes_unrated_packages_and_destinations(self) -> None:
+        summary = live_summary()
+        summary["rate_matrix"]["products"].append(
+            {
+                "product": {"name": "Unrated Widget", "weight_lb": 2},
+                "zones": [
+                    {
+                        "zone": 8,
+                        "dest_zip": "98101",
+                        "dest_label": "Seattle, WA",
+                        "quotes": [],
+                    }
+                ],
+            }
+        )
+        payload = serialize_public_matrix(summary, preview=False)
+        self.assertIsNotNone(payload)
+        self.assertEqual([item["name"] for item in (payload or {})["products"]], ["Widget"])
+        self.assertEqual([item["zone"] for item in (payload or {})["destinations"]], [5])
+        self.assertEqual((payload or {})["preview_product_count"], 1)
+
     def test_status_and_result_routes_return_only_safe_contract(self) -> None:
         summary = live_summary()
         run_id = storage.create_run(trigger="public_funnel")
@@ -108,6 +130,18 @@ class PublicPayloadTests(unittest.TestCase):
         self.assertNotIn("internal_margin", result.json())
         self.assertNotIn("fulfillment_quote", result.json())
         self.assertEqual(result.json()["quotes"][0]["rate_usd"], 8.25)
+
+    def test_status_rejects_corrupt_lifecycle_instead_of_claiming_building(self) -> None:
+        summary = live_summary("corrupt-status-correlation-abcdef")
+        summary["public_rate_sheet_status"] = "mystery"
+        run_id = storage.create_run(trigger="public_funnel")
+        storage.save_draft(run_id, summary)
+        response = self.client.get(
+            f"/api/public/fulfillment/rate-sheet/status/{summary['public_correlation_id']}",
+            headers=HEADERS,
+        )
+        self.assertEqual(response.status_code, 500, response.text)
+        self.assertEqual(response.json()["detail"], "Invalid rate sheet lifecycle.")
 
     def test_indexed_correlation_lookup_has_fixed_query_count(self) -> None:
         summary = live_summary("query-budget-correlation-abcdefgh")
@@ -136,6 +170,20 @@ class PublicPayloadTests(unittest.TestCase):
             self.client.get("/api/public/fulfillment/rate-sheet/result/does-not-exist").status_code,
             401,
         )
+
+    def test_malformed_correlation_never_reaches_storage(self) -> None:
+        with mock.patch.object(storage, "get_run_by_public_correlation") as lookup:
+            status = self.client.get(
+                "/api/public/fulfillment/rate-sheet/status/too-short",
+                headers=HEADERS,
+            )
+            result = self.client.get(
+                "/api/public/fulfillment/rate-sheet/result/contains%20spaces-and-is-long-enough",
+                headers=HEADERS,
+            )
+        self.assertEqual(status.status_code, 400, status.text)
+        self.assertEqual(result.status_code, 400, result.text)
+        lookup.assert_not_called()
 
     def test_repeated_unlock_reuses_ready_correlation(self) -> None:
         summary = live_summary("repeat-correlation-abcdefghijk")

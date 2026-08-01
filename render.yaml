@@ -82,6 +82,10 @@ services:
         sync: false
       - key: RESEND_FROM
         value: Anata Agent <noreply@anatainc.com>
+      - key: HR_OOO_GOOGLE_CALENDAR_ID
+        sync: false
+      - key: HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON
+        sync: false
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_WEBHOOK_SECRET

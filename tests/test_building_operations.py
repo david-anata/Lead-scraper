@@ -513,14 +513,12 @@ class BuildingOperationsTests(unittest.TestCase):
             ).status_code,
             400,
         )
-        with mock.patch("sales_support_agent.api.building_router.HubSpotClient") as hubspot:
-            hubspot.return_value.is_configured = False
-            first = self.client.post(
-                "/api/public/building/inquiries", headers=self.site_headers, json=payload
-            )
-            second = self.client.post(
-                "/api/public/building/inquiries", headers=self.site_headers, json=payload
-            )
+        first = self.client.post(
+            "/api/public/building/inquiries", headers=self.site_headers, json=payload
+        )
+        second = self.client.post(
+            "/api/public/building/inquiries", headers=self.site_headers, json=payload
+        )
         self.assertEqual(first.status_code, 201, first.text)
         self.assertFalse(first.json()["duplicate"])
         self.assertTrue(second.json()["duplicate"])
@@ -581,7 +579,7 @@ class BuildingOperationsTests(unittest.TestCase):
                 delta=1,
             )
 
-    def test_inquiry_response_and_qualification_are_audited_separately_from_crm_sync(self) -> None:
+    def test_inquiry_response_and_qualification_are_audited_in_agent(self) -> None:
         with self.factory() as session:
             inquiry = session.query(BuildingInquiry).one()
             inquiry_id = inquiry.id
@@ -693,32 +691,15 @@ class BuildingOperationsTests(unittest.TestCase):
         self.assertEqual(first.json()["space_status"], "available")
         self.assertEqual(second.status_code, 409, second.text)
 
-    def test_partial_hubspot_failure_is_retryable_without_duplicate_contact(self) -> None:
-        class FailingNoteClient:
-            is_configured = True
-
-            def __init__(self):
-                self.created = 0
-
-            def find_contact_by_email(self, email):
-                return None
-
-            def create_contact(self, properties):
-                self.created += 1
-                return {"id": "hs-building-contact"}
-
-            def create_contact_note(self, **kwargs):
-                raise RuntimeError("temporary HubSpot note failure")
-
-        failing = FailingNoteClient()
+    def test_new_inquiry_never_calls_hubspot(self) -> None:
         headers = {
             "X-Internal-Api-Key": "building-test-key",
-            "Idempotency-Key": "inquiry-hubspot-retry",
+            "Idempotency-Key": "inquiry-agent-owned",
         }
         payload = {
             "kind": "workspace",
-            "name": "Retry Prospect",
-            "email": "retry-building@example.com",
+            "name": "Agent-Owned Prospect",
+            "email": "agent-owned-building@example.com",
             "consent_to_contact": True,
             "source": "facebook_marketplace",
             "source_reference": "marketplace-message-123",
@@ -728,8 +709,8 @@ class BuildingOperationsTests(unittest.TestCase):
             hubspot_api_token="hubspot-test-token",
         )
         with mock.patch(
-            "sales_support_agent.api.building_router.HubSpotClient",
-            return_value=failing,
+            "sales_support_agent.integrations.hubspot.HubSpotClient",
+            side_effect=AssertionError("Building inquiries must remain in Agent."),
         ):
             created = self.client.post(
                 "/api/public/building/inquiries",
@@ -737,41 +718,8 @@ class BuildingOperationsTests(unittest.TestCase):
                 json=payload,
             )
         self.assertEqual(created.status_code, 201, created.text)
-        self.assertEqual(created.json()["status"], "crm_sync_needed")
-        inquiry_id = created.json()["inquiry_id"]
-        self.assertEqual(failing.created, 1)
-
-        class RetryClient:
-            is_configured = True
-
-            def __init__(self):
-                self.created = 0
-                self.noted = 0
-
-            def find_contact_by_email(self, email):
-                raise AssertionError("The stored HubSpot ID should be reused.")
-
-            def create_contact(self, properties):
-                self.created += 1
-                raise AssertionError("Retry must not create a duplicate contact.")
-
-            def create_contact_note(self, **kwargs):
-                self.noted += 1
-                return {"id": "hs-note-1"}
-
-        retry_client = RetryClient()
-        with mock.patch(
-            "sales_support_agent.api.building_router.HubSpotClient",
-            return_value=retry_client,
-        ):
-            retried = self.client.post(
-                f"/api/internal/building/inquiries/{inquiry_id}/retry-hubspot",
-                headers=self.internal_headers,
-                json={"actor": "operator@example.com"},
-            )
-        self.assertEqual(retried.status_code, 200, retried.text)
-        self.assertTrue(retried.json()["ok"])
-        self.assertEqual(retried.json()["status"], "new")
-        self.assertEqual(retried.json()["attempt_count"], 2)
-        self.assertEqual(retry_client.created, 0)
-        self.assertEqual(retry_client.noted, 1)
+        self.assertEqual(created.json()["status"], "new")
+        with self.factory() as session:
+            inquiry = session.get(BuildingInquiry, created.json()["inquiry_id"])
+            self.assertEqual(inquiry.hubspot_contact_id, "")
+            self.assertNotIn("_hubspot_sync", inquiry.payload_json)

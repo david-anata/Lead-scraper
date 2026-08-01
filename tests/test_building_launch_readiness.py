@@ -241,7 +241,7 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
         self.assertIn('id="incoming-inquiries"', page.text)
         self.assertIn('id="bookings-and-holds"', page.text)
         self.assertIn('id="billing-and-collections"', page.text)
-        self.assertIn('id="crm-email-list"', page.text)
+        self.assertIn('id="customer-email-list"', page.text)
 
     def test_02_decision_requires_exact_status_confirmation_and_evidence(self) -> None:
         wrong = self._decide("event_calendar", "accepted_policy")

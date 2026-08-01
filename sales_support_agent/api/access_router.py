@@ -302,6 +302,39 @@ async def invite_landing(token: str, request: Request):
         invite = None
     if not invite:
         return HTMLResponse(render_invite_invalid_page(), status_code=410)
+    # Employee invitations are delivered to the exact HR login address. The
+    # single-use bearer link proves control of that inbox, so Yahoo, Outlook,
+    # iCloud, and other providers do not need a Google account.
+    employee = None
+    try:
+        from sales_support_agent.api.auth_router import _auth_settings, _mint_session
+        from sales_support_agent.services.hr import store as hr_store
+
+        employee = hr_store.get_employee_by_email(invite["email"])
+        if employee:
+            if (
+                employee.get("status") != "active"
+                or (employee.get("hr_login_email") or "").strip().lower()
+                != invite["email"]
+            ):
+                return HTMLResponse(render_invite_invalid_page(), status_code=410)
+            access_user = store.get_user_by_email(invite["email"])
+            if not access_user:
+                return HTMLResponse(render_invite_invalid_page(), status_code=410)
+            store.set_user_status(access_user["id"], "active")
+            store.accept_invite(invite["id"])
+            store.record_login(invite["email"])
+            return _mint_session(
+                request,
+                _auth_settings(request),
+                invite["email"],
+                access_user.get("name") or employee.get("full_name") or invite["email"],
+                redirect_to="/app",
+            )
+    except Exception:  # noqa: BLE001 — fail closed for employee invitations
+        logger.exception("Provider-neutral employee invite acceptance failed")
+        if employee:
+            return HTMLResponse(render_invite_invalid_page(), status_code=503)
     # Store the raw token in a short-lived cookie, then bounce to Google login.
     secure = "localhost" not in str(request.base_url)
     response = RedirectResponse("/admin/auth/google", status_code=302)

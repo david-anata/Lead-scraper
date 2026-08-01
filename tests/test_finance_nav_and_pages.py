@@ -1,6 +1,7 @@
 """Eight tools lived in one dialog. They now live on pages, exactly once each."""
 
 from datetime import date, datetime, timedelta, timezone
+from html import escape
 
 from sales_support_agent.models.database import (
     create_session_factory,
@@ -41,11 +42,11 @@ def _txn(engine, cid, name, amount, days_ago, category="software"):
 
 
 def test_nav_shows_every_section_and_marks_the_active_one():
-    html = render_finance_nav("audit", counts={})
+    html = render_finance_nav("review", counts={})
     for _, label, href in NAV_ITEMS:
-        assert label in html
+        assert escape(label) in html
         assert href in html
-    assert 'class="finance-nav-link is-active" href="/admin/finances/audit"' in html
+    assert 'class="finance-nav-link is-active" href="/admin/finances/review"' in html
 
 
 def test_a_zero_count_is_hidden_rather_than_shown_as_zero():

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -18,6 +19,51 @@ from sales_support_agent.services.audit import AuditService
 
 RATE_LIMIT_RUN_TYPE_PREFIX = "marketing_limit_"
 _CLIENT_KEY_RE = re.compile(r"^[a-f0-9]{64}$")
+PUBLIC_JSON_MAX_BYTES = 16_384
+
+
+async def read_public_json_object(
+    request: Request,
+    *,
+    max_bytes: int = PUBLIC_JSON_MAX_BYTES,
+) -> tuple[Optional[dict[str, Any]], Optional[JSONResponse]]:
+    """Read a bounded JSON object without trusting Content-Length."""
+
+    declared = request.headers.get("content-length", "").strip()
+    if declared:
+        try:
+            if int(declared) > max_bytes:
+                return None, JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request body is too large."},
+                )
+        except ValueError:
+            return None, JSONResponse(
+                status_code=400,
+                content={"detail": "Invalid Content-Length header."},
+            )
+
+    payload = bytearray()
+    async for chunk in request.stream():
+        payload.extend(chunk)
+        if len(payload) > max_bytes:
+            return None, JSONResponse(
+                status_code=413,
+                content={"detail": "Request body is too large."},
+            )
+    try:
+        body: Any = json.loads(payload)
+    except Exception:  # noqa: BLE001
+        return None, JSONResponse(
+            status_code=400,
+            content={"detail": "Request body must be valid JSON."},
+        )
+    if not isinstance(body, dict):
+        return None, JSONResponse(
+            status_code=400,
+            content={"detail": "Request body must be a JSON object."},
+        )
+    return body, None
 
 
 def _client_key(request: Request) -> str:
@@ -46,7 +92,10 @@ def durable_rate_limited(
 
     now = datetime.now(timezone.utc)
     bucket = int(now.timestamp()) // window_seconds
-    material = f"{scope}|{_client_key(request)}|{bucket}"
+    # Keep one durable row per scope and anonymized client. The active window
+    # belongs in metadata so normal traffic does not create a permanent audit
+    # row every ten minutes forever.
+    material = f"{scope}|{_client_key(request)}"
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
     run_type = f"{RATE_LIMIT_RUN_TYPE_PREFIX}{digest[:40]}"
 
@@ -82,8 +131,16 @@ def durable_rate_limited(
             return False
 
         metadata = dict(row.metadata_json or {})
-        count = int(metadata.get("count", 0) or 0) + 1
-        row.metadata_json = {**metadata, "count": count}
+        if int(metadata.get("bucket", -1) or -1) != bucket:
+            count = 1
+        else:
+            count = int(metadata.get("count", 0) or 0) + 1
+        row.metadata_json = {
+            **metadata,
+            "bucket": bucket,
+            "count": count,
+            "window_seconds": window_seconds,
+        }
         session.add(row)
         return count > limit
 

@@ -3897,6 +3897,11 @@ def admin_login_page(request: Request) -> Response:
         _show_google = bool(_agent_settings and _goe(_agent_settings))
     except Exception:
         _show_google = False
+    try:
+        from sales_support_agent.services.access.notify import email_delivery_configured
+        _show_email = email_delivery_configured(_agent_settings)
+    except Exception:
+        _show_email = False
     _show_password = password_login_enabled(admin_settings)
     _oauth_errors = {
         "domain_not_allowed": ("This dashboard is for Anata Google accounts. "
@@ -3907,14 +3912,15 @@ def admin_login_page(request: Request) -> Response:
         "token_exchange": "Google sign-in failed — please try again.",
     }
     _err = _oauth_errors.get(request.query_params.get("error", ""), "")
-    if not (_show_google or _show_password):
-        _err = "No sign-in method is configured. Set GOOGLE_OAUTH_CLIENT_ID/SECRET or ADMIN_DASHBOARD_PASSWORD."
-    elif not _err and not _show_google and _show_password:
+    if not (_show_google or _show_email or _show_password):
+        _err = "No sign-in method is configured. Configure email delivery, Google OAuth, or the administrator fallback."
+    elif not _err and not (_show_google or _show_email) and _show_password:
         _err = (
-            "Google sign-in is currently unavailable. Use the shared fallback "
+            "Email and Google sign-in are currently unavailable. Use the shared fallback "
             "password only if you already have break-glass access."
         )
     return HTMLResponse(render_login_page(show_google_button=_show_google,
+                                          show_email_form=_show_email,
                                           show_password_form=_show_password,
                                           error_message=_err))
 
@@ -3934,8 +3940,20 @@ async def admin_login_submit(request: Request) -> Response:
         _show_google_post = bool(_agent_settings_post and _goe2(_agent_settings_post))
     except Exception:
         _show_google_post = False
+    try:
+        from sales_support_agent.services.access.notify import email_delivery_configured
+        _show_email_post = email_delivery_configured(_agent_settings_post)
+    except Exception:
+        _show_email_post = False
     if not verify_admin_password(admin_settings, password):
-        return HTMLResponse(render_login_page(error_message="Incorrect password.", show_google_button=_show_google_post), status_code=401)
+        return HTMLResponse(
+            render_login_page(
+                error_message="Incorrect password.",
+                show_google_button=_show_google_post,
+                show_email_form=_show_email_post,
+            ),
+            status_code=401,
+        )
 
     # Mint a 5-part identity token (same format as Google SSO) so the session
     # carries the submitter's email rather than the generic admin username.

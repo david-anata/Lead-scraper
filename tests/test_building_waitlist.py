@@ -4,7 +4,6 @@ import dataclasses
 import os
 import tempfile
 import unittest
-from unittest import mock
 
 os.environ.setdefault(
     "SALES_AGENT_DB_URL",
@@ -89,25 +88,21 @@ class BuildingWaitlistTests(unittest.TestCase):
             raise AssertionError(offering.text)
 
     def test_waitlist_intent_creates_and_closes_waitlist_relationship(self) -> None:
-        with mock.patch(
-            "sales_support_agent.api.building_router.HubSpotClient"
-        ) as hubspot:
-            hubspot.return_value.is_configured = False
-            created = self.client.post(
-                "/api/public/building/inquiries",
-                headers={
-                    "X-Internal-Api-Key": "waitlist-site-key",
-                    "Idempotency-Key": "waitlist-request-1",
-                },
-                json={
-                    "kind": "workspace",
-                    "name": "Waiting Tenant",
-                    "email": "waiting@example.com",
-                    "offering_id": "waitlist-office",
-                    "consent_to_contact": True,
-                    "details": {"intent": "waitlist", "teamSize": "3"},
-                },
-            )
+        created = self.client.post(
+            "/api/public/building/inquiries",
+            headers={
+                "X-Internal-Api-Key": "waitlist-site-key",
+                "Idempotency-Key": "waitlist-request-1",
+            },
+            json={
+                "kind": "workspace",
+                "name": "Waiting Tenant",
+                "email": "waiting@example.com",
+                "offering_id": "waitlist-office",
+                "consent_to_contact": True,
+                "details": {"intent": "waitlist", "teamSize": "3"},
+            },
+        )
         self.assertEqual(created.status_code, 201, created.text)
         inquiry_id = created.json()["inquiry_id"]
         with self.factory() as session:

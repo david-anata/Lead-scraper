@@ -43,7 +43,11 @@ from sales_support_agent.services.fulfillment_deck.service import (
     generate_rate_sheet,
     rerender_rate_sheet,
 )
-from sales_support_agent.services.public_request_guard import durable_rate_limit_response
+from sales_support_agent.services.public_request_guard import (
+    durable_rate_limit_response,
+    read_public_json_object,
+)
+from sales_support_agent.services.public_url_guard import public_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +58,17 @@ router = APIRouter(prefix="/api/public/fulfillment", tags=["fulfillment-public"]
 TASTE_MAX_PRODUCTS = 3
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_ATTRIBUTION_SOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9./:_-]{0,119}$", re.IGNORECASE)
+_CORRELATION_RE = re.compile(r"^[A-Za-z0-9_-]{20,80}$")
+
+
+def _sanitize_source(raw: Any) -> str:
+    candidate = str(raw or "").strip()
+    return (
+        candidate
+        if _ATTRIBUTION_SOURCE_RE.fullmatch(candidate)
+        else "anatainc.com/tools/fulfillment-rate-sheet"
+    )
 
 
 def _enforce_intake_key(request: Request, provided: Optional[str]) -> Optional[JSONResponse]:
@@ -67,13 +82,7 @@ def _enforce_intake_key(request: Request, provided: Optional[str]) -> Optional[J
 
 
 async def _json_body(request: Request) -> tuple[Optional[dict], Optional[JSONResponse]]:
-    try:
-        body: Any = await request.json()
-    except Exception:  # noqa: BLE001
-        return None, JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
-    if not isinstance(body, dict):
-        return None, JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
-    return body, None
+    return await read_public_json_object(request)
 
 
 def _is_bot(body: dict) -> bool:
@@ -109,9 +118,15 @@ async def rate_sheet_taste(
         # Look like success without doing any work.
         return JSONResponse(status_code=202, content={"status": "building"})
 
-    url = str(body.get("url", "") or "").strip()
-    if not url or len(url) > 2048:
+    raw_url = str(body.get("url", "") or "").strip()
+    if not raw_url or len(raw_url) > 2048:
         return JSONResponse(status_code=400, content={"detail": "url is required (your store or product page)."})
+    url = public_http_url(raw_url)
+    if not url:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Enter a public website URL."},
+        )
     segment = clean_segment(body.get("segment"))
     origin_zip = str(body.get("origin_zip", "") or "").strip()
     if segment == "diy" and clean_zip(origin_zip) is None:
@@ -119,7 +134,7 @@ async def rate_sheet_taste(
             status_code=400,
             content={"detail": "A valid ship-from ZIP is required when you ship from your own dock."},
         )
-    source = str(body.get("source", "") or "").strip()[:120]
+    source = _sanitize_source(body.get("source"))
 
     try:
         result = generate_rate_sheet(
@@ -187,7 +202,7 @@ def _absolute_view_url(settings, view_path: str) -> str:
     return f"{base}{path}" if base else path
 
 
-def _send_unlock_email(settings, *, email: str, brand: str, view_url: str) -> bool:
+def _send_unlock_email(settings, *, run_id: int, email: str, brand: str, view_url: str) -> bool:
     client = ResendClient(settings)
     if not client.is_configured():
         logger.warning("[fulfillment_public] Resend not configured; skipping email to %s", email)
@@ -212,6 +227,7 @@ def _send_unlock_email(settings, *, email: str, brand: str, view_url: str) -> bo
         to=email,
         subject="Your Anata rate sheet is ready",
         text="\n".join(lines),
+        idempotency_key=f"public-rate-sheet-{run_id}-ready",
     )
     return True
 
@@ -233,6 +249,7 @@ def _finish_unlock(
             "public_rate_sheet_status": "building",
             "public_email_status": "pending",
             "public_sales_handoff_status": "pending",
+            "public_rate_sheet_error": "",
         },
     )
     try:
@@ -249,7 +266,10 @@ def _finish_unlock(
             rerender_rate_sheet(run_id, settings=settings)
     except Exception:  # noqa: BLE001
         logger.exception("[fulfillment_public] refinement/rerender failed for run %d", run_id)
-        storage.update_summary(run_id, {"public_rate_sheet_status": "failed"})
+        storage.update_summary(run_id, {
+            "public_rate_sheet_status": "failed",
+            "public_rate_sheet_error": "Rate-sheet refinement or rerender failed.",
+        })
         return
 
     refreshed = storage.get_run(run_id)
@@ -259,7 +279,10 @@ def _finish_unlock(
             "[fulfillment_public] live rates unavailable after rerender for run %d; skipping publish and delivery",
             run_id,
         )
-        storage.update_summary(run_id, {"public_rate_sheet_status": "failed"})
+        storage.update_summary(run_id, {
+            "public_rate_sheet_status": "failed",
+            "public_rate_sheet_error": "Live carrier rates were unavailable after rerender.",
+        })
         return
 
     published = False
@@ -269,7 +292,10 @@ def _finish_unlock(
         logger.exception("[fulfillment_public] publish failed for run %d", run_id)
     if not published:
         logger.warning("[fulfillment_public] run %d not published; skipping delivery", run_id)
-        storage.update_summary(run_id, {"public_rate_sheet_status": "failed"})
+        storage.update_summary(run_id, {
+            "public_rate_sheet_status": "failed",
+            "public_rate_sheet_error": "The private rate sheet could not be published.",
+        })
         return
 
     run = storage.get_run(run_id)
@@ -282,6 +308,7 @@ def _finish_unlock(
         {
             "public_rate_sheet_status": "ready",
             "public_shared_url": view_url,
+            "public_rate_sheet_error": "",
         },
     )
 
@@ -293,7 +320,7 @@ def _finish_unlock(
 
     if view_url:
         try:
-            sent = _send_unlock_email(settings, email=email, brand=brand, view_url=view_url)
+            sent = _send_unlock_email(settings, run_id=run_id, email=email, brand=brand, view_url=view_url)
             storage.update_summary(run_id, {"public_email_status": "sent" if sent else "failed"})
         except Exception:  # noqa: BLE001
             logger.exception("[fulfillment_public] unlock email failed for %s", email)
@@ -314,6 +341,49 @@ def _finish_unlock(
     except Exception:  # noqa: BLE001
         logger.exception("[fulfillment_public] hubspot sync_new_prospect failed for run %d", run_id)
         storage.update_summary(run_id, {"public_sales_handoff_status": "failed"})
+
+
+def retry_rate_sheet_handoffs(app, *, run_id: int) -> bool:
+    """Retry only missing delivery writes for an already-ready public sheet."""
+    settings = getattr(app.state, "settings", None) or load_settings()
+    run = storage.get_run(run_id)
+    summary = dict(run.summary_json or {}) if run is not None else {}
+    if str(summary.get("public_rate_sheet_status") or "") != "ready":
+        return False
+    email = str(summary.get("public_unlock_email") or "").strip().lower()
+    view_url = str(summary.get("public_shared_url") or "").strip()
+    brand = str(summary.get("prospect") or "")
+    profile = dict(summary.get("prospect_profile") or {})
+
+    if str(summary.get("public_email_status") or "") != "sent" and email and view_url:
+        try:
+            sent = _send_unlock_email(
+                settings,
+                run_id=run_id,
+                email=email,
+                brand=brand,
+                view_url=view_url,
+            )
+            storage.update_summary(run_id, {"public_email_status": "sent" if sent else "failed"})
+        except Exception:  # noqa: BLE001
+            logger.exception("[fulfillment_public] rate-sheet email retry failed for run %d", run_id)
+            storage.update_summary(run_id, {"public_email_status": "failed"})
+
+    if str(summary.get("public_sales_handoff_status") or "") != "complete":
+        try:
+            from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_new_prospect
+
+            sync_new_prospect(run_id, summary, profile)
+            synced = storage.get_run(run_id)
+            synced_summary = dict(synced.summary_json or {}) if synced is not None else {}
+            storage.update_summary(
+                run_id,
+                {"public_sales_handoff_status": "complete" if synced_summary.get("hubspot_deal_id") else "failed"},
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[fulfillment_public] rate-sheet sales retry failed for run %d", run_id)
+            storage.update_summary(run_id, {"public_sales_handoff_status": "failed"})
+    return True
 
 
 @router.post("/rate-sheet/unlock")
@@ -339,41 +409,52 @@ async def rate_sheet_unlock(
         run_id = int(body.get("run_id"))
     except (TypeError, ValueError):
         return JSONResponse(status_code=400, content={"detail": "run_id is required."})
+    if run_id <= 0:
+        return JSONResponse(status_code=400, content={"detail": "run_id must be a positive integer."})
     token = str(body.get("token", "") or "").strip()
-    email = str(body.get("email", "") or "").strip()
-    if not token:
+    email = str(body.get("email", "") or "").strip().lower()
+    if not token or len(token) > 256:
         return JSONResponse(status_code=400, content={"detail": "token is required."})
     if not email or not _EMAIL_RE.match(email) or len(email) > 200:
         return JSONResponse(status_code=400, content={"detail": "A valid email is required."})
+
+    consent_version = str(body.get("consent_version", "") or "").strip()
+    if consent_version and consent_version != "sales-tools-v1":
+        return JSONResponse(status_code=400, content={"detail": "Unsupported consent version."})
+    monthly_orders: Optional[int] = None
+    raw_orders = body.get("monthly_orders")
+    if raw_orders is not None and str(raw_orders).strip() != "":
+        normalized_orders = str(raw_orders).strip()
+        if not re.fullmatch(r"[1-9]\d{0,8}", normalized_orders):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "monthly_orders must be a positive whole number."},
+            )
+        monthly_orders = int(normalized_orders)
+    origin_zip = str(body.get("origin_zip", "") or "").strip()
+    if origin_zip and clean_zip(origin_zip) is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "origin_zip must be a five-digit ZIP."},
+        )
 
     run = storage.get_run(run_id)
     if run is None:
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
     summary = dict(run.summary_json or {})
-    if token != str(summary.get("export_token") or ""):
+    expected_token = str(summary.get("export_token") or "")
+    if not expected_token or not secrets.compare_digest(token, expected_token):
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
     if str(summary.get("rates_source") or "") != RATE_SOURCE_WMS:
         return JSONResponse(
             status_code=503,
             content={"detail": "Live carrier rates are temporarily unavailable. Please build a new preview and try again."},
         )
-    consent_version = str(body.get("consent_version", "") or "").strip()[:64]
     if consent_version:
         try:
             storage.update_summary(run_id, {"consent_version": consent_version})
         except Exception:  # noqa: BLE001
             logger.debug("[fulfillment_public] consent persist failed", exc_info=True)
-
-    monthly_orders: Optional[int] = None
-    raw_orders = body.get("monthly_orders")
-    if raw_orders is not None and str(raw_orders).strip() != "":
-        try:
-            monthly_orders = int(raw_orders)
-        except (TypeError, ValueError):
-            monthly_orders = None
-        if monthly_orders is not None and monthly_orders <= 0:
-            monthly_orders = None
-    origin_zip = str(body.get("origin_zip", "") or "").strip()
 
     correlation_id = str(summary.get("public_correlation_id") or "").strip()
     existing_status = str(summary.get("public_rate_sheet_status") or "").strip()
@@ -395,6 +476,10 @@ async def rate_sheet_unlock(
             "public_rate_sheet_status": "building",
             "public_email_status": "pending",
             "public_sales_handoff_status": "pending",
+            "public_rate_sheet_error": "",
+            "public_unlock_email": email.lower(),
+            "public_unlock_monthly_orders": monthly_orders,
+            "public_unlock_origin_zip": origin_zip,
         },
     )
 
@@ -425,6 +510,8 @@ async def rate_sheet_status(
     denied = _enforce_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    if not _CORRELATION_RE.fullmatch(correlation_id):
+        return JSONResponse(status_code=400, content={"detail": "Invalid status identifier."})
     limited = durable_rate_limit_response(request, scope="fulfillment:status", limit=240)
     if limited is not None:
         return limited
@@ -433,10 +520,25 @@ async def rate_sheet_status(
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
     summary = dict(run.summary_json or {})
     rate_status = str(summary.get("public_rate_sheet_status") or "building")
+    email_status = str(summary.get("public_email_status") or "pending")
+    sales_status = str(summary.get("public_sales_handoff_status") or "pending")
+    if (
+        rate_status not in {"building", "ready", "failed"}
+        or email_status not in {"pending", "sent", "failed"}
+        or sales_status not in {"pending", "complete", "failed"}
+    ):
+        logger.error(
+            "[fulfillment_public] invalid public lifecycle for correlation %s: rate=%r email=%r sales=%r",
+            correlation_id,
+            rate_status,
+            email_status,
+            sales_status,
+        )
+        return JSONResponse(status_code=500, content={"detail": "Invalid rate sheet lifecycle."})
     response: dict[str, Any] = {
-        "rate_sheet": {"status": rate_status if rate_status in {"building", "ready", "failed"} else "building"},
-        "email": {"status": str(summary.get("public_email_status") or "pending")},
-        "sales_handoff": {"status": str(summary.get("public_sales_handoff_status") or "pending")},
+        "rate_sheet": {"status": rate_status},
+        "email": {"status": email_status},
+        "sales_handoff": {"status": sales_status},
     }
     if rate_status == "ready":
         response["result_path"] = f"/api/public/fulfillment/rate-sheet/result/{correlation_id}"
@@ -455,6 +557,8 @@ async def rate_sheet_result(
     denied = _enforce_intake_key(request, x_internal_api_key)
     if denied is not None:
         return denied
+    if not _CORRELATION_RE.fullmatch(correlation_id):
+        return JSONResponse(status_code=400, content={"detail": "Invalid result identifier."})
     limited = durable_rate_limit_response(request, scope="fulfillment:result", limit=240)
     if limited is not None:
         return limited

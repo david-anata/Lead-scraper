@@ -1,10 +1,12 @@
 from types import SimpleNamespace
+import json
 
 from sales_support_agent.services.website_ops_article_engine import (
     _claim_daily_article_slot,
     _eligible_editorial_seed,
     _historical_cluster_ids,
     article_generation_progress,
+    build_article_action,
 )
 from sales_support_agent.api.website_ops_jobs_router import WEBSITE_OPS_PULSE_HOURS
 
@@ -61,3 +63,43 @@ def test_topic_history_prevents_republishing_an_old_daily_claim(tmp_path) -> Non
     settings = SimpleNamespace(website_ops_root=tmp_path)
 
     assert _historical_cluster_ids(settings) == {"already-published"}
+
+
+def test_failed_generation_does_not_consume_daily_topic_slot(tmp_path) -> None:
+    settings = SimpleNamespace(website_ops_root=tmp_path)
+
+    def fail_generation(**_kwargs):
+        raise RuntimeError("provider timeout")
+
+    try:
+        build_article_action(
+            settings=settings,
+            query_intelligence={"clusters": []},
+            requester=fail_generation,
+        )
+    except RuntimeError:
+        pass
+
+    assert article_generation_progress(settings)["generated_today"] == 0
+
+
+def test_malformed_json_generation_is_retried_before_claiming_slot(tmp_path) -> None:
+    settings = SimpleNamespace(website_ops_root=tmp_path)
+    attempts = []
+
+    def retry_generation(**kwargs):
+        attempts.append(kwargs["prompt"])
+        if len(attempts) < 3:
+            raise json.JSONDecodeError("bad object", "{", 1)
+        return {"slug": "recovered-article", "title": "Recovered article", "content": {}}
+
+    action = build_article_action(
+        settings=settings,
+        query_intelligence={"clusters": []},
+        requester=retry_generation,
+    )
+
+    assert action is not None
+    assert len(attempts) == 3
+    assert "previous response was malformed JSON" in attempts[1]
+    assert article_generation_progress(settings)["generated_today"] == 1

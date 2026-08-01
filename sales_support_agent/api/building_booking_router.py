@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import base64
+import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 from uuid import uuid4
@@ -31,10 +32,14 @@ from sales_support_agent.models.entities import (
     BuildingRelationship,
     BuildingReservation,
     BuildingCalendarProjection,
+    BuildingSignatureRequestReadiness,
     BuildingSpace,
     BuildingTour,
 )
 from sales_support_agent.services.building_calendar import queue_calendar_projection
+from sales_support_agent.integrations.building_google_calendar import (
+    BuildingGoogleCalendarClient,
+)
 from sales_support_agent.services.building_checklists import (
     ensure_operational_checklist,
 )
@@ -196,6 +201,9 @@ class ProposalInput(BaseModel):
     proposal_type: Literal["proposal", "quote"] = "proposal"
     currency: str = Field(default="USD", min_length=3, max_length=3)
     amount_cents: int = Field(default=0, ge=0)
+    pricing_subtotal_cents: int | None = Field(default=None, ge=0)
+    discount_cents: int = Field(default=0, ge=0)
+    discount_reason: str = Field(default="", max_length=1000)
     line_items: list[dict[str, Any]] = Field(default_factory=list)
     rate_plan_id: str | None = Field(default=None, max_length=64)
     terms_summary: str = Field(default="", max_length=4000)
@@ -395,33 +403,49 @@ def _customer_status_projection(
         )
     ).scalar_one_or_none()
     status = _customer_event_status(reservation)
+    terminal = reservation.status in {"cancelled", "expired"}
     return {
         "reservation_id": reservation.id,
         "event_window": {
+            "starts_at": (
+                reservation.guest_starts_at or reservation.starts_at
+            ).isoformat(),
+            "ends_at": (
+                reservation.guest_ends_at or reservation.ends_at
+            ).isoformat(),
+        },
+        "access_window": {
             "starts_at": reservation.starts_at.isoformat(),
             "ends_at": reservation.ends_at.isoformat(),
         },
+        "hold_expires_at": (
+            reservation.hold_expires_at.isoformat()
+            if reservation.status == "soft_hold" and reservation.hold_expires_at
+            else None
+        ),
         "status": status,
         "quote": {
-            "status": proposal.status if proposal else "not_started",
+            "status": "closed" if terminal else proposal.status if proposal else "not_started",
             "version": proposal.version if proposal else None,
         },
         "agreement": {
-            "status": reservation.agreement_status,
+            "status": "closed" if terminal else reservation.agreement_status,
             "preparation_status": (
                 agreement.preparation_status if agreement else "not_started"
             ),
             "signature_verified": reservation.agreement_status == "signed",
         },
         "payment": {
-            "status": reservation.deposit_status,
+            "status": "closed" if terminal else reservation.deposit_status,
             "request_status": payment.status if payment else "not_started",
             "payment_verified": reservation.deposit_status == "paid",
             "invoice_status": invoice.status if invoice else "not_created",
         },
         "operations": {
             "calendar_projection": (
-                "ready"
+                "closed"
+                if terminal
+                else "ready"
                 if calendar and calendar.status == "synced"
                 else "pending"
                 if calendar
@@ -753,6 +777,41 @@ def _active_conflicts(
     return conflicts
 
 
+def _calendar_is_authoritative() -> bool:
+    return os.getenv(
+        "BUILDING_GOOGLE_CALENDAR_AVAILABILITY_AUTHORITY", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_calendar_availability(
+    *, starts_at: datetime, ends_at: datetime, reservation_id: str = ""
+) -> BuildingGoogleCalendarClient | None:
+    """Fail closed against the Anata Events calendar when authority is enabled."""
+
+    if not _calendar_is_authoritative():
+        return None
+    client = BuildingGoogleCalendarClient()
+    if not client.configured:
+        raise HTTPException(status_code=503, detail=client.readiness_error)
+    try:
+        conflicts = client.find_conflicts(
+            starts_at=starts_at,
+            ends_at=ends_at,
+            exclude_reservation_id=reservation_id,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Anata Events calendar availability could not be verified; no hold was created.",
+        ) from exc
+    if conflicts:
+        raise HTTPException(
+            status_code=409,
+            detail="The full setup-through-teardown window is occupied on the Anata Events calendar.",
+        )
+    return client
+
+
 def _availability_block(
     session,
     reservation: BuildingReservation,
@@ -840,6 +899,11 @@ def create_event_review(
                 status_code=409,
                 detail="The full setup-through-teardown window conflicts with Agent availability.",
             )
+        calendar_client = _require_calendar_availability(
+            starts_at=payload.setup_starts_at,
+            ends_at=payload.teardown_ends_at,
+            reservation_id=payload.reservation_id,
+        )
 
         event_date = payload.guest_starts_at.date()
         plans = session.execute(
@@ -1036,6 +1100,37 @@ def create_event_review(
         )
         session.add(command)
         session.flush()
+        if calendar_client is not None:
+            if os.getenv(
+                "BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED", ""
+            ).strip().lower() not in {"1", "true", "yes", "on"}:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Anata Events calendar writes are disabled; no hold was created.",
+                )
+            projection = session.execute(
+                select(BuildingCalendarProjection).where(
+                    BuildingCalendarProjection.reservation_id == row.id
+                )
+            ).scalar_one()
+            try:
+                event_id = calendar_client.upsert_event(
+                    reservation_id=row.id,
+                    payload=dict(projection.payload_json or {}),
+                    provider_event_id=row.calendar_event_id or "",
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Anata Events calendar hold could not be written; no Agent hold was created.",
+                ) from exc
+            row.calendar_event_id = event_id
+            projection.provider = calendar_client.provider
+            projection.provider_event_id = event_id
+            projection.target_calendar_id = calendar_client.target_calendar_id
+            projection.status = "synced"
+            projection.synced_at = _now()
+            projection.last_error = ""
         return _event_review_response(row, proposal, replayed=False)
 
 
@@ -1361,6 +1456,11 @@ def transition_reservation(
                 raise HTTPException(status_code=409, detail="A signed agreement is required.")
             if row.deposit_required and row.deposit_status != "paid":
                 raise HTTPException(status_code=409, detail="A verified deposit is required.")
+            _require_calendar_availability(
+                starts_at=row.starts_at,
+                ends_at=row.ends_at,
+                reservation_id=row.id,
+            )
             if row.kind == "event":
                 _activate_event_host_relationship(
                     session,
@@ -1984,8 +2084,6 @@ def record_proposal(
     x_internal_api_key: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     _require_internal_key(request, x_internal_api_key)
-    if payload.status in {"approved", "sent", "accepted"} and payload.amount_cents <= 0:
-        raise HTTPException(status_code=422, detail="Approved proposals require an amount.")
     if payload.status in {"sent", "accepted"} and not payload.document_url.strip():
         raise HTTPException(status_code=422, detail="Sent proposals require a document link.")
     if (
@@ -2006,6 +2104,13 @@ def record_proposal(
             raise HTTPException(
                 status_code=422,
                 detail=f"{reservation.kind.title()} reservations use {expected_type} records.",
+            )
+        if payload.proposal_type != "quote" and (
+            payload.pricing_subtotal_cents is not None or payload.discount_cents
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Audited event pricing adjustments apply only to event quotes.",
             )
         selected_rate_plan: BuildingRatePlan | None = None
         if payload.rate_plan_id:
@@ -2078,10 +2183,87 @@ def record_proposal(
                         status_code=409,
                         detail="Sent proposal content is immutable; create a new version.",
                     )
+        calculated_amount_cents = payload.amount_cents
+        calculated_line_items = payload.line_items
+        pricing_adjustment: dict[str, Any] = {}
+        if payload.proposal_type == "quote" and payload.pricing_subtotal_cents is not None:
+            if selected_rate_plan is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Adjusted event quotes require an approved effective rate plan.",
+                )
+            if selected_rate_plan.tax_status == "review_required":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Tax treatment must be approved before calculating an adjusted quote.",
+                )
+            if payload.discount_cents > payload.pricing_subtotal_cents:
+                raise HTTPException(
+                    status_code=422,
+                    detail="The discount cannot exceed the pre-tax subtotal.",
+                )
+            discount_reason = payload.discount_reason.strip()
+            if payload.discount_cents and not discount_reason:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A business reason is required for every discount.",
+                )
+            taxable_subtotal_cents = (
+                payload.pricing_subtotal_cents - payload.discount_cents
+            )
+            tax_cents = (
+                (taxable_subtotal_cents * selected_rate_plan.tax_rate_bps + 5000)
+                // 10000
+                if selected_rate_plan.tax_status == "taxable"
+                else 0
+            )
+            calculated_amount_cents = taxable_subtotal_cents + tax_cents
+            calculated_line_items = [
+                {
+                    "type": "pricing_subtotal",
+                    "description": "Event package before discount and tax",
+                    "amount_cents": payload.pricing_subtotal_cents,
+                }
+            ]
+            if payload.discount_cents:
+                calculated_line_items.append(
+                    {
+                        "type": "discount",
+                        "description": discount_reason,
+                        "amount_cents": -payload.discount_cents,
+                    }
+                )
+            if selected_rate_plan.tax_status == "taxable":
+                calculated_line_items.append(
+                    {
+                        "type": "tax",
+                        "description": (
+                            f"Lehi, Utah sales tax "
+                            f"({selected_rate_plan.tax_rate_bps / 100:.2f}%)"
+                        ),
+                        "amount_cents": tax_cents,
+                    }
+                )
+            pricing_adjustment = {
+                "pricing_subtotal_cents": payload.pricing_subtotal_cents,
+                "discount_cents": payload.discount_cents,
+                "discount_reason": discount_reason,
+                "tax_status": selected_rate_plan.tax_status,
+                "tax_rate_bps": selected_rate_plan.tax_rate_bps,
+                "tax_cents": tax_cents,
+                "final_amount_cents": calculated_amount_cents,
+            }
+        if (
+            payload.status in {"approved", "sent", "accepted"}
+            and calculated_amount_cents <= 0
+        ):
+            raise HTTPException(
+                status_code=422, detail="Approved proposals require an amount."
+            )
         if row.status not in {"sent", "accepted", "declined", "voided"}:
             row.currency = payload.currency.upper()
-            row.amount_cents = payload.amount_cents
-            row.line_items_json = payload.line_items
+            row.amount_cents = calculated_amount_cents
+            row.line_items_json = calculated_line_items
             if selected_rate_plan is not None:
                 row.rate_plan_id = selected_rate_plan.id
                 row.rate_plan_snapshot_json = {
@@ -2113,6 +2295,7 @@ def record_proposal(
                         if selected_rate_plan.effective_until
                         else None
                     ),
+                    "pricing_adjustment": pricing_adjustment,
                     "snapshotted_at": _now().isoformat(),
                 }
             row.terms_summary = payload.terms_summary.strip()
@@ -2152,6 +2335,7 @@ def record_proposal(
                 "rate_plan_snapshot": dict(row.rate_plan_snapshot_json or {}),
                 "document_url": row.document_url,
                 "approved_by": row.approved_by,
+                "pricing_adjustment": pricing_adjustment,
             },
         ))
         return {
@@ -2174,6 +2358,32 @@ def record_agreement(
         raise HTTPException(status_code=422, detail="Unsupported agreement status.")
     if payload.status == "signed" and not payload.provider_reference:
         raise HTTPException(status_code=422, detail="Signed agreements require provider evidence.")
+    if payload.provider == "quickbooks_contract_builder":
+        if payload.status in {"sent", "signed"} and not payload.document_url.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="QuickBooks contract evidence requires the Contract Builder document URL.",
+            )
+        if payload.status == "signed":
+            certificate_reference = str(
+                payload.evidence.get("esign_certificate_reference") or ""
+            ).strip()
+            signed_document_checksum = str(
+                payload.evidence.get("signed_document_checksum") or ""
+            ).strip().lower()
+            if not certificate_reference:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Signed QuickBooks contracts require the e-sign certificate reference.",
+                )
+            if (
+                len(signed_document_checksum) != 64
+                or any(character not in "0123456789abcdef" for character in signed_document_checksum)
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Signed QuickBooks contracts require a SHA-256 signed-document checksum.",
+                )
     with session_scope(request.app.state.session_factory) as session:
         reservation = session.get(BuildingReservation, reservation_id)
         if reservation is None:
@@ -2211,6 +2421,29 @@ def record_agreement(
             reservation.agreement_status = payload.status
         reservation.updated_at = _now()
         session.add(row)
+        if payload.provider == "quickbooks_contract_builder":
+            signature_readiness = session.execute(
+                select(BuildingSignatureRequestReadiness).where(
+                    BuildingSignatureRequestReadiness.agreement_id == row.id
+                )
+            ).scalar_one_or_none()
+            if signature_readiness is None or signature_readiness.status != "approved":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Approve the frozen QuickBooks signature handoff first.",
+                )
+            if signature_readiness.agreement_checksum != row.package_checksum:
+                raise HTTPException(
+                    status_code=409,
+                    detail="QuickBooks evidence does not match the approved agreement checksum.",
+                )
+            signature_readiness.provider = "quickbooks_contract_builder"
+            signature_readiness.provider_reference = payload.provider_reference
+            signature_readiness.delivery_status = (
+                "completed" if payload.status == "signed" else "sent"
+            )
+            signature_readiness.updated_at = _now()
+            session.add(signature_readiness)
         session.add(BuildingAuditEvent(
             entity_type="agreement",
             entity_id=row.id,
@@ -2221,6 +2454,8 @@ def record_agreement(
                 "version": row.version,
                 "provider": row.provider,
                 "provider_reference": row.provider_reference,
+                "document_url": row.document_url,
+                "evidence": dict(row.evidence_json or {}),
             },
         ))
         return {"ok": True, "agreement_id": row.id, "status": row.status}
