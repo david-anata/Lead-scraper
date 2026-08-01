@@ -176,8 +176,8 @@ class AdminWebsiteOpsTests(unittest.TestCase):
         source = '''
 // WEBSITE_OPS_GENERATED_ARTICLES_START
 export const GENERATED_ARTICLES = [
-  {"slug":"existing","primaryIntent":"Existing Intent","evidenceId":"evidence-1"}
-];
+  {"slug":"existing","primaryIntent":"Existing Intent","evidenceId":"evidence-1"},
+] as const;
 // WEBSITE_OPS_GENERATED_ARTICLES_END
 '''
         identities = generated_article_identities(source)
@@ -1038,7 +1038,11 @@ example
 
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(claim.call_count, 2)
-        self.assertTrue(claim.call_args_list[1].kwargs["run_key"].endswith("stale-state-recovery-v1"))
+        self.assertTrue(
+            claim.call_args_list[1].kwargs["run_key"].endswith(
+                "stale-or-failed-recovery-v1"
+            )
+        )
         run.assert_called_once()
 
     def test_embedded_scheduler_restores_then_persists_database_mirror(self) -> None:
