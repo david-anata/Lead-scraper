@@ -638,6 +638,30 @@ async def run_scheduled_website_ops(request: Request) -> dict:
         if engine is not None
         else None
     )
+    if engine is not None and lease is None and force and requested_mode == "daily":
+        current_state = get_website_ops_run_state(request.app.state.settings, "daily")
+        state_status = str(current_state.get("status", ""))
+        running_is_stale = state_status == "running" and not _daily_run_is_fresh(
+            {"runs": {"daily": current_state}},
+            local_now,
+        )
+        if state_status != "running" or running_is_stale:
+            attempt_reference = "|".join(
+                (
+                    state_status,
+                    str(current_state.get("last_started_at", "")),
+                    str(current_state.get("last_completed_at", "")),
+                )
+            )
+            recovery_key = hashlib.sha256(
+                attempt_reference.encode("utf-8")
+            ).hexdigest()[:12]
+            lease = claim_scheduled_job(
+                engine,
+                job_key="website_ops",
+                run_key=f"{run_key}:force-recovery:{recovery_key}",
+                lease_minutes=180,
+            )
     if engine is not None and lease is None:
         return {
             "status": "skipped",
