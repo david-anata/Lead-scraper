@@ -27,6 +27,28 @@ METADATA_ACTION_TYPES = {
     "canonical_update",
 }
 CONTENT_ACTION_TYPES = {"publish_blog_article"}
+OFFICIAL_ARTICLE_SOURCE_DOMAINS = {
+    "amazon.com",
+    "census.gov",
+    "dhl.com",
+    "fedex.com",
+    "ftc.gov",
+    "google.com",
+    "irs.gov",
+    "sba.gov",
+    "shopify.com",
+    "tiktok.com",
+    "ups.com",
+    "usps.com",
+}
+
+
+def _official_article_source(hostname: str) -> bool:
+    normalized = hostname.lower().strip(".").removeprefix("www.")
+    return any(
+        normalized == domain or normalized.endswith(f".{domain}")
+        for domain in OFFICIAL_ARTICLE_SOURCE_DOMAINS
+    )
 GENERATED_ARTICLE_REGISTRY = "src/content/generated-articles/index.ts"
 EXCLUDED_PATH_PREFIXES = ("/api/", "/book", "/brand", "/preview", "/x/")
 
@@ -174,11 +196,11 @@ def validate_generated_article(record: Mapping[str, Any]) -> dict[str, Any]:
             raise website_ops.ExecutionError(
                 "External article sources cannot use anatainc.com."
             )
+        if not _official_article_source(hostname):
+            raise website_ops.ExecutionError(
+                "Generated article sources must be first-party platform, carrier, or government documentation."
+            )
         source_domains.add(hostname)
-    if len(source_domains) < 2:
-        raise website_ops.ExecutionError(
-            "Generated article requires two distinct authoritative source domains."
-        )
     content = article.get("content")
     if not isinstance(content, Mapping):
         raise website_ops.ExecutionError("Generated article content is invalid.")
@@ -649,9 +671,15 @@ def execute_github_article_action(
     )
     commit_sha = str((commit.get("commit") or {}).get("sha", ""))
     page_url = f"https://anatainc.com/blog/{article['slug']}"
+    # Vercel production promotion can legitimately take longer than five minutes,
+    # especially while another website deployment is already building.  A short
+    # timeout previously caused Agent to commit an article, observe it live just
+    # after the deadline, and then delete it again as part of an automatic
+    # rollback.  Publication latency is not evidence that the source change is
+    # unsafe, so keep the durable commit and allow a full deployment window.
     timeout_seconds = max(
-        60,
-        int(os.getenv("WEBSITE_OPS_DEPLOY_VERIFY_TIMEOUT_SECONDS", "300")),
+        900,
+        int(os.getenv("WEBSITE_OPS_DEPLOY_VERIFY_TIMEOUT_SECONDS", "900")),
     )
     poll_seconds = max(
         5,
@@ -676,6 +704,7 @@ def execute_github_article_action(
                     "repository": client.repository,
                     "branch": client.branch,
                     "commit_sha": commit_sha,
+                    "production_url": page_url,
                     "executed_at": timestamp.isoformat(),
                     "verification_status": "verified",
                     "summary": {
@@ -690,17 +719,6 @@ def execute_github_article_action(
         except Exception:  # noqa: BLE001 - deployment can be briefly unavailable
             pass
         time.sleep(poll_seconds)
-    try:
-        current_source, current_sha = client.get_file(GENERATED_ARTICLE_REGISTRY)
-        if current_source == after_source:
-            client.put_file(
-                GENERATED_ARTICLE_REGISTRY,
-                before_source,
-                current_sha,
-                f"Rollback SEO article {article['slug']} ({feedback_id})",
-            )
-    except Exception:  # noqa: BLE001
-        pass
     raise website_ops.ExecutionError(
-        "Production article verification timed out; an automatic rollback was attempted."
+        "Production article verification timed out; the durable publication commit was preserved for reconciliation."
     )
