@@ -7,6 +7,7 @@ from sales_support_agent.services.website_ops_article_engine import (
     _historical_cluster_ids,
     article_generation_progress,
     build_article_action,
+    release_daily_article_slot,
 )
 from sales_support_agent.api.website_ops_jobs_router import WEBSITE_OPS_PULSE_HOURS
 
@@ -81,6 +82,17 @@ def test_failed_generation_does_not_consume_daily_topic_slot(tmp_path) -> None:
         pass
 
     assert article_generation_progress(settings)["generated_today"] == 0
+
+
+def test_failed_publication_releases_generated_topic_slot(tmp_path) -> None:
+    settings = SimpleNamespace(website_ops_root=tmp_path)
+    assert _claim_daily_article_slot(settings, "retry-topic", "Shipping OS") is True
+
+    assert release_daily_article_slot(settings, "retry-topic") is True
+    progress = article_generation_progress(settings)
+    assert progress["generated_today"] == 0
+    assert progress["pillar_counts"]["Shipping OS"] == 0
+    assert _claim_daily_article_slot(settings, "retry-topic", "Shipping OS") is True
 
 
 def test_malformed_json_generation_is_retried_before_claiming_slot(tmp_path) -> None:

@@ -445,6 +445,40 @@ def _claim_daily_article_slot(settings: Any, cluster_id: str, pillar: str = "") 
     return True
 
 
+def release_daily_article_slot(settings: Any, cluster_id: str) -> bool:
+    """Release a generated slot when publication does not reach production."""
+
+    target = _daily_generation_path(settings)
+    cluster_id = _clean(cluster_id)
+    if target is None or not target.exists() or not cluster_id:
+        return False
+    progress = article_generation_progress(settings)
+    claimed = [value for value in progress["cluster_ids"] if value != cluster_id]
+    if len(claimed) == len(progress["cluster_ids"]):
+        return False
+    claims = [
+        item
+        for item in progress.get("claims") or []
+        if _clean(item.get("cluster_id")) != cluster_id
+    ]
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "cluster_ids": claimed,
+                "claims": claims,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "daily_minimum": DAILY_ARTICLE_MINIMUM,
+                "daily_target": DAILY_ARTICLE_TARGET,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    temporary.replace(target)
+    return True
+
+
 def build_article_action(
     *,
     settings: Any,
