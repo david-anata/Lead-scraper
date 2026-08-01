@@ -19,7 +19,7 @@ services:
       - key: WEBSITE_OPS_DATABASE_MIRROR
         value: "true"
       - key: WEBSITE_OPS_EMBEDDED_SCHEDULER
-        value: "false"
+        value: "true"
       - key: OUTBOUND_EMBEDDED_SCHEDULER
         value: "false"
       - key: CLICKUP_API_TOKEN
