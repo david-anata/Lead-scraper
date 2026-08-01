@@ -65,6 +65,7 @@ from sales_support_agent.api.website_ops_jobs_router import (
     _daily_run_has_verified_outcome,
     _daily_run_is_fresh,
     _latest_autonomous_execution_error,
+    _run_due_modes,
     _run_embedded_pulse,
     _scheduled_modes,
     router as website_ops_jobs_router,
@@ -84,6 +85,92 @@ from sales_support_agent.services.website_ops_program import (
 
 
 class AdminWebsiteOpsTests(unittest.TestCase):
+    def test_daily_pulse_retries_zero_delta_until_production_is_verified(self) -> None:
+        settings = SimpleNamespace()
+        active = SimpleNamespace(
+            ok=True,
+            message="work remains",
+            report={
+                "run_outcome": {
+                    "status": "work_in_progress",
+                    "production_delta_count": 0,
+                }
+            },
+        )
+        verified = SimpleNamespace(
+            ok=True,
+            message="published",
+            report={
+                "run_outcome": {
+                    "status": "production_verified",
+                    "production_delta_count": 1,
+                }
+            },
+        )
+        with (
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                return_value={},
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.write_website_ops_run_state"
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
+                side_effect=[active, verified],
+            ) as run,
+        ):
+            result = _run_due_modes(
+                settings,
+                ["daily"],
+                trigger="test",
+                force=True,
+            )
+
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(result["daily"]["status"], "succeeded")
+        self.assertEqual(result["daily"]["attempts"], 2)
+
+    def test_daily_pulse_fails_truthfully_after_zero_delta_retries_exhaust(self) -> None:
+        settings = SimpleNamespace()
+        active = SimpleNamespace(
+            ok=True,
+            message="work remains",
+            report={
+                "run_outcome": {
+                    "status": "work_in_progress",
+                    "production_delta_count": 0,
+                }
+            },
+        )
+        with (
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                return_value={},
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.write_website_ops_run_state"
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.send_website_ops_failure_email"
+            ) as failure_email,
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
+                return_value=active,
+            ) as run,
+        ):
+            result = _run_due_modes(
+                settings,
+                ["daily"],
+                trigger="test",
+                force=True,
+            )
+
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(result["daily"]["status"], "failed_outcome")
+        self.assertEqual(result["daily"]["attempts"], 3)
+        failure_email.assert_called_once()
+
     def test_health_selects_latest_autonomous_execution_error(self) -> None:
         with mock.patch(
             "sales_support_agent.api.website_ops_jobs_router.load_feedback_records",
@@ -668,7 +755,16 @@ example
             self.assertEqual(unauthorized.status_code, 401)
             with mock.patch(
                 "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
-                return_value=SimpleNamespace(message="Daily website ops run completed."),
+                return_value=SimpleNamespace(
+                    ok=True,
+                    message="Daily website ops run completed.",
+                    report={
+                        "run_outcome": {
+                            "status": "production_verified",
+                            "production_delta_count": 1,
+                        }
+                    },
+                ),
             ) as run:
                 response = client.post(
                     "/api/jobs/website-ops/run",
