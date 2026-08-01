@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from unittest import mock
 
 from sales_support_agent.services.website_ops_article_engine import (
+    OFFICIAL_RESEARCH_DOMAINS,
     _claim_daily_article_slot,
     _eligible_editorial_seed,
     _historical_cluster_ids,
@@ -11,6 +12,7 @@ from sales_support_agent.services.website_ops_article_engine import (
     article_generation_progress,
     build_article_action,
     release_daily_article_slot,
+    _request_article,
 )
 from sales_support_agent.api.website_ops_jobs_router import WEBSITE_OPS_PULSE_HOURS
 
@@ -33,6 +35,46 @@ def test_daily_article_quota_tracks_eight_topic_target_and_pillars(tmp_path) -> 
     for index in range(3, 9):
         assert _claim_daily_article_slot(settings, f"topic-{index}") is True
     assert _claim_daily_article_slot(settings, "topic-nine") is False
+
+
+def test_openai_research_is_constrained_to_official_domains() -> None:
+    response = mock.Mock()
+    response.json.return_value = {"output_text": "{}"}
+    with mock.patch(
+        "sales_support_agent.services.website_ops_article_engine.citation_config",
+        return_value=SimpleNamespace(
+            api_key="key",
+            provider="openai",
+            model="gpt-5",
+        ),
+    ), mock.patch(
+        "sales_support_agent.services.website_ops_article_engine.requests.post",
+        return_value=response,
+    ) as post:
+        _request_article(settings=SimpleNamespace(), prompt="research")
+
+    tool = post.call_args.kwargs["json"]["tools"][0]
+    assert tool["filters"]["allowed_domains"] == OFFICIAL_RESEARCH_DOMAINS
+
+
+def test_anthropic_research_is_constrained_to_official_domains() -> None:
+    response = mock.Mock()
+    response.json.return_value = {"content": [{"type": "text", "text": "{}"}]}
+    with mock.patch(
+        "sales_support_agent.services.website_ops_article_engine.citation_config",
+        return_value=SimpleNamespace(
+            api_key="key",
+            provider="anthropic",
+            model="claude-sonnet",
+        ),
+    ), mock.patch(
+        "sales_support_agent.services.website_ops_article_engine.requests.post",
+        return_value=response,
+    ) as post:
+        _request_article(settings=SimpleNamespace(), prompt="research")
+
+    tool = post.call_args.kwargs["json"]["tools"][0]
+    assert tool["allowed_domains"] == OFFICIAL_RESEARCH_DOMAINS
 
 
 def test_editorial_backlog_supplies_distinct_topics_when_query_gaps_are_empty() -> None:
