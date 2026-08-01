@@ -243,7 +243,10 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
             'href="/admin/building/contracts"',
             page.text,
         )
-        self.assertIn("I APPROVE THIS DECISION", page.text)
+        # The passphrase box is gone. The decision form itself must still be
+        # on the page and still post a status.
+        self.assertIn('name="decision_status"', page.text)
+        self.assertIn("/launch-readiness/decisions/", page.text)
         self.assertNotIn("<label>Applies to</label>", page.text)
         self.assertIn('id="incoming-inquiries"', page.text)
         self.assertIn('id="bookings-and-holds"', page.text)

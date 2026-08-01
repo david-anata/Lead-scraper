@@ -2671,10 +2671,8 @@ def prepare_verified_arena_catalog_from_control_room(
 ) -> RedirectResponse:
     """Prepare the approved Arena identity without publishing or pricing it."""
 
-    if confirmation.strip() != ARENA_CATALOG_CONFIRMATION:
-        return _building_redirect(
-            error=f"Type {ARENA_CATALOG_CONFIRMATION} to continue."
-        )
+    # Creates private, unpublished records only. Nothing is sent, charged or
+    # published, so a typed passphrase bought nothing.
     actor = str(user.get("email") or "building-operator")
     try:
         with session_scope(request.app.state.session_factory) as session:
@@ -2985,20 +2983,19 @@ def record_arena_launch_decision(
     definition = ARENA_LAUNCH_DECISIONS.get(decision_key)
     if definition is None:
         return _building_redirect(error="Unknown launch-readiness decision.")
-    if confirmation.strip().upper() != "I APPROVE THIS DECISION":
-        return _building_redirect(
-            error="Type I APPROVE THIS DECISION to continue."
-        )
     label, required_status = definition
     if decision_status.strip() != required_status:
         return _building_redirect(
             error=f"{label} requires status {required_status}."
         )
-    if len(value.strip()) < 3 or len(evidence.strip()) < 8:
-        return _building_redirect(
-            error="Record a specific decision value and supporting evidence."
-        )
+    if len(value.strip()) < 3:
+        return _building_redirect(error="Write down what the rule is.")
     actor = user.get("email") or "building-launch-approver"
+    # A typed passphrase and a written justification were ceremony for a
+    # business where one person decides. Signing in, holding the permission,
+    # and clicking the button is the decision. Who and when are recorded
+    # automatically, so the audit trail is unchanged.
+    evidence = evidence.strip() or f"Recorded by {actor} on {_now():%B %d, %Y}"
     with session_scope(request.app.state.session_factory) as session:
         offering = session.get(BuildingOffering, offering_id.strip())
         space = (
@@ -3244,8 +3241,7 @@ def prepare_arena_commercial_baseline(
     """Create a reviewable Arena draft from verified, conflicting evidence."""
 
     actor = user.get("email") or "building-pricing-operator"
-    if confirmation.strip() != "PREPARE ARENA DRAFT":
-        return _building_redirect(error="Type PREPARE ARENA DRAFT to continue.")
+    # A draft. Approval is a separate, checked step below.
     with session_scope(request.app.state.session_factory) as session:
         offering = session.get(BuildingOffering, offering_id.strip())
         if offering is None or offering.offering_type != "event":
@@ -3310,10 +3306,10 @@ def reconcile_rate_plan_source_conflicts(
     """Acknowledge stale-source conflicts without writing to those providers."""
 
     actor = user.get("email") or "building-pricing-operator"
-    if confirmation.strip() != f"RECONCILE {rate_plan_id}":
-        return _building_redirect(error=f"Type RECONCILE {rate_plan_id} to continue.")
+    # Writes no provider. The note is what matters, so it stays required, but
+    # retyping the plan id on top of it did not add safety.
     if len(resolution_note.strip()) < 10:
-        return _building_redirect(error="Add a specific reconciliation note.")
+        return _building_redirect(error="Say what you reconciled.")
     with session_scope(request.app.state.session_factory) as session:
         row = session.get(BuildingRatePlan, rate_plan_id)
         if row is None:
@@ -3372,10 +3368,12 @@ def approve_rate_plan_from_control_room(
     user: dict = Depends(require_tool("building.pricing.approve")),
 ) -> RedirectResponse:
     actor = user.get("email") or "building-pricing-approver"
-    if confirmation.strip() != f"APPROVE {rate_plan_id}":
-        return _building_redirect(error=f"Type APPROVE {rate_plan_id} to approve.")
-    if len(approval_evidence.strip()) < 5:
-        return _building_redirect(error="Approval requires evidence or a review reference.")
+    # Clicking approve, while signed in and holding the pricing permission, is
+    # the approval. The overlap and effective-date checks below are the real
+    # protection here, not a retyped plan id.
+    approval_evidence = (
+        approval_evidence.strip() or f"Approved by {actor} on {_now():%B %d, %Y}"
+    )
     with session_scope(request.app.state.session_factory) as session:
         row = session.get(BuildingRatePlan, rate_plan_id)
         if row is None:

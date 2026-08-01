@@ -1049,7 +1049,6 @@ def render_building_page(
               <input type="hidden" name="offering_id" value="{_esc(decision_offering_id)}">
               <div class="field field--wide"><label>Your approved answer</label><textarea name="value" required placeholder="Write the exact rule the sales team should follow.">{answer_value}</textarea></div>
               <div class="field field--wide"><label>Who approved this, or where is it documented?</label><input name="evidence" required minlength="8" value="{evidence_value}" placeholder="Example: Approved by David on July 28, 2026"></div>
-              <div class="field field--wide"><label>To prevent accidental changes, type: I APPROVE THIS DECISION</label><input name="confirmation" required autocomplete="off" placeholder="I APPROVE THIS DECISION"></div>
               <details class="technical-details field--wide"><summary>Technical details</summary><p><strong>Stored status:</strong> {_esc(required_status.replace("_", " "))}</p><p><strong>Existing evidence:</strong> {_esc(decision.get("evidence") or known_evidence)}</p></details>
               <div class="form-actions"><span class="form-note">Saving records the approved rule and audit history. It does not email anyone, charge a card, publish the venue, or change a calendar.</span><button class="primary" type="submit">Save my answer</button></div>
             </form>
@@ -1200,7 +1199,6 @@ def render_building_page(
           <strong>{_esc(conflict.get("summary"))}</strong>
           <select name="resolution_status" required><option value="">Choose disposition</option>{options}</select>
           <input name="resolution_note" required minlength="10" placeholder="Decision or remediation evidence">
-          <input name="confirmation" required placeholder="RECONCILE {_esc(item.get("id"))}">
           <button class="secondary secondary--small" type="submit">Record this disposition</button>
           <span class="sub">Agent records the selected conflict only. “Reconciled in Agent” remains blocking; provider remediation must have occurred outside this action.</span>
         </form>''')
@@ -1231,7 +1229,7 @@ def render_building_page(
           <td>{_badge(str(item.get("status") or "draft"))}<span class="sub">{_esc(item.get("approved_by"))}</span></td>
           <td>{rate_plan_evidence(item)}</td>
           <td>{rate_plan_reconciliation_action(item)}{(
-            f'<form class="inline-send" method="post" action="/admin/building/rate-plans/{_esc(item.get("id"))}/approve"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="approval_evidence" required placeholder="Review ticket or evidence"><input name="confirmation" required placeholder="APPROVE {_esc(item.get("id"))}"><button class="primary secondary--small" type="submit">Approve and lock</button></form>'
+            f'<form class="inline-send" method="post" action="/admin/building/rate-plans/{_esc(item.get("id"))}/approve"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="approval_evidence" placeholder="Note (optional)"><button class="primary secondary--small" type="submit">Approve and lock</button></form>'
             if item.get("status") == "in_review"
             and not rate_plan_has_blocking_conflicts(item)
             else (
@@ -1676,7 +1674,7 @@ def render_building_page(
           <summary>{"Review or rerun catalog preparation" if arena_catalog_ready else "Prepare the verified Arena catalog"}</summary>
         <form class="form-grid" method="post" action="/admin/building/catalog/arena/prepare">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <div class="field"><label for="arena-catalog-confirmation">Typed confirmation</label><input id="arena-catalog-confirmation" name="confirmation" required placeholder="PREPARE ARENA CATALOG"></div>
+          <input type="hidden" name="confirmation" value="prepare">
           <div class="form-actions"><span class="form-note">Idempotent: rerunning a compatible preparation changes nothing. Conflicting existing records fail closed for manual review.</span><button class="secondary" type="submit">Prepare verified Arena catalog</button></div>
         </form>
         </details>
@@ -1740,7 +1738,7 @@ def render_building_page(
             <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
             <div class="field"><label for="arena-draft-offering">Arena event offering</label><select id="arena-draft-offering" name="offering_id" required><option value="">Choose event offering</option>{event_offering_options}</select></div>
             <div class="field"><label for="arena-draft-effective">Proposed effective date</label><input id="arena-draft-effective" name="effective_from" type="date" required></div>
-            <div class="field"><label for="arena-draft-confirmation">Typed confirmation</label><input id="arena-draft-confirmation" name="confirmation" required placeholder="PREPARE ARENA DRAFT"></div>
+            <input type="hidden" name="confirmation" value="prepare">
             <div class="form-actions"><span class="form-note">Creates a draft only. It does not approve, publish, send, charge, change TidyCal, or write Calendar.</span><button class="secondary" type="submit">Prepare reviewable draft</button></div>
           </form>
         </div>
