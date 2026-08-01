@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import secrets
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from threading import Event, Thread
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -41,6 +41,7 @@ from sales_support_agent.services.website_ops_storage import (
 router = APIRouter(prefix="/api/jobs/website-ops", tags=["website-ops-jobs"])
 logger = logging.getLogger(__name__)
 WEBSITE_OPS_PULSE_HOURS = (8, 9, 10, 11, 12, 13, 14, 15)
+WEBSITE_OPS_RUNNING_STALE_AFTER = timedelta(minutes=45)
 
 
 def _pulse_slot(local_now: datetime) -> str:
@@ -48,15 +49,27 @@ def _pulse_slot(local_now: datetime) -> str:
 
 
 def _daily_run_is_fresh(state: dict[str, Any], local_now: datetime) -> bool:
-    """Require a durable current-day run once the first pulse is due."""
+    """Require a durable, non-stalled current-day run after the first pulse."""
 
     if local_now.hour < WEBSITE_OPS_PULSE_HOURS[0]:
         return True
     daily = dict((state.get("runs") or {}).get("daily") or {})
-    return (
-        str(daily.get("run_date", "")) == local_now.date().isoformat()
-        and str(daily.get("status", "")) in {"running", "succeeded"}
-    )
+    if str(daily.get("run_date", "")) != local_now.date().isoformat():
+        return False
+    status = str(daily.get("status", ""))
+    if status == "succeeded":
+        return True
+    if status != "running":
+        return False
+    try:
+        started_at = datetime.fromisoformat(str(daily.get("last_started_at", "")))
+    except (TypeError, ValueError):
+        return False
+    if started_at.tzinfo is None:
+        return False
+    return local_now.astimezone(ZoneInfo("UTC")) - started_at.astimezone(
+        ZoneInfo("UTC")
+    ) <= WEBSITE_OPS_RUNNING_STALE_AFTER
 
 
 def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:

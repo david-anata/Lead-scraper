@@ -723,6 +723,47 @@ example
             )
         )
 
+    def test_daily_run_freshness_blocks_stalled_running_state(self) -> None:
+        running = {
+            "runs": {
+                "daily": {
+                    "run_date": "2026-08-01",
+                    "status": "running",
+                    "last_started_at": "2026-08-01T16:00:00+00:00",
+                }
+            }
+        }
+
+        self.assertTrue(
+            _daily_run_is_fresh(
+                running,
+                datetime(2026, 8, 1, 16, 44, tzinfo=timezone.utc),
+            )
+        )
+        self.assertFalse(
+            _daily_run_is_fresh(
+                running,
+                datetime(2026, 8, 1, 16, 46, tzinfo=timezone.utc),
+            )
+        )
+
+    def test_daily_run_freshness_rejects_running_state_without_timestamp(self) -> None:
+        running = {
+            "runs": {
+                "daily": {
+                    "run_date": "2026-08-01",
+                    "status": "running",
+                }
+            }
+        }
+
+        self.assertFalse(
+            _daily_run_is_fresh(
+                running,
+                datetime(2026, 8, 1, 16, 1, tzinfo=timezone.utc),
+            )
+        )
+
     def test_embedded_scheduler_catches_up_current_hour_once(self) -> None:
         settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))
         local_now = datetime(2026, 8, 1, 11, 37, tzinfo=timezone.utc)
