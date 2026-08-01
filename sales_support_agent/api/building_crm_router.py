@@ -76,6 +76,9 @@ from sales_support_agent.services.building_security import (
     require_building_form_security,
 )
 from sales_support_agent.services.building_analytics import build_building_analytics
+from sales_support_agent.integrations.building_quickbooks import (
+    BuildingQuickBooksClient,
+)
 from sales_support_agent.services.building_sender import building_from_address
 from sales_support_agent.services.building_money import (
     cents_to_dollars,
@@ -5082,6 +5085,9 @@ def building_control_room(
                     and item.status == "approved_reference"
                     for item in launch_decision_rows
                 ),
+                # The rail Anata bills on. Stripe below is only the optional
+                # automatic-confirmation path.
+                "quickbooks_connected": BuildingQuickBooksClient().is_configured,
                 "payment_credentials": bool(
                     str(request.app.state.settings.stripe_secret_key or "").strip()
                 ),
