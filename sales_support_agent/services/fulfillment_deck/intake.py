@@ -20,6 +20,8 @@ import logging
 import re
 from urllib.parse import urljoin, urlparse
 
+from sales_support_agent.services.public_url_guard import public_http_url
+
 logger = logging.getLogger(__name__)
 
 # Size caps (characters ~= bytes for our purposes).
@@ -113,18 +115,47 @@ def _read_file(filename: str, data: bytes, warnings: list) -> str:
         return ""
 
 
+_MAX_WEBSITE_REDIRECTS = 5
+
+
 def _fetch_website(url: str, warnings: list) -> str:
-    """Fetch + crudely de-tag a prospect website. Failure -> warning, never raises."""
+    """Fetch + crudely de-tag a prospect website. Failure -> warning, never raises.
+
+    Redirects are followed manually, one hop at a time, with every hop re-validated by
+    :func:`public_http_url`. Handing ``allow_redirects=True`` to requests would let a
+    prospect domain bounce us at a private or metadata address, which is the reason
+    redirects were originally disabled outright. But refusing them meant the common case
+    failed: almost every store redirects (apex to www, http to https, or to a locale
+    path), and a 301 carries an empty body, so extraction saw no products, quoted
+    nothing, and the public teaser reported rates as unavailable for every real store.
+    """
     try:
         import requests
 
-        resp = requests.get(
-            url,
-            timeout=10,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; AnataRateSheet/1.0)"},
-            allow_redirects=False,
-        )
-        html = resp.text or ""
+        current = url
+        resp = None
+        for _ in range(_MAX_WEBSITE_REDIRECTS + 1):
+            resp = requests.get(
+                current,
+                timeout=10,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; AnataRateSheet/1.0)"},
+                allow_redirects=False,
+            )
+            if resp.status_code not in (301, 302, 303, 307, 308):
+                break
+            location = str(resp.headers.get("location") or "").strip()
+            if not location:
+                break
+            nxt = public_http_url(urljoin(current, location))
+            if not nxt:
+                warnings.append(f"Stopped following {url}: redirect target is not a public address.")
+                return ""
+            current = nxt
+        else:
+            warnings.append(f"Stopped following {url}: too many redirects.")
+            return ""
+
+        html = (resp.text if resp is not None else "") or ""
         html = _SCRIPT_STYLE_RE.sub(" ", html)
         text = _TAG_RE.sub(" ", html)
         text = _WS_RE.sub(" ", text).strip()

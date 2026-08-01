@@ -37,7 +37,21 @@ from sales_support_agent.config import load_settings
 from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.services.fulfillment_deck import storage
 from sales_support_agent.services.fulfillment_deck.public_payload import serialize_public_matrix
-from sales_support_agent.services.fulfillment_deck.schema import RATE_SOURCE_WMS, clean_segment, clean_zip
+from sales_support_agent.services.fulfillment_deck.schema import (
+    ANATA_HQ_ZIP,
+    RATE_SOURCE_WMS,
+    ProductSpec,
+    clean_segment,
+    clean_zip,
+)
+from sales_support_agent.services.fulfillment_deck.wms_client import (
+    _billed_weight_lb as billed_weight_lb,
+    get_wms_client,
+)
+from sales_support_agent.services.fulfillment_deck.zones import (
+    representative_destinations,
+    zone_for,
+)
 from sales_support_agent.services.fulfillment_deck.service import (
     apply_profile_edits,
     generate_rate_sheet,
@@ -572,3 +586,123 @@ async def rate_sheet_result(
     if payload is None:
         return JSONResponse(status_code=503, content={"detail": "Live carrier rates are unavailable."})
     return JSONResponse(content=payload)
+
+
+# ---------------------------------------------------------------------------
+# Parcel quote — one box, real carrier rates (anatainc.com shipping calculator)
+# ---------------------------------------------------------------------------
+#
+# The rate-sheet flow above starts from a store URL and rates a whole catalog.
+# The public shipping calculator asks a different question: what does THIS box
+# cost, from here to there. That had no endpoint, so the calculator could only
+# do billable-weight arithmetic and link away. This exposes the same carrier
+# rating the real product uses, for a single parcel.
+#
+# Destination handling is the one subtlety worth stating. Carrier ground pricing
+# is a function of ZONE, not of the specific street address, and the rating call
+# needs a city/state pair it recognises. So we compute the true zone from the
+# visitor's own destination ZIP, then rate against a representative metro that
+# falls in that same zone. The price returned is the price for that lane, not an
+# average or a guess.
+
+
+_MAX_DIM_IN = 108.0        # longest side any common ground service will accept
+_MAX_WEIGHT_LB = 150.0     # standard parcel ceiling; above this is freight
+
+
+def _positive_number(raw: Any, *, cap: float) -> Optional[float]:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0 or value > cap:
+        return None
+    return round(value, 2)
+
+
+@router.post("/parcel-quote")
+async def parcel_quote(
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> JSONResponse:
+    denied = _enforce_intake_key(request, x_internal_api_key)
+    if denied is not None:
+        return denied
+    limited = durable_rate_limit_response(request, scope="fulfillment:parcel-quote", limit=30)
+    if limited is not None:
+        return limited
+    body, bad = await _json_body(request)
+    if bad is not None:
+        return bad
+    if _is_bot(body):
+        return JSONResponse(status_code=202, content={"rates_source": "unavailable", "rates": []})
+
+    length_in = _positive_number(body.get("length_in"), cap=_MAX_DIM_IN)
+    width_in = _positive_number(body.get("width_in"), cap=_MAX_DIM_IN)
+    height_in = _positive_number(body.get("height_in"), cap=_MAX_DIM_IN)
+    weight_lb = _positive_number(body.get("weight_lb"), cap=_MAX_WEIGHT_LB)
+    if None in (length_in, width_in, height_in, weight_lb):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Enter the box length, width, height, and weight."},
+        )
+
+    origin_zip = clean_zip(body.get("origin_zip")) or ANATA_HQ_ZIP
+    dest_zip = clean_zip(body.get("dest_zip"))
+    if dest_zip is None:
+        return JSONResponse(status_code=400, content={"detail": "Enter a valid destination ZIP code."})
+
+    zone = zone_for(origin_zip, dest_zip)
+    if zone is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "We cannot rate that ZIP pair. Check both ZIP codes."},
+        )
+    lane = representative_destinations(origin_zip).get(zone)
+    if lane is None:
+        return JSONResponse(status_code=503, content={"detail": "Live carrier rates are unavailable."})
+    rating_zip, _label = lane
+
+    package = ProductSpec(
+        name="Parcel",
+        length_in=length_in,
+        width_in=width_in,
+        height_in=height_in,
+        weight_lb=weight_lb,
+    )
+    try:
+        quotes = get_wms_client().quote_rates(package, origin_zip, rating_zip)
+    except Exception:  # noqa: BLE001 — never leak carrier/internal details publicly
+        logger.exception("[fulfillment_public] parcel quote failed for zone %s", zone)
+        return JSONResponse(status_code=503, content={"detail": "Live carrier rates are unavailable."})
+
+    # Mock rates exist so the deck renders in dev. They must never reach a
+    # visitor as a real price, so anything that is not a live carrier quote is
+    # reported as unavailable rather than dressed up.
+    live = [q for q in quotes if getattr(q, "source", "") == RATE_SOURCE_WMS and q.rate_usd > 0]
+    if not live:
+        return JSONResponse(
+            status_code=200,
+            content={"rates_source": "unavailable", "zone": zone, "rates": []},
+        )
+
+    live.sort(key=lambda q: q.rate_usd)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "rates_source": "live",
+            "zone": zone,
+            "origin_zip": origin_zip,
+            "dest_zip": dest_zip,
+            "billable_weight_lb": billed_weight_lb(package),
+            "rates": [
+                {
+                    "carrier": q.carrier,
+                    "service": q.service,
+                    "rate_usd": q.rate_usd,
+                    "transit_days": q.transit_days,
+                }
+                for q in live[:8]
+            ],
+        },
+    )
