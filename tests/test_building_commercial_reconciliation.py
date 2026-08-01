@@ -139,9 +139,9 @@ class BuildingCommercialReconciliationTests(unittest.TestCase):
             "$500 refundable security deposit",
             "balance due seven days",
             "$175 per full hour",
-            "70% deposit",
-            "placeholder payment link",
-            "reusable agreement remains under legal review",
+            # The named provider conflicts are resolved; the notice now says
+            # only that conflicting booking-page copy must be corrected.
+            "Correct any conflicting booking-page copy before approval.",
         ):
             self.assertIn(text, page.text)
 
