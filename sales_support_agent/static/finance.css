@@ -2256,6 +2256,25 @@ input:focus, select:focus, textarea:focus {
 .budget-investigation p { margin-top: 7px; color: var(--anata-muted); font-size: 13px; line-height: 1.55; }
 .budget-investigation__amount { text-align: right; }
 .budget-investigation__amount strong { display: block; margin-top: 7px; font: 800 1.35rem/1 "Montserrat", sans-serif; }
+.trim-summary { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.trim-summary button { border: 1px solid var(--anata-line); border-radius: 999px; background: var(--anata-surface); padding: 8px 12px; color: var(--anata-ink); font: 700 11px/1 "Montserrat", sans-serif; cursor: pointer; }
+.trim-summary button.is-active { background: var(--anata-ink); color: #fff; border-color: var(--anata-ink); }
+.trim-table th:nth-child(1) { width: 19%; }
+.trim-table th:nth-child(2), .trim-table th:nth-child(3) { width: 12%; }
+.trim-table th:nth-child(4) { width: 9%; }
+.trim-table th:nth-child(5) { width: 48%; }
+.trim-table td > span, .trim-table td:first-child span { display: block; margin-top: 4px; color: var(--anata-muted); font-size: 10px; }
+.trim-state { width: fit-content; border-radius: 999px; padding: 5px 8px; background: var(--anata-soft); font-weight: 700; }
+.trim-state--needed { color: var(--good); background: rgba(13, 119, 107, .08); }
+.trim-state--investigate { color: var(--warn); background: rgba(180, 105, 10, .09); }
+.trim-state--waste { color: var(--bad); background: rgba(185, 28, 28, .07); }
+.trim-form { display: grid; gap: 8px; }
+.trim-form input { width: 100%; min-height: 34px; padding: 7px 9px; border: 1px solid var(--anata-line); border-radius: 8px; background: var(--anata-surface); color: var(--anata-ink); }
+.trim-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.trim-choice { border: 1px solid var(--anata-line); border-radius: 7px; background: var(--anata-surface); padding: 6px 8px; color: var(--anata-ink); font-size: 10px; font-weight: 700; cursor: pointer; }
+.trim-choice.is-needed:hover, .trim-choice.is-needed:focus-visible { border-color: var(--good); color: var(--good); }
+.trim-choice.is-investigate:hover, .trim-choice.is-investigate:focus-visible { border-color: var(--warn); color: var(--warn); }
+.trim-choice.is-waste:hover, .trim-choice.is-waste:focus-visible { border-color: var(--bad); color: var(--bad); }
 
 @media (max-width: 1100px) {
   .budget-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -2301,6 +2320,8 @@ input:focus, select:focus, textarea:focus {
   .budget-saving-impact { text-align: left; }
   .budget-investigation { grid-template-columns: 1fr; }
   .budget-investigation__amount { text-align: left; }
+  .trim-table-wrap { overflow-x: auto; }
+  .trim-table { min-width: 900px; }
   .budget-saving-action { grid-column: auto; }
   .money-account-actions { display: grid; width: 100%; }
   .money-account-actions form,

@@ -18,7 +18,10 @@ import requests
 from sqlalchemy import text
 
 DEFAULT_SCOPE = "default"
-VALID_ACTIONS = frozenset({"keep", "dismiss", "follow_up", "confirm_realized"})
+VALID_ACTIONS = frozenset({
+    "keep", "dismiss", "follow_up", "confirm_realized",
+    "needed", "unknown", "investigate", "waste",
+})
 _KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -72,6 +75,10 @@ def _state_for(action: str) -> str:
         "dismiss": "dismissed",
         "follow_up": "monitoring",
         "confirm_realized": "realized",
+        "needed": "needed",
+        "unknown": "unknown",
+        "investigate": "investigate",
+        "waste": "waste",
     }[action]
 
 

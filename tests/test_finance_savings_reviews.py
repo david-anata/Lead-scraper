@@ -66,6 +66,16 @@ def test_keep_is_idempotent_and_suppresses_only_unchanged_evidence(finance_engin
     assert merge_savings_reviews({"opportunities": [changed]}, reviews)["opportunities"][0]["opportunity_key"] == KEY
 
 
+def test_trim_labels_are_saved_as_audited_review_states(finance_engine):
+    for index, action in enumerate(("needed", "unknown", "investigate", "waste")):
+        opportunity = _opportunity(opportunity_key=(f"{index + 2:x}" * 64)[:64])
+        result = record_savings_review(
+            opportunity, action, "qa@example.com", reason=f"note-{action}",
+            request_id=f"trim-{action}",
+        )
+        assert result["state"] == action
+
+
 def test_follow_up_persists_task_reference_without_changing_cash_events(finance_engine):
     result = record_savings_review(
         _opportunity(), "follow_up", "qa@example.com", request_id="followup-001",

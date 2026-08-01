@@ -1459,6 +1459,10 @@ async def record_savings_review_action(
         "dismiss": "Savings opportunity dismissed for 90 days.",
         "follow_up": "Savings review added to Anata; Finance will wait for bank evidence before counting a saving.",
         "confirm_realized": "Bank-verified savings recorded.",
+        "needed": "Marked needed.",
+        "unknown": "Marked unknown.",
+        "investigate": "Marked for investigation.",
+        "waste": "Marked as waste to remove.",
     }
     return _redirect_finance_home(messages.get(action, "Savings review recorded."))
 

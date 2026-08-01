@@ -266,6 +266,20 @@ def test_deep_review_finds_new_recurring_and_duplicate_looking_spend() -> None:
     assert by_kind["duplicate_looking"]["one_time_review_cents"] == 4_000
 
 
+def test_trim_list_includes_every_controllable_vendor_ranked_by_spend() -> None:
+    rows = [
+        _row("elementor-1", "plaid", "2026-01-10", 9_900, merchant="Elementor"),
+        _row("elementor-2", "plaid", "2026-02-10", 9_900, merchant="Elementor"),
+        _row("small-1", "plaid", "2026-03-10", 2_000, merchant="Small Tool"),
+        _row("rent-1", "plaid", "2026-03-01", 200_000, merchant="Building", category="rent"),
+    ]
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+
+    assert [item["display_name"] for item in view["trim_items"]] == ["Elementor", "Small Tool"]
+    assert len(view["trim_items"][0]["opportunity_key"]) == 64
+    assert view["trim_items"][0]["review_state"] == "unknown"
+
+
 def test_recurring_savings_exclude_reductions_already_reflected_this_month() -> None:
     rows = [
         _row(f"software-{month}", "plaid", f"2026-{month}-10", 20_000)
@@ -353,6 +367,8 @@ def test_budget_page_is_explicitly_advisory_and_explainable() -> None:
     assert "What operating spending is doing" in page
     assert "What should we cut or renegotiate?" in page
     assert "Where the deeper savings may be hiding" in page
+    assert "Decide what stays and what goes" in page
+    assert "Needed" in page and "Unknown" in page and "Investigate" in page and "Waste" in page
     assert "Run high spending review" in page
     assert "planning targets, not changes to your bank or books" in page
     assert "Mirrored sources and internal transfers are excluded" in page

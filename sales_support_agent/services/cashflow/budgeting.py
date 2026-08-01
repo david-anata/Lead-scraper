@@ -364,6 +364,38 @@ def build_budget_view(
         -int(item["monthly_review_cents"]), -int(item["one_time_review_cents"]),
         str(item["merchant"]).casefold(),
     ))
+    trim_items: list[dict[str, Any]] = []
+    for merchant_key, monthly in merchant_months.items():
+        meta = merchant_meta[merchant_key]
+        if meta["category"] in _PROTECTED_CATEGORIES:
+            continue
+        history = {month: int(monthly.get(month) or 0) for month in comparison_months}
+        total = sum(history.values())
+        if total <= 0:
+            continue
+        evidence = {
+            "merchant": merchant_key, "category": meta["category"],
+            "months": history, "comparison_months": comparison_months,
+        }
+        opportunity_key = hashlib.sha256(f"budget-trim-v1|{merchant_key}".encode()).hexdigest()
+        evidence_hash = hashlib.sha256(
+            json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        recent_average = sum(history[month] for month in comparison_months[3:]) // 3
+        trim_items.append({
+            "opportunity_key": opportunity_key, "key": opportunity_key,
+            "evidence_hash": evidence_hash, "display_name": meta["name"],
+            "normalized_merchant": merchant_key, "category": meta["category"],
+            "cadence": "monthly review", "monthly_potential_cents": recent_average,
+            "baseline_amount_cents": recent_average,
+            "six_month_total_cents": total, "monthly_average_cents": total // 6,
+            "recent_average_cents": recent_average,
+            "active_months": sum(1 for value in history.values() if value > 0),
+            "reason": "Six-month controllable vendor review",
+            "limitations": "Usage, contract terms, and replacement cost require operator review.",
+            "evidence_dates": comparison_months, "review_state": "unknown", "review_note": "",
+        })
+    trim_items.sort(key=lambda item: (-int(item["six_month_total_cents"]), str(item["display_name"]).casefold()))
     proof = {
         "source": source,
         "as_of": today.isoformat(),
@@ -373,6 +405,7 @@ def build_budget_view(
         "monthly_totals": monthly_totals,
         "categories": categories,
         "investigations": investigations[:12],
+        "trim_items": trim_items[:100],
     }
     return {
         **proof,
@@ -386,7 +419,15 @@ def build_budget_view(
 
 def load_budget_view() -> dict[str, Any]:
     try:
-        return build_budget_view(list_obligations(limit=10_000))
+        view = build_budget_view(list_obligations(limit=10_000))
+        from sales_support_agent.services.cashflow.savings_reviews import load_savings_reviews
+        reviews = load_savings_reviews()
+        for item in view.get("trim_items") or []:
+            review = reviews.get(str(item.get("opportunity_key") or ""))
+            if review:
+                item["review_state"] = str(review.get("state") or "unknown")
+                item["review_note"] = str(review.get("reason") or "")
+        return view
     except Exception:
         return build_budget_view([])
 
@@ -684,6 +725,33 @@ def render_budget_page(
         </article>"""
         for item in view.get("investigations") or []
     )
+    trim_items = list(view.get("trim_items") or [])
+    trim_counts = {
+        state: sum(1 for item in trim_items if str(item.get("review_state") or "unknown") == state)
+        for state in ("unknown", "needed", "investigate", "waste")
+    }
+    trim_rows = "".join(
+        f"""
+        <tr data-trim-row data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}">
+          <td><strong>{html.escape(item['display_name'])}</strong><span>{html.escape(str(item['category']).replace('_', ' ').title())} · {item['active_months']} of 6 months</span></td>
+          <td>{_money(int(item['monthly_average_cents']), exact=True)}</td>
+          <td>{_money(int(item['six_month_total_cents']), exact=True)}</td>
+          <td><span class="trim-state trim-state--{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}">{html.escape(str(item.get('review_state') or 'unknown').title())}</span></td>
+          <td><form method="post" action="/admin/finances/savings/{html.escape(item['opportunity_key'], quote=True)}/review" class="trim-form">
+            <input type="hidden" name="evidence_hash" value="{html.escape(item['evidence_hash'], quote=True)}">
+            <input type="hidden" name="opportunity_json" value="{html.escape(json.dumps(item, separators=(',', ':')), quote=True)}">
+            <label class="sr-only" for="trim-note-{html.escape(item['opportunity_key'], quote=True)}">Note for {html.escape(item['display_name'])}</label>
+            <input id="trim-note-{html.escape(item['opportunity_key'], quote=True)}" name="reason" value="{html.escape(str(item.get('review_note') or ''), quote=True)}" placeholder="Optional note">
+            <div class="trim-actions" role="group" aria-label="Classify {html.escape(item['display_name'], quote=True)}">
+              <button class="trim-choice is-needed" name="action" value="needed" type="submit">Needed</button>
+              <button class="trim-choice is-unknown" name="action" value="unknown" type="submit">Unknown</button>
+              <button class="trim-choice is-investigate" name="action" value="investigate" type="submit">Investigate</button>
+              <button class="trim-choice is-waste" name="action" value="waste" type="submit">Waste</button>
+            </div>
+          </form></td>
+        </tr>"""
+        for item in trim_items
+    )
     review_status = str(review.get("status") or "empty")
     review_matches = review.get("calculation_id") == view.get("calculation_id")
     if review_status == "ready" and review_matches:
@@ -731,6 +799,24 @@ def render_budget_page(
       </section>
       <p class="budget-proof">Source: {html.escape(str(view['source']).replace('_', ' ').title())} posted transactions · Six complete months: {html.escape(', '.join(view['comparison_months']))} · Latest evidence {html.escape(str(view.get('latest_date') or 'unavailable'))}. Mirrored sources and internal transfers are excluded.</p>
 
+      <section class="budget-workspace trim-workspace" aria-labelledby="trim-title">
+        <div class="money-section-heading"><div><p class="finance-eyebrow">Trim list</p>
+        <h2 id="trim-title">Decide what stays and what goes</h2></div>
+        <span class="money-section-state">{len(trim_items)} controllable vendors</span></div>
+        <p class="budget-review-summary">Work from the largest six-month spend down. Your labels and notes save immediately; no service is cancelled and no accounting record changes.</p>
+        <div class="trim-summary" aria-label="Trim review progress">
+          <button type="button" data-trim-filter="all" class="is-active">All <strong>{len(trim_items)}</strong></button>
+          <button type="button" data-trim-filter="unknown">Unknown <strong>{trim_counts['unknown']}</strong></button>
+          <button type="button" data-trim-filter="investigate">Investigate <strong>{trim_counts['investigate']}</strong></button>
+          <button type="button" data-trim-filter="waste">Waste <strong>{trim_counts['waste']}</strong></button>
+          <button type="button" data-trim-filter="needed">Needed <strong>{trim_counts['needed']}</strong></button>
+        </div>
+        <div class="money-table-wrap trim-table-wrap"><table class="budget-table trim-table"><thead><tr>
+          <th>Vendor</th><th>Monthly average</th><th>Six-month spend</th><th>Status</th><th>Decision and note</th>
+        </tr></thead><tbody>{trim_rows}</tbody></table></div>
+        <p class="budget-rule-note" data-trim-result-count>Showing all {len(trim_items)} vendors.</p>
+      </section>
+
       <section class="budget-trend" aria-labelledby="budget-trend-title">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Six-month trend</p>
         <h2 id="budget-trend-title">What operating spending is doing</h2></div>
@@ -763,4 +849,24 @@ def render_budget_page(
         {review_content}
       </section>
     </div>"""
+    body += """
+    <script>
+    (() => {
+      const filters = [...document.querySelectorAll('[data-trim-filter]')];
+      const rows = [...document.querySelectorAll('[data-trim-row]')];
+      const count = document.querySelector('[data-trim-result-count]');
+      filters.forEach(button => button.addEventListener('click', () => {
+        const wanted = button.dataset.trimFilter;
+        let shown = 0;
+        rows.forEach(row => {
+          const visible = wanted === 'all' || row.dataset.trimState === wanted;
+          row.hidden = !visible;
+          if (visible) shown += 1;
+        });
+        filters.forEach(item => item.classList.toggle('is-active', item === button));
+        filters.forEach(item => item.setAttribute('aria-pressed', item === button ? 'true' : 'false'));
+        if (count) count.textContent = `Showing ${shown} vendor${shown === 1 ? '' : 's'}.`;
+      }));
+    })();
+    </script>"""
     return _page_shell("Budget & savings", "budget", body, flash=flash)
