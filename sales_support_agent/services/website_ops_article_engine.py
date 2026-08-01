@@ -275,11 +275,15 @@ def _eligible_cluster(
     query_intelligence: Mapping[str, Any],
     *,
     excluded_cluster_ids: set[str] | None = None,
+    excluded_primary_intents: set[str] | None = None,
 ) -> Mapping[str, Any] | None:
     excluded_cluster_ids = excluded_cluster_ids or set()
+    excluded_primary_intents = excluded_primary_intents or set()
     for cluster in query_intelligence.get("clusters", []) or []:
         label = _clean(cluster.get("label"))
         if _clean(cluster.get("cluster_id")) in excluded_cluster_ids:
+            continue
+        if _clean(cluster.get("normalized_query")).casefold() in excluded_primary_intents:
             continue
         if (
             len(label) > 140
@@ -529,7 +533,22 @@ def build_article_action(
     progress = article_generation_progress(settings)
     if int(progress["remaining_to_target"]) <= 0:
         return None
-    excluded_cluster_ids = _historical_cluster_ids(settings) | set(progress["cluster_ids"])
+    from sales_support_agent.services.website_ops_github import (
+        github_metadata_is_configured,
+        load_generated_article_identities,
+    )
+
+    published = (
+        load_generated_article_identities()
+        if github_metadata_is_configured()
+        else {"evidence_ids": set(), "primary_intents": set(), "slugs": set()}
+    )
+    excluded_cluster_ids = (
+        _historical_cluster_ids(settings)
+        | set(progress["cluster_ids"])
+        | set(published["evidence_ids"])
+    )
+    excluded_primary_intents = set(published["primary_intents"])
     pillar_counts = dict(progress.get("pillar_counts") or {})
     selected_pillar = min(
         SERVICE_PILLARS,
@@ -538,6 +557,7 @@ def build_article_action(
     cluster = _eligible_cluster(
         query_intelligence,
         excluded_cluster_ids=excluded_cluster_ids,
+        excluded_primary_intents=excluded_primary_intents,
     )
     if not cluster:
         cluster = _eligible_editorial_seed(
