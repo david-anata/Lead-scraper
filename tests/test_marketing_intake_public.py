@@ -504,6 +504,61 @@ class MarketingIntakeTests(unittest.TestCase):
             self.assertEqual(run.metadata_json["qualification"]["company"], "Anata")
             self.assertEqual(run.summary_json["internal_lead_email"], "delivered")
 
+    def test_unlock_suppresses_the_observed_bot_submission(self) -> None:
+        """The 2026-07-31 scripted submission must reach nothing downstream.
+
+        It answers 202 like any other unlock so the script learns nothing, but
+        sends no alert, writes no HubSpot record, and starts no paid analysis.
+        """
+        data = self._create()
+        with mock.patch.object(
+            M, "_send_internal_lead_email", return_value=True
+        ) as lead_email, mock.patch.object(
+            M, "_send_unlock_ack_email", return_value=True
+        ) as ack_email, mock.patch.object(
+            M, "_record_hubspot_lead", return_value=True
+        ) as hubspot, mock.patch.object(M, "_run_analysis_and_deliver") as deliver:
+            response = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/unlock",
+                json={
+                    "token": data["token"],
+                    "email": "oroqe.n.u.z.94.5@gmail.com",
+                    "qualification": {
+                        "name": "jRYUmRZKmbAAdcTVxYKORSZX",
+                        "company": "Pmynutqga LLC",
+                        "phone": "6490216433",
+                    },
+                },
+                headers=HEADERS,
+            )
+        self.assertEqual(response.status_code, 202, response.text)
+        lead_email.assert_not_called()
+        ack_email.assert_not_called()
+        hubspot.assert_not_called()
+        deliver.assert_not_called()
+
+    def test_unlock_still_accepts_a_real_lead(self) -> None:
+        """The guard must not cost a genuine submission."""
+        data = self._create()
+        with mock.patch.object(
+            M, "_send_internal_lead_email", return_value=True
+        ) as lead_email, mock.patch.object(M, "_run_analysis_and_deliver"):
+            response = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/unlock",
+                json={
+                    "token": data["token"],
+                    "email": "sarah.chen@brightleaf.com",
+                    "qualification": {
+                        "name": "Sarah Chen",
+                        "company": "Brightleaf Supplements",
+                        "phone": "(801) 555-0142",
+                    },
+                },
+                headers=HEADERS,
+            )
+        self.assertEqual(response.status_code, 202, response.text)
+        lead_email.assert_called_once()
+
     def test_unlock_does_not_claim_success_when_every_handoff_fails(self) -> None:
         data = self._create()
         with mock.patch.object(

@@ -32,6 +32,10 @@ from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import AutomationAction, AutomationRun
 from sales_support_agent.services.audit import AuditService
 from sales_support_agent.services.deck.service import DeckGenerationService
+from sales_support_agent.services.marketing_junk_guard import (
+    junk_signals,
+    normalize_email_identity,
+)
 from sales_support_agent.services.public_request_guard import (
     RATE_LIMIT_RUN_TYPE_PREFIX,
     durable_rate_limit_response,
@@ -130,9 +134,19 @@ def _enforce_marketing_intake_key(request: Request, provided: Optional[str]) -> 
 
 
 def _daily_gate_enabled() -> bool:
-    """One-per-email-per-day gate. OFF by default during the testing phase (David 2026-07-19);
-    re-enable at launch by setting MARKETING_DAILY_GATE=1 on the service."""
-    return os.getenv("MARKETING_DAILY_GATE", "").strip() in {"1", "true", "yes"}
+    """One-per-mailbox-per-day gate.
+
+    Was OFF by default for the 2026-07-19 testing phase and never switched back
+    on, which let a single scripted mailbox submit without limit (David
+    2026-07-31). Now ON by default; set MARKETING_DAILY_GATE=0 to suspend it
+    for a testing window.
+    """
+    return os.getenv("MARKETING_DAILY_GATE", "").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 def _today_intakes_for_email(
@@ -166,11 +180,11 @@ def _today_intakes_for_email(
         .order_by(AutomationRun.id.desc())
         .limit(100)
     ).scalars().all()
-    normalized = email.strip().lower()
+    normalized = normalize_email_identity(email)
     matches = [
         run
         for run in rows
-        if str((run.metadata_json or {}).get("email", "")).strip().lower()
+        if normalize_email_identity(str((run.metadata_json or {}).get("email", "")))
         == normalized
     ]
     if matches:
@@ -183,9 +197,11 @@ def _today_intakes_for_email(
 
 
 def _daily_email_key(*, email: str) -> str:
+    # Keyed on the mailbox, not the spelling: dot-padded Gmail aliases are one
+    # person and must share one daily allowance.
     material = (
         f"{datetime.now(timezone.utc).date().isoformat()}|"
-        f"{email.strip().lower()}"
+        f"{normalize_email_identity(email)}"
     )
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
     return f"{DAILY_EMAIL_PREFIX}{digest}"
@@ -1819,6 +1835,25 @@ async def marketing_site_intake_unlock(
         return JSONResponse(status_code=400, content={"detail": "A valid email is required."})
 
     qualification = _sanitize_qualification(body.get("qualification"))
+
+    # Scripted submissions get the same answer a real one gets, but nothing
+    # downstream runs: no acknowledgement, no alert, no HubSpot record, no
+    # paid analysis. Telling a bot it failed only teaches it what to change.
+    spam_signals = junk_signals(email=email, qualification=qualification)
+    if len(spam_signals) >= 2:
+        logger.warning(
+            "[marketing_intake] suppressed automated submission for intake %s (%s)",
+            intake_id,
+            ", ".join(spam_signals),
+        )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "building",
+                "delivery_status": {},
+                "closers": {"software": False, "services": False},
+            },
+        )
 
     with session_scope(request.app.state.session_factory) as session:
         run, error = _load_site_intake(session, intake_id, str(body.get("token", "") or ""))
