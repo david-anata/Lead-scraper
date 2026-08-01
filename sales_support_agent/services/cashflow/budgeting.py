@@ -811,11 +811,11 @@ def render_budget_page(
         </div>
         <form method="post" action="/admin/finances/savings/reviews/batch" data-trim-batch-form>
         <input type="hidden" name="changes_json" data-trim-changes value="[]">
+        <div class="trim-savebar"><span data-trim-unsaved>No unsaved changes</span><button class="btn btn-primary" type="submit" data-trim-save disabled>Save all changes</button></div>
         <div class="money-table-wrap trim-table-wrap"><table class="budget-table trim-table"><thead><tr>
           <th>Vendor</th><th>Monthly average</th><th>Six-month spend</th><th>Status</th><th>Decision and note</th>
         </tr></thead><tbody>{trim_rows}</tbody></table></div>
         <p class="budget-rule-note" data-trim-result-count>Showing all {len(trim_items)} vendors.</p>
-        <div class="trim-savebar"><span data-trim-unsaved>No unsaved changes</span><button class="btn btn-primary" type="submit" data-trim-save disabled>Save all changes</button></div>
         </form>
       </section>
 
