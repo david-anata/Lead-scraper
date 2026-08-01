@@ -36,6 +36,9 @@ EVENT_MERGE_FIELDS = (
     "guest_ends_at",
     "teardown_ends_at",
     "attendance",
+    "subtotal_before_discount",
+    "discount_amount",
+    "discount_reason",
     "quote_total",
     "currency",
     "deposit_amount",
@@ -70,6 +73,9 @@ MERGE_FIELD_HELP = {
     "guest_ends_at": "Guest departure time",
     "teardown_ends_at": "End of the teardown window",
     "attendance": "Expected attendance",
+    "subtotal_before_discount": "Quote subtotal before any discount",
+    "discount_amount": "Discount applied to this booking",
+    "discount_reason": "Recorded business reason for the discount",
     "quote_total": "Frozen quote total",
     "currency": "Quote currency",
     "deposit_amount": "Required payment amount",
@@ -180,7 +186,13 @@ def format_merge_value(field: str, value: Any) -> str:
 
     if value is None or value == "":
         return "[not provided]"
-    if field in {"quote_total", "deposit_amount", "monthly_rate"}:
+    if field in {
+        "quote_total",
+        "deposit_amount",
+        "monthly_rate",
+        "subtotal_before_discount",
+        "discount_amount",
+    }:
         try:
             return f"{int(value) / 100:,.2f}"
         except (TypeError, ValueError):

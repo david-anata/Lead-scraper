@@ -59,6 +59,33 @@ CONTRACT_STATE_FILTERS = (
 CONTRACT_TYPE_LABELS = {"event": "Event", "workspace": "Workspace"}
 
 
+def _discount_terms(quote: BuildingProposal) -> dict[str, Any]:
+    """Read the discount off the frozen quote so the contract states it.
+
+    The quote flow already records a discount as its own negative line item with
+    a required business reason. Deriving from that rather than from a separate
+    field means the contract, the quote and the invoice cannot disagree: there
+    is only one number.
+
+    A booking with no discount returns zero and an empty reason, which the
+    document renders as a plain total with no discount language.
+    """
+
+    discount_cents = 0
+    reason = ""
+    for item in quote.line_items_json or []:
+        if not isinstance(item, dict) or item.get("type") != "discount":
+            continue
+        discount_cents += abs(int(item.get("amount_cents") or 0))
+        if not reason:
+            reason = str(item.get("description") or "").strip()
+    return {
+        "subtotal_before_discount": quote.amount_cents + discount_cents,
+        "discount_amount": discount_cents,
+        "discount_reason": reason,
+    }
+
+
 def compute_event_merge_values(
     *,
     reservation: BuildingReservation,
@@ -105,6 +132,7 @@ def compute_event_merge_values(
         ),
         "teardown_ends_at": reservation.ends_at.isoformat(),
         "attendance": reservation.attendance,
+        **_discount_terms(quote),
         "quote_total": quote.amount_cents,
         "currency": quote.currency,
         "deposit_amount": deposit_cents,

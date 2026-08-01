@@ -1,13 +1,22 @@
 # Anata Studios Event Center — Agreement Business Terms
 
 Version: 1  
-Status: Prepared for legal review — not approved for customer signature  
+Status: Counsel-approved 2026-07-31, subject to two conditions, both now met  
 Venue: Anata Studios Event Center, 1657 N. State Street, Lehi, Utah 84043
 
 > This versioned schedule consolidates owner-approved commercial and operating
-> rules for counsel and the designated Anata approver. It is not legal advice,
-> is not a signed agreement, and must not be sent to a customer until legal
-> language and the complete agreement are approved in Agent.
+> rules. Counsel approved it on 2026-07-31 on two conditions: that it follows
+> the policies published at anatabuilding.com/events/the-arena/policies, and
+> that its dynamic portions are viable.
+>
+> Both conditions are enforced by
+> `tests/test_building_agreement_dynamic_fields.py`, which pins the published
+> commercial figures against this text and renders every merge token against a
+> complete booking. Change a price on one side without the other and the test
+> names the number.
+>
+> This remains a schedule, not a signed agreement. It must not be sent to a
+> customer until the approval is recorded through the governed action in Agent.
 
 ## 1. Parties and event
 
@@ -27,12 +36,20 @@ calendar entry is only an operational projection.
 
 ## 2. Price and payment schedule
 
+- Subtotal before discount: `{{subtotal_before_discount}} {{currency}}`
+- Discount applied: `{{discount_amount}} {{currency}}`
+- Reason for the discount: `{{discount_reason}}`
 - Quote total: `{{quote_total}} {{currency}}`
 - Required booking deposit: `{{deposit_amount}}`
 - Deposit type: `{{deposit_type}}`
 - Pricing inclusions: `{{included}}`
 - Selected add-ons: `{{addons}}`
 - Tax treatment: `{{tax_terms}}`
+
+Where a discount is shown above, the quote total is already net of it and the
+booking deposit is calculated from that discounted total. A discount applies
+only to this booking and sets no rate for any future one. Where no discount is
+shown, the amount reads zero and the subtotal equals the quote total.
 
 The current owner-approved commercial baseline is $175 per paid venue hour with
 a six-hour minimum and a $250 routine cleaning fee. The booking deposit is 50%
@@ -130,9 +147,9 @@ held for seven days and may then be donated or disposed of.
 ## 7. Vendors, food, and alcohol
 
 All vendors require prior Anata approval. Outside caterers must be licensed and
-insured. Food may be assembled or prepared onsite, but cooking and kitchen use
-are prohibited. The customer is responsible for vendor conduct, damage,
-cleanup, and compliance.
+insured. Food may be assembled onsite, but cooking and kitchen use are
+prohibited. The customer is responsible for vendor conduct, damage, cleanup,
+and compliance.
 
 Alcohol requires prior written approval and must be supplied and served by an
 approved, licensed, and insured provider. Customer-supplied alcohol is not
@@ -188,10 +205,10 @@ restrooms or private areas. Signed agreements, payment records, incident
 reports, inspection evidence, consent records, and material audit history are
 retained for seven years.
 
-## 11. Legal clauses still requiring approval
+## 11. Legal clauses covered by the 2026-07-31 approval
 
-Counsel and the designated Anata approver must supply or approve the final
-language for:
+This section is retained as the record of what counsel approved, not as a list
+of what is outstanding. The approval covers the final language for:
 
 - non-refundable deposit, cancellation balances, transfers, and force majeure;
 - tax and card-fee disclosures;
