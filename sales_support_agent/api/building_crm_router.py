@@ -76,6 +76,12 @@ from sales_support_agent.services.building_security import (
     require_building_form_security,
 )
 from sales_support_agent.services.building_analytics import build_building_analytics
+from sales_support_agent.services.building_money import (
+    cents_to_dollars,
+    dollars_to_cents,
+    parse_lines,
+    suggested_rate_plan_id,
+)
 from sales_support_agent.services.building_arena_rate_plan_seed import (
     build_arena_commercial_draft,
 )
@@ -3054,20 +3060,25 @@ def record_arena_launch_decision(
 def save_rate_plan_from_control_room(
     request: Request,
     offering_id: str = Form(...),
-    rate_plan_id: str = Form(...),
+    rate_plan_id: str = Form(""),
     version: int = Form(1),
     name: str = Form(...),
     status: str = Form("draft"),
     currency: str = Form("USD"),
+    # Dollars is what the form now asks for. The cents fields stay accepted so
+    # existing callers and tests keep working; a filled dollars field wins.
+    unit_amount: str = Form(""),
     unit_amount_cents: int = Form(0),
     public_price_display: str = Form(""),
     booking_unit: str = Form("custom"),
     minimum_units: int = Form(1),
     deposit_type: str = Form("none"),
+    deposit_amount: str = Form(""),
     deposit_amount_cents: int = Form(0),
     deposit_percent: float = Form(0),
     cancellation_policy: str = Form(""),
     included: str = Form(""),
+    addons: str = Form(""),
     addons_json: str = Form("[]"),
     tax_status: str = Form("review_required"),
     tax_rate_percent: float = Form(0),
@@ -3082,25 +3093,44 @@ def save_rate_plan_from_control_room(
             error="Save the plan as draft or in review; approval is a separate action."
         )
     try:
-        addons = json.loads(addons_json or "[]")
-        if not isinstance(addons, list):
-            raise ValueError("Add-ons must be a JSON list.")
+        # Add-ons are one per line now. JSON is still read when the plain field
+        # is empty, so anything that posted JSON before still saves.
+        addon_items: list = parse_lines(addons)
+        if not addon_items:
+            decoded = json.loads(addons_json or "[]")
+            if not isinstance(decoded, list):
+                raise ValueError("Add-ons must be one per line.")
+            addon_items = decoded
+
+        unit_cents = (
+            dollars_to_cents(unit_amount) if unit_amount.strip() else unit_amount_cents
+        )
+        deposit_cents = (
+            dollars_to_cents(deposit_amount)
+            if deposit_amount.strip()
+            else deposit_amount_cents
+        )
+        # An operator should never have to invent an id.
+        plan_id = rate_plan_id.strip() or suggested_rate_plan_id(offering_id, version)
+
         payload = RatePlanInput(
-            id=rate_plan_id.strip(),
+            id=plan_id,
             version=version,
             name=name.strip(),
             status=status,
             currency=currency,
-            unit_amount_cents=unit_amount_cents,
+            unit_amount_cents=unit_cents,
             public_price_display=public_price_display.strip(),
             booking_unit=booking_unit.strip(),
             minimum_units=minimum_units,
             deposit_type=deposit_type,
-            deposit_amount_cents=deposit_amount_cents,
+            deposit_amount_cents=deposit_cents,
             deposit_percent_bps=round(deposit_percent * 100),
             cancellation_policy=cancellation_policy.strip(),
-            included=[item.strip() for item in included.split(",") if item.strip()],
-            addons=addons,
+            included=parse_lines(included) or [
+                item.strip() for item in included.split(",") if item.strip()
+            ],
+            addons=addon_items,
             tax_status=tax_status,
             tax_rate_bps=round(tax_rate_percent * 100),
             tax_note=tax_note.strip(),
