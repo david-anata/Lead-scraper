@@ -189,8 +189,13 @@ class BuildingAgreementReadinessTests(unittest.TestCase):
             "/admin/building/agreement-readiness/arena-review-package/download"
         )
         self.assertEqual(download.status_code, 200, download.text)
-        self.assertIn("Prepared for legal review", download.text)
-        self.assertIn("not approved for customer signature", download.text)
+        # Counsel approved the schedule on 2026-07-31, so it no longer reads
+        # "prepared for legal review". What must stay true is that approval is
+        # recorded through the governed action rather than by editing this file,
+        # and that the schedule is still not a signed agreement.
+        self.assertIn("Counsel-approved 2026-07-31", download.text)
+        self.assertIn("not a signed agreement", download.text)
+        self.assertIn("recorded through the governed action", download.text)
         self.assertIn(
             'attachment; filename="anata-arena-agreement-business-terms-v1.md"',
             download.headers["content-disposition"],
