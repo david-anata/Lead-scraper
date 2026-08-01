@@ -2834,6 +2834,67 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = ''' + json.dumps(
             self.assertEqual(records[0]["status"], "new")
             self.assertEqual(records[0]["action_type"], "")
 
+    def test_run_website_ops_resumes_durable_new_action_before_fresh_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir), execute_approved=True)
+            report_dir = settings.website_ops_root / "reports" / "daily"
+            report_dir.mkdir(parents=True)
+            (report_dir / "prior-report.md").write_text(
+                "# Prior report\n", encoding="utf-8"
+            )
+            record = save_feedback_record(
+                settings,
+                {
+                    "feedback_id": "durable-new-action",
+                    "status": "new",
+                    "auto_generated": True,
+                    "page_url": "https://anatainc.com/blog/durable-recovery-test",
+                    "confidence": "high",
+                    "suggested_action_type": "publish_blog_article",
+                    "suggested_action_value": json.dumps({"slug": "durable-recovery-test"}),
+                    "execution_eligibility": "auto_execute",
+                    "evidence": ["Validated intent gap", "Official sources"],
+                },
+            )
+            fake_pipeline = {
+                "report": self._fake_report(),
+                "observations": [],
+                "artifacts": {},
+            }
+            fake_overlay = {
+                "goal": {"primary": "Increase qualified leads."},
+                "action_queue": [],
+                "analytics_status": {},
+                "support_requests": [],
+                "page_insights": [],
+            }
+            execution_result = {
+                "feedback_id": record["feedback_id"],
+                "executed_at": "2026-08-01T00:00:00+00:00",
+                "verification_status": "verified",
+            }
+            with mock.patch(
+                "sales_support_agent.services.website_ops.website_ops.run_daily_report_pipeline",
+                return_value=fake_pipeline,
+            ), mock.patch(
+                "sales_support_agent.services.website_ops.build_autonomy_overlay",
+                return_value=fake_overlay,
+            ), mock.patch(
+                "sales_support_agent.services.website_ops._checkpoint_website_ops_cache",
+                return_value=True,
+            ) as checkpoint, mock.patch(
+                "sales_support_agent.services.website_ops._execute_record",
+                return_value=execution_result,
+            ) as execute:
+                result = run_website_ops(settings, mode="daily")
+
+            self.assertIsNotNone(result.report)
+            checkpoint.assert_called_once_with(settings)
+            execute.assert_called_once()
+            resumed = execute.call_args.args[2]
+            self.assertEqual(resumed["status"], "approved")
+            self.assertEqual(resumed["action_type"], "publish_blog_article")
+
     def test_run_website_ops_approves_entire_bounded_batch_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir), execute_approved=True)
