@@ -541,7 +541,7 @@ def website_ops_runtime_health(request: Request) -> dict:
         )
         + (
             []
-            if not latest_execution_error
+            if not latest_execution_error or checks["daily_production_outcome"]
             else [
                 "Latest autonomous execution failed: "
                 + latest_execution_error["error"]
