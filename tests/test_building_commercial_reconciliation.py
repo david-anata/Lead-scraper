@@ -146,10 +146,9 @@ class BuildingCommercialReconciliationTests(unittest.TestCase):
             self.assertIn(text, page.text)
 
     def test_02_prepare_uses_current_owner_rules_but_remains_a_draft(self) -> None:
-        invalid = self._prepare("APPROVE")
-        self.assertEqual(invalid.status_code, 303)
-        self.assertIn("Type+PREPARE+ARENA+DRAFT", invalid.headers["location"])
-
+        # Passphrase removed: this creates a draft, and approval is a
+        # separate checked step. What must stay true is below, that it remains
+        # a draft and approves nothing.
         prepared = self._prepare()
         self.assertEqual(prepared.status_code, 303, prepared.text)
         with self.factory() as session:

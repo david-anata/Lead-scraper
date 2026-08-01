@@ -132,11 +132,10 @@ class BuildingAdminOperationsTests(unittest.TestCase):
     def test_00a_prepare_verified_arena_catalog_is_gated_audited_and_idempotent(
         self,
     ) -> None:
-        rejected = self._post(
-            "/admin/building/catalog/arena/prepare",
-            {"confirmation": "prepare it"},
-        )
-        self.assertIn("error=", rejected.headers["location"])
+        # The typed passphrase was dropped for a business where one person
+        # decides. Gating is the building.manage permission, and the real
+        # safety is below: the prepared records stay private and unpublished,
+        # and preparing twice changes nothing.
         with self.factory() as session:
             self.assertIsNone(session.get(BuildingSpace, "arena"))
             self.assertIsNone(session.get(BuildingOffering, "arena-events"))
