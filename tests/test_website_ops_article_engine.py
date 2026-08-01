@@ -1,11 +1,13 @@
 from types import SimpleNamespace
 import json
+from datetime import datetime, timezone
 from unittest import mock
 
 from sales_support_agent.services.website_ops_article_engine import (
     _claim_daily_article_slot,
     _eligible_editorial_seed,
     _historical_cluster_ids,
+    article_batch_size,
     article_generation_progress,
     build_article_action,
     release_daily_article_slot,
@@ -53,6 +55,25 @@ def test_editorial_backlog_can_select_a_required_service_pillar() -> None:
 
 def test_scheduler_has_one_daily_pulse_for_each_required_article() -> None:
     assert WEBSITE_OPS_PULSE_HOURS == (8, 9, 10, 11, 12, 13, 14, 15)
+
+
+def test_article_batch_size_catches_up_as_daily_deadline_approaches(tmp_path) -> None:
+    settings = SimpleNamespace(website_ops_root=tmp_path)
+    assert article_batch_size(
+        settings,
+        local_now=datetime(2026, 8, 1, 8, tzinfo=timezone.utc),
+    ) == 1
+    assert article_batch_size(
+        settings,
+        local_now=datetime(2026, 8, 1, 13, tzinfo=timezone.utc),
+    ) == 3
+
+    for index in range(5):
+        assert _claim_daily_article_slot(settings, f"published-{index}") is True
+    assert article_batch_size(
+        settings,
+        local_now=datetime(2026, 8, 1, 14, tzinfo=timezone.utc),
+    ) == 2
 
 
 def test_topic_history_prevents_republishing_an_old_daily_claim(tmp_path) -> None:

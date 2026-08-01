@@ -23,6 +23,7 @@ from sales_support_agent.services.website_ops_customer_language import collect_c
 from sales_support_agent.services.website_ops_serp import build_blueprint
 from sales_support_agent.services.website_ops_aeo import build_aeo_assessment
 from sales_support_agent.services.website_ops_article_engine import (
+    article_batch_size,
     article_generation_progress,
     build_article_action,
 )
@@ -1721,19 +1722,22 @@ def build_autonomy_overlay(
     )
     content_strategy = build_content_strategy(query_intelligence)
     if run_mode in {"daily", "weekly", "monthly"}:
-        try:
-            article_action = build_article_action(
-                settings=settings,
-                query_intelligence=query_intelligence,
-            )
-            if article_action:
+        for _ in range(article_batch_size(settings)):
+            try:
+                article_action = build_article_action(
+                    settings=settings,
+                    query_intelligence=query_intelligence,
+                )
+                if not article_action:
+                    break
                 action_queue.append(article_action)
                 content_tasks.append(article_action)
-        except Exception as exc:  # noqa: BLE001 - surface provider failure without blocking crawl
-            support_requests.append(
-                "Autonomous article generation could not complete: "
-                f"{type(exc).__name__}: {exc}"
-            )
+            except Exception as exc:  # noqa: BLE001 - report provider failure with completed crawl
+                support_requests.append(
+                    "Autonomous article generation could not complete: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                break
     content_strategy["production_quota"] = article_generation_progress(settings)
     content_strategy["summary"]["generated_today"] = int(
         content_strategy["production_quota"].get("generated_today", 0) or 0
