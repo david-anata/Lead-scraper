@@ -28,6 +28,20 @@ SERVICE_PILLARS = (
     "Shipping OS",
     "Anata Intelligence",
 )
+OFFICIAL_RESEARCH_DOMAINS = [
+    "amazon.com",
+    "census.gov",
+    "dhl.com",
+    "fedex.com",
+    "ftc.gov",
+    "google.com",
+    "irs.gov",
+    "sba.gov",
+    "shopify.com",
+    "tiktok.com",
+    "ups.com",
+    "usps.com",
+]
 
 EDITORIAL_TOPIC_SEEDS: tuple[dict[str, Any], ...] = (
     {
@@ -248,7 +262,12 @@ def _request_article(*, settings: Any, prompt: str) -> dict[str, Any]:
                 # output tokens. Truncation produces terminally malformed JSON.
                 "max_tokens": 8000,
                 "messages": [{"role": "user", "content": prompt}],
-                "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 8}],
+                "tools": [{
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": 8,
+                    "allowed_domains": OFFICIAL_RESEARCH_DOMAINS,
+                }],
             },
             timeout=150,
         )
@@ -262,7 +281,10 @@ def _request_article(*, settings: Any, prompt: str) -> dict[str, Any]:
             json={
                 "model": config.model,
                 "input": prompt,
-                "tools": [{"type": "web_search"}],
+                "tools": [{
+                    "type": "web_search",
+                    "filters": {"allowed_domains": OFFICIAL_RESEARCH_DOMAINS},
+                }],
                 "tool_choice": "required",
                 "store": False,
             },
