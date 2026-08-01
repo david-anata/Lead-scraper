@@ -2480,7 +2480,7 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = ''' + json.dumps(
     def test_article_execution_rejects_existing_slug_with_different_payload(self) -> None:
         record = self._generated_article_record()
         article = json.loads(str(record["action_value"]))
-        conflicting = {**article, "title": "A Different Valid Article Title"}
+        conflicting = {**article, "evidenceId": "different-evidence-id"}
         source = '''import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
 export type GeneratedArticle = { content: ArticlePageContent };
 // WEBSITE_OPS_GENERATED_ARTICLES_START
@@ -2495,10 +2495,48 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = ''' + json.dumps(
         ):
             with self.assertRaisesRegex(
                 ExecutionError,
-                "different payload",
+                "different identity",
             ):
                 execute_github_article_action(record, config=SimpleNamespace())
 
+        client.put_file.assert_not_called()
+
+    def test_article_execution_reconciles_source_safe_registry_repair(self) -> None:
+        record = self._generated_article_record()
+        stale_article = json.loads(str(record["action_value"]))
+        stale_article["sources"] = [
+            {"title": "Old third-party source", "url": "https://example.com/old"},
+            stale_article["sources"][0],
+        ]
+        record["action_value"] = json.dumps(stale_article)
+        repaired_article = json.loads(str(self._generated_article_record()["action_value"]))
+        source = '''import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
+export type GeneratedArticle = { content: ArticlePageContent };
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES: readonly GeneratedArticle[] = ''' + json.dumps([repaired_article]) + ''';
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+'''
+        client = mock.Mock()
+        client.repository = "david-anata/anata-website"
+        client.branch = "main"
+        client.get_file.return_value = (source, "source-sha")
+        page_url = f"https://anatainc.com/blog/{repaired_article['slug']}"
+        with mock.patch(
+            "sales_support_agent.services.website_ops_github.GitHubWebsiteClient",
+            return_value=client,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.website_ops.collect_page_observation",
+            return_value={
+                "status_code": 200,
+                "title": f"{repaired_article['title']} | Anata",
+                "canonical_url": page_url,
+                "h1": [repaired_article["content"]["h1"]],
+            },
+        ):
+            result = execute_github_article_action(record, config=SimpleNamespace())
+
+        self.assertTrue(result["summary"]["reconciled_existing"])
+        self.assertEqual(result["summary"]["source_count"], 2)
         client.put_file.assert_not_called()
 
     def test_missing_canonical_creates_high_confidence_github_action(self) -> None:
