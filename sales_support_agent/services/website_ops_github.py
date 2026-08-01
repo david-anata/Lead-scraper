@@ -84,6 +84,37 @@ def generated_article_identities(source: str) -> dict[str, set[str]]:
     }
 
 
+def generated_article_records(source: str) -> list[dict[str, Any]]:
+    """Parse the durable generated-article registry without executing TypeScript."""
+
+    marker = "// WEBSITE_OPS_GENERATED_ARTICLES_START"
+    end_marker = "// WEBSITE_OPS_GENERATED_ARTICLES_END"
+    marker_index = source.find(marker)
+    end = source.find(end_marker, marker_index)
+    if marker_index < 0 or end < 0:
+        raise website_ops.ExecutionError("Generated article registry markers are missing.")
+    block = source[marker_index + len(marker) : end]
+    match = re.search(
+        r"export const GENERATED_ARTICLES: readonly GeneratedArticle\[\] = (?P<data>\[[\s\S]*\]);",
+        block,
+    )
+    if not match:
+        raise website_ops.ExecutionError("Generated article registry could not be parsed.")
+    try:
+        articles = json.loads(match.group("data"))
+    except json.JSONDecodeError as exc:
+        raise website_ops.ExecutionError(
+            "Generated article registry contains invalid JSON."
+        ) from exc
+    if not isinstance(articles, list) or not all(
+        isinstance(item, dict) for item in articles
+    ):
+        raise website_ops.ExecutionError(
+            "Generated article registry must contain article objects."
+        )
+    return articles
+
+
 def load_generated_article_identities() -> dict[str, set[str]]:
     source, _ = GitHubWebsiteClient().get_file(GENERATED_ARTICLE_REGISTRY)
     return generated_article_identities(source)
@@ -331,19 +362,7 @@ def update_generated_article_registry(source: str, article: Mapping[str, Any]) -
     end = source.find(end_marker)
     if start < 0 or end < 0 or end <= start:
         raise website_ops.ExecutionError("Generated article registry markers are missing.")
-    block = source[start + len(start_marker) : end]
-    match = re.search(
-        r"export const GENERATED_ARTICLES: readonly GeneratedArticle\[\] = (?P<data>\[[\s\S]*\]);",
-        block,
-    )
-    if not match:
-        raise website_ops.ExecutionError("Generated article registry could not be parsed.")
-    try:
-        articles = json.loads(match.group("data"))
-    except json.JSONDecodeError as exc:
-        raise website_ops.ExecutionError("Generated article registry contains invalid JSON.") from exc
-    if not isinstance(articles, list):
-        raise website_ops.ExecutionError("Generated article registry must contain a list.")
+    articles = generated_article_records(source)
     slug = str(article.get("slug", ""))
     if any(str(item.get("slug", "")) == slug for item in articles if isinstance(item, Mapping)):
         raise website_ops.ExecutionError("Generated article slug already exists.")
@@ -687,15 +706,31 @@ def execute_github_article_action(
         article = validate_generated_article(repaired_record)
     client = GitHubWebsiteClient()
     before_source, before_sha = client.get_file(GENERATED_ARTICLE_REGISTRY)
-    after_source = update_generated_article_registry(before_source, article)
     feedback_id = str(record.get("feedback_id", "") or "unknown")
-    commit = client.put_file(
-        GENERATED_ARTICLE_REGISTRY,
-        after_source,
-        before_sha,
-        f"SEO: publish {article['slug']} ({feedback_id})",
+    existing_article = next(
+        (
+            item
+            for item in generated_article_records(before_source)
+            if str(item.get("slug", "")) == str(article["slug"])
+        ),
+        None,
     )
-    commit_sha = str((commit.get("commit") or {}).get("sha", ""))
+    reconciled_existing = existing_article is not None
+    if existing_article is not None:
+        if existing_article != article:
+            raise website_ops.ExecutionError(
+                "Generated article slug already exists with a different payload."
+            )
+        commit_sha = ""
+    else:
+        after_source = update_generated_article_registry(before_source, article)
+        commit = client.put_file(
+            GENERATED_ARTICLE_REGISTRY,
+            after_source,
+            before_sha,
+            f"SEO: publish {article['slug']} ({feedback_id})",
+        )
+        commit_sha = str((commit.get("commit") or {}).get("sha", ""))
     page_url = f"https://anatainc.com/blog/{article['slug']}"
     # Vercel production promotion can legitimately take longer than five minutes,
     # especially while another website deployment is already building.  A short
@@ -742,6 +777,7 @@ def execute_github_article_action(
                         "primary_intent": article["primaryIntent"],
                         "source_count": len(article["sources"]),
                         "deterministic_repairs": deterministic_repairs,
+                        "reconciled_existing": reconciled_existing,
                     },
                 }
         except Exception:  # noqa: BLE001 - deployment can be briefly unavailable

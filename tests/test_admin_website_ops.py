@@ -2440,6 +2440,67 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
         self.assertEqual(result["verification_status"], "verified")
         self.assertEqual(result["production_url"], page_url)
 
+    def test_article_execution_reconciles_an_exact_existing_registry_entry(self) -> None:
+        record = self._generated_article_record()
+        article = json.loads(str(record["action_value"]))
+        source = '''import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
+export type GeneratedArticle = { content: ArticlePageContent };
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES: readonly GeneratedArticle[] = ''' + json.dumps([article]) + ''';
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+'''
+        client = mock.Mock()
+        client.repository = "david-anata/anata-website"
+        client.branch = "main"
+        client.get_file.return_value = (source, "source-sha")
+        page_url = f"https://anatainc.com/blog/{article['slug']}"
+        with mock.patch(
+            "sales_support_agent.services.website_ops_github.GitHubWebsiteClient",
+            return_value=client,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.website_ops.collect_page_observation",
+            return_value={
+                "status_code": 200,
+                "title": f"{article['title']} | Anata",
+                "canonical_url": page_url,
+                "h1": [article["content"]["h1"]],
+            },
+        ):
+            result = execute_github_article_action(
+                record,
+                config=SimpleNamespace(),
+                timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(result["verification_status"], "verified")
+        self.assertTrue(result["summary"]["reconciled_existing"])
+        self.assertEqual(result["commit_sha"], "")
+        client.put_file.assert_not_called()
+
+    def test_article_execution_rejects_existing_slug_with_different_payload(self) -> None:
+        record = self._generated_article_record()
+        article = json.loads(str(record["action_value"]))
+        conflicting = {**article, "title": "A Different Valid Article Title"}
+        source = '''import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
+export type GeneratedArticle = { content: ArticlePageContent };
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES: readonly GeneratedArticle[] = ''' + json.dumps([conflicting]) + ''';
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+'''
+        client = mock.Mock()
+        client.get_file.return_value = (source, "source-sha")
+        with mock.patch(
+            "sales_support_agent.services.website_ops_github.GitHubWebsiteClient",
+            return_value=client,
+        ):
+            with self.assertRaisesRegex(
+                ExecutionError,
+                "different payload",
+            ):
+                execute_github_article_action(record, config=SimpleNamespace())
+
+        client.put_file.assert_not_called()
+
     def test_missing_canonical_creates_high_confidence_github_action(self) -> None:
         page = {
             "url": "https://anatainc.com/services/amazon-advertising/",
