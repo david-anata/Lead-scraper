@@ -14,6 +14,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 
 from sales_support_agent.services.website_ops import (
     get_website_ops_run_state,
+    load_feedback_records,
     load_website_ops_run_state,
     run_website_ops,
     send_website_ops_failure_email,
@@ -93,6 +94,32 @@ def _daily_run_has_verified_outcome(
         and str(daily.get("outcome_status", "")) == "production_verified"
         and production_delta_count > 0
     )
+
+
+def _latest_autonomous_execution_error(settings: Any) -> dict[str, str]:
+    failed = [
+        record
+        for record in load_feedback_records(settings)
+        if bool(record.get("auto_generated"))
+        and str(record.get("status", "")).strip().lower() == "error"
+        and str(record.get("execution_error", "")).strip()
+    ]
+    if not failed:
+        return {}
+    latest = max(
+        failed,
+        key=lambda item: str(
+            item.get("last_execution_at", "") or item.get("submitted_at", "")
+        ),
+    )
+    return {
+        "action_type": str(
+            latest.get("action_type", "") or latest.get("suggested_action_type", "")
+        )[:80],
+        "page_url": str(latest.get("page_url", ""))[:300],
+        "error": str(latest.get("execution_error", ""))[:500],
+        "last_execution_at": str(latest.get("last_execution_at", ""))[:64],
+    }
 
 
 def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
@@ -410,6 +437,7 @@ def website_ops_runtime_health(request: Request) -> dict:
     )
     query_intelligence = load_query_intelligence(settings)
     state = load_website_ops_run_state(settings)
+    latest_execution_error = _latest_autonomous_execution_error(settings)
     local_now = datetime.now(ZoneInfo("America/Denver"))
     checks["daily_run_fresh"] = _daily_run_is_fresh(state, local_now)
     checks["daily_production_outcome"] = _daily_run_has_verified_outcome(
@@ -484,6 +512,14 @@ def website_ops_runtime_health(request: Request) -> dict:
             else [
                 "The latest completed Website Ops pulse has no production-verified change."
             ]
+        )
+        + (
+            []
+            if not latest_execution_error
+            else [
+                "Latest autonomous execution failed: "
+                + latest_execution_error["error"]
+            ]
         ),
         "schedule": {
             "timezone": "America/Denver",
@@ -500,6 +536,7 @@ def website_ops_runtime_health(request: Request) -> dict:
             "age_hours": operating_state["evidence_age_hours"],
         },
         "user_todo": operating_state["support_requests"],
+        "latest_execution_error": latest_execution_error,
     }
 
 

@@ -64,6 +64,7 @@ from sales_support_agent.services.website_ops_vendor.executor import (
 from sales_support_agent.api.website_ops_jobs_router import (
     _daily_run_has_verified_outcome,
     _daily_run_is_fresh,
+    _latest_autonomous_execution_error,
     _run_embedded_pulse,
     _scheduled_modes,
     router as website_ops_jobs_router,
@@ -83,6 +84,33 @@ from sales_support_agent.services.website_ops_program import (
 
 
 class AdminWebsiteOpsTests(unittest.TestCase):
+    def test_health_selects_latest_autonomous_execution_error(self) -> None:
+        with mock.patch(
+            "sales_support_agent.api.website_ops_jobs_router.load_feedback_records",
+            return_value=[
+                {
+                    "auto_generated": True,
+                    "status": "error",
+                    "action_type": "publish_blog_article",
+                    "page_url": "https://anatainc.com/blog/older",
+                    "execution_error": "older failure",
+                    "last_execution_at": "2026-08-01T17:00:00+00:00",
+                },
+                {
+                    "auto_generated": True,
+                    "status": "error",
+                    "action_type": "publish_blog_article",
+                    "page_url": "https://anatainc.com/blog/newer",
+                    "execution_error": "production title did not match",
+                    "last_execution_at": "2026-08-01T18:00:00+00:00",
+                },
+            ],
+        ):
+            latest = _latest_autonomous_execution_error(SimpleNamespace())
+
+        self.assertEqual(latest["page_url"], "https://anatainc.com/blog/newer")
+        self.assertEqual(latest["error"], "production title did not match")
+
     def test_autonomous_execution_error_is_recorded_and_rethrown_for_retry(self) -> None:
         settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))
         record = {
