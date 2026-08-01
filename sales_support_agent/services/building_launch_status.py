@@ -287,20 +287,47 @@ def build_arena_launch_status(
         decisions.get("event_calendar", {}).get("status") == "provider_verified"
     )
     calendar_ready = calendar_configured and calendar_writes and calendar_verified
+    # "Outside setup" told an operator nothing about which of the three is
+    # missing, so somebody asked to finish it had no way to see what to do.
+    calendar_error = str(provider_readiness.get("calendar_readiness_error") or "")
+    calendar_target = str(provider_readiness.get("calendar_target_id") or "")
+    if calendar_ready:
+        calendar_summary = (
+            "The dedicated calendar is verified and production projection is enabled."
+        )
+        calendar_next = "Monitor projection errors and reconciliation."
+    elif calendar_error:
+        calendar_summary = f"Agent cannot reach a calendar: {calendar_error}"
+        calendar_next = "Fix the connection above before recording it as verified."
+    elif not calendar_writes:
+        calendar_summary = (
+            f"Connected to {calendar_target}, but writes are switched off."
+            if calendar_target
+            else "Connected, but writes are switched off."
+        )
+        calendar_next = "Set BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED=true, then record the calendar as verified."
+    elif not calendar_verified:
+        calendar_summary = (
+            f"Connected to {calendar_target} and writes are on. Not yet recorded as verified."
+            if calendar_target
+            else "Connected and writes are on. Not yet recorded as verified."
+        )
+        calendar_next = "Record the dedicated event calendar decision to finish this."
+    else:
+        calendar_summary = (
+            "Calendar projection remains dry-run only; no verified dedicated "
+            "Arena destination is active."
+        )
+        calendar_next = (
+            "Provide an Anata-owned calendar, grant service-account access, "
+            "verify it, then deliberately enable writes."
+        )
     items.append(_item(
         key="calendar",
         label="Dedicated Arena calendar",
         state="complete" if calendar_ready else "external",
-        summary=(
-            "The dedicated calendar is verified and production projection is enabled."
-            if calendar_ready
-            else "Calendar projection remains dry-run only; no verified dedicated Arena destination is active."
-        ),
-        next_action=(
-            "Monitor projection errors and reconciliation."
-            if calendar_ready
-            else "Provide an Anata-owned calendar, grant service-account access, verify it, then deliberately enable writes."
-        ),
+        summary=calendar_summary,
+        next_action=calendar_next,
         owner="Google Workspace and platform administrator",
         href="#calendar-projection",
         action_label="Review calendar",

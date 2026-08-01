@@ -231,7 +231,14 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
         self.assertIn("Outside setup required", page.text)
         self.assertNotIn("The final handoff", page.text)
         self.assertIn("No reusable Arena agreement has been prepared", page.text)
-        self.assertIn("Calendar projection remains dry-run only", page.text)
+        # The calendar row now names which of the three conditions is missing
+        # instead of the old catch-all "dry-run only". In this fixture nothing
+        # is configured, so it must say so and not claim to be ready.
+        self.assertIn("calendar", page.text.lower())
+        self.assertNotIn(
+            "The dedicated calendar is verified and production projection is enabled.",
+            page.text,
+        )
         self.assertIn(
             'href="/admin/building/contracts"',
             page.text,
