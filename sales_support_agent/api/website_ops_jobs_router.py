@@ -39,6 +39,70 @@ logger = logging.getLogger(__name__)
 WEBSITE_OPS_PULSE_HOURS = (8, 9, 10, 11, 12, 13, 14, 15)
 
 
+def _pulse_slot(local_now: datetime) -> str:
+    return f"{local_now.date().isoformat()}:{local_now.hour:02d}"
+
+
+def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
+    """Run one missed hourly slot with the same durable lease as Render cron."""
+
+    if local_now.hour not in WEBSITE_OPS_PULSE_HOURS:
+        return {"status": "skipped", "message": "Outside the Website Ops pulse window."}
+    pulse_slot = _pulse_slot(local_now)
+    current_state = get_website_ops_run_state(settings, "daily")
+    if current_state.get("last_pulse_slot") == pulse_slot:
+        return {"status": "skipped", "message": "This Website Ops pulse already completed."}
+
+    from sales_support_agent.models.database import get_engine
+
+    try:
+        engine = get_engine()
+    except RuntimeError:
+        engine = None
+    run_key = f"{local_now.date().isoformat()}:scheduled:{pulse_slot}"
+    lease = (
+        claim_scheduled_job(
+            engine,
+            job_key="website_ops",
+            run_key=run_key,
+            lease_minutes=180,
+        )
+        if engine is not None
+        else None
+    )
+    if engine is not None and lease is None:
+        return {"status": "skipped", "message": "This Website Ops pulse is already running."}
+
+    try:
+        results = _run_due_modes(
+            settings,
+            _scheduled_modes(local_now),
+            trigger="embedded_scheduler",
+            pulse_slot=pulse_slot,
+        )
+        failed = any(
+            item.get("status") in {"failed", "failed_outcome"}
+            for item in results.values()
+        )
+        if engine is not None and lease is not None:
+            finish_scheduled_job(
+                engine,
+                lease,
+                status="failed" if failed else "succeeded",
+                details=results,
+            )
+        return {"status": "failed" if failed else "succeeded", "details": results}
+    except Exception as exc:
+        if engine is not None and lease is not None:
+            finish_scheduled_job(
+                engine,
+                lease,
+                status="failed",
+                details={"error": str(exc)},
+            )
+        raise
+
+
 def _require_internal_key(request: Request) -> None:
     expected = str(getattr(request.app.state.settings, "internal_api_key", "") or "").strip()
     supplied = request.headers.get("X-Internal-Api-Key", "").strip()
@@ -213,14 +277,9 @@ def install_embedded_website_ops_scheduler(app: FastAPI) -> None:
     def worker() -> None:
         while not stop_event.is_set():
             local_now = datetime.now(ZoneInfo("America/Denver"))
-            if local_now.hour in WEBSITE_OPS_PULSE_HOURS and local_now.minute < 5:
+            if local_now.hour in WEBSITE_OPS_PULSE_HOURS:
                 try:
-                    _run_due_modes(
-                        settings,
-                        _scheduled_modes(local_now),
-                        trigger="embedded_scheduler",
-                        pulse_slot=f"{local_now.date().isoformat()}:{local_now.hour:02d}",
-                    )
+                    _run_embedded_pulse(settings, local_now)
                 except Exception:  # noqa: BLE001
                     logger.exception("Embedded Website Ops scheduler failed.")
             stop_event.wait(300)
@@ -253,6 +312,12 @@ def website_ops_runtime_health(request: Request) -> dict:
             and bool(getattr(settings, "website_ops_execute_approved", True))
         ),
     }
+    scheduler_thread = getattr(request.app.state, "website_ops_scheduler_thread", None)
+    checks["embedded_scheduler"] = bool(
+        scheduler_thread is not None
+        and callable(getattr(scheduler_thread, "is_alive", None))
+        and scheduler_thread.is_alive()
+    )
     analytics_readiness = analytics_configuration_status(settings)
     operating_state = website_ops_operating_state(settings)
     checks["search_console_configuration"] = bool(
@@ -330,6 +395,7 @@ def website_ops_runtime_health(request: Request) -> dict:
             "timezone": "America/Denver",
             "hour": 8,
             "hours": list(WEBSITE_OPS_PULSE_HOURS),
+            "source": "embedded_scheduler" if checks["embedded_scheduler"] else "unavailable",
             "trigger_path": "/api/jobs/website-ops/run",
         },
         "checks": checks,
@@ -359,7 +425,7 @@ async def run_scheduled_website_ops(request: Request) -> dict:
     if requested_mode == "scheduled" and local_now.hour not in WEBSITE_OPS_PULSE_HOURS:
         return {
             "status": "skipped",
-            "message": "Website Ops scheduler is waiting for the 8 AM, 1 PM, or 6 PM America/Denver pulse.",
+            "message": "Website Ops scheduler is waiting for an 8 AM through 3 PM America/Denver pulse.",
             "local_time": local_now.isoformat(),
         }
 
