@@ -18,7 +18,7 @@ def repair_deterministic_article_defects(
 
     def replace_em_dashes(value: Any) -> Any:
         if isinstance(value, str):
-            return value.replace("\u2014", ";")
+            return value.replace("\u2014", "; ")
         if isinstance(value, list):
             return [replace_em_dashes(item) for item in value]
         if isinstance(value, dict):

@@ -31,6 +31,7 @@ OFFICIAL_ARTICLE_SOURCE_DOMAINS = {
     "amazon.com",
     "census.gov",
     "dhl.com",
+    "ebay.com",
     "fedex.com",
     "ftc.gov",
     "google.com",
@@ -40,6 +41,7 @@ OFFICIAL_ARTICLE_SOURCE_DOMAINS = {
     "tiktok.com",
     "ups.com",
     "usps.com",
+    "walmart.com",
 }
 
 
@@ -204,6 +206,26 @@ def validate_generated_article(record: Mapping[str, Any]) -> dict[str, Any]:
     content = article.get("content")
     if not isinstance(content, Mapping):
         raise website_ops.ExecutionError("Generated article content is invalid.")
+    content_text = json.dumps(content, ensure_ascii=False).lower()
+    platform_source_requirements = {
+        "amazon": "amazon.com",
+        "tiktok": "tiktok.com",
+        "shopify": "shopify.com",
+        "walmart": "walmart.com",
+        "ebay": "ebay.com",
+        "fedex": "fedex.com",
+        "usps": "usps.com",
+        "dhl": "dhl.com",
+    }
+    for platform, required_domain in platform_source_requirements.items():
+        if re.search(rf"\b{re.escape(platform)}\b", content_text) and not any(
+            hostname == required_domain
+            or hostname.endswith(f".{required_domain}")
+            for hostname in source_domains
+        ):
+            raise website_ops.ExecutionError(
+                f"Generated article discusses {platform.title()} without an official {required_domain} source."
+            )
     expected_route = f"/blog/{slug}"
     if content.get("route") != expected_route or content.get("schemaType") != "article":
         raise website_ops.ExecutionError(
@@ -236,6 +258,10 @@ def validate_generated_article(record: Mapping[str, Any]) -> dict[str, Any]:
         for paragraph in section.get("paragraphs", [])
         if str(paragraph).strip()
     ]
+    if any(re.search(r"\w;\w", paragraph) for paragraph in paragraphs):
+        raise website_ops.ExecutionError(
+            "Generated article contains malformed punctuation joins."
+        )
     normalized_paragraphs = {
         re.sub(r"\s+", " ", paragraph).lower() for paragraph in paragraphs
     }
