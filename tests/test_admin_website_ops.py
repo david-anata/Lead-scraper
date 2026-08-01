@@ -61,6 +61,7 @@ from sales_support_agent.services.website_ops_vendor.executor import (
     resolve_insertion_point,
 )
 from sales_support_agent.api.website_ops_jobs_router import (
+    _daily_run_has_verified_outcome,
     _daily_run_is_fresh,
     _run_embedded_pulse,
     _scheduled_modes,
@@ -643,6 +644,8 @@ example
                     "trigger": "render_cron",
                     "run_date": datetime.now(ZoneInfo("America/Denver")).date().isoformat(),
                     "last_successful_date": datetime.now(ZoneInfo("America/Denver")).date().isoformat(),
+                    "outcome_status": "production_verified",
+                    "production_delta_count": "1",
                 },
             )
             report_dir = Path(tmpdir) / "reports" / "daily"
@@ -763,6 +766,32 @@ example
                 datetime(2026, 8, 1, 16, 1, tzinfo=timezone.utc),
             )
         )
+
+    def test_daily_outcome_requires_a_verified_production_delta(self) -> None:
+        local_now = datetime(2026, 8, 1, 18, 20, tzinfo=timezone.utc)
+        no_delta = {
+            "runs": {
+                "daily": {
+                    "run_date": "2026-08-01",
+                    "status": "succeeded",
+                    "outcome_status": "work_in_progress",
+                    "production_delta_count": "0",
+                }
+            }
+        }
+        verified = {
+            "runs": {
+                "daily": {
+                    "run_date": "2026-08-01",
+                    "status": "succeeded",
+                    "outcome_status": "production_verified",
+                    "production_delta_count": "1",
+                }
+            }
+        }
+
+        self.assertFalse(_daily_run_has_verified_outcome(no_delta, local_now))
+        self.assertTrue(_daily_run_has_verified_outcome(verified, local_now))
 
     def test_embedded_scheduler_catches_up_current_hour_once(self) -> None:
         settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))
