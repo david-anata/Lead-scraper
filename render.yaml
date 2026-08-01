@@ -103,7 +103,7 @@ services:
       - key: CONTENT_DRIVE_VERIFIED
         value: "false"
       - key: CONTENT_RIVERSIDE_RELAY_ENABLED
-        value: "false"
+        sync: false
       - key: RIVERSIDE_API_KEY
         sync: false
       - key: RIVERSIDE_STUDIO_ID

@@ -17,6 +17,7 @@ from sales_support_agent.models.content import (
 )
 from sales_support_agent.models.database import init_database, session_scope
 from sales_support_agent.services.content_automation import (
+    JOB_DEFINITIONS,
     due_scheduled_jobs,
     quality_gate,
     stage_native_candidates,
@@ -78,6 +79,12 @@ def test_default_playbooks_are_versioned_and_idempotent() -> None:
         assert linkedin.format_rules_json["cross_post_copy"] is False
         x_playbook = next(row for row in rows if row.channel == "x")
         assert x_playbook.format_rules_json["publishing_enabled"] is False
+
+
+def test_episode_harvest_does_not_require_optional_drive_archival() -> None:
+    assert JOB_DEFINITIONS["episode_harvest"].required_dependencies == (
+        "riverside",
+    )
 
 
 def test_scheduler_catches_up_after_six_and_deduplicates_the_day() -> None:

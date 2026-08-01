@@ -75,7 +75,7 @@ JOB_DEFINITIONS: dict[str, ContentJobDefinition] = {
     "episode_harvest": ContentJobDefinition(
         "episode_harvest",
         "Riverside episode harvest",
-        ("riverside", "drive"),
+        ("riverside",),
         schedule="episode_ready",
     ),
     "social_distribution": ContentJobDefinition(
