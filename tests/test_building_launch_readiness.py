@@ -149,12 +149,9 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
 
     def test_01_page_explains_all_blockers_and_calendar_uncertainty(self) -> None:
         page = self.client.get("/admin/building")
+        self.assertIn("What still needs finishing", page.text)
         self.assertIn(
-            "What is ready—and what still needs outside approval",
-            page.text,
-        )
-        self.assertIn(
-            "This list updates from the real system evidence",
+            "each one waits on someone outside Agent",
             page.text,
         )
         self.assertIn("Business rules", page.text)
@@ -181,7 +178,6 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
             "Owner approved $175 per full overtime hour",
             page.text,
         )
-        self.assertIn("0/7", page.text)
         self.assertIn(
             "Create a dedicated Arena calendar owned by Anata",
             page.text,
@@ -201,14 +197,12 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
             "Open this only to change business rules or finish provider setup.",
             page.text,
         )
-        self.assertIn("Arena launch command center", page.text)
-        self.assertIn("Private, protected, and not ready to publish", page.text)
         self.assertIn('class="launch-checklist"', page.text)
         self.assertIn("Outside setup", page.text)
-        self.assertIn(
-            "it does not ask you to repeat decisions",
-            page.text,
-        )
+        # The command centre restated the checklist below it, so it is gone.
+        self.assertNotIn("Arena launch command center", page.text)
+        self.assertIn("Change a saved business rule", page.text)
+        self.assertIn("Already done (", page.text)
         self.assertIn('class="decision-list"', page.text)
         self.assertEqual(page.text.count('class="decision-card"'), 10)
         self.assertEqual(

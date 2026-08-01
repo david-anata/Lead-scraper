@@ -1097,11 +1097,6 @@ def render_building_page(
         (launch_ready_count / len(launch_definitions)) * 100
     )
     launch_status_items = list(launch_status.get("items") or [])
-    launch_external_count = int(launch_status.get("external_count") or 0)
-    launch_blocked_count = int(launch_status.get("blocked_count") or 0)
-    launch_owner_complete = int(launch_status.get("owner_complete") or 0)
-    launch_owner_total = int(launch_status.get("owner_total") or 0)
-    launch_customer_ready = bool(launch_status.get("customer_launch_ready"))
     launch_state_labels = {
         "complete": ("Ready", "badge--ok"),
         "needs_review": ("Needs review", "badge--warn"),
@@ -1135,14 +1130,43 @@ def render_building_page(
           </details>
         </li>"""
 
+    # A building with one bookable room does not need ten rows of finished work
+    # on screen. Only what is still outstanding is shown; the rest is one line
+    # you can open if you want to check it.
+    launch_open_items = [
+        item
+        for item in launch_status_items
+        if str(item.get("state") or "") in {"external", "needs_review", "blocked"}
+    ]
+    launch_settled_items = [
+        item for item in launch_status_items if item not in launch_open_items
+    ]
     launch_checklist_html = "".join(
-        render_launch_checklist_item(item) for item in launch_status_items
+        render_launch_checklist_item(item) for item in launch_open_items
+    )
+    launch_settled_html = "".join(
+        render_launch_checklist_item(item) for item in launch_settled_items
     )
     arena_plan_ready = any(
         item.get("offering_id") == "arena-events"
         and item.get("status") == "approved"
         for item in rate_plans
     )
+    # This reconciliation notice named conflicts that are now resolved, so once
+    # the Arena plan is approved it was telling the owner something untrue.
+    arena_rate_reconciliation_html = "" if arena_plan_ready else f"""
+        <div class="alert alert--warning">
+          <strong>Arena commercial evidence needs reconciliation.</strong>
+          <p>Owner-reconciled draft: 6,000 sq ft, capacity 200, $175/hour, six-hour minimum ($1,050), $250 routine cleaning, 50% booking deposit, $500 refundable security deposit, and balance due seven days before the event. Two self-service setup hours and two teardown hours are included; approved overtime is $175 per full hour.</p>
+          <p>Correct any conflicting booking-page copy before approval.</p>
+          <form class="form-grid" method="post" action="/admin/building/rate-plans/arena-commercial-baseline">
+            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+            <div class="field"><label for="arena-draft-offering">Arena event offering</label><select id="arena-draft-offering" name="offering_id" required><option value="">Choose event offering</option>{event_offering_options}</select></div>
+            <div class="field"><label for="arena-draft-effective">Proposed effective date</label><input id="arena-draft-effective" name="effective_from" type="date" required></div>
+            <input type="hidden" name="confirmation" value="prepare">
+            <div class="form-actions"><span class="form-note">Creates a draft only. It does not approve, publish, send, charge, or write Calendar.</span><button class="secondary" type="submit">Prepare reviewable draft</button></div>
+          </form>
+        </div>"""
     qualified_event_inquiry_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))} · {_esc(item.get("preferred_date") or "date not set")}</option>'
         for item in inquiries
@@ -1509,15 +1533,6 @@ def render_building_page(
     body:not(.view-today) .today-only{{display:none;}}
     body.view-sales #incoming-inquiries{{order:1;}} body.view-sales #add-assisted-lead{{order:2;}} body.view-sales #start-booking-workflow{{order:3;}} body.view-sales #building-tours{{order:4;}}
     body.view-bookings #bookings-and-holds{{order:1;}} body.view-bookings #review-event-date{{order:2;}}
-    .launch-command{{margin-top:20px;border:1px solid rgba(57,122,157,.28);border-radius:16px;background:linear-gradient(135deg,#fff 0,#f3f9fc 100%);overflow:hidden;}}
-    .launch-command__head{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:24px;align-items:center;padding:25px 26px;border-bottom:1px solid var(--border);}}
-    .launch-command h2{{font-size:25px;}} .launch-command p{{max-width:760px;margin:7px 0 0;color:rgba(43,54,68,.67);line-height:1.55;}}
-    .launch-score{{display:grid;place-items:center;width:92px;height:92px;border:8px solid #dcebf2;border-top-color:#397a9d;border-radius:50%;background:#fff;text-align:center;}}
-    .launch-score strong{{display:block;font:800 24px "Montserrat",sans-serif;line-height:1;}} .launch-score span{{display:block;margin-top:4px;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:rgba(43,54,68,.56);}}
-    .launch-steps{{display:grid;grid-template-columns:repeat(4,1fr);}}
-    .launch-step{{padding:17px 20px;border-right:1px solid var(--border);}} .launch-step:last-child{{border-right:0;}}
-    .launch-step span{{display:block;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:rgba(43,54,68,.55);}}
-    .launch-step strong{{display:block;margin-top:6px;font-size:14px;}} .launch-step p{{margin:4px 0 0;font-size:12px;line-height:1.4;}}
     .flash{{margin:0 0 18px;padding:14px 16px;border-radius:10px;font-weight:700;}} .flash--ok{{background:#e4f4f1;color:#11665f;border:1px solid #acd8d2;}} .flash--error{{background:#fff0ed;color:#8b2f23;border:1px solid #e4b3aa;}}
     .grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px;}}
     .panel{{background:#fff;border:1px solid var(--border);border-radius:14px;overflow:hidden;}}
@@ -1599,9 +1614,9 @@ def render_building_page(
     .checklist-list{{display:grid;gap:14px;padding:18px 22px;}} .checklist-group{{border:1px solid var(--border);border-radius:10px;overflow:hidden;}} .checklist-head{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 16px;background:#f8f8f6;}} .checklist-add{{display:grid;grid-template-columns:minmax(220px,1fr) auto auto;align-items:end;gap:10px;padding:12px 16px;border-top:1px solid var(--border);}} .checklist-add label:first-of-type{{display:grid;gap:5px;}}
     .media-space{{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#fff;}} .media-space>summary{{cursor:pointer;list-style:none;}} .media-space>summary::-webkit-details-marker{{display:none;}} .media-space__action{{color:#397a9d;font-size:12px;font-weight:800;}} .media-space[open] .media-space__action{{color:rgba(43,54,68,.58);}} .media-space[open]>summary{{border-bottom:1px solid var(--border);}}
     .adjustment-evidence{{display:grid;grid-template-columns:repeat(2,minmax(130px,1fr));gap:6px;min-width:360px;}} .adjustment-evidence button{{justify-self:start;}}
-    @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.daily-guide{{grid-template-columns:1fr}}.daily-guide__item{{border-right:0;border-bottom:1px solid var(--border)}}.daily-guide__item:last-child{{border-bottom:0}}.grid,.setup-workspace__content{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}.launch-steps{{grid-template-columns:1fr 1fr}}.launch-step:nth-child(2){{border-right:0}}.launch-step:nth-child(-n+2){{border-bottom:1px solid var(--border)}}}}
+    @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.daily-guide{{grid-template-columns:1fr}}.daily-guide__item{{border-right:0;border-bottom:1px solid var(--border)}}.daily-guide__item:last-child{{border-bottom:0}}.grid,.setup-workspace__content{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}}}
     @media(max-width:700px){{.decision-card__summary{{grid-template-columns:42px minmax(0,1fr)}}.decision-card__state{{grid-column:2;justify-self:start;text-align:left;max-width:none}}.decision-card__evidence{{grid-template-columns:1fr}}.decision-card__evidence>div+div{{border-left:0;border-top:1px solid var(--border)}}}}
-    @media(max-width:600px){{.page-head,.panel-head{{align-items:start;flex-direction:column}}.panel-head{{gap:9px;padding:18px}}.metric{{padding:14px 15px}}.metric strong{{font-size:22px}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.launch-command__head{{grid-template-columns:1fr;padding:21px}}.launch-score{{width:78px;height:78px}}.launch-steps{{grid-template-columns:1fr}}.launch-step{{border-right:0;border-bottom:1px solid var(--border)!important}}.launch-step:last-child{{border-bottom:0!important}}.form-grid,.decision-form{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
+    @media(max-width:600px){{.page-head,.panel-head{{align-items:start;flex-direction:column}}.panel-head{{gap:9px;padding:18px}}.metric{{padding:14px 15px}}.metric strong{{font-size:22px}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.form-grid,.decision-form{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
   </style>
 </head>
 <body class="app app--operator view-{_esc(view)}">
@@ -1651,97 +1666,22 @@ def render_building_page(
       <details class="setup-workspace building-view view-settings" id="building-setup">
         <summary><span><strong>Arena setup and administration</strong><span>{launch_ready_count} of 10 launch requirements are complete. Open this only to change business rules or finish provider setup.</span></span></summary>
         <div class="setup-workspace__content">
-    <section class="launch-command panel--wide" aria-labelledby="arena-command-title">
-      <div class="launch-command__head">
-        <div>
-          <div class="eyebrow">Arena launch command center</div>
-          <h2 id="arena-command-title">Private, protected, and not ready to publish</h2>
-          <p>{_esc(launch_status.get("headline") or "Arena launch readiness is being verified.")}. The checklist below comes from the actual pricing, agreement, payment, sender, and calendar evidence.</p>
-        </div>
-        <div class="launch-score" aria-label="{launch_owner_complete} of {launch_owner_total} owner decisions saved"><div><strong>{launch_owner_complete}/{launch_owner_total}</strong><span>rules saved</span></div></div>
-      </div>
-      <div class="launch-steps" aria-label="Arena launch stages">
-        <div class="launch-step"><span>1 · Catalog</span><strong>{"Prepared" if arena_catalog_ready else "Action required"}</strong><p>{"Canonical Arena records are private." if arena_catalog_ready else "Prepare the verified Arena catalog."}</p></div>
-        <div class="launch-step"><span>2 · Business rules</span><strong>{launch_owner_complete} of {launch_owner_total} saved</strong><p>{"No more owner questions." if launch_owner_complete == launch_owner_total else "Only missing owner-approved rules remain."}</p></div>
-        <div class="launch-step"><span>3 · Outside setup</span><strong>{launch_external_count} item{"s" if launch_external_count != 1 else ""}</strong><p>Legal, accountant, or provider evidence—not another owner questionnaire.</p></div>
-        <div class="launch-step"><span>4 · Customer launch</span><strong>{"Ready for rehearsal" if launch_customer_ready else "Safely locked"}</strong><p>{"Run the controlled booking rehearsal." if launch_customer_ready else "No binding estimate, payment, or booking claim is made."}</p></div>
-      </div>
-    </section>
-      <section class="panel panel--wide" id="arena-catalog-readiness">
-        <div class="panel-head"><div><h2>Arena catalog foundation</h2><p>Create the verified venue identity required by availability, pricing, inquiry, and launch-readiness workflows.</p></div>{arena_catalog_state}</div>
-        <div class="alert alert--warning"><strong>This does not launch the venue.</strong><p>The action creates or reconciles only The Arena and the canonical <code>arena-events</code> offering as private, unavailable, and unpublished. A compatible legacy Canva placeholder may be retained as an unpublished record. It does not approve a rate plan, claim a date is available, send a message, charge a customer, or write a calendar.</p></div>
-        <details class="advanced-disclosure">
-          <summary>{"Review or rerun catalog preparation" if arena_catalog_ready else "Prepare the verified Arena catalog"}</summary>
-        <form class="form-grid" method="post" action="/admin/building/catalog/arena/prepare">
-          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <input type="hidden" name="confirmation" value="prepare">
-          <div class="form-actions"><span class="form-note">Idempotent: rerunning a compatible preparation changes nothing. Conflicting existing records fail closed for manual review.</span><button class="secondary" type="submit">Prepare verified Arena catalog</button></div>
-        </form>
-        </details>
-      </section>
-      <section class="panel advanced-tools">
-        <div class="panel-head"><div><h2>Add or update a space <span class="advanced-label">Advanced</span></h2><p>Save reviewed physical inventory. Publishing remains a separate choice.</p></div></div>
-        <details class="advanced-disclosure">
-          <summary>Open space editor</summary>
-        <form class="form-grid" method="post" action="/admin/building/spaces">
-          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <div class="field"><label for="space-id">Stable ID</label><input id="space-id" name="space_id" required placeholder="office-201"></div>
-          <div class="field"><label for="space-slug">Public URL slug</label><input id="space-slug" name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="office-201"></div>
-          <div class="field"><label for="space-name">Name</label><input id="space-name" name="name" required placeholder="Office 201"></div>
-          <div class="field"><label for="space-type">Type</label><select id="space-type" name="space_type"><option value="private_office">Private office</option><option value="coworking">Coworking</option><option value="conference">Conference room</option><option value="event">Event space</option><option value="warehouse">Warehouse</option><option value="amenity">Amenity</option></select></div>
-          <div class="field"><label for="space-floor">Floor or area</label><input id="space-floor" name="floor" placeholder="Second floor"></div>
-          <div class="field"><label for="space-capacity">Capacity</label><input id="space-capacity" name="capacity" type="number" min="0" value="0"></div>
-          <div class="field"><label for="space-status">Availability state</label><select id="space-status" name="status"><option value="unavailable">Unavailable</option><option value="available">Available</option><option value="soft_hold">Soft hold</option><option value="occupied">Occupied</option><option value="maintenance">Maintenance</option></select></div>
-          <div class="field"><label for="space-features">Features</label><input id="space-features" name="features" placeholder="Natural light, furnished, whiteboard"></div>
-          <div class="field field--wide"><label for="space-description">Public description</label><textarea id="space-description" name="public_description" placeholder="What a prospective tenant may safely see."></textarea></div>
-          <div class="field field--wide"><label for="space-notes">Internal notes</label><textarea id="space-notes" name="internal_notes" placeholder="Occupancy, repairs, or operator context. Never shown publicly."></textarea></div>
-          <div class="form-actions"><label class="check"><input type="checkbox" name="is_public" value="true"> Allow this space to appear publicly</label><button class="primary" type="submit">Save space</button></div>
-        </form>
-        </details>
-      </section>
-      <section class="panel advanced-tools">
-        <div class="panel-head"><div><h2>Add or update an offering <span class="advanced-label">Advanced</span></h2><p>Define what customers can inquire about and how pricing is described.</p></div></div>
-        <details class="advanced-disclosure">
-          <summary>Open offering editor</summary>
-        <form class="form-grid" method="post" action="/admin/building/offerings">
-          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <div class="field"><label for="offering-id">Stable ID</label><input id="offering-id" name="offering_id" required placeholder="private-office-201"></div>
-          <div class="field"><label for="offering-slug">Public URL slug</label><input id="offering-slug" name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="private-office-201"></div>
-          <div class="field"><label for="offering-name">Name</label><input id="offering-name" name="name" required placeholder="Private Office 201"></div>
-          <div class="field"><label for="offering-type">Offering type</label><select id="offering-type" name="offering_type"><option value="private_office">Private office</option><option value="coworking">Coworking</option><option value="meeting_room">Meeting room</option><option value="event">Event</option><option value="warehouse">Warehouse</option><option value="membership">Membership</option></select></div>
-          <div class="field"><label for="offering-space">Linked space</label><select id="offering-space" name="space_id"><option value="">No specific space</option>{linked_space_options}</select></div>
-          <div class="field"><label for="offering-price">Public price wording</label><input id="offering-price" name="price_display" placeholder="From $1,250/month"></div>
-          <div class="field"><label for="offering-unit">Booking unit</label><select id="offering-unit" name="booking_unit"><option value="custom">Custom</option><option value="month">Monthly</option><option value="day">Daily</option><option value="hour">Hourly</option><option value="event">Per event</option></select></div>
-          <div class="field"><label for="offering-cta">Call to action</label><select id="offering-cta" name="call_to_action"><option value="inquire">Inquire</option><option value="tour">Schedule a tour</option><option value="request_date">Request a date</option><option value="join_waitlist">Join waitlist</option></select></div>
-          <div class="field field--wide"><label for="offering-features">Included features</label><input id="offering-features" name="features" placeholder="Conference access, mail service, Boom Standard"></div>
-          <div class="field field--wide"><label for="offering-description">Public description</label><textarea id="offering-description" name="public_description" placeholder="Warm, specific copy for the public offering."></textarea></div>
-          <div class="form-actions"><span class="form-note">Publish only after the linked space, price wording, and copy have been reviewed.</span><label class="check"><input type="checkbox" name="is_published" value="true"> Publish offering</label><button class="primary" type="submit">Save offering</button></div>
-        </form>
-        </details>
-      </section>
       <section class="panel panel--wide" id="arena-launch-readiness">
-        <div class="panel-head"><div><h2>What is ready—and what still needs outside approval</h2><p>Your answers are already saved. This list updates from the real system evidence; it does not ask you to repeat decisions.</p></div><span class="count">{launch_external_count} outside item{"s" if launch_external_count != 1 else ""}</span></div>
-        <div class="alert {"alert--success" if launch_customer_ready else "alert--warning"}"><strong>{"Ready for a controlled launch rehearsal." if launch_customer_ready else "Customer launch remains safely locked."}</strong><p>{"Complete one governed rehearsal before opening the full booking path." if launch_customer_ready else f"{launch_external_count} outside approval or provider item{'s' if launch_external_count != 1 else ''} and {launch_blocked_count} internal blocker{'s' if launch_blocked_count != 1 else ''} remain. No customer message, payment, publication, or calendar write happens from this checklist."}</p></div>
+        <div class="panel-head"><div><h2>{"Nothing left to finish" if not launch_open_items else "What still needs finishing"}</h2><p>{"Everything Agent can check is done." if not launch_open_items else "Everything else is done. These are the only items left, and each one waits on someone outside Agent."}</p></div><span class="count">{len(launch_open_items)} left</span></div>
         <ol class="launch-checklist">{launch_checklist_html}</ol>
         <details class="saved-policy-disclosure">
-          <summary>Review or change saved business rules ({launch_ready_count} of 10 governed records complete)</summary>
+          <summary>Already done ({len(launch_settled_items)} of {len(launch_status_items)})</summary>
+          <ol class="launch-checklist">{launch_settled_html}</ol>
+        </details>
+        <details class="saved-policy-disclosure">
+          <summary>Change a saved business rule</summary>
+          <p class="form-note">Open a card only when the approved policy itself changes.</p>
           <div class="decision-list">{launch_readiness_cards}</div>
         </details>
       </section>
       <section class="panel panel--wide" id="commercial-rate-plans">
         <div class="panel-head"><div><h2>Commercial rate plans</h2><p>Version pricing, deposits, included items, and cancellation terms. Approved versions are locked.</p></div><span class="count">{len(rate_plans)} versions</span></div>
-        <div class="alert alert--warning">
-          <strong>Arena commercial evidence needs reconciliation.</strong>
-          <p>Owner-reconciled draft: 6,000 sq ft, capacity 200, $175/hour, six-hour minimum ($1,050), $250 routine cleaning, 50% booking deposit, $500 refundable security deposit, and balance due seven days before the event. Two self-service setup hours and two teardown hours are included; approved overtime is $175 per full hour.</p>
-          <p>TidyCal still conflicts with a 70% deposit, balance due 48 hours before, and a placeholder payment link. Those provider-copy items must be corrected before approval. Tax remains quote-review-required, and the reusable agreement remains under legal review.</p>
-          <form class="form-grid" method="post" action="/admin/building/rate-plans/arena-commercial-baseline">
-            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-            <div class="field"><label for="arena-draft-offering">Arena event offering</label><select id="arena-draft-offering" name="offering_id" required><option value="">Choose event offering</option>{event_offering_options}</select></div>
-            <div class="field"><label for="arena-draft-effective">Proposed effective date</label><input id="arena-draft-effective" name="effective_from" type="date" required></div>
-            <input type="hidden" name="confirmation" value="prepare">
-            <div class="form-actions"><span class="form-note">Creates a draft only. It does not approve, publish, send, charge, change TidyCal, or write Calendar.</span><button class="secondary" type="submit">Prepare reviewable draft</button></div>
-          </form>
-        </div>
+        {arena_rate_reconciliation_html}
         <div class="table-wrap"><table><thead><tr><th>Plan</th><th>Price</th><th>Deposit</th><th>Effective</th><th>State</th><th>Evidence</th><th>Review action</th></tr></thead><tbody>{rate_plan_rows}</tbody></table></div>
         <details class="advanced-disclosure">
           <summary>Open manual rate-plan editor</summary>
@@ -1799,6 +1739,64 @@ def render_building_page(
         </form>
         </details>
       </section>
+      <section class="panel panel--wide advanced-tools">
+        <div class="panel-head"><div><h2>Spaces, offerings, and catalog <span class="advanced-label">Advanced</span></h2><p>Rarely needed. The Arena is already set up here.</p></div></div>
+        <details class="advanced-disclosure">
+          <summary>Open the advanced editors</summary>
+      <section class="panel panel--wide" id="arena-catalog-readiness">
+        <div class="panel-head"><div><h2>Arena catalog foundation</h2><p>Create the verified venue identity required by availability, pricing, inquiry, and launch-readiness workflows.</p></div>{arena_catalog_state}</div>
+        <div class="alert alert--warning"><strong>This does not launch the venue.</strong><p>The action creates or reconciles only The Arena and the canonical <code>arena-events</code> offering as private, unavailable, and unpublished. A compatible legacy Canva placeholder may be retained as an unpublished record. It does not approve a rate plan, claim a date is available, send a message, charge a customer, or write a calendar.</p></div>
+        <details class="advanced-disclosure">
+          <summary>{"Review or rerun catalog preparation" if arena_catalog_ready else "Prepare the verified Arena catalog"}</summary>
+        <form class="form-grid" method="post" action="/admin/building/catalog/arena/prepare">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <input type="hidden" name="confirmation" value="prepare">
+          <div class="form-actions"><span class="form-note">Idempotent: rerunning a compatible preparation changes nothing. Conflicting existing records fail closed for manual review.</span><button class="secondary" type="submit">Prepare verified Arena catalog</button></div>
+        </form>
+        </details>
+      </section>
+      <section class="panel advanced-tools">
+        <div class="panel-head"><div><h2>Add or update a space <span class="advanced-label">Advanced</span></h2><p>Save reviewed physical inventory. Publishing remains a separate choice.</p></div></div>
+        <details class="advanced-disclosure">
+          <summary>Open space editor</summary>
+        <form class="form-grid" method="post" action="/admin/building/spaces">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="space-id">Stable ID</label><input id="space-id" name="space_id" required placeholder="office-201"></div>
+          <div class="field"><label for="space-slug">Public URL slug</label><input id="space-slug" name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="office-201"></div>
+          <div class="field"><label for="space-name">Name</label><input id="space-name" name="name" required placeholder="Office 201"></div>
+          <div class="field"><label for="space-type">Type</label><select id="space-type" name="space_type"><option value="private_office">Private office</option><option value="coworking">Coworking</option><option value="conference">Conference room</option><option value="event">Event space</option><option value="warehouse">Warehouse</option><option value="amenity">Amenity</option></select></div>
+          <div class="field"><label for="space-floor">Floor or area</label><input id="space-floor" name="floor" placeholder="Second floor"></div>
+          <div class="field"><label for="space-capacity">Capacity</label><input id="space-capacity" name="capacity" type="number" min="0" value="0"></div>
+          <div class="field"><label for="space-status">Availability state</label><select id="space-status" name="status"><option value="unavailable">Unavailable</option><option value="available">Available</option><option value="soft_hold">Soft hold</option><option value="occupied">Occupied</option><option value="maintenance">Maintenance</option></select></div>
+          <div class="field"><label for="space-features">Features</label><input id="space-features" name="features" placeholder="Natural light, furnished, whiteboard"></div>
+          <div class="field field--wide"><label for="space-description">Public description</label><textarea id="space-description" name="public_description" placeholder="What a prospective tenant may safely see."></textarea></div>
+          <div class="field field--wide"><label for="space-notes">Internal notes</label><textarea id="space-notes" name="internal_notes" placeholder="Occupancy, repairs, or operator context. Never shown publicly."></textarea></div>
+          <div class="form-actions"><label class="check"><input type="checkbox" name="is_public" value="true"> Allow this space to appear publicly</label><button class="primary" type="submit">Save space</button></div>
+        </form>
+        </details>
+      </section>
+      <section class="panel advanced-tools">
+        <div class="panel-head"><div><h2>Add or update an offering <span class="advanced-label">Advanced</span></h2><p>Define what customers can inquire about and how pricing is described.</p></div></div>
+        <details class="advanced-disclosure">
+          <summary>Open offering editor</summary>
+        <form class="form-grid" method="post" action="/admin/building/offerings">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="offering-id">Stable ID</label><input id="offering-id" name="offering_id" required placeholder="private-office-201"></div>
+          <div class="field"><label for="offering-slug">Public URL slug</label><input id="offering-slug" name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="private-office-201"></div>
+          <div class="field"><label for="offering-name">Name</label><input id="offering-name" name="name" required placeholder="Private Office 201"></div>
+          <div class="field"><label for="offering-type">Offering type</label><select id="offering-type" name="offering_type"><option value="private_office">Private office</option><option value="coworking">Coworking</option><option value="meeting_room">Meeting room</option><option value="event">Event</option><option value="warehouse">Warehouse</option><option value="membership">Membership</option></select></div>
+          <div class="field"><label for="offering-space">Linked space</label><select id="offering-space" name="space_id"><option value="">No specific space</option>{linked_space_options}</select></div>
+          <div class="field"><label for="offering-price">Public price wording</label><input id="offering-price" name="price_display" placeholder="From $1,250/month"></div>
+          <div class="field"><label for="offering-unit">Booking unit</label><select id="offering-unit" name="booking_unit"><option value="custom">Custom</option><option value="month">Monthly</option><option value="day">Daily</option><option value="hour">Hourly</option><option value="event">Per event</option></select></div>
+          <div class="field"><label for="offering-cta">Call to action</label><select id="offering-cta" name="call_to_action"><option value="inquire">Inquire</option><option value="tour">Schedule a tour</option><option value="request_date">Request a date</option><option value="join_waitlist">Join waitlist</option></select></div>
+          <div class="field field--wide"><label for="offering-features">Included features</label><input id="offering-features" name="features" placeholder="Conference access, mail service, Boom Standard"></div>
+          <div class="field field--wide"><label for="offering-description">Public description</label><textarea id="offering-description" name="public_description" placeholder="Warm, specific copy for the public offering."></textarea></div>
+          <div class="form-actions"><span class="form-note">Publish only after the linked space, price wording, and copy have been reviewed.</span><label class="check"><input type="checkbox" name="is_published" value="true"> Publish offering</label><button class="primary" type="submit">Save offering</button></div>
+        </form>
+        </details>
+      </section>
+        </details>
+      </section>
         </div>
       </details>
       <section class="panel building-view view-contacts">
@@ -1820,7 +1818,7 @@ def render_building_page(
         </form>
         </details>
       </section>
-      <section class="panel building-view view-settings">
+      <section class="panel building-view view-contacts">
         <div class="panel-head"><div><h2>Preview a roster import</h2><p>Stage up to 500 tenant or community contacts before anything changes.</p></div></div>
         <details class="task-creator"><summary>Import a contact roster</summary>
         <form class="form-grid" method="post" action="/admin/building/roster-imports/preview">
