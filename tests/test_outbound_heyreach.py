@@ -146,3 +146,26 @@ class PushTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PreviewContractTests(unittest.TestCase):
+    """Preview must be inert. The route returns before push() is reached, so
+    what is guarded here is that prepare() alone never contacts or records."""
+
+    def test_prepare_touches_nothing(self):
+        called = []
+        s = _session()
+        leads, keys, stats = hr.prepare([ROW], campaign_id="7")
+        self.assertEqual(len(leads), 1)
+        self.assertEqual(len(keys), 1)
+        s.post.assert_not_called()
+        self.assertEqual(called, [])
+
+    def test_preview_names_match_what_would_send(self):
+        leads, _, _ = hr.prepare([ROW], campaign_id="7")
+        self.assertEqual(f"{leads[0]['firstName']} {leads[0]['lastName']}", "Jane Doe")
+
+    def test_nothing_reason_is_readable_when_all_are_duplicates(self):
+        key = hr.lead_key("7", ROW["linkedin_url"])
+        _, _, stats = hr.prepare([ROW], campaign_id="7", already={key})
+        self.assertIn("already sent before", hr._nothing_reason(stats))

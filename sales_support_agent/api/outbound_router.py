@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from sales_support_agent.services.auth_deps import get_current_user
@@ -490,8 +490,10 @@ _AMAZON_SCAN_CONTROL = """
       real LinkedIn profile go into the campaign. Anyone already sent is skipped against our own
       record, so nobody gets a second request even if the campaign is rebuilt.</p>
       <div class="am-row">
+        <button class="am-btn am-ghost" id="hr-check" type="button">Check connection</button>
         <input type="file" id="hr-file" accept=".csv,text/csv">
-        <button class="am-btn am-ghost" id="hr-go" type="button">Send to HeyReach</button>
+        <button class="am-btn am-ghost" id="hr-prev" type="button">Preview</button>
+        <button class="am-btn" id="hr-go" type="button" disabled>Send to HeyReach</button>
         <span id="hr-msg" style="font-size:14px;font-weight:700"></span>
       </div>
       <span class="am-note" id="am-msg">Checks the best brands we have not looked at yet.
@@ -512,10 +514,24 @@ _AMAZON_SCAN_CONTROL = """
         }
         var hrF=document.getElementById('hr-file'), hrB=document.getElementById('hr-go'),
             hrM=document.getElementById('hr-msg');
-        if(hrB) hrB.addEventListener('click', function(){
+        var hrC=document.getElementById('hr-check'), hrP=document.getElementById('hr-prev');
+        if(hrC) hrC.addEventListener('click', function(){
+          hrC.disabled=true; hrM.textContent='Checking...';
+          fetch('/admin/api/outbound/heyreach/status')
+            .then(function(r){return r.json();})
+            .then(function(d){ hrM.textContent=d.reason||''; hrC.disabled=false; })
+            .catch(function(){ hrM.textContent='Could not reach the server.'; hrC.disabled=false; });
+        });
+        // Send stays locked until a preview of THIS file has been seen. The
+        // file input resets it, so a new file cannot inherit the last approval.
+        if(hrF) hrF.addEventListener('change', function(){
+          hrB.disabled=true; hrM.textContent='Press Preview to see who would go.';
+        });
+        function upload(preview, btn){
           if(!hrF.files || !hrF.files.length){ hrM.textContent='Pick the Clay export first.'; return; }
-          hrB.disabled=true; hrM.textContent='Sending...';
+          btn.disabled=true; hrM.textContent = preview ? 'Checking the file...' : 'Sending...';
           var fd=new FormData(); fd.append('file', hrF.files[0]);
+          if(preview) fd.append('dry_run','1');
           fetch('/admin/api/outbound/heyreach',{method:'POST',body:fd})
             .then(function(r){return r.json();})
             .then(function(d){
@@ -523,10 +539,14 @@ _AMAZON_SCAN_CONTROL = """
               if(d.duplicate||d.no_profile){
                 extra=' ('+(d.duplicate||0)+' already sent, '+(d.no_profile||0)+' with no profile)';
               }
-              hrM.textContent=(d.reason||'')+extra; hrB.disabled=false;
+              hrM.textContent=(d.reason||'')+extra;
+              if(preview){ btn.disabled=false; hrB.disabled = !(d.queued>0); }
+              else { hrB.disabled=true; }
             })
-            .catch(function(){ hrM.textContent='Could not reach the server.'; hrB.disabled=false; });
-        });
+            .catch(function(){ hrM.textContent='Could not reach the server.'; btn.disabled=false; });
+        }
+        if(hrP) hrP.addEventListener('click', function(){ upload(true, hrP); });
+        if(hrB) hrB.addEventListener('click', function(){ upload(false, hrB); });
         var runB=document.getElementById('am-run'), mailB=document.getElementById('am-mail');
         if(runB) runB.addEventListener('click', function(){
           runB.disabled=true; m.textContent='Starting the full run...';
@@ -1436,9 +1456,41 @@ def outbound_amazon_scan_status(request: Request) -> Response:
     return JSONResponse(content=dict(_AMAZON_SCAN))
 
 
+@router.get("/admin/api/outbound/heyreach/status", response_class=JSONResponse)
+def outbound_heyreach_status(request: Request) -> JSONResponse:
+    """Is HeyReach connected? Asks HeyReach, sends nobody.
+
+    Worth its own route: the only other way to find out was to upload real
+    contacts, and a connection test that messages people is not a test.
+    """
+    import os
+
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_heyreach as hr, outbound_memory
+
+    api_key = os.getenv("HEYREACH_API_KEY", "").strip()
+    campaign = os.getenv("HEYREACH_CAMPAIGN_ID", "").strip()
+    missing = [n for n, v in (("HEYREACH_API_KEY", api_key),
+                              ("HEYREACH_CAMPAIGN_ID", campaign)) if not v]
+    if missing:
+        return JSONResponse(content={"ok": False, "connected": False,
+                                     "reason": "Not set on this service: " + ", ".join(missing)})
+
+    ok, why = hr.check_key(api_key)
+    try:
+        contacted = len(outbound_memory.load_heyreach_sent(get_engine(), campaign))
+    except Exception:  # noqa: BLE001
+        contacted = 0
+    return JSONResponse(content={
+        "ok": ok, "connected": ok, "campaign": campaign, "contacted": contacted,
+        "reason": (f"Connected. Campaign {campaign}. "
+                   f"{contacted} contact(s) already sent from here." if ok else why)})
+
+
 @router.post("/admin/api/outbound/heyreach", response_class=JSONResponse)
 async def outbound_push_heyreach(request: Request,
-                                 file: UploadFile = File(...)) -> JSONResponse:
+                                 file: UploadFile = File(...),
+                                 dry_run: str = Form("")) -> JSONResponse:
     """Send Clay's exported contacts into the HeyReach campaign.
 
     Takes the CSV straight off Clay's Found Contacts export, so there is nothing
@@ -1475,6 +1527,19 @@ async def outbound_push_heyreach(request: Request,
         engine = None
 
     already = outbound_memory.load_heyreach_sent(engine, campaign)
+
+    # Preview: work out exactly who would go, contact nobody. The default the
+    # page offers, because a send cannot be taken back.
+    if str(dry_run or "").strip().lower() in ("1", "true", "on", "yes"):
+        leads, _keys, stats = hr.prepare(rows, campaign_id=campaign, already=already)
+        return JSONResponse(content={
+            "ok": True, "preview": True, "sent": 0,
+            "would_send": [f"{l['firstName']} {l['lastName']}".strip() or l["linkedinUrl"]
+                           for l in leads[:25]],
+            "reason": (f"Would send {len(leads)} contact(s). Nobody has been contacted."
+                       if leads else hr._nothing_reason(stats)),
+            **stats})
+
     result = hr.push(
         rows, api_key=api_key, campaign_id=campaign, already=already,
         record=lambda keys: outbound_memory.record_heyreach_sent(engine, keys, campaign),
