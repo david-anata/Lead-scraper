@@ -369,6 +369,9 @@ def test_budget_page_is_explicitly_advisory_and_explainable() -> None:
     assert "Where the deeper savings may be hiding" in page
     assert "Decide what stays and what goes" in page
     assert "Needed" in page and "Unknown" in page and "Investigate" in page and "Waste" in page
+    assert "Save all changes" in page
+    assert 'data-trim-batch-form' in page
+    assert "save immediately" not in page
     assert "Run high spending review" in page
     assert "planning targets, not changes to your bank or books" in page
     assert "Mirrored sources and internal transfers are excluded" in page

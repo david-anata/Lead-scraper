@@ -732,23 +732,21 @@ def render_budget_page(
     }
     trim_rows = "".join(
         f"""
-        <tr data-trim-row data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}">
+        <tr data-trim-row data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-note="{html.escape(str(item.get('review_note') or ''), quote=True)}" data-trim-opportunity="{html.escape(json.dumps(item, separators=(',', ':')), quote=True)}">
           <td><strong>{html.escape(item['display_name'])}</strong><span>{html.escape(str(item['category']).replace('_', ' ').title())} · {item['active_months']} of 6 months</span></td>
           <td>{_money(int(item['monthly_average_cents']), exact=True)}</td>
           <td>{_money(int(item['six_month_total_cents']), exact=True)}</td>
           <td><span class="trim-state trim-state--{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}">{html.escape(str(item.get('review_state') or 'unknown').title())}</span></td>
-          <td><form method="post" action="/admin/finances/savings/{html.escape(item['opportunity_key'], quote=True)}/review" class="trim-form">
-            <input type="hidden" name="evidence_hash" value="{html.escape(item['evidence_hash'], quote=True)}">
-            <input type="hidden" name="opportunity_json" value="{html.escape(json.dumps(item, separators=(',', ':')), quote=True)}">
+          <td><div class="trim-form">
             <label class="sr-only" for="trim-note-{html.escape(item['opportunity_key'], quote=True)}">Note for {html.escape(item['display_name'])}</label>
-            <input id="trim-note-{html.escape(item['opportunity_key'], quote=True)}" name="reason" value="{html.escape(str(item.get('review_note') or ''), quote=True)}" placeholder="Optional note">
+            <input id="trim-note-{html.escape(item['opportunity_key'], quote=True)}" data-trim-note value="{html.escape(str(item.get('review_note') or ''), quote=True)}" placeholder="Optional note">
             <div class="trim-actions" role="group" aria-label="Classify {html.escape(item['display_name'], quote=True)}">
-              <button class="trim-choice is-needed" name="action" value="needed" type="submit">Needed</button>
-              <button class="trim-choice is-unknown" name="action" value="unknown" type="submit">Unknown</button>
-              <button class="trim-choice is-investigate" name="action" value="investigate" type="submit">Investigate</button>
-              <button class="trim-choice is-waste" name="action" value="waste" type="submit">Waste</button>
+              <button class="trim-choice is-needed{' is-selected' if item.get('review_state') == 'needed' else ''}" data-trim-choice="needed" type="button">Needed</button>
+              <button class="trim-choice is-unknown{' is-selected' if item.get('review_state') == 'unknown' else ''}" data-trim-choice="unknown" type="button">Unknown</button>
+              <button class="trim-choice is-investigate{' is-selected' if item.get('review_state') == 'investigate' else ''}" data-trim-choice="investigate" type="button">Investigate</button>
+              <button class="trim-choice is-waste{' is-selected' if item.get('review_state') == 'waste' else ''}" data-trim-choice="waste" type="button">Waste</button>
             </div>
-          </form></td>
+          </div></td>
         </tr>"""
         for item in trim_items
     )
@@ -803,7 +801,7 @@ def render_budget_page(
         <div class="money-section-heading"><div><p class="finance-eyebrow">Trim list</p>
         <h2 id="trim-title">Decide what stays and what goes</h2></div>
         <span class="money-section-state">{len(trim_items)} controllable vendors</span></div>
-        <p class="budget-review-summary">Work from the largest six-month spend down. Your labels and notes save immediately; no service is cancelled and no accounting record changes.</p>
+        <p class="budget-review-summary">Work from the largest six-month spend down. Make as many decisions as you want, then save them together. No service is cancelled and no accounting record changes.</p>
         <div class="trim-summary" aria-label="Trim review progress">
           <button type="button" data-trim-filter="all" class="is-active">All <strong>{len(trim_items)}</strong></button>
           <button type="button" data-trim-filter="unknown">Unknown <strong>{trim_counts['unknown']}</strong></button>
@@ -811,10 +809,14 @@ def render_budget_page(
           <button type="button" data-trim-filter="waste">Waste <strong>{trim_counts['waste']}</strong></button>
           <button type="button" data-trim-filter="needed">Needed <strong>{trim_counts['needed']}</strong></button>
         </div>
+        <form method="post" action="/admin/finances/savings/reviews/batch" data-trim-batch-form>
+        <input type="hidden" name="changes_json" data-trim-changes value="[]">
         <div class="money-table-wrap trim-table-wrap"><table class="budget-table trim-table"><thead><tr>
           <th>Vendor</th><th>Monthly average</th><th>Six-month spend</th><th>Status</th><th>Decision and note</th>
         </tr></thead><tbody>{trim_rows}</tbody></table></div>
         <p class="budget-rule-note" data-trim-result-count>Showing all {len(trim_items)} vendors.</p>
+        <div class="trim-savebar"><span data-trim-unsaved>No unsaved changes</span><button class="btn btn-primary" type="submit" data-trim-save disabled>Save all changes</button></div>
+        </form>
       </section>
 
       <section class="budget-trend" aria-labelledby="budget-trend-title">
@@ -855,6 +857,40 @@ def render_budget_page(
       const filters = [...document.querySelectorAll('[data-trim-filter]')];
       const rows = [...document.querySelectorAll('[data-trim-row]')];
       const count = document.querySelector('[data-trim-result-count]');
+      const form = document.querySelector('[data-trim-batch-form]');
+      const changesInput = document.querySelector('[data-trim-changes]');
+      const saveButton = document.querySelector('[data-trim-save]');
+      const unsaved = document.querySelector('[data-trim-unsaved]');
+      const stagedChanges = () => rows.flatMap(row => {
+        const note = row.querySelector('[data-trim-note]')?.value.trim() || '';
+        const changed = row.dataset.trimState !== row.dataset.trimOriginalState || note !== row.dataset.trimOriginalNote;
+        if (!changed) return [];
+        return [{action: row.dataset.trimState, reason: note, opportunity: JSON.parse(row.dataset.trimOpportunity)}];
+      });
+      const updateSaveState = () => {
+        const changes = stagedChanges();
+        if (changesInput) changesInput.value = JSON.stringify(changes);
+        if (saveButton) saveButton.disabled = changes.length === 0;
+        if (unsaved) unsaved.textContent = changes.length ? `${changes.length} unsaved change${changes.length === 1 ? '' : 's'}` : 'No unsaved changes';
+      };
+      rows.forEach(row => {
+        row.querySelectorAll('[data-trim-choice]').forEach(button => button.addEventListener('click', () => {
+          const state = button.dataset.trimChoice;
+          row.dataset.trimState = state;
+          const badge = row.querySelector('.trim-state');
+          if (badge) {
+            badge.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+            badge.className = `trim-state trim-state--${state}`;
+          }
+          row.querySelectorAll('[data-trim-choice]').forEach(item => {
+            const selected = item === button;
+            item.classList.toggle('is-selected', selected);
+            item.setAttribute('aria-pressed', selected ? 'true' : 'false');
+          });
+          updateSaveState();
+        }));
+        row.querySelector('[data-trim-note]')?.addEventListener('input', updateSaveState);
+      });
       filters.forEach(button => button.addEventListener('click', () => {
         const wanted = button.dataset.trimFilter;
         let shown = 0;
@@ -867,6 +903,14 @@ def render_budget_page(
         filters.forEach(item => item.setAttribute('aria-pressed', item === button ? 'true' : 'false'));
         if (count) count.textContent = `Showing ${shown} vendor${shown === 1 ? '' : 's'}.`;
       }));
+      form?.addEventListener('submit', event => {
+        const changes = stagedChanges();
+        if (!changes.length) { event.preventDefault(); return; }
+        changesInput.value = JSON.stringify(changes);
+        saveButton.disabled = true;
+        saveButton.textContent = 'Saving changes…';
+      });
+      updateSaveState();
     })();
     </script>"""
     return _page_shell("Budget & savings", "budget", body, flash=flash)

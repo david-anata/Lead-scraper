@@ -1467,6 +1467,37 @@ async def record_savings_review_action(
     return _redirect_finance_home(messages.get(action, "Savings review recorded."))
 
 
+@router.post("/savings/reviews/batch", response_class=HTMLResponse)
+async def record_savings_review_batch(
+    request: Request,
+    changes_json: str = Form(...),
+):
+    """Save the operator's staged vendor decisions in one transaction."""
+    import json
+    from sales_support_agent.services.cashflow.savings_reviews import record_savings_reviews
+
+    current_user = get_current_user(request)
+    actor = "finance-operator"
+    if isinstance(current_user, dict):
+        actor = str(current_user.get("email") or current_user.get("name") or actor)
+    try:
+        changes = json.loads(changes_json)
+        if not isinstance(changes, list):
+            raise ValueError("Savings changes are invalid; refresh and try again")
+        results = await asyncio.to_thread(
+            record_savings_reviews,
+            changes,
+            actor,
+            request_id=request.headers.get("Idempotency-Key") or uuid4().hex,
+        )
+    except ValueError as exc:
+        return _redirect_finance_error(str(exc))
+    except Exception:
+        logger.exception("Savings batch could not be recorded")
+        return _redirect_finance_error("Savings changes could not be saved. Nothing was changed; please try again")
+    return _redirect_finance_home(f"Saved {len(results)} savings change(s).")
+
+
 @router.post("/actions/{event_id}/partial", response_class=HTMLResponse)
 async def record_partial_payment(
     request: Request,

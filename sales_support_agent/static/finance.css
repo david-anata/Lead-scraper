@@ -2275,6 +2275,10 @@ input:focus, select:focus, textarea:focus {
 .trim-choice.is-needed:hover, .trim-choice.is-needed:focus-visible { border-color: var(--good); color: var(--good); }
 .trim-choice.is-investigate:hover, .trim-choice.is-investigate:focus-visible { border-color: var(--warn); color: var(--warn); }
 .trim-choice.is-waste:hover, .trim-choice.is-waste:focus-visible { border-color: var(--bad); color: var(--bad); }
+.trim-choice.is-selected { border-color: var(--anata-ink); background: var(--anata-ink); color: #fff; box-shadow: 0 0 0 1px var(--anata-ink); }
+.trim-savebar { position: sticky; bottom: 14px; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; padding: 14px 16px; border: 1px solid var(--anata-line); border-radius: 14px; background: rgba(255, 255, 255, .96); box-shadow: 0 12px 30px rgba(15, 23, 42, .13); backdrop-filter: blur(10px); }
+.trim-savebar span { color: var(--anata-muted); font-size: 12px; font-weight: 700; }
+.trim-savebar .btn:disabled { cursor: not-allowed; opacity: .45; }
 
 @media (max-width: 1100px) {
   .budget-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -2334,6 +2338,8 @@ input:focus, select:focus, textarea:focus {
   .trim-table td:nth-child(5) { grid-column: 1 / -1; padding-top: 6px; }
   .trim-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .trim-choice { min-height: 38px; }
+  .trim-savebar { bottom: 8px; display: grid; }
+  .trim-savebar .btn { width: 100%; }
   .budget-saving-action { grid-column: auto; }
   .money-account-actions { display: grid; width: 100%; }
   .money-account-actions form,

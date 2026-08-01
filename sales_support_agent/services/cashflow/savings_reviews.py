@@ -94,6 +94,53 @@ def record_savings_review(
     engine=None,
 ) -> dict[str, Any]:
     """Record a reviewed savings candidate without mutating finance facts."""
+    prepared = _prepare_review(
+        opportunity, action, actor, reason=reason, scope=scope,
+        request_id=request_id, clickup_task=clickup_task,
+    )
+    from sales_support_agent.models.database import ensure_finance_trust_schema, get_engine
+
+    db_engine = engine or get_engine()
+    ensure_finance_trust_schema(db_engine)
+    with db_engine.begin() as connection:
+        return _record_prepared_review(connection, prepared)
+
+
+def record_savings_reviews(
+    changes: list[Mapping[str, Any]], actor: str, *, scope: str = DEFAULT_SCOPE,
+    request_id: str | None = None, engine=None,
+) -> list[dict[str, Any]]:
+    """Save a validated set of trim decisions atomically."""
+    if not changes or len(changes) > 100:
+        raise ValueError("Choose between 1 and 100 savings changes")
+    prepared: list[dict[str, Any]] = []
+    keys: set[str] = set()
+    batch_id = request_id or uuid4().hex
+    for index, change in enumerate(changes):
+        if not isinstance(change, Mapping):
+            raise ValueError("One savings change is invalid; review the list and try again")
+        item = _prepare_review(
+            change.get("opportunity") or {}, str(change.get("action") or ""), actor,
+            reason=str(change.get("reason") or ""), scope=scope,
+            request_id=f"{batch_id}:{index}", clickup_task=None,
+        )
+        if item["key"] in keys:
+            raise ValueError("A vendor appears more than once; refresh and try again")
+        keys.add(item["key"])
+        prepared.append(item)
+
+    from sales_support_agent.models.database import ensure_finance_trust_schema, get_engine
+
+    db_engine = engine or get_engine()
+    ensure_finance_trust_schema(db_engine)
+    with db_engine.begin() as connection:
+        return [_record_prepared_review(connection, item) for item in prepared]
+
+
+def _prepare_review(
+    opportunity: Mapping[str, Any], action: str, actor: str, *, reason: str,
+    scope: str, request_id: str | None, clickup_task: Mapping[str, str] | None,
+) -> dict[str, Any]:
     if action not in VALID_ACTIONS:
         raise ValueError("Unsupported savings action")
     actor = _actor(actor)
@@ -104,10 +151,6 @@ def record_savings_review(
     evidence = _json(opportunity)
     if action == "confirm_realized" and not bool(opportunity.get("realization_ready")):
         raise ValueError("Posted bank evidence has not verified this saving yet")
-    from sales_support_agent.models.database import ensure_finance_trust_schema, get_engine
-
-    db_engine = engine or get_engine()
-    ensure_finance_trust_schema(db_engine)
     review_id = _review_id(scope, key)
     now = datetime.now(timezone.utc)
     next_state = _state_for(action)
@@ -117,28 +160,29 @@ def record_savings_review(
     event_id = sha256(f"finance-savings-event-v1|{review_id}|{request_identity}".encode()).hexdigest()
     suppress_until = now + timedelta(days=90) if action in {"keep", "dismiss"} else None
     task = dict(clickup_task or {})
-    with db_engine.begin() as connection:
-        existing = connection.execute(text("""
+    return {
+        "action": action, "actor": actor, "evidence": evidence, "evidence_hash": evidence_hash,
+        "event_id": event_id, "key": key, "next_state": next_state, "now": now,
+        "reason": reason.strip(), "request_identity": request_identity, "review_id": review_id,
+        "scope": scope, "suppress_until": suppress_until, "task": task,
+    }
+
+
+def _record_prepared_review(connection, item: Mapping[str, Any]) -> dict[str, Any]:
+    existing_event = connection.execute(text("""
+        SELECT id FROM finance_savings_review_events WHERE idempotency_key=:idempotency_key
+    """), {"idempotency_key": item["request_identity"]}).fetchone()
+    if existing_event:
+        return {"review_id": item["review_id"], "state": item["next_state"], "created": False, "clickup_task": item["task"]}
+
+    existing = connection.execute(text("""
             SELECT state FROM finance_savings_reviews WHERE id=:id
-        """), {"id": review_id}).fetchone()
-        prior_state = str(existing.state) if existing else ""
-        inserted = connection.execute(text("""
-            INSERT INTO finance_savings_review_events (
-                id, review_id, scope_key, event_type, prior_state, next_state,
-                actor, idempotency_key, payload_json, created_at
-            ) VALUES (:id, :review_id, :scope, :event_type, :prior_state, :next_state,
-                      :actor, :idempotency_key, :payload_json, :created_at)
-            ON CONFLICT(idempotency_key) DO NOTHING
-        """), {
-            "id": event_id, "review_id": review_id, "scope": scope,
-            "event_type": f"savings_{action}", "prior_state": prior_state,
-            "next_state": next_state, "actor": actor, "idempotency_key": request_identity,
-            "payload_json": json.dumps({"reason": reason.strip(), "evidence_hash": evidence_hash, "opportunity": evidence, "clickup_task": task}, separators=(",", ":"), sort_keys=True),
-            "created_at": now,
-        })
-        if inserted.rowcount:
-            connection.execute(text("""
-                INSERT INTO finance_savings_reviews (
+        """), {"id": item["review_id"]}).fetchone()
+    prior_state = str(existing.state) if existing else ""
+    evidence = item["evidence"]
+    task = item["task"]
+    connection.execute(text("""
+        INSERT INTO finance_savings_reviews (
                     id, scope_key, opportunity_key, evidence_hash, state, display_name,
                     normalized_merchant, cadence, potential_monthly_cents, baseline_amount_cents,
                     suppress_until, clickup_task_id, clickup_task_url, reason, evidence_json,
@@ -156,16 +200,30 @@ def record_savings_review(
                     clickup_task_id=CASE WHEN excluded.clickup_task_id <> '' THEN excluded.clickup_task_id ELSE finance_savings_reviews.clickup_task_id END,
                     clickup_task_url=CASE WHEN excluded.clickup_task_url <> '' THEN excluded.clickup_task_url ELSE finance_savings_reviews.clickup_task_url END,
                     reason=excluded.reason, evidence_json=excluded.evidence_json, updated_at=excluded.updated_at
-            """), {
-                "id": review_id, "scope": scope, "key": key, "evidence_hash": evidence_hash,
-                "state": next_state, "display_name": str(evidence.get("display_name") or ""),
+    """), {
+                "id": item["review_id"], "scope": item["scope"], "key": item["key"], "evidence_hash": item["evidence_hash"],
+                "state": item["next_state"], "display_name": str(evidence.get("display_name") or ""),
                 "merchant": str(evidence.get("normalized_merchant") or ""), "cadence": str(evidence.get("cadence") or ""),
                 "monthly": evidence.get("monthly_potential_cents"), "baseline": evidence.get("baseline_amount_cents"),
-                "suppress_until": suppress_until, "task_id": str(task.get("id") or ""),
-                "task_url": str(task.get("url") or ""), "reason": reason.strip(),
-                "evidence_json": json.dumps(evidence, separators=(",", ":"), sort_keys=True), "actor": actor, "now": now,
+                "suppress_until": item["suppress_until"], "task_id": str(task.get("id") or ""),
+                "task_url": str(task.get("url") or ""), "reason": item["reason"],
+                "evidence_json": json.dumps(evidence, separators=(",", ":"), sort_keys=True), "actor": item["actor"], "now": item["now"],
             })
-    return {"review_id": review_id, "state": next_state, "created": bool(inserted.rowcount), "clickup_task": task}
+    inserted = connection.execute(text("""
+        INSERT INTO finance_savings_review_events (
+            id, review_id, scope_key, event_type, prior_state, next_state,
+            actor, idempotency_key, payload_json, created_at
+        ) VALUES (:id, :review_id, :scope, :event_type, :prior_state, :next_state,
+                  :actor, :idempotency_key, :payload_json, :created_at)
+        ON CONFLICT(idempotency_key) DO NOTHING
+    """), {
+        "id": item["event_id"], "review_id": item["review_id"], "scope": item["scope"],
+        "event_type": f"savings_{item['action']}", "prior_state": prior_state,
+        "next_state": item["next_state"], "actor": item["actor"], "idempotency_key": item["request_identity"],
+        "payload_json": json.dumps({"reason": item["reason"], "evidence_hash": item["evidence_hash"], "opportunity": evidence, "clickup_task": task}, separators=(",", ":"), sort_keys=True),
+        "created_at": item["now"],
+    })
+    return {"review_id": item["review_id"], "state": item["next_state"], "created": bool(inserted.rowcount), "clickup_task": task}
 
 
 def create_clickup_savings_review_task(opportunity: Mapping[str, Any]) -> dict[str, str]:
