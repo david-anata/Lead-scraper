@@ -686,12 +686,60 @@ def execute_github_article_action(
     timestamp: datetime | None = None,
 ) -> dict[str, Any]:
     timestamp = timestamp or datetime.now(timezone.utc)
+    raw_value = str(
+        record.get("action_value") or record.get("suggested_action_value") or ""
+    ).strip()
     try:
-        article = validate_generated_article(record)
+        requested_article = json.loads(raw_value)
+    except json.JSONDecodeError:
+        # Preserve the validator's stable user-facing error for malformed input.
+        validate_generated_article(record)
+        raise website_ops.ExecutionError("Generated article payload must be valid JSON.")
+    if not isinstance(requested_article, Mapping):
+        validate_generated_article(record)
+        raise website_ops.ExecutionError("Generated article payload must be an object.")
+
+    client = GitHubWebsiteClient()
+    before_source, before_sha = client.get_file(GENERATED_ARTICLE_REGISTRY)
+    requested_slug = str(requested_article.get("slug", "")).strip()
+    existing_article = next(
+        (
+            item
+            for item in generated_article_records(before_source)
+            if str(item.get("slug", "")) == requested_slug
+        ),
+        None,
+    )
+    reconciled_existing = existing_article is not None
+    validation_record = dict(record)
+    if existing_article is not None:
+        requested_evidence_id = str(requested_article.get("evidenceId", "")).strip()
+        existing_evidence_id = str(existing_article.get("evidenceId", "")).strip()
+        requested_intent = str(requested_article.get("primaryIntent", "")).strip().casefold()
+        existing_intent = str(existing_article.get("primaryIntent", "")).strip().casefold()
+        if (
+            not requested_evidence_id
+            or requested_evidence_id != existing_evidence_id
+            or not requested_intent
+            or requested_intent != existing_intent
+        ):
+            raise website_ops.ExecutionError(
+                "Generated article slug already exists with a different identity."
+            )
+        # The durable registry is authoritative for a matching identity. This
+        # lets recovery accept a later source-safe editorial repair instead of
+        # repeatedly validating the stale pre-repair draft stored in the queue.
+        validation_record["action_value"] = json.dumps(
+            existing_article, ensure_ascii=False
+        )
+    try:
+        article = validate_generated_article(validation_record)
         deterministic_repairs: list[str] = []
     except website_ops.ExecutionError as original_error:
         try:
-            raw_article = json.loads(str(record.get("action_value", "") or ""))
+            raw_article = json.loads(
+                str(validation_record.get("action_value", "") or "")
+            )
         except json.JSONDecodeError:
             raise original_error
         repaired_article, deterministic_repairs = repair_deterministic_article_defects(
@@ -700,27 +748,12 @@ def execute_github_article_action(
         if not deterministic_repairs:
             raise original_error
         repaired_record = {
-            **dict(record),
+            **validation_record,
             "action_value": json.dumps(repaired_article, ensure_ascii=False),
         }
         article = validate_generated_article(repaired_record)
-    client = GitHubWebsiteClient()
-    before_source, before_sha = client.get_file(GENERATED_ARTICLE_REGISTRY)
     feedback_id = str(record.get("feedback_id", "") or "unknown")
-    existing_article = next(
-        (
-            item
-            for item in generated_article_records(before_source)
-            if str(item.get("slug", "")) == str(article["slug"])
-        ),
-        None,
-    )
-    reconciled_existing = existing_article is not None
     if existing_article is not None:
-        if existing_article != article:
-            raise website_ops.ExecutionError(
-                "Generated article slug already exists with a different payload."
-            )
         commit_sha = ""
     else:
         after_source = update_generated_article_registry(before_source, article)
