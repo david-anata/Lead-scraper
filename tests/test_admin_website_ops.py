@@ -765,6 +765,42 @@ example
         self.assertEqual(result["status"], "skipped")
         run.assert_not_called()
 
+    def test_embedded_scheduler_retries_claimed_slot_when_durable_state_is_stale(self) -> None:
+        settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))
+        local_now = datetime(2026, 8, 1, 12, 12, tzinfo=timezone.utc)
+        lease = object()
+        with (
+            mock.patch(
+                "sales_support_agent.models.database.get_engine",
+                return_value=object(),
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.database_mirror_enabled",
+                return_value=False,
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                return_value={"run_date": "2026-07-31"},
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.claim_scheduled_job",
+                side_effect=[None, lease],
+            ) as claim,
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.finish_scheduled_job",
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router._run_due_modes",
+                return_value={"daily": {"status": "succeeded"}},
+            ) as run,
+        ):
+            result = _run_embedded_pulse(settings, local_now)
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(claim.call_count, 2)
+        self.assertTrue(claim.call_args_list[1].kwargs["run_key"].endswith("stale-state-recovery-v1"))
+        run.assert_called_once()
+
     def test_embedded_scheduler_restores_then_persists_database_mirror(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

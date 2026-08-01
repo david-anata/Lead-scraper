@@ -90,6 +90,19 @@ def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
             if engine is not None
             else None
         )
+        if (
+            engine is not None
+            and lease is None
+            and str(current_state.get("run_date", "")) != local_now.date().isoformat()
+        ):
+            # One bounded same-slot recovery is allowed when the durable run
+            # state proves the earlier lease produced no current-day outcome.
+            lease = claim_scheduled_job(
+                engine,
+                job_key="website_ops",
+                run_key=f"{run_key}:stale-state-recovery-v1",
+                lease_minutes=180,
+            )
         if engine is not None and lease is None:
             return {"status": "skipped", "message": "This Website Ops pulse is already running."}
 
