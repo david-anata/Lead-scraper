@@ -95,6 +95,86 @@ class ArenaAgreementDynamicFieldTests(unittest.TestCase):
         self.assertEqual(format_merge_value("quote_total", 550000), "5,500.00")
 
 
+CONTRACT = DOCUMENT.parent / "arena-event-agreement-v1.md"
+
+
+class CustomerContractTests(unittest.TestCase):
+    """The document a customer actually signs.
+
+    The schedule beside it is written for a reviewer. This one is written for
+    the person paying, and David approves it as owner.
+    """
+
+    def setUp(self) -> None:
+        self.body = CONTRACT.read_text(encoding="utf-8")
+        self.flat = re.sub(r"\s+", " ", self.body)
+        self.tokens = sorted(set(TOKEN_RE.findall(self.body)))
+
+    def test_every_token_is_a_supported_field(self) -> None:
+        unsupported = [t for t in self.tokens if t not in set(EVENT_MERGE_FIELDS)]
+        self.assertEqual(unsupported, [], f"unsupported merge tokens: {unsupported}")
+
+    def test_it_states_the_discount(self) -> None:
+        for token in ("subtotal_before_discount", "discount_amount", "discount_reason"):
+            self.assertIn(token, self.tokens)
+
+    def test_nothing_renders_as_a_gap_on_a_real_booking(self) -> None:
+        values = {
+            "customer_name": "Rosalind Ferro",
+            "customer_email": "rosalind@ferro.example",
+            "event_space": "The Arena",
+            "setup_starts_at": "2026-09-30T15:00:00+00:00",
+            "guest_starts_at": "2026-09-30T17:00:00+00:00",
+            "guest_ends_at": "2026-09-30T23:00:00+00:00",
+            "teardown_ends_at": "2026-10-01T01:00:00+00:00",
+            "attendance": 120,
+            "subtotal_before_discount": 620000,
+            "discount_amount": 70000,
+            "discount_reason": "Repeat customer, third booking this year",
+            "quote_total": 550000,
+            "currency": "USD",
+            "deposit_amount": 275000,
+            "deposit_type": "percent",
+            "cancellation_policy": "Non-refundable inside 14 days.",
+            "tax_terms": {"status": "non_taxable", "rate_bps": 0, "note": "Owner decision"},
+            "included": ["Tables", "Chairs", "Stage"],
+            "addons": ["Setup and reset"],
+        }
+        rendered = self.body
+        for token in self.tokens:
+            text = format_merge_value(token, values[token])
+            self.assertNotEqual(text, "[not provided]", f"{token} rendered as a gap")
+            rendered = rendered.replace("{{" + token + "}}", text)
+        self.assertNotIn("{{", rendered)
+        self.assertIn("5,500.00", rendered)
+
+    def test_it_matches_the_published_policies(self) -> None:
+        for needle in (
+            "$175 per full hour",
+            "$250 cleaning fee",
+            "$500 refundable security deposit",
+            "seven days before your event",
+            "$250 up to 75 guests",
+            "$75 per hour",
+            "$125 per hour",
+            "20% rush fee",
+            "$1 million per occurrence",
+            "at least 14 days before your event",
+            "Cooking and kitchen use are not allowed",
+        ):
+            self.assertIn(needle, self.flat, f"published term missing: {needle}")
+
+    def test_it_reads_as_a_contract_not_a_review_schedule(self) -> None:
+        self.assertIn("Signature:", self.body)
+        self.assertIn("governed by the laws of the State of Utah", self.flat)
+        self.assertNotIn("prepared for legal review", self.flat.lower())
+        self.assertNotIn("must not be sent to a customer", self.flat.lower())
+
+    def test_no_em_dashes(self) -> None:
+        """David's standing rule for anything customer-facing."""
+        self.assertNotIn("—", self.body)
+
+
 class DiscountResolverTests(unittest.TestCase):
     """The contract's discount must come off the quote, not a second source."""
 
