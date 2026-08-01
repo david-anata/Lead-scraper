@@ -5,7 +5,7 @@ import io
 import os
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -843,6 +843,65 @@ example
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["details"]["daily"]["status"], "succeeded")
             run.assert_called_once_with(app.state.settings, mode="daily")
+
+    def test_forced_daily_run_recovers_a_stale_manual_lease(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            settings.internal_api_key = "test-internal-key"
+            local_now = datetime.now(ZoneInfo("America/Denver"))
+            write_website_ops_run_state(
+                settings,
+                "daily",
+                {
+                    "status": "running",
+                    "run_date": local_now.date().isoformat(),
+                    "last_started_at": (
+                        datetime.now(timezone.utc) - timedelta(hours=2)
+                    ).isoformat(),
+                },
+            )
+            app = FastAPI()
+            app.state.settings = settings
+            app.include_router(website_ops_jobs_router)
+            client = TestClient(app)
+            lease = SimpleNamespace(
+                job_key="website_ops",
+                run_key="recovery",
+                owner_token="owner",
+            )
+            with mock.patch(
+                "sales_support_agent.models.database.get_engine",
+                return_value=object(),
+            ), mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.claim_scheduled_job",
+                side_effect=[None, lease],
+            ) as claim, mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.finish_scheduled_job",
+            ), mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
+                return_value=SimpleNamespace(
+                    ok=True,
+                    message="Recovered.",
+                    report={
+                        "run_outcome": {
+                            "status": "production_verified",
+                            "production_delta_count": 1,
+                        }
+                    },
+                ),
+            ):
+                response = client.post(
+                    "/api/jobs/website-ops/run",
+                    headers={"X-Internal-Api-Key": "test-internal-key"},
+                    json={"mode": "daily", "force": True},
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(claim.call_count, 2)
+            self.assertIn(
+                ":force-recovery:",
+                claim.call_args_list[1].kwargs["run_key"],
+            )
 
     def test_scheduled_modes_add_weekly_and_monthly_on_first_monday(self) -> None:
         first_monday = datetime(2026, 8, 3, 8, 0, tzinfo=timezone.utc)
