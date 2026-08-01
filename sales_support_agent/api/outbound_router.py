@@ -369,6 +369,7 @@ _AMAZON_CSS = """
   .am-btn { padding:10px 18px; border:none; border-radius:10px; background:#2B3644; color:#fff;
     font-weight:800; font-size:14px; cursor:pointer; }
   .am-btn:disabled { opacity:.55; cursor:default; }
+  .am-ghost { background:#fff; color:#2B3644; border:1px solid var(--border); }
   .am-note { font-size:13px; color:rgba(43,54,68,0.65); }
   .am-empty { margin:0; font-size:15px; }
   .am-badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:800; letter-spacing:.04em; }
@@ -475,6 +476,8 @@ def _lower_first(text: str) -> str:
 _AMAZON_SCAN_CONTROL = """
     <div class="am-run">
       <button class="am-btn" id="am-go" type="button">Check next 3 brands</button>
+      <button class="am-btn am-ghost" id="am-run" type="button">Run the whole morning now</button>
+      <button class="am-btn am-ghost" id="am-mail" type="button">Email me what is ready</button>
       <span class="am-note" id="am-msg">Checks the best brands we have not looked at yet.
         Roughly two minutes each, so this runs in the background.</span>
     </div>
@@ -491,6 +494,21 @@ _AMAZON_SCAN_CONTROL = """
                      b.disabled=false; b.textContent='Check next 3 brands'; }
             }).catch(function(){ m.textContent='Lost track of the scan. Refresh the page.'; });
         }
+        var runB=document.getElementById('am-run'), mailB=document.getElementById('am-mail');
+        if(runB) runB.addEventListener('click', function(){
+          runB.disabled=true; m.textContent='Starting the full run...';
+          fetch('/admin/api/outbound/run-morning',{method:'POST'})
+            .then(function(r){return r.json();})
+            .then(function(d){ m.textContent=d.reason||''; if(d.ok){ poll(); } else { runB.disabled=false; } })
+            .catch(function(){ m.textContent='Could not reach the server.'; runB.disabled=false; });
+        });
+        if(mailB) mailB.addEventListener('click', function(){
+          mailB.disabled=true; m.textContent='Sending...';
+          fetch('/admin/api/outbound/email-batch',{method:'POST'})
+            .then(function(r){return r.json();})
+            .then(function(d){ m.textContent=d.reason||''; mailB.disabled=false; })
+            .catch(function(){ m.textContent='Could not reach the server.'; mailB.disabled=false; });
+        });
         b.addEventListener('click', function(){
           b.disabled=true; b.textContent='Starting...'; m.textContent='Starting...';
           var fd=new FormData(); fd.append('limit','3');
@@ -1347,6 +1365,41 @@ async def outbound_amazon_scan(request: Request) -> Response:
 def outbound_amazon_scan_status(request: Request) -> Response:
     """Where the running scan has got to."""
     return JSONResponse(content=dict(_AMAZON_SCAN))
+
+
+@router.post("/admin/api/outbound/run-morning", response_class=JSONResponse)
+async def outbound_run_morning(request: Request) -> Response:
+    """Run the whole morning routine now: pull, check Amazon, email the batch.
+
+    Backgrounded, because a full run is roughly half an hour of Amazon checks
+    and would never return inside a request. The same routine the 7am schedule
+    calls, so testing it here tests the real thing rather than a copy.
+    """
+    from starlette.background import BackgroundTask
+
+    from sales_support_agent.api import outbound_jobs as _jobs
+
+    if _AMAZON_SCAN.get("running"):
+        return JSONResponse(status_code=409, content={
+            "ok": False,
+            "reason": f"A scan is already running ({_AMAZON_SCAN.get('done', 0)} of {_AMAZON_SCAN.get('total', 0)} done)."})
+
+    _AMAZON_SCAN.update(running=True, done=0, total=_jobs._SCAN_PER_DAY,
+                        started=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        last="")
+
+    def _go() -> None:
+        try:
+            _jobs.run_morning_routine()
+        finally:
+            _AMAZON_SCAN.update(running=False, last="Morning routine finished. Check your email.")
+
+    return JSONResponse(
+        content={"ok": True, "started": True,
+                 "reason": "Running now: pulling brands, checking Amazon, then emailing you. "
+                           "Roughly 30 minutes. You can close this."},
+        background=BackgroundTask(_go),
+    )
 
 
 @router.get("/admin/api/outbound/email-batch", response_class=JSONResponse)
