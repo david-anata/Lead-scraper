@@ -1370,6 +1370,7 @@ def review_feedback_record(
             record,
             {
                 "status": "done",
+                "execution_error": "",
                 "last_execution_at": result["executed_at"],
                 "execution_result": result,
             },
@@ -1411,6 +1412,7 @@ def _execute_record(
         record,
         {
             "status": "done",
+            "execution_error": "",
             "last_execution_at": result["executed_at"],
             "execution_result": result,
         },

@@ -1585,6 +1585,38 @@ example
             self.assertEqual(updated["status"], "approved")
             self.assertEqual(updated.get("execution_error", ""), "")
 
+    def test_review_execution_success_clears_stale_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir), execute_approved=True)
+            record = save_feedback_record(
+                settings,
+                {
+                    "summary": "Publish reconciled article",
+                    "status": "error",
+                    "execution_error": "stale publication failure",
+                    "auto_generated": True,
+                    "execution_eligibility": "auto_execute",
+                    "suggested_action_type": "publish_blog_article",
+                    "suggested_action_value": json.dumps({"slug": "reconciled-article"}),
+                },
+            )
+            with mock.patch(
+                "sales_support_agent.services.website_ops._execute_feedback_action",
+                return_value={
+                    "executed_at": "2026-08-01T23:30:00Z",
+                    "verification_status": "verified",
+                },
+            ):
+                result = review_feedback_record(
+                    settings,
+                    record["feedback_id"],
+                    {"status": "approved"},
+                )
+            self.assertTrue(result.ok)
+            updated = load_feedback_records(settings)[0]
+            self.assertEqual(updated["status"], "done")
+            self.assertEqual(updated["execution_error"], "")
+
     def test_execute_approved_website_ops_actions_runs_approved_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir), execute_approved=True)
@@ -1593,6 +1625,7 @@ example
                 {
                     "summary": "Add fulfillment FAQ",
                     "status": "approved",
+                    "execution_error": "stale failure from an earlier attempt",
                     "action_type": "inject_faq_block",
                     "action_value": json.dumps({"heading": "Fulfillment FAQ", "questions": []}),
                     "page_url": "https://anatainc.com/services/fulfillment/",
@@ -1613,6 +1646,7 @@ example
             self.assertEqual(result.report["executed"], 1)
             updated = next(item for item in load_feedback_records(settings) if item["feedback_id"] == record["feedback_id"])
             self.assertEqual(updated["status"], "done")
+            self.assertEqual(updated["execution_error"], "")
             self.assertEqual(updated["execution_result"]["verification_status"], "verified")
 
     def test_run_website_ops_enriches_report_with_autonomy_overlay(self) -> None:
