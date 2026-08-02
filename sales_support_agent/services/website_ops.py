@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo
 
 from sales_support_agent.config import Settings
 from sales_support_agent.integrations.resend import ResendClient
@@ -254,7 +255,7 @@ def write_website_ops_run_state(settings: Settings, mode: str, updates: Mapping[
 
 def website_ops_run_is_due(settings: Settings, mode: str = "daily", *, today: date | None = None) -> bool:
     normalized_mode = mode if mode in RUN_MODES else "daily"
-    current_date = today or date.today()
+    current_date = today or datetime.now(ZoneInfo("America/Denver")).date()
     current_day = current_date.isoformat()
     state = get_website_ops_run_state(settings, normalized_mode)
     if state.get("status") in {"queued", "running"} and state.get("run_date") == current_day:
@@ -1985,7 +1986,7 @@ def _run_state_notice(state: Mapping[str, Any]) -> tuple[str, str]:
     run_date = str(state.get("run_date", "") or "").strip()
     last_successful_date = str(state.get("last_successful_date", "") or "").strip()
     last_error = str(state.get("last_error", "") or "").strip()
-    today = date.today().isoformat()
+    today = datetime.now(ZoneInfo("America/Denver")).date().isoformat()
     if status in {"queued", "running"} and run_date == today:
         return ("neutral", "Daily sweep running")
     if status in {"failed", "failed-outcome"} and run_date == today:
