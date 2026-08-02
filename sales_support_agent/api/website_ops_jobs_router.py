@@ -6,7 +6,7 @@ import os
 import secrets
 import logging
 import hashlib
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from threading import Event, Thread
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -202,6 +202,7 @@ def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
                 _scheduled_modes(local_now),
                 trigger="embedded_scheduler",
                 pulse_slot=pulse_slot,
+                business_date=local_now.date(),
             )
             failed = any(
                 item.get("status") in {"failed", "failed_outcome"}
@@ -254,8 +255,12 @@ def _run_due_modes(
     trigger: str,
     force: bool = False,
     pulse_slot: str = "",
+    business_date: date | None = None,
 ) -> dict[str, dict]:
     results: dict[str, dict] = {}
+    run_business_date = business_date or datetime.now(
+        ZoneInfo("America/Denver")
+    ).date()
     for mode in modes:
         current_state = get_website_ops_run_state(settings, mode)
         repeated_daily_pulse = (
@@ -263,7 +268,11 @@ def _run_due_modes(
             and bool(pulse_slot)
             and current_state.get("last_pulse_slot") != pulse_slot
         )
-        if not force and not repeated_daily_pulse and not website_ops_run_is_due(settings, mode):
+        if (
+            not force
+            and not repeated_daily_pulse
+            and not website_ops_run_is_due(settings, mode, today=run_business_date)
+        ):
             results[mode] = {"status": "skipped", "message": "Already completed for this period."}
             continue
         now = datetime.now(ZoneInfo("UTC"))
@@ -273,7 +282,7 @@ def _run_due_modes(
             {
                 "mode": mode,
                 "status": "running",
-                "run_date": now.date().isoformat(),
+                "run_date": run_business_date.isoformat(),
                 "trigger": trigger,
                 "last_started_at": now.isoformat(),
                 "last_error": "",
@@ -397,7 +406,7 @@ def _run_due_modes(
                 **outcome_updates,
                 "status": "succeeded",
                 "last_completed_at": completed_at.isoformat(),
-                "last_successful_date": completed_at.date().isoformat(),
+                "last_successful_date": run_business_date.isoformat(),
                 "last_error": "",
                 "recovery_status": "recovered" if last_attempt > 1 else "not_needed",
             },
@@ -682,6 +691,7 @@ async def run_scheduled_website_ops(request: Request) -> dict:
             trigger="internal_force" if force else "render_cron",
             force=force,
             pulse_slot=pulse_slot,
+            business_date=local_now.date(),
         )
         failed = any(item.get("status") == "failed" for item in results.values())
         if engine is not None and lease is not None:

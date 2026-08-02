@@ -170,7 +170,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             ),
             mock.patch(
                 "sales_support_agent.api.website_ops_jobs_router.write_website_ops_run_state"
-            ),
+            ) as write_state,
             mock.patch(
                 "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
                 side_effect=[active, verified],
@@ -181,11 +181,15 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 ["daily"],
                 trigger="test",
                 force=True,
+                business_date=date(2026, 8, 1),
             )
 
         self.assertEqual(run.call_count, 2)
         self.assertEqual(result["daily"]["status"], "succeeded")
         self.assertEqual(result["daily"]["attempts"], 2)
+        persisted_updates = [call.args[2] for call in write_state.call_args_list]
+        self.assertEqual(persisted_updates[0]["run_date"], "2026-08-01")
+        self.assertEqual(persisted_updates[-1]["last_successful_date"], "2026-08-01")
 
     def test_daily_pulse_fails_truthfully_after_zero_delta_retries_exhaust(self) -> None:
         settings = SimpleNamespace()
@@ -1101,6 +1105,7 @@ example
             ["daily"],
             trigger="embedded_scheduler",
             pulse_slot="2026-08-01:11",
+            business_date=date(2026, 8, 1),
         )
 
     def test_embedded_scheduler_does_not_repeat_completed_slot(self) -> None:
