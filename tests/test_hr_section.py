@@ -194,23 +194,39 @@ class HRSectionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_time_clock_and_pto_pages_are_live(self):
-        page = self._get("/admin/hr/time", self.sa)
+        import uuid
+        employee_email = f"time-pto-{uuid.uuid4().hex[:8]}@anatainc.com"
+        hr_store.create_employee(
+            email=employee_email, full_name="Time PTO Employee",
+            employee_type="salaried", annual_salary="24000",
+        )
+        hr_store.upsert_employment_profile(
+            employee_email, hire_date=date(2026, 1, 1),
+            classification="exempt", pay_basis="fixed_semimonthly",
+            fixed_pay_per_period="1000", standard_weekly_hours=40,
+            actor="test",
+        )
+        uid = access_store.upsert_user(employee_email, "Time PTO Employee")
+        access_store.set_user_permissions(uid, ["hr.access"])
+        employee_cookie = _cookie(employee_email, "Time PTO Employee")
+
+        page = self._get("/admin/hr/time", employee_cookie)
         self.assertEqual(page.status_code, 200)
         self.assertIn("Time &amp; PTO", page.text)
         self.assertIn("Clock in", page.text)
 
-        punch = self._post("/admin/hr/time/clock", {"action": "in"}, self.sa)
+        punch = self._post("/admin/hr/time/clock", {"action": "in"}, employee_cookie)
         self.assertEqual(punch.status_code, 303)
-        running = self._get("/admin/hr/time", self.sa)
+        running = self._get("/admin/hr/time", employee_cookie)
         self.assertIn("Clock out", running.text)
-        self._post("/admin/hr/time/clock", {"action": "out"}, self.sa)
+        self._post("/admin/hr/time/clock", {"action": "out"}, employee_cookie)
 
         request = self._post("/admin/hr/time/pto", {
             "start_date": "2026-08-10", "end_date": "2026-08-10",
             "hours": "4", "reason": "Appointment",
-        }, self.sa)
+        }, employee_cookie)
         self.assertEqual(request.status_code, 303)
-        self.assertIn("Appointment", self._get("/admin/hr/time", self.sa).text)
+        self.assertIn("Appointment", self._get("/admin/hr/time", employee_cookie).text)
 
     def test_hourly_timesheet_requires_employee_attestation_and_independent_review(self):
         import uuid
