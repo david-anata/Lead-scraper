@@ -14,7 +14,8 @@ import os
 import re
 from calendar import monthrange
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from statistics import median
 from typing import Any, Iterable, Mapping
 
 from sales_support_agent.models.database import kv_get_json, kv_set_json
@@ -22,6 +23,10 @@ from sales_support_agent.services.cashflow.cashflow_helpers import _page_shell
 from sales_support_agent.services.cashflow.categorizer import categorize
 from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
 from sales_support_agent.services.cashflow.obligations import list_obligations
+from sales_support_agent.services.cashflow.vendor_aliases import (
+    alias_map,
+    clean_vendor_display_name,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -130,6 +135,112 @@ def _merchant(row: Mapping[str, Any]) -> str:
     ).strip()[:120]
 
 
+def _merchant_identity(
+    row: Mapping[str, Any], aliases: Mapping[str, Mapping[str, str]] | None = None,
+) -> tuple[str, str]:
+    """Resolve an audited merchant identity while preserving raw bank wording."""
+    raw = _merchant(row)
+    cleaned = clean_vendor_display_name(raw)
+    base_key = _slug(cleaned) or _slug(raw) or "unassigned"
+    try:
+        loaded_aliases = dict(aliases) if aliases is not None else alias_map()
+        key = base_key
+        seen: set[str] = set()
+        while key not in seen:
+            seen.add(key)
+            matched = key if key in loaded_aliases else next((
+                alias for alias in sorted(loaded_aliases, key=len, reverse=True)
+                if key.startswith(alias + " ")
+            ), "")
+            if not matched:
+                break
+            key = str(loaded_aliases[matched].get("canonical_key") or key)
+        display = next((
+            str(value.get("canonical_name") or "")
+            for value in loaded_aliases.values()
+            if str(value.get("canonical_key") or "") == key
+            and str(value.get("canonical_name") or "")
+        ), cleaned)
+    except RuntimeError:
+        # Pure calculation tests and offline previews intentionally have no DB.
+        key, display = base_key, cleaned
+    return key, display
+
+
+def _account_label(row: Mapping[str, Any]) -> str:
+    """Return a safe account hint, never credentials or a full account number."""
+    for field in ("account_name", "plaid_account_name", "account_mask", "bank_reference"):
+        value = str(row.get(field) or "").strip()
+        if value:
+            return value[-80:]
+    notes = str(row.get("notes") or "")
+    match = re.search(r"(?:account|acct)[=: ]+([^;|\n]+)", notes, re.IGNORECASE)
+    return match.group(1).strip()[-80:] if match else "Connected bank account"
+
+
+def _recurrence_classification(
+    occurrences: list[dict[str, Any]], *, latest_complete_month: str,
+) -> dict[str, Any]:
+    """Classify vendor cadence from transaction dates, not monthly totals alone."""
+    ordered = sorted(occurrences, key=lambda row: row["date"])
+    dates = [row["date"] for row in ordered]
+    amounts = [int(row["amount_cents"]) for row in ordered]
+    unique_months = sorted({_month_key(day) for day in dates})
+    duplicate_signatures: dict[tuple[str, int, str], int] = defaultdict(int)
+    for row in ordered:
+        duplicate_signatures[(
+            row["date"].isoformat(), int(row["amount_cents"]), str(row["account"]),
+        )] += 1
+    probable_duplicate_cents = sum(
+        (count - 1) * signature[1]
+        for signature, count in duplicate_signatures.items() if count > 1
+    )
+    intervals = [(later - earlier).days for earlier, later in zip(dates, dates[1:])]
+    typical_interval = int(round(median(intervals))) if intervals else 0
+    cadence = "one_time"
+    confidence = "low"
+    exclusion_reason = "Only one isolated posted charge is available."
+    if probable_duplicate_cents:
+        cadence = "uncertain"
+        exclusion_reason = "Same-day, same-amount charges need duplicate review first."
+    elif len(ordered) >= 3 and 20 <= typical_interval <= 40:
+        cadence = "monthly" if latest_complete_month in unique_months else "inactive"
+        confidence = "high" if len(ordered) >= 5 else "medium"
+        exclusion_reason = "" if cadence == "monthly" else "No charge posted in the latest complete month."
+    elif len(ordered) >= 2 and 300 <= typical_interval <= 430:
+        cadence = "annual"
+        confidence = "medium"
+        exclusion_reason = ""
+    elif len(unique_months) >= 2:
+        cadence = "irregular" if latest_complete_month in unique_months else "inactive"
+        confidence = "medium"
+        exclusion_reason = (
+            "Timing does not form a reliable monthly or annual cycle."
+            if cadence == "irregular" else "No charge posted in the latest complete month."
+        )
+    stable_amount = int(median(amounts[-3:])) if amounts else 0
+    earlier_amount = int(median(amounts[:-3])) if len(amounts) >= 6 else stable_amount
+    increase_cents = max(0, stable_amount - earlier_amount)
+    price_increase = bool(
+        earlier_amount and increase_cents >= 1_000
+        and stable_amount * 100 >= earlier_amount * 110
+    )
+    expected_next = dates[-1] + timedelta(days=(365 if cadence == "annual" else typical_interval or 30))
+    return {
+        "cadence": cadence,
+        "confidence": confidence,
+        "typical_interval_days": typical_interval,
+        "baseline_amount_cents": stable_amount,
+        "prior_amount_cents": earlier_amount,
+        "price_increase": price_increase,
+        "price_increase_cents": increase_cents if price_increase else 0,
+        "probable_duplicate_cents": probable_duplicate_cents,
+        "exclusion_reason": exclusion_reason,
+        "last_charge_date": dates[-1].isoformat() if dates else "",
+        "next_expected_date": expected_next.isoformat() if dates else "",
+    }
+
+
 def _is_transfer(row: Mapping[str, Any], category: str) -> bool:
     """Identify internal money movement even when Plaid leaves it uncategorized."""
     if category in _TRANSFER_CATEGORIES:
@@ -220,24 +331,37 @@ def build_budget_view(
     category_merchants: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     merchant_months: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     merchant_meta: dict[str, dict[str, str]] = {}
+    merchant_occurrences: dict[str, list[dict[str, Any]]] = defaultdict(list)
     merchant_charge_signatures: dict[str, dict[tuple[str, int], int]] = defaultdict(
         lambda: defaultdict(int)
     )
     latest_date: date | None = None
     earliest_date: date | None = None
+    try:
+        aliases = alias_map()
+    except RuntimeError:
+        aliases = {}
     for row in transactions:
         occurred = row["_budget_date"]
         key = row["_budget_category"]
         month = _month_key(occurred)
+        merchant_key, merchant_display = _merchant_identity(row, aliases)
+        merchant_meta[merchant_key] = {
+            "name": merchant_display, "category": key,
+        }
+        if occurred >= today - timedelta(days=430) and month != current_month:
+            merchant_occurrences[merchant_key].append({
+                "transaction_id": str(row.get("source_id") or row.get("id") or ""),
+                "date": occurred,
+                "amount_cents": int(row.get("amount_cents") or 0),
+                "account": _account_label(row),
+                "raw_description": row["_budget_merchant"],
+            })
         if month in comparison_months or month == current_month:
             category_months[key][month] += int(row.get("amount_cents") or 0)
             category_merchants[key][row["_budget_merchant"]] += int(
                 row.get("amount_cents") or 0
             )
-            merchant_key = _slug(row["_budget_merchant"]) or "unassigned"
-            merchant_meta[merchant_key] = {
-                "name": row["_budget_merchant"], "category": key,
-            }
             merchant_months[merchant_key][month] += int(row.get("amount_cents") or 0)
             if month in comparison_months:
                 merchant_charge_signatures[merchant_key][
@@ -248,16 +372,20 @@ def build_budget_view(
 
     days_in_month = monthrange(today.year, today.month)[1]
     elapsed_days = max(1, today.day)
+    recurrence_facts = {
+        merchant_key: _recurrence_classification(
+            occurrences, latest_complete_month=comparison_months[-1]
+        )
+        for merchant_key, occurrences in merchant_occurrences.items()
+    }
     recurring_category_average: dict[str, int] = defaultdict(int)
-    for merchant_key, monthly in merchant_months.items():
-        historical = [int(monthly.get(month) or 0) for month in comparison_months]
-        if (
-            sum(1 for amount in historical if amount > 0) >= 2
-            and historical[-1] > 0
-        ):
-            recurring_category_average[merchant_meta[merchant_key]["category"]] += (
-                sum(historical) // len(comparison_months)
-            )
+    for merchant_key, facts in recurrence_facts.items():
+        if facts["cadence"] not in {"monthly", "annual"}:
+            continue
+        monthly_value = int(facts["baseline_amount_cents"])
+        if facts["cadence"] == "annual":
+            monthly_value //= 12
+        recurring_category_average[merchant_meta[merchant_key]["category"]] += monthly_value
     categories: list[dict[str, Any]] = []
     for key in sorted(category_months):
         monthly = category_months[key]
@@ -393,9 +521,19 @@ def build_budget_view(
         total = sum(history.values())
         if total <= 0:
             continue
+        occurrence_evidence = [
+            {
+                "transaction_id": item["transaction_id"],
+                "date": item["date"].isoformat(),
+                "amount_cents": item["amount_cents"],
+                "account": item["account"],
+            }
+            for item in merchant_occurrences.get(merchant_key, [])
+        ]
         evidence = {
             "merchant": merchant_key, "category": meta["category"],
             "months": history, "comparison_months": comparison_months,
+            "transactions": occurrence_evidence,
         }
         opportunity_key = hashlib.sha256(f"budget-trim-v1|{merchant_key}".encode()).hexdigest()
         evidence_hash = hashlib.sha256(
@@ -403,35 +541,52 @@ def build_budget_view(
         ).hexdigest()
         recent_average = sum(history[month] for month in comparison_months[3:]) // 3
         active_months = sum(1 for value in history.values() if value > 0)
-        cadence = (
-            "recurring"
-            if active_months >= 2 and history[comparison_months[-1]] > 0
-            else "inactive"
-            if active_months >= 2
-            else "one_time"
-        )
+        facts = recurrence_facts.get(merchant_key) or {
+            "cadence": "one_time", "confidence": "low", "baseline_amount_cents": 0,
+            "probable_duplicate_cents": 0, "exclusion_reason": "Insufficient history.",
+            "last_charge_date": "", "next_expected_date": "", "price_increase": False,
+            "price_increase_cents": 0, "typical_interval_days": 0,
+        }
+        cadence = str(facts["cadence"])
+        is_recurring = cadence in {"monthly", "annual"}
+        baseline = int(facts["baseline_amount_cents"])
+        monthly_potential = baseline // 12 if cadence == "annual" else baseline if cadence == "monthly" else 0
+        occurrences = merchant_occurrences.get(merchant_key, [])
         trim_items.append({
             "opportunity_key": opportunity_key, "key": opportunity_key,
             "evidence_hash": evidence_hash, "display_name": meta["name"],
             "normalized_merchant": merchant_key, "category": meta["category"],
             "cadence": cadence,
-            "monthly_potential_cents": recent_average if cadence == "recurring" else 0,
-            "baseline_amount_cents": recent_average if cadence == "recurring" else 0,
+            "monthly_potential_cents": monthly_potential,
+            "baseline_amount_cents": baseline if is_recurring else 0,
             "six_month_total_cents": total, "monthly_average_cents": total // 6,
             "recent_average_cents": recent_average,
             "active_months": active_months, "monthly_history": history,
             "reason": (
-                "Recurring controllable vendor review"
-                if cadence == "recurring"
+                f"{cadence.title()} controllable cost supported by posted charges"
+                if is_recurring
                 else "Previously recurring but absent from the latest complete month"
                 if cadence == "inactive"
+                else "Duplicate-looking activity needs review before savings analysis"
+                if cadence == "uncertain"
                 else "One-time or irregular historical purchase review"
             ),
-            "limitations": "Usage, contract terms, and replacement cost require operator review.",
-            "evidence_dates": comparison_months, "review_state": "unknown", "review_note": "",
+            "limitations": str(facts.get("exclusion_reason") or "Usage, contract terms, and replacement cost require operator review."),
+            "evidence_dates": [item["date"].isoformat() for item in occurrences],
+            "transactions": [{
+                **item, "date": item["date"].isoformat(),
+            } for item in occurrences],
+            "last_charge_date": facts.get("last_charge_date"),
+            "next_expected_date": facts.get("next_expected_date"),
+            "confidence": facts.get("confidence"),
+            "typical_interval_days": facts.get("typical_interval_days"),
+            "probable_duplicate_cents": facts.get("probable_duplicate_cents"),
+            "price_increase": facts.get("price_increase"),
+            "price_increase_cents": facts.get("price_increase_cents"),
+            "review_state": "unknown", "review_note": "",
         })
     trim_items.sort(key=lambda item: (
-        {"recurring": 0, "inactive": 1, "one_time": 2}.get(item["cadence"], 3),
+        {"monthly": 0, "annual": 1, "inactive": 2, "irregular": 3, "one_time": 4, "uncertain": 5}.get(item["cadence"], 6),
         -int(item["six_month_total_cents"]), str(item["display_name"]).casefold(),
     ))
     proof = {
@@ -463,14 +618,86 @@ def build_budget_view(
 
 def load_budget_view() -> dict[str, Any]:
     try:
-        view = build_budget_view(list_obligations(limit=10_000))
+        source_rows = list_obligations(limit=10_000)
+        view = build_budget_view(source_rows)
         from sales_support_agent.services.cashflow.savings_reviews import load_savings_reviews
         reviews = load_savings_reviews()
+        try:
+            aliases = alias_map()
+        except RuntimeError:
+            aliases = {}
+        current_day = date.today()
         for item in view.get("trim_items") or []:
             review = reviews.get(str(item.get("opportunity_key") or ""))
             if review:
                 item["review_state"] = str(review.get("state") or "unknown")
                 item["review_note"] = str(review.get("reason") or "")
+                item["review"] = {
+                    key: review.get(key) for key in (
+                        "owner", "action_type", "cancellation_started_at",
+                        "cancellation_confirmed_at", "effective_date",
+                        "expected_verification_date", "proof_note",
+                        "realized_monthly_cents", "updated_at",
+                    )
+                }
+                effective = review.get("effective_date")
+                expected = review.get("expected_verification_date")
+                try:
+                    effective_day = effective if isinstance(effective, date) else date.fromisoformat(str(effective)[:10])
+                except (TypeError, ValueError):
+                    effective_day = None
+                try:
+                    expected_day = expected if isinstance(expected, date) else date.fromisoformat(str(expected)[:10])
+                except (TypeError, ValueError):
+                    expected_day = None
+                later_matches = []
+                if effective_day:
+                    for raw in source_rows:
+                        occurred = _event_date(raw)
+                        if (
+                            occurred and occurred > effective_day
+                            and str(raw.get("source") or "").lower() == "plaid"
+                            and str(raw.get("event_type") or "").lower() == "outflow"
+                            and str(raw.get("status") or "").lower() in {"posted", "matched"}
+                            and _merchant_identity(raw, aliases)[0] == item["normalized_merchant"]
+                        ):
+                            later_matches.append({
+                                "date": occurred.isoformat(),
+                                "amount_cents": int(raw.get("amount_cents") or 0),
+                            })
+                materially_returned = any(
+                    int(row["amount_cents"]) > int(item.get("baseline_amount_cents") or 0) * 20 // 100
+                    for row in later_matches
+                )
+                item["verification_ready"] = bool(
+                    item["review_state"] == "verifying" and expected_day
+                    and current_day >= expected_day and not materially_returned
+                )
+                item["charge_returned"] = bool(
+                    item["review_state"] == "realized" and materially_returned
+                )
+                item["verification_matches"] = later_matches
+        recurring_items = [
+            item for item in view.get("trim_items") or []
+            if item.get("cadence") in {"monthly", "annual"}
+        ]
+        view["savings_summary"] = {
+            "potential_monthly_cents": sum(
+                int(item.get("monthly_potential_cents") or 0)
+                for item in recurring_items
+                if item.get("review_state") in {"unknown", "investigate"}
+            ),
+            "committed_monthly_cents": sum(
+                int(item.get("monthly_potential_cents") or 0)
+                for item in recurring_items
+                if item.get("review_state") in {"waste", "cancellation_started", "verifying"}
+            ),
+            "realized_monthly_cents": sum(
+                int((item.get("review") or {}).get("realized_monthly_cents") or 0)
+                for item in recurring_items
+                if item.get("review_state") == "realized" and not item.get("charge_returned")
+            ),
+        }
         return view
     except Exception:
         return build_budget_view([])
@@ -714,6 +941,106 @@ def load_budget_review() -> dict[str, Any]:
         return {"status": "empty", "recommendations": []}
 
 
+def render_budget_vendor_page(
+    view: Mapping[str, Any], opportunity_key: str, *, flash: str = ""
+) -> str:
+    """Render one evidence-first savings decision as a normal page."""
+    item = next(
+        (
+            dict(candidate) for candidate in view.get("trim_items") or []
+            if str(candidate.get("opportunity_key") or "") == opportunity_key
+        ),
+        None,
+    )
+    if item is None:
+        body = f"""<div class="money-brief">{render_finance_nav("budget", counts={})}
+        <div class="money-empty"><h1>This cost is no longer in the current review</h1>
+        <p>Its bank evidence may have changed. Return to Budget &amp; savings for the current list.</p>
+        <a class="btn btn-primary" href="/admin/finances/budget">Return to Budget &amp; savings</a></div></div>"""
+        return _page_shell("Cost review", "budget", body, flash=flash)
+    item["realization_ready"] = bool(item.get("verification_ready"))
+    payload = html.escape(json.dumps(item, separators=(",", ":"), default=str), quote=True)
+    history = "".join(
+        f"<tr><td>{html.escape(str(tx.get('date') or ''))}</td>"
+        f"<td>{html.escape(str(tx.get('account') or 'Connected bank account'))}</td>"
+        f"<td>{html.escape(str(tx.get('raw_description') or item['display_name']))}</td>"
+        f"<td>{_money(int(tx.get('amount_cents') or 0), exact=True)}</td></tr>"
+        for tx in item.get("transactions") or []
+    )
+    state = str(item.get("review_state") or "unknown")
+    state_label = {
+        "unknown": "Needs a decision", "investigate": "Needs investigation",
+        "needed": "Kept", "waste": "Ready to cut",
+        "cancellation_started": "Cancellation started", "verifying": "Verifying the charge stopped",
+        "realized": "Savings confirmed", "cannot_cancel": "Cannot cancel",
+    }.get(state, state.replace("_", " ").title())
+    common = f"""
+      <input type="hidden" name="opportunity_json" value="{payload}">
+      <input type="hidden" name="evidence_hash" value="{html.escape(str(item['evidence_hash']), quote=True)}">
+      <input type="hidden" name="return_to" value="/admin/finances/budget/vendor/{html.escape(opportunity_key, quote=True)}">
+    """
+    if state == "waste":
+        action_panel = f"""<form class="cost-action-form" method="post" action="/admin/finances/savings/{html.escape(opportunity_key, quote=True)}/review">
+          {common}<input type="hidden" name="action" value="start_cancellation">
+          <h2>Start the cost-cutting action</h2><p>This records the work. It does not contact the vendor.</p>
+          <div class="cost-action-grid"><label>Owner<input name="owner" value="David Narayan" required></label>
+          <label>Action<select name="action_type" required><option value="cancel">Cancel</option><option value="downgrade">Downgrade</option><option value="renegotiate">Renegotiate</option><option value="dispute">Dispute duplicate</option><option value="investigate_duplicate">Investigate duplicate</option></select></label></div>
+          <label>Working note<textarea name="proof_note" rows="3" placeholder="Vendor login, contract detail, or next step"></textarea></label>
+          <button class="btn btn-primary" type="submit">Start cancellation work</button></form>"""
+    elif state == "cancellation_started":
+        action_panel = f"""<form class="cost-action-form" method="post" action="/admin/finances/savings/{html.escape(opportunity_key, quote=True)}/review">
+          {common}<input type="hidden" name="action" value="confirm_cancellation">
+          <h2>Record the vendor confirmation</h2><p>Finance will wait for the next expected charge window before calling this saved.</p>
+          <label>Effective date<input type="date" name="effective_date" required></label>
+          <label>Confirmation or proof<textarea name="proof_note" rows="4" required placeholder="Confirmation number, email summary, or downgrade details"></textarea></label>
+          <button class="btn btn-primary" type="submit">Confirm cancellation details</button></form>"""
+    elif state == "verifying":
+        review = item.get("review") or {}
+        verify_on = html.escape(str(review.get("expected_verification_date") or "the next expected charge window"))
+        if item.get("verification_ready"):
+            action_panel = f"""<form class="cost-action-form" method="post" action="/admin/finances/savings/{html.escape(opportunity_key, quote=True)}/review">
+              {common}<input type="hidden" name="action" value="confirm_realized">
+              <h2>Plaid verifies the charge stopped</h2><p>No comparable posted charge appeared through {verify_on}. Confirm this evidence to count the saving.</p>
+              <button class="btn btn-primary" type="submit">Record bank-verified savings</button></form>"""
+        else:
+            action_panel = f"""<div class="cost-action-form"><h2>Waiting for bank proof</h2>
+              <p>Finance will check posted Plaid activity through {verify_on}. Potential savings are not included in verified cash.</p></div>"""
+    elif state == "realized":
+        warning = "<div class=\"money-alert money-alert--danger\"><strong>A matching charge returned.</strong><p>Reopen this action and remove it from confirmed savings.</p></div>" if item.get("charge_returned") else ""
+        action_panel = f"""{warning}<form class="cost-action-form" method="post" action="/admin/finances/savings/{html.escape(opportunity_key, quote=True)}/review">
+          {common}<input type="hidden" name="action" value="reopen"><h2>Savings confirmed</h2>
+          <p>{_money(int((item.get('review') or {}).get('realized_monthly_cents') or 0), exact=True)} per month is supported by later Plaid evidence.</p>
+          <button class="btn btn-secondary" type="submit">Reopen this cost</button></form>"""
+    else:
+        action_panel = f"""<form class="cost-action-form" method="post" action="/admin/finances/savings/{html.escape(opportunity_key, quote=True)}/review">
+          {common}<h2>Choose what this cost means</h2><p>Nothing changes until you confirm one answer.</p>
+          <label>Decision<select name="action"><option value="needed">Needed</option><option value="investigate">Investigate</option><option value="waste">Waste — prepare to cut</option><option value="unknown">Unknown</option></select></label>
+          <label>Note<textarea name="reason" rows="3" placeholder="Why you chose this"></textarea></label>
+          <button class="btn btn-primary" type="submit">Save this decision</button></form>"""
+    body = f"""
+    <div class="money-brief cost-review-page">
+      {render_finance_nav("budget", counts={})}
+      <a class="money-back-link" href="/admin/finances/budget#trim-title">← Back to Budget &amp; savings</a>
+      <header class="money-page-header"><div><p class="finance-eyebrow">Cost review</p>
+      <h1>{html.escape(item['display_name'])}</h1><p class="money-page-subtitle">See the bank evidence, then take one clear next step.</p></div>
+      <div class="money-page-status"><span class="money-status money-status--review">{html.escape(state_label)}</span>
+      <span>{html.escape(str(item.get('confidence') or 'low').title())} evidence confidence</span></div></header>
+      <section class="cost-evidence-summary" aria-label="Cost evidence summary">
+        <article><span>Current frequency</span><strong>{html.escape(str(item.get('cadence') or 'uncertain').replace('_', ' ').title())}</strong></article>
+        <article><span>Estimated monthly cost</span><strong>{_money(int(item.get('monthly_potential_cents') or 0), exact=True)}</strong></article>
+        <article><span>Last posted charge</span><strong>{html.escape(str(item.get('last_charge_date') or 'Unavailable'))}</strong></article>
+        <article><span>Next expected</span><strong>{html.escape(str(item.get('next_expected_date') or 'Uncertain'))}</strong></article>
+      </section>
+      <section class="budget-workspace"><div class="money-section-heading"><div><p class="finance-eyebrow">Why this is here</p><h2>{html.escape(str(item.get('reason') or 'Review posted cost'))}</h2></div></div>
+      <p>{html.escape(str(item.get('limitations') or 'Verify usage and contract terms before acting.'))}</p>
+      {f'<div class="money-alert money-alert--warning"><strong>Possible duplicate</strong><p>{_money(int(item.get("probable_duplicate_cents") or 0), exact=True)} requires receipt or invoice review and is excluded from recurring savings.</p></div>' if item.get('probable_duplicate_cents') else ''}
+      <div class="money-table-wrap"><table class="budget-table"><thead><tr><th>Date</th><th>Account</th><th>Bank description</th><th>Posted amount</th></tr></thead><tbody>{history}</tbody></table></div></section>
+      {action_panel}
+      <p class="budget-rule-note">This workflow never cancels a service, moves money, runs payroll, or edits QuickBooks.</p>
+    </div>"""
+    return _page_shell(f"Review {item['display_name']}", "budget", body, flash=flash)
+
+
 def render_budget_page(
     view: Mapping[str, Any], review: Mapping[str, Any], *, flash: str = ""
 ) -> str:
@@ -770,9 +1097,9 @@ def render_budget_page(
         for item in view.get("investigations") or []
     )
     trim_items = list(view.get("trim_items") or [])
-    recurring_trim_count = sum(1 for item in trim_items if item.get("cadence") == "recurring")
+    recurring_trim_count = sum(1 for item in trim_items if item.get("cadence") in {"monthly", "annual"})
     inactive_trim_count = sum(1 for item in trim_items if item.get("cadence") == "inactive")
-    one_time_trim_count = sum(1 for item in trim_items if item.get("cadence") == "one_time")
+    one_time_trim_count = sum(1 for item in trim_items if item.get("cadence") in {"one_time", "irregular", "uncertain"})
     trim_counts = {
         state: sum(1 for item in trim_items if str(item.get("review_state") or "unknown") == state)
         for state in ("unknown", "needed", "investigate", "waste")
@@ -780,26 +1107,57 @@ def render_budget_page(
     actionable_items = [
         item for item in trim_items
         if (
-            item.get("cadence") == "recurring"
+            item.get("cadence") in {"monthly", "annual"}
             and str(item.get("review_state") or "unknown") in {"unknown", "investigate"}
         )
-    ][:15]
+    ][:5]
     actionable_keys = {
         str(item.get("opportunity_key") or "") for item in actionable_items
     }
     ready_to_cut_count = sum(
         1 for item in trim_items
-        if item.get("cadence") == "recurring" and item.get("review_state") == "waste"
+        if item.get("cadence") in {"monthly", "annual"} and item.get("review_state") == "waste"
+    )
+    cancellation_started_count = sum(1 for item in trim_items if item.get("review_state") == "cancellation_started")
+    verifying_count = sum(1 for item in trim_items if item.get("review_state") == "verifying")
+    realized_count = sum(1 for item in trim_items if item.get("review_state") == "realized" and not item.get("charge_returned"))
+    brief_items: list[dict[str, str]] = []
+    for item in trim_items:
+        if item.get("charge_returned"):
+            brief_items.append({
+                "label": "Charge returned", "name": str(item["display_name"]),
+                "detail": "A cost previously counted as saved charged again.",
+                "href": f"/admin/finances/budget/vendor/{item['opportunity_key']}",
+            })
+    for item in trim_items:
+        if item.get("review_state") == "waste":
+            brief_items.append({
+                "label": "Ready to cut", "name": str(item["display_name"]),
+                "detail": f"{_money(int(item.get('monthly_potential_cents') or 0), exact=True)} per month awaits cancellation work.",
+                "href": f"/admin/finances/budget/vendor/{item['opportunity_key']}",
+            })
+    for finding in view.get("investigations") or []:
+        brief_items.append({
+            "label": str(finding.get("headline") or "Review spending"),
+            "name": str(finding.get("merchant") or "Posted spending"),
+            "detail": str(finding.get("evidence") or "Review current bank evidence."),
+            "href": "/admin/finances/budget#budget-investigation-title",
+        })
+    brief_items = brief_items[:5]
+    monthly_brief_rows = "".join(
+        f"<li><div><span>{html.escape(item['label'])}</span><strong>{html.escape(item['name'])}</strong>"
+        f"<p>{html.escape(item['detail'])}</p></div><a href=\"{html.escape(item['href'], quote=True)}\">Review</a></li>"
+        for item in brief_items
     )
     trim_rows = "".join(
         f"""
-        <tr {'hidden' if str(item.get('opportunity_key') or '') not in actionable_keys else ''} data-trim-row data-trim-actionable="{'true' if str(item.get('opportunity_key') or '') in actionable_keys else 'false'}" data-trim-cadence="{html.escape(str(item.get('cadence') or 'one_time'), quote=True)}" data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-note="{html.escape(str(item.get('review_note') or ''), quote=True)}" data-trim-opportunity="{html.escape(json.dumps(item, separators=(',', ':')), quote=True)}">
-          <td><strong>{html.escape(item['display_name'])}</strong><span>{'Recently recurring' if item.get('cadence') == 'recurring' else 'Inactive / historical' if item.get('cadence') == 'inactive' else 'One-time / irregular'} · {html.escape(str(item['category']).replace('_', ' ').title())} · {item['active_months']} of 6 months</span>
+        <tr {'hidden' if str(item.get('opportunity_key') or '') not in actionable_keys else ''} data-trim-row data-trim-actionable="{'true' if str(item.get('opportunity_key') or '') in actionable_keys else 'false'}" data-trim-cadence="{html.escape(str(item.get('cadence') or 'one_time'), quote=True)}" data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-note="{html.escape(str(item.get('review_note') or ''), quote=True)}" data-trim-opportunity="{html.escape(json.dumps(item, separators=(',', ':'), default=str), quote=True)}">
+          <td><strong><a href="/admin/finances/budget/vendor/{html.escape(item['opportunity_key'], quote=True)}">{html.escape(item['display_name'])}</a></strong><span>{html.escape(str(item.get('cadence') or 'uncertain').replace('_', ' ').title())} · {html.escape(str(item['category']).replace('_', ' ').title())} · {item['active_months']} of 6 months</span>
           <span class="trim-month-history">{' · '.join(f"{date.fromisoformat(month + '-01').strftime('%b')} {_money(int(amount), exact=True)}" for month, amount in item['monthly_history'].items())}</span></td>
-          <td>{_money(int(item['monthly_average_cents']), exact=True) if item.get('cadence') == 'recurring' else '<span class="trim-not-recurring">No recent charge</span>' if item.get('cadence') == 'inactive' else '<span class="trim-not-recurring">Not recurring</span>'}</td>
+          <td>{_money(int(item['monthly_potential_cents']), exact=True) if item.get('cadence') in {'monthly', 'annual'} else '<span class="trim-not-recurring">No recent charge</span>' if item.get('cadence') == 'inactive' else '<span class="trim-not-recurring">Not recurring</span>'}</td>
           <td>{_money(int(item['six_month_total_cents']), exact=True)}</td>
           <td><span class="trim-state trim-state--{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}">{html.escape(str(item.get('review_state') or 'unknown').title())}</span></td>
-          <td><div class="trim-form">
+          <td><div class="trim-form" {'hidden' if item.get('review_state') in {'cancellation_started', 'verifying', 'realized', 'cannot_cancel'} else ''}>
             <label class="sr-only" for="trim-note-{html.escape(item['opportunity_key'], quote=True)}">Note for {html.escape(item['display_name'])}</label>
             <input id="trim-note-{html.escape(item['opportunity_key'], quote=True)}" data-trim-note value="{html.escape(str(item.get('review_note') or ''), quote=True)}" placeholder="Optional note">
             <div class="trim-actions" role="group" aria-label="Classify {html.escape(item['display_name'], quote=True)}">
@@ -808,7 +1166,7 @@ def render_budget_page(
               <button class="trim-choice is-investigate{' is-selected' if item.get('review_state') == 'investigate' else ''}" data-trim-choice="investigate" type="button">Investigate</button>
               <button class="trim-choice is-waste{' is-selected' if item.get('review_state') == 'waste' else ''}" data-trim-choice="waste" type="button">Waste</button>
             </div>
-          </div></td>
+          </div><a class="trim-review-link" href="/admin/finances/budget/vendor/{html.escape(item['opportunity_key'], quote=True)}">Review evidence and next step</a></td>
         </tr>"""
         for item in trim_items
     )
@@ -850,23 +1208,42 @@ def render_budget_page(
       <div class="money-page-status"><span class="money-status money-status--review">Savings target</span>
       <span>Calculation {html.escape(str(view['calculation_id']))}</span></div></header>
 
-      <section class="budget-summary" aria-label="Monthly budget summary">
+      <section class="budget-summary" aria-label="Monthly budget and savings summary">
         <article><span>Projected spending this month</span><strong>{_money(totals['projected_cents'], exact=True)}</strong></article>
         <article><span>Six-month monthly average</span><strong>{_money(totals['average_cents'], exact=True)}</strong></article>
         <article><span>Suggested monthly budget</span><strong>{_money(totals['target_cents'], exact=True)}</strong></article>
         <article><span>Possible EOM improvement</span><strong>{_money(totals['potential_saving_cents'], exact=True)}</strong></article>
-        <article class="budget-summary__saving"><span>Recurring savings still to capture</span><strong>{_money(totals['recurring_saving_cents'], exact=True)}</strong></article>
+        <article><span>Potential monthly savings</span><strong>{_money(int((view.get('savings_summary') or {}).get('potential_monthly_cents') or 0), exact=True)}</strong></article>
+        <article><span>Cancellation in progress</span><strong>{_money(int((view.get('savings_summary') or {}).get('committed_monthly_cents') or 0), exact=True)}</strong></article>
+        <article class="budget-summary__saving"><span>Bank-verified monthly savings</span><strong>{_money(int((view.get('savings_summary') or {}).get('realized_monthly_cents') or 0), exact=True)}</strong></article>
       </section>
       <p class="budget-proof">Source: {html.escape(str(view['source']).replace('_', ' ').title())} posted transactions · {int(view.get('transaction_count') or 0)} transactions available from {html.escape(str(view.get('earliest_date') or 'unavailable'))} through {html.escape(str(view.get('latest_date') or 'unavailable'))} · Six complete months reviewed: {html.escape(', '.join(view['comparison_months']))}. Mirrored sources and internal transfers are excluded.</p>
+
+      <section class="monthly-trim-brief" aria-labelledby="monthly-trim-title">
+        <div class="money-section-heading"><div><p class="finance-eyebrow">Monthly trim brief</p>
+        <h2 id="monthly-trim-title">The next five cost decisions</h2></div><span class="money-section-state">First working-day review</span></div>
+        <ul>{monthly_brief_rows or '<li><div><strong>No urgent cost exceptions</strong><p>Continue with the five current recurring costs below.</p></div></li>'}</ul>
+      </section>
+
+      <section class="savings-cash-bridge" aria-labelledby="savings-cash-title">
+        <div><p class="finance-eyebrow">Cash impact</p><h2 id="savings-cash-title">What may improve month-end cash</h2>
+        <p>Potential and in-progress cuts remain scenarios. Only later Plaid evidence can move a cost into bank-verified savings.</p></div>
+        <dl><div><dt>Potential</dt><dd>{_money(int((view.get('savings_summary') or {}).get('potential_monthly_cents') or 0), exact=True)}</dd></div>
+        <div><dt>Committed, not verified</dt><dd>{_money(int((view.get('savings_summary') or {}).get('committed_monthly_cents') or 0), exact=True)}</dd></div>
+        <div><dt>Verified monthly</dt><dd>{_money(int((view.get('savings_summary') or {}).get('realized_monthly_cents') or 0), exact=True)}</dd></div></dl>
+      </section>
 
       <section class="budget-workspace trim-workspace" aria-labelledby="trim-title">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Trim list</p>
         <h2 id="trim-title">Decide what stays and what goes</h2></div>
         <span class="money-section-state">{len(trim_items)} controllable vendors</span></div>
-        <p class="budget-review-summary">Review only the highest-impact vendors that still need an answer. Saved keep decisions leave this queue; confirmed waste moves to Ready to cut. No service is cancelled here.</p>
+        <p class="budget-review-summary">Start with five current costs. Saved keep decisions leave this queue; Waste moves to Ready to cut. A saving counts only after later Plaid activity verifies that the charge stopped.</p>
         <div class="trim-summary" aria-label="Trim review progress">
           <button type="button" data-trim-filter="needs_decision" class="is-active">Needs decision <strong>{len(actionable_items)}</strong></button>
           <button type="button" data-trim-filter="waste">Ready to cut <strong>{ready_to_cut_count}</strong></button>
+          <button type="button" data-trim-filter="cancellation_started">Cancellation started <strong>{cancellation_started_count}</strong></button>
+          <button type="button" data-trim-filter="verifying">Verifying <strong>{verifying_count}</strong></button>
+          <button type="button" data-trim-filter="realized">Savings confirmed <strong>{realized_count}</strong></button>
           <button type="button" data-trim-filter="recurring">All recent <strong>{recurring_trim_count}</strong></button>
           <button type="button" data-trim-filter="inactive">Inactive/history <strong>{inactive_trim_count}</strong></button>
           <button type="button" data-trim-filter="one_time">One-time <strong>{one_time_trim_count}</strong></button>
@@ -879,7 +1256,7 @@ def render_budget_page(
         <div class="money-table-wrap trim-table-wrap"><table class="budget-table trim-table"><thead><tr>
           <th>Vendor</th><th>Monthly average</th><th>Six-month spend</th><th>Status</th><th>Decision and note</th>
         </tr></thead><tbody>{trim_rows}</tbody></table></div>
-        <p class="budget-rule-note" data-trim-result-count>Showing {len(actionable_items)} highest-impact recent vendors that still need a decision.</p>
+        <p class="budget-rule-note" data-trim-result-count>Showing {len(actionable_items)} highest-impact current vendors that still need a decision.</p>
         </form>
       </section>
 

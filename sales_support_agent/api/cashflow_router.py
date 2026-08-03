@@ -49,6 +49,7 @@ from sales_support_agent.services.cashflow.budgeting import (
     load_budget_review,
     load_budget_view,
     render_budget_page,
+    render_budget_vendor_page,
     run_budget_review,
 )
 from sales_support_agent.services.cashflow.recurring import (
@@ -462,6 +463,15 @@ async def finance_budget(request: Request, flash: str = ""):
         asyncio.to_thread(load_budget_review),
     )
     return HTMLResponse(render_budget_page(view, review, flash=flash))
+
+
+@router.get("/budget/vendor/{opportunity_key}", response_class=HTMLResponse)
+async def finance_budget_vendor(
+    request: Request, opportunity_key: str, flash: str = "",
+):
+    """Show one cost with its posted evidence and explicit next action."""
+    view = await asyncio.to_thread(load_budget_view)
+    return HTMLResponse(render_budget_vendor_page(view, opportunity_key, flash=flash))
 
 
 @router.post("/budget/review")
@@ -1426,12 +1436,18 @@ async def record_savings_review_action(
     evidence_hash: str = Form(...),
     opportunity_json: str = Form(...),
     reason: str = Form(""),
+    owner: str = Form(""),
+    action_type: str = Form(""),
+    effective_date: str = Form(""),
+    proof_note: str = Form(""),
+    return_to: str = Form(""),
 ):
     """Store a confirmed savings disposition without mutating cash facts."""
     import json
     from sales_support_agent.services.cashflow.savings_reviews import record_savings_review
 
     current_user = get_current_user(request)
+    request.state.finance_return_to = return_to or "/admin/finances/budget"
     actor = "finance-operator"
     if isinstance(current_user, dict):
         actor = str(current_user.get("email") or current_user.get("name") or actor)
@@ -1441,6 +1457,17 @@ async def record_savings_review_action(
             raise ValueError("Savings evidence is invalid; refresh Finance and try again")
         if opportunity.get("opportunity_key") != opportunity_key or opportunity.get("evidence_hash") != evidence_hash:
             raise ValueError("Savings evidence is stale; refresh Finance and try again")
+        current_view = await asyncio.to_thread(load_budget_view)
+        current = next((
+            item for item in current_view.get("trim_items") or []
+            if str(item.get("opportunity_key") or "") == opportunity_key
+        ), None)
+        if current is None or str(current.get("evidence_hash") or "") != evidence_hash:
+            raise ValueError("Savings evidence changed; refresh before saving this decision")
+        opportunity = dict(current)
+        opportunity.pop("review", None)
+        opportunity.pop("verification_matches", None)
+        opportunity["realization_ready"] = bool(current.get("verification_ready"))
         result = await asyncio.to_thread(
             record_savings_review,
             opportunity,
@@ -1449,6 +1476,10 @@ async def record_savings_review_action(
             reason=reason,
             request_id=request.headers.get("Idempotency-Key") or uuid4().hex,
             clickup_task=None,
+            owner=owner,
+            action_type=action_type,
+            effective_date=effective_date,
+            proof_note=proof_note,
         )
     except ValueError as exc:
         return _redirect_finance_error(str(exc))
@@ -1463,6 +1494,10 @@ async def record_savings_review_action(
         "unknown": "Marked unknown.",
         "investigate": "Marked for investigation.",
         "waste": "Marked as waste to remove.",
+        "start_cancellation": "Cancellation work started. No vendor was contacted.",
+        "confirm_cancellation": "Cancellation details saved. Finance is waiting for Plaid verification.",
+        "cannot_cancel": "Marked as unable to cancel.",
+        "reopen": "Cost reopened for review.",
     }
     return _redirect_finance_home(messages.get(action, "Savings review recorded."))
 
@@ -1484,9 +1519,30 @@ async def record_savings_review_batch(
         changes = json.loads(changes_json)
         if not isinstance(changes, list):
             raise ValueError("Savings changes are invalid; refresh and try again")
+        current_view = await asyncio.to_thread(load_budget_view)
+        current_items = {
+            str(item.get("opportunity_key") or ""): dict(item)
+            for item in current_view.get("trim_items") or []
+        }
+        verified_changes = []
+        for change in changes:
+            if not isinstance(change, dict) or not isinstance(change.get("opportunity"), dict):
+                raise ValueError("One savings change is invalid; refresh and try again")
+            supplied = change["opportunity"]
+            key = str(supplied.get("opportunity_key") or "")
+            current = current_items.get(key)
+            if current is None or str(current.get("evidence_hash") or "") != str(supplied.get("evidence_hash") or ""):
+                raise ValueError("Savings evidence changed; refresh before saving these decisions")
+            current.pop("review", None)
+            current.pop("verification_matches", None)
+            verified_changes.append({
+                "opportunity": current,
+                "action": change.get("action"),
+                "reason": change.get("reason"),
+            })
         results = await asyncio.to_thread(
             record_savings_reviews,
-            changes,
+            verified_changes,
             actor,
             request_id=request.headers.get("Idempotency-Key") or uuid4().hex,
         )

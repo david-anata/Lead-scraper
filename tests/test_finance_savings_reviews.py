@@ -122,6 +122,50 @@ def test_invalid_or_unverified_realization_fails_closed(finance_engine):
         record_savings_review(_opportunity(opportunity_key="bad"), "keep", "qa@example.com")
 
 
+def test_cancellation_workflow_keeps_potential_separate_until_bank_verification(finance_engine):
+    record_savings_review(_opportunity(), "waste", "qa@example.com", request_id="cut-001")
+    started = record_savings_review(
+        _opportunity(), "start_cancellation", "qa@example.com",
+        owner="David Narayan", action_type="cancel", proof_note="Opened vendor account",
+        request_id="cut-002",
+    )
+    assert started["state"] == "cancellation_started"
+    confirmed = record_savings_review(
+        _opportunity(), "confirm_cancellation", "qa@example.com",
+        effective_date="2026-08-03", proof_note="Confirmation ABC-123",
+        request_id="cut-003",
+    )
+    assert confirmed["state"] == "verifying"
+    review = load_savings_reviews()[KEY]
+    assert review["owner"] == "David Narayan"
+    assert review["action_type"] == "cancel"
+    assert str(review["effective_date"]) == "2026-08-03"
+    assert str(review["expected_verification_date"]) == "2026-09-10"
+    assert review["realized_monthly_cents"] == 0
+
+    realized = record_savings_review(
+        _opportunity(realization_ready=True), "confirm_realized", "qa@example.com",
+        request_id="cut-004",
+    )
+    assert realized["state"] == "realized"
+    assert load_savings_reviews()[KEY]["realized_monthly_cents"] == 24_900
+
+
+def test_cancellation_steps_cannot_be_skipped(finance_engine):
+    with pytest.raises(ValueError, match="no longer available"):
+        record_savings_review(
+            _opportunity(), "start_cancellation", "qa@example.com",
+            action_type="cancel", request_id="skip-001",
+        )
+
+    record_savings_review(_opportunity(), "waste", "qa@example.com", request_id="skip-002")
+    with pytest.raises(ValueError, match="no longer available"):
+        record_savings_review(
+            _opportunity(realization_ready=True), "confirm_realized", "qa@example.com",
+            request_id="skip-003",
+        )
+
+
 def test_monitoring_requires_later_reduced_posted_bank_charge(finance_engine):
     record_savings_review(_opportunity(), "follow_up", "qa@example.com", request_id="monitor-001")
     reviews = load_savings_reviews()
@@ -158,6 +202,10 @@ def test_review_route_records_confirmed_operator_action(monkeypatch):
     monkeypatch.setattr("sales_support_agent.services.auth_deps.get_current_user", lambda request: user)
     monkeypatch.setattr("sales_support_agent.api.cashflow_router.get_current_user", lambda request: user)
     monkeypatch.setattr(
+        "sales_support_agent.api.cashflow_router.load_budget_view",
+        lambda: {"trim_items": [opportunity]},
+    )
+    monkeypatch.setattr(
         "sales_support_agent.services.cashflow.savings_reviews.record_savings_review",
         lambda *args, **kwargs: calls.append((args, kwargs)) or {"created": True},
     )
@@ -168,7 +216,8 @@ def test_review_route_records_confirmed_operator_action(monkeypatch):
     )
     assert response.status_code == 303
     assert "Savings%20opportunity%20kept" in response.headers["location"]
-    assert calls[0][0][:3] == (opportunity, "keep", "finance@example.com")
+    assert calls[0][0][0] == {**opportunity, "realization_ready": False}
+    assert calls[0][0][1:] == ("keep", "finance@example.com")
 
 
 def test_batch_route_saves_all_staged_changes_together(monkeypatch):
@@ -183,6 +232,10 @@ def test_batch_route_saves_all_staged_changes_together(monkeypatch):
     monkeypatch.setattr("sales_support_agent.services.auth_deps.get_session_user_from_request", lambda request: {"email": user["email"]})
     monkeypatch.setattr("sales_support_agent.services.auth_deps.get_current_user", lambda request: user)
     monkeypatch.setattr("sales_support_agent.api.cashflow_router.get_current_user", lambda request: user)
+    monkeypatch.setattr(
+        "sales_support_agent.api.cashflow_router.load_budget_view",
+        lambda: {"trim_items": [_opportunity()]},
+    )
     monkeypatch.setattr(
         "sales_support_agent.services.cashflow.savings_reviews.record_savings_reviews",
         lambda *args, **kwargs: calls.append((args, kwargs)) or [{"created": True}],
