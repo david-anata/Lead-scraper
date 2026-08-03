@@ -348,6 +348,9 @@ class HREmploymentProfile(Base):
     work_state: Mapped[str] = mapped_column(String(2), default="UT")
     classification: Mapped[str] = mapped_column(String(16), default="nonexempt")
     pay_basis: Mapped[str] = mapped_column(String(24), default="hourly")
+    # Application access and payroll membership are deliberately separate.
+    # Owners/admins may approve payroll without being paid through Anata.
+    payroll_eligible: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     fixed_pay_per_period_cents: Mapped[int] = mapped_column(Integer, default=0)
     standard_weekly_hours: Mapped[float] = mapped_column(Numeric(8, 2), default=40)
     standard_period_hours: Mapped[float] = mapped_column(Numeric(8, 2), default=86.67)

@@ -17,11 +17,17 @@ def calendar_readiness() -> dict:
     client = HRGoogleCalendarClient()
     return {
         "configured": client.configured,
-        "status": "Ready" if client.configured else "Setup needed",
+        "state": client.readiness_state,
+        "status": "Credential detected" if client.configured else "Setup needed",
         "reason": client.readiness_error,
         "calendar_id": client.calendar_id,
         "service_account_email": client.service_account_email,
     }
+
+
+def test_calendar_connection() -> tuple[bool, str, str]:
+    """Run an explicit, non-mutating calendar permission check."""
+    return HRGoogleCalendarClient().check_connection()
 
 
 def notify_reviewer(settings, *, request_id: int, base_url: str) -> bool:

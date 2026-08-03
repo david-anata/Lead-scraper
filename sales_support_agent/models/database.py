@@ -999,6 +999,9 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
         "finance_action_audit": {
             "idempotency_key": "ALTER TABLE finance_action_audit ADD COLUMN idempotency_key VARCHAR(128)",
         },
+        "hr_employment_profiles": {
+            "payroll_eligible": "ALTER TABLE hr_employment_profiles ADD COLUMN payroll_eligible BOOLEAN NOT NULL DEFAULT 1",
+        },
     }
 
     with engine.begin() as connection:
@@ -1139,6 +1142,16 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
 
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
+    if "hr_employment_profiles" in existing_tables:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE hr_employment_profiles "
+                "ADD COLUMN IF NOT EXISTS payroll_eligible BOOLEAN NOT NULL DEFAULT TRUE"
+            ))
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_hr_employment_profiles_payroll_eligible "
+                "ON hr_employment_profiles (payroll_eligible)"
+            ))
     if "lead_mirrors" not in existing_tables:
         return
 

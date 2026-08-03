@@ -403,11 +403,11 @@ def render_hr_setup(control: dict, company_profile: dict, calendar: dict,
             "title": "Connect the shared OOO calendar",
             "description": (
                 "Approved PTO is synchronized to the dedicated Anata OOO calendar."
-                if calendar.get("configured") else
+                if calendar.get("verified") else
                 "Connect the dedicated Anata OOO Google Calendar so approved leave "
                 "is visible to the team. PTO approval remains valid if sync is down."
             ),
-            "ready": bool(calendar.get("configured")), "owner": "David or Val",
+            "ready": bool(calendar.get("verified")), "owner": "David or Val",
             "href": "/admin/hr/settings#ooo-calendar",
             "action": "Review calendar connection",
         },
@@ -625,6 +625,14 @@ def _flash(flash: Optional[str]) -> str:
         "settings_saved": "Payroll setup saved.",
         "company_profile_saved": "Employer legal profile saved.",
         "company_profile_invalid": "Complete the employer profile and evidence note.",
+        "calendar_ready": "OOO calendar connection and event-write permission confirmed.",
+        "calendar_calendar_id_missing": "Add the Anata OOO Calendar ID in Render, deploy, and test again.",
+        "calendar_calendar_id_invalid": "Use the dedicated Anata OOO Calendar ID, not the primary-calendar alias.",
+        "calendar_credential_missing": "Add the protected OOO service-account credential in Render, deploy, and test again.",
+        "calendar_credential_invalid": "The protected OOO credential is invalid or incomplete. Replace it in Render.",
+        "calendar_permission_missing": "Val must share the Anata OOO calendar with the service account using “Make changes to events.”",
+        "calendar_calendar_not_found": "The calendar was not found. Check its Calendar ID and sharing permission.",
+        "calendar_api_unavailable": "Google Calendar could not be verified. Nothing changed; try again.",
         "opening_balance_saved": "Reviewed opening balance saved.",
         "opening_source_required": "Add the source used to verify the opening balance.",
         "opening_amount_invalid": "Use valid nonnegative dollar amounts. The opening balance was not changed.",
@@ -841,6 +849,11 @@ def render_hr_employees(employees: list, *, user, flash=None) -> str:
             if employment.get("pay_basis") == "fixed_semimonthly"
             else f"${e.get('hourly_rate', '0.00')}/hr"
             )
+        payroll_state = (
+            "Contractor workflow" if e.get("employee_type") == "contractor" else
+            "Included in W-2 payroll" if employment.get("payroll_eligible", True) else
+            "Not on Anata payroll"
+        )
         name = (
             f'<a href="/admin/hr/employees/{e["id"]}" style="color:#2456b8;text-decoration:none;font-weight:600">{_esc(e["full_name"])}</a>'
             if can_manage_people else f'<strong>{_esc(e["full_name"])}</strong>'
@@ -855,11 +868,12 @@ def render_hr_employees(employees: list, *, user, flash=None) -> str:
           <td class="hr-sub" style="margin:0">{_esc(e['email'])}</td><td>{access_state}</td>
           <td>{_role_badge(e['hr_role'])}</td>
           <td>{_esc(e['employee_type'])}</td>
+          <td>{_esc(payroll_state)}</td>
           <td>{_esc(pay)}</td>
           <td>{status_dot} {_esc(e['status'])}</td>
         </tr>"""
     if not rows:
-        rows = '<tr><td colspan="7" class="hr-empty">No employees yet. Add your first one.</td></tr>'
+        rows = '<tr><td colspan="8" class="hr-empty">No employees yet. Add your first one.</td></tr>'
     body = f"""
     {_flash(flash)}
     <div class="hr-row-head">
@@ -870,7 +884,7 @@ def render_hr_employees(employees: list, *, user, flash=None) -> str:
       </div>
     </div>
     <table class="hr-tbl">
-      <thead><tr><th>Name</th><th>Record email</th><th>Employee app access</th><th>Role</th><th>Type</th><th>Pay</th><th>Status</th></tr></thead>
+      <thead><tr><th>Name</th><th>Record email</th><th>Employee app access</th><th>Role</th><th>Type</th><th>Payroll relationship</th><th>Pay</th><th>Status</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>
     """
@@ -908,6 +922,15 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         f'<option value="{value}"{" selected" if value == worker_category else ""}>{label}</option>'
         for value, label in worker_options
     ) + "</select>"
+    payroll_relationship = (
+        "w2" if employment.get("payroll_eligible", True) else "not_on_payroll"
+    )
+    payroll_select = (
+        '<select name="payroll_relationship" aria-describedby="payroll-relationship-help">'
+        f'<option value="w2"{" selected" if payroll_relationship == "w2" else ""}>Included in Anata W-2 payroll</option>'
+        f'<option value="not_on_payroll"{" selected" if payroll_relationship == "not_on_payroll" else ""}>Not on Anata payroll</option>'
+        '</select>'
+    )
     personal_contact_status = (
         f'<strong>Personal contact email on file:</strong> {_esc(e.get("personal_email"))}'
         if e.get("personal_email")
@@ -936,6 +959,8 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         <div><label>Worker record</label>{worker_select}</div>
       </div>
       <p class="hr-help">Choose W-2 employee here, then choose hourly or fixed semimonthly pay below. Contractor records stay outside W-2 payroll and use the separate Wise contractor workflow.</p>
+      <label>Payroll relationship</label>{payroll_select}
+      <p class="hr-help" id="payroll-relationship-help">Use “Not on Anata payroll” for an owner or administrator who needs Agent access but is not paid as an Anata W-2 employee. This removes W-4, time, pay, and opening-balance blockers without removing their access or approval permissions. Changing this selection requires the pay-change effective date and business reason below.</p>
       <div class="hr-grid2">
         <div><label>Team</label><select name="team_id">{team_opts}</select></div>
         <div><label>Status</label>{_sel("status", ("active","inactive"), e.get("status","active"))}</div>
@@ -1411,10 +1436,13 @@ def render_hr_onboarding(
 def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     period = control["period"]
     readiness = control["readiness"]
-    blockers = "".join(
-        f"<li><strong>{_esc(item.get('employee_email') or 'Company setup')}:</strong> "
-        f"{_esc(item.get('message'))}</li>" for item in readiness["blockers"]
-    ) or "<li>No blocking issues. Payroll can be prepared for approval.</li>"
+    blocker_rows = "".join(
+        f"""<tr><td>{_esc(item.get('owner') or 'David or Val')}</td>
+        <td>{_esc(item.get('employee_email') or 'Company setup')}</td>
+        <td>{_esc(item.get('message'))}</td>
+        <td><a class="hr-btn hr-btn-light" href="{_esc(item.get('href') or '/admin/hr/setup')}">{_esc(item.get('action') or 'Review setup')}</a></td></tr>"""
+        for item in readiness["blockers"]
+    ) or '<tr><td colspan="4" class="hr-empty">No blockers remain. This period can be prepared.</td></tr>'
     outside_corrections = readiness.get("outside_period_corrections") or []
     outside_correction_notice = ""
     if outside_corrections:
@@ -1499,7 +1527,9 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <button class="hr-btn hr-btn-light" type="submit">Open period</button>
     </form>
     <div class="hr-callout {'ok' if readiness['ready'] else 'warn'}"><div class="hr-kicker">Payroll readiness</div>
-      <h2 style="margin:6px 0">{status_label}</h2><ul>{blockers}</ul>
+      <h2 style="margin:6px 0">{status_label}</h2>
+      <p>Each blocker names who owns the next step. Opening this list never changes payroll.</p>
+      <div style="overflow-x:auto"><table class="hr-tbl"><thead><tr><th>Owner</th><th>Person or company</th><th>Requirement</th><th>Next action</th></tr></thead><tbody>{blocker_rows}</tbody></table></div>
       <p>No bank transfer, check, tax payment, or filing occurs from preparation.</p>
       <p><strong>Calculation authority:</strong> gross, withholding, net pay, and employer cost shown here are Anata planning estimates. No payroll provider is connected. The first live run remains blocked until a qualified professional reviews the rule package and the exact run is independently compared.</p></div>
     {outside_correction_notice}
@@ -2091,7 +2121,11 @@ def render_hr_settings(
         for item in handbooks
     ) or '<tr><td colspan="6" class="hr-empty">The built-in operating policy will be used until a handbook is published.</td></tr>'
     for employee in employees:
-        if employee.get("employee_type") == "contractor":
+        employment = employee.get("employment") or {}
+        if (
+            employee.get("employee_type") == "contractor"
+            or (employment and not employment.get("payroll_eligible", True))
+        ):
             continue
         balance = balance_by_email.get(employee["email"], {})
         approval_form = (
@@ -2156,7 +2190,7 @@ def render_hr_settings(
       <div class="hr-kicker">Time-off calendar</div>
       <h2>Anata OOO Google Calendar · {_esc(calendar.get('status'))}</h2>
       <p class="hr-sub">Only approved PTO is added. Pending and denied requests never appear. Revoking approved PTO releases the reserved hours and removes its event.</p>
-      {f'<div class="hr-callout"><strong>Ready.</strong> Calendar: {_esc(calendar.get("calendar_id"))}<br>Service account: {_esc(calendar.get("service_account_email"))}</div>' if calendar.get('configured') else f'<div class="hr-callout warn"><strong>Setup needed.</strong> {_esc(calendar.get("reason"))}</div>'}
+      {f'<div class="hr-callout"><strong>Ready.</strong> Calendar: {_esc(calendar.get("calendar_id"))}<br>Service account: {_esc(calendar.get("service_account_email"))}<p>Google confirmed event-write permission for this exact configuration.</p></div>' if calendar.get('verified') else f'<div class="hr-callout warn"><strong>{"Protected credential detected" if calendar.get("configured") else "Setup needed"}.</strong> {_esc(calendar.get("reason") or "Run the connection test to confirm event-write permission.")}</div>'}
       {calendar_identity}
       <ol class="hr-sub">
         <li>Create or open the dedicated Google Calendar named <strong>Anata OOO</strong>.</li>
@@ -2164,6 +2198,10 @@ def render_hr_settings(
         <li>In Render, set <code>HR_OOO_GOOGLE_CALENDAR_ID</code> and <code>HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON</code>, then deploy.</li>
         <li>Return to Time &amp; PTO and retry any item marked as needing calendar attention.</li>
       </ol>
+      <form method="post" action="/admin/hr/settings/ooo-calendar/test">
+        <button class="hr-btn hr-btn-light" type="submit"{' disabled' if not calendar.get('configured') else ''}>Test calendar connection</button>
+      </form>
+      <p class="hr-help">The test checks calendar visibility and event-write permission without creating an employee event.</p>
       <p class="hr-help">Never paste the service-account JSON into an HR form, email, or employee record. It belongs only in Render’s secret environment settings.</p>
     </section>
     <section class="hr-card">

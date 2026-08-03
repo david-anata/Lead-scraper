@@ -2,6 +2,7 @@ from datetime import date
 from unittest.mock import MagicMock, patch
 
 from sales_support_agent.services.hr import pto_workflow
+from sales_support_agent.integrations.hr_google_calendar import HRGoogleCalendarClient
 
 
 def _item(status="approved"):
@@ -68,11 +69,47 @@ def test_revoked_request_deletes_calendar_event_idempotently(store, client_type)
 def test_calendar_readiness_exposes_identity_but_never_credentials(client_type):
     client_type.return_value = MagicMock(
         configured=False, readiness_error="Calendar ID missing",
+        readiness_state="calendar_id_missing",
         calendar_id="", service_account_email="calendar-agent@example.com",
     )
     result = pto_workflow.calendar_readiness()
     assert result == {
-        "configured": False, "status": "Setup needed",
+        "configured": False, "state": "calendar_id_missing", "status": "Setup needed",
         "reason": "Calendar ID missing", "calendar_id": "",
         "service_account_email": "calendar-agent@example.com",
     }
+
+
+@patch("sales_support_agent.services.hr.pto_workflow.HRGoogleCalendarClient")
+def test_calendar_connection_test_is_non_mutating(client_type):
+    client_type.return_value.check_connection.return_value = (
+        True, "ready", "Calendar connection confirmed."
+    )
+    assert pto_workflow.test_calendar_connection() == (
+        True, "ready", "Calendar connection confirmed."
+    )
+    client_type.return_value.upsert_event.assert_not_called()
+    client_type.return_value.delete_event.assert_not_called()
+
+
+def test_calendar_connection_distinguishes_writer_permission_and_denial():
+    client = HRGoogleCalendarClient(
+        calendar_id="ooo@example.com",
+        service_account_json='{"client_email":"agent@example.com","private_key":"test"}',
+    )
+    session = MagicMock()
+    client._session = session
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"accessRole": "writer"}
+    session.get.return_value = response
+    assert client.check_connection() == (
+        True, "ready", "Calendar connection and event-write permission confirmed."
+    )
+    session.post.assert_not_called()
+    session.patch.assert_not_called()
+
+    response.json.return_value = {"accessRole": "reader"}
+    ready, state, message = client.check_connection()
+    assert not ready
+    assert state == "permission_missing"
+    assert "cannot change events" in message

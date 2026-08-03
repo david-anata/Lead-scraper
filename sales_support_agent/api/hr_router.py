@@ -279,6 +279,22 @@ def _default_payroll_date(today: date | None = None) -> date:
     current = today or date.today()
     return max(current, FIRST_LIVE_PAYROLL_DATE)
 
+
+def _ooo_calendar_readiness() -> dict:
+    current = pto_workflow.calendar_readiness()
+    tested = payroll_store.latest_ooo_calendar_test()
+    same_configuration = bool(
+        tested
+        and tested.get("calendar_id") == current.get("calendar_id")
+        and tested.get("service_account_email") == current.get("service_account_email")
+    )
+    current["verified"] = bool(same_configuration and tested.get("ready"))
+    current["tested_state"] = tested.get("state") if same_configuration else ""
+    current["tested_at"] = tested.get("tested_at") if same_configuration else None
+    if current["verified"]:
+        current["status"] = "Ready"
+    return current
+
 @router.get("", response_class=HTMLResponse)
 async def hr_dashboard(request: Request, user: dict = Depends(_guard)):
     stats = (
@@ -296,7 +312,7 @@ async def hr_setup(request: Request, user: dict = Depends(_pay_view_guard)):
     return HTMLResponse(render_hr_setup(
         payroll_store.control_room(_default_payroll_date()),
         payroll_store.get_company_profile(),
-        pto_workflow.calendar_readiness(),
+        _ooo_calendar_readiness(),
         user=user,
         flash=_flash(request),
     ))
@@ -335,6 +351,7 @@ async def employee_create(
     full_name: str = Form(""),
     hr_role: str = Form("employee"),
     employee_type: str = Form("hourly"),
+    payroll_relationship: str = Form("w2"),
     team_id: str = Form(""),
     hourly_rate: str = Form("0"),
     fixed_pay_per_period: str = Form("0"),
@@ -362,9 +379,15 @@ async def employee_create(
             "fixed_pay_per_period": fixed_pay_per_period, "hire_date": hire_date or "",
             "title": title, "manager_email": manager_email,
             "classification": classification, "pay_basis": pay_basis,
+            "payroll_eligible": payroll_relationship == "w2",
             "standard_weekly_hours": standard_weekly_hours,
         },
     }
+    if payroll_relationship not in {"w2", "not_on_payroll"}:
+        return HTMLResponse(render_hr_employee_form(
+            entered, store.list_teams(), user=user,
+            error="Choose whether this person is included in Anata W-2 payroll.",
+        ), status_code=422)
     if not email.strip():
         return HTMLResponse(render_hr_employee_form(entered, store.list_teams(), user=user,
                                                     error="Email is required."), status_code=422)
@@ -445,6 +468,7 @@ async def employee_create(
         store.upsert_employment_profile(
             email, hire_date=hire_date, title=title, manager_email=manager_email,
             classification=classification, pay_basis=pay_basis,
+            payroll_eligible=payroll_relationship == "w2",
             fixed_pay_per_period=fixed_pay_per_period,
             standard_weekly_hours=standard_weekly_hours, standard_period_hours=86.67,
             actor=user.get("email", "system"),
@@ -469,6 +493,7 @@ async def employee_update(
     full_name: str = Form(""),
     hr_role: str = Form("employee"),
     employee_type: str = Form("hourly"),
+    payroll_relationship: str = Form("w2"),
     team_id: str = Form(""),
     hourly_rate: str = Form("0"),
     annual_salary: str = Form("0"),
@@ -488,6 +513,14 @@ async def employee_update(
     employee = store.get_employee(emp_id)
     if not employee:
         return RedirectResponse("/admin/hr/employees?err=not_found", status_code=303)
+    if payroll_relationship not in {"w2", "not_on_payroll"}:
+        employee["compensation_history"] = store.list_compensation_changes(
+            employee["email"]
+        )
+        return HTMLResponse(render_hr_employee_form(
+            employee, store.list_teams(), user=user,
+            error="Choose whether this person is included in Anata W-2 payroll.",
+        ), status_code=422)
     classification_error = _employee_classification_error(
         employee_type=employee_type, pay_basis=pay_basis,
         classification=classification,
@@ -569,12 +602,14 @@ async def employee_update(
         "fixed_pay_per_period_cents": int(
             employment.get("fixed_pay_per_period_cents") or 0
         ),
+        "payroll_eligible": employment.get("payroll_eligible", True),
     }
     new_compensation = {
         "employee_type": employee_type,
         "hourly_rate_cents": hourly_rate_cents,
         "pay_basis": "contractor" if employee_type == "contractor" else pay_basis,
         "fixed_pay_per_period_cents": fixed_pay_cents,
+        "payroll_eligible": payroll_relationship == "w2",
     }
     compensation_changed = prior_compensation != new_compensation
     employment_changed = employee_type != "contractor" and {
@@ -583,6 +618,7 @@ async def employee_update(
         "manager_email": (employment.get("manager_email") or "").strip().lower(),
         "classification": employment.get("classification") or "nonexempt",
         "pay_basis": employment.get("pay_basis") or "hourly",
+        "payroll_eligible": employment.get("payroll_eligible", True),
         "fixed_pay_per_period_cents": int(
             employment.get("fixed_pay_per_period_cents") or 0
         ),
@@ -595,6 +631,7 @@ async def employee_update(
         "manager_email": manager_email.strip().lower(),
         "classification": classification,
         "pay_basis": pay_basis,
+        "payroll_eligible": payroll_relationship == "w2",
         "fixed_pay_per_period_cents": fixed_pay_cents,
         "standard_weekly_hours": float(standard_weekly_hours),
     }
@@ -643,7 +680,8 @@ async def employee_update(
         store.upsert_employment_profile(
             employee["email"], hire_date=hire_date, title=title,
             manager_email=manager_email, classification=classification,
-            pay_basis=pay_basis, fixed_pay_per_period=fixed_pay_per_period,
+            pay_basis=pay_basis, payroll_eligible=payroll_relationship == "w2",
+            fixed_pay_per_period=fixed_pay_per_period,
             standard_weekly_hours=standard_weekly_hours,
             standard_period_hours=86.67, actor=user.get("email", "system"),
         )
@@ -1669,7 +1707,7 @@ async def hr_settings(request: Request, user: dict = Depends(_settings_guard)):
     )
     return HTMLResponse(render_hr_settings(
         payroll_store.get_payroll_settings(), payroll_store.get_company_profile(),
-        pto_workflow.calendar_readiness(),
+        _ooo_calendar_readiness(),
         store.list_employees(),
         [
             account for account in access_store.list_users()
@@ -1784,6 +1822,28 @@ async def hr_settings_save(
     except ValueError:
         return RedirectResponse("/admin/hr/settings?err=invalid_input", status_code=303)
     return RedirectResponse("/admin/hr/settings?ok=settings_saved", status_code=303)
+
+
+@router.post("/settings/ooo-calendar/test")
+async def hr_ooo_calendar_test(
+    user: dict = Depends(_settings_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
+):
+    ok, state, _message = pto_workflow.test_calendar_connection()
+    calendar = pto_workflow.calendar_readiness()
+    payroll_store.audit_hr_event(
+        actor=user.get("email", ""), action="ooo_calendar.connection_tested",
+        entity_type="calendar", entity_id="anata_ooo",
+        details={
+            "state": state, "ready": ok,
+            "calendar_id": calendar.get("calendar_id") or "",
+            "service_account_email": calendar.get("service_account_email") or "",
+        },
+    )
+    return RedirectResponse(
+        f"/admin/hr/settings?{'ok' if ok else 'err'}=calendar_{state}#ooo-calendar",
+        status_code=303,
+    )
 
 
 @router.post("/settings/handbook")

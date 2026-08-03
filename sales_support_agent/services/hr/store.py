@@ -297,6 +297,7 @@ def _employment_dict(row: Optional[HREmploymentProfile]) -> dict:
         "termination_date": row.termination_date, "title": row.title,
         "manager_email": row.manager_email, "work_state": row.work_state,
         "classification": row.classification, "pay_basis": row.pay_basis,
+        "payroll_eligible": bool(row.payroll_eligible),
         "fixed_pay_per_period": cents_to_dollars(row.fixed_pay_per_period_cents),
         "fixed_pay_per_period_cents": row.fixed_pay_per_period_cents,
         "standard_weekly_hours": float(row.standard_weekly_hours or 0),
@@ -501,6 +502,7 @@ def upsert_employment_profile(employee_email: str, *, hire_date: Optional[date],
                               title: str = "", manager_email: str = "",
                               classification: str = "nonexempt",
                               pay_basis: str = "hourly",
+                              payroll_eligible: bool = True,
                               fixed_pay_per_period: str = "0",
                               standard_weekly_hours: float = 40,
                               standard_period_hours: float = 86.67,
@@ -525,6 +527,7 @@ def upsert_employment_profile(employee_email: str, *, hire_date: Optional[date],
         row.work_state = "UT"
         row.classification = classification
         row.pay_basis = pay_basis
+        row.payroll_eligible = bool(payroll_eligible)
         row.fixed_pay_per_period_cents = dollars_to_cents(fixed_pay_per_period)
         row.standard_weekly_hours = Decimal(str(max(0, standard_weekly_hours)))
         row.standard_period_hours = Decimal(str(max(0, standard_period_hours)))
@@ -550,6 +553,7 @@ def upsert_employment_profile(employee_email: str, *, hire_date: Optional[date],
         _audit(s, actor, "employment.updated", "employee", employee.id, {
             "hire_date": hire_date.isoformat() if hire_date else None,
             "classification": classification, "pay_basis": pay_basis,
+            "payroll_eligible": bool(payroll_eligible),
         })
         return True
 

@@ -137,6 +137,45 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn(email, lst.text)
         self.assertIn("Work Er", lst.text)
 
+    def test_not_on_payroll_requires_effective_reason_and_removes_w2_blockers(self):
+        import uuid
+        suffix = uuid.uuid4().hex[:8]
+        email = f"admin-only-{suffix}@anatainc.com"
+        employee_id = hr_store.create_employee(
+            email=email, full_name="Admin Only", employee_type="hourly",
+            hourly_rate="25", actor="test",
+        )
+        hr_store.upsert_employment_profile(
+            email, hire_date=date(2026, 1, 1), pay_basis="hourly",
+            payroll_eligible=True, actor="test",
+        )
+        payload = {
+            "full_name": "Admin Only", "hr_role": "admin",
+            "employee_type": "hourly", "payroll_relationship": "not_on_payroll",
+            "team_id": "", "hourly_rate": "25", "fixed_pay_per_period": "0",
+            "hire_date": "2026-01-01", "title": "Owner", "manager_email": "",
+            "classification": "nonexempt", "pay_basis": "hourly",
+            "standard_weekly_hours": "40", "phone": "", "status": "active",
+        }
+        blocked = self._post(f"/admin/hr/employees/{employee_id}", payload, self.sa)
+        self.assertEqual(blocked.status_code, 422)
+        self.assertIn("Pay changes require an effective date", blocked.text)
+
+        saved = self._post(f"/admin/hr/employees/{employee_id}", {
+            **payload,
+            "compensation_effective_date": "2026-08-01",
+            "compensation_reason": "Owner is not paid through Anata payroll.",
+        }, self.sa)
+        self.assertEqual(saved.status_code, 303)
+        employee = hr_store.get_employee(employee_id)
+        self.assertFalse(employee["employment"]["payroll_eligible"])
+        control = payroll_store.control_room(date(2026, 8, 1))
+        self.assertNotIn(email, {item["email"] for item in control["employees"]})
+        self.assertFalse(any(
+            item.get("employee_email") == email
+            for item in control["readiness"]["blockers"]
+        ))
+
     def test_duplicate_employee_rejected(self):
         import uuid
         email = f"dup-{uuid.uuid4().hex[:8]}@anatainc.com"

@@ -235,6 +235,34 @@ def test_company_profile_accepts_only_authorized_payroll_approver():
         assert company.final_approver_email == "david@anatainc.com"
 
 
+def test_payroll_roster_is_separate_from_admin_access_and_effective_by_period():
+    period_start = date(2026, 8, 1)
+    period_end = date(2026, 8, 15)
+    base = {
+        "email": "owner@anatainc.com", "status": "active",
+        "employee_type": "salaried",
+        "employment": {
+            "hire_date": date(2026, 1, 1), "termination_date": None,
+            "payroll_eligible": False,
+        },
+    }
+    assert not payroll_store.employee_is_payroll_eligible(
+        base, period_start=period_start, period_end=period_end,
+    )
+    included = {**base, "employment": {**base["employment"], "payroll_eligible": True}}
+    assert payroll_store.employee_is_payroll_eligible(
+        included, period_start=period_start, period_end=period_end,
+    )
+    future = {**included, "employment": {**included["employment"], "hire_date": date(2026, 8, 16)}}
+    assert not payroll_store.employee_is_payroll_eligible(
+        future, period_start=period_start, period_end=period_end,
+    )
+    ended = {**included, "employment": {**included["employment"], "termination_date": date(2026, 7, 31)}}
+    assert not payroll_store.employee_is_payroll_eligible(
+        ended, period_start=period_start, period_end=period_end,
+    )
+
+
 def test_provider_handoff_detects_exact_match_and_variance():
     engine = _engine()
     run = _run()
