@@ -54,6 +54,7 @@ def test_link_token_is_transactions_only():
     assert client.create_link_token(client_user_id="finance-user") == "link-sandbox"
     assert captured["path"] == "/link/token/create"
     assert captured["payload"]["products"] == ["transactions"]
+    assert captured["payload"]["transactions"]["days_requested"] == 730
     assert "auth" not in captured["payload"]["products"]
     assert "transfer" not in captured["payload"]["products"]
 

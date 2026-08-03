@@ -40,6 +40,9 @@ def test_budget_uses_one_canonical_source_and_does_not_double_count() -> None:
     view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 20))
     assert view["source"] == "plaid"
     assert view["transaction_count"] == 7
+    assert view["earliest_date"]
+    assert view["latest_date"]
+    assert view["coverage_days"] >= 1
     assert view["comparison_months"] == [
         "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"
     ]

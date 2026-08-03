@@ -2264,6 +2264,13 @@ input:focus, select:focus, textarea:focus {
 .trim-table th:nth-child(4) { width: 9%; }
 .trim-table th:nth-child(5) { width: 48%; }
 .trim-table td > span, .trim-table td:first-child span { display: block; margin-top: 4px; color: var(--anata-muted); font-size: 10px; }
+.trim-table .trim-month-history {
+  max-width: 28rem;
+  margin-top: 8px;
+  color: var(--anata-text);
+  font-size: 11px;
+  line-height: 1.55;
+}
 .trim-state { width: fit-content; border-radius: 999px; padding: 5px 8px; background: var(--anata-soft); font-weight: 700; }
 .trim-state--needed { color: var(--good); background: rgba(13, 119, 107, .08); }
 .trim-state--investigate { color: var(--warn); background: rgba(180, 105, 10, .09); }
