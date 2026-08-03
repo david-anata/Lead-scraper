@@ -724,7 +724,7 @@ class HRSectionTests(unittest.TestCase):
         )
         self.assertIn(login_email, result.text)
 
-    def test_yahoo_employee_invitation_is_a_direct_single_use_login(self):
+    def test_yahoo_employee_invitation_requires_explicit_single_use_confirmation(self):
         import uuid
 
         record_email = f"yahoo-worker-{uuid.uuid4().hex[:8]}@anatainc.com"
@@ -740,11 +740,31 @@ class HRSectionTests(unittest.TestCase):
         )
         self.assertTrue(invite["ok"])
 
-        accepted = self.client.get(
+        previewed = self.client.get(
             f"/admin/access/invite/{invite['token']}",
             follow_redirects=False,
         )
 
+        self.assertEqual(previewed.status_code, 200)
+        self.assertIn("Your invitation is ready", previewed.text)
+        self.assertIn("Continue to Anata", previewed.text)
+        self.assertNotIn(invite["token"], previewed.text)
+        self.assertEqual(
+            access_store.get_user_by_email(login_email)["status"], "suspended"
+        )
+        self.assertIsNotNone(
+            access_store.get_pending_invite_by_token(invite["token"])
+        )
+
+        # A link scanner may preview the same URL repeatedly; GET remains safe.
+        second_preview = self.client.get(
+            f"/admin/access/invite/{invite['token']}", follow_redirects=False
+        )
+        self.assertEqual(second_preview.status_code, 200)
+
+        accepted = self.client.post(
+            "https://testserver/admin/access/invite/accept", follow_redirects=False
+        )
         self.assertEqual(accepted.status_code, 302)
         self.assertEqual(accepted.headers["location"], "/app")
         self.assertIn(app.state.agent_settings.admin_cookie_name, accepted.cookies)

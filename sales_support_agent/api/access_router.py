@@ -2,7 +2,8 @@
 
 Requires `access.manage` for all admin routes.
 Public route (no auth guard, in middleware bypass list):
-  GET  /admin/access/invite/{token}   → validate token, set cookie, bounce to Google login
+  GET  /admin/access/invite/{token}   → validate without consuming; employee confirms or Google login begins
+  POST /admin/access/invite/accept    → explicitly consume an employee invitation
 
 Admin routes:
   GET  /admin/access                  → users list
@@ -40,6 +41,7 @@ from sales_support_agent.services.auth_deps import get_session_user_from_request
 from sales_support_agent.services.access import store
 from sales_support_agent.services.access.pages import (
     render_invite_created_page,
+    render_employee_invite_ready_page,
     render_invite_invalid_page,
     render_invites_page,
     render_requests_page,
@@ -302,12 +304,11 @@ async def invite_landing(token: str, request: Request):
         invite = None
     if not invite:
         return HTMLResponse(render_invite_invalid_page(), status_code=410)
-    # Employee invitations are delivered to the exact HR login address. The
-    # single-use bearer link proves control of that inbox, so Yahoo, Outlook,
-    # iCloud, and other providers do not need a Google account.
+    # Employee invitations are delivered to the exact HR login address. Do not
+    # consume them on GET: email security scanners routinely preview links and
+    # would otherwise activate the account before the employee taps it.
     employee = None
     try:
-        from sales_support_agent.api.auth_router import _auth_settings, _mint_session
         from sales_support_agent.services.hr import store as hr_store
 
         employee = hr_store.get_employee_by_email(invite["email"])
@@ -321,16 +322,13 @@ async def invite_landing(token: str, request: Request):
             access_user = store.get_user_by_email(invite["email"])
             if not access_user:
                 return HTMLResponse(render_invite_invalid_page(), status_code=410)
-            store.set_user_status(access_user["id"], "active")
-            store.accept_invite(invite["id"])
-            store.record_login(invite["email"])
-            return _mint_session(
-                request,
-                _auth_settings(request),
-                invite["email"],
-                access_user.get("name") or employee.get("full_name") or invite["email"],
-                redirect_to="/app",
+            secure = "localhost" not in str(request.base_url)
+            response = HTMLResponse(render_employee_invite_ready_page())
+            response.set_cookie(
+                "pending_employee_invite", token, httponly=True, samesite="lax",
+                path="/admin/access/invite", secure=secure, max_age=600,
             )
+            return response
     except Exception:  # noqa: BLE001 — fail closed for employee invitations
         logger.exception("Provider-neutral employee invite acceptance failed")
         if employee:
@@ -341,6 +339,57 @@ async def invite_landing(token: str, request: Request):
     response.set_cookie("pending_invite", token, httponly=True, samesite="lax",
                         path="/", secure=secure, max_age=600)
     return response
+
+
+@router.post("/invite/accept", response_class=HTMLResponse)
+async def accept_employee_invite(request: Request):
+    """Consume an HR invitation only after an explicit employee action."""
+
+    token = request.cookies.get("pending_employee_invite", "")
+    try:
+        invite = store.get_pending_invite_by_token(token) if token else None
+    except Exception:  # noqa: BLE001 — public acceptance must fail closed
+        logger.exception("Employee invite acceptance failed for token lookup")
+        invite = None
+    if not invite:
+        response = HTMLResponse(render_invite_invalid_page(), status_code=410)
+        response.delete_cookie("pending_employee_invite", path="/admin/access/invite")
+        return response
+
+    try:
+        from sales_support_agent.api.auth_router import _auth_settings, _mint_session
+        from sales_support_agent.services.hr import store as hr_store
+
+        employee = hr_store.get_employee_by_email(invite["email"])
+        if (
+            not employee
+            or employee.get("status") != "active"
+            or (employee.get("hr_login_email") or "").strip().lower()
+            != invite["email"]
+        ):
+            response = HTMLResponse(render_invite_invalid_page(), status_code=410)
+            response.delete_cookie("pending_employee_invite", path="/admin/access/invite")
+            return response
+        access_user = store.get_user_by_email(invite["email"])
+        if not access_user:
+            response = HTMLResponse(render_invite_invalid_page(), status_code=410)
+            response.delete_cookie("pending_employee_invite", path="/admin/access/invite")
+            return response
+        store.set_user_status(access_user["id"], "active")
+        store.accept_invite(invite["id"])
+        store.record_login(invite["email"])
+        response = _mint_session(
+            request,
+            _auth_settings(request),
+            invite["email"],
+            access_user.get("name") or employee.get("full_name") or invite["email"],
+            redirect_to="/app",
+        )
+        response.delete_cookie("pending_employee_invite", path="/admin/access/invite")
+        return response
+    except Exception:  # noqa: BLE001 — fail closed on activation/session failure
+        logger.exception("Provider-neutral employee invite acceptance failed")
+        return HTMLResponse(render_invite_invalid_page(), status_code=503)
 
 
 # ---------------------------------------------------------------------------

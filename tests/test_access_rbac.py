@@ -449,6 +449,15 @@ class InviteRequestTests(unittest.TestCase):
         r = self._get("/admin/access/invite/totally-bogus-token-xyz")
         self.assertEqual(r.status_code, 410)
         self.assertIn("Invalid invite", r.text)
+        self.assertIn("Sign in with personal email", r.text)
+
+    def test_employee_invite_accept_without_preview_cookie_fails_closed(self) -> None:
+        r = self.client.post(
+            "https://testserver/admin/access/invite/accept",
+            follow_redirects=False,
+        )
+        self.assertEqual(r.status_code, 410)
+        self.assertNotIn("admin_session", r.cookies)
 
     def test_invite_landing_valid_token_redirects(self) -> None:
         import secrets as _sec
