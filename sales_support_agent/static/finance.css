@@ -2374,8 +2374,9 @@ input:focus, select:focus, textarea:focus {
   .trim-table td:nth-child(5) { grid-column: 1 / -1; padding-top: 6px; }
   .trim-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .trim-choice { min-height: 38px; }
-  .trim-workspace [data-trim-batch-form] { padding-bottom: 108px; }
-  .trim-savebar { position: fixed; left: 12px; right: 12px; bottom: 8px; display: grid; margin: 0; }
+  .trim-workspace [data-trim-batch-form].has-unsaved-changes { padding-bottom: 108px; }
+  .trim-savebar { display: none; position: fixed; left: 12px; right: 12px; bottom: 8px; margin: 0; }
+  .trim-workspace [data-trim-batch-form].has-unsaved-changes .trim-savebar { display: grid; }
   .trim-savebar__actions { display: grid; grid-template-columns: 1fr 1fr; }
   .trim-savebar .btn { width: 100%; }
   .cost-evidence-summary, .cost-action-grid { grid-template-columns: 1fr; }
