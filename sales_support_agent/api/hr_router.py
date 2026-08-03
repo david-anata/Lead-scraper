@@ -1705,15 +1705,27 @@ async def hr_settings(request: Request, user: dict = Depends(_settings_guard)):
         user.get("email", ""), scope="payroll_settings",
         purpose="tax and opening balance review",
     )
+    payroll_approvers = [
+        account for account in access_store.list_users()
+        if account.get("status") == "active"
+        and "hr.payroll.approve" in account.get("permissions", set())
+    ]
+    current_email = (user.get("email") or "").strip().lower()
+    if user.get("is_superadmin") and current_email and not any(
+        account.get("email", "").strip().lower() == current_email
+        for account in payroll_approvers
+    ):
+        payroll_approvers.append({
+            "email": current_email,
+            "name": user.get("name") or current_email,
+            "status": "active",
+            "is_superadmin": True,
+        })
     return HTMLResponse(render_hr_settings(
         payroll_store.get_payroll_settings(), payroll_store.get_company_profile(),
         _ooo_calendar_readiness(),
         store.list_employees(),
-        [
-            account for account in access_store.list_users()
-            if account.get("status") == "active"
-            and "hr.payroll.approve" in account.get("permissions", set())
-        ],
+        payroll_approvers,
         payroll_store.list_opening_balances(2026),
         store.list_handbooks(),
         user=user, flash=_flash(request)

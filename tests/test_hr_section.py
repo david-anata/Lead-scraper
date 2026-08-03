@@ -109,6 +109,13 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("ooo-calendar-agent@example.com", page.text)
         self.assertNotIn("client_email", page.text)
 
+    def test_signed_in_superadmin_is_available_as_final_payroll_approver(self):
+        page = self._get("/admin/hr/settings", self.sa)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(
+            '<option value="david@anatainc.com"', page.text
+        )
+
     def test_prelaunch_payroll_defaults_to_approved_first_live_period(self):
         from sales_support_agent.api.hr_router import _default_payroll_date
 

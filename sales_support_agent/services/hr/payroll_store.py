@@ -218,6 +218,7 @@ def save_company_profile(
     source_note: str, actor: str,
 ) -> tuple[bool, str]:
     from sales_support_agent.services.access.store import resolve_access
+    from sales_support_agent.config import load_settings
 
     digits = "".join(character for character in (ein_last4 or "") if character.isdigit())
     withholding_last4 = "".join(
@@ -228,12 +229,24 @@ def save_company_profile(
         character for character in (utah_ui_account_last4 or "") if character.isdigit()
     )
     approver_access = resolve_access(final_approver_email)
+    configured_superadmins = {
+        email.strip().lower()
+        for email in load_settings().rbac_superadmin_emails
+        if email.strip()
+    }
+    approver_is_authorized = bool(
+        (
+            approver_access
+            and approver_access.get("status") == "active"
+            and "hr.payroll.approve" in approver_access.get("permissions", set())
+        )
+        or final_approver_email.strip().lower() in configured_superadmins
+    )
     if (
         not legal_name.strip() or len(digits) != 4 or not address_line1.strip()
         or not city.strip() or state.strip().upper() != "UT" or not zip_code.strip()
         or "@" not in payroll_contact_email or "@" not in final_approver_email
-        or not approver_access
-        or "hr.payroll.approve" not in approver_access.get("permissions", set())
+        or not approver_is_authorized
         or federal_deposit_schedule not in {"monthly", "semiweekly"}
         or utah_withholding_payment_frequency not in {"monthly", "quarterly"}
         or not source_note.strip()
