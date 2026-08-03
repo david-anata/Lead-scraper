@@ -251,7 +251,10 @@ def build_budget_view(
     recurring_category_average: dict[str, int] = defaultdict(int)
     for merchant_key, monthly in merchant_months.items():
         historical = [int(monthly.get(month) or 0) for month in comparison_months]
-        if sum(1 for amount in historical if amount > 0) >= 2:
+        if (
+            sum(1 for amount in historical if amount > 0) >= 2
+            and historical[-1] > 0
+        ):
             recurring_category_average[merchant_meta[merchant_key]["category"]] += (
                 sum(historical) // len(comparison_months)
             )
@@ -400,7 +403,13 @@ def build_budget_view(
         ).hexdigest()
         recent_average = sum(history[month] for month in comparison_months[3:]) // 3
         active_months = sum(1 for value in history.values() if value > 0)
-        cadence = "recurring" if active_months >= 2 else "one_time"
+        cadence = (
+            "recurring"
+            if active_months >= 2 and history[comparison_months[-1]] > 0
+            else "inactive"
+            if active_months >= 2
+            else "one_time"
+        )
         trim_items.append({
             "opportunity_key": opportunity_key, "key": opportunity_key,
             "evidence_hash": evidence_hash, "display_name": meta["name"],
@@ -414,13 +423,15 @@ def build_budget_view(
             "reason": (
                 "Recurring controllable vendor review"
                 if cadence == "recurring"
+                else "Previously recurring but absent from the latest complete month"
+                if cadence == "inactive"
                 else "One-time or irregular historical purchase review"
             ),
             "limitations": "Usage, contract terms, and replacement cost require operator review.",
             "evidence_dates": comparison_months, "review_state": "unknown", "review_note": "",
         })
     trim_items.sort(key=lambda item: (
-        0 if item["cadence"] == "recurring" else 1,
+        {"recurring": 0, "inactive": 1, "one_time": 2}.get(item["cadence"], 3),
         -int(item["six_month_total_cents"]), str(item["display_name"]).casefold(),
     ))
     proof = {
@@ -760,17 +771,18 @@ def render_budget_page(
     )
     trim_items = list(view.get("trim_items") or [])
     recurring_trim_count = sum(1 for item in trim_items if item.get("cadence") == "recurring")
-    one_time_trim_count = len(trim_items) - recurring_trim_count
+    inactive_trim_count = sum(1 for item in trim_items if item.get("cadence") == "inactive")
+    one_time_trim_count = sum(1 for item in trim_items if item.get("cadence") == "one_time")
     trim_counts = {
         state: sum(1 for item in trim_items if str(item.get("review_state") or "unknown") == state)
         for state in ("unknown", "needed", "investigate", "waste")
     }
     trim_rows = "".join(
         f"""
-        <tr {'hidden' if item.get('cadence') == 'one_time' else ''} data-trim-row data-trim-cadence="{html.escape(str(item.get('cadence') or 'one_time'), quote=True)}" data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-note="{html.escape(str(item.get('review_note') or ''), quote=True)}" data-trim-opportunity="{html.escape(json.dumps(item, separators=(',', ':')), quote=True)}">
-          <td><strong>{html.escape(item['display_name'])}</strong><span>{'Recurring vendor' if item.get('cadence') == 'recurring' else 'One-time / irregular'} · {html.escape(str(item['category']).replace('_', ' ').title())} · {item['active_months']} of 6 months</span>
+        <tr {'hidden' if item.get('cadence') != 'recurring' else ''} data-trim-row data-trim-cadence="{html.escape(str(item.get('cadence') or 'one_time'), quote=True)}" data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-note="{html.escape(str(item.get('review_note') or ''), quote=True)}" data-trim-opportunity="{html.escape(json.dumps(item, separators=(',', ':')), quote=True)}">
+          <td><strong>{html.escape(item['display_name'])}</strong><span>{'Recently recurring' if item.get('cadence') == 'recurring' else 'Inactive / historical' if item.get('cadence') == 'inactive' else 'One-time / irregular'} · {html.escape(str(item['category']).replace('_', ' ').title())} · {item['active_months']} of 6 months</span>
           <span class="trim-month-history">{' · '.join(f"{date.fromisoformat(month + '-01').strftime('%b')} {_money(int(amount), exact=True)}" for month, amount in item['monthly_history'].items())}</span></td>
-          <td>{_money(int(item['monthly_average_cents']), exact=True) if item.get('cadence') == 'recurring' else '<span class="trim-not-recurring">Not recurring</span>'}</td>
+          <td>{_money(int(item['monthly_average_cents']), exact=True) if item.get('cadence') == 'recurring' else '<span class="trim-not-recurring">No recent charge</span>' if item.get('cadence') == 'inactive' else '<span class="trim-not-recurring">Not recurring</span>'}</td>
           <td>{_money(int(item['six_month_total_cents']), exact=True)}</td>
           <td><span class="trim-state trim-state--{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}">{html.escape(str(item.get('review_state') or 'unknown').title())}</span></td>
           <td><div class="trim-form">
@@ -840,6 +852,7 @@ def render_budget_page(
         <p class="budget-review-summary">Work from the largest six-month spend down. Make as many decisions as you want, then save them together. No service is cancelled and no accounting record changes.</p>
         <div class="trim-summary" aria-label="Trim review progress">
           <button type="button" data-trim-filter="recurring" class="is-active">Recurring <strong>{recurring_trim_count}</strong></button>
+          <button type="button" data-trim-filter="inactive">Inactive/history <strong>{inactive_trim_count}</strong></button>
           <button type="button" data-trim-filter="one_time">One-time <strong>{one_time_trim_count}</strong></button>
           <button type="button" data-trim-filter="all">All <strong>{len(trim_items)}</strong></button>
           <button type="button" data-trim-filter="unknown">Unknown <strong>{trim_counts['unknown']}</strong></button>
@@ -853,7 +866,7 @@ def render_budget_page(
         <div class="money-table-wrap trim-table-wrap"><table class="budget-table trim-table"><thead><tr>
           <th>Vendor</th><th>Monthly average</th><th>Six-month spend</th><th>Status</th><th>Decision and note</th>
         </tr></thead><tbody>{trim_rows}</tbody></table></div>
-        <p class="budget-rule-note" data-trim-result-count>Showing {recurring_trim_count} recurring vendors. {one_time_trim_count} one-time or irregular purchases are available separately.</p>
+        <p class="budget-rule-note" data-trim-result-count>Showing {recurring_trim_count} vendors charged in the latest complete month. {inactive_trim_count} inactive and {one_time_trim_count} one-time purchases are available separately.</p>
         </form>
       </section>
 

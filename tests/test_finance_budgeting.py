@@ -290,8 +290,8 @@ def test_deep_review_finds_new_recurring_and_duplicate_looking_spend() -> None:
 
 def test_trim_list_includes_every_controllable_vendor_ranked_by_spend() -> None:
     rows = [
-        _row("elementor-1", "plaid", "2026-01-10", 9_900, merchant="Elementor"),
-        _row("elementor-2", "plaid", "2026-02-10", 9_900, merchant="Elementor"),
+        _row("elementor-1", "plaid", "2026-05-10", 9_900, merchant="Elementor"),
+        _row("elementor-2", "plaid", "2026-06-10", 9_900, merchant="Elementor"),
         _row("small-1", "plaid", "2026-03-10", 2_000, merchant="Small Tool"),
         _row("rent-1", "plaid", "2026-03-01", 200_000, merchant="Building", category="rent"),
     ]
@@ -313,6 +313,20 @@ def test_one_time_purchase_does_not_create_recurring_savings() -> None:
     view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
 
     assert view["trim_items"][0]["cadence"] == "one_time"
+    assert view["categories"][0]["recurring_average_cents"] == 0
+    assert view["categories"][0]["recurring_saving_cents"] == 0
+
+
+def test_stopped_vendor_moves_to_inactive_history_and_not_recurring_savings() -> None:
+    rows = [
+        _row("old-1", "plaid", "2026-01-10", 9_900, merchant="Cancelled Tool"),
+        _row("old-2", "plaid", "2026-02-10", 9_900, merchant="Cancelled Tool"),
+    ]
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+
+    assert view["trim_items"][0]["cadence"] == "inactive"
+    assert view["trim_items"][0]["monthly_potential_cents"] == 0
     assert view["categories"][0]["recurring_average_cents"] == 0
     assert view["categories"][0]["recurring_saving_cents"] == 0
 
