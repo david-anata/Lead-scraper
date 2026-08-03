@@ -202,15 +202,24 @@ class BuildingContentPublicationTests(unittest.TestCase):
         self.assertNotIn("draft-review", ids)
         self.assertNotIn("expired-logo", ids)
 
-    def test_04_boom_private_benefit_language_is_rejected(self) -> None:
+    def test_04_private_benefit_language_is_rejected_but_boom_branding_is_allowed(self) -> None:
         response = self._save(
             "testimonial",
             "private-benefit-review",
-            quote="Boom members receive a private benefit here.",
+            quote="Tenants receive a complimentary Boom membership here.",
             attribution_name="Internal Draft",
         )
         self.assertEqual(response.status_code, 422, response.text)
         self.assertIn("private-benefit", response.text)
+        logo = self._save(
+            "tenant_logo",
+            "boom-fitness-culture-logo",
+            tenant_name="Boom Fitness Culture",
+            asset_url="/brand/boom-fitness-culture.png",
+            alt_text="Boom Fitness Culture",
+            destination_url="https://boomfitnessculture.com/",
+        )
+        self.assertEqual(logo.status_code, 200, logo.text)
 
     def test_05_offering_publish_is_blocked_until_ready(self) -> None:
         space = self.client.put(

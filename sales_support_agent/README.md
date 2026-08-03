@@ -320,9 +320,10 @@ history.
 
 `GET /api/public/building/content` exposes only approved, unexpired allow-listed
 fields. It never returns evidence references, consent records, internal notes,
-reviewer identity, or draft/rejected content. Public fields containing Boom or
-private-benefit language are rejected and are also filtered defensively at
-projection time.
+reviewer identity, or draft/rejected content. Public fields containing private
+tenant-benefit language are rejected and are also filtered defensively at
+projection time. Truthful public references to Boom Fitness Culture remain
+allowed; claims about complimentary or tenant-only membership do not.
 
 Publishing an offering now runs deterministic readiness checks. A publish is
 blocked unless it has public description and conversion wording, a linked

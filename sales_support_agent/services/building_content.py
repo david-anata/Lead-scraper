@@ -20,7 +20,8 @@ from sales_support_agent.models.entities import (
 CONTENT_STATUSES = {"draft", "needs_review", "approved", "rejected", "retired"}
 PUBLIC_URL_RE = re.compile(r"^(?:https://|/(?!/))")
 PRIVATE_BENEFIT_RE = re.compile(
-    r"\b(?:boom|private[- ]benefit|members?[- ]only benefit)\b",
+    r"\b(?:private[- ]benefit|members?[- ]only benefit|tenant[- ]only|"
+    r"complimentary\s+(?:boom\s+)?membership|free\s+(?:boom\s+)?(?:gym|fitness|membership))\b",
     re.IGNORECASE,
 )
 
@@ -36,7 +37,7 @@ def is_safe_public_url(value: str) -> bool:
 
 
 def contains_private_benefit_language(*values: str) -> bool:
-    """Keep internal Boom/private-benefit language out of public projections."""
+    """Keep private tenant-benefit language out of public projections."""
 
     return any(PRIVATE_BENEFIT_RE.search(str(value or "")) for value in values)
 
@@ -221,7 +222,7 @@ def validate_content_for_approval(kind: str, values: dict[str, Any]) -> list[str
         )
     ]
     if contains_private_benefit_language(*public_text):
-        errors.append("Remove Boom or private-benefit language from public fields.")
+        errors.append("Remove private-benefit language from public fields.")
     if kind == "lifestyle_media":
         if values.get("media_kind") not in {"image", "video"}:
             errors.append("Media kind must be image or video.")
