@@ -220,6 +220,7 @@ def build_budget_view(
         lambda: defaultdict(int)
     )
     latest_date: date | None = None
+    earliest_date: date | None = None
     for row in transactions:
         occurred = row["_budget_date"]
         key = row["_budget_category"]
@@ -239,6 +240,7 @@ def build_budget_view(
                     (occurred.isoformat(), int(row.get("amount_cents") or 0))
                 ] += 1
         latest_date = max(latest_date or occurred, occurred)
+        earliest_date = min(earliest_date or occurred, occurred)
 
     days_in_month = monthrange(today.year, today.month)[1]
     elapsed_days = max(1, today.day)
@@ -391,6 +393,7 @@ def build_budget_view(
             "six_month_total_cents": total, "monthly_average_cents": total // 6,
             "recent_average_cents": recent_average,
             "active_months": sum(1 for value in history.values() if value > 0),
+            "monthly_history": history,
             "reason": "Six-month controllable vendor review",
             "limitations": "Usage, contract terms, and replacement cost require operator review.",
             "evidence_dates": comparison_months, "review_state": "unknown", "review_note": "",
@@ -399,7 +402,13 @@ def build_budget_view(
     proof = {
         "source": source,
         "as_of": today.isoformat(),
+        "earliest_date": earliest_date.isoformat() if earliest_date else "",
         "latest_date": latest_date.isoformat() if latest_date else "",
+        "coverage_days": (
+            (latest_date - earliest_date).days + 1
+            if latest_date is not None and earliest_date is not None
+            else 0
+        ),
         "comparison_months": comparison_months,
         "totals": totals,
         "monthly_totals": monthly_totals,
@@ -733,7 +742,8 @@ def render_budget_page(
     trim_rows = "".join(
         f"""
         <tr data-trim-row data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-note="{html.escape(str(item.get('review_note') or ''), quote=True)}" data-trim-opportunity="{html.escape(json.dumps(item, separators=(',', ':')), quote=True)}">
-          <td><strong>{html.escape(item['display_name'])}</strong><span>{html.escape(str(item['category']).replace('_', ' ').title())} · {item['active_months']} of 6 months</span></td>
+          <td><strong>{html.escape(item['display_name'])}</strong><span>{html.escape(str(item['category']).replace('_', ' ').title())} · {item['active_months']} of 6 months</span>
+          <span class="trim-month-history">{' · '.join(f"{date.fromisoformat(month + '-01').strftime('%b')} {_money(int(amount), exact=True)}" for month, amount in item['monthly_history'].items())}</span></td>
           <td>{_money(int(item['monthly_average_cents']), exact=True)}</td>
           <td>{_money(int(item['six_month_total_cents']), exact=True)}</td>
           <td><span class="trim-state trim-state--{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}">{html.escape(str(item.get('review_state') or 'unknown').title())}</span></td>
@@ -795,7 +805,7 @@ def render_budget_page(
         <article><span>Possible EOM improvement</span><strong>{_money(totals['potential_saving_cents'], exact=True)}</strong></article>
         <article class="budget-summary__saving"><span>Recurring savings still to capture</span><strong>{_money(totals['recurring_saving_cents'], exact=True)}</strong></article>
       </section>
-      <p class="budget-proof">Source: {html.escape(str(view['source']).replace('_', ' ').title())} posted transactions · Six complete months: {html.escape(', '.join(view['comparison_months']))} · Latest evidence {html.escape(str(view.get('latest_date') or 'unavailable'))}. Mirrored sources and internal transfers are excluded.</p>
+      <p class="budget-proof">Source: {html.escape(str(view['source']).replace('_', ' ').title())} posted transactions · {int(view.get('transaction_count') or 0)} transactions available from {html.escape(str(view.get('earliest_date') or 'unavailable'))} through {html.escape(str(view.get('latest_date') or 'unavailable'))} · Six complete months reviewed: {html.escape(', '.join(view['comparison_months']))}. Mirrored sources and internal transfers are excluded.</p>
 
       <section class="budget-workspace trim-workspace" aria-labelledby="trim-title">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Trim list</p>

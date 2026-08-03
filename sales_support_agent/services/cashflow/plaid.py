@@ -88,7 +88,12 @@ class PlaidClient:
             payload["access_token"] = access_token
         else:
             payload["products"] = ["transactions"]
-            payload["transactions"] = {"days_requested": 365}
+            # Plaid allows at most 24 months. Request the full window when the
+            # Item is created because this value cannot be increased later
+            # without removing the Item and sending the operator through Link
+            # again. The longer history gives Finance enough evidence for
+            # seasonal and annual vendor reviews while remaining read-only.
+            payload["transactions"] = {"days_requested": 730}
         data = self.post("/link/token/create", payload)
         return str(data["link_token"])
 
