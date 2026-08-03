@@ -298,8 +298,23 @@ def test_trim_list_includes_every_controllable_vendor_ranked_by_spend() -> None:
     view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
 
     assert [item["display_name"] for item in view["trim_items"]] == ["Elementor", "Small Tool"]
+    assert view["trim_items"][0]["cadence"] == "recurring"
+    assert view["trim_items"][1]["cadence"] == "one_time"
+    assert view["trim_items"][1]["monthly_potential_cents"] == 0
     assert len(view["trim_items"][0]["opportunity_key"]) == 64
     assert view["trim_items"][0]["review_state"] == "unknown"
+
+
+def test_one_time_purchase_does_not_create_recurring_savings() -> None:
+    rows = [
+        _row("one-time-1", "plaid", "2026-06-10", 600_000, merchant="One Time Build"),
+    ]
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+
+    assert view["trim_items"][0]["cadence"] == "one_time"
+    assert view["categories"][0]["recurring_average_cents"] == 0
+    assert view["categories"][0]["recurring_saving_cents"] == 0
 
 
 def test_recurring_savings_exclude_reductions_already_reflected_this_month() -> None:
