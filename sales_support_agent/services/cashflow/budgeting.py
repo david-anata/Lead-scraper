@@ -1179,7 +1179,7 @@ def render_budget_page(
     )
     trim_rows = "".join(
         f"""
-        <tr {'hidden' if str(item.get('opportunity_key') or '') not in actionable_keys else ''} data-trim-row data-trim-actionable="{'true' if str(item.get('opportunity_key') or '') in actionable_keys else 'false'}" data-trim-cadence="{html.escape(str(item.get('cadence') or 'one_time'), quote=True)}" data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-note="{html.escape(str(item.get('review_note') or ''), quote=True)}" data-trim-opportunity="{html.escape(json.dumps(item, separators=(',', ':'), default=str), quote=True)}">
+        <tr {'hidden' if str(item.get('opportunity_key') or '') not in actionable_keys else ''} data-trim-row data-trim-actionable="{'true' if str(item.get('opportunity_key') or '') in actionable_keys else 'false'}" data-trim-current="{'true' if item.get('cadence') in {'monthly', 'annual'} and int(item.get('monthly_potential_cents') or 0) > 0 else 'false'}" data-trim-cadence="{html.escape(str(item.get('cadence') or 'one_time'), quote=True)}" data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-note="{html.escape(str(item.get('review_note') or ''), quote=True)}" data-trim-opportunity="{html.escape(json.dumps(item, separators=(',', ':'), default=str), quote=True)}">
           <td><strong><a href="/admin/finances/budget/vendor/{html.escape(item['opportunity_key'], quote=True)}">{html.escape(item['display_name'])}</a></strong><span>{html.escape(str(item.get('cadence') or 'uncertain').replace('_', ' ').title())} · {html.escape(str(item['category']).replace('_', ' ').title())} · {item['active_months']} of 6 months</span>
           <span class="trim-month-history">{' · '.join(f"{date.fromisoformat(month + '-01').strftime('%b')} {_money(int(amount), exact=True)}" for month, amount in item['monthly_history'].items())}</span></td>
           <td>{_money(int(item['monthly_potential_cents']), exact=True) if item.get('cadence') in {'monthly', 'annual'} else '<span class="trim-not-recurring">No recent charge</span>' if item.get('cadence') == 'inactive' else '<span class="trim-not-recurring">Not recurring</span>'}</td>
@@ -1378,7 +1378,11 @@ def render_budget_page(
         const wanted = button.dataset.trimFilter;
         let shown = 0;
         rows.forEach(row => {
-          const visible = wanted === 'all' || (wanted === 'needs_decision' && row.dataset.trimActionable === 'true') || row.dataset.trimState === wanted || row.dataset.trimCadence === wanted;
+          const visible = wanted === 'all'
+            || (wanted === 'needs_decision' && row.dataset.trimActionable === 'true')
+            || (wanted === 'waste' && row.dataset.trimState === 'waste' && row.dataset.trimCurrent === 'true')
+            || (wanted !== 'waste' && row.dataset.trimState === wanted)
+            || row.dataset.trimCadence === wanted;
           row.hidden = !visible;
           if (visible) shown += 1;
         });
