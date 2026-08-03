@@ -11,6 +11,7 @@ import html
 import json
 import logging
 import os
+import re
 from calendar import monthrange
 from collections import defaultdict
 from datetime import date, datetime
@@ -54,7 +55,7 @@ _TRANSFER_TEXT_MARKERS = (
 )
 _PROTECTED_CATEGORIES = {
     "debt", "debt_service", "insurance", "payroll", "rent", "tax", "taxes",
-    "utilities", "critical_utilities", "revenue",
+    "utilities", "critical_utilities", "revenue", "manual_check",
 }
 _HIGH_CONTROL_CATEGORIES = {
     "advertising", "bank_fees", "entertainment", "fees", "meals",
@@ -95,6 +96,18 @@ def _money(cents: int, *, exact: bool = False) -> str:
 
 
 def _category(row: Mapping[str, Any]) -> str:
+    transaction_type = str(row.get("bank_transaction_type") or "").strip().lower()
+    description = " ".join(
+        str(row.get(field) or "")
+        for field in ("friendly_name", "vendor_or_customer", "name", "description")
+    )
+    # A bare check number is not a vendor. It may be payroll, a contractor,
+    # rent, or another protected payment that needs payee evidence before a
+    # savings decision. Keep it visible in spending, but out of the trim list.
+    if transaction_type == "check" or re.search(
+        r"\b(?:check|chk)\s*(?:#|no\.?|number)?\s*\d+\b", description, re.IGNORECASE
+    ):
+        return "manual_check"
     raw = (
         row.get("category")
         or row.get("personal_finance_category")
@@ -103,15 +116,6 @@ def _category(row: Mapping[str, Any]) -> str:
     )
     key = _slug(raw)
     if key in {"", "other", "uncategorized", "unknown"}:
-        description = " ".join(
-            str(row.get(field) or "")
-            for field in (
-                "friendly_name",
-                "vendor_or_customer",
-                "name",
-                "description",
-            )
-        )
         key = _slug(categorize(description, str(raw or "")))
     return key or "uncategorized"
 

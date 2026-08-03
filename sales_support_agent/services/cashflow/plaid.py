@@ -19,6 +19,7 @@ import jwt
 from sqlalchemy import text
 
 from sales_support_agent.models.database import get_engine, insert_cash_event
+from sales_support_agent.services.cashflow.categorizer import categorize
 from sales_support_agent.services.token_seal import seal_token, unseal_token
 
 
@@ -592,25 +593,44 @@ def _upsert_transaction(connection: Any, transaction: Mapping[str, Any], *, now:
     event = connection.execute(text("SELECT id FROM cash_events WHERE source='plaid' AND source_id=:source_id"), {"source_id": external_id}).fetchone()
     posted_date = str(transaction.get("date") or transaction.get("authorized_date") or "")[:10] or None
     description = str(transaction.get("merchant_name") or transaction.get("name") or "")[:255]
+    transaction_code = str(transaction.get("transaction_code") or "")[:32]
+    pfc = transaction.get("personal_finance_category") or {}
+    pfc_primary = str(pfc.get("primary") or "") if isinstance(pfc, Mapping) else ""
+    pfc_detailed = str(pfc.get("detailed") or "") if isinstance(pfc, Mapping) else ""
+    category = "manual_check" if transaction_code.lower() == "check" else categorize(
+        description, pfc_primary.replace("_", " ")
+    )
+    metadata_note = json.dumps({
+        "source": "plaid",
+        "account_id": str(transaction.get("account_id") or ""),
+        "pending_transaction_id": str(transaction.get("pending_transaction_id") or ""),
+    }, sort_keys=True, separators=(",", ":"))
     if event:
         connection.execute(text("""
             UPDATE cash_events SET event_type=:event_type, amount_cents=:amount,
                 due_date=:posted_date, effective_date=:posted_date, status=:status,
                 name=:name, description=:description, vendor_or_customer=:name,
+                category=:category, subcategory=:subcategory,
+                bank_transaction_type=:transaction_code, notes=:notes,
                 confidence=:confidence, updated_at=:now
             WHERE id=:id
         """), {"event_type": event_type, "amount": cents, "posted_date": posted_date,
                 "status": "pending" if pending else "posted", "name": description,
-                "description": description, "confidence": "estimated" if pending else "confirmed",
+                "description": description, "category": category,
+                "subcategory": pfc_detailed[:64], "transaction_code": transaction_code,
+                "notes": metadata_note,
+                "confidence": "estimated" if pending else "confirmed",
                 "now": now, "id": event_id})
     else:
         insert_cash_event(
             connection, id=event_id, source="plaid", source_id=external_id,
-            record_kind="transaction", event_type=event_type, category="uncategorized",
-            name=description, description=description, vendor_or_customer=description,
+            record_kind="transaction", event_type=event_type, category=category,
+            subcategory=pfc_detailed[:64], name=description, description=description,
+            vendor_or_customer=description,
             amount_cents=cents, due_date=posted_date, status="pending" if pending else "posted",
-            confidence="estimated" if pending else "confirmed", bank_reference=external_id,
-            notes="Imported from Plaid; pending transactions are not settlement evidence.",
+            confidence="estimated" if pending else "confirmed",
+            bank_transaction_type=transaction_code, bank_reference=external_id,
+            notes=metadata_note,
             created_at=now, updated_at=now,
         )
     payload_hash = hashlib.sha256(json.dumps(dict(transaction), sort_keys=True, default=str).encode()).hexdigest()

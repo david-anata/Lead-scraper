@@ -129,6 +129,25 @@ def test_budget_excludes_credit_card_payments_and_named_internal_withdrawals() -
     assert [item["key"] for item in view["categories"]] == ["software"]
 
 
+def test_budget_protects_generic_checks_from_the_vendor_trim_list() -> None:
+    rows = [
+        _row(
+            "payroll-check-1", "plaid", "2026-07-11", 125_000,
+            category="uncategorized", merchant="Check #1842",
+        ),
+        _row(
+            "software-1", "plaid", "2026-06-12", 2_000,
+            category="software", merchant="Anthropic",
+        ),
+    ]
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    by_key = {item["key"]: item for item in view["categories"]}
+
+    assert by_key["manual_check"]["protected"] is True
+    assert [item["display_name"] for item in view["trim_items"]] == ["Anthropic"]
+
+
 def test_budget_recategorizes_existing_uncategorized_plaid_rows() -> None:
     rows = [
         _row(
