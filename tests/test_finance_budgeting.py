@@ -520,3 +520,5 @@ def test_monthly_brief_omits_zero_value_nonrecurring_waste() -> None:
     )
 
     assert "$0.00 per month awaits cancellation work" not in page
+    assert 'data-trim-current="false"' in page
+    assert "wanted === 'waste' && row.dataset.trimState === 'waste' && row.dataset.trimCurrent === 'true'" in page
