@@ -777,9 +777,23 @@ def render_budget_page(
         state: sum(1 for item in trim_items if str(item.get("review_state") or "unknown") == state)
         for state in ("unknown", "needed", "investigate", "waste")
     }
+    actionable_items = [
+        item for item in trim_items
+        if (
+            item.get("cadence") == "recurring"
+            and str(item.get("review_state") or "unknown") in {"unknown", "investigate"}
+        )
+    ][:15]
+    actionable_keys = {
+        str(item.get("opportunity_key") or "") for item in actionable_items
+    }
+    ready_to_cut_count = sum(
+        1 for item in trim_items
+        if item.get("cadence") == "recurring" and item.get("review_state") == "waste"
+    )
     trim_rows = "".join(
         f"""
-        <tr {'hidden' if item.get('cadence') != 'recurring' else ''} data-trim-row data-trim-cadence="{html.escape(str(item.get('cadence') or 'one_time'), quote=True)}" data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-note="{html.escape(str(item.get('review_note') or ''), quote=True)}" data-trim-opportunity="{html.escape(json.dumps(item, separators=(',', ':')), quote=True)}">
+        <tr {'hidden' if str(item.get('opportunity_key') or '') not in actionable_keys else ''} data-trim-row data-trim-actionable="{'true' if str(item.get('opportunity_key') or '') in actionable_keys else 'false'}" data-trim-cadence="{html.escape(str(item.get('cadence') or 'one_time'), quote=True)}" data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-note="{html.escape(str(item.get('review_note') or ''), quote=True)}" data-trim-opportunity="{html.escape(json.dumps(item, separators=(',', ':')), quote=True)}">
           <td><strong>{html.escape(item['display_name'])}</strong><span>{'Recently recurring' if item.get('cadence') == 'recurring' else 'Inactive / historical' if item.get('cadence') == 'inactive' else 'One-time / irregular'} · {html.escape(str(item['category']).replace('_', ' ').title())} · {item['active_months']} of 6 months</span>
           <span class="trim-month-history">{' · '.join(f"{date.fromisoformat(month + '-01').strftime('%b')} {_money(int(amount), exact=True)}" for month, amount in item['monthly_history'].items())}</span></td>
           <td>{_money(int(item['monthly_average_cents']), exact=True) if item.get('cadence') == 'recurring' else '<span class="trim-not-recurring">No recent charge</span>' if item.get('cadence') == 'inactive' else '<span class="trim-not-recurring">Not recurring</span>'}</td>
@@ -849,16 +863,15 @@ def render_budget_page(
         <div class="money-section-heading"><div><p class="finance-eyebrow">Trim list</p>
         <h2 id="trim-title">Decide what stays and what goes</h2></div>
         <span class="money-section-state">{len(trim_items)} controllable vendors</span></div>
-        <p class="budget-review-summary">Work from the largest six-month spend down. Make as many decisions as you want, then save them together. No service is cancelled and no accounting record changes.</p>
+        <p class="budget-review-summary">Review only the highest-impact vendors that still need an answer. Saved keep decisions leave this queue; confirmed waste moves to Ready to cut. No service is cancelled here.</p>
         <div class="trim-summary" aria-label="Trim review progress">
-          <button type="button" data-trim-filter="recurring" class="is-active">Recurring <strong>{recurring_trim_count}</strong></button>
+          <button type="button" data-trim-filter="needs_decision" class="is-active">Needs decision <strong>{len(actionable_items)}</strong></button>
+          <button type="button" data-trim-filter="waste">Ready to cut <strong>{ready_to_cut_count}</strong></button>
+          <button type="button" data-trim-filter="recurring">All recent <strong>{recurring_trim_count}</strong></button>
           <button type="button" data-trim-filter="inactive">Inactive/history <strong>{inactive_trim_count}</strong></button>
           <button type="button" data-trim-filter="one_time">One-time <strong>{one_time_trim_count}</strong></button>
           <button type="button" data-trim-filter="all">All <strong>{len(trim_items)}</strong></button>
-          <button type="button" data-trim-filter="unknown">Unknown <strong>{trim_counts['unknown']}</strong></button>
-          <button type="button" data-trim-filter="investigate">Investigate <strong>{trim_counts['investigate']}</strong></button>
-          <button type="button" data-trim-filter="waste">Waste <strong>{trim_counts['waste']}</strong></button>
-          <button type="button" data-trim-filter="needed">Needed <strong>{trim_counts['needed']}</strong></button>
+          <button type="button" data-trim-filter="needed">Kept <strong>{trim_counts['needed']}</strong></button>
         </div>
         <form method="post" action="/admin/finances/savings/reviews/batch" data-trim-batch-form data-trim-calculation="{html.escape(str(view['calculation_id']), quote=True)}">
         <input type="hidden" name="changes_json" data-trim-changes value="[]">
@@ -866,7 +879,7 @@ def render_budget_page(
         <div class="money-table-wrap trim-table-wrap"><table class="budget-table trim-table"><thead><tr>
           <th>Vendor</th><th>Monthly average</th><th>Six-month spend</th><th>Status</th><th>Decision and note</th>
         </tr></thead><tbody>{trim_rows}</tbody></table></div>
-        <p class="budget-rule-note" data-trim-result-count>Showing {recurring_trim_count} vendors charged in the latest complete month. {inactive_trim_count} inactive and {one_time_trim_count} one-time purchases are available separately.</p>
+        <p class="budget-rule-note" data-trim-result-count>Showing {len(actionable_items)} highest-impact recent vendors that still need a decision.</p>
         </form>
       </section>
 
@@ -959,7 +972,7 @@ def render_budget_page(
         const wanted = button.dataset.trimFilter;
         let shown = 0;
         rows.forEach(row => {
-          const visible = wanted === 'all' || row.dataset.trimState === wanted || row.dataset.trimCadence === wanted;
+          const visible = wanted === 'all' || (wanted === 'needs_decision' && row.dataset.trimActionable === 'true') || row.dataset.trimState === wanted || row.dataset.trimCadence === wanted;
           row.hidden = !visible;
           if (visible) shown += 1;
         });

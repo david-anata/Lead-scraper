@@ -430,3 +430,23 @@ def test_budget_page_is_explicitly_advisory_and_explainable() -> None:
     assert "Run high spending review" in page
     assert "planning targets, not changes to your bank or books" in page
     assert "Mirrored sources and internal transfers are excluded" in page
+
+
+def test_budget_page_defaults_to_fifteen_highest_impact_unresolved_vendors() -> None:
+    rows = []
+    for vendor_number in range(20):
+        for month in ("05", "06"):
+            rows.append(_row(
+                f"vendor-{vendor_number}-{month}", "plaid", f"2026-{month}-10",
+                (vendor_number + 1) * 1_000, merchant=f"Vendor {vendor_number}",
+            ))
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    view["trim_items"][0]["review_state"] = "needed"
+
+    page = budgeting.render_budget_page(
+        view, {"status": "empty", "recommendations": []}
+    )
+
+    assert 'data-trim-filter="needs_decision" class="is-active"' in page
+    assert "Needs decision <strong>15</strong>" in page
+    assert "Saved keep decisions leave this queue" in page
