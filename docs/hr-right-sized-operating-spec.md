@@ -86,9 +86,14 @@ employee master or filing-grade year-to-date payroll values.
 ### Paid time off
 
 - One combined PTO bank covers vacation, illness, and personal time.
-- W-2 employees accrue one PTO hour per 52 paid hours, up to 40 hours per policy year.
-- Accrual begins on the hire date; use begins after 90 days.
+- The PTO policy is effective August 1, 2026. Regular full-time means 30 or more
+  standard hours per week; regular part-time means fewer than 30.
+- Regular full-time and part-time W-2 employees accrue one PTO hour per 52 paid
+  hours, beginning on the later of August 1, 2026 or the hire date. The common
+  rate makes part-time accrual proportional to actual paid hours.
+- Use begins after 90 days of employment, but never before August 1, 2026.
 - The balance cap is 40 hours. Accrual pauses at the cap.
+- Unused hours carry forward subject to the 40-hour balance cap.
 - No negative balance or borrowing future PTO.
 - PTO is paid at the employee's base rate.
 - PTO and holiday hours are paid hours but not hours worked for overtime.
@@ -103,9 +108,11 @@ employee master or filing-grade year-to-date payroll values.
 - Thanksgiving
 - Christmas
 
-Eligibility begins after 90 days for W-2 employees. Hourly employees receive their
-normally scheduled hours up to eight; salaried employees receive normal salary. If an
-employee works on a holiday, regular worked time and holiday pay remain separate lines.
+Eligibility begins after 90 days for W-2 employees and applies only to holidays on or
+after August 1, 2026. Full-time hourly employees receive normally scheduled hours up
+to eight. Part-time employees receive their normal scheduled hours only when the
+holiday falls on a day they normally work. Salaried employees receive normal salary. If
+an employee works on a holiday, regular worked time and holiday pay remain separate lines.
 There is no holiday accrual or payout balance.
 
 ### Other pay

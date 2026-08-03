@@ -1037,6 +1037,7 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
         },
         "hr_employment_profiles": {
             "payroll_eligible": "ALTER TABLE hr_employment_profiles ADD COLUMN payroll_eligible BOOLEAN NOT NULL DEFAULT 1",
+            "standard_workdays": "ALTER TABLE hr_employment_profiles ADD COLUMN standard_workdays VARCHAR(32) NOT NULL DEFAULT '0,1,2,3,4'",
         },
     }
 
@@ -1183,6 +1184,11 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
             connection.execute(text(
                 "ALTER TABLE hr_employment_profiles "
                 "ADD COLUMN IF NOT EXISTS payroll_eligible BOOLEAN NOT NULL DEFAULT TRUE"
+            ))
+            connection.execute(text(
+                "ALTER TABLE hr_employment_profiles "
+                "ADD COLUMN IF NOT EXISTS standard_workdays VARCHAR(32) "
+                "NOT NULL DEFAULT '0,1,2,3,4'"
             ))
             connection.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_hr_employment_profiles_payroll_eligible "

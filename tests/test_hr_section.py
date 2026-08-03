@@ -57,6 +57,25 @@ class HRSectionTests(unittest.TestCase):
         finally:
             self.client.cookies.clear()
 
+    def _grant_test_pto(self, employee_email: str, hours: float = 40) -> None:
+        """Seed an explicit balance only for tests that exercise PTO workflow."""
+        from sqlalchemy.orm import Session
+        from sales_support_agent.models.database import get_engine
+        from sales_support_agent.models.hr import HRPTOLedger
+
+        with Session(get_engine()) as session:
+            session.add(HRPTOLedger(
+                employee_email=employee_email,
+                entry_type="adjusted",
+                hours=hours,
+                effective_date=date(2026, 8, 1),
+                source_type="test_setup",
+                source_id=employee_email,
+                note="Explicit test-only opening PTO balance.",
+                created_by="test",
+            ))
+            session.commit()
+
     def test_dashboard_and_nav(self):
         r = self._get("/admin/hr", self.sa)
         self.assertEqual(r.status_code, 200)
@@ -252,6 +271,7 @@ class HRSectionTests(unittest.TestCase):
             fixed_pay_per_period="1000", standard_weekly_hours=40,
             actor="test",
         )
+        self._grant_test_pto(employee_email)
         uid = access_store.upsert_user(employee_email, "Time PTO Employee")
         access_store.set_user_permissions(uid, ["hr.access"])
         employee_cookie = _cookie(employee_email, "Time PTO Employee")
@@ -1022,6 +1042,7 @@ class HRSectionTests(unittest.TestCase):
             email, hire_date=date(2025, 1, 1), pay_basis="fixed_semimonthly",
             fixed_pay_per_period="1000", actor="test"
         )
+        self._grant_test_pto(email)
         weekend = hr_store.create_pto_request(
             email, start_date=date(2026, 8, 8), end_date=date(2026, 8, 8),
             hours=8, reason="", actor=email,
@@ -1062,6 +1083,7 @@ class HRSectionTests(unittest.TestCase):
             )
             user_id = access_store.upsert_user(email, email.split("@")[0])
             access_store.set_user_permissions(user_id, ["hr.access"])
+        self._grant_test_pto(employee_email)
         created = hr_store.create_pto_request(
             employee_email, start_date=date(2026, 8, 3),
             end_date=date(2026, 8, 3), hours=8, reason="Personal",
@@ -1095,6 +1117,7 @@ class HRSectionTests(unittest.TestCase):
             email, hire_date=date(2025, 1, 1), pay_basis="fixed_semimonthly",
             fixed_pay_per_period="1000", standard_weekly_hours=40, actor="test",
         )
+        self._grant_test_pto(email)
         self.assertEqual(
             hr_store.create_pto_request(
                 email, start_date=date(2026, 8, 3), end_date=date(2026, 8, 3),
@@ -1285,6 +1308,13 @@ class HRSectionTests(unittest.TestCase):
     def test_handbook_publication_is_versioned_and_employee_acknowledges_current(self):
         import uuid
 
+        built_in = self._get("/admin/hr/policies", self.sa)
+        versions = {item["version"] for item in hr_store.list_handbooks()}
+        self.assertIn("2026.2", versions)
+        self.assertIn("effective August 1, 2026", built_in.text)
+        self.assertIn("Equal opportunity and respectful workplace", built_in.text)
+        self.assertIn("Regular full-time employees", built_in.text)
+
         version = f"test-{uuid.uuid4().hex[:8]}"
         published = self._post(
             "/admin/hr/settings/handbook",
@@ -1337,6 +1367,122 @@ class HRSectionTests(unittest.TestCase):
             self.sa,
         )
         self.assertIn("err=handbook_invalid", unsafe.headers["location"])
+
+    def test_pto_launch_ignores_pre_august_hours_and_prorates_part_time(self):
+        import uuid
+        from datetime import datetime, timezone
+        from sqlalchemy.orm import Session
+        from sales_support_agent.models.database import get_engine
+        from sales_support_agent.models.hr import HRTimeEntry
+
+        email = f"pto-launch-{uuid.uuid4().hex[:8]}@anatainc.com"
+        hr_store.create_employee(email=email, full_name="Part Time Launch")
+        hr_store.upsert_employment_profile(
+            email, hire_date=date(2026, 1, 1), standard_weekly_hours=20,
+            actor="test",
+        )
+        with Session(get_engine()) as session:
+            session.add_all([
+                HRTimeEntry(
+                    employee_email=email, date=date(2026, 7, 31), hours=520,
+                    start_time="08:00", stop_time="16:00",
+                    clocked_in_at=datetime.now(timezone.utc),
+                ),
+                HRTimeEntry(
+                    employee_email=email, date=date(2026, 8, 1), hours=52,
+                    start_time="08:00", stop_time="16:00",
+                    clocked_in_at=datetime.now(timezone.utc),
+                ),
+            ])
+            session.commit()
+
+        employment = hr_store.get_employment_profile(email)
+        summary = hr_store.pto_summary(email)
+        self.assertEqual(employment["employment_category"], "part_time")
+        self.assertEqual(employment["pto_eligible_date"], date(2026, 8, 1))
+        self.assertEqual(summary["accrued"], 1.0)
+        self.assertEqual(summary["available"], 1.0)
+
+    def test_holiday_policy_starts_august_first_and_prorates_part_time(self):
+        import uuid
+
+        email = f"holiday-launch-{uuid.uuid4().hex[:8]}@anatainc.com"
+        hr_store.create_employee(email=email, full_name="Part Time Holiday")
+        hr_store.upsert_employment_profile(
+            email, hire_date=date(2026, 1, 1), standard_weekly_hours=20,
+            actor="test",
+        )
+        july = hr_store.holiday_pay_proposals(
+            email, date(2026, 7, 1), date(2026, 7, 31)
+        )
+        september = hr_store.holiday_pay_proposals(
+            email, date(2026, 9, 1), date(2026, 9, 15)
+        )
+        self.assertEqual(july, [])
+        self.assertEqual(len(september), 1)
+        self.assertEqual(september[0]["name"], "Labor Day")
+        self.assertEqual(september[0]["hours"], 4.0)
+
+        hr_store.upsert_employment_profile(
+            email, hire_date=date(2026, 1, 1), standard_weekly_hours=18,
+            standard_workdays=[1, 2, 3], actor="test",
+        )
+        employment = hr_store.get_employment_profile(email)
+        self.assertEqual(employment["standard_workdays"], [1, 2, 3])
+        self.assertEqual(
+            hr_store.holiday_pay_proposals(
+                email, date(2026, 9, 1), date(2026, 9, 15)
+            ),
+            [],
+        )
+        self.assertEqual(
+            hr_store.create_pto_request(
+                email, start_date=date(2026, 8, 3), end_date=date(2026, 8, 3),
+                hours=4, reason="Not a scheduled Monday", actor=email,
+            ),
+            (False, "pto_non_workday"),
+        )
+
+    def test_employee_workday_schedule_is_visible_and_requires_one_day(self):
+        import uuid
+
+        email = f"workdays-{uuid.uuid4().hex[:8]}@anatainc.com"
+        login = f"workdays-{uuid.uuid4().hex[:8]}@example.com"
+        response = self._post(
+            "/admin/hr/employees/new",
+            {
+                "email": email, "hr_login_email": login,
+                "full_name": "Scheduled Employee", "employee_type": "hourly",
+                "pay_basis": "hourly", "hourly_rate": "20",
+                "standard_weekly_hours": "24",
+                "workday_schedule_present": "true",
+            },
+            self.sa,
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("Choose at least one normally scheduled workday", response.text)
+
+        created = self._post(
+            "/admin/hr/employees/new",
+            {
+                "email": email, "hr_login_email": login,
+                "full_name": "Scheduled Employee", "employee_type": "hourly",
+                "pay_basis": "hourly", "hourly_rate": "20",
+                "standard_weekly_hours": "24",
+                "standard_workdays": [0, 2, 4],
+                "workday_schedule_present": "true",
+            },
+            self.sa,
+        )
+        self.assertEqual(created.status_code, 303)
+        employment = hr_store.get_employment_profile(email)
+        self.assertEqual(employment["standard_workdays"], [0, 2, 4])
+        page = self._get(
+            f"/admin/hr/employees/{hr_store.get_employee_by_email(email)['id']}",
+            self.sa,
+        )
+        self.assertIn("Normally scheduled workdays", page.text)
+        self.assertIn("Part-time", page.text)
 
     def test_hr_backup_is_private_and_checksum_verifiable(self):
         import hashlib

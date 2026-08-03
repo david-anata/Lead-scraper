@@ -8,6 +8,7 @@ the form boundary so the rest of the app deals in dollars.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import calendar
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
@@ -95,8 +96,10 @@ EMPLOYEE_TYPES = ("hourly", "salaried", "contractor")
 ANATA_TIMEZONE = ZoneInfo("America/Denver")
 PTO_ANNUAL_HOURS = 40.0
 PTO_ACCRUAL_DIVISOR = 52.0
+PTO_POLICY_EFFECTIVE_DATE = date(2026, 8, 1)
+FULL_TIME_WEEKLY_HOURS = 30.0
 HR_EMPLOYEE_ROLE_NAME = "HR Employee"
-CURRENT_POLICY_VERSION = "2026.1"
+CURRENT_POLICY_VERSION = "2026.2"
 ANATA_PAID_HOLIDAYS = (
     "New Year's Day",
     "Memorial Day",
@@ -134,6 +137,28 @@ def _supersede_open_payrolls(session: Session, *, actor: str,
 def current_policy(employee_email: str) -> dict:
     email = (employee_email or "").strip().lower()
     with _session() as session:
+        builtin_id = f"policy-{CURRENT_POLICY_VERSION}"
+        builtin = session.query(HREmployeeHandbook).filter_by(
+            base44_id=builtin_id
+        ).first()
+        if not builtin:
+            # A new built-in version is an explicit policy release. Preserve every
+            # earlier version and acknowledgement, but retire the older built-in
+            # version so employees must acknowledge the replacement.
+            session.query(HREmployeeHandbook).filter(
+                HREmployeeHandbook.base44_id.like("policy-%"),
+                HREmployeeHandbook.is_active.is_(True),
+            ).update({"is_active": False}, synchronize_session=False)
+            builtin = HREmployeeHandbook(
+                base44_id=builtin_id,
+                title="Anata Employee Handbook",
+                file_url="/admin/hr/policies",
+                version=CURRENT_POLICY_VERSION,
+                uploaded_by="system",
+                is_active=True,
+            )
+            session.add(builtin)
+            session.flush()
         row = session.query(HREmployeeHandbook).filter_by(
             is_active=True
         ).order_by(
@@ -141,14 +166,7 @@ def current_policy(employee_email: str) -> dict:
             HREmployeeHandbook.id.desc(),
         ).first()
         if not row:
-            row = HREmployeeHandbook(
-                base44_id=f"policy-{CURRENT_POLICY_VERSION}",
-                title="Anata Employee Operating Policies",
-                file_url="/admin/hr/policies", version=CURRENT_POLICY_VERSION,
-                uploaded_by="system", is_active=True,
-            )
-            session.add(row)
-            session.flush()
+            row = builtin
         acknowledged = session.query(HRHandbookAcknowledgement).filter_by(
             handbook_id=row.base44_id, employee_email=email
         ).first()
@@ -301,6 +319,15 @@ def _employment_dict(row: Optional[HREmploymentProfile]) -> dict:
         "fixed_pay_per_period": cents_to_dollars(row.fixed_pay_per_period_cents),
         "fixed_pay_per_period_cents": row.fixed_pay_per_period_cents,
         "standard_weekly_hours": float(row.standard_weekly_hours or 0),
+        "standard_workdays": [
+            int(day) for day in (row.standard_workdays or "0,1,2,3,4").split(",")
+            if day.strip().isdigit() and 0 <= int(day) <= 4
+        ],
+        "employment_category": (
+            "full_time"
+            if float(row.standard_weekly_hours or 0) >= FULL_TIME_WEEKLY_HOURS
+            else "part_time"
+        ),
         "standard_period_hours": float(row.standard_period_hours or 0),
         "pto_eligible_date": row.pto_eligible_date,
         "holiday_eligible_date": row.holiday_eligible_date,
@@ -505,6 +532,7 @@ def upsert_employment_profile(employee_email: str, *, hire_date: Optional[date],
                               payroll_eligible: bool = True,
                               fixed_pay_per_period: str = "0",
                               standard_weekly_hours: float = 40,
+                              standard_workdays: Optional[list[int]] = None,
                               standard_period_hours: float = 86.67,
                               actor: str = "system") -> bool:
     """Create/update employer-owned employment facts and eligibility dates."""
@@ -512,6 +540,12 @@ def upsert_employment_profile(employee_email: str, *, hire_date: Optional[date],
     if classification not in {"exempt", "nonexempt"}:
         return False
     if pay_basis not in {"hourly", "fixed_semimonthly"}:
+        return False
+    workdays = sorted(set(
+        day for day in (standard_workdays or [0, 1, 2, 3, 4])
+        if isinstance(day, int) and 0 <= day <= 4
+    ))
+    if not workdays:
         return False
     with _session() as s:
         employee = s.query(HREmployee).filter_by(email=email).first()
@@ -530,8 +564,12 @@ def upsert_employment_profile(employee_email: str, *, hire_date: Optional[date],
         row.payroll_eligible = bool(payroll_eligible)
         row.fixed_pay_per_period_cents = dollars_to_cents(fixed_pay_per_period)
         row.standard_weekly_hours = Decimal(str(max(0, standard_weekly_hours)))
+        row.standard_workdays = ",".join(str(day) for day in workdays)
         row.standard_period_hours = Decimal(str(max(0, standard_period_hours)))
-        row.pto_eligible_date = hire_date + timedelta(days=90) if hire_date else None
+        row.pto_eligible_date = (
+            max(hire_date + timedelta(days=90), PTO_POLICY_EFFECTIVE_DATE)
+            if hire_date else None
+        )
         row.holiday_eligible_date = row.pto_eligible_date
         row.updated_by = actor
         row.updated_at = datetime.now(timezone.utc)
@@ -1277,6 +1315,10 @@ def holiday_pay_proposals(employee_email: str, start_date: date, end_date: date)
         eligible_date = employment.holiday_eligible_date
         if not eligible_date:
             return []
+        workdays = {
+            int(day) for day in (employment.standard_workdays or "0,1,2,3,4").split(",")
+            if day.strip().isdigit() and 0 <= int(day) <= 4
+        }
         years = range(start_date.year, end_date.year + 1)
         proposals = []
         for year in years:
@@ -1284,9 +1326,14 @@ def holiday_pay_proposals(employee_email: str, start_date: date, end_date: date)
                 observed = holiday["observed_date"]
                 if not (start_date <= observed <= end_date) or observed < eligible_date:
                     continue
+                if observed.weekday() not in workdays:
+                    continue
                 hours = 0.0
                 if employment.pay_basis == "hourly":
-                    hours = min(8.0, float(employment.standard_weekly_hours or 0) / 5)
+                    hours = min(
+                        8.0,
+                        float(employment.standard_weekly_hours or 0) / max(1, len(workdays)),
+                    )
                 proposals.append({
                     **holiday,
                     "employee_email": email,
@@ -1751,19 +1798,31 @@ def _preview_accrued_hours(session: Session, email: str, employment: HREmploymen
     if not employment.hire_date:
         return 0.0
     today = datetime.now(ANATA_TIMEZONE).date()
-    if today < employment.hire_date:
+    accrual_start = max(employment.hire_date, PTO_POLICY_EFFECTIVE_DATE)
+    if today < accrual_start:
         return 0.0
     if employment.pay_basis == "fixed_semimonthly":
-        months = (today.year - employment.hire_date.year) * 12 + today.month - employment.hire_date.month
-        completed_periods = max(0, months * 2)
-        if today.day >= 16:
-            completed_periods += 1
+        completed_periods = 0
+        cursor = date(accrual_start.year, accrual_start.month, 1)
+        while cursor <= today:
+            last_day = calendar.monthrange(cursor.year, cursor.month)[1]
+            for period_start, period_end in (
+                (date(cursor.year, cursor.month, 1), date(cursor.year, cursor.month, 15)),
+                (date(cursor.year, cursor.month, 16), date(cursor.year, cursor.month, last_day)),
+            ):
+                if period_start >= accrual_start and period_end <= today:
+                    completed_periods += 1
+            cursor = (
+                date(cursor.year + 1, 1, 1)
+                if cursor.month == 12
+                else date(cursor.year, cursor.month + 1, 1)
+            )
         eligible_hours = completed_periods * float(employment.standard_period_hours or 0)
     else:
         eligible_hours = float(
             session.query(func.coalesce(func.sum(HRTimeEntry.hours), 0)).filter(
                 HRTimeEntry.employee_email == email,
-                HRTimeEntry.date >= employment.hire_date,
+                HRTimeEntry.date >= accrual_start,
             ).scalar() or 0
         )
     return min(PTO_ANNUAL_HOURS, eligible_hours / PTO_ACCRUAL_DIVISOR)
@@ -1864,10 +1923,27 @@ def create_pto_request(employee_email: str, *, start_date: date, end_date: date,
         employment = s.query(HREmploymentProfile).filter_by(employee_email=email).first()
         if not employment or not employment.pto_eligible_date:
             return False, "pto_setup_required"
+        scheduled_workdays = {
+            int(day) for day in (employment.standard_workdays or "0,1,2,3,4").split(",")
+            if day.strip().isdigit() and 0 <= int(day) <= 4
+        }
+        if start_date.weekday() not in scheduled_workdays or end_date.weekday() not in scheduled_workdays:
+            return False, "pto_non_workday"
+        working_dates = [
+            day for day in requested_dates
+            if day.weekday() in scheduled_workdays and day not in holiday_dates
+        ]
+        if not working_dates:
+            return False, "pto_non_workday"
         if start_date < employment.pto_eligible_date:
             return False, "pto_not_eligible"
         normal_daily_hours = min(
-            8.0, max(0.0, float(employment.standard_weekly_hours or 0) / 5)
+            8.0,
+            max(
+                0.0,
+                float(employment.standard_weekly_hours or 0)
+                / max(1, len(scheduled_workdays)),
+            ),
         )
         if normal_daily_hours <= 0 or hours > len(working_dates) * normal_daily_hours:
             return False, "pto_hours_exceed_workdays"
@@ -1908,6 +1984,14 @@ def list_pto_requests(employee_email: Optional[str] = None) -> list:
         if employee_email:
             q = q.filter(HRPTORequest.employee_email == employee_email.strip().lower())
         rows = q.order_by(HRPTORequest.created_at.desc()).limit(100).all()
+        profiles = {
+            profile.employee_email: profile
+            for profile in s.query(HREmploymentProfile).filter(
+                HREmploymentProfile.employee_email.in_([
+                    row.employee_email for row in rows
+                ])
+            ).all()
+        } if rows else {}
         result = []
         for row in rows:
             dates = [
@@ -1919,7 +2003,18 @@ def list_pto_requests(employee_email: Optional[str] = None) -> list:
                 for year in range(row.start_date.year, row.end_date.year + 1)
                 for holiday in paid_holidays(year)
             }
-            workdays = [day for day in dates if day.weekday() < 5 and day not in holidays]
+            profile = profiles.get(row.employee_email)
+            scheduled = {
+                int(day)
+                for day in (
+                    profile.standard_workdays if profile else "0,1,2,3,4"
+                ).split(",")
+                if day.strip().isdigit() and 0 <= int(day) <= 4
+            }
+            workdays = [
+                day for day in dates
+                if day.weekday() in scheduled and day not in holidays
+            ]
             result.append({
                 "id": row.id, "employee_email": row.employee_email,
                 "start_date": row.start_date, "end_date": row.end_date,

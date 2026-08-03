@@ -931,6 +931,13 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         f'<option value="not_on_payroll"{" selected" if payroll_relationship == "not_on_payroll" else ""}>Not on Anata payroll</option>'
         '</select>'
     )
+    selected_workdays = set(employment.get("standard_workdays") or [0, 1, 2, 3, 4])
+    workday_options = "".join(
+        f'<label style="display:inline-flex;align-items:center;gap:6px;margin:6px 14px 6px 0">'
+        f'<input type="checkbox" name="standard_workdays" value="{day}" '
+        f'{"checked" if day in selected_workdays else ""} style="width:auto">{label}</label>'
+        for day, label in enumerate(("Monday", "Tuesday", "Wednesday", "Thursday", "Friday"))
+    )
     personal_contact_status = (
         f'<strong>Personal contact email on file:</strong> {_esc(e.get("personal_email"))}'
         if e.get("personal_email")
@@ -982,6 +989,13 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         <div><label>Pay basis</label>{_sel("pay_basis", ("hourly","fixed_semimonthly"), employment.get("pay_basis","hourly"))}</div>
         <div><label>Standard weekly hours</label><input type="number" min="0" step="0.01" name="standard_weekly_hours" value="{_esc(employment.get('standard_weekly_hours','40'))}"></div>
       </div>
+      <p class="hr-help"><strong>Employment category:</strong> {_esc('Full-time' if float(employment.get('standard_weekly_hours') or 40) >= 30 else 'Part-time')}. Anata treats 30 or more standard hours per week as full-time. PTO accrues from actual paid hours, so part-time employees earn proportionally.</p>
+      <fieldset style="border:1px solid rgba(43,54,68,.16);border-radius:10px;padding:10px 12px;margin:14px 0">
+        <legend style="font-weight:700;padding:0 5px">Normally scheduled workdays</legend>
+        <input type="hidden" name="workday_schedule_present" value="true">
+        {workday_options}
+        <p class="hr-help">PTO can be requested only on these days. Part-time holiday pay is proposed only when an observed holiday falls on one of these days.</p>
+      </fieldset>
       <div class="hr-callout warn">
         <div class="hr-kicker">Required when pay changes</div>
         <div class="hr-grid2"><div><label>Pay change effective date</label><input type="date" name="compensation_effective_date"></div>
@@ -2078,14 +2092,20 @@ def render_hr_policies(policy: dict, *, user, flash=None) -> str:
         if str(policy.get("file_url") or "").startswith("https://") else ""
     )
     body = f"""{_flash(flash)}<h1 class="hr-h1">{_esc(policy['title'])}</h1>
-    <p class="hr-sub">Version {_esc(policy['version'])} · {ack}</p>
+    <p class="hr-sub">Version {_esc(policy['version'])} · effective August 1, 2026 · {ack}</p>
     {handbook_link}
     <div class="hr-stack">
-      <section class="hr-callout"><h2>Timekeeping and overtime</h2><p>Hourly employees clock in and out for the day using exact time. The workweek is Sunday through Saturday. Overtime should be approved in advance, but all time actually worked must be reported and will be paid.</p></section>
-      <section class="hr-callout"><h2>PTO</h2><p>W-2 employees accrue one PTO hour for each 52 paid hours, up to 40 hours. Accrual starts on the hire date; use begins after 90 days. Balances cannot go negative. PTO is paid at the base rate and does not count as hours worked for overtime.</p></section>
-      <section class="hr-callout"><h2>Paid holidays</h2><p>New Year's Day, Memorial Day, Independence Day, Labor Day, Thanksgiving, and Christmas are paid after 90 days of W-2 employment. Saturday holidays are observed Friday and Sunday holidays Monday. Holiday pay remains separate from worked time.</p></section>
-      <section class="hr-callout"><h2>Payroll and corrections</h2><p>Pay periods are the 1st–15th, paid the 20th, and the 16th–month end, paid the following 5th. Employees should review statements and request corrections promptly. A second authorized person reviews time and payroll changes.</p></section>
-      <section class="hr-callout"><h2>Privacy and records</h2><p>Use the secure HR forms for personal and tax information. Do not email Social Security numbers or identity documents. Anata records access and material approvals.</p></section>
+      <section class="hr-callout"><h2>1. Employment relationship</h2><p>Employment with Anata is at will unless a signed written agreement says otherwise. Either the employee or Anata may end employment at any time for a lawful reason. This handbook explains current practices; it is not an employment contract. Anata may revise policies prospectively and will publish a new version when employees must acknowledge a material change.</p></section>
+      <section class="hr-callout"><h2>2. Equal opportunity and respectful workplace</h2><p>Anata provides equal employment opportunity and does not tolerate unlawful discrimination, harassment, violence, intimidation, or retaliation. Raise a concern promptly with David or Val. If the concern involves one of them, report it to the other. Good-faith reports and participation in an investigation will not result in retaliation.</p></section>
+      <section class="hr-callout"><h2>3. Code of conduct</h2><p>Employees must communicate respectfully, protect confidential company and customer information, avoid undisclosed conflicts of interest, use company property responsibly, and maintain a safe workplace free from threats, impairment, or unlawful conduct. Gifts or outside interests that could influence a business decision must be disclosed to David or Val.</p></section>
+      <section class="hr-callout"><h2>4. Attendance, timekeeping, and overtime</h2><p>Employees should be ready to work at the agreed schedule and notify their manager as soon as possible about an absence or delay. Hourly employees clock in and out using exact time and must report every hour worked. Off-the-clock work is prohibited. The workweek is Sunday through Saturday. Overtime should be approved in advance, but all time actually worked must still be reported and paid. Missed punches require a correction request; the original record remains in history.</p></section>
+      <section class="hr-callout"><h2>5. PTO</h2><p>The PTO policy starts August 1, 2026. Regular full-time employees are scheduled for 30 or more hours per week; regular part-time employees are scheduled for fewer than 30. Both groups accrue one PTO hour for each 52 paid hours beginning on the later of August 1, 2026 or their hire date. This naturally prorates part-time accrual. Use begins after 90 days of employment. The balance carries forward but cannot exceed 40 hours; accrual pauses at the cap. PTO cannot be borrowed, is paid at the base rate, and does not count as hours worked for overtime. Unused PTO is not paid at separation unless a signed written agreement requires it.</p></section>
+      <section class="hr-callout"><h2>6. Paid holidays and other leave</h2><p>New Year's Day, Memorial Day, Independence Day, Labor Day, Thanksgiving, and Christmas are paid after 90 days of W-2 employment and only for holidays on or after August 1, 2026. Saturday holidays are observed Friday and Sunday holidays Monday. Full-time employees receive normally scheduled hours up to eight. Part-time employees receive their normal scheduled hours only when the holiday falls on a day they normally work. Holiday pay remains separate from worked time. Employees should contact David or Val about jury duty, military service, voting time, bereavement, disability or pregnancy accommodations, or other legally protected leave.</p></section>
+      <section class="hr-callout"><h2>7. PTO requests and attendance decisions</h2><p>Submit PTO in Agent as early as practical. Requests may be limited by available balance, normal workdays, paid holidays, overlapping requests, staffing, and business needs. Pending PTO is not approved until an authorized manager decides it. When illness or an emergency prevents advance notice, contact the manager as soon as reasonably possible. Repeated no-call/no-show behavior may lead to discipline, but protected leave and lawful absences are handled separately.</p></section>
+      <section class="hr-callout"><h2>8. Payroll, expenses, and corrections</h2><p>Pay periods are the 1st–15th, paid the 20th, and the 16th–month end, paid the following 5th. Employees should review pay statements and report a suspected error promptly. Bonuses and commissions require approval. Business reimbursements require a receipt and business purpose. Deductions occur only when authorized or legally required. A second authorized person reviews material time and payroll changes.</p></section>
+      <section class="hr-callout"><h2>9. Safety, concerns, and investigations</h2><p>Report injuries, unsafe conditions, threats, harassment, payroll concerns, or suspected policy violations promptly to David or Val. Call emergency services first when immediate danger exists. Anata will review concerns fairly and share information only with people who need it to respond; complete confidentiality cannot be promised. Discipline may include coaching, warnings, suspension, or separation, and serious conduct may skip earlier steps.</p></section>
+      <section class="hr-callout"><h2>10. Privacy, security, and technology</h2><p>Use secure HR forms for personal and tax information. Never email Social Security numbers or identity documents. Protect passwords and one-time sign-in links, do not share accounts, and report a lost device or suspected account compromise immediately. Access company and customer information only for authorized work. Anata records sensitive access and material approvals and removes business access when it is no longer required.</p></section>
+      <section class="hr-callout"><h2>11. Separation and company property</h2><p>Employees should return company property and information at separation. Anata disables access while preserving required employment, payroll, tax, acknowledgement, and audit records. Final wages are handled under applicable law and written agreements. Employees should provide a personal contact email so required records remain reachable after business access ends.</p></section>
     </div>
     {'' if policy.get('acknowledged') else f'''<form class="hr-form" method="post" action="/admin/hr/policies/acknowledge">
       <label><input type="checkbox" name="attested" value="true" required style="width:auto"> I received, read, and acknowledge policy version {_esc(policy["version"])}.</label>

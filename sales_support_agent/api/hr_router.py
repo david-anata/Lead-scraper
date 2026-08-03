@@ -361,10 +361,17 @@ async def employee_create(
     classification: str = Form("nonexempt"),
     pay_basis: str = Form("hourly"),
     standard_weekly_hours: float = Form(40),
+    standard_workdays: list[int] | None = Form(None),
+    workday_schedule_present: bool = Form(False),
     phone: str = Form(""),
     status: str = Form("active"),
     user: dict = Depends(_people_comp_guard),
 ):
+    workday_selection_missing = workday_schedule_present and not standard_workdays
+    standard_workdays = (
+        sorted(set(standard_workdays))
+        if standard_workdays is not None else [0, 1, 2, 3, 4]
+    )
     entered = {
         "_is_new": True,
         "email": email.strip().lower(), "hr_login_email": hr_login_email.strip().lower(),
@@ -381,12 +388,18 @@ async def employee_create(
             "classification": classification, "pay_basis": pay_basis,
             "payroll_eligible": payroll_relationship == "w2",
             "standard_weekly_hours": standard_weekly_hours,
+            "standard_workdays": standard_workdays,
         },
     }
     if payroll_relationship not in {"w2", "not_on_payroll"}:
         return HTMLResponse(render_hr_employee_form(
             entered, store.list_teams(), user=user,
             error="Choose whether this person is included in Anata W-2 payroll.",
+        ), status_code=422)
+    if workday_selection_missing:
+        return HTMLResponse(render_hr_employee_form(
+            entered, store.list_teams(), user=user,
+            error="Choose at least one normally scheduled workday.",
         ), status_code=422)
     if not email.strip():
         return HTMLResponse(render_hr_employee_form(entered, store.list_teams(), user=user,
@@ -470,7 +483,8 @@ async def employee_create(
             classification=classification, pay_basis=pay_basis,
             payroll_eligible=payroll_relationship == "w2",
             fixed_pay_per_period=fixed_pay_per_period,
-            standard_weekly_hours=standard_weekly_hours, standard_period_hours=86.67,
+            standard_weekly_hours=standard_weekly_hours,
+            standard_workdays=standard_workdays, standard_period_hours=86.67,
             actor=user.get("email", "system"),
         )
     return RedirectResponse("/admin/hr/employees?ok=created", status_code=303)
@@ -506,10 +520,17 @@ async def employee_update(
     compensation_effective_date: date | None = Form(None),
     compensation_reason: str = Form(""),
     standard_weekly_hours: float = Form(40),
+    standard_workdays: list[int] | None = Form(None),
+    workday_schedule_present: bool = Form(False),
     phone: str = Form(""),
     status: str = Form("active"),
     user: dict = Depends(_people_comp_guard),
 ):
+    workday_selection_missing = workday_schedule_present and not standard_workdays
+    standard_workdays = (
+        sorted(set(standard_workdays))
+        if standard_workdays is not None else [0, 1, 2, 3, 4]
+    )
     employee = store.get_employee(emp_id)
     if not employee:
         return RedirectResponse("/admin/hr/employees?err=not_found", status_code=303)
@@ -520,6 +541,14 @@ async def employee_update(
         return HTMLResponse(render_hr_employee_form(
             employee, store.list_teams(), user=user,
             error="Choose whether this person is included in Anata W-2 payroll.",
+        ), status_code=422)
+    if workday_selection_missing:
+        employee["compensation_history"] = store.list_compensation_changes(
+            employee["email"]
+        )
+        return HTMLResponse(render_hr_employee_form(
+            employee, store.list_teams(), user=user,
+            error="Choose at least one normally scheduled workday.",
         ), status_code=422)
     classification_error = _employee_classification_error(
         employee_type=employee_type, pay_basis=pay_basis,
@@ -625,6 +654,9 @@ async def employee_update(
         "standard_weekly_hours": float(
             employment.get("standard_weekly_hours") or 40
         ),
+        "standard_workdays": sorted(
+            employment.get("standard_workdays") or [0, 1, 2, 3, 4]
+        ),
     } != {
         "hire_date": hire_date,
         "title": title.strip(),
@@ -634,6 +666,7 @@ async def employee_update(
         "payroll_eligible": payroll_relationship == "w2",
         "fixed_pay_per_period_cents": fixed_pay_cents,
         "standard_weekly_hours": float(standard_weekly_hours),
+        "standard_workdays": sorted(set(standard_workdays)),
     }
     if compensation_changed and (
         not compensation_effective_date or not compensation_reason.strip()
@@ -683,6 +716,7 @@ async def employee_update(
             pay_basis=pay_basis, payroll_eligible=payroll_relationship == "w2",
             fixed_pay_per_period=fixed_pay_per_period,
             standard_weekly_hours=standard_weekly_hours,
+            standard_workdays=standard_workdays,
             standard_period_hours=86.67, actor=user.get("email", "system"),
         )
     if compensation_changed:
