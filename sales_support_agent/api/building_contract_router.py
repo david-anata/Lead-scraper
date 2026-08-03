@@ -424,7 +424,7 @@ async def save_template_draft(
 def transition_template(
     template_id: str,
     request: Request,
-    target_status: Literal["in_review", "approved", "retired"] = Form(...),
+    target_status: Literal["draft", "in_review", "approved", "retired"] = Form(...),
     confirmation: str = Form(...),
     evidence: str = Form(""),
     user: dict = Depends(require_tool("building.agreements.approve")),

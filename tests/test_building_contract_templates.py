@@ -330,6 +330,8 @@ class ContractTemplateEditorTests(unittest.TestCase):
 
         for target, verb, evidence in (
             ("in_review", "IN_REVIEW", ""),
+            ("draft", "DRAFT", "Counsel requested a cancellation-clause edit."),
+            ("in_review", "IN_REVIEW", ""),
             ("approved", "APPROVED", "legal-review-ticket-42"),
         ):
             moved = self._post(f"{TEMPLATES}/{template_id}/transition", {

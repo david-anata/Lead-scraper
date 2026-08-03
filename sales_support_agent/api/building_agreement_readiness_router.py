@@ -81,7 +81,7 @@ PREPARATION_TRANSITIONS = {
 }
 TEMPLATE_TRANSITIONS = {
     "draft": {"in_review"},
-    "in_review": {"approved"},
+    "in_review": {"draft", "approved"},
     "approved": {"retired"},
     "retired": set(),
 }
@@ -220,7 +220,7 @@ class AgreementTemplateInput(BaseModel):
 
 
 class ReviewActionInput(BaseModel):
-    target_status: Literal["in_review", "approved", "retired"]
+    target_status: Literal["draft", "in_review", "approved", "retired"]
     confirmation: str = Field(min_length=1, max_length=255)
     evidence: str = Field(default="", max_length=2000)
     actor: str = Field(min_length=1, max_length=255)
@@ -384,9 +384,17 @@ def transition_agreement_template(
                 status_code=409,
                 detail=f"Cannot move template from {row.status} to {payload.target_status}.",
             )
-        if payload.target_status == "approved" and not payload.evidence.strip():
+        if (
+            payload.target_status in {"draft", "approved"}
+            and not payload.evidence.strip()
+        ):
             raise HTTPException(
-                status_code=422, detail="Template approval evidence is required."
+                status_code=422,
+                detail=(
+                    "A review change note is required."
+                    if payload.target_status == "draft"
+                    else "Template approval evidence is required."
+                ),
             )
         before = row.status
         row.status = payload.target_status
@@ -405,6 +413,7 @@ def transition_agreement_template(
                 "status": row.status,
                 "version": row.version,
                 "approval_evidence": row.approval_evidence,
+                "transition_evidence": payload.evidence.strip(),
             },
         ))
         sync_arena_agreement_template_decision(
