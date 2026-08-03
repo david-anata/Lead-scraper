@@ -293,30 +293,39 @@ def render_template_editor(
     if can_approve and template["status"] in {"draft", "in_review", "approved"}:
         next_states = {
             "draft": [("in_review", "In review")],
-            "in_review": [("approved", "Approved")],
+            "in_review": [("draft", "Return to draft"), ("approved", "Approved")],
             "approved": [("retired", "Retired")],
         }[template["status"]]
-        target_status, _ = next_states[0]
-        verb = {"draft": "IN_REVIEW", "in_review": "APPROVED", "approved": "RETIRED"}[template["status"]]
-        action_label = {
-            "draft": "Submit for review",
-            "in_review": "Approve template",
-            "approved": "Retire template",
-        }[template["status"]]
-        confirmation_copy = {
-            "draft": "I confirm this draft is complete enough for formal review.",
-            "in_review": "I confirm the complete contract received the required legal and owner approval.",
-            "approved": "I confirm this version must no longer be used for new contracts.",
-        }[template["status"]]
-        lifecycle = f"""<form class="app-form-grid" method="post" action="{TEMPLATES_URL}/{_esc(template['id'])}/transition">
+        action_content = []
+        for target_status, _ in next_states:
+            action_label = {
+                "draft": "Return to draft for changes",
+                "in_review": "Submit for review",
+                "approved": "Approve template",
+                "retired": "Retire template",
+            }[target_status]
+            confirmation_copy = {
+                "draft": "I confirm review requested changes and this version must be editable again.",
+                "in_review": "I confirm this draft is complete enough for formal review.",
+                "approved": "I confirm the complete contract received the required legal and owner approval.",
+                "retired": "I confirm this version must no longer be used for new contracts.",
+            }[target_status]
+            evidence_label = (
+                "Change request or review note"
+                if target_status == "draft"
+                else "Approval evidence"
+            )
+            evidence_required = " required" if target_status in {"draft", "approved"} else ""
+            action_content.append(f"""<form class="app-form-grid" method="post" action="{TEMPLATES_URL}/{_esc(template['id'])}/transition">
         <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
         <input type="hidden" name="target_status" value="{_esc(target_status)}">
-        <input type="hidden" name="confirmation" value="{verb} TEMPLATE {_esc(template['id'])}">
-        <label class="app-field"><span>Approval evidence</span>
-          <input name="evidence" value="{_esc(template['approval_evidence'])}" placeholder="Counsel approval, signed memo, or review reference"></label>
+        <input type="hidden" name="confirmation" value="{_esc(target_status.upper())} TEMPLATE {_esc(template['id'])}">
+        <label class="app-field"><span>{_esc(evidence_label)}</span>
+          <input name="evidence" value="{_esc(template['approval_evidence'])}" placeholder="Counsel approval, signed memo, or review reference"{evidence_required}></label>
         <label class="app-confirmation"><input type="checkbox" required> <span>{_esc(confirmation_copy)}</span></label>
         <div class="app-form-grid__actions"><button class="admin-btn" type="submit">{_esc(action_label)}</button></div>
-      </form>"""
+      </form>""")
+        lifecycle = "".join(action_content)
     new_version = ""
     if can_author and template["status"] in {"approved", "retired"}:
         new_version = f"""<form method="post" action="{TEMPLATES_URL}/{_esc(template['id'])}/new-version">
