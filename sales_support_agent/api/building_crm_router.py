@@ -314,6 +314,19 @@ def _mountain(value: datetime) -> datetime:
     return aware.astimezone(MOUNTAIN)
 
 
+def _follow_up_step_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Add a staff-readable Mountain Time deadline to a stored sequence step."""
+
+    step = dict(raw)
+    due_raw = str(step.get("due_at") or "").strip()
+    try:
+        due = datetime.fromisoformat(due_raw.replace("Z", "+00:00"))
+        step["due_at_display"] = _mountain(due).strftime("%b %d, %Y · %I:%M %p MT")
+    except ValueError:
+        step["due_at_display"] = "not set"
+    return step
+
+
 def _utc(value: datetime) -> datetime:
     """Normalize a database or API timestamp for safe UTC comparison."""
 
@@ -5211,9 +5224,13 @@ def building_control_room(
                     "event_interview": dict(
                         (item.payload_json or {}).get("_event_interview") or {}
                     ),
-                    "follow_up_sequence": list(
-                        (item.payload_json or {}).get("_follow_up_sequence") or []
-                    ),
+                    "follow_up_sequence": [
+                        _follow_up_step_payload(dict(step))
+                        for step in list(
+                            (item.payload_json or {}).get("_follow_up_sequence") or []
+                        )
+                        if isinstance(step, dict)
+                    ],
                     "lead_notification": dict(
                         (item.payload_json or {}).get("_lead_notification") or {}
                     ),
