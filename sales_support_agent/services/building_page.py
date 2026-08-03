@@ -670,7 +670,7 @@ def render_building_page(
             else ""
         )
         steps = "".join(
-            f'<li><strong>{_esc(step.get("label"))}</strong><span class="sub">{_esc(step.get("status") or "queued")} · due {_esc(step.get("due_at") or "not set")}</span></li>'
+            f'<li><strong>{_esc(step.get("label"))}</strong><span class="sub">{_esc(str(step.get("status") or "queued").replace("_", " ").title())} · by {_esc(step.get("due_at_display") or "not set")}</span></li>'
             for step in sequence
         )
         return (
