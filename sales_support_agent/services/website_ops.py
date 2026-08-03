@@ -569,6 +569,17 @@ def _load_notification_state(settings: Settings) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _save_notification_state(settings: Settings, state: Mapping[str, Any]) -> None:
+    path = _notification_state_path(settings)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(state), indent=2, sort_keys=True))
+
+
+def _notification_business_day() -> tuple[str, bool]:
+    local_now = _utc_now().astimezone(ZoneInfo("America/Denver"))
+    return local_now.date().isoformat(), local_now.weekday() < 5
+
+
 def _write_email_delivery(settings: Settings, payload: Mapping[str, Any]) -> None:
     _ensure_storage(settings)
     path = settings.website_ops_root / "emails" / "deliveries.jsonl"
@@ -596,7 +607,11 @@ def send_website_ops_report_email(
     state = _load_notification_state(settings)
     previous = str(state.get(f"{mode}_fingerprint", "") or "")
     changed = fingerprint != previous
-    should_send = bool(force or changed)
+    business_date, is_workday = _notification_business_day()
+    already_sent_today = state.get("last_email_business_date") == business_date
+    should_send = bool(
+        force or (changed and is_workday and not already_sent_today)
+    )
     result = {
         "attempted": False,
         "sent": False,
@@ -611,7 +626,12 @@ def send_website_ops_report_email(
         result["reason"] = "email_not_configured"
         return result
     if not should_send:
-        result["reason"] = "unchanged"
+        if not changed:
+            result["reason"] = "unchanged"
+        elif not is_workday:
+            result["reason"] = "outside_workday"
+        else:
+            result["reason"] = "daily_cadence"
         return result
 
     issues = list(report.get("issues") or [])
@@ -760,9 +780,8 @@ def send_website_ops_report_email(
         result.update({"sent": True, "provider_message_id": message_id})
         state[f"{mode}_fingerprint"] = fingerprint
         state[f"{mode}_sent_at"] = _utc_now().isoformat()
-        path = _notification_state_path(settings)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state, indent=2, sort_keys=True))
+        state["last_email_business_date"] = business_date
+        _save_notification_state(settings, state)
     except Exception as exc:  # noqa: BLE001 - delivery failure belongs in the run record
         result["reason"] = str(exc)
     _write_email_delivery(
@@ -788,6 +807,14 @@ def send_website_ops_failure_email(settings: Settings, *, mode: str, error: str)
         )
     resend = ResendClient(settings)
     result = {"attempted": False, "sent": False, "provider_message_id": "", "reason": ""}
+    state = _load_notification_state(settings)
+    business_date, is_workday = _notification_business_day()
+    if not is_workday:
+        result["reason"] = "outside_workday"
+        return result
+    if state.get("last_email_business_date") == business_date:
+        result["reason"] = "daily_cadence"
+        return result
     if not recipients or not resend.is_configured(
         from_address=str(getattr(settings, "website_ops_email_from", "") or "")
     ):
@@ -810,6 +837,9 @@ def send_website_ops_failure_email(settings: Settings, *, mode: str, error: str)
             from_address=str(getattr(settings, "website_ops_email_from", "") or ""),
         )
         result.update({"sent": True, "provider_message_id": message_id})
+        state["last_email_business_date"] = business_date
+        state["failure_sent_at"] = _utc_now().isoformat()
+        _save_notification_state(settings, state)
     except Exception as exc:  # noqa: BLE001
         result["reason"] = str(exc)
     _write_email_delivery(

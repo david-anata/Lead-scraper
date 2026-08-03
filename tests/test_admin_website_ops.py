@@ -49,6 +49,7 @@ from sales_support_agent.services.website_ops import (
     review_feedback_record,
     run_website_ops,
     save_feedback_record,
+    send_website_ops_failure_email,
     send_website_ops_report_email,
     website_ops_operating_state,
     website_ops_run_is_due,
@@ -789,6 +790,76 @@ example
             self.assertFalse(second["changed"])
             self.assertEqual(second["reason"], "unchanged")
             self.assertEqual(send.call_count, 1)
+
+    def test_seo_email_cadence_allows_only_one_changed_email_per_workday(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                website_ops_root=Path(tmpdir),
+                website_ops_report_email_to=("david@anatainc.com",),
+                website_ops_email_from="Anata Agent <noreply@anatainc.com>",
+                resend_api_key="test-key",
+                resend_from="Anata Agent <noreply@anatainc.com>",
+            )
+            first_report = self._fake_report()
+            second_report = dict(first_report)
+            second_report["issues"] = [{"summary": "new finding"}]
+            monday = datetime(2026, 8, 3, 15, tzinfo=timezone.utc)
+            with (
+                mock.patch(
+                    "sales_support_agent.services.website_ops._utc_now",
+                    return_value=monday,
+                ),
+                mock.patch(
+                    "sales_support_agent.services.website_ops.ResendClient.send_message",
+                    return_value="email-1",
+                ) as send,
+            ):
+                first = send_website_ops_report_email(
+                    settings, mode="daily", report=first_report
+                )
+                second = send_website_ops_report_email(
+                    settings, mode="daily", report=second_report
+                )
+                failure = send_website_ops_failure_email(
+                    settings, mode="daily", error="later pulse failed"
+                )
+
+            self.assertTrue(first["sent"])
+            self.assertFalse(second["sent"])
+            self.assertEqual(second["reason"], "daily_cadence")
+            self.assertFalse(failure["sent"])
+            self.assertEqual(failure["reason"], "daily_cadence")
+            self.assertEqual(send.call_count, 1)
+
+    def test_seo_email_cadence_suppresses_weekend_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                website_ops_root=Path(tmpdir),
+                website_ops_report_email_to=("david@anatainc.com",),
+                website_ops_email_from="Anata Agent <noreply@anatainc.com>",
+                resend_api_key="test-key",
+                resend_from="Anata Agent <noreply@anatainc.com>",
+            )
+            saturday = datetime(2026, 8, 1, 15, tzinfo=timezone.utc)
+            with (
+                mock.patch(
+                    "sales_support_agent.services.website_ops._utc_now",
+                    return_value=saturday,
+                ),
+                mock.patch(
+                    "sales_support_agent.services.website_ops.ResendClient.send_message"
+                ) as send,
+            ):
+                report = send_website_ops_report_email(
+                    settings, mode="daily", report=self._fake_report()
+                )
+                failure = send_website_ops_failure_email(
+                    settings, mode="daily", error="weekend pulse failed"
+                )
+
+            self.assertEqual(report["reason"], "outside_workday")
+            self.assertEqual(failure["reason"], "outside_workday")
+            send.assert_not_called()
 
     def test_run_due_respects_daily_weekly_and_monthly_periods(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
