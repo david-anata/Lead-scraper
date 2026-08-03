@@ -569,6 +569,41 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
     _ensure_plaid_account_columns(engine)
     _ensure_collection_draft_columns(engine)
     _ensure_vendor_columns(engine)
+    _ensure_savings_review_columns(engine)
+
+
+def _ensure_savings_review_columns(engine: Any) -> None:
+    """Add cancellation and verification fields without replacing saved reviews."""
+    inspector = inspect(engine)
+    if "finance_savings_reviews" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("finance_savings_reviews")}
+    timestamp = "TIMESTAMPTZ" if engine.dialect.name == "postgresql" else "DATETIME"
+    additions = {
+        "owner": "VARCHAR(255) NOT NULL DEFAULT ''",
+        "action_type": "VARCHAR(32) NOT NULL DEFAULT ''",
+        "cancellation_started_at": timestamp,
+        "cancellation_confirmed_at": timestamp,
+        "effective_date": "DATE",
+        "expected_verification_date": "DATE",
+        "proof_note": "TEXT NOT NULL DEFAULT ''",
+        "realized_monthly_cents": "INTEGER NOT NULL DEFAULT 0",
+    }
+    with engine.begin() as connection:
+        for column, ddl in additions.items():
+            if column not in columns:
+                if engine.dialect.name == "postgresql":
+                    connection.execute(text(
+                        f"ALTER TABLE finance_savings_reviews ADD COLUMN IF NOT EXISTS {column} {ddl}"
+                    ))
+                elif engine.dialect.name == "sqlite":
+                    connection.execute(text(
+                        f"ALTER TABLE finance_savings_reviews ADD COLUMN {column} {ddl}"
+                    ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_finance_savings_expected_verification "
+            "ON finance_savings_reviews(expected_verification_date)"
+        ))
 
 
 def _ensure_vendor_columns(engine: Any) -> None:
@@ -836,6 +871,7 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:
         Base.metadata.create_all(bind=db_engine, tables=tables, checkfirst=True)
+    _ensure_savings_review_columns(db_engine)
 
     inspector = inspect(db_engine)
     if "cash_events" not in set(inspector.get_table_names()):

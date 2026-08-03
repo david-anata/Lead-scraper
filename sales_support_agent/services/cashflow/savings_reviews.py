@@ -21,6 +21,7 @@ DEFAULT_SCOPE = "default"
 VALID_ACTIONS = frozenset({
     "keep", "dismiss", "follow_up", "confirm_realized",
     "needed", "unknown", "investigate", "waste",
+    "start_cancellation", "confirm_cancellation", "cannot_cancel", "reopen",
 })
 _KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -63,7 +64,10 @@ def load_savings_reviews(*, scope: str = DEFAULT_SCOPE, engine=None) -> dict[str
         rows = connection.execute(text("""
             SELECT opportunity_key, evidence_hash, state, suppress_until, clickup_task_id,
                    clickup_task_url, potential_monthly_cents, baseline_amount_cents,
-                   display_name, normalized_merchant, cadence, reason, evidence_json, updated_at
+                   display_name, normalized_merchant, cadence, reason, evidence_json, updated_at,
+                   owner, action_type, cancellation_started_at, cancellation_confirmed_at,
+                   effective_date, expected_verification_date, proof_note,
+                   realized_monthly_cents
             FROM finance_savings_reviews WHERE scope_key=:scope
         """), {"scope": scope}).fetchall()
     return {str(row.opportunity_key): dict(row._mapping) for row in rows}
@@ -79,6 +83,10 @@ def _state_for(action: str) -> str:
         "unknown": "unknown",
         "investigate": "investigate",
         "waste": "waste",
+        "start_cancellation": "cancellation_started",
+        "confirm_cancellation": "verifying",
+        "cannot_cancel": "cannot_cancel",
+        "reopen": "waste",
     }[action]
 
 
@@ -91,12 +99,16 @@ def record_savings_review(
     scope: str = DEFAULT_SCOPE,
     request_id: str | None = None,
     clickup_task: Mapping[str, str] | None = None,
+    owner: str = "", action_type: str = "", effective_date: str = "",
+    proof_note: str = "",
     engine=None,
 ) -> dict[str, Any]:
     """Record a reviewed savings candidate without mutating finance facts."""
     prepared = _prepare_review(
         opportunity, action, actor, reason=reason, scope=scope,
         request_id=request_id, clickup_task=clickup_task,
+        owner=owner, action_type=action_type, effective_date=effective_date,
+        proof_note=proof_note,
     )
     from sales_support_agent.models.database import ensure_finance_trust_schema, get_engine
 
@@ -123,6 +135,7 @@ def record_savings_reviews(
             change.get("opportunity") or {}, str(change.get("action") or ""), actor,
             reason=str(change.get("reason") or ""), scope=scope,
             request_id=f"{batch_id}:{index}", clickup_task=None,
+            owner="", action_type="", effective_date="", proof_note="",
         )
         if item["key"] in keys:
             raise ValueError("A vendor appears more than once; refresh and try again")
@@ -140,6 +153,7 @@ def record_savings_reviews(
 def _prepare_review(
     opportunity: Mapping[str, Any], action: str, actor: str, *, reason: str,
     scope: str, request_id: str | None, clickup_task: Mapping[str, str] | None,
+    owner: str, action_type: str, effective_date: str, proof_note: str,
 ) -> dict[str, Any]:
     if action not in VALID_ACTIONS:
         raise ValueError("Unsupported savings action")
@@ -160,11 +174,32 @@ def _prepare_review(
     event_id = sha256(f"finance-savings-event-v1|{review_id}|{request_identity}".encode()).hexdigest()
     suppress_until = now + timedelta(days=90) if action in {"keep", "dismiss"} else None
     task = dict(clickup_task or {})
+    allowed_action_types = {"", "cancel", "downgrade", "renegotiate", "dispute", "investigate_duplicate"}
+    action_type = str(action_type or "").strip().lower()
+    if action_type not in allowed_action_types:
+        raise ValueError("Choose a valid cost-cutting action")
+    effective_day = None
+    if effective_date:
+        try:
+            effective_day = date.fromisoformat(effective_date)
+        except ValueError as exc:
+            raise ValueError("Enter a valid cancellation effective date") from exc
+    if action == "start_cancellation" and not action_type:
+        raise ValueError("Choose what you are doing with this cost")
+    if action == "confirm_cancellation" and not effective_day:
+        raise ValueError("Enter the date the cancellation or reduction takes effect")
+    expected_verification = None
+    if effective_day:
+        cadence = str(evidence.get("cadence") or "monthly")
+        expected_verification = effective_day + timedelta(days=372 if cadence == "annual" else 38)
     return {
         "action": action, "actor": actor, "evidence": evidence, "evidence_hash": evidence_hash,
         "event_id": event_id, "key": key, "next_state": next_state, "now": now,
         "reason": reason.strip(), "request_identity": request_identity, "review_id": review_id,
         "scope": scope, "suppress_until": suppress_until, "task": task,
+        "owner": str(owner or "").strip()[:255], "action_type": action_type,
+        "effective_date": effective_day, "proof_note": str(proof_note or "").strip()[:4000],
+        "expected_verification_date": expected_verification,
     }
 
 
@@ -176,21 +211,59 @@ def _record_prepared_review(connection, item: Mapping[str, Any]) -> dict[str, An
         return {"review_id": item["review_id"], "state": item["next_state"], "created": False, "clickup_task": item["task"]}
 
     existing = connection.execute(text("""
-            SELECT state FROM finance_savings_reviews WHERE id=:id
+            SELECT state, owner, action_type, effective_date, proof_note,
+                   cancellation_started_at, cancellation_confirmed_at
+            FROM finance_savings_reviews WHERE id=:id
         """), {"id": item["review_id"]}).fetchone()
     prior_state = str(existing.state) if existing else ""
+    allowed_prior = {
+        "start_cancellation": {"waste"},
+        "confirm_cancellation": {"cancellation_started"},
+        "confirm_realized": {"verifying"},
+        "cannot_cancel": {"waste", "cancellation_started"},
+        "reopen": {"realized", "cannot_cancel", "verifying"},
+    }
+    if item["action"] in allowed_prior and prior_state not in allowed_prior[item["action"]]:
+        raise ValueError("This savings step is no longer available; refresh and review its current status")
+    if (
+        item["action"] in {"needed", "unknown", "investigate", "waste"}
+        and prior_state in {"cancellation_started", "verifying", "realized"}
+    ):
+        raise ValueError("Reopen this cost before changing its review decision")
     evidence = item["evidence"]
     task = item["task"]
+    now = item["now"]
+    owner = item["owner"] or (str(existing.owner) if existing else "")
+    action_type = item["action_type"] or (str(existing.action_type) if existing else "")
+    effective_date = item["effective_date"] or (existing.effective_date if existing else None)
+    proof_note = item["proof_note"] or (str(existing.proof_note) if existing else "")
+    started_at = (
+        now if item["action"] == "start_cancellation"
+        else existing.cancellation_started_at if existing else None
+    )
+    confirmed_at = (
+        now if item["action"] == "confirm_cancellation"
+        else existing.cancellation_confirmed_at if existing else None
+    )
+    realized_monthly = (
+        int(evidence.get("monthly_potential_cents") or 0)
+        if item["action"] == "confirm_realized" else 0
+    )
     connection.execute(text("""
         INSERT INTO finance_savings_reviews (
                     id, scope_key, opportunity_key, evidence_hash, state, display_name,
                     normalized_merchant, cadence, potential_monthly_cents, baseline_amount_cents,
                     suppress_until, clickup_task_id, clickup_task_url, reason, evidence_json,
-                    created_by, created_at, updated_at
+                    owner, action_type, cancellation_started_at, cancellation_confirmed_at,
+                    effective_date, expected_verification_date, proof_note,
+                    realized_monthly_cents, created_by, created_at, updated_at
                 ) VALUES (
                     :id, :scope, :key, :evidence_hash, :state, :display_name,
                     :merchant, :cadence, :monthly, :baseline, :suppress_until,
-                    :task_id, :task_url, :reason, :evidence_json, :actor, :now, :now
+                    :task_id, :task_url, :reason, :evidence_json,
+                    :owner, :action_type, :started_at, :confirmed_at, :effective_date,
+                    :expected_verification_date, :proof_note, :realized_monthly,
+                    :actor, :now, :now
                 ) ON CONFLICT(scope_key, opportunity_key) DO UPDATE SET
                     evidence_hash=excluded.evidence_hash, state=excluded.state,
                     display_name=excluded.display_name, normalized_merchant=excluded.normalized_merchant,
@@ -199,7 +272,16 @@ def _record_prepared_review(connection, item: Mapping[str, Any]) -> dict[str, An
                     suppress_until=excluded.suppress_until,
                     clickup_task_id=CASE WHEN excluded.clickup_task_id <> '' THEN excluded.clickup_task_id ELSE finance_savings_reviews.clickup_task_id END,
                     clickup_task_url=CASE WHEN excluded.clickup_task_url <> '' THEN excluded.clickup_task_url ELSE finance_savings_reviews.clickup_task_url END,
-                    reason=excluded.reason, evidence_json=excluded.evidence_json, updated_at=excluded.updated_at
+                    reason=excluded.reason, evidence_json=excluded.evidence_json,
+                    owner=CASE WHEN excluded.owner <> '' THEN excluded.owner ELSE finance_savings_reviews.owner END,
+                    action_type=CASE WHEN excluded.action_type <> '' THEN excluded.action_type ELSE finance_savings_reviews.action_type END,
+                    cancellation_started_at=COALESCE(excluded.cancellation_started_at, finance_savings_reviews.cancellation_started_at),
+                    cancellation_confirmed_at=COALESCE(excluded.cancellation_confirmed_at, finance_savings_reviews.cancellation_confirmed_at),
+                    effective_date=COALESCE(excluded.effective_date, finance_savings_reviews.effective_date),
+                    expected_verification_date=COALESCE(excluded.expected_verification_date, finance_savings_reviews.expected_verification_date),
+                    proof_note=CASE WHEN excluded.proof_note <> '' THEN excluded.proof_note ELSE finance_savings_reviews.proof_note END,
+                    realized_monthly_cents=CASE WHEN excluded.realized_monthly_cents > 0 THEN excluded.realized_monthly_cents ELSE finance_savings_reviews.realized_monthly_cents END,
+                    updated_at=excluded.updated_at
     """), {
                 "id": item["review_id"], "scope": item["scope"], "key": item["key"], "evidence_hash": item["evidence_hash"],
                 "state": item["next_state"], "display_name": str(evidence.get("display_name") or ""),
@@ -207,7 +289,12 @@ def _record_prepared_review(connection, item: Mapping[str, Any]) -> dict[str, An
                 "monthly": evidence.get("monthly_potential_cents"), "baseline": evidence.get("baseline_amount_cents"),
                 "suppress_until": item["suppress_until"], "task_id": str(task.get("id") or ""),
                 "task_url": str(task.get("url") or ""), "reason": item["reason"],
-                "evidence_json": json.dumps(evidence, separators=(",", ":"), sort_keys=True), "actor": item["actor"], "now": item["now"],
+                "evidence_json": json.dumps(evidence, separators=(",", ":"), sort_keys=True),
+                "owner": owner, "action_type": action_type, "started_at": started_at,
+                "confirmed_at": confirmed_at, "effective_date": effective_date,
+                "expected_verification_date": item["expected_verification_date"],
+                "proof_note": proof_note, "realized_monthly": realized_monthly,
+                "actor": item["actor"], "now": item["now"],
             })
     inserted = connection.execute(text("""
         INSERT INTO finance_savings_review_events (
