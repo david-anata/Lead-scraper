@@ -723,3 +723,56 @@ class BuildingOperationsTests(unittest.TestCase):
             inquiry = session.get(BuildingInquiry, created.json()["inquiry_id"])
             self.assertEqual(inquiry.hubspot_contact_id, "")
             self.assertNotIn("_hubspot_sync", inquiry.payload_json)
+            self.assertEqual(
+                [step["key"] for step in inquiry.payload_json["_follow_up_sequence"]],
+                ["review", "first_response", "interview", "follow_up", "close_loop"],
+            )
+            self.assertEqual(
+                inquiry.payload_json["_lead_notification"]["status"],
+                "not_configured",
+            )
+
+    def test_new_inquiry_sends_one_nonblocking_slack_alert(self) -> None:
+        original = app.state.settings
+        app.state.settings = dataclasses.replace(
+            original,
+            slack_bot_token="xoxb-building-test",
+            slack_channel_id="C-BUILDING",
+        )
+        headers = {
+            "X-Internal-Api-Key": "building-test-key",
+            "Idempotency-Key": "inquiry-slack-alert-once",
+        }
+        payload = {
+            "kind": "event",
+            "name": "Alerted Prospect",
+            "email": "alerted-building@example.com",
+            "preferred_date": "2026-11-10",
+            "consent_to_contact": True,
+        }
+        try:
+            with mock.patch(
+                "sales_support_agent.services.building_lead_intake.SlackClient.post_message",
+                return_value={"ok": True, "ts": "123.456"},
+            ) as sender:
+                created = self.client.post(
+                    "/api/public/building/inquiries", headers=headers, json=payload
+                )
+                duplicate = self.client.post(
+                    "/api/public/building/inquiries", headers=headers, json=payload
+                )
+            self.assertEqual(created.status_code, 201, created.text)
+            self.assertTrue(duplicate.json()["duplicate"])
+            sender.assert_called_once()
+            with self.factory() as session:
+                inquiry = session.get(BuildingInquiry, created.json()["inquiry_id"])
+                self.assertEqual(
+                    inquiry.payload_json["_lead_notification"]["status"],
+                    "delivered",
+                )
+                self.assertEqual(
+                    inquiry.payload_json["_lead_notification"]["provider_reference"],
+                    "123.456",
+                )
+        finally:
+            app.state.settings = original

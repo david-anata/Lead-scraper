@@ -122,7 +122,7 @@ def test_root_entrypoint_serves_authenticated_building_control() -> None:
         page = client.get("/admin/building")
         assert page.status_code == 200, page.text
         assert "Building Control" in page.text
-        assert "Your Arena decisions and remaining setup" in page.text
+        assert "Arena setup and administration" in page.text
         for route, title in {
             "sales": "Sales",
             "bookings": "Bookings",

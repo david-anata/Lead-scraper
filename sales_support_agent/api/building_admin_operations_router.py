@@ -84,7 +84,11 @@ from sales_support_agent.api.building_service_request_router import (
     transition_service_request,
 )
 from sales_support_agent.models.database import session_scope
-from sales_support_agent.models.entities import BuildingBillingSchedule
+from sales_support_agent.models.entities import (
+    BuildingAuditEvent,
+    BuildingBillingSchedule,
+    BuildingInquiry,
+)
 from sales_support_agent.services.auth_deps import (
     require_all_tools,
     require_recent_tool,
@@ -92,6 +96,10 @@ from sales_support_agent.services.auth_deps import (
 )
 from sales_support_agent.services.building_security import (
     require_building_form_security,
+)
+from sales_support_agent.services.building_lead_intake import (
+    advance_follow_up_sequence,
+    notify_new_building_lead,
 )
 from sales_support_agent.services.building_page import (
     render_customer_status_link_result,
@@ -262,6 +270,140 @@ def update_inquiry_lifecycle_from_control_room(
     return _run_form_action(
         action,
         f"Inquiry moved to {target_stage.replace('_', ' ')}.",
+    )
+
+
+@router.post("/inquiries/{inquiry_id}/event-interview", dependencies=FORM_DEPS)
+async def save_event_interview_from_control_room(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Save the operational discovery record without promising a date or price."""
+
+    form = await request.form()
+    field_names = (
+        "event_purpose",
+        "event_format",
+        "candidate_dates",
+        "guest_schedule",
+        "access_schedule",
+        "attendance",
+        "decision_maker",
+        "authorized_signer",
+        "billing_contact",
+        "decision_timeline",
+        "room_layout",
+        "furniture",
+        "av_and_sound",
+        "internet_and_power",
+        "catering",
+        "alcohol",
+        "vendors_and_load_in",
+        "parking_and_transportation",
+        "accessibility",
+        "security_and_staffing",
+        "insurance",
+        "decor_and_signage",
+        "cleanup_and_waste",
+        "marketing_and_media",
+        "special_requests",
+        "known_risks",
+        "agreed_next_step",
+        "operator_notes",
+    )
+    answers = {name: str(form.get(name) or "").strip() for name in field_names}
+    if not any(answers.values()):
+        return _redirect(
+            error="Record at least one interview answer before saving.",
+            target="/admin/building/sales",
+        )
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None or inquiry.kind != "event":
+            return _redirect(
+                error="Event inquiry not found.", target="/admin/building/sales"
+            )
+        payload = dict(inquiry.payload_json or {})
+        before = dict(payload.get("_event_interview") or {})
+        payload["_event_interview"] = {
+            **answers,
+            "updated_by": _actor(user),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        lifecycle_stage = str(
+            (payload.get("_lifecycle") or {}).get("stage") or "new"
+        )
+        payload["_follow_up_sequence"] = advance_follow_up_sequence(
+            list(payload.get("_follow_up_sequence") or []),
+            lifecycle_stage=lifecycle_stage,
+            changed_at=datetime.now(timezone.utc),
+            interview_complete=True,
+        )
+        inquiry.payload_json = payload
+        inquiry.updated_at = datetime.now(timezone.utc)
+        session.add(BuildingAuditEvent(
+            entity_type="inquiry",
+            entity_id=inquiry.id,
+            action="event_interview_saved",
+            actor=_actor(user),
+            before_json=before,
+            after_json={
+                "answered_fields": sorted(
+                    name for name, value in answers.items() if value
+                ),
+                "provider_write": False,
+            },
+        ))
+    return _redirect(
+        notice="Event interview saved. No date, price, or booking was promised.",
+        target="/admin/building/sales",
+    )
+
+
+@router.post("/inquiries/{inquiry_id}/notify", dependencies=FORM_DEPS)
+def retry_new_lead_notification_from_control_room(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Retry the staff Slack alert; this never contacts the prospect."""
+
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            return _redirect(error="Inquiry not found.", target="/admin/building/sales")
+        try:
+            result = notify_new_building_lead(request.app.state.settings, inquiry)
+        except Exception as exc:
+            result = {
+                "status": "failed",
+                "provider": "slack",
+                "reason": str(exc)[:500],
+            }
+        payload = dict(inquiry.payload_json or {})
+        payload["_lead_notification"] = {
+            **result,
+            "attempted_at": datetime.now(timezone.utc).isoformat(),
+            "attempted_by": _actor(user),
+        }
+        inquiry.payload_json = payload
+        inquiry.updated_at = datetime.now(timezone.utc)
+        session.add(BuildingAuditEvent(
+            entity_type="inquiry",
+            entity_id=inquiry.id,
+            action=f"lead_notification_{result['status']}",
+            actor=_actor(user),
+            after_json=result,
+        ))
+    if result["status"] != "delivered":
+        return _redirect(
+            error="Staff notification was not delivered; the lead remains safely in Agent.",
+            target="/admin/building/sales",
+        )
+    return _redirect(
+        notice="Staff Slack notification delivered.",
+        target="/admin/building/sales",
     )
 
 

@@ -5208,6 +5208,20 @@ def building_control_room(
                     "tour_handoff": dict(
                         (item.payload_json or {}).get("_tour_handoff") or {}
                     ),
+                    "event_interview": dict(
+                        (item.payload_json or {}).get("_event_interview") or {}
+                    ),
+                    "follow_up_sequence": list(
+                        (item.payload_json or {}).get("_follow_up_sequence") or []
+                    ),
+                    "lead_notification": dict(
+                        (item.payload_json or {}).get("_lead_notification") or {}
+                    ),
+                    "details": {
+                        key: value
+                        for key, value in dict(item.payload_json or {}).items()
+                        if not str(key).startswith("_")
+                    },
                     "assigned_owner": item.assigned_owner,
                     "response_due_at": (
                         _mountain(item.response_due_at).strftime(

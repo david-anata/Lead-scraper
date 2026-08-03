@@ -606,6 +606,79 @@ def render_building_page(
             '<button class="secondary secondary--small" type="submit">Save progress</button></form></details>'
         )
 
+    interview_fields = (
+        ("event_purpose", "Purpose and desired outcome"),
+        ("event_format", "Event format and agenda"),
+        ("candidate_dates", "Candidate dates and flexibility"),
+        ("guest_schedule", "Guest start and end"),
+        ("access_schedule", "Setup, vendor access, and teardown"),
+        ("attendance", "Expected and maximum attendance"),
+        ("decision_maker", "Decision maker"),
+        ("authorized_signer", "Authorized agreement signer"),
+        ("billing_contact", "Billing contact and invoice details"),
+        ("decision_timeline", "Decision timeline"),
+        ("room_layout", "Room layout and guest flow"),
+        ("furniture", "Tables, chairs, staging, and furniture"),
+        ("av_and_sound", "A/V, microphones, screens, and sound"),
+        ("internet_and_power", "Internet, streaming, and power"),
+        ("catering", "Food, catering, kitchen, and service plan"),
+        ("alcohol", "Alcohol service and licensing"),
+        ("vendors_and_load_in", "Vendors, deliveries, and load-in"),
+        ("parking_and_transportation", "Parking and transportation"),
+        ("accessibility", "Accessibility accommodations"),
+        ("security_and_staffing", "Security and event staffing"),
+        ("insurance", "Insurance or certificate requirements"),
+        ("decor_and_signage", "Decor, signage, mounting, and restrictions"),
+        ("cleanup_and_waste", "Cleanup, waste, and teardown ownership"),
+        ("marketing_and_media", "Photography, recording, and media permissions"),
+        ("special_requests", "Special requests and add-ons"),
+        ("known_risks", "Known risks, conflicts, or open questions"),
+        ("agreed_next_step", "Agreed next step and date"),
+        ("operator_notes", "Private operator notes"),
+    )
+
+    def inquiry_interview_action(item: dict[str, Any]) -> str:
+        if item.get("kind") != "event":
+            return ""
+        interview = dict(item.get("event_interview") or {})
+        answered = sum(bool(str(interview.get(key) or "").strip()) for key, _ in interview_fields)
+        fields = "".join(
+            f'<label>{_esc(label)}<textarea name="{_esc(key)}" rows="2">{_esc(interview.get(key) or "")}</textarea></label>'
+            for key, label in interview_fields
+        )
+        return (
+            '<details class="row-actions interview-workspace"><summary>'
+            f'Event interview · {answered}/{len(interview_fields)} answered</summary>'
+            '<p class="sub">Capture facts before promising a date, price, layout, service, or exception. Partial saves are allowed.</p>'
+            f'<form class="interview-grid" method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/event-interview">'
+            f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+            f'{fields}<button class="primary" type="submit">Save event interview</button>'
+            '<span class="sub">This records discovery only. It does not hold a date or contact the prospect.</span></form></details>'
+        )
+
+    def inquiry_sequence(item: dict[str, Any]) -> str:
+        sequence = list(item.get("follow_up_sequence") or [])
+        notification = dict(item.get("lead_notification") or {})
+        if not sequence and not notification:
+            return ""
+        notification_status = str(notification.get("status") or "not recorded")
+        retry = (
+            f'<form method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/notify">'
+            f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+            '<button class="secondary secondary--small" type="submit">Retry staff alert</button></form>'
+            if notification_status != "delivered"
+            else ""
+        )
+        steps = "".join(
+            f'<li><strong>{_esc(step.get("label"))}</strong><span class="sub">{_esc(step.get("status") or "queued")} · due {_esc(step.get("due_at") or "not set")}</span></li>'
+            for step in sequence
+        )
+        return (
+            '<details class="row-actions"><summary>Notifications and follow-up plan</summary>'
+            f'<p class="sub">New-lead Slack alert: {_esc(notification_status.replace("_", " "))}. Customer messages are never auto-sent.</p>'
+            f'{retry}<ol class="sequence-list">{steps}</ol></details>'
+        )
+
     workspace_offerings = [
         item
         for item in offerings
@@ -657,8 +730,8 @@ def render_building_page(
         <tr>
           <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("email"))}</span></td>
           <td>{_esc(item.get("kind"))}</td>
-          <td>{_esc(item.get("preferred_date") or "—")}{tour_handoff_action(item)}</td>
-          <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")} · respond by {_esc(item.get("response_due_at") or "not set")}</span>{inquiry_lifecycle_action(item)}</td>
+          <td>{_esc(item.get("preferred_date") or "—")}{tour_handoff_action(item)}{inquiry_interview_action(item)}</td>
+          <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")} · respond by {_esc(item.get("response_due_at") or "not set")}</span>{inquiry_sequence(item)}{inquiry_lifecycle_action(item)}</td>
           <td>{_esc(item.get("source"))}<span class="sub">{_esc(item.get("source_reference"))}</span></td>
         </tr>
         """
@@ -1563,7 +1636,8 @@ def render_building_page(
     .field[hidden]{{display:none;}}
     label{{font-size:12px;font-weight:700;color:rgba(43,54,68,.72);}} input,select,textarea{{box-sizing:border-box;width:100%;min-height:42px;border:1px solid rgba(43,54,68,.22);border-radius:8px;background:#fff;padding:10px 11px;color:var(--ink);font:inherit;}} textarea{{min-height:92px;resize:vertical;}} input:focus,select:focus,textarea:focus{{outline:3px solid rgba(133,187,218,.34);border-color:#397a9d;}}
     .check{{display:flex;align-items:center;gap:9px;font-size:13px;}} .check input{{width:18px;min-height:18px;}} .check-stack{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;padding:11px;border:1px solid rgba(43,54,68,.14);border-radius:8px;}} .form-actions{{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid var(--border);padding-top:16px;}} .form-note{{font-size:12px;color:rgba(43,54,68,.62);line-height:1.45;}} .primary,.secondary{{min-height:42px;border:0;border-radius:8px;background:var(--ink);color:#fff;padding:0 17px;font-weight:700;cursor:pointer;}} .primary:hover{{background:#17222d;}} .secondary{{border:1px solid var(--border);background:#fff;color:var(--ink);}} .secondary--small{{min-height:34px;padding:0 11px;font-size:12px;white-space:nowrap;}} .action-stack{{display:grid;gap:7px;min-width:210px;}} .inline-send{{display:flex;gap:6px;align-items:center;}} .inline-send input{{min-height:34px;padding:7px 8px;font-size:12px;}}
-    .row-actions{{min-width:220px;}} .row-actions summary{{cursor:pointer;font-weight:700;color:#397a9d;}} .row-actions form{{display:grid;gap:7px;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:9px;background:#f8f8f6;}} .row-actions label{{display:grid;gap:4px;}} .row-actions input,.row-actions select{{min-height:34px;padding:7px 8px;font-size:12px;}}
+    .row-actions{{min-width:220px;}} .row-actions summary{{cursor:pointer;font-weight:700;color:#397a9d;}} .row-actions form{{display:grid;gap:7px;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:9px;background:#f8f8f6;}} .row-actions label{{display:grid;gap:4px;}} .row-actions input,.row-actions select,.row-actions textarea{{min-height:34px;padding:7px 8px;font-size:12px;}}
+    .interview-workspace{{min-width:min(640px,80vw);}} .interview-grid{{grid-template-columns:repeat(2,minmax(0,1fr))!important;max-height:70vh;overflow:auto;}} .interview-grid>p,.interview-grid>button,.interview-grid>.sub{{grid-column:1/-1;}} .sequence-list{{display:grid;gap:8px;margin:10px 0 0;padding-left:20px;}} .sequence-list .sub{{display:block;}}
     .decision-list{{display:grid;gap:12px;padding:18px 20px;background:#f8fafb;}}
     .decision-card{{border:1px solid var(--border);border-radius:12px;background:#fff;overflow:hidden;}}
     .decision-card--answered{{border-color:rgba(24,119,111,.28);}} .decision-card--answered .decision-card__number{{background:#e4f4f1;color:#11665f;}}
@@ -1616,7 +1690,7 @@ def render_building_page(
     .adjustment-evidence{{display:grid;grid-template-columns:repeat(2,minmax(130px,1fr));gap:6px;min-width:360px;}} .adjustment-evidence button{{justify-self:start;}}
     @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.daily-guide{{grid-template-columns:1fr}}.daily-guide__item{{border-right:0;border-bottom:1px solid var(--border)}}.daily-guide__item:last-child{{border-bottom:0}}.grid,.setup-workspace__content{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}}}
     @media(max-width:700px){{.decision-card__summary{{grid-template-columns:42px minmax(0,1fr)}}.decision-card__state{{grid-column:2;justify-self:start;text-align:left;max-width:none}}.decision-card__evidence{{grid-template-columns:1fr}}.decision-card__evidence>div+div{{border-left:0;border-top:1px solid var(--border)}}}}
-    @media(max-width:600px){{.page-head,.panel-head{{align-items:start;flex-direction:column}}.panel-head{{gap:9px;padding:18px}}.metric{{padding:14px 15px}}.metric strong{{font-size:22px}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.form-grid,.decision-form{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
+    @media(max-width:600px){{.page-head,.panel-head{{align-items:start;flex-direction:column}}.panel-head{{gap:9px;padding:18px}}.metric{{padding:14px 15px}}.metric strong{{font-size:22px}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.form-grid,.decision-form,.interview-grid{{grid-template-columns:1fr!important}}.interview-workspace{{min-width:min(300px,80vw)}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
   </style>
 </head>
 <body class="app app--operator view-{_esc(view)}">
