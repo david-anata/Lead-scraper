@@ -431,6 +431,7 @@ def test_budget_page_is_explicitly_advisory_and_explainable() -> None:
     assert "localStorage" in page
     assert "beforeunload" in page
     assert "Recovered ${restored} unsaved change" in page
+    assert "has-unsaved-changes" in page
     assert 'data-trim-batch-form' in page
     assert "save immediately" not in page
     assert "Run high spending review" in page
@@ -493,11 +494,29 @@ def test_vendor_review_is_full_page_with_posted_evidence() -> None:
     ]
     view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
     item = view["trim_items"][0]
+    item["transactions"][0]["account"] = "plaid-account-token-that-must-not-render"
 
     page = budgeting.render_budget_vendor_page(view, item["opportunity_key"])
 
     assert "See the bank evidence, then take one clear next step" in page
     assert "Bank description" in page
     assert "Connected bank account" in page
+    assert "plaid-account-token-that-must-not-render" not in page
+    assert '<option value="unknown" selected>Unknown</option>' in page
     assert "Save this decision" in page
     assert "side drawer" not in page
+
+
+def test_monthly_brief_omits_zero_value_nonrecurring_waste() -> None:
+    rows = [
+        _row("one-off", "plaid", "2026-06-10", 9_900, merchant="Past One Off")
+    ]
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    item = view["trim_items"][0]
+    item["review_state"] = "waste"
+
+    page = budgeting.render_budget_page(
+        view, {"status": "empty", "recommendations": []}
+    )
+
+    assert "$0.00 per month awaits cancellation work" not in page

@@ -169,13 +169,22 @@ def _merchant_identity(
 
 def _account_label(row: Mapping[str, Any]) -> str:
     """Return a safe account hint, never credentials or a full account number."""
-    for field in ("account_name", "plaid_account_name", "account_mask", "bank_reference"):
+    for field in ("account_name", "plaid_account_name"):
         value = str(row.get(field) or "").strip()
         if value:
             return value[-80:]
-    notes = str(row.get("notes") or "")
-    match = re.search(r"(?:account|acct)[=: ]+([^;|\n]+)", notes, re.IGNORECASE)
-    return match.group(1).strip()[-80:] if match else "Connected bank account"
+    mask = re.sub(r"\D", "", str(row.get("account_mask") or ""))[-4:]
+    return f"Connected account ••••{mask}" if mask else "Connected bank account"
+
+
+def _display_account_label(value: Any) -> str:
+    """Keep legacy/cache identifiers out of operator-facing evidence tables."""
+    label = str(value or "").strip()
+    if not label:
+        return "Connected bank account"
+    if len(label) > 24 and re.fullmatch(r"[A-Za-z0-9_-]+", label):
+        return "Connected bank account"
+    return label[-80:]
 
 
 def _recurrence_classification(
@@ -959,10 +968,16 @@ def render_budget_vendor_page(
         <a class="btn btn-primary" href="/admin/finances/budget">Return to Budget &amp; savings</a></div></div>"""
         return _page_shell("Cost review", "budget", body, flash=flash)
     item["realization_ready"] = bool(item.get("verification_ready"))
-    payload = html.escape(json.dumps(item, separators=(",", ":"), default=str), quote=True)
+    payload_item = {
+        key: value for key, value in item.items()
+        if key not in {"transactions", "verification_matches"}
+    }
+    payload = html.escape(
+        json.dumps(payload_item, separators=(",", ":"), default=str), quote=True
+    )
     history = "".join(
         f"<tr><td>{html.escape(str(tx.get('date') or ''))}</td>"
-        f"<td>{html.escape(str(tx.get('account') or 'Connected bank account'))}</td>"
+        f"<td>{html.escape(_display_account_label(tx.get('account')))}</td>"
         f"<td>{html.escape(str(tx.get('raw_description') or item['display_name']))}</td>"
         f"<td>{_money(int(tx.get('amount_cents') or 0), exact=True)}</td></tr>"
         for tx in item.get("transactions") or []
@@ -1012,9 +1027,18 @@ def render_budget_vendor_page(
           <p>{_money(int((item.get('review') or {}).get('realized_monthly_cents') or 0), exact=True)} per month is supported by later Plaid evidence.</p>
           <button class="btn btn-secondary" type="submit">Reopen this cost</button></form>"""
     else:
+        decision_options = "".join(
+            f'<option value="{value}"{" selected" if state == value else ""}>{label}</option>'
+            for value, label in (
+                ("needed", "Needed"),
+                ("investigate", "Investigate"),
+                ("waste", "Waste — prepare to cut"),
+                ("unknown", "Unknown"),
+            )
+        )
         action_panel = f"""<form class="cost-action-form" method="post" action="/admin/finances/savings/{html.escape(opportunity_key, quote=True)}/review">
           {common}<h2>Choose what this cost means</h2><p>Nothing changes until you confirm one answer.</p>
-          <label>Decision<select name="action"><option value="needed">Needed</option><option value="investigate">Investigate</option><option value="waste">Waste — prepare to cut</option><option value="unknown">Unknown</option></select></label>
+          <label>Decision<select name="action">{decision_options}</select></label>
           <label>Note<textarea name="reason" rows="3" placeholder="Why you chose this"></textarea></label>
           <button class="btn btn-primary" type="submit">Save this decision</button></form>"""
     body = f"""
@@ -1130,7 +1154,11 @@ def render_budget_page(
                 "href": f"/admin/finances/budget/vendor/{item['opportunity_key']}",
             })
     for item in trim_items:
-        if item.get("review_state") == "waste":
+        if (
+            item.get("review_state") == "waste"
+            and item.get("cadence") in {"monthly", "annual"}
+            and int(item.get("monthly_potential_cents") or 0) > 0
+        ):
             brief_items.append({
                 "label": "Ready to cut", "name": str(item["display_name"]),
                 "detail": f"{_money(int(item.get('monthly_potential_cents') or 0), exact=True)} per month awaits cancellation work.",
@@ -1322,6 +1350,7 @@ def render_budget_page(
         if (saveButton) saveButton.disabled = changes.length === 0;
         if (discardButton) discardButton.disabled = changes.length === 0;
         if (unsaved) unsaved.textContent = changes.length ? `${changes.length} unsaved change${changes.length === 1 ? '' : 's'}` : 'No unsaved changes';
+        form?.classList.toggle('has-unsaved-changes', changes.length > 0);
         if (changes.length) storage.set({changes, savedAt: new Date().toISOString()}); else storage.clear();
       };
       const showRowState = (row, state) => {
