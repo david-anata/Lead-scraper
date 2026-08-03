@@ -159,6 +159,17 @@ def render_template_index(
       </div>
     </header>
     {_messages(notice, error)}
+    <section class="admin-panel">
+      <h2>Agreement review and change workflow</h2>
+      <ol class="template-workflow">
+        <li><strong>Edit a draft.</strong><span>Adjust reusable contract language and clauses. Saving validates every merge field but sends nothing.</span></li>
+        <li><strong>Preview with a booking.</strong><span>Choose a real booking to verify names, dates, attendance, quote, deposit, tax, and cancellation terms.</span></li>
+        <li><strong>Move to review.</strong><span>The version locks while legal and owner review is underway.</span></li>
+        <li><strong>Approve with evidence.</strong><span>Only the approved immutable version can create a customer agreement package.</span></li>
+        <li><strong>Revise safely.</strong><span>Never alter an approved version. Open it and start the next version, make changes, preview, and approve again.</span></li>
+      </ol>
+      <p class="app-muted">Approving a template or customer package does not send it. QuickBooks Contract Builder remains the staff-controlled delivery and signature step.</p>
+    </section>
     {workspace}
     {create}"""
     return render_operator_document(
@@ -430,6 +441,7 @@ _TEMPLATE_STYLES = """<style>
 .building-contracts-page .template-review h2{margin-top:1.6rem;font-size:1.15rem;}
 .building-contracts-page .template-source{margin-top:14px;}
 .building-contracts-page .template-source>summary{cursor:pointer;color:var(--agent-ink-muted);font-weight:700;}
+.building-contracts-page .template-workflow{display:grid;gap:12px;margin:0;padding-left:22px;}.building-contracts-page .template-workflow li{padding-left:4px;}.building-contracts-page .template-workflow span{display:block;margin-top:3px;color:var(--agent-ink-muted);}
 .building-contracts-page .app-confirmation{display:flex;align-items:flex-start;gap:10px;grid-column:1/-1;padding:12px 14px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);background:var(--agent-surface-soft);}
 .building-contracts-page .app-confirmation input{width:18px;height:18px;flex:0 0 auto;}
 .building-contracts-page textarea{font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;}

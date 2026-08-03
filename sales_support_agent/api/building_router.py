@@ -25,6 +25,11 @@ from sales_support_agent.services.building_launch_readiness import (
     arena_rate_plan_decision_blockers,
     sync_arena_effective_date_decision,
 )
+from sales_support_agent.services.building_lead_intake import (
+    advance_follow_up_sequence,
+    build_follow_up_sequence,
+    notify_new_building_lead,
+)
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
@@ -702,6 +707,10 @@ def create_inquiry(
                 or 4
             ),
         )
+        inquiry_details = dict(payload.details or {})
+        inquiry_details["_follow_up_sequence"] = build_follow_up_sequence(
+            received_at, response_sla_hours
+        )
         inquiry = BuildingInquiry(
             id=str(uuid4()),
             idempotency_key=dedupe_key,
@@ -717,7 +726,7 @@ def create_inquiry(
             consent_to_marketing=payload.consent_to_marketing,
             assigned_owner=assigned_owner,
             response_due_at=received_at + timedelta(hours=response_sla_hours),
-            payload_json=payload.details,
+            payload_json=inquiry_details,
             created_at=received_at,
             updated_at=received_at,
         )
@@ -828,6 +837,29 @@ def create_inquiry(
                 "assigned_owner": inquiry.assigned_owner,
                 "response_due_at": inquiry.response_due_at.isoformat(),
             },
+        ))
+
+        try:
+            notification = notify_new_building_lead(request.app.state.settings, inquiry)
+        except Exception as exc:  # Lead intake must survive a provider outage.
+            notification = {
+                "status": "failed",
+                "provider": "slack",
+                "reason": str(exc)[:500],
+            }
+        inquiry_payload = dict(inquiry.payload_json or {})
+        inquiry_payload["_lead_notification"] = {
+            **notification,
+            "attempted_at": _now().isoformat(),
+        }
+        inquiry.payload_json = inquiry_payload
+        inquiry.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="inquiry",
+            entity_id=inquiry.id,
+            action=f"lead_notification_{notification['status']}",
+            actor=actor,
+            after_json=notification,
         ))
 
         return {"ok": True, "inquiry_id": inquiry.id, "status": inquiry.status, "duplicate": False}
@@ -965,6 +997,12 @@ def update_inquiry_lifecycle(
                     },
                 ))
         inquiry_payload["_lifecycle"] = lifecycle
+        inquiry_payload["_follow_up_sequence"] = advance_follow_up_sequence(
+            list(inquiry_payload.get("_follow_up_sequence") or []),
+            lifecycle_stage=payload.target_stage,
+            changed_at=changed_at,
+            interview_complete=bool(inquiry_payload.get("_event_interview")),
+        )
         inquiry.payload_json = inquiry_payload
         if payload.assigned_owner.strip():
             inquiry.assigned_owner = payload.assigned_owner.strip()
