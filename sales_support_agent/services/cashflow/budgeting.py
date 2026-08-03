@@ -248,6 +248,13 @@ def build_budget_view(
 
     days_in_month = monthrange(today.year, today.month)[1]
     elapsed_days = max(1, today.day)
+    recurring_category_average: dict[str, int] = defaultdict(int)
+    for merchant_key, monthly in merchant_months.items():
+        historical = [int(monthly.get(month) or 0) for month in comparison_months]
+        if sum(1 for amount in historical if amount > 0) >= 2:
+            recurring_category_average[merchant_meta[merchant_key]["category"]] += (
+                sum(historical) // len(comparison_months)
+            )
     categories: list[dict[str, Any]] = []
     for key in sorted(category_months):
         monthly = category_months[key]
@@ -266,7 +273,10 @@ def build_budget_view(
         reduction_bps = 0 if protected else 1_500 if key in _HIGH_CONTROL_CATEGORIES else 1_000
         target = average * (10_000 - reduction_bps) // 10_000
         potential = 0 if protected else max(0, projected - target)
-        historical_reduction = 0 if protected else max(0, average - target)
+        recurring_average = int(recurring_category_average.get(key) or 0)
+        historical_reduction = (
+            0 if protected else recurring_average * reduction_bps // 10_000
+        )
         recurring_saving = min(historical_reduction, potential)
         variance = projected - target
         merchants = sorted(
@@ -284,6 +294,7 @@ def build_budget_view(
                 "target_cents": target,
                 "potential_saving_cents": potential,
                 "historical_reduction_cents": historical_reduction,
+                "recurring_average_cents": recurring_average,
                 "recurring_saving_cents": recurring_saving,
                 "variance_cents": variance,
                 "earlier_average_cents": earlier_average,
@@ -388,21 +399,30 @@ def build_budget_view(
             json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         recent_average = sum(history[month] for month in comparison_months[3:]) // 3
+        active_months = sum(1 for value in history.values() if value > 0)
+        cadence = "recurring" if active_months >= 2 else "one_time"
         trim_items.append({
             "opportunity_key": opportunity_key, "key": opportunity_key,
             "evidence_hash": evidence_hash, "display_name": meta["name"],
             "normalized_merchant": merchant_key, "category": meta["category"],
-            "cadence": "monthly review", "monthly_potential_cents": recent_average,
-            "baseline_amount_cents": recent_average,
+            "cadence": cadence,
+            "monthly_potential_cents": recent_average if cadence == "recurring" else 0,
+            "baseline_amount_cents": recent_average if cadence == "recurring" else 0,
             "six_month_total_cents": total, "monthly_average_cents": total // 6,
             "recent_average_cents": recent_average,
-            "active_months": sum(1 for value in history.values() if value > 0),
-            "monthly_history": history,
-            "reason": "Six-month controllable vendor review",
+            "active_months": active_months, "monthly_history": history,
+            "reason": (
+                "Recurring controllable vendor review"
+                if cadence == "recurring"
+                else "One-time or irregular historical purchase review"
+            ),
             "limitations": "Usage, contract terms, and replacement cost require operator review.",
             "evidence_dates": comparison_months, "review_state": "unknown", "review_note": "",
         })
-    trim_items.sort(key=lambda item: (-int(item["six_month_total_cents"]), str(item["display_name"]).casefold()))
+    trim_items.sort(key=lambda item: (
+        0 if item["cadence"] == "recurring" else 1,
+        -int(item["six_month_total_cents"]), str(item["display_name"]).casefold(),
+    ))
     proof = {
         "source": source,
         "as_of": today.isoformat(),
@@ -739,16 +759,18 @@ def render_budget_page(
         for item in view.get("investigations") or []
     )
     trim_items = list(view.get("trim_items") or [])
+    recurring_trim_count = sum(1 for item in trim_items if item.get("cadence") == "recurring")
+    one_time_trim_count = len(trim_items) - recurring_trim_count
     trim_counts = {
         state: sum(1 for item in trim_items if str(item.get("review_state") or "unknown") == state)
         for state in ("unknown", "needed", "investigate", "waste")
     }
     trim_rows = "".join(
         f"""
-        <tr data-trim-row data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-note="{html.escape(str(item.get('review_note') or ''), quote=True)}" data-trim-opportunity="{html.escape(json.dumps(item, separators=(',', ':')), quote=True)}">
-          <td><strong>{html.escape(item['display_name'])}</strong><span>{html.escape(str(item['category']).replace('_', ' ').title())} · {item['active_months']} of 6 months</span>
+        <tr {'hidden' if item.get('cadence') == 'one_time' else ''} data-trim-row data-trim-cadence="{html.escape(str(item.get('cadence') or 'one_time'), quote=True)}" data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-note="{html.escape(str(item.get('review_note') or ''), quote=True)}" data-trim-opportunity="{html.escape(json.dumps(item, separators=(',', ':')), quote=True)}">
+          <td><strong>{html.escape(item['display_name'])}</strong><span>{'Recurring vendor' if item.get('cadence') == 'recurring' else 'One-time / irregular'} · {html.escape(str(item['category']).replace('_', ' ').title())} · {item['active_months']} of 6 months</span>
           <span class="trim-month-history">{' · '.join(f"{date.fromisoformat(month + '-01').strftime('%b')} {_money(int(amount), exact=True)}" for month, amount in item['monthly_history'].items())}</span></td>
-          <td>{_money(int(item['monthly_average_cents']), exact=True)}</td>
+          <td>{_money(int(item['monthly_average_cents']), exact=True) if item.get('cadence') == 'recurring' else '<span class="trim-not-recurring">Not recurring</span>'}</td>
           <td>{_money(int(item['six_month_total_cents']), exact=True)}</td>
           <td><span class="trim-state trim-state--{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}">{html.escape(str(item.get('review_state') or 'unknown').title())}</span></td>
           <td><div class="trim-form">
@@ -817,7 +839,9 @@ def render_budget_page(
         <span class="money-section-state">{len(trim_items)} controllable vendors</span></div>
         <p class="budget-review-summary">Work from the largest six-month spend down. Make as many decisions as you want, then save them together. No service is cancelled and no accounting record changes.</p>
         <div class="trim-summary" aria-label="Trim review progress">
-          <button type="button" data-trim-filter="all" class="is-active">All <strong>{len(trim_items)}</strong></button>
+          <button type="button" data-trim-filter="recurring" class="is-active">Recurring <strong>{recurring_trim_count}</strong></button>
+          <button type="button" data-trim-filter="one_time">One-time <strong>{one_time_trim_count}</strong></button>
+          <button type="button" data-trim-filter="all">All <strong>{len(trim_items)}</strong></button>
           <button type="button" data-trim-filter="unknown">Unknown <strong>{trim_counts['unknown']}</strong></button>
           <button type="button" data-trim-filter="investigate">Investigate <strong>{trim_counts['investigate']}</strong></button>
           <button type="button" data-trim-filter="waste">Waste <strong>{trim_counts['waste']}</strong></button>
@@ -829,7 +853,7 @@ def render_budget_page(
         <div class="money-table-wrap trim-table-wrap"><table class="budget-table trim-table"><thead><tr>
           <th>Vendor</th><th>Monthly average</th><th>Six-month spend</th><th>Status</th><th>Decision and note</th>
         </tr></thead><tbody>{trim_rows}</tbody></table></div>
-        <p class="budget-rule-note" data-trim-result-count>Showing all {len(trim_items)} vendors.</p>
+        <p class="budget-rule-note" data-trim-result-count>Showing {recurring_trim_count} recurring vendors. {one_time_trim_count} one-time or irregular purchases are available separately.</p>
         </form>
       </section>
 
@@ -922,7 +946,7 @@ def render_budget_page(
         const wanted = button.dataset.trimFilter;
         let shown = 0;
         rows.forEach(row => {
-          const visible = wanted === 'all' || row.dataset.trimState === wanted;
+          const visible = wanted === 'all' || row.dataset.trimState === wanted || row.dataset.trimCadence === wanted;
           row.hidden = !visible;
           if (visible) shown += 1;
         });
