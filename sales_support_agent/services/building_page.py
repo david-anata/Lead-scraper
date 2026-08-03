@@ -1915,7 +1915,7 @@ def render_building_page(
           <div class="field"><label for="review-inquiry">Qualified event inquiry</label><select id="review-inquiry" name="inquiry_id" required><option value="">Choose accepted inquiry</option>{qualified_event_inquiry_options}</select></div>
           <input type="hidden" name="reservation_id" value="{_esc(generated_reservation_id)}">
           <div class="field"><label for="review-space">Event space</label><select id="review-space" name="space_id" required><option value="">Choose space</option>{linked_space_options}</select></div>
-          <div class="field"><label for="review-offering">Event offering</label><select id="review-offering" name="offering_id" required><option value="">Choose offering</option>{offering_options}</select></div>
+          <div class="field"><label for="review-offering">Event offering</label><select id="review-offering" name="offering_id" required><option value="">Choose offering</option>{event_offering_options}</select></div>
           <div class="field"><label for="review-contact">Responsible contact</label><select id="review-contact" name="contact_id"><option value="">Link later</option>{contact_options}</select></div>
           <div class="field"><label for="review-attendance">Attendance</label><input id="review-attendance" name="attendance" type="number" min="1" required></div>
           <div class="field"><label for="review-setup">Setup starts (Mountain time)</label><input id="review-setup" name="setup_starts_at" type="datetime-local" required></div>
