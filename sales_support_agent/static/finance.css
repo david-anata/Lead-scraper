@@ -2367,13 +2367,14 @@ input:focus, select:focus, textarea:focus {
 .cash-calendar-legend i.is-planned { background: var(--good); }
 .cash-calendar-legend i.is-warning { background: var(--warn); }
 .cash-calendar-weekly {
+  min-width: 0;
   padding: 20px;
   border: 1px solid var(--anata-line);
   border-radius: 18px;
   background: rgba(255, 255, 255, .72);
 }
 .cash-calendar-weekly__note { margin: 4px 0 14px; color: var(--anata-muted); font-size: 12px; }
-.cash-calendar-weekly__scroll { overflow-x: auto; }
+.cash-calendar-weekly__scroll { width: 100%; max-width: 100%; overflow-x: auto; }
 .cash-calendar-weekly table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .cash-calendar-weekly th,
 .cash-calendar-weekly td { padding: 12px; border-bottom: 1px solid var(--anata-line); text-align: right; vertical-align: top; }
