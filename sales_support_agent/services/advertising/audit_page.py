@@ -456,6 +456,7 @@ def _active_run_card(active_run: dict) -> str:
     label_html = f'<div class="flash-detail">Run label: {_esc(label)}</div>' if label else ""
     stale = _run_is_stale(active_run)
     downloads = _run_download_actions(active_run)
+    downloads_html = f'<div class="strip-actions">{downloads}</div>' if downloads else ""
     if status == "running" and stale:
         body = (
             "This audit stopped reporting progress. It is no longer shown as actively running. "
@@ -477,7 +478,7 @@ def _active_run_card(active_run: dict) -> str:
         f'<div style="font-size:14px;line-height:1.6;">{body}</div>'
         f'<div class="flash-detail">Started: {_esc(when or "just now")}</div>'
         f'{label_html}'
-        f'{f"<div class=\"strip-actions\">{downloads}</div>" if downloads else ""}'
+        f'{downloads_html}'
         '</div>'
     )
 
