@@ -7421,6 +7421,7 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
         gap: 18px;
       }}
       .secondary-grid > *, #scorecard-table {{ min-width: 0; max-width: 100%; }}
+      details.secondary-disclosure:not([open]) > .secondary-grid {{ display:none; }}
       .section h2 {{
         margin: 0 0 16px;
         font-family: "Montserrat", sans-serif;
