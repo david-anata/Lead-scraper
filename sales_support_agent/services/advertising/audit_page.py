@@ -56,11 +56,11 @@ def _page(
         --line: rgba(43, 54, 68, 0.12);
       }}
       * {{ box-sizing: border-box; }}
-      body {{ margin: 0; background: var(--light-brown); color: var(--dark-blue); font-family: "Inter","Segoe UI",sans-serif; }}
+      body {{ margin: 0; overflow-x: hidden; background: var(--light-brown); color: var(--dark-blue); font-family: "Inter","Segoe UI",sans-serif; }}
       a {{ color: var(--dark-blue); }}
       {render_agent_nav_styles()}
       .shell {{ max-width: 1320px; margin: 0 auto; padding: 28px 24px 64px; }}
-      .workspace {{ background: var(--white); border: 1px solid var(--line); border-radius: 26px; box-shadow: 0 18px 40px var(--shadow); padding: 26px; }}
+      .workspace {{ min-width:0; max-width:100%; background: var(--white); border: 1px solid var(--line); border-radius: 26px; box-shadow: 0 18px 40px var(--shadow); padding: 26px; }}
       .page-header {{ padding-bottom: 18px; border-bottom: 1px solid var(--line); margin-bottom: 22px; }}
       .eyebrow {{ display: inline-block; padding: 10px 15px; border-radius: 6px; background: var(--dark-blue); color: var(--white);
         font-family: "Montserrat",sans-serif; font-weight: 700; font-size: 14px; line-height: 1; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 14px; }}
@@ -104,6 +104,8 @@ def _page(
       .metric small {{ font-size: 12px; color: rgba(43,54,68,0.65); }}
       .narrative {{ background: #f4f8fb; border-left: 4px solid var(--light-blue); border-radius: 0 12px 12px 0; padding: 16px 18px; font-size: 15px; line-height: 1.55; white-space: pre-wrap; }}
       table.burn {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
+      .table-scroll {{ width:100%; max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; }}
+      .table-scroll table.burn {{ min-width:560px; }}
       table.burn th {{ text-align: left; font-family: "Montserrat",sans-serif; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: rgba(43,54,68,0.6); padding: 8px 10px; border-bottom: 2px solid var(--line); }}
       table.burn td {{ padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; }}
       table.burn tr:hover td {{ background: #fafbfc; }}
@@ -509,9 +511,9 @@ def _history_table(runs: list[dict]) -> str:
             f"<td>{_esc(recs) if recs else '—'}</td><td>{downloads}</td></tr>"
         )
     return (
-        '<table class="burn"><thead><tr>'
+        '<div class="table-scroll" role="region" aria-label="Advertising audit history" tabindex="0"><table class="burn"><thead><tr>'
         "<th>Brand</th><th>Run</th><th>Sales</th><th>Blended TACoS</th><th>Actions</th><th>Downloads</th>"
-        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>"
     )
 
 
