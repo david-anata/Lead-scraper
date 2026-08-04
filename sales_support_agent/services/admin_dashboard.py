@@ -2249,6 +2249,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       * {{ box-sizing: border-box; }}
       body {{
         margin: 0;
+        overflow-x: hidden;
         background: var(--light-brown);
         color: var(--text);
         font-family: "Inter", "Segoe UI", sans-serif;
@@ -2262,6 +2263,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
         padding: 28px 24px 64px;
       }}
       .workspace {{
+        min-width: 0;
         background: var(--white);
         border: 1px solid rgba(43, 54, 68, 0.10);
         border-radius: 26px;
@@ -7383,6 +7385,8 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
         line-height: 1.4;
       }}
       .section {{
+        min-width: 0;
+        max-width: 100%;
         background: var(--white);
         border: 2px solid var(--border);
         border-radius: 20px;
@@ -7413,8 +7417,10 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
       }}
       .secondary-grid {{
         display: grid;
+        min-width: 0;
         gap: 18px;
       }}
+      .secondary-grid > *, #scorecard-table {{ min-width: 0; max-width: 100%; }}
       .section h2 {{
         margin: 0 0 16px;
         font-family: "Montserrat", sans-serif;
@@ -7547,11 +7553,16 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
           padding: 24px 14px 56px;
         }}
         .workspace {{
-          padding: 18px;
+          padding: 18px 16px;
         }}
         .page-title {{
-          font-size: 42px;
+          font-size: 38px;
         }}
+        .heading-line {{ display:flex; flex-wrap:wrap; }}
+        #scorecard-table {{ overflow-x:auto; -webkit-overflow-scrolling:touch; }}
+        #scorecard-table table {{ min-width:610px; }}
+        .section {{ padding:16px; }}
+        .section h2 {{ font-size:23px; }}
       }}
     </style>
   </head>
