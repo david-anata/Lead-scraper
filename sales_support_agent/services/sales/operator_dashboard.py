@@ -94,10 +94,10 @@ AUTONOMY_POLICY = {
 }
 HIGH_CONFIDENCE_THRESHOLD = 0.85
 MEDIUM_CONFIDENCE_THRESHOLD = 0.65
-# The snapshot includes live HubSpot schema and communication evidence. Reusing
-# it for five minutes keeps the control room responsive while the explicit
-# mirror-refresh action remains available when an operator needs current data.
-SNAPSHOT_TTL_SECONDS = 300
+# The snapshot includes several HubSpot and Gmail reads. Keep normal navigation
+# fast for an operating session; the page shows when it was generated and gives
+# the operator an explicit refresh whenever a current decision needs newer data.
+SNAPSHOT_TTL_SECONDS = 3600
 LIVE_MAILBOX_LOOKBACK_DAYS = 120
 LIVE_MAILBOX_MAX_DEALS = 6
 AUTOMATION_SCHEDULES = [

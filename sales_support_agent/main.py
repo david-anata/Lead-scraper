@@ -53,6 +53,19 @@ from sales_support_agent.models.database import (
 logger = logging.getLogger("agent.lifecycle")
 
 
+def _log_sales_snapshot_prewarm(future) -> None:
+    """Report background snapshot readiness without delaying app startup."""
+    try:
+        snapshot = future.result()
+    except Exception:  # noqa: BLE001 - prewarming must never block the service
+        logger.exception("lifecycle milestone=sales_snapshot_prewarm_failed")
+        return
+    logger.info(
+        "lifecycle milestone=sales_snapshot_ready generated_at=%s",
+        snapshot.get("generatedAt", "unknown"),
+    )
+
+
 def _startup_database_prep_enabled() -> bool:
     """Keep local SQLite convenient while Render uses the pre-deploy command."""
 
@@ -135,6 +148,17 @@ def create_app() -> FastAPI:
             commit,
             (perf_counter() - process_started) * 1000,
         )
+        if os.getenv("RENDER", "").strip().lower() in {"1", "true", "yes"}:
+            from sales_support_agent.services.sales.operator_dashboard import (
+                get_operator_snapshot,
+            )
+
+            sales_snapshot_future = app.state.dashboard_sync_executor.submit(
+                get_operator_snapshot,
+                settings,
+                session_factory=session_factory,
+            )
+            sales_snapshot_future.add_done_callback(_log_sales_snapshot_prewarm)
         try:
             yield
         finally:
