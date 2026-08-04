@@ -44,6 +44,10 @@ from sales_support_agent.services.cashflow.money_brief import (
     render_cash_plan_page,
     render_money_brief_page,
 )
+from sales_support_agent.services.cashflow.cash_calendar import (
+    load_cash_calendar,
+    render_cash_calendar_page,
+)
 from sales_support_agent.services.cashflow.budgeting import (
     BudgetReviewProviderError,
     load_budget_review,
@@ -454,6 +458,17 @@ async def finance_overview(request: Request, flash: str = ""):
 async def finance_cash_plan(request: Request):
     brief = await asyncio.to_thread(load_finance_brief, _finance_settings(request))
     return HTMLResponse(render_cash_plan_page(brief))
+
+
+@router.get("/calendar", response_class=HTMLResponse)
+async def finance_cash_calendar(request: Request, flash: str = ""):
+    """Show posted, planned, and historically likely expenses by day."""
+    try:
+        calendar = await asyncio.to_thread(load_cash_calendar)
+    except Exception:
+        logger.exception("The Finance cash calendar could not load")
+        calendar = {"status": "error", "days": [], "totals": {}}
+    return HTMLResponse(render_cash_calendar_page(calendar, flash=flash))
 
 
 @router.get("/budget", response_class=HTMLResponse)
@@ -2318,15 +2333,6 @@ async def ledger_export(request: Request):
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="ledger-{from_date}-to-{to_date}.csv"'}
     )
-
-
-# ---------------------------------------------------------------------------
-# Calendar
-# ---------------------------------------------------------------------------
-
-@router.get("/calendar", response_class=HTMLResponse)
-async def calendar_page(request: Request):
-    return _redirect_finance_home()
 
 
 # ---------------------------------------------------------------------------

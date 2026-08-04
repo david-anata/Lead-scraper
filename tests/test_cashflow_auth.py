@@ -151,7 +151,6 @@ class TestFinanceRoleGate(unittest.TestCase):
             "/admin/finances/ap",
             "/admin/finances/ar",
             "/admin/finances/ledger",
-            "/admin/finances/calendar",
             "/admin/finances/alerts",
             "/admin/finances/scenario",
             "/admin/finances/upload",
@@ -180,6 +179,12 @@ class TestFinanceRoleGate(unittest.TestCase):
             resp.status_code, 303,
             "Schedules must render rather than redirect; it is the page that replaces ClickUp",
         )
+
+    def test_cash_calendar_is_a_real_page_and_no_longer_bounces_to_home(self) -> None:
+        resp = _get_finances_response("/admin/finances/calendar", "finance")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("cash calendar", resp.text.lower())
 
 
 if __name__ == "__main__":
