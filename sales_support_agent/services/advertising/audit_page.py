@@ -471,13 +471,14 @@ def _active_run_card(active_run: dict) -> str:
     else:
         body = _esc(active_run.get("error") or "Audit failed before downloads were generated. Re-run with the same files.")
         card_style = 'border:2px solid #d9a441;background:#fdf6e9;'
+    download_actions = f'<div class="strip-actions">{downloads}</div>' if downloads else ""
     return (
         f'<div class="card" style="{card_style}">'
         f'<h2 style="margin-bottom:8px;">{_esc(brand)}</h2>'
         f'<div style="font-size:14px;line-height:1.6;">{body}</div>'
         f'<div class="flash-detail">Started: {_esc(when or "just now")}</div>'
         f'{label_html}'
-        f'{f"<div class=\"strip-actions\">{downloads}</div>" if downloads else ""}'
+        f'{download_actions}'
         '</div>'
     )
 
