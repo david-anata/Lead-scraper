@@ -14,10 +14,7 @@ from sales_support_agent.models.entities import (
     BuildingInquiry,
     BuildingInquiryReceipt,
 )
-from sales_support_agent.services.building_sender import (
-    building_cc,
-    building_from_address,
-)
+from sales_support_agent.services.building_sender import building_from_address
 
 
 RECEIPT_SUBJECT = "We received your event inquiry"
@@ -102,8 +99,12 @@ def attempt_inquiry_receipt(
                 text=body,
                 reply_to=building_from_address(),
                 from_address=building_from_address(),
-                cc=building_cc(exclude=(inquiry.email,)),
-                idempotency_key=f"building-inquiry-receipt:{inquiry.id}:v1",
+                # Staff already receive the detailed Slack alert. Keeping this
+                # acknowledgement customer-only avoids redundant copies and
+                # prevents an invalid internal address from misclassifying a
+                # successfully delivered customer message as bounced.
+                cc=(),
+                idempotency_key=f"building-inquiry-receipt:{inquiry.id}:v2",
             )
             row.status = "sent"
             row.provider_message_id = message_id
