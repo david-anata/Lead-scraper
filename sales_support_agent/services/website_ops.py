@@ -2372,6 +2372,7 @@ def _page_shell(title: str, body: str) -> str:
       .stat strong {{ display: block; font-size: 28px; line-height: 1.05; margin-top: 8px; }}
       .stat-link {{ margin-top: 10px; font-size: 13px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }}
       .grid-2 {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 20px; }}
+      .grid-2 > *, .hero > * {{ min-width: 0; }}
       .stack {{ display: grid; gap: 12px; }}
       .list-card {{ display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 22px; background: #fff; }}
       .card-muted {{ opacity: 0.96; }}
