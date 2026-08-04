@@ -193,6 +193,85 @@ def render_agent_nav_css() -> str:
       .topbar-shell {
         width: 100%;
       }
+      .agent-mobile-control {
+        display: none;
+        min-width: 0;
+      }
+      .agent-mobile-menu {
+        position: relative;
+      }
+      .agent-mobile-menu > summary {
+        min-height: 40px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 0 13px;
+        border: 1px solid rgba(43, 54, 68, 0.14);
+        border-radius: 10px;
+        background: #fff;
+        color: #2B3644;
+        cursor: pointer;
+        font: 800 12px/1 "Montserrat", sans-serif;
+        list-style: none;
+      }
+      .agent-mobile-menu > summary::-webkit-details-marker { display: none; }
+      .agent-mobile-menu > summary::after {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-right: 2px solid currentColor;
+        border-bottom: 2px solid currentColor;
+        transform: rotate(45deg) translateY(-2px);
+      }
+      .agent-mobile-menu[open] > summary::after {
+        transform: rotate(225deg) translate(-1px, -1px);
+      }
+      .agent-mobile-menu-panel {
+        position: absolute;
+        top: calc(100% + 8px);
+        left: 0;
+        z-index: 110;
+        width: min(330px, calc(100vw - 32px));
+        max-height: min(70vh, 620px);
+        overflow-y: auto;
+        padding: 8px;
+        border: 1px solid rgba(43, 54, 68, 0.14);
+        border-radius: 14px;
+        background: #fff;
+        box-shadow: 0 18px 48px rgba(43, 54, 68, 0.18);
+      }
+      .agent-mobile-menu-group {
+        display: grid;
+        gap: 3px;
+      }
+      .agent-mobile-menu-group + .agent-mobile-menu-group {
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(43, 54, 68, 0.08);
+      }
+      .agent-mobile-menu-label {
+        padding: 7px 10px 4px;
+        color: rgba(43, 54, 68, 0.54);
+        font: 800 10px/1.2 "Montserrat", sans-serif;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+      }
+      .agent-mobile-menu-link {
+        display: flex;
+        align-items: center;
+        min-height: 42px;
+        padding: 9px 11px;
+        border-radius: 9px;
+        color: #2B3644;
+        font: 700 13px/1.35 "Montserrat", sans-serif;
+        text-decoration: none;
+      }
+      .agent-mobile-menu-link:hover { background: rgba(43, 54, 68, 0.05); }
+      .agent-mobile-menu-link.active {
+        background: rgba(133, 187, 218, 0.22);
+        box-shadow: inset 3px 0 0 #5E9FC4;
+      }
       .brandmark {
         display: inline-flex;
         align-items: center;
@@ -442,19 +521,22 @@ def render_agent_nav_css() -> str:
         }
       }
       @media (max-width: 760px) {
-        .topbar-inner { grid-template-columns:auto 1fr auto; padding-bottom:8px; }
-        .topbar-inner > .top-actions { grid-column:1 / -1; grid-row:2; }
-        .topbar-section-row { padding-inline:16px; }
-        .topbar-section-label { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
-        .top-actions,
-        .topbar-section-row {
-          scrollbar-width: thin;
-          scrollbar-color: rgba(43,54,68,.28) transparent;
+        #agent-main-content { scroll-margin-top: 72px; }
+        .topbar-inner {
+          min-height: 64px;
+          grid-template-columns: auto minmax(0, 1fr) auto;
+          gap: 10px;
+          padding: 10px 16px;
         }
-        .top-actions::-webkit-scrollbar,
-        .topbar-section-row::-webkit-scrollbar { display:block; height:3px; }
-        .top-actions::-webkit-scrollbar-thumb,
-        .topbar-section-row::-webkit-scrollbar-thumb { background:rgba(43,54,68,.28); border-radius:99px; }
+        .topbar-inner > .top-actions,
+        .topbar-divider,
+        .topbar-section-band { display: none; }
+        .agent-mobile-control {
+          display: block;
+          justify-self: start;
+        }
+        .brandmark { font-size: 23px; }
+        .user-chip { min-height: 40px; }
       }
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
@@ -484,7 +566,18 @@ def render_agent_stylesheet_links() -> str:
 
 def _user_chip_html(user: Optional[dict]) -> str:
     if not user:
-        return f'<a class="top-link" href="/admin/logout">Log out</a>'
+        return """<details class="user-chip">
+      <summary aria-label="Account menu">
+        <span class="user-chip-avatar" aria-hidden="true">A</span>
+        <span class="user-chip-caret" aria-hidden="true">&#9660;</span>
+      </summary>
+      <div class="user-dropdown">
+        <div class="user-dropdown-profile">
+          <div class="user-dropdown-profile-name">Agent account</div>
+        </div>
+        <a href="/admin/logout" class="logout-link"><span class="ud-icon">&#8594;</span> Log out</a>
+      </div>
+    </details>"""
     name_raw = (user.get("name") or user.get("email") or "User").strip()
     name = html.escape(name_raw)
     email = html.escape(user.get("email") or "")
@@ -602,6 +695,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
     }
 
     nav_items: list = []
+    mobile_nav_items: list = []
     active_section_label = ""
     active_section_subpages: list = []
     active_section_current = ""
@@ -623,8 +717,13 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
 
         primary_label = accessible[0].label if len(accessible) == 1 else section.label
         nav_items.append(_nav_item(primary_label, primary_href, active=is_primary_active))
+        mobile_class = "agent-mobile-menu-link active" if is_primary_active else "agent-mobile-menu-link"
+        mobile_nav_items.append(
+            f'<a class="{mobile_class}" href="{primary_href}">{html.escape(primary_label)}</a>'
+        )
 
     active_section_row = ""
+    mobile_section_group = ""
     if active_section_subpages:
         secondary_pills = "".join(
             _nav_item(sp.label, sp.href, active=(active_section_current == sp.active_key), extra_class="top-link--secondary")
@@ -641,6 +740,33 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
           </div>
         </div>
         """
+        mobile_section_links = "".join(
+            f'<a class="agent-mobile-menu-link{" active" if active_section_current == sp.active_key else ""}" '
+            f'href="{sp.href}">{html.escape(sp.label)}</a>'
+            for sp in active_section_subpages
+        )
+        mobile_section_group = f"""
+          <div class="agent-mobile-menu-group">
+            <div class="agent-mobile-menu-label">{html.escape(active_section_label)} pages</div>
+            {mobile_section_links}
+          </div>
+        """
+
+    mobile_current_label = html.escape(active_section_label or "Agent")
+    mobile_menu = f"""
+      <div class="agent-mobile-control">
+        <details class="agent-mobile-menu">
+          <summary aria-label="Open Agent navigation"><span>{mobile_current_label}</span><span aria-hidden="true">Menu</span></summary>
+          <div class="agent-mobile-menu-panel">
+            <nav class="agent-mobile-menu-group" aria-label="Mobile main navigation">
+              <div class="agent-mobile-menu-label">Agent tools</div>
+              {"".join(mobile_nav_items)}
+            </nav>
+            {mobile_section_group}
+          </div>
+        </details>
+      </div>
+    """
 
     # Access/Team management is intentionally NOT a primary nav section — it lives
     # only in the profile dropdown ("Team"), so the top bar stays identical on
@@ -656,6 +782,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
       <div class="topbar-shell">
         <div class="topbar-inner">
           <a class="brandmark" href="/admin">agent<span class="dot">.</span></a>
+          {mobile_menu}
           <nav class="top-actions" aria-label="Main navigation">
             {"".join(nav_items)}
           </nav>

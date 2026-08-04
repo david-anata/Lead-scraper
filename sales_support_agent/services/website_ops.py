@@ -2484,7 +2484,12 @@ def _page_shell(title: str, body: str) -> str:
 
 
 def _nav(active: str = "website_ops", *, website_ops_section: str = "", user: dict | None = None) -> str:
-    return render_agent_nav(active, website_ops_section=website_ops_section, user=user)
+    return render_agent_nav(
+        active,
+        website_ops_section=website_ops_section,
+        user=user,
+        include_content_target=False,
+    )
 
 
 def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "reports", user: dict | None = None) -> str:
@@ -2526,7 +2531,7 @@ def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "repor
     if "<body" in injected:
         injected = re.sub(
             r"(<body[^>]*>)",
-            r"\1" + render_agent_nav(active, user=user) + '<main id="agent-main-content" class="admin-report-shell app-container app-page">',
+            r"\1" + render_agent_nav(active, user=user, include_content_target=False) + '<main id="agent-main-content" class="admin-report-shell app-container app-page">',
             injected,
             count=1,
             flags=re.IGNORECASE,

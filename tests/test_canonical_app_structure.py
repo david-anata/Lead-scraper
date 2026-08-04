@@ -28,6 +28,34 @@ def test_section_navigation_uses_full_width_band_and_constrained_row() -> None:
     assert 'href="/admin/sales/fix-queue"' in nav
 
 
+def test_mobile_navigation_replaces_horizontal_desktop_bands() -> None:
+    styles = render_agent_nav_styles()
+    nav = render_agent_nav(
+        "hr",
+        hr_section="time",
+        permissions={"hr.access"},
+        user={"email": "employee@example.com", "permissions": {"hr.access"}},
+        include_content_target=False,
+    )
+
+    assert 'class="agent-mobile-control"' in nav
+    assert 'aria-label="Open Agent navigation"' in nav
+    assert 'aria-label="Mobile main navigation"' in nav
+    assert 'class="agent-mobile-menu-link active" href="/admin/hr"' in nav
+    assert 'class="agent-mobile-menu-link active" href="/admin/hr/time"' in nav
+    assert 'id="agent-main-content"' not in nav
+    assert ".topbar-inner > .top-actions" in styles
+    assert ".topbar-section-band { display: none; }" in styles
+
+
+def test_navigation_without_user_still_uses_consistent_account_menu() -> None:
+    nav = render_agent_nav("website_ops", permissions={"website_ops.seo"})
+
+    assert 'aria-label="Account menu"' in nav
+    assert "Agent account" in nav
+    assert 'class="top-link" href="/admin/logout"' not in nav
+
+
 def test_authenticated_page_families_use_canonical_canvas_width() -> None:
     sources = (
         "sales_support_agent/static/admin.css",
