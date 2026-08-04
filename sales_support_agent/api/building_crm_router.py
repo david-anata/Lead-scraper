@@ -4803,6 +4803,17 @@ def building_control_room(
             .order_by(BuildingInquiry.created_at.desc())
             .limit(50)
         ).scalars().all()
+        conversion_dispatch_inquiry_ids = {
+            event.entity_id
+            for event in session.execute(
+                select(BuildingAuditEvent).where(
+                    BuildingAuditEvent.entity_type == "inquiry",
+                    BuildingAuditEvent.action
+                    == "google_ads_browser_conversion_dispatched",
+                    BuildingAuditEvent.entity_id.in_([item.id for item in inquiry_rows]),
+                )
+            ).scalars().all()
+        }
         reservation_rows = session.execute(
             select(BuildingReservation)
             .order_by(BuildingReservation.starts_at)
@@ -5204,6 +5215,9 @@ def building_control_room(
                     "source_reference": item.source_reference,
                     "attribution": dict(
                         (item.payload_json or {}).get("_attribution") or {}
+                    ),
+                    "conversion_dispatch_recorded": (
+                        item.id in conversion_dispatch_inquiry_ids
                     ),
                     "hubspot_contact_id": item.hubspot_contact_id,
                     "hubspot_attempt_count": int(
