@@ -7561,13 +7561,22 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
       <div class="workspace">
         <section class="page-header">
           <div>
-            <div class="eyebrow">Executive summary</div>
-            <h1 class="page-title">Pipeline <span class="highlight">Health</span>.</h1>
+            <div class="eyebrow">Executive · Sales</div>
+            <h1 class="page-title">Sales pipeline <span class="highlight">Health</span>.</h1>
           </div>
           <div class="page-copy">
-            Leadership view for AE performance and pipeline risk. Latest ClickUp sync: {html.escape(latest_sync)}.
+            Leadership view for AE performance and pipeline risk. This page covers Sales—not company-wide finance, operations, advertising, fulfillment, or HR. Latest ClickUp sync: {html.escape(latest_sync)}.
           </div>
         </section>
+
+        <nav class="app-command-bar" aria-label="Other executive operating areas">
+          <span><strong>Open another operating area:</strong></span>
+          <a href="/admin/finances">Finance</a>
+          <a href="/admin/building">Building</a>
+          <a href="/admin/advertising/audit">Advertising</a>
+          <a href="/admin/fulfillment/sales">Fulfillment</a>
+          <a href="/admin/hr">HR</a>
+        </nav>
 
         <section class="confidence-banner {html.escape(sync_state)}">
           <div class="confidence-copy">

@@ -94,7 +94,10 @@ AUTONOMY_POLICY = {
 }
 HIGH_CONFIDENCE_THRESHOLD = 0.85
 MEDIUM_CONFIDENCE_THRESHOLD = 0.65
-SNAPSHOT_TTL_SECONDS = 30
+# The snapshot includes live HubSpot schema and communication evidence. Reusing
+# it for five minutes keeps the control room responsive while the explicit
+# mirror-refresh action remains available when an operator needs current data.
+SNAPSHOT_TTL_SECONDS = 300
 LIVE_MAILBOX_LOOKBACK_DAYS = 120
 LIVE_MAILBOX_MAX_DEALS = 6
 AUTOMATION_SCHEDULES = [
@@ -2085,6 +2088,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
         <p class="eyebrow">Sales Control Room</p>
         <h1>Work the highest-value sales action first.</h1>
         <p class="muted">The control room ranks replies, follow-ups, asset sends, and cleanup gaps so Sales does not have to inspect raw CRM data before acting.</p>
+        <p class="muted">Snapshot generated {_esc(str(snapshot.get("generatedAt") or "unknown"))}. Use “Refresh HubSpot mirror” when you need a newer view.</p>
         <div class="stats">
           <div class="stat"><div class="n">{int(summary.get("openDeals") or 0)}</div><div class="l">Open deals</div></div>
           <div class="stat"><div class="n">{_fmt_money(summary.get("openAmount"))}</div><div class="l">Open value</div></div>

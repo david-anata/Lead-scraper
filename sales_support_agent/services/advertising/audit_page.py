@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import html
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from sales_support_agent.services.admin_nav import (
@@ -416,6 +416,37 @@ def _last_run_strip(latest: dict) -> str:
     )
 
 
+def _run_is_stale(run: dict, *, now: Optional[datetime] = None) -> bool:
+    """Return true when a running audit has stopped reporting progress."""
+    if str(run.get("status") or "").strip().lower() != "running":
+        return False
+    raw = str(run.get("updated_at") or run.get("created_at") or "").strip()
+    if not raw:
+        return True
+    try:
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    return current.astimezone(timezone.utc) - stamp.astimezone(timezone.utc) > timedelta(minutes=10)
+
+
+def _run_download_actions(run: dict) -> str:
+    rid = _esc(run.get("id"))
+    actions = []
+    if run.get("has_plan"):
+        actions.append(f'<a class="btn" href="/admin/advertising/audit/{rid}/plan.xlsx">Download growth plan</a>')
+    if run.get("has_bids"):
+        actions.append(f'<a class="btn secondary" href="/admin/advertising/audit/{rid}/bulk/bids.xlsx">Download bid changes</a>')
+    if run.get("has_additions"):
+        actions.append(f'<a class="btn secondary" href="/admin/advertising/audit/{rid}/bulk/additions.xlsx">Download additions</a>')
+    if run.get("has_apply"):
+        actions.append(f'<a class="btn secondary" href="/admin/advertising/audit/{rid}/bulk/combined.xlsx">Download apply sheet</a>')
+    return " ".join(actions)
+
+
 def _active_run_card(active_run: dict) -> str:
     status = str(active_run.get("status") or "").strip().lower()
     summary = active_run.get("summary", {}) or {}
@@ -423,7 +454,15 @@ def _active_run_card(active_run: dict) -> str:
     when = (active_run.get("created_at") or "")[:16].replace("T", " ")
     label = (active_run.get("label") or "").strip()
     label_html = f'<div class="flash-detail">Run label: {_esc(label)}</div>' if label else ""
-    if status == "running":
+    stale = _run_is_stale(active_run)
+    downloads = _run_download_actions(active_run)
+    if status == "running" and stale:
+        body = (
+            "This audit stopped reporting progress. It is no longer shown as actively running. "
+            + ("The generated files are preserved below; review them before deciding whether to rerun." if downloads else "No generated files were found. Check the inputs and start a new audit.")
+        )
+        card_style = 'border:2px solid #d9a441;background:#fdf6e9;'
+    elif status == "running":
         body = (
             "Audit is still running. This page refreshes automatically and the run will move into "
             "History once the downloads are ready."
@@ -438,6 +477,7 @@ def _active_run_card(active_run: dict) -> str:
         f'<div style="font-size:14px;line-height:1.6;">{body}</div>'
         f'<div class="flash-detail">Started: {_esc(when or "just now")}</div>'
         f'{label_html}'
+        f'{f"<div class=\"strip-actions\">{downloads}</div>" if downloads else ""}'
         '</div>'
     )
 
@@ -495,7 +535,7 @@ def render_audit_page(
     active_html = _active_run_card(active_run) if active_run else ""
     auto_refresh_html = (
         "<script>setTimeout(function(){ window.location.reload(); }, 8000);</script>"
-        if active_run and str(active_run.get("status") or "").strip().lower() == "running"
+        if active_run and str(active_run.get("status") or "").strip().lower() == "running" and not _run_is_stale(active_run)
         else ""
     )
 

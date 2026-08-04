@@ -239,8 +239,8 @@ def audit_page(request: Request, run: str = "", msg: str = "", detail: str = "")
         selected = _with_files(storage.get_run(run))
         latest = selected if _visible_run(selected) else None
         active_run = selected if _status_run(selected) else None
-    elif runs:
-        latest = runs[0]
+    else:
+        latest = runs[0] if runs else None
         active_run = next((r for r in all_runs if _status_run(r)), None)
 
     html = render_audit_page(
