@@ -2,7 +2,10 @@ services:
   - type: web
     name: sales-support-agent
     runtime: python
-    plan: starter
+    # Agent's combined admin and automation workload exceeded Starter's 512 MB
+    # ceiling repeatedly in production. Standard provides 2 GB so Render does
+    # not kill the only web instance during normal scheduled work.
+    plan: standard
     # Website Ops currently maintains its report, quota, and publishing ledgers on
     # the service filesystem. Keep one writer until every ledger is database-backed.
     numInstances: 1

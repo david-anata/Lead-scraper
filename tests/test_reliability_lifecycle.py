@@ -38,6 +38,7 @@ def preserve_global_database_engine():
 
 def test_render_blueprint_uses_truthful_readiness_and_predeploy() -> None:
     blueprint = Path("render.yaml").read_text(encoding="utf-8")
+    assert "plan: standard" in blueprint
     assert "healthCheckPath: /health/ready" in blueprint
     assert "preDeployCommand: python scripts/predeploy_agent.py" in blueprint
     assert "autoDeployTrigger: commit" in blueprint
