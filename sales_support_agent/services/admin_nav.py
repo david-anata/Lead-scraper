@@ -626,7 +626,7 @@ def _user_chip_html(user: Optional[dict]) -> str:
     </details>"""
 
 
-def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", executive_section: str = "", fulfillment_section: str = "", hr_section: str = "", permissions: Optional[set] = None, is_superadmin: bool = False, user: Optional[dict] = None, include_content_target: bool = True) -> str:
+def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", executive_section: str = "", fulfillment_section: str = "", hr_section: str = "", permissions: Optional[set] = None, is_superadmin: bool = False, user: Optional[dict] = None, include_content_target: bool = False) -> str:
     # Per-tool nav filtering. When neither permissions nor is_superadmin is
     # supplied, we keep the legacy "show everything" behaviour (the routes
     # themselves are still guarded server-side). The Access admin link is the

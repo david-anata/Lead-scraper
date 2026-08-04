@@ -66,6 +66,12 @@ def test_operator_shell_loads_shared_interaction_contracts() -> None:
     assert "data-paginate" in script
 
 
+def test_navigation_does_not_create_a_duplicate_content_target() -> None:
+    nav = render_agent_nav("fulfillment", permissions={"fulfillment.dashboard"})
+
+    assert 'id="agent-main-content"' not in nav
+
+
 def test_authenticated_page_families_use_canonical_canvas_width() -> None:
     sources = (
         "sales_support_agent/static/admin.css",

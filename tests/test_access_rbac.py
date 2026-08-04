@@ -1254,7 +1254,7 @@ class NavAccessSafetyTests(unittest.TestCase):
         )
 
         self.assertIn('class="agent-skip-link" href="#agent-main-content"', nav)
-        self.assertIn('id="agent-main-content" tabindex="-1"', nav)
+        self.assertNotIn('id="agent-main-content"', nav)
         self.assertIn('<details class="user-chip">', nav)
         self.assertIn('aria-label="Account menu for Admin User"', nav)
         self.assertNotIn('onclick="this.toggleAttribute', nav)
