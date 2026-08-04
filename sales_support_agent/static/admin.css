@@ -289,6 +289,23 @@
 
 .app-muted { color: var(--agent-ink-muted); }
 
+.app-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 52px;
+  cursor: pointer;
+  color: var(--agent-ink);
+  font: 800 .9rem/1.35 "Montserrat", sans-serif;
+  list-style: none;
+}
+
+.app-disclosure > summary::-webkit-details-marker { display: none; }
+.app-disclosure > summary::after { content: "Open"; color: var(--agent-blue-strong); font-size: .75rem; }
+.app-disclosure[open] > summary::after { content: "Close"; }
+.app-disclosure[open] > summary { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--agent-border); }
+
 :where(button, a, input, select, textarea, summary):focus-visible {
   outline: 3px solid var(--agent-blue-strong);
   outline-offset: 3px;

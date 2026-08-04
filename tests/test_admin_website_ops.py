@@ -644,6 +644,8 @@ example
             settings = self._settings(Path(tmpdir))
             html = render_dashboard_page(settings)
             self.assertIn("Continuous website", html)
+            self.assertIn("How the automation and content program work", html)
+            self.assertIn("Research evidence and recommendation detail", html)
             self.assertIn("Continuous optimization loop", html)
             self.assertIn("Repair Google connections", html)
             self.assertIn('action="/admin/api/website-ops/run"', html)

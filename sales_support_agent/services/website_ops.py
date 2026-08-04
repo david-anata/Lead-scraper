@@ -2895,6 +2895,8 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <a class="text-link" href="/admin/website-ops/queries">Inspect query ownership and citations</a>
           </div>
         </section>
+        <details class="card stack app-disclosure">
+          <summary>How the automation and content program work</summary>
         {_continuous_loop_panel()}
         <section class="card stack">
           <div class="section-heading">
@@ -2941,6 +2943,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             </div>
           </div>
         </section>
+        </details>
         <section class="stats">
           {_dashboard_stat_card("Reports", len(reports), "Daily, weekly, monthly", "/admin/website-ops/reports")}
           {_dashboard_stat_card("Validated Queries", query_summary.get('validated_clusters', 0), "One page, one intent", "/admin/website-ops/queries?status=validated")}
@@ -2963,8 +2966,9 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         </section>
         <section class="grid-2">
           {_latest_report_panel(latest, latest_payload)}
-          <div class="card stack">
-            <div class="row-actions"><h2>Submit a new issue</h2>{_issue_help_block()}</div>
+          <details class="card stack app-disclosure">
+            <summary>Submit a new website issue</summary>
+            <div class="row-actions"><h2>Describe the issue</h2>{_issue_help_block()}</div>
             <form action="/admin/api/website-ops/feedback" method="post" class="form-grid">
               <div><label>Category</label><select name="category"><option>SEO</option><option>Content</option><option>UX</option><option>Conversion</option><option>Technical</option><option>Strategy</option></select></div>
               <div><label>Priority</label><select name="priority"><option>Low</option><option selected>Medium</option><option>High</option><option>Urgent</option></select></div>
@@ -2973,8 +2977,10 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
               <div class="span-2"><label>Details</label><textarea name="details" placeholder="What is wrong, why it matters, and what outcome is needed."></textarea></div>
               <div class="span-2"><button type="submit">Save Feedback</button></div>
             </form>
-          </div>
+          </details>
         </section>
+        <details class="card stack app-disclosure">
+          <summary>Research evidence and recommendation detail</summary>
         <section class="grid-2">
           <div class="card stack">
             <h2>Priority action queue</h2>
@@ -3018,6 +3024,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         <section class="grid-2">
           {_system_details_panel(settings, analytics_status)}
         </section>
+        </details>
       </main>
       {_dashboard_auto_run_script(run_state)}
     """
