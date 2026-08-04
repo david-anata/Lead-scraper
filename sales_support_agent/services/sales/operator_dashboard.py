@@ -1121,14 +1121,19 @@ def _build_operator_queues(recent_deals: list[dict[str, Any]]) -> dict[str, list
     }
 
 
-def build_operator_snapshot(settings: Settings, *, session_factory: Any | None = None) -> dict[str, Any]:
+def build_operator_snapshot(
+    settings: Settings,
+    *,
+    session_factory: Any | None = None,
+    live_enrichment: bool = False,
+) -> dict[str, Any]:
     client = HubSpotClient(settings)
     if not client.is_configured:
         raise RuntimeError("HubSpot token is not configured for this environment.")
     pipeline = _get_primary_pipeline(client, settings)
     owners = client.list_owners()
     all_deals = _list_deals(client)
-    recent_deals = _list_deals(client, limit=12)
+    recent_deals = all_deals[:12]
     owner_map = {str(owner.get("id") or ""): _format_owner(owner) for owner in owners}
     stage_map = {str(stage.get("id") or ""): stage for stage in pipeline.get("stages", []) or []}
     all_deal_ids = [str(deal.get("id") or "") for deal in all_deals if str(deal.get("id") or "").strip()]
@@ -1146,13 +1151,14 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
     live_mailbox_by_deal: dict[str, dict[str, Any]] = {}
     if session_factory is not None:
         with session_scope(session_factory) as session:
+            if live_enrichment and recent_deal_ids:
+                _sync_recent_hubspot_notes(session, client, recent_deal_ids)
             if all_deal_ids:
-                _sync_recent_hubspot_notes(session, client, all_deal_ids)
                 local_context = _load_local_deal_context(session, all_deal_ids)
             schedule_runs = _build_schedule_runs(session)
             website_notes = _build_website_notes(session)
             website_intakes = _build_website_intakes(session)
-        if all_deal_ids:
+        if live_enrichment and recent_deal_ids:
             live_mailbox_by_deal = _fetch_live_mailbox_state(
                 settings,
                 {deal_id: local_context["contactEmailsByDeal"].get(deal_id, []) for deal_id in recent_deal_ids},
@@ -1167,18 +1173,27 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
     contact_ids = set()
     deal_company_ids: dict[str, str] = {}
     deal_contact_ids: dict[str, str] = {}
-    for deal in recent_deals:
-        deal_id = str(deal.get("id") or "")
-        company_list = client.list_associations("deals", deal_id, "companies")
-        contact_list = client.list_associations("deals", deal_id, "contacts")
-        if company_list:
-            deal_company_ids[deal_id] = company_list[0]
-            company_ids.add(company_list[0])
-        if contact_list:
-            deal_contact_ids[deal_id] = contact_list[0]
-            contact_ids.add(contact_list[0])
-    companies = _map_records(client.batch_read("companies", sorted(company_ids), properties=("name", "service_type")))
-    contacts = _map_records(client.batch_read("contacts", sorted(contact_ids), properties=("firstname", "lastname", "email")))
+    if live_enrichment:
+        for deal in recent_deals:
+            deal_id = str(deal.get("id") or "")
+            company_list = client.list_associations("deals", deal_id, "companies")
+            contact_list = client.list_associations("deals", deal_id, "contacts")
+            if company_list:
+                deal_company_ids[deal_id] = company_list[0]
+                company_ids.add(company_list[0])
+            if contact_list:
+                deal_contact_ids[deal_id] = contact_list[0]
+                contact_ids.add(contact_list[0])
+    companies = (
+        _map_records(client.batch_read("companies", sorted(company_ids), properties=("name", "service_type")))
+        if company_ids
+        else {}
+    )
+    contacts = (
+        _map_records(client.batch_read("contacts", sorted(contact_ids), properties=("firstname", "lastname", "email")))
+        if contact_ids
+        else {}
+    )
 
     open_deals = won_deals = lost_deals = nurture_deals = 0
     unclassified = missing_amount = missing_owner = missing_next = multi_offer = 0
@@ -1278,6 +1293,9 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
         amount = _to_float(properties.get("amount"))
         stage_status = get_stage_status(stage) if stage else "open"
         local_contacts = local_context["contactsByDeal"].get(deal_id, [])
+        deal_row = local_context["dealRows"].get(deal_id)
+        company_present = bool(company or (deal_row and deal_row.hubspot_company_id))
+        contact_present = bool(contact or local_contacts)
         intelligence = _build_deal_intelligence(
             deal=deal,
             stage=stage,
@@ -1302,14 +1320,24 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
             missing_fields.append("owner")
         if stage_status in {"open", "nurture"} and not str(properties.get("hs_next_step") or "").strip():
             missing_fields.append("next step")
-        if not company:
+        if not company_present:
             missing_fields.append("company link")
-        if not contact:
+        if not contact_present:
             missing_fields.append("contact link")
         full_name = ""
         if contact:
             cp = contact.get("properties") or {}
             full_name = " ".join(part for part in [str(cp.get("firstname") or "").strip(), str(cp.get("lastname") or "").strip()] if part).strip() or str(cp.get("email") or "")
+        elif local_contacts:
+            local_contact = local_contacts[0]
+            full_name = " ".join(
+                part
+                for part in [
+                    str(local_contact.first_name or "").strip(),
+                    str(local_contact.last_name or "").strip(),
+                ]
+                if part
+            ).strip() or str(local_contact.email or "")
         recent_rows.append(
             {
                 "id": deal_id,
@@ -1335,8 +1363,8 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
                     deal_name=str(properties.get("dealname") or "").strip() or "Unnamed deal",
                     stage_status=stage_status,
                     primary_offer=inference["primary_offer_label"],
-                    company_present=bool(company),
-                    contact_present=bool(contact) or bool(local_contacts),
+                    company_present=company_present,
+                    contact_present=contact_present,
                     contact_count=len(local_contacts),
                     missing_fields=missing_fields,
                     intelligence=intelligence,
@@ -1432,7 +1460,11 @@ def get_operator_snapshot(settings: Settings, *, session_factory: Any | None = N
     global _cached_snapshot, _cached_snapshot_expires_at
     if not force_refresh and _cached_snapshot and _cached_snapshot_expires_at > time.time():
         return _cached_snapshot
-    snapshot = build_operator_snapshot(settings, session_factory=session_factory)
+    snapshot = build_operator_snapshot(
+        settings,
+        session_factory=session_factory,
+        live_enrichment=force_refresh,
+    )
     _cached_snapshot = snapshot
     _cached_snapshot_expires_at = time.time() + SNAPSHOT_TTL_SECONDS
     return snapshot
