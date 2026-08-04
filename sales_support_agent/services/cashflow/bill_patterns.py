@@ -164,9 +164,13 @@ def _data_stamp() -> tuple[Any, ...]:
     try:
         with get_engine().connect() as connection:
             bank = connection.execute(text("""
-                SELECT COUNT(*), MAX(updated_at) FROM cash_events
-                WHERE source = 'csv' AND event_type = 'outflow'
+                SELECT source, COUNT(*) AS row_count, MAX(updated_at) AS newest
+                FROM cash_events
+                WHERE source IN ('plaid', 'csv') AND event_type = 'outflow'
                   AND status IN ('posted', 'matched')
+                GROUP BY source
+                ORDER BY CASE source WHEN 'plaid' THEN 0 ELSE 1 END
+                LIMIT 1
             """)).fetchone()
             answers = connection.execute(
                 text("SELECT COUNT(*) FROM finance_action_audit WHERE action_type = :action"),
@@ -186,7 +190,14 @@ def _data_stamp() -> tuple[Any, ...]:
         # Never let the fingerprint be the thing that breaks the page. A unique
         # value simply means this call is not served from cache.
         return (uuid4().hex,)
-    return (bank[0], str(bank[1]), answers, schedules, *aliases)
+    return (
+        str(bank[0]) if bank else "unavailable",
+        int(bank[1]) if bank else 0,
+        str(bank[2]) if bank else "",
+        answers,
+        schedules,
+        *aliases,
+    )
 
 
 def _list_bill_patterns_uncached(
@@ -947,9 +958,19 @@ def _load_bill_history(
     with get_engine().connect() as connection:
         rows = connection.execute(
             text("""
+                WITH preferred_source AS (
+                    SELECT CASE WHEN EXISTS (
+                        SELECT 1 FROM cash_events
+                        WHERE source = 'plaid'
+                          AND status IN ('posted', 'matched')
+                          AND event_type = 'outflow'
+                          AND due_date >= :cutoff
+                          AND amount_cents > 0
+                    ) THEN 'plaid' ELSE 'csv' END AS source
+                )
                 SELECT amount_cents, due_date, vendor_or_customer, name, description, category
-                FROM cash_events
-                WHERE source = 'csv'
+                FROM cash_events, preferred_source
+                WHERE cash_events.source = preferred_source.source
                   AND status IN ('posted', 'matched')
                   AND event_type = 'outflow'
                   AND due_date >= :cutoff

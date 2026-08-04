@@ -70,6 +70,54 @@ def _active_allocation_maps(
     return dict(by_transaction), dict(by_obligation)
 
 
+def _posted_history_match(
+    row: Mapping[str, Any],
+    *,
+    occurred: date,
+    patterns: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Find strong recurring-history evidence for one posted transaction.
+
+    This is a classification, not a settlement. It requires the exact posted
+    date and amount to appear in a very-likely recurring series, so a merely
+    similar charge cannot disappear from the owner's review list.
+    """
+    from sales_support_agent.services.cashflow.bill_patterns import bill_merchant_key
+
+    transaction_key = bill_merchant_key(_name(row))
+    amount = int(row.get("amount_cents") or 0)
+    if not transaction_key or amount <= 0:
+        return None
+    for source in patterns:
+        pattern = dict(source)
+        if int(pattern.get("confidence_bps") or 0) < 7_500:
+            continue
+        if pattern.get("paid_in_pieces"):
+            # A monthly aggregate cannot prove which individual instalment was
+            # expected, so leave those payments in review.
+            continue
+        known_keys = {
+            str(pattern.get("merchant_key") or ""),
+            bill_merchant_key(str(pattern.get("vendor") or "")),
+        }
+        evidence = list(pattern.get("evidence") or [])
+        known_keys.update(
+            bill_merchant_key(str(item.get("raw_descriptor") or ""))
+            for item in evidence if isinstance(item, Mapping)
+        )
+        if transaction_key not in known_keys:
+            continue
+        for item in evidence:
+            if not isinstance(item, Mapping):
+                continue
+            if (
+                _as_date(item.get("due_date")) == occurred
+                and int(item.get("amount_cents") or 0) == amount
+            ):
+                return pattern
+    return None
+
+
 def _day_label(day: date, as_of: date) -> tuple[str, str]:
     readable = day.strftime("%A, %b %d").replace(" 0", " ")
     if day == as_of:
@@ -86,6 +134,7 @@ def build_cash_calendar(
     *,
     allocations: Sequence[Mapping[str, Any]] = (),
     historical_events: Sequence[Mapping[str, Any]] = (),
+    historical_patterns: Sequence[Mapping[str, Any]] = (),
     as_of: date | None = None,
     past_days: int = PAST_DAYS,
     future_days: int = FUTURE_DAYS,
@@ -123,6 +172,10 @@ def build_cash_calendar(
         transaction_id = str(row.get("id") or row.get("source_id") or "")
         matches = by_transaction.get(transaction_id, [])
         planned = bool(matches)
+        history_match = None if planned else _posted_history_match(
+            row, occurred=occurred, patterns=historical_patterns,
+        )
+        expected = history_match is not None
         matched_name = next(
             (str(match.get("obligation_name") or "").strip() for match in matches
              if str(match.get("obligation_name") or "").strip()),
@@ -130,18 +183,37 @@ def build_cash_calendar(
         )
         event = {
             "id": transaction_id,
-            "kind": "posted_planned" if planned else "posted_unplanned",
-            "state_label": "Posted · planned" if planned else "Posted · not in plan",
+            "kind": (
+                "posted_planned" if planned
+                else "posted_expected" if expected
+                else "posted_unplanned"
+            ),
+            "state_label": (
+                "Posted · planned" if planned
+                else "Posted · expected from history" if expected
+                else "Posted · not in plan"
+            ),
             "name": _name(row),
             "amount_cents": amount,
             "category": _category(row),
             "evidence": (
                 f"Matched to {matched_name}" if matched_name
                 else "Matched to a planned bill" if planned
-                else "No planned bill is linked to this posted charge"
+                else (
+                    f"Recognized from {history_match.get('occurrences')} prior recurring payments"
+                    if expected else "No plan or strong recurring history is linked to this posted charge"
+                )
             ),
-            "href": "/admin/finances/review" if planned else "/admin/finances/budget",
-            "action_label": "See match" if planned else "Review for savings",
+            "href": (
+                "/admin/finances/review" if planned
+                else "/admin/finances/whats-coming" if expected
+                else "/admin/finances/budget"
+            ),
+            "action_label": (
+                "See match" if planned
+                else "See recurring evidence" if expected
+                else "Review for savings"
+            ),
             "protected": _category(row) in _PROTECTED_CATEGORIES,
         }
         bucket = days[occurred.isoformat()]
@@ -213,7 +285,7 @@ def build_cash_calendar(
 
     ordered_days = list(days.values())
     priority = {"posted_unplanned": 0, "history_warning": 1, "planned": 2,
-                "history_planned": 3, "posted_planned": 4}
+                "history_planned": 3, "posted_expected": 4, "posted_planned": 5}
     for bucket in ordered_days:
         bucket["events"].sort(
             key=lambda item: (priority.get(str(item["kind"]), 9), -int(item["amount_cents"]), str(item["name"]))
@@ -237,6 +309,9 @@ def build_cash_calendar(
             "unplanned_posted_cents": sum(
                 int(item["amount_cents"]) for item in past_events if item["kind"] == "posted_unplanned"
             ),
+            "expected_posted_cents": sum(
+                int(item["amount_cents"]) for item in past_events if item["kind"] == "posted_expected"
+            ),
             "planned_cents": sum(
                 int(item["amount_cents"]) for item in future_events
                 if item["kind"] in {"planned", "history_planned"}
@@ -245,6 +320,7 @@ def build_cash_calendar(
                 int(item["amount_cents"]) for item in future_events if item["kind"] == "history_warning"
             ),
             "unplanned_count": sum(1 for item in past_events if item["kind"] == "posted_unplanned"),
+            "expected_count": sum(1 for item in past_events if item["kind"] == "posted_expected"),
             "warning_count": sum(1 for item in future_events if item["kind"] == "history_warning"),
         },
     }
@@ -269,7 +345,9 @@ def _load_active_allocations() -> list[dict[str, Any]]:
     return [dict(row._mapping) for row in rows]
 
 
-def _historical_events(*, as_of: date, future_days: int) -> list[dict[str, Any]]:
+def _historical_data(
+    *, as_of: date, future_days: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from sales_support_agent.services.cashflow.bill_patterns import (
         _occurrences_in_window,
         confirmed_bill_projections,
@@ -301,7 +379,11 @@ def _historical_events(*, as_of: date, future_days: int) -> list[dict[str, Any]]
                 "confirmed": False,
                 "evidence": f"{pattern.get('confidence_label') or 'Possible'} recurring pattern from posted bank history",
             })
-    return events
+    patterns = [
+        dict(pattern)
+        for pattern in [*(listing.get("patterns") or []), *(listing.get("tracked") or [])]
+    ]
+    return events, patterns
 
 
 def load_cash_calendar(*, as_of: date | None = None) -> dict[str, Any]:
@@ -317,11 +399,15 @@ def load_cash_calendar(*, as_of: date | None = None) -> dict[str, Any]:
     except Exception:
         allocations = []
     try:
-        history = _historical_events(as_of=today, future_days=FUTURE_DAYS)
+        history, patterns = _historical_data(as_of=today, future_days=FUTURE_DAYS)
     except Exception:
-        history = []
+        history, patterns = [], []
     return build_cash_calendar(
-        rows, allocations=allocations, historical_events=history, as_of=today
+        rows,
+        allocations=allocations,
+        historical_events=history,
+        historical_patterns=patterns,
+        as_of=today,
     )
 
 
@@ -396,7 +482,8 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
 
       <section class="cash-calendar-summary" aria-label="Expense calendar summary">
         <article><span>Posted in the last 7 days</span><strong>{_money(int(totals.get('posted_cents') or 0))}</strong></article>
-        <article class="cash-calendar-summary__attention"><span>Posted but not in plan</span><strong>{_money(int(totals.get('unplanned_posted_cents') or 0))}</strong><small>{int(totals.get('unplanned_count') or 0)} charge(s)</small></article>
+        <article class="cash-calendar-summary__expected"><span>Recognized automatically</span><strong>{_money(int(totals.get('expected_posted_cents') or 0))}</strong><small>{int(totals.get('expected_count') or 0)} recurring charge(s)</small></article>
+        <article class="cash-calendar-summary__attention"><span>Still needs review</span><strong>{_money(int(totals.get('unplanned_posted_cents') or 0))}</strong><small>{int(totals.get('unplanned_count') or 0)} charge(s)</small></article>
         <article><span>Planned next 14 days</span><strong>{_money(int(totals.get('planned_cents') or 0))}</strong></article>
         <article class="cash-calendar-summary__warning"><span>Possible from history</span><strong>{_money(int(totals.get('warning_cents') or 0))}</strong><small>{int(totals.get('warning_count') or 0)} warning(s), not counted as required</small></article>
       </section>
@@ -437,7 +524,7 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
       const matches = (event, wanted) => wanted === 'all'
         || (wanted === 'attention' && ['posted_unplanned', 'history_warning'].includes(event.dataset.calendarKind))
         || (wanted === 'planned' && ['planned', 'history_planned'].includes(event.dataset.calendarKind))
-        || (wanted === 'posted' && ['posted_planned', 'posted_unplanned'].includes(event.dataset.calendarKind));
+        || (wanted === 'posted' && ['posted_planned', 'posted_expected', 'posted_unplanned'].includes(event.dataset.calendarKind));
       const selectDay = date => {{
         const chosen = days.find(day => day.dataset.calendarDatePanel === date && !day.hidden);
         if (!chosen) return;

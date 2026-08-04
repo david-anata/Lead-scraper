@@ -83,13 +83,14 @@ def _post_history(
     payments: list[tuple[date, int]],
     *,
     category: str = "software",
+    source: str = "csv",
 ) -> None:
     """Insert posted bank outflows, the only evidence bill prediction reads."""
     with Session(engine) as session:
         for index, (day, amount_cents) in enumerate(payments):
             session.add(CashEvent(
-                id=f"csv-{vendor}-{index}".replace(" ", "-").lower(),
-                source="csv",
+                id=f"{source}-{vendor}-{index}".replace(" ", "-").lower(),
+                source=source,
                 source_id=f"{vendor}-{index}",
                 record_kind="transaction",
                 event_type="outflow",
@@ -103,6 +104,27 @@ def _post_history(
                 confidence="confirmed",
             ))
         session.commit()
+
+
+def test_plaid_history_replaces_the_legacy_csv_archive(finance_engine):
+    dates = _monthly_dates(4, day=8)
+    _post_history(
+        finance_engine,
+        "Old CSV Vendor",
+        [(day, 100_00) for day in dates],
+        source="csv",
+    )
+    _post_history(
+        finance_engine,
+        "Current Plaid Vendor",
+        [(day, 250_00) for day in dates],
+        source="plaid",
+    )
+
+    listing = list_bill_patterns(as_of=AS_OF)
+
+    vendors = {row["vendor"] for row in listing["patterns"]}
+    assert vendors == {"Current Plaid Vendor"}
 
 
 def _schedule_real_bill(
