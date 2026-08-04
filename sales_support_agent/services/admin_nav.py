@@ -241,6 +241,7 @@ def render_agent_nav_css() -> str:
         background: #fff;
         box-shadow: 0 18px 48px rgba(43, 54, 68, 0.18);
       }
+      .agent-mobile-menu:not([open]) > .agent-mobile-menu-panel { display: none; }
       .agent-mobile-menu-group {
         display: grid;
         gap: 3px;
