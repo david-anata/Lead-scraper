@@ -152,11 +152,11 @@ def _goals_fields(goals: Optional[Goals]) -> str:
     )
     return f"""
       <div class="row">
-        <div class="field"><label>Revenue target ($)</label><input type="number" step="0.01" name="revenue_target" value="{_esc(rev)}" placeholder="100000"></div>
-        <div class="field"><label>ACoS target (%)</label><input type="number" step="0.1" name="acos_target" value="{_esc(acos)}" placeholder="30"></div>
-        <div class="field"><label>TACoS target (%)</label><input type="number" step="0.1" name="tacos_target" value="{_esc(tacos)}" placeholder="25"></div>
-        <div class="field"><label>Units target</label><input type="number" name="units_target" value="{_esc(units)}" placeholder="500"></div>
-        <div class="field"><label>Period</label><select name="period">{periods}</select></div>
+        <div class="field"><label>Revenue target ($)</label><input aria-label="Revenue target in dollars" type="number" step="0.01" name="revenue_target" value="{_esc(rev)}" placeholder="100000"></div>
+        <div class="field"><label>ACoS target (%)</label><input aria-label="ACoS target percent" type="number" step="0.1" name="acos_target" value="{_esc(acos)}" placeholder="30"></div>
+        <div class="field"><label>TACoS target (%)</label><input aria-label="TACoS target percent" type="number" step="0.1" name="tacos_target" value="{_esc(tacos)}" placeholder="25"></div>
+        <div class="field"><label>Units target</label><input aria-label="Units target" type="number" name="units_target" value="{_esc(units)}" placeholder="500"></div>
+        <div class="field"><label>Period</label><select aria-label="Goal period" name="period">{periods}</select></div>
       </div>"""
 
 
@@ -258,7 +258,7 @@ def _client_select(clients: list[dict]) -> str:
     return (
         '<div class="field" style="max-width:480px;">'
         '<label>Client</label>'
-        '<select id="adv-client" name="client_id" onchange="advClientChange()">'
+        '<select id="adv-client" aria-label="Advertising client" name="client_id" onchange="advClientChange()">'
         + "".join(opts) +
         '</select>'
         '<span class="hint">Pick the client to run this audit for — its goals pre-fill below and the run is '
@@ -290,9 +290,9 @@ def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None,
         <h2 style="font-size:15px;">Off-Amazon marketing spend <small>- added to blended TACoS</small></h2>
         <div id="ext-rows">
           <div class="row ext-row">
-            <div class="field"><label>Channel</label><select name="ext_channel"><option value=""></option>{ext_channels}</select></div>
-            <div class="field"><label>Label (optional)</label><input type="text" name="ext_label" placeholder="e.g. Meta prospecting / influencer Jane"></div>
-            <div class="field"><label>Amount ($)</label><input type="number" step="0.01" name="ext_amount" placeholder="0.00"></div>
+            <div class="field"><label>Channel</label><select aria-label="Off-Amazon spend channel" name="ext_channel"><option value=""></option>{ext_channels}</select></div>
+            <div class="field"><label>Label (optional)</label><input aria-label="Off-Amazon spend label" type="text" name="ext_label" placeholder="e.g. Meta prospecting / influencer Jane"></div>
+            <div class="field"><label>Amount ($)</label><input aria-label="Off-Amazon spend amount in dollars" type="number" step="0.01" name="ext_amount" placeholder="0.00"></div>
           </div>
         </div>
         <div style="margin-top:10px;"><button type="button" class="btn secondary" id="adv-add-ext">+ Add channel</button></div>
@@ -300,21 +300,21 @@ def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None,
       <details class="guide">
         <summary>Assign files individually instead (advanced)</summary>
         <div class="row" style="margin-top:12px;">
-          <div class="field"><label>Amazon bulk operations file (XLSX)</label><input type="file" name="bulk_xlsx" accept=".xlsx"></div>
-          <div class="field"><label>Search Term (CSV)</label><input type="file" name="search_term_csv" accept=".csv"></div>
-          <div class="field"><label>Business Report (CSV)</label><input type="file" name="business_report_csv" accept=".csv"></div>
-          <div class="field"><label>Search Query Performance (SQP) report (CSV)</label><input type="file" name="sqp_csv" accept=".csv"></div>
-          <div class="field"><label>DSP (CSV)</label><input type="file" name="dsp_csv" accept=".csv"></div>
-          <div class="field"><label>External costs (CSV)</label><input type="file" name="external_costs_csv" accept=".csv"></div>
-          <div class="field"><label>Unit costs by ASIN (COGS CSV)</label><input type="file" name="cogs_csv" accept=".csv"></div>
+          <div class="field"><label>Amazon bulk operations file (XLSX)</label><input aria-label="Amazon bulk operations file" type="file" name="bulk_xlsx" accept=".xlsx"></div>
+          <div class="field"><label>Search Term (CSV)</label><input aria-label="Search Term CSV" type="file" name="search_term_csv" accept=".csv"></div>
+          <div class="field"><label>Business Report (CSV)</label><input aria-label="Business Report CSV" type="file" name="business_report_csv" accept=".csv"></div>
+          <div class="field"><label>Search Query Performance (SQP) report (CSV)</label><input aria-label="Search Query Performance report CSV" type="file" name="sqp_csv" accept=".csv"></div>
+          <div class="field"><label>DSP (CSV)</label><input aria-label="DSP CSV" type="file" name="dsp_csv" accept=".csv"></div>
+          <div class="field"><label>External costs (CSV)</label><input aria-label="External costs CSV" type="file" name="external_costs_csv" accept=".csv"></div>
+          <div class="field"><label>Unit costs by ASIN (COGS CSV)</label><input aria-label="Unit costs by ASIN CSV" type="file" name="cogs_csv" accept=".csv"></div>
         </div>
       </details>
       <div class="field" style="max-width:420px;">
         <label>Brand focus (optional)</label>
-        <input id="adv-brand" type="text" name="brand" placeholder="e.g. Zantrex — leave blank for full account">
+        <input id="adv-brand" aria-label="Brand focus" type="text" name="brand" placeholder="e.g. Zantrex — leave blank for full account">
         <span class="hint">Type the client brand to scope the whole audit + plan to its campaigns &amp; ASINs.</span>
       </div>
-      <div class="field" style="max-width:320px;"><label>Run label (optional)</label><input type="text" name="label" placeholder="{_week_label()}"></div>
+      <div class="field" style="max-width:320px;"><label>Run label (optional)</label><input aria-label="Run label" type="text" name="label" placeholder="{_week_label()}"></div>
       <div class="card" style="margin:6px 0 0;background:#fafbfc;">
         <h2 style="font-size:15px;">Goals <small>— targets the plan measures against (saved &amp; applied on run)</small></h2>
         {_goals_fields(goals)}
