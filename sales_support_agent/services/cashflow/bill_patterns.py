@@ -206,6 +206,26 @@ def _list_bill_patterns_uncached(
     history = _load_bill_history(as_of=as_of, lookback_days=lookback_days)
     decisions = _decision_records(scope=scope)
 
+    # Plaid may word a vendor differently from the legacy CSV archive. Preserve
+    # an earlier operator decision only when the two recurring series share
+    # strong payment evidence; a similar-looking name alone is not enough.
+    legacy_patterns: list[dict[str, Any]] = []
+    legacy_history = _load_bill_history(
+        as_of=as_of, lookback_days=lookback_days, source="csv",
+    )
+    for merchant, occurrences in legacy_history.items():
+        if len(occurrences) < MIN_OCCURRENCES:
+            continue
+        legacy = _build_pattern(
+            merchant,
+            occurrences=occurrences,
+            as_of=as_of,
+            decisions=decisions,
+            already_tracked=False,
+        )
+        if legacy is not None and legacy.get("decision"):
+            legacy_patterns.append(legacy)
+
     # The history is grouped by the same merchant reader the filing queue uses,
     # so a vendor whose descriptor varies stays one bill. Driving off the
     # detector's own grouping split Boulder Ranch into "Type: Pmts Boulder Ranch"
@@ -228,6 +248,11 @@ def _list_bill_patterns_uncached(
         )
         if built is None:
             continue
+        if not built.get("decision"):
+            inherited = _matching_legacy_decision(built, legacy_patterns)
+            if inherited:
+                built["decision"] = inherited["decision"]
+                built["decision_inherited_from"] = inherited["pattern_key"]
         if built["already_tracked"]:
             tracked.append(built)
         elif built["decision"] == "not_a_bill":
@@ -944,7 +969,7 @@ def _effective_decision(record: Mapping[str, Any] | None, *, as_of: date) -> str
 # ---------------------------------------------------------------------------
 
 def _load_bill_history(
-    *, as_of: date, lookback_days: int
+    *, as_of: date, lookback_days: int, source: str | None = None,
 ) -> dict[str, list[tuple[date, int, str]]]:
     """Posted bank outflows grouped by the same vendor key the detector uses.
 
@@ -955,29 +980,30 @@ def _load_bill_history(
     from sales_support_agent.models.database import get_engine
 
     cutoff = (as_of - timedelta(days=lookback_days)).isoformat()
+    selected_source = source if source in {"plaid", "csv"} else None
     with get_engine().connect() as connection:
         rows = connection.execute(
             text("""
-                WITH preferred_source AS (
-                    SELECT CASE WHEN EXISTS (
+                SELECT amount_cents, due_date, vendor_or_customer, name, description, category
+                FROM cash_events
+                WHERE cash_events.source = COALESCE(
+                    :selected_source,
+                    CASE WHEN EXISTS (
                         SELECT 1 FROM cash_events
                         WHERE source = 'plaid'
                           AND status IN ('posted', 'matched')
                           AND event_type = 'outflow'
                           AND due_date >= :cutoff
                           AND amount_cents > 0
-                    ) THEN 'plaid' ELSE 'csv' END AS source
+                    ) THEN 'plaid' ELSE 'csv' END
                 )
-                SELECT amount_cents, due_date, vendor_or_customer, name, description, category
-                FROM cash_events, preferred_source
-                WHERE cash_events.source = preferred_source.source
                   AND status IN ('posted', 'matched')
                   AND event_type = 'outflow'
                   AND due_date >= :cutoff
                   AND amount_cents > 0
                 ORDER BY due_date ASC
             """),
-            {"cutoff": cutoff},
+            {"cutoff": cutoff, "selected_source": selected_source},
         ).fetchall()
 
     from sales_support_agent.services.cashflow.transfers import is_internal_transfer
@@ -1023,6 +1049,26 @@ def _load_bill_history(
     for occurrences in grouped.values():
         occurrences.sort(key=lambda entry: entry[0])
     return grouped
+
+
+def _matching_legacy_decision(
+    current: Mapping[str, Any], legacy_patterns: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    """Return a prior CSV decision backed by the same real payments."""
+    current_evidence = {
+        (str(item.get("due_date") or "")[:10], int(item.get("amount_cents") or 0))
+        for item in current.get("evidence") or [] if isinstance(item, Mapping)
+    }
+    for legacy in legacy_patterns:
+        if str(legacy.get("frequency") or "") != str(current.get("frequency") or ""):
+            continue
+        legacy_evidence = {
+            (str(item.get("due_date") or "")[:10], int(item.get("amount_cents") or 0))
+            for item in legacy.get("evidence") or [] if isinstance(item, Mapping)
+        }
+        if len(current_evidence & legacy_evidence) >= 2:
+            return legacy
+    return None
 
 
 # Bank wording the filing queue leaves behind. Grouping the queue can live with
