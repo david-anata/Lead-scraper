@@ -132,6 +132,9 @@ def test_calendar_renderer_explains_evidence_and_filters_without_write_controls(
     assert "not counted as required" in page
     assert "data-calendar-filter=\"attention\"" in page
     assert "Posted source: Plaid" in page
+    assert page.count('data-calendar-date="') == 22
+    assert 'class="cash-calendar-date is-selected"' in page
+    assert "Showing Today. Choose another day to drill down." in page
     assert "<form" not in page
 
 

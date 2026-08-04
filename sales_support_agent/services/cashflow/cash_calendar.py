@@ -353,6 +353,7 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
 
     totals = calendar.get("totals") or {}
     day_rows: list[str] = []
+    day_buttons: list[str] = []
     for day in calendar.get("days") or []:
         events = list(day.get("events") or [])
         event_rows = "".join(_event_html(event) for event in events)
@@ -365,8 +366,19 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
             summary_parts.append(f"Possible {_money(int(day['warning_cents']))}")
         summary = " · ".join(summary_parts) or "No expenses found"
         period = html.escape(str(day.get("period") or "future"), quote=True)
+        selected = period == "today"
+        day_buttons.append(f"""
+          <button type="button" class="cash-calendar-date{' is-selected' if selected else ''}"
+            data-calendar-date="{html.escape(str(day.get('date') or ''), quote=True)}"
+            aria-pressed="{'true' if selected else 'false'}">
+            <span>{html.escape(str(day.get('label') or 'Day'))}</span>
+            <strong>{html.escape(str(day.get('date_label') or day.get('date') or ''))}</strong>
+            <small>{html.escape(summary)}</small>
+          </button>""")
         day_rows.append(f"""
-          <article class="cash-calendar-day cash-calendar-day--{period}" data-calendar-day data-calendar-period="{period}">
+          <article class="cash-calendar-day cash-calendar-day--{period}{' is-selected' if selected else ''}"
+            data-calendar-day data-calendar-date-panel="{html.escape(str(day.get('date') or ''), quote=True)}"
+            data-calendar-period="{period}">
             <header><div><span>{html.escape(str(day.get('label') or 'Day'))}</span>
             <strong>{html.escape(str(day.get('date_label') or day.get('date') or ''))}</strong></div>
             <p>{html.escape(summary)}</p></header>
@@ -406,8 +418,11 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
           <button type="button" data-calendar-filter="planned" aria-pressed="false">Planned</button>
           <button type="button" data-calendar-filter="posted" aria-pressed="false">Already posted</button>
         </div>
-        <p class="cash-calendar-result" data-calendar-result>Showing every day in the 22-day window.</p>
-        <div class="cash-calendar-days">{''.join(day_rows)}</div>
+        <p class="cash-calendar-result" data-calendar-result>Showing Today. Choose another day to drill down.</p>
+        <div class="cash-calendar-browser">
+          <nav class="cash-calendar-dates" aria-label="Choose a day">{''.join(day_buttons)}</nav>
+          <div class="cash-calendar-days">{''.join(day_rows)}</div>
+        </div>
       </section>
 
       <footer class="money-proof-note"><strong>What the calendar does not assume</strong>
@@ -415,14 +430,27 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
     </div>
     <script>
     (() => {{
-      const buttons = [...document.querySelectorAll('[data-calendar-filter]')];
+      const filterButtons = [...document.querySelectorAll('[data-calendar-filter]')];
+      const dateButtons = [...document.querySelectorAll('[data-calendar-date]')];
       const days = [...document.querySelectorAll('[data-calendar-day]')];
       const result = document.querySelector('[data-calendar-result]');
       const matches = (event, wanted) => wanted === 'all'
         || (wanted === 'attention' && ['posted_unplanned', 'history_warning'].includes(event.dataset.calendarKind))
         || (wanted === 'planned' && ['planned', 'history_planned'].includes(event.dataset.calendarKind))
         || (wanted === 'posted' && ['posted_planned', 'posted_unplanned'].includes(event.dataset.calendarKind));
-      buttons.forEach(button => button.addEventListener('click', () => {{
+      const selectDay = date => {{
+        const chosen = days.find(day => day.dataset.calendarDatePanel === date && !day.hidden);
+        if (!chosen) return;
+        days.forEach(day => day.classList.toggle('is-selected', day === chosen));
+        dateButtons.forEach(button => {{
+          const active = button.dataset.calendarDate === date;
+          button.classList.toggle('is-selected', active);
+          button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        }});
+        if (result) result.textContent = `Showing ${{chosen.querySelector('header span')?.textContent || 'selected day'}}. Choose another day to drill down.`;
+      }};
+      dateButtons.forEach(button => button.addEventListener('click', () => selectDay(button.dataset.calendarDate)));
+      filterButtons.forEach(button => button.addEventListener('click', () => {{
         const wanted = button.dataset.calendarFilter;
         let visibleEvents = 0;
         days.forEach(day => {{
@@ -434,14 +462,20 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
           }});
           day.hidden = wanted !== 'all' && !events.some(event => !event.hidden);
         }});
-        buttons.forEach(item => {{
+        dateButtons.forEach(dateButton => {{
+          const panel = days.find(day => day.dataset.calendarDatePanel === dateButton.dataset.calendarDate);
+          dateButton.hidden = Boolean(panel?.hidden);
+        }});
+        filterButtons.forEach(item => {{
           const active = item === button;
           item.classList.toggle('is-active', active);
           item.setAttribute('aria-pressed', active ? 'true' : 'false');
         }});
-        if (result) result.textContent = wanted === 'all'
-          ? 'Showing every day in the 22-day window.'
-          : `Showing ${{visibleEvents}} expense${{visibleEvents === 1 ? '' : 's'}}.`;
+        const selected = days.find(day => day.classList.contains('is-selected') && !day.hidden);
+        const fallback = dateButtons.find(dateButton => !dateButton.hidden);
+        if (selected) selectDay(selected.dataset.calendarDatePanel);
+        else if (fallback) selectDay(fallback.dataset.calendarDate);
+        if (result && wanted !== 'all') result.textContent += ` ${{visibleEvents}} matching expense${{visibleEvents === 1 ? '' : 's'}} across the window.`;
       }}));
     }})();
     </script>"""

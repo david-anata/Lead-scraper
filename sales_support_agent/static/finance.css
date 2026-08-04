@@ -2390,7 +2390,38 @@ input:focus, select:focus, textarea:focus {
 .cash-calendar-filters button:focus-visible { border-color: var(--anata-blue); }
 .cash-calendar-filters button.is-active { border-color: var(--anata-ink); background: var(--anata-ink); color: #fff; }
 .cash-calendar-result { margin: 0 0 12px; color: var(--anata-muted); font-size: 12px; }
-.cash-calendar-days { display: grid; gap: 8px; }
+.cash-calendar-browser {
+  display: grid;
+  grid-template-columns: minmax(210px, 260px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.cash-calendar-dates {
+  display: grid;
+  gap: 6px;
+  max-height: 620px;
+  overflow-y: auto;
+  padding-right: 5px;
+}
+.cash-calendar-date {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--anata-line);
+  border-radius: 11px;
+  background: var(--anata-surface);
+  color: var(--anata-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.cash-calendar-date span { color: var(--anata-blue); font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .07em; }
+.cash-calendar-date strong { font: 800 12px/1.3 "Montserrat", sans-serif; }
+.cash-calendar-date small { overflow: hidden; color: var(--anata-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.cash-calendar-date:hover,
+.cash-calendar-date:focus-visible { border-color: var(--anata-blue); }
+.cash-calendar-date.is-selected { border-color: var(--anata-blue); background: rgba(36, 113, 181, .08); }
+.cash-calendar-days { min-width: 0; }
 .cash-calendar-day {
   display: grid;
   grid-template-columns: 180px minmax(0, 1fr);
@@ -2398,6 +2429,7 @@ input:focus, select:focus, textarea:focus {
   padding: 13px 0;
   border-top: 1px solid var(--anata-line);
 }
+.cash-calendar-day:not(.is-selected) { display: none; }
 .cash-calendar-day[hidden], .cash-calendar-event[hidden] { display: none; }
 .cash-calendar-day > header { padding: 4px 0; }
 .cash-calendar-day > header span { display: block; color: var(--anata-blue); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
@@ -2463,6 +2495,8 @@ input:focus, select:focus, textarea:focus {
   .budget-summary { grid-template-columns: 1fr; }
   .cash-calendar-summary { grid-template-columns: 1fr; }
   .cash-calendar-workspace { padding: 18px; }
+  .cash-calendar-browser { grid-template-columns: 1fr; }
+  .cash-calendar-dates { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 260px; }
   .cash-calendar-day { grid-template-columns: 1fr; gap: 8px; }
   .cash-calendar-day--today { margin-inline: -6px; }
   .cash-calendar-event { grid-template-columns: 1fr; gap: 8px; }
