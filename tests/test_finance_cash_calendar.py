@@ -97,7 +97,8 @@ def test_very_likely_recurring_charge_is_recognized_without_becoming_a_settlemen
 
     event = _events(calendar, occurred)[0]
     assert event["kind"] == "posted_expected"
-    assert event["state_label"] == "Posted · expected from history"
+    assert event["state_label"] == "Paid · expected from history"
+    assert event["payment_status"] == "paid"
     assert event["href"] == "/admin/finances/whats-coming"
     assert calendar["totals"]["expected_posted_cents"] == 4900
     assert calendar["totals"]["unplanned_posted_cents"] == 0
@@ -142,6 +143,9 @@ def test_future_plan_uses_only_remaining_unsettled_amount():
 
     events = _events(calendar, TODAY + timedelta(days=3))
     assert [(item["kind"], item["amount_cents"]) for item in events] == [("planned", 15000)]
+    assert events[0]["state_label"] == "Partially paid · balance due"
+    assert events[0]["payment_status"] == "partially_paid"
+    assert "$50 paid; $150 remains" in events[0]["evidence"]
     assert _events(calendar, TODAY + timedelta(days=4)) == []
     assert calendar["totals"]["planned_cents"] == 15000
 
@@ -156,7 +160,30 @@ def test_history_warning_is_not_counted_as_required_cash():
 
     assert calendar["totals"]["warning_cents"] == 9900
     assert calendar["totals"]["planned_cents"] == 12000
-    assert _events(calendar, TODAY + timedelta(days=2))[0]["state_label"] == "Likely from history · not planned"
+    assert _events(calendar, TODAY + timedelta(days=2))[0]["state_label"] == "Unconfirmed · likely from history"
+
+
+def test_weekly_rollup_keeps_paid_unpaid_and_possible_money_separate():
+    rows = [
+        _transaction("paid", days_ago=1, amount=5000),
+        _obligation("unpaid", days_ahead=1, amount=12000),
+    ]
+    history = [{
+        "id": "possible",
+        "date": TODAY + timedelta(days=2),
+        "name": "Possible tool",
+        "amount_cents": 9900,
+    }]
+
+    calendar = build_cash_calendar(rows, historical_events=history, as_of=TODAY)
+    this_week = next(week for week in calendar["weeks"] if week["label"] == "This week")
+
+    assert this_week["paid_cents"] == 5000
+    assert this_week["unpaid_cents"] == 12000
+    assert this_week["possible_cents"] == 9900
+    assert this_week["paid_count"] == 1
+    assert this_week["unpaid_count"] == 1
+    assert this_week["possible_count"] == 1
 
 
 def test_canonical_actuals_exclude_internal_transfers_and_mirrored_sources():
@@ -185,11 +212,16 @@ def test_calendar_renderer_explains_evidence_and_filters_without_write_controls(
     page = render_cash_calendar_page(calendar)
 
     assert "Past 7 days · today · next 14 days" in page
-    assert "Likely from history · not planned" in page
+    assert "Unconfirmed · likely from history" in page
     assert "not counted as required" in page
     assert "data-calendar-filter=\"attention\"" in page
     assert "Posted source: Plaid" in page
     assert "Recognized automatically" in page
+    assert "Weekly roll-up" in page
+    assert "Paid from bank" in page
+    assert "Unpaid planned" in page
+    assert "Possible · unconfirmed" in page
+    assert 'data-payment-status="paid"' in page
     assert page.count('data-calendar-date="') == 22
     assert 'class="cash-calendar-date is-selected"' in page
     assert "Showing Today. Choose another day to drill down." in page
