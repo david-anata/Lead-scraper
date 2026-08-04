@@ -8,8 +8,9 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import delete, select
 
@@ -29,7 +30,11 @@ from sales_support_agent.services.building_lead_intake import (
     advance_follow_up_sequence,
     build_follow_up_sequence,
     notify_new_building_lead,
+    prefill_event_interview,
 )
+from sales_support_agent.services.building_inquiry_receipt import attempt_inquiry_receipt
+from sales_support_agent.services.building_public_availability import candidate_date_availability
+from sales_support_agent.integrations.building_google_calendar import BuildingGoogleCalendarClient
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
@@ -662,6 +667,37 @@ def list_public_availability(request: Request) -> dict[str, Any]:
         }
 
 
+@public_router.get("/event-date-availability")
+def event_date_availability(
+    request: Request,
+    dates: str = Query(min_length=10, max_length=32),
+    guest_start_time: str = Query(default="", max_length=8),
+    guest_end_time: str = Query(default="", max_length=8),
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Return a privacy-safe conflict status for one to three candidate dates."""
+
+    _require_building_key(request, x_internal_api_key)
+    raw_dates = list(dict.fromkeys(item.strip() for item in dates.split(",") if item.strip()))
+    if not raw_dates or len(raw_dates) > 3:
+        raise HTTPException(status_code=422, detail="Provide one to three candidate dates.")
+    try:
+        candidates = [date.fromisoformat(item) for item in raw_dates]
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Candidate dates must use YYYY-MM-DD.") from exc
+    today = _now().astimezone(ZoneInfo("America/Denver")).date()
+    if any(item < today or item > today + timedelta(days=730) for item in candidates):
+        raise HTTPException(status_code=422, detail="Candidate dates must be within the next two years.")
+    with session_scope(request.app.state.session_factory) as session:
+        return candidate_date_availability(
+            session,
+            calendar=BuildingGoogleCalendarClient(),
+            candidates=candidates,
+            guest_start_time=guest_start_time,
+            guest_end_time=guest_end_time,
+        )
+
+
 @public_router.post("/inquiries", status_code=201)
 def create_inquiry(
     payload: InquiryInput,
@@ -685,7 +721,13 @@ def create_inquiry(
             select(BuildingInquiry).where(BuildingInquiry.idempotency_key == dedupe_key)
         ).scalar_one_or_none()
         if existing is not None:
-            return {"ok": True, "inquiry_id": existing.id, "status": existing.status, "duplicate": True}
+            return {
+                "ok": True,
+                "inquiry_id": existing.id,
+                "status": existing.status,
+                "duplicate": True,
+                "customer_receipt": dict(existing.payload_json or {}).get("_customer_receipt", {}),
+            }
 
         if payload.offering_id and session.get(BuildingOffering, payload.offering_id) is None:
             raise HTTPException(status_code=422, detail="Unknown offering.")
@@ -717,6 +759,17 @@ def create_inquiry(
         inquiry_details["_follow_up_sequence"] = build_follow_up_sequence(
             received_at, response_sla_hours
         )
+        if payload.kind == "event":
+            interview, prefilled_fields = prefill_event_interview(
+                preferred_date=payload.preferred_date,
+                details=inquiry_details,
+            )
+            inquiry_details["_event_interview"] = interview
+            inquiry_details["_event_interview_meta"] = {
+                "source": "website_submission",
+                "reviewed": False,
+                "prefilled_fields": prefilled_fields,
+            }
         inquiry = BuildingInquiry(
             id=str(uuid4()),
             idempotency_key=dedupe_key,
@@ -871,7 +924,22 @@ def create_inquiry(
             after_json=notification,
         ))
 
-        return {"ok": True, "inquiry_id": inquiry.id, "status": inquiry.status, "duplicate": False}
+        customer_receipt: dict[str, Any] = {}
+        if inquiry.kind == "event":
+            customer_receipt = attempt_inquiry_receipt(
+                session,
+                settings=request.app.state.settings,
+                inquiry=inquiry,
+                actor=actor,
+            )
+
+        return {
+            "ok": True,
+            "inquiry_id": inquiry.id,
+            "status": inquiry.status,
+            "duplicate": False,
+            "customer_receipt": customer_receipt,
+        }
 
 
 @public_router.post("/inquiries/{inquiry_id}/conversion-receipts", status_code=201)
@@ -1056,7 +1124,9 @@ def update_inquiry_lifecycle(
             list(inquiry_payload.get("_follow_up_sequence") or []),
             lifecycle_stage=payload.target_stage,
             changed_at=changed_at,
-            interview_complete=bool(inquiry_payload.get("_event_interview")),
+            interview_complete=bool(
+                dict(inquiry_payload.get("_event_interview_meta") or {}).get("reviewed")
+            ),
         )
         inquiry.payload_json = inquiry_payload
         if payload.assigned_owner.strip():

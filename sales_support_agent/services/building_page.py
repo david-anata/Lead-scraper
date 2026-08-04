@@ -642,13 +642,15 @@ def render_building_page(
             return ""
         interview = dict(item.get("event_interview") or {})
         answered = sum(bool(str(interview.get(key) or "").strip()) for key, _ in interview_fields)
+        interview_meta = dict(item.get("event_interview_meta") or {})
+        summary_suffix = " · staff review needed" if interview_meta.get("reviewed") is False else " answered"
         fields = "".join(
             f'<label>{_esc(label)}<textarea name="{_esc(key)}" rows="2">{_esc(interview.get(key) or "")}</textarea></label>'
             for key, label in interview_fields
         )
         return (
             '<details class="row-actions interview-workspace"><summary>'
-            f'Event interview · {answered}/{len(interview_fields)} answered</summary>'
+            f'Event interview · {answered}/{len(interview_fields)}{summary_suffix}</summary>'
             '<p class="sub">Capture facts before promising a date, price, layout, service, or exception. Partial saves are allowed.</p>'
             f'<form class="interview-grid" method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/event-interview">'
             f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
@@ -659,14 +661,23 @@ def render_building_page(
     def inquiry_sequence(item: dict[str, Any]) -> str:
         sequence = list(item.get("follow_up_sequence") or [])
         notification = dict(item.get("lead_notification") or {})
-        if not sequence and not notification:
+        receipt = dict(item.get("customer_receipt") or {})
+        if not sequence and not notification and not receipt:
             return ""
         notification_status = str(notification.get("status") or "not recorded")
+        receipt_status = str(receipt.get("status") or "not recorded")
         retry = (
             f'<form method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/notify">'
             f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
             '<button class="secondary secondary--small" type="submit">Retry staff alert</button></form>'
             if notification_status != "delivered"
+            else ""
+        )
+        receipt_retry = (
+            f'<form method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/receipt">'
+            f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+            '<button class="secondary secondary--small" type="submit">Retry customer acknowledgement</button></form>'
+            if receipt_status in {"not_configured", "failed", "bounced", "complained", "not recorded"}
             else ""
         )
         steps = "".join(
@@ -675,9 +686,23 @@ def render_building_page(
         )
         return (
             '<details class="row-actions"><summary>Notifications and follow-up plan</summary>'
-            f'<p class="sub">New-lead Slack alert: {_esc(notification_status.replace("_", " "))}. Customer messages are never auto-sent.</p>'
-            f'{retry}<ol class="sequence-list">{steps}</ol></details>'
+            f'<p class="sub">New-lead Slack alert: {_esc(notification_status.replace("_", " "))}. Customer acknowledgement: {_esc(receipt_status.replace("_", " "))}.</p>'
+            f'{retry}{receipt_retry}<ol class="sequence-list">{steps}</ol></details>'
         )
+
+    def original_submission(item: dict[str, Any]) -> str:
+        labels = {
+            "eventType": "Event type", "alternateDate": "Backup date",
+            "backupDate2": "Second backup date", "guestStartTime": "Guest start",
+            "guestEndTime": "Guest end", "groupSize": "Estimated attendance",
+            "notes": "Notes", "landingPage": "Landing page", "utmCampaign": "Campaign",
+        }
+        values = [("Phone", item.get("phone"))]
+        values.extend((labels.get(str(key), str(key)), value) for key, value in dict(item.get("details") or {}).items() if key != "eventHandoff")
+        rows = "".join(f'<dt>{_esc(label)}</dt><dd>{_esc(value)}</dd>' for label, value in values if str(value or "").strip())
+        if not rows:
+            return ""
+        return f'<details class="row-actions"><summary>Original website submission</summary><dl class="detail-list">{rows}</dl></details>'
 
     workspace_offerings = [
         item
@@ -728,7 +753,7 @@ def render_building_page(
     inquiry_rows = "".join(
         f"""
         <tr>
-          <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("email"))}</span></td>
+          <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("email"))}</span>{original_submission(item)}</td>
           <td>{_esc(item.get("kind"))}</td>
           <td>{_esc(item.get("preferred_date") or "—")}{tour_handoff_action(item)}{inquiry_interview_action(item)}</td>
           <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")} · respond by {_esc(item.get("response_due_at") or "not set")}</span>{inquiry_sequence(item)}{inquiry_lifecycle_action(item)}</td>

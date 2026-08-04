@@ -8,6 +8,65 @@ from typing import Any
 from sales_support_agent.integrations.slack import SlackClient
 
 
+def _detail(details: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = str(details.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def event_candidate_dates(
+    preferred_date: Any,
+    details: dict[str, Any],
+) -> list[str]:
+    """Return the primary and optional backup dates without duplicates."""
+
+    preferred = (
+        preferred_date.isoformat()
+        if hasattr(preferred_date, "isoformat")
+        else str(preferred_date or "").strip()
+    )
+    values = [
+        preferred,
+        _detail(details, "alternateDate", "alternate_date"),
+        _detail(details, "backupDate2", "backup_date_2"),
+    ]
+    return list(dict.fromkeys(value for value in values if value))[:3]
+
+
+def prefill_event_interview(
+    *,
+    preferred_date: Any,
+    details: dict[str, Any],
+) -> tuple[dict[str, str], list[str]]:
+    """Map existing prospect answers into the staff interview without completing it."""
+
+    dates = event_candidate_dates(preferred_date, details)
+    guest_start = _detail(details, "guestStartTime", "guest_start_time")
+    guest_end = _detail(details, "guestEndTime", "guest_end_time")
+    guest_schedule = ""
+    if guest_start or guest_end:
+        guest_schedule = f"{guest_start or 'Start not provided'}–{guest_end or 'End not provided'}"
+    values = {
+        "event_format": _detail(details, "eventType", "event_type"),
+        "candidate_dates": "; ".join(dates),
+        "guest_schedule": guest_schedule,
+        "access_schedule": (
+            "Setup or vendor access requested before guests arrive."
+            if _detail(details, "setupRequired", "setup_required").lower()
+            in {"1", "true", "yes", "on"}
+            else ""
+        ),
+        "attendance": _detail(details, "groupSize", "attendance"),
+        "catering": _detail(details, "catering"),
+        "alcohol": _detail(details, "alcohol"),
+        "special_requests": _detail(details, "notes"),
+    }
+    answers = {key: value for key, value in values.items() if value}
+    return answers, sorted(answers)
+
+
 def build_follow_up_sequence(received_at: datetime, response_sla_hours: int) -> list[dict[str, Any]]:
     """Return an internal sequence; these steps never send customer messages."""
 
@@ -81,6 +140,10 @@ def notify_new_building_lead(settings: Any, inquiry: Any) -> dict[str, Any]:
     if not client.is_configured():
         return {"status": "not_configured", "provider": "slack"}
     preferred = inquiry.preferred_date.isoformat() if inquiry.preferred_date else "No date supplied"
+    details = dict(inquiry.payload_json or {})
+    candidate_dates = event_candidate_dates(inquiry.preferred_date, details)
+    event_type = _detail(details, "eventType", "event_type") or "Not supplied"
+    attendance = _detail(details, "groupSize", "attendance") or "Not supplied"
     fallback = (
         f"New Building {inquiry.kind} lead: {inquiry.name} · {preferred} · "
         f"owner {inquiry.assigned_owner}"
@@ -97,13 +160,23 @@ def notify_new_building_lead(settings: Any, inquiry: Any) -> dict[str, Any]:
                 {"type": "mrkdwn", "text": f"*Journey*\n{inquiry.kind.title()}"},
                 {"type": "mrkdwn", "text": f"*Preferred date*\n{preferred}"},
                 {"type": "mrkdwn", "text": f"*Owner*\n{inquiry.assigned_owner}"},
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Candidate dates*\n{', '.join(candidate_dates) or 'Not supplied'}",
+                },
+                {"type": "mrkdwn", "text": f"*Event type*\n{event_type}"},
+                {"type": "mrkdwn", "text": f"*Attendance*\n{attendance}"},
             ],
         },
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "Open *Agent → Building → Sales* to review, respond, and complete the event interview.",
+                "text": (
+                    "Open <https://agent.anatainc.com/admin/building/sales|"
+                    "Agent → Building → Sales> to review the original submission, "
+                    "respond, and complete the event interview."
+                ),
             },
         },
     ]

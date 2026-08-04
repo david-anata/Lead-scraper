@@ -29,6 +29,8 @@ try:
         BuildingCommunicationPreference,
         BuildingContact,
         BuildingEmailEvent,
+        BuildingInquiry,
+        BuildingInquiryReceipt,
         BuildingSegment,
         BuildingSuppression,
     )
@@ -217,6 +219,46 @@ class BuildingEmailWebhookTests(unittest.TestCase):
             self.assertEqual(suppression.reason, "complaint")
             self.assertEqual(preference.marketing_status, "unsubscribed")
             self.assertTrue(preference.transactional_allowed)
+
+    def test_03_delivery_updates_inquiry_receipt_evidence(self) -> None:
+        with self.factory() as session:
+            session.add(BuildingInquiry(
+                id="receipt-inquiry",
+                idempotency_key="receipt-inquiry-key",
+                kind="event",
+                name="Receipt Prospect",
+                email="receipt@example.com",
+                consent_to_contact=True,
+                payload_json={"_customer_receipt": {"status": "sent"}},
+            ))
+            session.add(BuildingInquiryReceipt(
+                inquiry_id="receipt-inquiry",
+                status="sent",
+                to_email="receipt@example.com",
+                subject="We received your event inquiry",
+                provider_message_id="receipt-message-1",
+            ))
+            session.commit()
+        body = json.dumps({
+            "type": "email.delivered",
+            "data": {
+                "email_id": "receipt-message-1",
+                "to": ["receipt@example.com"],
+            },
+        }, separators=(",", ":")).encode()
+        response = self.client.post(
+            "/api/integrations/resend/webhook",
+            content=body,
+            headers=self._signed_headers(body, "evt-receipt-delivered"),
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["recipient_matched"])
+        with self.factory() as session:
+            receipt = session.get(BuildingInquiryReceipt, "receipt-inquiry")
+            inquiry = session.get(BuildingInquiry, "receipt-inquiry")
+            self.assertEqual(receipt.status, "delivered")
+            self.assertIsNotNone(receipt.delivered_at)
+            self.assertEqual(inquiry.payload_json["_customer_receipt"]["status"], "delivered")
 
 
 if __name__ == "__main__":

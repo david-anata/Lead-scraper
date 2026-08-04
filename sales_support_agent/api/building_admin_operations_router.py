@@ -101,6 +101,7 @@ from sales_support_agent.services.building_lead_intake import (
     advance_follow_up_sequence,
     notify_new_building_lead,
 )
+from sales_support_agent.services.building_inquiry_receipt import attempt_inquiry_receipt
 from sales_support_agent.services.building_page import (
     render_customer_status_link_result,
 )
@@ -331,6 +332,13 @@ async def save_event_interview_from_control_room(
             "updated_by": _actor(user),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+        interview_meta = dict(payload.get("_event_interview_meta") or {})
+        payload["_event_interview_meta"] = {
+            **interview_meta,
+            "reviewed": True,
+            "reviewed_by": _actor(user),
+            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        }
         lifecycle_stage = str(
             (payload.get("_lifecycle") or {}).get("stage") or "new"
         )
@@ -405,6 +413,32 @@ def retry_new_lead_notification_from_control_room(
         notice="Staff Slack notification delivered.",
         target="/admin/building/sales",
     )
+
+
+@router.post("/inquiries/{inquiry_id}/receipt", dependencies=FORM_DEPS)
+def retry_inquiry_receipt_from_control_room(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Retry the idempotent customer acknowledgement without duplicating a sent email."""
+
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None or inquiry.kind != "event":
+            return _redirect(error="Event inquiry not found.", target="/admin/building/sales")
+        result = attempt_inquiry_receipt(
+            session,
+            settings=request.app.state.settings,
+            inquiry=inquiry,
+            actor=_actor(user),
+        )
+    if result.get("status") not in {"sent", "delivered", "delivery_delayed"}:
+        return _redirect(
+            error="Customer acknowledgement was not sent; the inquiry remains safely in Agent.",
+            target="/admin/building/sales",
+        )
+    return _redirect(notice="Customer acknowledgement is sent.", target="/admin/building/sales")
 
 
 @router.post("/reservations", dependencies=FORM_DEPS)
