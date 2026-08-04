@@ -2366,6 +2366,23 @@ input:focus, select:focus, textarea:focus {
 .cash-calendar-legend i { width: 9px; height: 9px; border-radius: 50%; background: var(--anata-blue); }
 .cash-calendar-legend i.is-planned { background: var(--good); }
 .cash-calendar-legend i.is-warning { background: var(--warn); }
+.cash-calendar-weekly {
+  padding: 20px;
+  border: 1px solid var(--anata-line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .72);
+}
+.cash-calendar-weekly__note { margin: 4px 0 14px; color: var(--anata-muted); font-size: 12px; }
+.cash-calendar-weekly__scroll { overflow-x: auto; }
+.cash-calendar-weekly table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cash-calendar-weekly th,
+.cash-calendar-weekly td { padding: 12px; border-bottom: 1px solid var(--anata-line); text-align: right; vertical-align: top; }
+.cash-calendar-weekly thead th { color: var(--anata-muted); font: 800 10px/1.3 "Montserrat", sans-serif; text-transform: uppercase; letter-spacing: .06em; }
+.cash-calendar-weekly th:first-child { text-align: left; }
+.cash-calendar-weekly tbody tr:last-child th,
+.cash-calendar-weekly tbody tr:last-child td { border-bottom: 0; }
+.cash-calendar-weekly tbody strong { display: block; color: var(--anata-ink); font: 800 13px/1.3 "Montserrat", sans-serif; }
+.cash-calendar-weekly tbody small { display: block; margin-top: 3px; color: var(--anata-muted); font-size: 10px; }
 .cash-calendar-workspace {
   padding: 22px;
   border: 1px solid var(--anata-line);
@@ -2504,6 +2521,8 @@ input:focus, select:focus, textarea:focus {
   .cash-calendar-day--today { margin-inline: -6px; }
   .cash-calendar-event { grid-template-columns: 1fr; gap: 8px; }
   .cash-calendar-event__amount { grid-template-columns: 1fr auto; justify-items: start; align-items: center; text-align: left; }
+  .cash-calendar-weekly { padding: 16px; }
+  .cash-calendar-weekly table { min-width: 600px; }
   .money-brief .finance-nav {
     display: grid;
     grid-template-columns: 1fr 1fr;

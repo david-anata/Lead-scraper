@@ -129,6 +129,14 @@ def _day_label(day: date, as_of: date) -> tuple[str, str]:
     return day.strftime("%A"), day.strftime("%b %d").replace(" 0", " ")
 
 
+def _week_label(start: date, end: date, as_of: date) -> str:
+    if start <= as_of <= end:
+        return "This week"
+    if start > as_of:
+        return "Next week" if start <= as_of + timedelta(days=7) else "Upcoming week"
+    return "Previous week"
+
+
 def build_cash_calendar(
     rows: Iterable[Mapping[str, Any]],
     *,
@@ -189,10 +197,11 @@ def build_cash_calendar(
                 else "posted_unplanned"
             ),
             "state_label": (
-                "Posted · planned" if planned
-                else "Posted · expected from history" if expected
-                else "Posted · not in plan"
+                "Paid · matched to plan" if planned
+                else "Paid · expected from history" if expected
+                else "Paid · not in plan"
             ),
+            "payment_status": "paid",
             "name": _name(row),
             "amount_cents": amount,
             "category": _category(row),
@@ -237,18 +246,23 @@ def build_cash_calendar(
         if due is None or due < today or due > end:
             continue
         face = max(0, int(row.get("amount_cents") or 0))
-        open_amount = max(0, face - settled_by_obligation.get(str(row.get("id") or ""), 0))
+        paid_amount = min(face, settled_by_obligation.get(str(row.get("id") or ""), 0))
+        open_amount = max(0, face - paid_amount)
         if open_amount <= 0:
             continue
         category = _category(row)
         event = {
             "id": str(row.get("id") or ""),
             "kind": "planned",
-            "state_label": "Planned",
+            "state_label": "Partially paid · balance due" if paid_amount else "Unpaid · planned",
+            "payment_status": "partially_paid" if paid_amount else "unpaid",
             "name": _name(row, "Planned payment"),
             "amount_cents": open_amount,
             "category": category,
-            "evidence": "Known bill or schedule",
+            "evidence": (
+                f"{_money(paid_amount)} paid; {_money(open_amount)} remains"
+                if paid_amount else "Known bill or schedule; no posted payment is matched"
+            ),
             "href": "/admin/finances/review",
             "action_label": "Review plan",
             "protected": category in _PROTECTED_CATEGORIES,
@@ -270,7 +284,8 @@ def build_cash_calendar(
         event = {
             "id": str(row.get("id") or row.get("pattern_key") or ""),
             "kind": kind,
-            "state_label": "Planned from history" if confirmed else "Likely from history · not planned",
+            "state_label": "Unpaid · planned from history" if confirmed else "Unconfirmed · likely from history",
+            "payment_status": "unpaid" if confirmed else "unconfirmed",
             "name": _name(row, "Possible recurring expense"),
             "amount_cents": amount,
             "category": _category(row),
@@ -291,6 +306,46 @@ def build_cash_calendar(
             key=lambda item: (priority.get(str(item["kind"]), 9), -int(item["amount_cents"]), str(item["name"]))
         )
 
+    weeks: list[dict[str, Any]] = []
+    week_start = start - timedelta(days=start.weekday())
+    while week_start <= end:
+        week_end = week_start + timedelta(days=6)
+        included = [
+            bucket for bucket in ordered_days
+            if week_start <= date.fromisoformat(str(bucket["date"])) <= week_end
+        ]
+        events = [event for bucket in included for event in bucket["events"]]
+        weeks.append({
+            "start": week_start.isoformat(),
+            "end": week_end.isoformat(),
+            "label": _week_label(week_start, week_end, today),
+            "date_label": (
+                f"{week_start.strftime('%b %d').replace(' 0', ' ')}–"
+                f"{week_end.strftime('%b %d').replace(' 0', ' ')}"
+            ),
+            "paid_cents": sum(
+                int(event["amount_cents"]) for event in events
+                if event.get("payment_status") == "paid"
+            ),
+            "unpaid_cents": sum(
+                int(event["amount_cents"]) for event in events
+                if event.get("payment_status") in {"unpaid", "partially_paid"}
+            ),
+            "possible_cents": sum(
+                int(event["amount_cents"]) for event in events
+                if event.get("payment_status") == "unconfirmed"
+            ),
+            "paid_count": sum(1 for event in events if event.get("payment_status") == "paid"),
+            "unpaid_count": sum(
+                1 for event in events
+                if event.get("payment_status") in {"unpaid", "partially_paid"}
+            ),
+            "possible_count": sum(
+                1 for event in events if event.get("payment_status") == "unconfirmed"
+            ),
+        })
+        week_start += timedelta(days=7)
+
     past_events = [event for bucket in ordered_days if bucket["period"] in {"past", "today"}
                    for event in bucket["events"] if str(event["kind"]).startswith("posted_")]
     future_events = [event for bucket in ordered_days if bucket["period"] in {"today", "future"}
@@ -304,6 +359,7 @@ def build_cash_calendar(
         "future_days": future_days,
         "actual_source": source,
         "days": ordered_days,
+        "weeks": weeks,
         "totals": {
             "posted_cents": sum(int(item["amount_cents"]) for item in past_events),
             "unplanned_posted_cents": sum(
@@ -413,9 +469,10 @@ def load_cash_calendar(*, as_of: date | None = None) -> dict[str, Any]:
 
 def _event_html(event: Mapping[str, Any]) -> str:
     kind = html.escape(str(event.get("kind") or "planned"), quote=True)
+    payment_status = html.escape(str(event.get("payment_status") or "unconfirmed"), quote=True)
     protected = bool(event.get("protected"))
     return f"""
-      <li class="cash-calendar-event cash-calendar-event--{kind}" data-calendar-kind="{kind}">
+      <li class="cash-calendar-event cash-calendar-event--{kind}" data-calendar-kind="{kind}" data-payment-status="{payment_status}">
         <div class="cash-calendar-event__main">
           <span class="cash-calendar-state cash-calendar-state--{kind}">{html.escape(str(event.get('state_label') or 'Expense'))}</span>
           <strong>{html.escape(str(event.get('name') or 'Expense'))}</strong>
@@ -438,6 +495,15 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
         return _page_shell("Cash calendar", "calendar", body, flash=flash)
 
     totals = calendar.get("totals") or {}
+    week_rows = []
+    for week in calendar.get("weeks") or []:
+        week_rows.append(f"""
+          <tr>
+            <th scope="row"><strong>{html.escape(str(week.get('label') or 'Week'))}</strong><small>{html.escape(str(week.get('date_label') or ''))}</small></th>
+            <td><strong>{_money(int(week.get('paid_cents') or 0))}</strong><small>{int(week.get('paid_count') or 0)} paid</small></td>
+            <td><strong>{_money(int(week.get('unpaid_cents') or 0))}</strong><small>{int(week.get('unpaid_count') or 0)} still due</small></td>
+            <td><strong>{_money(int(week.get('possible_cents') or 0))}</strong><small>{int(week.get('possible_count') or 0)} unconfirmed</small></td>
+          </tr>""")
     day_rows: list[str] = []
     day_buttons: list[str] = []
     for day in calendar.get("days") or []:
@@ -490,10 +556,22 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
 
       <aside class="cash-calendar-legend" aria-label="Calendar status meanings">
         <strong>How to read this</strong>
-        <span><i class="is-posted"></i>Posted means it left the bank.</span>
-        <span><i class="is-planned"></i>Planned means a known bill or schedule exists.</span>
-        <span><i class="is-warning"></i>Likely from history is an early warning, not a confirmed bill.</span>
+        <span><i class="is-posted"></i>Paid means the bank confirms it left.</span>
+        <span><i class="is-planned"></i>Unpaid means a known balance still needs payment.</span>
+        <span><i class="is-warning"></i>Unconfirmed is an early warning, not a bill or payment.</span>
       </aside>
+
+      <section class="cash-calendar-weekly" aria-labelledby="cash-calendar-weekly-title">
+        <div class="money-section-heading"><div><p class="finance-eyebrow">Weekly roll-up</p>
+        <h2 id="cash-calendar-weekly-title">What left, what is due, and what is only possible</h2></div></div>
+        <p class="cash-calendar-weekly__note">Columns stay separate. Possible expenses are not added to the unpaid total.</p>
+        <div class="cash-calendar-weekly__scroll">
+          <table>
+            <thead><tr><th scope="col">Week</th><th scope="col">Paid from bank</th><th scope="col">Unpaid planned</th><th scope="col">Possible · unconfirmed</th></tr></thead>
+            <tbody>{''.join(week_rows)}</tbody>
+          </table>
+        </div>
+      </section>
 
       <section class="cash-calendar-workspace" aria-labelledby="cash-calendar-title">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Daily drill-down</p>
@@ -513,7 +591,7 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
       </section>
 
       <footer class="money-proof-note"><strong>What the calendar does not assume</strong>
-      <p>Historical warnings do not reduce projected cash and do not become planned bills until you confirm them. This page never moves money, cancels a vendor, runs payroll, or edits QuickBooks.</p></footer>
+      <p>Paid requires a posted bank withdrawal. Unpaid shows a known remaining balance. Historical warnings do not reduce projected cash and do not become planned bills until you confirm them. This page never moves money, cancels a vendor, runs payroll, or edits QuickBooks.</p></footer>
     </div>
     <script>
     (() => {{
