@@ -4,7 +4,7 @@ import dataclasses
 import os
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 os.environ.setdefault("SALES_AGENT_DB_URL", "sqlite:///" + tempfile.gettempdir() + "/building_ops_boot.db")
@@ -830,3 +830,23 @@ class BuildingOperationsTests(unittest.TestCase):
                 )
         finally:
             app.state.settings = original
+
+    def test_public_event_date_check_fails_open_without_calendar_details(self) -> None:
+        calendar = mock.Mock(configured=False)
+        first = (date.today() + timedelta(days=40)).isoformat()
+        second = (date.today() + timedelta(days=41)).isoformat()
+        with mock.patch(
+            "sales_support_agent.api.building_router.BuildingGoogleCalendarClient",
+            return_value=calendar,
+        ):
+            response = self.client.get(
+                "/api/public/building/event-date-availability",
+                headers={"X-Internal-Api-Key": "building-test-key"},
+                params={"dates": f"{first},{second}"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            [item["status"] for item in response.json()["dates"]],
+            ["unknown", "unknown"],
+        )
+        self.assertNotIn("summary", response.text.lower())

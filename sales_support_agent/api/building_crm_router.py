@@ -5241,6 +5241,9 @@ def building_control_room(
                     "event_interview": dict(
                         (item.payload_json or {}).get("_event_interview") or {}
                     ),
+                    "event_interview_meta": dict(
+                        (item.payload_json or {}).get("_event_interview_meta") or {}
+                    ),
                     "follow_up_sequence": [
                         _follow_up_step_payload(dict(step))
                         for step in list(
@@ -5251,6 +5254,10 @@ def building_control_room(
                     "lead_notification": dict(
                         (item.payload_json or {}).get("_lead_notification") or {}
                     ),
+                    "customer_receipt": dict(
+                        (item.payload_json or {}).get("_customer_receipt") or {}
+                    ),
+                    "phone": item.phone,
                     "details": {
                         key: value
                         for key, value in dict(item.payload_json or {}).items()

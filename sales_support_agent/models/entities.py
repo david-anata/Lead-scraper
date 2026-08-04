@@ -1680,6 +1680,37 @@ class BuildingInquiry(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class BuildingInquiryReceipt(Base):
+    """One idempotent transactional receipt for a Building inquiry."""
+
+    __tablename__ = "building_inquiry_receipts"
+
+    inquiry_id: Mapped[str] = mapped_column(
+        ForeignKey("building_inquiries.id"), primary_key=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    to_email: Mapped[str] = mapped_column(String(255), index=True)
+    subject: Mapped[str] = mapped_column(String(255), default="")
+    content_checksum: Mapped[str] = mapped_column(String(64), default="")
+    provider: Mapped[str] = mapped_column(String(32), default="resend")
+    provider_message_id: Mapped[str] = mapped_column(
+        String(255), default="", index=True
+    )
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    attempted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
 class BuildingAuditEvent(Base):
     __tablename__ = "building_audit_events"
 
