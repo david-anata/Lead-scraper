@@ -316,6 +316,31 @@ class AdminExecutiveTests(unittest.TestCase):
         self.assertIn("id=\"scorecard-table\"", html)
         self.assertNotIn("Due</th>", html)
 
+    def test_unknown_open_tasks_are_not_counted_as_sales_pipeline(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        with session_scope(session_factory) as session:
+            session.add(
+                LeadMirror(
+                    clickup_task_id="operations-task",
+                    list_id="list-123",
+                    task_name="Vendor bill",
+                    task_url="https://app.clickup.com/t/operations-task",
+                    status="Open",
+                    created_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+                    last_sync_at=datetime(2026, 3, 18, tzinfo=timezone.utc),
+                )
+            )
+
+        with session_scope(session_factory) as session:
+            executive = build_executive_data(
+                settings=_build_settings(),
+                session=session,
+                as_of_date=date(2026, 3, 18),
+            )
+
+        self.assertEqual(executive.kpis["active_leads"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

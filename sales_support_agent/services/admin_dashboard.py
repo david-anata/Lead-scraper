@@ -1256,14 +1256,15 @@ def build_executive_data(
             .order_by(CommunicationEvent.occurred_at.desc())
         ).scalars()
     )
+    configured_active_statuses = {
+        normalize_status_key(status)
+        for status in settings.active_statuses
+        if normalize_status_key(status)
+    }
     active_leads = [
         lead
         for lead in leads
-        if is_active_pipeline_status(
-            (lead.status or "").strip(),
-            active_statuses=settings.active_statuses,
-            inactive_statuses=settings.inactive_statuses,
-        )
+        if normalize_status_key((lead.status or "").strip()) in configured_active_statuses
         and not _exclude_from_dashboard(lead.status or "")
     ]
     active_task_ids = [lead.clickup_task_id for lead in active_leads if lead.clickup_task_id]
