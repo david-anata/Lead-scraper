@@ -5202,6 +5202,9 @@ def building_control_room(
                     "status": item.status,
                     "source": item.source,
                     "source_reference": item.source_reference,
+                    "attribution": dict(
+                        (item.payload_json or {}).get("_attribution") or {}
+                    ),
                     "hubspot_contact_id": item.hubspot_contact_id,
                     "hubspot_attempt_count": int(
                         (
