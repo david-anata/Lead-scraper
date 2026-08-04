@@ -2971,11 +2971,11 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <summary>Submit a new website issue</summary>
             <div class="row-actions"><h2>Describe the issue</h2>{_issue_help_block()}</div>
             <form action="/admin/api/website-ops/feedback" method="post" class="form-grid">
-              <div><label>Category</label><select name="category"><option>SEO</option><option>Content</option><option>UX</option><option>Conversion</option><option>Technical</option><option>Strategy</option></select></div>
-              <div><label>Priority</label><select name="priority"><option>Low</option><option selected>Medium</option><option>High</option><option>Urgent</option></select></div>
-              <div class="span-2"><label>Page URL</label><input type="text" name="page_url" placeholder="https://anatainc.com/services/..."></div>
-              <div class="span-2"><label>Summary</label><input type="text" name="summary" placeholder="Short description of the issue"></div>
-              <div class="span-2"><label>Details</label><textarea name="details" placeholder="What is wrong, why it matters, and what outcome is needed."></textarea></div>
+              <div><label for="website-issue-category">Category</label><select id="website-issue-category" name="category"><option>SEO</option><option>Content</option><option>UX</option><option>Conversion</option><option>Technical</option><option>Strategy</option></select></div>
+              <div><label for="website-issue-priority">Priority</label><select id="website-issue-priority" name="priority"><option>Low</option><option selected>Medium</option><option>High</option><option>Urgent</option></select></div>
+              <div class="span-2"><label for="website-issue-url">Page URL</label><input id="website-issue-url" type="text" name="page_url" placeholder="https://anatainc.com/services/..."></div>
+              <div class="span-2"><label for="website-issue-summary">Summary</label><input id="website-issue-summary" type="text" name="summary" placeholder="Short description of the issue"></div>
+              <div class="span-2"><label for="website-issue-details">Details</label><textarea id="website-issue-details" name="details" placeholder="What is wrong, why it matters, and what outcome is needed."></textarea></div>
               <div class="span-2"><button type="submit">Save Feedback</button></div>
             </form>
           </details>
