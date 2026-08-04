@@ -56,6 +56,16 @@ def test_navigation_without_user_still_uses_consistent_account_menu() -> None:
     assert 'class="top-link" href="/admin/logout"' not in nav
 
 
+def test_operator_shell_loads_shared_interaction_contracts() -> None:
+    nav = render_agent_nav("website_ops", permissions={"website_ops.seo"})
+    script = (ROOT / "sales_support_agent/static/admin-interactions.js").read_text(encoding="utf-8")
+
+    assert 'src="/static/admin-interactions.js?v=1"' in nav
+    assert "aria-busy" in script
+    assert "confirmMessage" in script
+    assert "data-paginate" in script
+
+
 def test_authenticated_page_families_use_canonical_canvas_width() -> None:
     sources = (
         "sales_support_agent/static/admin.css",

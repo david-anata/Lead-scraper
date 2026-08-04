@@ -309,7 +309,7 @@ def _candidate_cards(candidates: list[dict[str, Any]]) -> str:
         action_controls = _candidate_action_controls(candidate, draft_reply)
         cards.append(
             f"""
-            <article class="candidate-card">
+            <article class="candidate-card" data-page-item>
               <div class="candidate-top">
                 <span class="candidate-brand">{html.escape(str(candidate.get('brand', candidate.get('brand_name', candidate.get('channel_name', 'Unknown')))))}</span>
                 <span class="candidate-action">{html.escape(str(candidate.get('ui_recommendation', 'investigating')).replace('_', ' '))}</span>
@@ -811,7 +811,7 @@ def render_fulfillment_report_detail_page(
             else '<p class="empty">No escalations recorded in this report.</p>'
         )
         + "</div></section>"
-        + '<section class="panel"><h2>Support threads</h2><div class="candidate-list">'
+        + '<section class="panel"><h2>Support threads</h2><p class="candidate-meta">Review ten threads at a time. Use Next to continue without losing your place.</p><div class="candidate-list" data-paginate data-page-size="10" data-pagination-label="Support thread pages">'
         + _candidate_cards(report.get("candidates", []) if isinstance(report.get("candidates", []), list) else [])
         + "</div></section>"
     )

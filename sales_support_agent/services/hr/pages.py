@@ -259,6 +259,7 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
   {nav}
   <main id="agent-main-content" class="hr-main app-container app-page">{body}</main>
   <nav class="hr-mobile-nav" aria-label="Employee HR shortcuts">{mobile_nav}</nav>
+  <script src="/static/admin-interactions.js?v=1" defer></script>
   <script>
     if ('serviceWorker' in navigator) {{
       window.addEventListener('load', function() {{

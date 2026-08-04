@@ -648,7 +648,7 @@ def render_content_control_room(
           <td>{html.escape(row.playbook_version)}</td>
           <td>{_format_time(row.created_at)}</td>
           <td>{(
-              f'<button class="admin-btn admin-btn--secondary content-publish" type="button" data-artifact-id="{html.escape(row.id)}" data-channel="{html.escape(row.channel.replace("_", " ").title())}">Approve and publish</button>'
+              f'<button class="admin-btn admin-btn--secondary content-publish" type="button" data-artifact-id="{html.escape(row.id)}" data-channel="{html.escape(row.channel.replace("_", " ").title())}" aria-label="Review and publish {html.escape(row.title)} to {html.escape(row.channel.replace("_", " ").title())}">Review and publish to {html.escape(row.channel.replace("_", " ").title())}</button>'
               if can_operate and row.artifact_type == "native_candidate" and row.status in {"needs_review", "approved", "failed"}
               else (f'<a href="{html.escape(row.external_url)}" rel="noopener">View live post</a>' if row.external_url else "—")
           )}</td>
