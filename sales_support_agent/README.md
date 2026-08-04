@@ -200,6 +200,7 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `GET /api/public/building/offerings`
 - `GET /api/public/building/availability`
 - `POST /api/public/building/inquiries`
+- `POST /api/public/building/inquiries/{inquiry_id}/conversion-receipts`
 - `POST /api/public/building/event-estimates`
 - `POST /api/internal/building/inquiries/{inquiry_id}/retry-hubspot`
 - `GET /admin/building`
@@ -421,6 +422,13 @@ Retry HubSpot action in Building Control. Retry looks up the contact by exact
 email before creating one and reuses any stored HubSpot contact ID, preventing
 an ordinary retry from creating an uncontrolled duplicate. Success returns the
 inquiry to the new-lead queue and preserves the sync audit history.
+
+Building website attribution preserves first- and latest-touch UTMs plus
+Google click identifiers (`gclid`, `gbraid`, and `wbraid`) on the inquiry and
+contact. After the browser queues the Google Ads conversion, the website sends
+an authenticated receipt to Agent. Agent records that dispatch exactly once by
+inquiry ID and labels provider acceptance as unconfirmed; the receipt proves
+our code attempted the conversion, not that Google accepted or attributed it.
 
 Building Control also provides assisted intake for Facebook Marketplace,
 Eventective, referrals, phone calls, walk-ins, and direct inquiries. External

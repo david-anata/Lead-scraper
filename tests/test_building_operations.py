@@ -499,6 +499,8 @@ class BuildingOperationsTests(unittest.TestCase):
                 "firstLandingPage": "/",
                 "firstUtmSource": "direct",
                 "firstCapturedAt": "2026-08-01T12:00:00Z",
+                "gclid": "latest-click-123",
+                "firstGclid": "first-click-456",
             },
         }
         self.assertEqual(
@@ -530,8 +532,15 @@ class BuildingOperationsTests(unittest.TestCase):
                 inquiry.payload_json["_attribution"]["campaign"], "summer"
             )
             self.assertEqual(
+                inquiry.payload_json["_attribution"]["gclid"], "latest-click-123"
+            )
+            self.assertEqual(
                 contact.metadata_json["_building_attribution"]["first_touch"]["source"],
                 "direct",
+            )
+            self.assertEqual(
+                contact.metadata_json["_building_attribution"]["first_touch"]["gclid"],
+                "first-click-456",
             )
             self.assertEqual(
                 contact.metadata_json["_building_attribution"]["latest_touch"]["source"],
@@ -578,6 +587,51 @@ class BuildingOperationsTests(unittest.TestCase):
                 2 * 60 * 60,
                 delta=1,
             )
+
+    def test_zz_google_ads_browser_conversion_receipt_is_audited_once(self) -> None:
+        created = self.client.post(
+            "/api/public/building/inquiries",
+            headers={
+                "X-Internal-Api-Key": "building-test-key",
+                "Idempotency-Key": "google-ads-receipt-test",
+            },
+            json={
+                "kind": "event",
+                "name": "Conversion Test",
+                "email": "conversion-test@example.com",
+                "consent_to_contact": True,
+                "source": "google",
+                "details": {"gclid": "click-123"},
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        inquiry_id = created.json()["inquiry_id"]
+        payload = {
+            "provider": "google_ads",
+            "event_name": "conversion",
+            "destination": "AW-740931224/JY4TCOv43c4BEJjtpuEC",
+        }
+        first = self.client.post(
+            f"/api/public/building/inquiries/{inquiry_id}/conversion-receipts",
+            headers={"X-Internal-Api-Key": "building-test-key"},
+            json=payload,
+        )
+        duplicate = self.client.post(
+            f"/api/public/building/inquiries/{inquiry_id}/conversion-receipts",
+            headers={"X-Internal-Api-Key": "building-test-key"},
+            json=payload,
+        )
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertFalse(first.json()["duplicate"])
+        self.assertTrue(duplicate.json()["duplicate"])
+        with self.factory() as session:
+            rows = session.query(BuildingAuditEvent).filter_by(
+                entity_type="inquiry",
+                entity_id=inquiry_id,
+                action="google_ads_browser_conversion_dispatched",
+            ).all()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].after_json["provider_acceptance"], "not_confirmed")
 
     def test_inquiry_response_and_qualification_are_audited_in_agent(self) -> None:
         with self.factory() as session:

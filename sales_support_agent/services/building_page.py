@@ -732,7 +732,7 @@ def render_building_page(
           <td>{_esc(item.get("kind"))}</td>
           <td>{_esc(item.get("preferred_date") or "—")}{tour_handoff_action(item)}{inquiry_interview_action(item)}</td>
           <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")} · respond by {_esc(item.get("response_due_at") or "not set")}</span>{inquiry_sequence(item)}{inquiry_lifecycle_action(item)}</td>
-          <td>{_esc(item.get("source"))}<span class="sub">{_esc(item.get("source_reference"))}</span></td>
+          <td>{_esc(item.get("source"))}<span class="sub">{_esc((item.get("attribution") or {}).get("medium") or "direct / unknown medium")} · {_esc((item.get("attribution") or {}).get("campaign") or "no campaign")}</span><span class="sub">{_esc((item.get("attribution") or {}).get("term") or item.get("source_reference"))}</span>{_badge("Google click ID captured") if any((item.get("attribution") or {}).get(key) for key in ("gclid", "gbraid", "wbraid")) else ""}</td>
         </tr>
         """
         for item in inquiries

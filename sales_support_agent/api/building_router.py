@@ -312,6 +312,12 @@ class InquiryRetryInput(BaseModel):
     actor: str = Field(min_length=1, max_length=255)
 
 
+class InquiryConversionReceiptInput(BaseModel):
+    provider: Literal["google_ads"]
+    event_name: Literal["conversion"]
+    destination: str = Field(min_length=1, max_length=128)
+
+
 class InquiryLifecycleInput(BaseModel):
     target_stage: Literal["responded", "qualified", "closed_won", "closed_lost"]
     actor: str = Field(min_length=1, max_length=255)
@@ -775,6 +781,9 @@ def create_inquiry(
                 "campaign": payload.details.get("firstUtmCampaign"),
                 "content": payload.details.get("firstUtmContent"),
                 "term": payload.details.get("firstUtmTerm"),
+                "gclid": payload.details.get("firstGclid"),
+                "gbraid": payload.details.get("firstGbraid"),
+                "wbraid": payload.details.get("firstWbraid"),
                 "landing_page": payload.details.get("firstLandingPage"),
                 "offering_id": inquiry.offering_id or "",
             },
@@ -863,6 +872,52 @@ def create_inquiry(
         ))
 
         return {"ok": True, "inquiry_id": inquiry.id, "status": inquiry.status, "duplicate": False}
+
+
+@public_router.post("/inquiries/{inquiry_id}/conversion-receipts", status_code=201)
+def record_inquiry_conversion_receipt(
+    inquiry_id: str,
+    payload: InquiryConversionReceiptInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Audit one browser conversion dispatch without claiming provider acceptance."""
+
+    _require_building_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        action = "google_ads_browser_conversion_dispatched"
+        existing = session.execute(
+            select(BuildingAuditEvent).where(
+                BuildingAuditEvent.entity_type == "inquiry",
+                BuildingAuditEvent.entity_id == inquiry.id,
+                BuildingAuditEvent.action == action,
+            )
+        ).scalars().first()
+        if existing is not None:
+            return {"ok": True, "inquiry_id": inquiry.id, "duplicate": True}
+        attribution = dict((inquiry.payload_json or {}).get("_attribution") or {})
+        session.add(
+            BuildingAuditEvent(
+                entity_type="inquiry",
+                entity_id=inquiry.id,
+                action=action,
+                actor="anata-building",
+                after_json={
+                    "provider": payload.provider,
+                    "event_name": payload.event_name,
+                    "destination": payload.destination,
+                    "transaction_id": inquiry.id,
+                    "click_id_present": any(
+                        attribution.get(key) for key in ("gclid", "gbraid", "wbraid")
+                    ),
+                    "provider_acceptance": "not_confirmed",
+                },
+            )
+        )
+        return {"ok": True, "inquiry_id": inquiry.id, "duplicate": False}
 
 
 @internal_router.post("/inquiries/{inquiry_id}/retry-hubspot")
