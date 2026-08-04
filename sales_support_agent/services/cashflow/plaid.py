@@ -565,13 +565,15 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
         # Without this an imported payment never becomes settlement evidence,
         # which is what leaves obligations stuck in "no matching bank payment".
         # Only high-confidence, non-protected matches are automatic.
-        if counts["added"] or counts["modified"]:
-            try:
-                from sales_support_agent.services.cashflow.plaid_match import auto_match_on_sync
-                match_result = auto_match_on_sync(actor="plaid-sync")
-                counts["matched"] = int(match_result.get("confirmed") or 0)
-            except Exception as exc:
-                logger.warning("Plaid auto-match after sync failed item_id=%s: %s", local_item_id, exc)
+        # Run on every refresh, even when Plaid itself has no new rows. A bill
+        # or schedule may have been added after its payment was imported; the
+        # next refresh should still connect that existing payment automatically.
+        try:
+            from sales_support_agent.services.cashflow.plaid_match import auto_match_on_sync
+            match_result = auto_match_on_sync(actor="plaid-sync")
+            counts["matched"] = int(match_result.get("confirmed") or 0)
+        except Exception as exc:
+            logger.warning("Plaid auto-match after sync failed item_id=%s: %s", local_item_id, exc)
     except Exception as exc:
         code = exc.code if isinstance(exc, PlaidError) else "sync_error"
         with get_engine().begin() as connection:

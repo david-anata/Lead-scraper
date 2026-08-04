@@ -71,6 +71,63 @@ def test_posted_expenses_are_split_by_linked_plan_evidence():
     assert calendar["totals"]["unplanned_posted_cents"] == 4900
 
 
+def test_very_likely_recurring_charge_is_recognized_without_becoming_a_settlement():
+    occurred = TODAY - timedelta(days=1)
+    pattern = {
+        "pattern_key": "pattern-1",
+        "vendor": "Reliable Software",
+        "merchant_key": "reliable software",
+        "amount_cents": 4900,
+        "confidence_bps": 8800,
+        "confidence_label": "Very likely",
+        "occurrences": 5,
+        "paid_in_pieces": False,
+        "evidence": [{
+            "due_date": occurred.isoformat(),
+            "amount_cents": 4900,
+            "raw_descriptor": "Reliable Software",
+        }],
+    }
+
+    calendar = build_cash_calendar(
+        [_transaction("tx-recurring", days_ago=1, amount=4900, name="Reliable Software")],
+        historical_patterns=[pattern],
+        as_of=TODAY,
+    )
+
+    event = _events(calendar, occurred)[0]
+    assert event["kind"] == "posted_expected"
+    assert event["state_label"] == "Posted · expected from history"
+    assert event["href"] == "/admin/finances/whats-coming"
+    assert calendar["totals"]["expected_posted_cents"] == 4900
+    assert calendar["totals"]["unplanned_posted_cents"] == 0
+
+
+def test_weak_or_aggregate_history_never_hides_a_charge_from_review():
+    occurred = TODAY - timedelta(days=1)
+    base = {
+        "vendor": "Uncertain Software",
+        "merchant_key": "uncertain software",
+        "confidence_bps": 7400,
+        "occurrences": 5,
+        "evidence": [{"due_date": occurred.isoformat(), "amount_cents": 4900}],
+    }
+    calendar = build_cash_calendar(
+        [_transaction("tx-uncertain", days_ago=1, amount=4900, name="Uncertain Software")],
+        historical_patterns=[base],
+        as_of=TODAY,
+    )
+    assert _events(calendar, occurred)[0]["kind"] == "posted_unplanned"
+
+    aggregate = {**base, "confidence_bps": 9000, "paid_in_pieces": True}
+    calendar = build_cash_calendar(
+        [_transaction("tx-pieces", days_ago=1, amount=4900, name="Uncertain Software")],
+        historical_patterns=[aggregate],
+        as_of=TODAY,
+    )
+    assert _events(calendar, occurred)[0]["kind"] == "posted_unplanned"
+
+
 def test_future_plan_uses_only_remaining_unsettled_amount():
     rows = [
         _obligation("part-paid", days_ahead=3, amount=20000, name="Part-paid bill"),
@@ -132,6 +189,7 @@ def test_calendar_renderer_explains_evidence_and_filters_without_write_controls(
     assert "not counted as required" in page
     assert "data-calendar-filter=\"attention\"" in page
     assert "Posted source: Plaid" in page
+    assert "Recognized automatically" in page
     assert page.count('data-calendar-date="') == 22
     assert 'class="cash-calendar-date is-selected"' in page
     assert "Showing Today. Choose another day to drill down." in page

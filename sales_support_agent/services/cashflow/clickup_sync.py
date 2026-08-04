@@ -187,7 +187,7 @@ def _match_existing_posted_transactions(engine) -> int:
     rows = list_obligations(limit=5000)
     posted = [
         row for row in rows
-        if row.get("source") in {"csv", "qbo_bank"}
+        if row.get("source") in {"csv", "qbo_bank", "plaid"}
         and row.get("status") == "posted"
     ]
     planned = [
@@ -200,6 +200,10 @@ def _match_existing_posted_transactions(engine) -> int:
         and str(row.get("source_status") or "").lower() != "probable_duplicate"
         and str(row.get("match_status") or "").lower() != "duplicate"
         and int(row.get("amount_cents") or 0) > 0
+        # Payroll, taxes, and debt always require an explicit human review.
+        # A strong name/amount/date resemblance is still not permission to
+        # silently settle these protected commitments.
+        and str(row.get("commitment_type") or "").lower() not in {"payroll", "tax", "debt"}
     ]
     if not posted or not planned:
         return 0
@@ -217,7 +221,7 @@ def _match_existing_posted_transactions(engine) -> int:
                 conn,
                 obligation_event_id=str(match.planned_event_id),
                 transaction_event_id=str(match.csv_event_id),
-                idempotency_key=f"clickup-auto-match:{match.csv_event_id}:{match.planned_event_id}",
+                idempotency_key=f"obligation-auto-match:{match.csv_event_id}:{match.planned_event_id}",
             )
     return len(matches)
 

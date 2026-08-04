@@ -2320,7 +2320,7 @@ input:focus, select:focus, textarea:focus {
 .cash-calendar-page { gap: 22px; }
 .cash-calendar-summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
 }
 .cash-calendar-summary article {
@@ -2345,6 +2345,8 @@ input:focus, select:focus, textarea:focus {
 }
 .cash-calendar-summary__attention { border-color: rgba(185, 28, 28, .28) !important; }
 .cash-calendar-summary__attention strong { color: var(--bad); }
+.cash-calendar-summary__expected { border-color: rgba(13, 119, 107, .28) !important; }
+.cash-calendar-summary__expected strong { color: var(--good); }
 .cash-calendar-summary__warning { border-color: rgba(180, 105, 10, .28) !important; }
 .cash-calendar-summary__warning strong { color: var(--warn); }
 .cash-calendar-legend {
@@ -2474,6 +2476,7 @@ input:focus, select:focus, textarea:focus {
 .cash-calendar-state--posted_unplanned { background: rgba(185, 28, 28, .07); color: var(--bad); }
 .cash-calendar-state--history_warning { background: rgba(180, 105, 10, .09); color: var(--warn); }
 .cash-calendar-state--posted_planned { background: rgba(36, 113, 181, .08); color: var(--anata-blue); }
+.cash-calendar-state--posted_expected { background: rgba(13, 119, 107, .08); color: var(--good); }
 .cash-calendar-empty { padding: 9px 12px; color: var(--anata-muted); font-size: 11px; font-style: italic; }
 
 @media (max-width: 1100px) {
