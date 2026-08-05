@@ -20,12 +20,14 @@ from sales_support_agent.api.building_billing_router import (
     CollectionRefreshInput,
     CollectionReminderInput,
     CollectionTransitionInput,
+    EventBillingPreparationInput,
     InvoiceRunInput,
     ScheduleApprovalInput,
     approve_billing_schedule,
     create_invoice_from_schedule,
     refresh_collection_cases,
     send_collection_reminder,
+    sync_quickbooks_invoice,
     transition_collection_case,
     upsert_billing_account,
     upsert_billing_schedule,
@@ -966,6 +968,31 @@ def create_invoice_from_control_room(
     if result.get("duplicate"):
         return _redirect(notice="That scheduled invoice already exists; no duplicate was created.")
     return _redirect(notice="QuickBooks draft invoice created. Nothing was sent to the customer.")
+
+
+@router.post("/billing/invoices/{invoice_id}/sync-qbo", dependencies=FORM_DEPS)
+def sync_quickbooks_invoice_from_control_room(
+    invoice_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    try:
+        result = sync_quickbooks_invoice(
+            invoice_id,
+            EventBillingPreparationInput(actor=_actor(user)),
+            request,
+            _internal_key(request),
+        )
+    except HTTPException as exc:
+        return _redirect(error=str(exc.detail))
+    if not result.get("ok"):
+        return _redirect(
+            error="QuickBooks total differs from Agent. Review the draft in QuickBooks before sending."
+        )
+    status = str((result.get("invoice") or {}).get("status") or "draft")
+    return _redirect(
+        notice=f"QuickBooks invoice evidence refreshed as {status}; no message was sent."
+    )
 
 
 @router.post("/billing/collections/refresh", dependencies=FORM_DEPS)

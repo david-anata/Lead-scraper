@@ -215,7 +215,7 @@ class BuildingBookingWorkspaceTests(unittest.TestCase):
         base["reservation"]["agreement_status"] = "signed"
         phases, action = _build_phases(base)
         self.assertEqual(phases[4]["state"], "current")
-        self.assertEqual(action["title"], "Record cleared payment evidence.")
+        self.assertEqual(action["title"], "Prepare billing from the signed booking.")
 
         base["reservation"]["deposit_status"] = "paid"
         phases, action = _build_phases(base)

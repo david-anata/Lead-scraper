@@ -322,6 +322,9 @@ def _ensure_building_columns(engine: Any) -> None:
             "source_proposal_id": "VARCHAR(64) NOT NULL DEFAULT ''",
             "source_proposal_version": "INTEGER NOT NULL DEFAULT 0",
             "source_amount_cents": "INTEGER NOT NULL DEFAULT 0",
+            "source_quote_total_cents": "INTEGER NOT NULL DEFAULT 0",
+            "source_quote_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "billing_component": "VARCHAR(32) NOT NULL DEFAULT 'full_amount'",
         },
         "building_communication_preferences": {
             "operational_source": "VARCHAR(64) NOT NULL DEFAULT ''",
