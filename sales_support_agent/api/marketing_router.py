@@ -1646,7 +1646,10 @@ async def marketing_site_intake_create(
 # Digital shelf: cap competitor product pulls and the overall build time so a
 # slow Rainforest day cannot pin a worker (the shelf simply stays "pending"
 # until the next status poll after completion, or lands "empty" on failure).
-_SHELF_COMPETITOR_LIMIT = 8
+# Pull beyond the visible five because category/search results are often crowded
+# by several variants from the same brand. The public payload still exposes only
+# the best five distinct outside brands.
+_SHELF_COMPETITOR_LIMIT = 16
 _SHELF_MAX_ITEMS = 5
 _SHELF_REQUIRED_ITEMS = 5
 _SHELF_TIMEOUT_SECONDS = 90
