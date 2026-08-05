@@ -1180,6 +1180,7 @@ def render_budget_page(
     trim_rows = "".join(
         f"""
         <tr {'hidden' if str(item.get('opportunity_key') or '') not in actionable_keys else ''} data-trim-row data-trim-actionable="{'true' if str(item.get('opportunity_key') or '') in actionable_keys else 'false'}" data-trim-current="{'true' if item.get('cadence') in {'monthly', 'annual'} and int(item.get('monthly_potential_cents') or 0) > 0 else 'false'}" data-trim-cadence="{html.escape(str(item.get('cadence') or 'one_time'), quote=True)}" data-trim-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-state="{html.escape(str(item.get('review_state') or 'unknown'), quote=True)}" data-trim-original-note="{html.escape(str(item.get('review_note') or ''), quote=True)}" data-trim-opportunity="{html.escape(json.dumps(item, separators=(',', ':'), default=str), quote=True)}">
+          <td class="trim-select-cell"><input type="checkbox" data-trim-select aria-label="Select {html.escape(item['display_name'], quote=True)}"></td>
           <td><strong><a href="/admin/finances/budget/vendor/{html.escape(item['opportunity_key'], quote=True)}">{html.escape(item['display_name'])}</a></strong><span>{html.escape(str(item.get('cadence') or 'uncertain').replace('_', ' ').title())} · {html.escape(str(item['category']).replace('_', ' ').title())} · {item['active_months']} of 6 months</span>
           <span class="trim-month-history">{' · '.join(f"{date.fromisoformat(month + '-01').strftime('%b')} {_money(int(amount), exact=True)}" for month, amount in item['monthly_history'].items())}</span></td>
           <td>{_money(int(item['monthly_potential_cents']), exact=True) if item.get('cadence') in {'monthly', 'annual'} else '<span class="trim-not-recurring">No recent charge</span>' if item.get('cadence') == 'inactive' else '<span class="trim-not-recurring">Not recurring</span>'}</td>
@@ -1281,8 +1282,11 @@ def render_budget_page(
         <form method="post" action="/admin/finances/savings/reviews/batch" data-trim-batch-form data-trim-calculation="{html.escape(str(view['calculation_id']), quote=True)}">
         <input type="hidden" name="changes_json" data-trim-changes value="[]">
         <div class="trim-savebar"><span data-trim-unsaved>No unsaved changes</span><div class="trim-savebar__actions"><button class="btn btn-secondary" type="button" data-trim-discard disabled>Discard draft</button><button class="btn btn-primary" type="submit" data-trim-save disabled>Save all changes</button></div></div>
+        <div class="trim-selection-bar" data-trim-selection-bar hidden><div><strong data-trim-selection-count>0 selected</strong><span data-trim-selection-value>$0 monthly impact</span></div><div>
+          <button type="button" data-trim-bulk-choice="needed">Needed</button><button type="button" data-trim-bulk-choice="unknown">Unknown</button><button type="button" data-trim-bulk-choice="investigate">Investigate</button><button type="button" data-trim-bulk-choice="waste">Waste</button><button type="button" data-trim-clear-selection>Clear selection</button>
+        </div></div>
         <div class="money-table-wrap trim-table-wrap"><table class="budget-table trim-table"><thead><tr>
-          <th>Vendor</th><th>Monthly average</th><th>Six-month spend</th><th>Status</th><th>Decision and note</th>
+          <th class="trim-select-cell"><input type="checkbox" data-trim-select-all aria-label="Select all visible vendors"></th><th>Vendor</th><th>Monthly average</th><th>Six-month spend</th><th>Status</th><th>Decision and note</th>
         </tr></thead><tbody>{trim_rows}</tbody></table></div>
         <p class="budget-rule-note" data-trim-result-count>Showing {len(actionable_items)} highest-impact current vendors that still need a decision.</p>
         </form>
@@ -1331,12 +1335,17 @@ def render_budget_page(
       const saveButton = document.querySelector('[data-trim-save]');
       const discardButton = document.querySelector('[data-trim-discard]');
       const unsaved = document.querySelector('[data-trim-unsaved]');
+      const rowSelections = rows.map(row => row.querySelector('[data-trim-select]')).filter(Boolean);
+      const selectAll = document.querySelector('[data-trim-select-all]');
+      const selectionBar = document.querySelector('[data-trim-selection-bar]');
+      const selectionCount = document.querySelector('[data-trim-selection-count]');
+      const selectionValue = document.querySelector('[data-trim-selection-value]');
       let submitting = false;
-      const draftKey = `anata-finance-trim-draft:${form?.dataset.trimCalculation || 'current'}`;
+      let volatileDraft = null;
       const storage = {
-        get: () => { try { return JSON.parse(localStorage.getItem(draftKey) || 'null'); } catch (_) { return null; } },
-        set: value => { try { localStorage.setItem(draftKey, JSON.stringify(value)); } catch (_) {} },
-        clear: () => { try { localStorage.removeItem(draftKey); } catch (_) {} },
+        get: () => volatileDraft,
+        set: value => { volatileDraft = value; },
+        clear: () => { volatileDraft = null; },
       };
       const stagedChanges = () => rows.flatMap(row => {
         const note = row.querySelector('[data-trim-note]')?.value.trim() || '';
@@ -1352,6 +1361,17 @@ def render_budget_page(
         if (unsaved) unsaved.textContent = changes.length ? `${changes.length} unsaved change${changes.length === 1 ? '' : 's'}` : 'No unsaved changes';
         form?.classList.toggle('has-unsaved-changes', changes.length > 0);
         if (changes.length) storage.set({changes, savedAt: new Date().toISOString()}); else storage.clear();
+        if (window.FinanceWorkspace?.replaceScope) {
+          const workspaceChanges = changes.flatMap(change => {
+            const key = String(change?.opportunity?.opportunity_key || '');
+            if (!key) return [];
+            const staged = [];
+            if (change.reason) staged.push({object_type: 'savings_opportunity', object_id: key, action: 'set_note', value: change.reason});
+            staged.push({object_type: 'savings_opportunity', object_id: key, action: 'set_savings_state', value: change.action});
+            return staged;
+          });
+          window.FinanceWorkspace.replaceScope('savings_opportunity', workspaceChanges);
+        }
       };
       const showRowState = (row, state) => {
         row.dataset.trimState = state;
@@ -1366,6 +1386,30 @@ def render_budget_page(
           item.setAttribute('aria-pressed', selected ? 'true' : 'false');
         });
       };
+      const selectedRows = () => rows.filter(row => row.querySelector('[data-trim-select]')?.checked);
+      const updateSelection = () => {
+        const selected = selectedRows();
+        const visible = rows.filter(row => !row.hidden);
+        const selectedVisible = visible.filter(row => row.querySelector('[data-trim-select]')?.checked);
+        if (selectionBar) selectionBar.hidden = selected.length === 0;
+        if (selectionCount) selectionCount.textContent = `${selected.length} selected`;
+        const cents = selected.reduce((total, row) => total + Number(JSON.parse(row.dataset.trimOpportunity).monthly_potential_cents || 0), 0);
+        if (selectionValue) selectionValue.textContent = `${new Intl.NumberFormat('en-US', {style: 'currency', currency: 'USD'}).format(cents / 100)} monthly impact`;
+        if (selectAll) {
+          selectAll.checked = visible.length > 0 && selectedVisible.length === visible.length;
+          selectAll.indeterminate = selectedVisible.length > 0 && selectedVisible.length < visible.length;
+        }
+      };
+      rowSelections.forEach(input => input.addEventListener('change', updateSelection));
+      selectAll?.addEventListener('change', () => {
+        rows.filter(row => !row.hidden).forEach(row => { const input = row.querySelector('[data-trim-select]'); if (input) input.checked = selectAll.checked; });
+        updateSelection();
+      });
+      document.querySelectorAll('[data-trim-bulk-choice]').forEach(button => button.addEventListener('click', () => {
+        selectedRows().forEach(row => showRowState(row, button.dataset.trimBulkChoice));
+        updateSaveState();
+      }));
+      document.querySelector('[data-trim-clear-selection]')?.addEventListener('click', () => { rowSelections.forEach(input => { input.checked = false; }); updateSelection(); });
       rows.forEach(row => {
         row.querySelectorAll('[data-trim-choice]').forEach(button => button.addEventListener('click', () => {
           const state = button.dataset.trimChoice;
@@ -1389,11 +1433,26 @@ def render_budget_page(
         filters.forEach(item => item.classList.toggle('is-active', item === button));
         filters.forEach(item => item.setAttribute('aria-pressed', item === button ? 'true' : 'false'));
         if (count) count.textContent = `Showing ${shown} vendor${shown === 1 ? '' : 's'}.`;
+        updateSelection();
       }));
-      form?.addEventListener('submit', event => {
+      form?.addEventListener('submit', async event => {
         const changes = stagedChanges();
         if (!changes.length) { event.preventDefault(); return; }
         changesInput.value = JSON.stringify(changes);
+        if (window.FinanceWorkspace?.reviewAndSave) {
+          event.preventDefault();
+          submitting = true;
+          saveButton.disabled = true;
+          saveButton.textContent = 'Preparing review…';
+          try {
+            await window.FinanceWorkspace.reviewAndSave();
+          } catch (_) {
+            submitting = false;
+            saveButton.disabled = false;
+            saveButton.textContent = 'Save all changes';
+          }
+          return;
+        }
         submitting = true;
         saveButton.disabled = true;
         saveButton.textContent = 'Saving changes…';
@@ -1425,6 +1484,24 @@ def render_budget_page(
         updateSaveState();
         if (restored && unsaved) unsaved.textContent = `Recovered ${restored} unsaved change${restored === 1 ? '' : 's'}`;
       } else updateSaveState();
+      document.addEventListener('finance:workspace-ready', event => {
+        if (storage.get()) return;
+        const shared = (event.detail?.draft?.changes || []).filter(change => change.object_type === 'savings_opportunity');
+        if (!shared.length) return;
+        const byKey = new Map(rows.map(row => [JSON.parse(row.dataset.trimOpportunity).opportunity_key, row]));
+        const notes = new Map(shared.filter(change => change.action === 'set_note').map(change => [change.object_id, String(change.value || '')]));
+        let restored = 0;
+        shared.filter(change => change.action === 'set_savings_state').forEach(change => {
+          const row = byKey.get(change.object_id);
+          if (!row || !['needed', 'unknown', 'investigate', 'waste'].includes(change.value)) return;
+          showRowState(row, change.value);
+          const note = row.querySelector('[data-trim-note]');
+          if (note && notes.has(change.object_id)) note.value = notes.get(change.object_id);
+          restored += 1;
+        });
+        updateSaveState();
+        if (restored && unsaved) unsaved.textContent = `Recovered ${restored} protected draft change${restored === 1 ? '' : 's'}`;
+      });
       window.addEventListener('beforeunload', event => {
         if (submitting || !stagedChanges().length) return;
         event.preventDefault();

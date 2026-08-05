@@ -65,6 +65,10 @@ from sales_support_agent.services.cashflow.upload import run_csv_upload
 from sales_support_agent.services.cashflow.upload_page import render_upload_result
 from sales_support_agent.services.auth_deps import get_current_user, require_tool
 from sales_support_agent.services.cashflow.cashflow_helpers import _finance_nav_user
+from sales_support_agent.services.cashflow.finance_security import (
+    csrf_token as finance_csrf_token,
+    require_finance_write_security,
+)
 
 
 async def _set_finance_nav_user(request: Request) -> None:
@@ -1234,6 +1238,245 @@ async def finance_assistant_preview(request: Request):
     return JSONResponse(preview)
 
 
+def _finance_actor(request: Request) -> str:
+    user = get_current_user(request) or {}
+    return str(user.get("email") or user.get("id") or "finance-operator")
+
+
+@router.get("/api/workspace/bootstrap")
+async def finance_workspace_bootstrap(request: Request):
+    """Return the shared action contract and this operator's recoverable draft."""
+    from sales_support_agent.services.cashflow.transaction_workspace import action_catalog, list_saved_views, load_draft
+
+    actor = _finance_actor(request)
+    try:
+        draft = await asyncio.to_thread(load_draft, actor=actor)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return JSONResponse({
+        "actions": action_catalog(),
+        "draft": draft,
+        "saved_views": await asyncio.to_thread(list_saved_views, actor=actor),
+        "csrf_token": finance_csrf_token(get_current_user(request)),
+        "save_vocabulary": ["Draft", "Saved", "Synced", "Failed", "Partially synced"],
+    })
+
+
+@router.get("/api/objects/{object_type}/{object_id}")
+async def finance_workspace_object(object_type: str, object_id: str):
+    """Load one canonical object for the shared detail panel."""
+    from sales_support_agent.services.cashflow.transaction_workspace import get_finance_object
+
+    try:
+        item = await asyncio.to_thread(get_finance_object, object_type, object_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return JSONResponse(item)
+
+
+@router.put("/api/workspace/draft", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_save_draft(request: Request):
+    from sales_support_agent.services.cashflow.transaction_workspace import save_draft
+
+    body = await request.json()
+    try:
+        result = await asyncio.to_thread(
+            save_draft,
+            body.get("changes") or [],
+            actor=_finance_actor(request),
+            dataset_revision=str(body.get("dataset_revision") or ""),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return JSONResponse(result)
+
+
+@router.delete("/api/workspace/draft", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_discard_draft(request: Request):
+    from sales_support_agent.services.cashflow.transaction_workspace import discard_draft
+
+    discarded = await asyncio.to_thread(discard_draft, actor=_finance_actor(request))
+    return JSONResponse({"discarded": discarded, "state": "Saved"})
+
+
+@router.post("/api/workspace/preview", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_preview(request: Request):
+    from sales_support_agent.services.cashflow.transaction_workspace import preview_changes
+
+    body = await request.json()
+    try:
+        result = await asyncio.to_thread(
+            preview_changes,
+            body.get("changes") or [],
+            actor=_finance_actor(request),
+            draft_revision=int(body.get("draft_revision") or 0),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(result)
+
+
+@router.post("/api/workspace/apply", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_apply(request: Request):
+    from sales_support_agent.services.cashflow.transaction_workspace import apply_preview
+
+    body = await request.json()
+    try:
+        result = await asyncio.to_thread(
+            apply_preview,
+            str(body.get("preview_token") or ""),
+            actor=_finance_actor(request),
+            idempotency_key=str(body.get("idempotency_key") or ""),
+            reason=str(body.get("reason") or ""),
+            source_page=str(body.get("source_page") or ""),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(result)
+
+
+@router.post("/api/workspace/batches/{batch_id}/undo", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_undo(request: Request, batch_id: str):
+    from sales_support_agent.services.cashflow.transaction_workspace import undo_batch
+
+    try:
+        result = await asyncio.to_thread(undo_batch, batch_id, actor=_finance_actor(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(result)
+
+
+@router.get("/api/workspace/batches/{batch_id}")
+async def finance_workspace_receipt(batch_id: str):
+    from sales_support_agent.services.cashflow.transaction_workspace import get_batch_receipt
+
+    try:
+        result = await asyncio.to_thread(get_batch_receipt, batch_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return JSONResponse(result)
+
+
+@router.get("/api/workspace/activity")
+async def finance_workspace_activity(limit: int = 50):
+    from sales_support_agent.services.cashflow.transaction_workspace import list_activity
+
+    return JSONResponse({"items": await asyncio.to_thread(list_activity, limit=limit)})
+
+
+@router.get("/api/workspace/search")
+async def finance_workspace_search(q: str = "", limit: int = 30):
+    from sales_support_agent.services.cashflow.transaction_workspace import search_finance
+
+    return JSONResponse({"items": await asyncio.to_thread(search_finance, q, limit=limit), "query": q})
+
+
+@router.post("/api/workspace/views", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_save_view(request: Request):
+    from sales_support_agent.services.cashflow.transaction_workspace import save_view
+
+    body = await request.json()
+    try:
+        item = await asyncio.to_thread(
+            save_view, str(body.get("name") or ""), body.get("definition") or {},
+            actor=_finance_actor(request),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(item)
+
+
+@router.delete("/api/workspace/views/{view_id}", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_delete_view(request: Request, view_id: str):
+    from sales_support_agent.services.cashflow.transaction_workspace import delete_saved_view
+
+    deleted = await asyncio.to_thread(delete_saved_view, view_id, actor=_finance_actor(request))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Saved view was not found.")
+    return JSONResponse({"deleted": True})
+
+
+@router.get("/workspace/review", response_class=HTMLResponse)
+async def finance_workspace_review_page(request: Request):
+    """Render the mandatory full-page preview for the current safe draft."""
+    from sales_support_agent.services.cashflow.transaction_workspace import load_draft, preview_changes
+    from sales_support_agent.services.cashflow.transaction_workspace_page import render_workspace_preview
+
+    actor = _finance_actor(request)
+    try:
+        draft = await asyncio.to_thread(load_draft, actor=actor)
+        if not draft or not draft.get("changes"):
+            request.state.finance_return_to = "/admin/finances/budget"
+            return _redirect_finance_error("There are no draft changes to review.")
+        preview = await asyncio.to_thread(
+            preview_changes,
+            draft["changes"],
+            actor=actor,
+            draft_revision=int(draft.get("draft_revision") or 0),
+        )
+    except (RuntimeError, ValueError) as exc:
+        request.state.finance_return_to = "/admin/finances/budget"
+        return _redirect_finance_error(str(exc))
+    return HTMLResponse(render_workspace_preview(
+        preview,
+        csrf_token=finance_csrf_token(get_current_user(request)),
+        idempotency_key=uuid4().hex,
+    ))
+
+
+@router.post("/workspace/apply", response_class=HTMLResponse, dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_apply_page(
+    request: Request,
+    preview_token: str = Form(...),
+    idempotency_key: str = Form(...),
+    reason: str = Form(""),
+):
+    from sales_support_agent.services.cashflow.transaction_workspace import apply_preview
+
+    try:
+        result = await asyncio.to_thread(
+            apply_preview,
+            preview_token,
+            actor=_finance_actor(request),
+            idempotency_key=idempotency_key,
+            reason=reason,
+            source_page="workspace_review",
+        )
+    except ValueError as exc:
+        request.state.finance_return_to = "/admin/finances/workspace/review"
+        return _redirect_finance_error(str(exc))
+    return RedirectResponse(f"/admin/finances/workspace/receipt/{quote(str(result['batch_id']))}", status_code=303)
+
+
+@router.get("/workspace/receipt/{batch_id}", response_class=HTMLResponse)
+async def finance_workspace_receipt_page(request: Request, batch_id: str):
+    from sales_support_agent.services.cashflow.transaction_workspace import get_batch_receipt
+    from sales_support_agent.services.cashflow.transaction_workspace_page import render_workspace_receipt
+
+    try:
+        receipt = await asyncio.to_thread(get_batch_receipt, batch_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return HTMLResponse(render_workspace_receipt(
+        receipt, csrf_token=finance_csrf_token(get_current_user(request)),
+    ))
+
+
+@router.post("/workspace/batches/{batch_id}/undo", response_class=HTMLResponse, dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_undo_page(request: Request, batch_id: str):
+    from sales_support_agent.services.cashflow.transaction_workspace import undo_batch
+
+    try:
+        await asyncio.to_thread(undo_batch, batch_id, actor=_finance_actor(request))
+    except ValueError as exc:
+        return _redirect_finance_error(str(exc))
+    return RedirectResponse(f"/admin/finances/workspace/receipt/{quote(batch_id)}", status_code=303)
+
+
 @router.post("/assistant/confirm")
 async def finance_assistant_confirm(request: Request):
     """Confirm one unexpired assistant draft after explicit user review."""
@@ -1566,6 +1809,13 @@ async def record_savings_review_batch(
     except Exception:
         logger.exception("Savings batch could not be recorded")
         return _redirect_finance_error("Savings changes could not be saved. Nothing was changed; please try again")
+    try:
+        from sales_support_agent.services.cashflow.transaction_workspace import discard_draft
+        await asyncio.to_thread(discard_draft, actor=actor)
+    except Exception:
+        # The authoritative savings batch succeeded. A stale recovery draft is
+        # safe to leave behind and can be discarded on the next workspace load.
+        logger.warning("Saved savings batch, but its recovery draft could not be cleared", exc_info=True)
     return _redirect_finance_home(f"Saved {len(results)} savings change(s).")
 
 

@@ -471,8 +471,22 @@ def _event_html(event: Mapping[str, Any]) -> str:
     kind = html.escape(str(event.get("kind") or "planned"), quote=True)
     payment_status = html.escape(str(event.get("payment_status") or "unconfirmed"), quote=True)
     protected = bool(event.get("protected"))
+    event_id = str(event.get("id") or "").strip()
+    is_canonical = bool(event_id and not str(event.get("kind") or "").startswith("history_"))
+    selection = (
+        f'<label class="cash-calendar-select"><input type="checkbox" data-calendar-select '
+        f'data-object-id="{html.escape(event_id, quote=True)}" data-amount-cents="{int(event.get("amount_cents") or 0)}" '
+        f'{"disabled" if protected else ""}><span class="sr-only">Select {html.escape(str(event.get("name") or "expense"))}</span></label>'
+        if is_canonical else ""
+    )
+    detail_button = (
+        f'<button type="button" class="cash-calendar-detail" data-finance-object-open '
+        f'data-finance-object-type="cash_event" data-finance-object-id="{html.escape(event_id, quote=True)}">Details</button>'
+        if is_canonical else ""
+    )
     return f"""
       <li class="cash-calendar-event cash-calendar-event--{kind}" data-calendar-kind="{kind}" data-payment-status="{payment_status}">
+        {selection}
         <div class="cash-calendar-event__main">
           <span class="cash-calendar-state cash-calendar-state--{kind}">{html.escape(str(event.get('state_label') or 'Expense'))}</span>
           <strong>{html.escape(str(event.get('name') or 'Expense'))}</strong>
@@ -480,6 +494,7 @@ def _event_html(event: Mapping[str, Any]) -> str:
         </div>
         <div class="cash-calendar-event__amount">
           <strong>{_money(int(event.get('amount_cents') or 0))}</strong>
+          {detail_button}
           <a href="{html.escape(str(event.get('href') or '/admin/finances/review'), quote=True)}">{html.escape(str(event.get('action_label') or 'Review'))}</a>
         </div>
       </li>"""
@@ -533,7 +548,7 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
             data-calendar-period="{period}">
             <header><div><span>{html.escape(str(day.get('label') or 'Day'))}</span>
             <strong>{html.escape(str(day.get('date_label') or day.get('date') or ''))}</strong></div>
-            <p>{html.escape(summary)}</p></header>
+            <div><p>{html.escape(summary)}</p><button type="button" class="cash-calendar-select-day" data-calendar-select-day>Select this day</button></div></header>
             <ul>{event_rows or '<li class="cash-calendar-empty">Nothing is posted or expected for this day.</li>'}</ul>
           </article>""")
 
@@ -588,6 +603,17 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
           <nav class="cash-calendar-dates" aria-label="Choose a day">{''.join(day_buttons)}</nav>
           <div class="cash-calendar-days">{''.join(day_rows)}</div>
         </div>
+        <div class="finance-batch-bar" data-calendar-batch-bar hidden>
+          <div><strong data-calendar-selected-count>0 selected</strong><span data-calendar-selected-value>$0</span></div>
+          <div class="finance-batch-bar__actions" role="group" aria-label="Stage action for selected expenses">
+            <button type="button" data-calendar-batch-action="needed">Needed</button>
+            <button type="button" data-calendar-batch-action="unknown">Unknown</button>
+            <button type="button" data-calendar-batch-action="investigate">Investigate</button>
+            <button type="button" data-calendar-batch-action="waste">Waste</button>
+            <button type="button" data-calendar-clear>Clear selection</button>
+            <button type="button" class="is-primary" data-calendar-review>Review and save</button>
+          </div>
+        </div>
       </section>
 
       <footer class="money-proof-note"><strong>What the calendar does not assume</strong>
@@ -599,6 +625,18 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
       const dateButtons = [...document.querySelectorAll('[data-calendar-date]')];
       const days = [...document.querySelectorAll('[data-calendar-day]')];
       const result = document.querySelector('[data-calendar-result]');
+      const selections = [...document.querySelectorAll('[data-calendar-select]')];
+      const batchBar = document.querySelector('[data-calendar-batch-bar]');
+      const selectedCount = document.querySelector('[data-calendar-selected-count]');
+      const selectedValue = document.querySelector('[data-calendar-selected-value]');
+      const selected = () => selections.filter(input => input.checked && !input.disabled);
+      const updateSelection = () => {{
+        const chosen = selected();
+        const cents = chosen.reduce((total, input) => total + Math.abs(Number(input.dataset.amountCents || 0)), 0);
+        if (batchBar) batchBar.hidden = chosen.length === 0;
+        if (selectedCount) selectedCount.textContent = `${{chosen.length}} selected`;
+        if (selectedValue) selectedValue.textContent = new Intl.NumberFormat('en-US', {{style: 'currency', currency: 'USD'}}).format(cents / 100);
+      }};
       const matches = (event, wanted) => wanted === 'all'
         || (wanted === 'attention' && ['posted_unplanned', 'history_warning'].includes(event.dataset.calendarKind))
         || (wanted === 'planned' && ['planned', 'history_planned'].includes(event.dataset.calendarKind))
@@ -615,6 +653,19 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
         if (result) result.textContent = `Showing ${{chosen.querySelector('header span')?.textContent || 'selected day'}}. Choose another day to drill down.`;
       }};
       dateButtons.forEach(button => button.addEventListener('click', () => selectDay(button.dataset.calendarDate)));
+      selections.forEach(input => input.addEventListener('change', updateSelection));
+      document.querySelectorAll('[data-calendar-select-day]').forEach(button => button.addEventListener('click', () => {{
+        const day = button.closest('[data-calendar-day]');
+        [...day.querySelectorAll('[data-calendar-select]:not(:disabled)')].filter(input => !input.closest('[data-calendar-kind]').hidden).forEach(input => {{ input.checked = true; }});
+        updateSelection();
+      }}));
+      document.querySelector('[data-calendar-clear]')?.addEventListener('click', () => {{ selections.forEach(input => {{ input.checked = false; }}); updateSelection(); }});
+      document.querySelectorAll('[data-calendar-batch-action]').forEach(button => button.addEventListener('click', () => {{
+        const value = button.dataset.calendarBatchAction;
+        selected().forEach(input => window.FinanceWorkspace?.stage({{object_type: 'cash_event', object_id: input.dataset.objectId, action: 'set_savings_state', value}}));
+        button.closest('.finance-batch-bar')?.querySelectorAll('[data-calendar-batch-action]').forEach(item => item.classList.toggle('is-selected', item === button));
+      }}));
+      document.querySelector('[data-calendar-review]')?.addEventListener('click', () => window.FinanceWorkspace?.reviewAndSave());
       filterButtons.forEach(button => button.addEventListener('click', () => {{
         const wanted = button.dataset.calendarFilter;
         let visibleEvents = 0;

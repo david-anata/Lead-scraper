@@ -862,6 +862,122 @@ class FinanceActionAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class FinanceWorkspaceDraft(Base):
+    """Encrypted, actor-scoped Finance edits that have not been applied yet."""
+
+    __tablename__ = "finance_workspace_drafts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    actor: Mapped[str] = mapped_column(String(255), index=True)
+    dataset_revision: Mapped[str] = mapped_column(String(128), default="")
+    draft_revision: Mapped[int] = mapped_column(Integer, default=1)
+    sealed_payload: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    __table_args__ = (
+        Index("uq_finance_workspace_draft_scope_actor", "scope_key", "actor", unique=True),
+    )
+
+
+class FinanceObjectDecision(Base):
+    """Current operator-owned classification for a shared Finance object."""
+
+    __tablename__ = "finance_object_decisions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    object_type: Mapped[str] = mapped_column(String(32), index=True)
+    object_id: Mapped[str] = mapped_column(String(255), index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    decision_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_by: Mapped[str] = mapped_column(String(255), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index(
+            "uq_finance_object_decision_scope_object",
+            "scope_key", "object_type", "object_id", unique=True,
+        ),
+    )
+
+
+class FinanceActionBatch(Base):
+    """One atomic multi-object Finance change with a durable receipt."""
+
+    __tablename__ = "finance_action_batches"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    actor: Mapped[str] = mapped_column(String(255), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="applied", index=True)
+    source_page: Mapped[str] = mapped_column(String(64), default="")
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    committed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    undone_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FinanceActionBatchItem(Base):
+    """Exact before/after state and eligibility evidence for one batch item."""
+
+    __tablename__ = "finance_action_batch_items"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(ForeignKey("finance_action_batches.id"), index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    object_type: Mapped[str] = mapped_column(String(32), index=True)
+    object_id: Mapped[str] = mapped_column(String(255), index=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    prior_state_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    new_state_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    eligibility_result: Mapped[str] = mapped_column(String(32), default="eligible")
+    skip_reason: Mapped[str] = mapped_column(Text, default="")
+    external_sync_status: Mapped[str] = mapped_column(String(32), default="not_required")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class FinanceBatchPreview(Base):
+    """Short-lived server preview that must be consumed before a batch applies."""
+
+    __tablename__ = "finance_batch_previews"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    actor: Mapped[str] = mapped_column(String(255), index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    draft_revision: Mapped[int] = mapped_column(Integer, default=1)
+    payload_hash: Mapped[str] = mapped_column(String(128), default="")
+    preview_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FinanceSavedView(Base):
+    """An actor-owned named Finance search/filter/sort definition."""
+
+    __tablename__ = "finance_saved_views"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    actor: Mapped[str] = mapped_column(String(255), index=True)
+    name: Mapped[str] = mapped_column(String(96))
+    definition_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("uq_finance_saved_view_scope_actor_name", "scope_key", "actor", "name", unique=True),
+    )
+
+
 class FinanceReconciliationReport(Base):
     """Immutable shadow-reconciliation result used before forecast promotion."""
 

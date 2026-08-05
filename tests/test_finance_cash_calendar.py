@@ -225,6 +225,9 @@ def test_calendar_renderer_explains_evidence_and_filters_without_write_controls(
     assert page.count('data-calendar-date="') == 22
     assert 'class="cash-calendar-date is-selected"' in page
     assert "Showing Today. Choose another day to drill down." in page
+    assert "data-calendar-select" in page
+    assert "data-calendar-batch-bar" in page
+    assert "Review and save" in page
     assert "<form" not in page
 
 

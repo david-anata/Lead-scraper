@@ -78,14 +78,16 @@ Confirmed, Delivered, Failed, Blocked, and Stale.
 
 ## Layout And Hierarchy
 
-- Finance Control uses five plain-language destinations: Today, Cash plan,
-  Budget & savings, Review, and Accounts & setup. Today is a short money brief,
+- Finance Control uses six plain-language destinations: Today, Cash plan,
+  Calendar, Budget & savings, Review, and Accounts & setup. Today is a short money brief,
   not a dashboard.
   It must show source readiness, decision trust, current cash, the 14-day
   outlook, and the next action within one scan.
-- Review work always opens as a normal page. Consequential answers use a
-  preview, an explicit confirmation, and a receipt with undo; Finance must not
-  put the decision workflow in a side drawer or save from the queue itself.
+- A shared transaction drawer or mobile sheet may expose facts, evidence,
+  history, and stage low-risk draft changes without saving them. Consequential
+  review work always opens as a normal page and uses a preview, an explicit
+  confirmation, and a receipt with undo. Finance must not permanently save a
+  consequential decision from a drawer or directly from a queue.
 - Prefer a small number of purposeful regions over repeated generic card grids.
   A bordered/tinted panel is valid when it groups a decision, source, or action;
   do not nest panels merely for decoration.
