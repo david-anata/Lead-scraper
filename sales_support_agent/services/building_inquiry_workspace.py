@@ -186,7 +186,19 @@ def render_inquiry_workspace(
         if str(value or "").strip()
     ) or "<p>No additional event details were submitted.</p>"
     notification = dict(data.get("lead_notification") or {})
+    escalation = dict(data.get("lead_escalation") or {})
     receipt = dict(data.get("customer_receipt") or {})
+    notification_retry = (
+        f'<form method="post" action="/admin/building/inquiries/{_esc(data.get("id"))}/notify"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><button class="lead-button" type="submit">Retry staff alert</button></form>'
+        if notification.get("status") != "delivered"
+        else ""
+    )
+    receipt_retry = (
+        f'<form method="post" action="/admin/building/inquiries/{_esc(data.get("id"))}/receipt"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><button class="lead-button" type="submit">Retry acknowledgement</button></form>'
+        if data.get("kind") == "event"
+        and receipt.get("status") not in {"sent", "delivered", "delivery_delayed"}
+        else ""
+    )
     follow_up = list(data.get("follow_up_sequence") or [])
     follow_up_rows = "".join(
         f"<li><strong>{_esc(step.get('label'))}</strong><span>{_esc(str(step.get('status') or 'queued').replace('_', ' ').title())} · {_esc(step.get('due_at_display') or 'No due time')}</span></li>"
@@ -260,8 +272,9 @@ def render_inquiry_workspace(
           </dl></section>
           <section class="lead-panel"><div class="lead-panel__head"><div><h2>Delivery evidence</h2><p>Accepted is distinct from delivered.</p></div></div><dl class="lead-details">
             <dt>Staff Slack alert</dt><dd>{_status(str(notification.get('status') or 'unknown'))}</dd>
+            <dt>Overdue escalation</dt><dd>{_status(str(escalation.get('status') or 'not needed'))}</dd>
             <dt>Customer acknowledgement</dt><dd>{_status(str(receipt.get('status') or 'unknown'))}</dd>
-          </dl></section>
+          </dl><div class="lead-delivery-actions">{notification_retry}{receipt_retry}</div></section>
           <section class="lead-panel"><div class="lead-panel__head"><div><h2>Follow-up plan</h2><p>Internal tasks; these do not send customer messages.</p></div></div><ol class="lead-follow-up">{follow_up_rows}</ol></section>
           <section class="lead-panel"><div class="lead-panel__head"><div><h2>Source</h2></div></div><dl class="lead-details"><dt>Source</dt><dd>{_esc(data.get('source') or 'Unknown')}</dd><dt>Reference</dt><dd>{_esc(data.get('source_reference') or 'None')}</dd><dt>Campaign</dt><dd>{_esc((data.get('attribution') or {}).get('campaign') or 'No campaign')}</dd></dl></section>
         </aside>
@@ -278,6 +291,7 @@ def render_inquiry_workspace(
       .lead-layout{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(300px,.7fr);gap:20px;align-items:start}.lead-stack{display:grid;gap:20px}.lead-panel{min-width:0;overflow:hidden;border:1px solid var(--agent-border);border-radius:var(--agent-radius-panel);background:var(--agent-surface)}.lead-panel__head{display:flex;justify-content:space-between;gap:16px;align-items:start;padding:18px 20px}.lead-panel__head h2{margin:0}.lead-panel__head p{margin:5px 0 0;color:var(--agent-ink-muted)}
       .lead-details,.lead-contact dl{display:grid;grid-template-columns:minmax(130px,.45fr) minmax(0,1fr);margin:0}.lead-details dt,.lead-details dd,.lead-contact dt,.lead-contact dd{margin:0;padding:11px 18px;border-top:1px solid var(--agent-border)}.lead-details dt,.lead-contact dt{color:var(--agent-ink-muted);font-size:12px;font-weight:800}.lead-details dd,.lead-contact dd{overflow-wrap:anywhere}
       .lead-follow-up,.lead-activity{margin:0;padding:0;list-style:none}.lead-follow-up li,.lead-activity li{display:grid;gap:3px;padding:13px 18px;border-top:1px solid var(--agent-border)}.lead-follow-up span,.lead-activity span,.lead-activity time{color:var(--agent-ink-muted);font-size:12px}.lead-activity li{grid-template-columns:150px 1fr}.lead-activity div{display:grid;gap:3px}.lead-technical{padding:14px 18px;border:1px dashed var(--agent-border);border-radius:var(--agent-radius-control)}
+      .lead-delivery-actions{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px;border-top:1px solid var(--agent-border)}
       .lead-interview{border-top:1px solid var(--agent-border)}.lead-interview>summary{padding:14px 20px;color:var(--agent-blue-strong);font-weight:800;cursor:pointer}.lead-interview form{display:grid;gap:16px;padding:0 20px 20px}.lead-interview__grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.lead-interview label{display:grid;gap:5px;font-weight:700}.lead-interview textarea{min-height:80px}
       @media(max-width:900px){.lead-next,.lead-layout{grid-template-columns:1fr}.lead-next .lead-button{justify-self:start}}
       @media(max-width:600px){.lead-details,.lead-contact dl,.lead-interview__grid{grid-template-columns:1fr}.lead-details dt,.lead-contact dt{padding-bottom:0}.lead-details dd,.lead-contact dd{padding-top:4px}.lead-activity li{grid-template-columns:1fr}.lead-panel__head{display:grid}.lead-next{padding:20px}.lead-response{width:100%}}

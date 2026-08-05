@@ -316,6 +316,10 @@ services:
         -H "Content-Type: application/json" \
         -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
         -d '{"dry_run":false}'
+      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/building-leads/run" \
+        -H "Content-Type: application/json" \
+        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
+        -d '{"dry_run":false}'
       curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/internal/building/crm/scheduled-campaigns/run" \
         -H "Content-Type: application/json" \
         -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \

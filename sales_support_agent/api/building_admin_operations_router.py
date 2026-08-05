@@ -382,6 +382,12 @@ def retry_new_lead_notification_from_control_room(
         inquiry = session.get(BuildingInquiry, inquiry_id)
         if inquiry is None:
             return _redirect(error="Inquiry not found.", target=f"/admin/building/inquiries/{inquiry_id}")
+        existing = dict((inquiry.payload_json or {}).get("_lead_notification") or {})
+        if existing.get("status") == "delivered":
+            return _redirect(
+                notice="The staff Slack notification was already delivered; no duplicate was sent.",
+                target=f"/admin/building/inquiries/{inquiry_id}",
+            )
         try:
             result = notify_new_building_lead(request.app.state.settings, inquiry)
         except Exception as exc:
