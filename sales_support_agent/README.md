@@ -756,3 +756,18 @@ staff work and never mutate the booking or availability directly. The hourly
 operator cron invokes
 `POST /api/internal/building/bookings/communications/run` for the idempotent
 seven-day event reminder.
+
+## Event operations and synthetic monitoring
+
+Confirmed event checklists assign every required item an owner and due date.
+Completion requires evidence notes and a reference; waivers require an explicit
+reason. Overdue and unowned required work is surfaced in Building performance.
+The checklist includes vendor/access planning, a run sheet, onsite ownership,
+and incident, damage, security-deposit, and closeout evidence.
+
+The daily `building-synthetic-journey` Render cron runs the real isolated
+event-billing and customer-communication lifecycle tests. It never points at the
+production database or providers, reports that provider mode as a dry run, and
+fails unless every created test database is removed and cleanup is verified.
+Render therefore alerts on the first failed handoff without leaving a live hold,
+invoice, message, calendar event, or customer artifact.

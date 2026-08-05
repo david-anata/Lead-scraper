@@ -350,3 +350,11 @@ services:
         value: https://agent.anatainc.com
       - key: SALES_AGENT_INTERNAL_API_KEY
         sync: false
+
+  - type: cron
+    name: building-synthetic-journey
+    runtime: python
+    # Daily isolated journey. A broken handoff or failed cleanup fails the cron.
+    schedule: "30 13 * * *"
+    buildCommand: pip install -r requirements.txt pytest
+    startCommand: python scripts/run_building_synthetic_journey.py

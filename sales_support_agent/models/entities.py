@@ -2374,7 +2374,12 @@ class BuildingOperationalChecklistItem(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     is_required: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    assigned_owner: Mapped[str] = mapped_column(String(255), default="", index=True)
+    due_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     completion_reason: Mapped[str] = mapped_column(Text, default="")
+    evidence_reference: Mapped[str] = mapped_column(Text, default="")
     completed_by: Mapped[str] = mapped_column(String(255), default="")
     completed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
