@@ -336,13 +336,22 @@ class RainforestClient:
         target_product = target_data.get("product") or {}
 
         # 2. Discover competitor ASINs
-        competitor_asins = self._competitor_asins_from_bestsellers(
-            target_product, target_asin, limit=competitor_limit
+        # A category bestseller list can be dominated by one brand. Always blend it
+        # with title-search candidates so downstream reports have enough distinct
+        # competitors instead of declaring success from one outside brand.
+        candidate_limit = min(max(competitor_limit * 2, 12), 24)
+        bestseller_asins = self._competitor_asins_from_bestsellers(
+            target_product, target_asin, limit=candidate_limit
         )
-        if not competitor_asins:
-            competitor_asins = self._competitor_asins_from_search(
-                target_product, target_asin, limit=competitor_limit
-            )
+        search_asins = self._competitor_asins_from_search(
+            target_product, target_asin, limit=candidate_limit
+        )
+        competitor_asins = []
+        for asin in [*bestseller_asins, *search_asins]:
+            if asin not in competitor_asins:
+                competitor_asins.append(asin)
+            if len(competitor_asins) >= candidate_limit:
+                break
 
         if not competitor_asins:
             logger.warning("No competitor ASINs found for %s; report will be empty.", target_asin)
@@ -366,7 +375,7 @@ class RainforestClient:
 
         # 4. Convert to XrayProduct
         products: list[XrayProduct] = []
-        for i, raw in enumerate(competitor_raw[:competitor_limit]):
+        for i, raw in enumerate(competitor_raw):
             xp = self._product_to_xray(raw, display_order=i + 1)
             if xp:
                 products.append(xp)
@@ -375,7 +384,7 @@ class RainforestClient:
         products.sort(key=lambda p: (p.bsr or 999_999, p.display_order))
         products = [
             dataclasses.replace(p, display_order=i + 1)
-            for i, p in enumerate(products)
+            for i, p in enumerate(products[:competitor_limit])
         ]
 
         # 5. Aggregate report fields
@@ -408,10 +417,7 @@ class RainforestClient:
 
         # Honest sourcing note: how many listings carried Amazon's real
         # "bought in past month" badge vs. fell back to a BSR estimate.
-        real_units_count = sum(
-            1 for raw in competitor_raw
-            if _parse_recent_sales((raw.get("product") or {}).get("recent_sales")) is not None
-        )
+        real_units_count = sum(1 for product in products if product.units_label.endswith("+"))
         if real_units_count and real_units_count == len(products):
             _sales_warning = (
                 "Unit/revenue figures use Amazon's real \"bought in past month\" "

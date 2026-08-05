@@ -182,8 +182,9 @@ class TestRainforestBuildXrayReport(unittest.TestCase):
 
     @patch.object(RainforestClient, "get_product")
     @patch.object(RainforestClient, "get_bestsellers")
+    @patch.object(RainforestClient, "search")
     def test_build_xray_report_returns_report_and_raw(
-        self, mock_bestsellers, mock_get_product
+        self, mock_search, mock_bestsellers, mock_get_product
     ):
         target_asin = "B09AAAAAAA"
         competitor_asins = [f"B09{str(i).zfill(7)}" for i in range(5)]
@@ -203,6 +204,7 @@ class TestRainforestBuildXrayReport(unittest.TestCase):
 
         mock_get_product.side_effect = mock_product_side_effect
         mock_bestsellers.return_value = _mock_bestsellers(competitor_asins)
+        mock_search.return_value = {"search_results": []}
 
         report, raw = self.client.build_xray_report(target_asin, competitor_limit=5)
 
@@ -218,7 +220,8 @@ class TestRainforestBuildXrayReport(unittest.TestCase):
 
     @patch.object(RainforestClient, "get_product")
     @patch.object(RainforestClient, "get_bestsellers")
-    def test_products_sorted_by_bsr(self, mock_bestsellers, mock_get_product):
+    @patch.object(RainforestClient, "search")
+    def test_products_sorted_by_bsr(self, mock_search, mock_bestsellers, mock_get_product):
         target_asin = "B09AAAAAAA"
         competitor_asins = ["B09CC11111", "B09BB22222"]  # order in bestsellers
         category_url = "https://www.amazon.com/Best-Sellers/zgbs/hpc/1/"
@@ -234,6 +237,7 @@ class TestRainforestBuildXrayReport(unittest.TestCase):
             target_raw if asin == target_asin else comp_raws[asin]
         )
         mock_bestsellers.return_value = _mock_bestsellers(competitor_asins)
+        mock_search.return_value = {"search_results": []}
 
         report, _ = self.client.build_xray_report(target_asin, competitor_limit=10)
 
@@ -254,11 +258,13 @@ class TestRainforestBuildXrayReport(unittest.TestCase):
 class TestRainforestWarnings(unittest.TestCase):
     @patch.object(RainforestClient, "get_product")
     @patch.object(RainforestClient, "get_bestsellers")
-    def test_report_includes_bsr_estimate_warning(self, mock_bestsellers, mock_get_product):
+    @patch.object(RainforestClient, "search")
+    def test_report_includes_bsr_estimate_warning(self, mock_search, mock_bestsellers, mock_get_product):
         target_asin = "B09AAAAAAA"
         category_url = "https://www.amazon.com/Best-Sellers/zgbs/hpc/1/"
         mock_get_product.return_value = _mock_product(target_asin, bsr=5000, category_url=category_url)
         mock_bestsellers.return_value = _mock_bestsellers(["B09BB00001"])
+        mock_search.return_value = {"search_results": []}
         mock_get_product.side_effect = lambda a: (
             _mock_product(target_asin, bsr=5000, category_url=category_url)
             if a == target_asin
