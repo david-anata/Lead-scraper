@@ -80,6 +80,14 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
                     "eventType": "Company celebration",
                     "groupSize": "85",
                     "alternateDate": "2026-09-19",
+                    "backupDate2": "2026-09-26",
+                    "dateFlexibility": "Same month is workable",
+                    "accessStartTime": "14:00",
+                    "accessEndTime": "23:00",
+                    "avNeeds": "Presentation display",
+                    "accessibilityNeeds": "Step-free guest route",
+                    "vendorPlan": "Caterer only",
+                    "tourInterest": "Yes, please contact me",
                     "notes": "Need a stage and accessible seating.",
                     "_lifecycle": {"stage": "new"},
                     "_lead_notification": {"status": "delivered"},
@@ -110,6 +118,10 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
         self.assertIn("Jordan Rivera", page.text)
         self.assertIn("Company celebration", page.text)
         self.assertIn("Estimated attendance", page.text)
+        self.assertIn("Third-choice date", page.text)
+        self.assertIn("Date flexibility", page.text)
+        self.assertIn("Setup or vendor access begins", page.text)
+        self.assertIn("Accessibility needs", page.text)
         self.assertIn("Need a stage and accessible seating.", page.text)
         self.assertIn("Do this next", page.text)
         self.assertIn("Record response", page.text)

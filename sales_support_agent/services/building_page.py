@@ -697,7 +697,12 @@ def render_building_page(
             "eventType": "Event type", "alternateDate": "Backup date",
             "backupDate2": "Second backup date", "guestStartTime": "Guest start",
             "guestEndTime": "Guest end", "groupSize": "Estimated attendance",
-            "notes": "Notes", "landingPage": "Landing page", "utmCampaign": "Campaign",
+            "dateFlexibility": "Date flexibility", "accessStartTime": "Setup or vendor access begins",
+            "accessEndTime": "Teardown and final access ends", "organization": "Organization",
+            "avNeeds": "AV and sound", "accessibilityNeeds": "Accessibility needs",
+            "vendorPlan": "Food and outside vendors", "tourInterest": "Tour interest",
+            "alcoholPlan": "Alcohol service being considered", "notes": "Notes",
+            "landingPage": "Landing page", "utmCampaign": "Campaign",
         }
         values = [("Phone", item.get("phone"))]
         values.extend((labels.get(str(key), str(key)), value) for key, value in dict(item.get("details") or {}).items() if key != "eventHandoff")
