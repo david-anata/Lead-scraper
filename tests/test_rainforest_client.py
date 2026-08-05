@@ -278,6 +278,34 @@ class TestRainforestWarnings(unittest.TestCase):
 
 
 class TestCompetitorSearchBreadth(unittest.TestCase):
+    @patch.object(RainforestClient, "get_product")
+    @patch.object(RainforestClient, "get_bestsellers")
+    @patch.object(RainforestClient, "search")
+    def test_distinct_brand_mode_fetches_bounded_batches_until_complete(
+        self, mock_search, mock_bestsellers, mock_get_product
+    ):
+        target_asin = "B09TARGT01"
+        candidates = [f"B0000000{i:02d}" for i in range(1, 19)]
+        target = _mock_product(target_asin, brand="Target")
+        brands = ["Brand A"] * 6 + ["Brand B", "Brand C", "Brand D", "Brand E", "Brand F", "Brand G"]
+        products = {
+            asin: _mock_product(asin, brand=brands[index], bsr=100 + index)
+            for index, asin in enumerate(candidates[:12])
+        }
+        mock_get_product.side_effect = lambda asin: target if asin == target_asin else products[asin]
+        mock_bestsellers.return_value = _mock_bestsellers(candidates)
+        mock_search.return_value = {"search_results": []}
+
+        report, _ = RainforestClient(api_key="key").build_xray_report(
+            target_asin,
+            competitor_limit=18,
+            minimum_distinct_brands=5,
+        )
+
+        fetched = [call.args[0] for call in mock_get_product.call_args_list[1:]]
+        self.assertEqual(len(fetched), 12)
+        self.assertEqual(len({product.brand for product in report.products}), 7)
+
     def test_search_excludes_target_brand_and_uses_second_page(self):
         client = RainforestClient(api_key="key")
         client.search = MagicMock(side_effect=[

@@ -1799,6 +1799,7 @@ def _build_shelf(app, intake_run_id: int, asin: str) -> None:
                 client.build_xray_report,
                 asin,
                 competitor_limit=_SHELF_COMPETITOR_LIMIT,
+                minimum_distinct_brands=_SHELF_REQUIRED_ITEMS,
             )
             xray_report, target_raw = future.result(timeout=_SHELF_TIMEOUT_SECONDS)
 

@@ -37,6 +37,7 @@ _AMAZON_DOMAIN = "amazon.com"
 _DEFAULT_TIMEOUT = 20
 # Fetch the competitor set in a single parallel wave (see _DEFAULT_COMPETITOR_LIMIT).
 _MAX_CONCURRENT_FETCHES = 12
+_DISTINCT_BRAND_BATCH_SIZE = 6
 _BSR_ESTIMATE_CAP = 50_000
 # The deck surfaces the top ~10 competitors (niche table [:10], gallery [:4]),
 # so discovering 12 keeps full display coverage while cutting generation time
@@ -320,6 +321,7 @@ class RainforestClient:
         asin_or_url: str,
         *,
         competitor_limit: int = _DEFAULT_COMPETITOR_LIMIT,
+        minimum_distinct_brands: int = 0,
     ) -> tuple[Helium10XrayReport, dict[str, Any]]:
         """
         Core Digital Shelf builder.
@@ -381,13 +383,30 @@ class RainforestClient:
                 return None
 
         competitor_raw: list[dict[str, Any]] = []
-        if competitor_asins:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES) as pool:
-                futures = {pool.submit(_safe_fetch, a): a for a in competitor_asins}
-                for fut in concurrent.futures.as_completed(futures):
-                    result = fut.result()
-                    if result:
-                        competitor_raw.append(result)
+        target_brand = re.sub(r"[^a-z0-9]+", "", str(target_product.get("brand", "")).lower())
+        distinct_brands: set[str] = set()
+        batch_size = (
+            _DISTINCT_BRAND_BATCH_SIZE
+            if minimum_distinct_brands > 0
+            else _MAX_CONCURRENT_FETCHES
+        )
+        for start in range(0, len(competitor_asins), batch_size):
+            batch = competitor_asins[start : start + batch_size]
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(_MAX_CONCURRENT_FETCHES, len(batch))
+            ) as pool:
+                futures = {pool.submit(_safe_fetch, asin): asin for asin in batch}
+                batch_results = [future.result() for future in concurrent.futures.as_completed(futures)]
+            for result in batch_results:
+                if not result:
+                    continue
+                competitor_raw.append(result)
+                product = result.get("product") or {}
+                brand = re.sub(r"[^a-z0-9]+", "", str(product.get("brand", "")).lower())
+                if brand and brand != target_brand:
+                    distinct_brands.add(brand)
+            if minimum_distinct_brands > 0 and len(distinct_brands) >= minimum_distinct_brands:
+                break
 
         # 4. Convert to XrayProduct
         products: list[XrayProduct] = []
