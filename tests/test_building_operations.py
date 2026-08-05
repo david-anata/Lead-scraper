@@ -864,3 +864,60 @@ class BuildingOperationsTests(unittest.TestCase):
             ["unknown", "unknown"],
         )
         self.assertNotIn("summary", response.text.lower())
+
+    def test_public_date_check_uses_full_access_window_and_safe_alternatives(self) -> None:
+        first_date = date.today() + timedelta(days=60)
+        calendar = mock.Mock(configured=True)
+
+        def conflicts(**kwargs):
+            if kwargs["starts_at"].date() == first_date:
+                return [{"id": "private", "summary": "Private customer event"}]
+            return []
+
+        calendar.find_conflicts.side_effect = conflicts
+        with mock.patch(
+            "sales_support_agent.api.building_router.BuildingGoogleCalendarClient",
+            return_value=calendar,
+        ):
+            response = self.client.get(
+                "/api/public/building/event-date-availability",
+                headers={"X-Internal-Api-Key": "building-test-key"},
+                params={
+                    "dates": first_date.isoformat(),
+                    "setup_start_time": "10:00",
+                    "guest_start_time": "12:00",
+                    "guest_end_time": "18:00",
+                    "teardown_end_time": "20:00",
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["dates"][0]["status"], "unavailable")
+        self.assertIn("T10:00:00", body["dates"][0]["window_start"])
+        self.assertIn("T20:00:00", body["dates"][0]["window_end"])
+        self.assertEqual(len(body["nearby_alternatives"]), 3)
+        self.assertEqual(body["checked_by"], "Anata Events calendar and Agent holds")
+        self.assertNotIn("Private customer event", response.text)
+
+    def test_public_date_check_rejects_reversed_access_window(self) -> None:
+        candidate = (date.today() + timedelta(days=60)).isoformat()
+        calendar = mock.Mock(configured=True)
+        response = None
+        with mock.patch(
+            "sales_support_agent.api.building_router.BuildingGoogleCalendarClient",
+            return_value=calendar,
+        ):
+            response = self.client.get(
+                "/api/public/building/event-date-availability",
+                headers={"X-Internal-Api-Key": "building-test-key"},
+                params={
+                    "dates": candidate,
+                    "setup_start_time": "14:00",
+                    "guest_start_time": "12:00",
+                    "guest_end_time": "18:00",
+                    "teardown_end_time": "20:00",
+                },
+            )
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("Setup must begin", response.text)
+        calendar.find_conflicts.assert_not_called()

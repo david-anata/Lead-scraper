@@ -112,6 +112,7 @@ async def building_hold_expiration_job(
     result = expire_building_holds(
         request.app.state.session_factory,
         dry_run=bool(payload.get("dry_run", False)),
+        settings=request.app.state.settings,
     )
     return JSONResponse(
         {

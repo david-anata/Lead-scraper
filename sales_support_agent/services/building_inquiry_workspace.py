@@ -239,6 +239,33 @@ def render_inquiry_workspace(
         if data.get("kind") == "event"
         else ""
     )
+    candidate_values = list(dict.fromkeys(
+        value for value in (
+            data.get("preferred_date"),
+            details.get("alternateDate") or details.get("alternate_date"),
+            details.get("backupDate2") or details.get("backup_date_2"),
+        ) if value
+    ))[:3]
+    candidate_inputs = "".join(
+        f'<label>Choice {index}<input type="date" name="candidate_date" value="{_esc(value)}"></label>'
+        for index, value in enumerate(candidate_values + [""] * (3 - len(candidate_values)), start=1)
+    )
+    availability_section = (
+        f'''<section class="lead-panel" id="date-review"><div class="lead-panel__head"><div><h2>Date review</h2><p>Compare up to three dates against Agent holds and the Anata Events calendar. Unknown never means available.</p></div></div>
+          <form class="lead-availability" data-availability-form data-endpoint="/admin/building/inquiries/{_esc(data.get('id'))}/availability">
+            <div class="lead-availability__dates">{candidate_inputs}</div>
+            <div class="lead-availability__times">
+              <label>Setup begins<input type="time" name="setup_start_time" value="{_esc(details.get('accessStartTime') or '')}"></label>
+              <label>Guests begin<input type="time" name="guest_start_time" value="{_esc(details.get('guestStartTime') or '')}"></label>
+              <label>Guests end<input type="time" name="guest_end_time" value="{_esc(details.get('guestEndTime') or '')}"></label>
+              <label>Teardown ends<input type="time" name="teardown_end_time" value="{_esc(details.get('accessEndTime') or '')}"></label>
+            </div>
+            <div class="lead-interview__save"><button class="lead-button lead-button--primary" type="submit">Check dates</button><span>Read-only check; this creates no hold.</span></div>
+          </form><div class="lead-availability__results" data-availability-results aria-live="polite"></div>
+        </section>'''
+        if data.get("kind") == "event" and stage == "qualified" and not data.get("reservation_id")
+        else ""
+    )
     activity_rows = "".join(
         f"<li><time>{_esc(_when(item.get('created_at')))}</time><div><strong>{_esc(str(item.get('action') or 'updated').replace('_', ' ').title())}</strong><span>{_esc(item.get('actor') or 'System')}</span></div></li>"
         for item in data.get("activity", [])
@@ -283,6 +310,7 @@ def render_inquiry_workspace(
         <div class="lead-stack">
           <section class="lead-panel"><div class="lead-panel__head"><div><h2>Original website submission</h2><p>The prospect's words, preserved under plain-language labels.</p></div></div><dl class="lead-details">{submitted_rows}</dl></section>
           {interview_section}
+          {availability_section}
           <section class="lead-panel"><div class="lead-panel__head"><div><h2>Activity</h2><p>Audited intake, delivery, and lifecycle evidence.</p></div></div><ol class="lead-activity">{activity_rows}</ol></section>
         </div>
         <aside class="lead-stack">
@@ -319,6 +347,29 @@ def render_inquiry_workspace(
         form.addEventListener('input', () => {{ clearTimeout(timer); timer = setTimeout(save, 900); }});
         form.addEventListener('change', () => {{ clearTimeout(timer); timer = setTimeout(save, 250); }});
       }})();
+      (() => {{
+        const form = document.querySelector('[data-availability-form]');
+        const output = document.querySelector('[data-availability-results]');
+        if (!form || !output || !window.fetch) return;
+        const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[char]));
+        form.addEventListener('submit', async event => {{
+          event.preventDefault();
+          const values = new FormData(form);
+          const dates = values.getAll('candidate_date').map(value => String(value).trim()).filter(Boolean);
+          if (!dates.length) {{ output.innerHTML = '<p class="app-alert app-alert--error">Add at least one candidate date.</p>'; return; }}
+          const params = new URLSearchParams({{dates: dates.join(',')}});
+          for (const key of ['setup_start_time','guest_start_time','guest_end_time','teardown_end_time']) params.set(key, String(values.get(key) || ''));
+          output.innerHTML = '<p>Checking Agent and Anata Events…</p>';
+          try {{
+            const response = await fetch(`${{form.dataset.endpoint}}?${{params}}`, {{headers:{{'Accept':'application/json'}}}});
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.detail || 'Date review failed.');
+            const rows = result.dates.map(item => `<li><strong>${{esc(item.date)}}</strong><span class="app-status app-status--${{item.status === 'available' ? 'confirmed' : item.status === 'unknown' ? 'neutral' : 'blocked'}}">${{esc(item.status)}}</span><small>${{esc(item.message)}}</small></li>`).join('');
+            const alternatives = result.nearby_alternatives.length ? `<p><strong>Nearby options:</strong> ${{result.nearby_alternatives.map(item => esc(item.date)).join(', ')}}</p>` : '';
+            output.innerHTML = `<p>Checked ${{esc(result.checked_at)}} by ${{esc(result.checked_by)}}.</p><ul>${{rows}}</ul>${{alternatives}}<p><a class="lead-button lead-button--primary" href="/admin/building/bookings#review-event-date">Continue to governed hold</a></p>`;
+          }} catch (error) {{ output.innerHTML = `<p class="app-alert app-alert--error">${{esc(error.message)}} No hold was created.</p>`; }}
+        }});
+      }})();
       </script>
     """
     styles = """
@@ -333,8 +384,9 @@ def render_inquiry_workspace(
       .lead-follow-up,.lead-activity{margin:0;padding:0;list-style:none}.lead-follow-up li,.lead-activity li{display:grid;gap:3px;padding:13px 18px;border-top:1px solid var(--agent-border)}.lead-follow-up span,.lead-activity span,.lead-activity time{color:var(--agent-ink-muted);font-size:12px}.lead-activity li{grid-template-columns:150px 1fr}.lead-activity div{display:grid;gap:3px}.lead-technical{padding:14px 18px;border:1px dashed var(--agent-border);border-radius:var(--agent-radius-control)}
       .lead-delivery-actions{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px;border-top:1px solid var(--agent-border)}
       .lead-interview{border-top:1px solid var(--agent-border);scroll-margin-top:140px}.lead-interview>summary{padding:14px 20px;color:var(--agent-blue-strong);font-weight:800;cursor:pointer}.lead-interview form{display:grid;gap:16px;padding:0 20px 20px}.lead-interview__section{display:grid;gap:10px;margin:0;padding:16px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control)}.lead-interview__section legend{padding:0 6px;font-weight:800}.lead-interview__section>p{margin:0;color:var(--agent-ink-muted);font-size:13px}.lead-interview__section>span{color:var(--agent-blue-strong);font-size:12px;font-weight:800}.lead-interview__grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.lead-interview label{display:grid;gap:5px;font-weight:700}.lead-interview label.is-missing{order:-1}.lead-interview textarea{min-height:80px}.lead-call-guide{display:grid;gap:4px;margin:0 20px 16px;padding:14px;border-radius:var(--agent-radius-control);background:#f1f8fb}.lead-call-guide span{color:var(--agent-ink-muted);font-size:13px;line-height:1.5}.lead-interview__save{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.lead-interview__save span{color:var(--agent-ink-muted);font-size:12px}
+      .lead-availability{display:grid;gap:14px;padding:0 20px 18px}.lead-availability__dates,.lead-availability__times{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.lead-availability__dates{grid-template-columns:repeat(3,minmax(0,1fr))}.lead-availability label{display:grid;gap:5px;font-weight:700}.lead-availability__results{padding:0 20px 20px}.lead-availability__results>p{color:var(--agent-ink-muted)}.lead-availability__results ul{display:grid;gap:8px;margin:0;padding:0;list-style:none}.lead-availability__results li{display:grid;grid-template-columns:130px auto minmax(0,1fr);gap:10px;align-items:center;padding:10px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control)}.lead-availability__results small{color:var(--agent-ink-muted)}
       @media(max-width:900px){.lead-next,.lead-layout{grid-template-columns:1fr}.lead-next .lead-button{justify-self:start}}
-      @media(max-width:600px){.lead-details,.lead-contact dl,.lead-interview__grid{grid-template-columns:1fr}.lead-details dt,.lead-contact dt{padding-bottom:0}.lead-details dd,.lead-contact dd{padding-top:4px}.lead-activity li{grid-template-columns:1fr}.lead-panel__head{display:grid}.lead-next{padding:20px}.lead-response{width:100%}}
+      @media(max-width:600px){.lead-details,.lead-contact dl,.lead-interview__grid,.lead-availability__dates,.lead-availability__times,.lead-availability__results li{grid-template-columns:1fr}.lead-details dt,.lead-contact dt{padding-bottom:0}.lead-details dd,.lead-contact dd{padding-top:4px}.lead-activity li{grid-template-columns:1fr}.lead-panel__head{display:grid}.lead-next{padding:20px}.lead-response{width:100%}}
     </style>
     """
     return render_operator_document(
