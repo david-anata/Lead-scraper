@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sales_support_agent.config import ACTIVE_FOLLOW_UP_STATUSES, DEFAULT_STATUS_POLICIES, INACTIVE_STATUSES, ManagedFieldSettings, Settings, build_normalized_status_policies, normalize_status_key
+from tests.settings_factory import make_settings
 
 try:
     from sales_support_agent.jobs.stale_leads import StaleLeadJob
@@ -43,13 +44,11 @@ class _FakeSlackClient:
 
 
 def _build_settings(database_path: Path) -> Settings:
-    return Settings(
-        app_name="sales-support-agent",
+    """Only the fields this suite actually depends on; the rest come from the
+    factory so a new ``Settings`` field can never break these tests again."""
+    return make_settings(
         clickup_api_token="token",
-        clickup_base_url="https://api.clickup.com/api/v2",
         clickup_list_id="list-123",
-        clickup_request_timeout_seconds=30,
-        clickup_discovery_sample_size=10,
         stale_lead_scan_max_tasks=5,
         stale_lead_scan_sync_max_tasks=7,
         stale_lead_slack_digest_enabled=True,
@@ -65,24 +64,10 @@ def _build_settings(database_path: Path) -> Settings:
         slack_channel_id="channel-123",
         slack_assignee_map={},
         slack_immediate_event_types=("inbound_reply_received", "meeting_notes_missing"),
-        gmail_api_base_url="https://gmail.googleapis.com/gmail/v1",
-        gmail_oauth_token_url="https://oauth2.googleapis.com/token",
-        gmail_access_token="",
-        gmail_client_id="",
-        gmail_client_secret="",
-        gmail_refresh_token="",
-        gmail_user_id="me",
-        gmail_poll_query="newer_than:2d",
-        gmail_poll_max_messages=25,
         gmail_source_domains=("fulfil.com",),
         sales_agent_db_url=f"sqlite:///{database_path}",
         internal_api_key="internal-key",
-        discovery_snapshot_path=Path("runtime/clickup_schema_snapshot.json"),
         use_due_date_for_follow_up=False,
-        openai_api_key="",
-        openai_model="gpt-4o-mini",
-        instantly_webhook_secret="",
-        instantly_webhook_secret_header="X-Instantly-Webhook-Secret",
         instantly_webhook_allowed_event_types=("reply_received",),
         active_statuses=tuple(normalize_status_key(status) for status in ACTIVE_FOLLOW_UP_STATUSES),
         inactive_statuses=tuple(normalize_status_key(status) for status in INACTIVE_STATUSES),
@@ -101,9 +86,21 @@ class StaleLeadJobTests(unittest.TestCase):
         init_database(self.session_factory)
 
     def tearDown(self) -> None:
+        # Windows refuses to delete a SQLite file while the pool still holds it
+        # open, so drop the connections before removing the directory.
+        bind = getattr(self.session_factory, "kw", {}).get("bind")
+        if bind is not None:
+            bind.dispose()
         self.tempdir.cleanup()
 
-    def _insert_lead(self) -> None:
+    #: Against ``as_of_date=2026-03-13`` and the "new lead" policy
+    #: (first_action=1, due=2, overdue=3 business days) these anchors produce:
+    #: 03-10 -> overdue, 03-11 -> follow_up_due, 03-12 -> new_and_untouched.
+    OVERDUE_ANCHOR = datetime(2026, 3, 10, 9, 0, 0)
+    ROUTINE_DUE_ANCHOR = datetime(2026, 3, 11, 9, 0, 0)
+
+    def _insert_lead(self, created_at: datetime | None = None) -> None:
+        anchor = created_at or self.OVERDUE_ANCHOR
         session = self.session_factory()
         try:
             session.add(
@@ -113,9 +110,9 @@ class StaleLeadJobTests(unittest.TestCase):
                     task_name="Example Lead",
                     task_url="https://app.clickup.com/t/task-123",
                     status="new lead",
-                    created_at=datetime(2026, 3, 10, 9, 0, 0),
-                    updated_at=datetime(2026, 3, 10, 9, 0, 0),
-                    last_sync_at=datetime(2026, 3, 10, 9, 0, 0),
+                    created_at=anchor,
+                    updated_at=anchor,
+                    last_sync_at=anchor,
                     raw_task_payload={},
                 )
             )
@@ -167,7 +164,7 @@ class StaleLeadJobTests(unittest.TestCase):
             session.close()
 
     def test_run_posts_single_digest_for_routine_due_items(self) -> None:
-        self._insert_lead()
+        self._insert_lead(self.ROUTINE_DUE_ANCHOR)
         session = self.session_factory()
         slack_client = _FakeSlackClient()
         try:
@@ -276,7 +273,7 @@ class StaleLeadJobTests(unittest.TestCase):
             session.close()
 
     def test_run_skips_duplicate_digest_for_same_date(self) -> None:
-        self._insert_lead()
+        self._insert_lead(self.ROUTINE_DUE_ANCHOR)
         session = self.session_factory()
         slack_client = _FakeSlackClient()
         try:
