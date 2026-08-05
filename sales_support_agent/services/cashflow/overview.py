@@ -2833,6 +2833,7 @@ def _render_bookkeeping() -> str:
         group_rows = []
         for group in grouped["groups"]:
             key = html.escape(str(group["key"]), quote=True)
+            event_ids = html.escape(json.dumps(group.get("event_ids") or []), quote=True)
             guess = str(group["guess"] or "")
             options = (
                 '<option value="" ' + ("selected" if not guess else "") + '>&mdash; choose &mdash;</option>'
@@ -2844,14 +2845,15 @@ def _render_bookkeeping() -> str:
             )
             samples = html.escape(" &middot; ".join(group["samples"])[:160])
             group_rows.append(
-                '<tr><td><strong>' + html.escape(str(group["label"])) + '</strong>'
+                '<tr data-bookkeeping-group data-event-ids="' + event_ids + '"><td><label class="finance-row-select"><input type="checkbox" data-bookkeeping-select-group aria-label="Select all transactions from '
+                + html.escape(str(group["label"]), quote=True) + '"> <strong>' + html.escape(str(group["label"])) + '</strong></label>'
                 + '<br><small>' + samples + '</small></td>'
                 + '<td class="finance-accounts-amount">' + str(group["count"]) + '</td>'
                 + '<td class="finance-accounts-amount">' + _money(group["amount_cents"]) + '</td>'
                 + '<td><form method="post" action="/admin/finances/bookkeeping/file-merchant" class="finance-book-form" '
                 + 'onsubmit="return confirm(\'File all ' + str(group["count"]) + ' of these the same way?\');">'
                 + '<input type="hidden" name="key" value="' + key + '">'
-                + '<select name="category" required>' + options + '</select>'
+                + '<select name="category" required data-bookkeeping-group-category>' + options + '</select>'
                 + '<button type="submit" class="btn btn-secondary btn-sm">File all ' + str(group["count"]) + '</button>'
                 + '</form></td></tr>'
             )
@@ -2862,7 +2864,7 @@ def _render_bookkeeping() -> str:
             + 'than one row at a time. Each group also teaches a rule, so it never asks again. '
             + 'The sample descriptions show what you are filing together.</p>'
             + '<div class="finance-book-table-wrap"><table class="finance-accounts-table finance-book-table"><thead><tr>'
-            + '<th>Merchant</th><th>Count</th><th>Total</th><th>File all as</th>'
+            + '<th>Merchant</th><th>Count</th><th>Total</th><th>Category</th>'
             + '</tr></thead><tbody>' + "".join(group_rows) + '</tbody></table></div>'
         )
 
@@ -2883,11 +2885,12 @@ def _render_bookkeeping() -> str:
                 )
             )
             rows.append(
-                '<tr><td>' + html.escape(str(item["name"]))
+                '<tr data-bookkeeping-row data-object-id="' + event_id + '" data-amount-cents="' + str(int(item["amount_cents"] or 0)) + '"><td><label class="finance-row-select"><input type="checkbox" data-bookkeeping-select aria-label="Select '
+                + html.escape(str(item["name"]), quote=True) + '"> ' + html.escape(str(item["name"])) + '</label>'
                 + '<br><small>' + _money(item["amount_cents"]) + ' on ' + html.escape(item["posted_on"]) + '</small></td>'
                 + '<td><form method="post" action="/admin/finances/bookkeeping/file" class="finance-book-form">'
                 + '<input type="hidden" name="event_id" value="' + event_id + '">'
-                + '<select name="category" required>' + options + '</select>'
+                + '<select name="category" required data-bookkeeping-category>' + options + '</select>'
                 + '<label class="finance-book-always"><input type="checkbox" name="always" value="true"> always</label>'
                 + '<button type="submit" class="btn btn-secondary btn-sm">File</button>'
                 + '</form></td></tr>'
@@ -2952,11 +2955,65 @@ def _render_bookkeeping() -> str:
         )
         + '</div>'
     )
+    batch_controls = (
+        '<div class="finance-batch-bar" data-bookkeeping-batch hidden>'
+        '<div><strong data-bookkeeping-selected-count>0 selected</strong>'
+        '<span data-bookkeeping-selected-value>$0 total</span></div>'
+        '<label>File selected as <select data-bookkeeping-bulk-category><option value="">Choose category</option>'
+        + ''.join('<option value="' + category + '">' + category.title() + '</option>' for category in _BOOKKEEPING_CATEGORIES)
+        + '</select></label><button type="button" class="btn btn-secondary btn-sm" data-bookkeeping-stage>Stage category</button>'
+        '<button type="button" class="btn btn-secondary btn-sm" data-bookkeeping-transfer>Mark transfer</button>'
+        '<button type="button" class="btn btn-secondary btn-sm" data-bookkeeping-clear>Clear</button>'
+        '<button type="button" class="btn btn-primary btn-sm" data-bookkeeping-review>Review and save</button></div>'
+    )
+    script = """
+    <script>
+    (() => {
+      const rows = [...document.querySelectorAll('[data-bookkeeping-row]')];
+      const groups = [...document.querySelectorAll('[data-bookkeeping-group]')];
+      const bar = document.querySelector('[data-bookkeeping-batch]');
+      const money = cents => new Intl.NumberFormat('en-US', {style:'currency', currency:'USD'}).format(cents / 100);
+      const selected = () => rows.filter(row => row.querySelector('[data-bookkeeping-select]')?.checked);
+      const update = () => {
+        const chosen = selected();
+        if (bar) bar.hidden = chosen.length === 0;
+        const count = document.querySelector('[data-bookkeeping-selected-count]');
+        const value = document.querySelector('[data-bookkeeping-selected-value]');
+        if (count) count.textContent = `${chosen.length} selected`;
+        if (value) value.textContent = `${money(chosen.reduce((sum, row) => sum + Number(row.dataset.amountCents || 0), 0))} total`;
+      };
+      rows.forEach(row => row.querySelector('[data-bookkeeping-select]')?.addEventListener('change', update));
+      groups.forEach(group => group.querySelector('[data-bookkeeping-select-group]')?.addEventListener('change', event => {
+        const ids = JSON.parse(group.dataset.eventIds || '[]');
+        rows.filter(row => ids.includes(row.dataset.objectId)).forEach(row => { row.querySelector('[data-bookkeeping-select]').checked = event.target.checked; });
+        update();
+      }));
+      document.querySelector('[data-bookkeeping-stage]')?.addEventListener('click', () => {
+        const category = document.querySelector('[data-bookkeeping-bulk-category]')?.value || '';
+        if (!category) return;
+        selected().forEach(row => {
+          const select = row.querySelector('[data-bookkeeping-category]');
+          if (select) select.value = category;
+          window.FinanceWorkspace?.stage({object_type:'cash_event', object_id:row.dataset.objectId, action:'set_category', value:category});
+        });
+      });
+      document.querySelector('[data-bookkeeping-transfer]')?.addEventListener('click', () => selected().forEach(row =>
+        window.FinanceWorkspace?.stage({object_type:'cash_event', object_id:row.dataset.objectId, action:'mark_internal_transfer', value:true})
+      ));
+      document.querySelector('[data-bookkeeping-clear]')?.addEventListener('click', () => { rows.forEach(row => { const input = row.querySelector('[data-bookkeeping-select]'); if (input) input.checked = false; }); update(); });
+      document.querySelector('[data-bookkeeping-review]')?.addEventListener('click', () => window.FinanceWorkspace?.reviewAndSave());
+      rows.forEach(row => row.querySelector('[data-bookkeeping-category]')?.addEventListener('change', event => {
+        if (!event.target.value) return;
+        window.FinanceWorkspace?.stage({object_type:'cash_event', object_id:row.dataset.objectId, action:'set_category', value:event.target.value});
+      }));
+    })();
+    </script>
+    """
     return (
         '<section class="finance-source-row finance-bookkeeping"><div style="width:100%">'
         + '<strong>Bookkeeping</strong><span>Only money going out is sorted here. '
         + 'QuickBooks decides the category; this page only chases what it has not booked yet.</span>'
-        + head + writeback + queue + rules_html + money_in_note + '</div></section>'
+        + head + batch_controls + writeback + queue + rules_html + money_in_note + '</div></section>' + script
     )
 
 

@@ -913,7 +913,7 @@ async def finance_qbo_bookkeeping_confirm(
     request: Request, event_id: str,
     account_id: str = Form(...),
 ):
-    from sales_support_agent.services.cashflow.qbo_bookkeeping import confirm_writeback
+    from sales_support_agent.services.cashflow.qbo_bookkeeping import confirm_writeback, record_writeback_failure
     user = get_current_user(request) or {}
     actor = str(user.get("email") or user.get("id") or "finance-operator")
     try:
@@ -922,7 +922,12 @@ async def finance_qbo_bookkeeping_confirm(
             settings=_finance_settings(request), actor=actor,
         )
     except Exception as exc:
-        return _redirect_finance_error(f"QuickBooks was not changed: {exc}")
+        await asyncio.to_thread(record_writeback_failure, event_id, actor=actor, error=str(exc))
+        return RedirectResponse(
+            f"/admin/finances/bookkeeping/qbo/{quote(event_id)}/review?flash="
+            f"{quote(f'err:QuickBooks was not changed. Your Agent category is safe. Retry when ready: {exc}')}",
+            status_code=303,
+        )
     return _redirect_finance_home(
         f"QuickBooks updated. This purchase is now filed under {result['account_name']}."
     )

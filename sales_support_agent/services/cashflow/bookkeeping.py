@@ -238,9 +238,11 @@ def group_needs_decision(*, limit: int = 3000, top: int = 60) -> dict[str, Any]:
             "amount_cents": 0,
             "samples": [],
             "guess": "",
+            "event_ids": [],
         })
         group["count"] += 1
         group["amount_cents"] += int(row.get("amount_cents") or 0)
+        group["event_ids"].append(str(row["id"]))
         if len(group["samples"]) < 3:
             sample = str(row.get("name") or description)[:90]
             if sample not in group["samples"]:

@@ -121,6 +121,49 @@ def test_apply_is_atomic_idempotent_audited_and_undoable(finance_engine):
     assert get_finance_object("cash_event", "tx-1", engine=finance_engine)["decision"] == {}
 
 
+def test_category_batch_updates_authoritative_transaction_and_undo_restores_it(finance_engine):
+    _cash_event(finance_engine, "tx-category", category="other")
+    changes = [
+        {"object_type": "cash_event", "object_id": "tx-category", "action": "set_category", "value": "software"},
+        {"object_type": "cash_event", "object_id": "tx-category", "action": "set_note", "value": "Confirmed subscription"},
+    ]
+    preview = preview_changes(changes, actor="owner@example.com", engine=finance_engine)
+    result = apply_preview(
+        preview["preview_token"], actor="owner@example.com",
+        idempotency_key="category-001", source_page="bookkeeping",
+        engine=finance_engine,
+    )
+    with finance_engine.connect() as connection:
+        row = connection.execute(text("""
+            SELECT category, status, amount_cents, source_id
+            FROM cash_events WHERE id='tx-category'
+        """)).fetchone()
+    assert row.category == "software"
+    assert row.status == "posted"
+    assert row.amount_cents == 9_900
+    assert row.source_id == "tx-category"
+
+    undo_batch(result["batch_id"], actor="owner@example.com", engine=finance_engine)
+    with finance_engine.connect() as connection:
+        restored = connection.execute(text("SELECT category FROM cash_events WHERE id='tx-category'")).scalar_one()
+    assert restored == "other"
+
+
+def test_mark_transfer_updates_authoritative_category(finance_engine):
+    _cash_event(finance_engine, "tx-transfer", category="other")
+    preview = preview_changes([
+        {"object_type": "cash_event", "object_id": "tx-transfer", "action": "mark_internal_transfer", "value": True},
+    ], actor="owner@example.com", engine=finance_engine)
+    result = apply_preview(
+        preview["preview_token"], actor="owner@example.com",
+        idempotency_key="transfer-001", source_page="bookkeeping",
+        engine=finance_engine,
+    )
+    with finance_engine.connect() as connection:
+        assert connection.execute(text("SELECT category FROM cash_events WHERE id='tx-transfer'" )).scalar_one() == "transfer"
+    undo_batch(result["batch_id"], actor="owner@example.com", engine=finance_engine)
+
+
 def test_stale_revision_is_reported_before_apply(finance_engine):
     _cash_event(finance_engine, "tx-1")
     first = preview_changes([

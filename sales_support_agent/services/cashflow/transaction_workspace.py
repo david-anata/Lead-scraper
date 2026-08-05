@@ -452,6 +452,14 @@ def apply_preview(preview_token: str, *, actor: str, idempotency_key: str, reaso
             next_decision = _decision_after(current["decision"], item)
             revision = current["revision"] + 1
             prior_for_undo = dict(current["decision"])
+            if item["object_type"] == "cash_event" and item["action"] in {
+                "set_category", "mark_internal_transfer",
+            }:
+                if str(authoritative.get("record_kind") or "") != "transaction":
+                    raise ValueError("Only posted transactions can be categorized.")
+                prior_for_undo["__cash_event"] = {
+                    "category": str(authoritative.get("category") or "uncategorized"),
+                }
             if item["object_type"] == "savings_opportunity" and item["action"] == "set_savings_state":
                 prior_review = connection.execute(text("""
                     SELECT state, reason FROM finance_savings_reviews
@@ -482,6 +490,18 @@ def apply_preview(preview_token: str, *, actor: str, idempotency_key: str, reaso
                     "object_id": item["object_id"], "action": item["action"],
                     "prior": _canonical_json(prior_for_undo),
                     "new": _canonical_json(next_decision), "now": now})
+            if item["object_type"] == "cash_event" and item["action"] in {
+                "set_category", "mark_internal_transfer",
+            }:
+                category = (
+                    str(item["value"])
+                    if item["action"] == "set_category"
+                    else "transfer"
+                )
+                connection.execute(text("""
+                    UPDATE cash_events SET category=:category, updated_at=:now
+                    WHERE id=:id AND record_kind='transaction'
+                """), {"category": category, "now": now, "id": item["object_id"]})
             if item["object_type"] == "savings_opportunity" and item["action"] == "set_savings_state":
                 from sales_support_agent.services.cashflow.savings_reviews import _prepare_review, _record_prepared_review
                 evidence = dict(authoritative.get("_evidence") or {})
@@ -535,6 +555,7 @@ def undo_batch(batch_id: str, *, actor: str, engine=None) -> dict[str, Any]:
                 raise ValueError("A newer decision replaced this batch; undo was safely stopped.")
             prior = item.prior_state_json if isinstance(item.prior_state_json, dict) else json.loads(item.prior_state_json)
             prior_review = prior.pop("__savings_review", "not_applicable")
+            prior_cash_event = prior.pop("__cash_event", None)
             connection.execute(text("""
                 UPDATE finance_object_decisions SET revision=revision+1,
                     decision_json=:prior, updated_by=:actor, updated_at=:now
@@ -549,6 +570,15 @@ def undo_batch(batch_id: str, *, actor: str, engine=None) -> dict[str, Any]:
                     WHERE scope_key=:scope AND opportunity_key=:key
                 """), {"state": restored_state, "reason": restored_reason, "now": now,
                         "scope": SCOPE, "key": item.object_id})
+            if item.object_type == "cash_event" and prior_cash_event is not None:
+                connection.execute(text("""
+                    UPDATE cash_events SET category=:category, updated_at=:now
+                    WHERE id=:id AND record_kind='transaction'
+                """), {
+                    "category": str(prior_cash_event.get("category") or "uncategorized"),
+                    "now": now,
+                    "id": item.object_id,
+                })
         connection.execute(text("""
             UPDATE finance_action_batches SET status='undone', undone_at=:now WHERE id=:id
         """), {"now": now, "id": batch_id})
