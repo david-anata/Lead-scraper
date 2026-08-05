@@ -2845,7 +2845,7 @@ def _render_bookkeeping() -> str:
             )
             samples = html.escape(" &middot; ".join(group["samples"])[:160])
             group_rows.append(
-                '<tr data-bookkeeping-group data-event-ids="' + event_ids + '"><td><label class="finance-row-select"><input type="checkbox" data-bookkeeping-select-group aria-label="Select all transactions from '
+                '<tr data-bookkeeping-group data-event-ids="' + event_ids + '" data-amount-cents="' + str(int(group["amount_cents"] or 0)) + '"><td><label class="finance-row-select"><input type="checkbox" data-bookkeeping-select-group aria-label="Select all transactions from '
                 + html.escape(str(group["label"]), quote=True) + '"> <strong>' + html.escape(str(group["label"])) + '</strong></label>'
                 + '<br><small>' + samples + '</small></td>'
                 + '<td class="finance-accounts-amount">' + str(group["count"]) + '</td>'
@@ -2974,13 +2974,24 @@ def _render_bookkeeping() -> str:
       const bar = document.querySelector('[data-bookkeeping-batch]');
       const money = cents => new Intl.NumberFormat('en-US', {style:'currency', currency:'USD'}).format(cents / 100);
       const selected = () => rows.filter(row => row.querySelector('[data-bookkeeping-select]')?.checked);
+      const selectedGroups = () => groups.filter(group => group.querySelector('[data-bookkeeping-select-group]')?.checked);
+      const selectedItems = () => {
+        const items = new Map();
+        selected().forEach(row => items.set(row.dataset.objectId, {id: row.dataset.objectId, amount: Number(row.dataset.amountCents || 0)}));
+        selectedGroups().forEach(group => {
+          const ids = JSON.parse(group.dataset.eventIds || '[]');
+          const share = ids.length ? Math.round(Number(group.dataset.amountCents || 0) / ids.length) : 0;
+          ids.forEach(id => { if (!items.has(id)) items.set(id, {id, amount: share}); });
+        });
+        return [...items.values()];
+      };
       const update = () => {
-        const chosen = selected();
+        const chosen = selectedItems();
         if (bar) bar.hidden = chosen.length === 0;
         const count = document.querySelector('[data-bookkeeping-selected-count]');
         const value = document.querySelector('[data-bookkeeping-selected-value]');
         if (count) count.textContent = `${chosen.length} selected`;
-        if (value) value.textContent = `${money(chosen.reduce((sum, row) => sum + Number(row.dataset.amountCents || 0), 0))} total`;
+        if (value) value.textContent = `${money(chosen.reduce((sum, item) => sum + item.amount, 0))} total`;
       };
       rows.forEach(row => row.querySelector('[data-bookkeeping-select]')?.addEventListener('change', update));
       groups.forEach(group => group.querySelector('[data-bookkeeping-select-group]')?.addEventListener('change', event => {
@@ -2991,16 +3002,17 @@ def _render_bookkeeping() -> str:
       document.querySelector('[data-bookkeeping-stage]')?.addEventListener('click', () => {
         const category = document.querySelector('[data-bookkeeping-bulk-category]')?.value || '';
         if (!category) return;
-        selected().forEach(row => {
-          const select = row.querySelector('[data-bookkeeping-category]');
+        selectedItems().forEach(item => {
+          const row = rows.find(candidate => candidate.dataset.objectId === item.id);
+          const select = row?.querySelector('[data-bookkeeping-category]');
           if (select) select.value = category;
-          window.FinanceWorkspace?.stage({object_type:'cash_event', object_id:row.dataset.objectId, action:'set_category', value:category});
+          window.FinanceWorkspace?.stage({object_type:'cash_event', object_id:item.id, action:'set_category', value:category});
         });
       });
-      document.querySelector('[data-bookkeeping-transfer]')?.addEventListener('click', () => selected().forEach(row =>
-        window.FinanceWorkspace?.stage({object_type:'cash_event', object_id:row.dataset.objectId, action:'mark_internal_transfer', value:true})
+      document.querySelector('[data-bookkeeping-transfer]')?.addEventListener('click', () => selectedItems().forEach(item =>
+        window.FinanceWorkspace?.stage({object_type:'cash_event', object_id:item.id, action:'mark_internal_transfer', value:true})
       ));
-      document.querySelector('[data-bookkeeping-clear]')?.addEventListener('click', () => { rows.forEach(row => { const input = row.querySelector('[data-bookkeeping-select]'); if (input) input.checked = false; }); update(); });
+      document.querySelector('[data-bookkeeping-clear]')?.addEventListener('click', () => { rows.forEach(row => { const input = row.querySelector('[data-bookkeeping-select]'); if (input) input.checked = false; }); groups.forEach(group => { const input = group.querySelector('[data-bookkeeping-select-group]'); if (input) input.checked = false; }); update(); });
       document.querySelector('[data-bookkeeping-review]')?.addEventListener('click', () => window.FinanceWorkspace?.reviewAndSave());
       rows.forEach(row => row.querySelector('[data-bookkeeping-category]')?.addEventListener('change', event => {
         if (!event.target.value) return;
