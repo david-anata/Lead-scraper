@@ -324,6 +324,10 @@ services:
         -H "Content-Type: application/json" \
         -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
         -d '{"dry_run":false,"max_campaigns":10,"actor":"job:building-campaign-scheduler"}'
+      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/internal/building/bookings/communications/run" \
+        -H "Content-Type: application/json" \
+        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
+        -d '{"execute":true,"actor":"job:building-event-communications"}'
     envVars:
       - key: SALES_SUPPORT_AGENT_URL
         sync: false

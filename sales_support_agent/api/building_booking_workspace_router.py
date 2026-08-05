@@ -25,6 +25,7 @@ from sales_support_agent.models.entities import (
     BuildingRatePlan,
     BuildingReservation,
     BuildingSpace,
+    BuildingTransactionalMessage,
 )
 from sales_support_agent.services.admin_nav import render_agent_nav
 from sales_support_agent.services.auth_deps import require_tool
@@ -33,6 +34,10 @@ from sales_support_agent.services.building_booking_workspace import (
 )
 from sales_support_agent.services.building_security import csrf_token
 from sales_support_agent.services.building_security import require_building_form_security
+from sales_support_agent.services.building_transactional_messages import (
+    TEMPLATES,
+    attempt_booking_message,
+)
 
 
 router = APIRouter(
@@ -85,6 +90,45 @@ def prepare_booking_billing(
     )
     return RedirectResponse(
         f"/admin/building/bookings/{reservation_id}?{urlencode({'notice': notice})}",
+        status_code=303,
+    )
+
+
+@router.post(
+    "/{reservation_id}/communications/{milestone}/retry",
+    dependencies=FORM_DEPS,
+)
+def retry_booking_communication(
+    reservation_id: str,
+    milestone: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Retry one versioned milestone message without duplicating delivery."""
+
+    from urllib.parse import urlencode
+
+    if milestone not in TEMPLATES:
+        raise HTTPException(status_code=404, detail="Message milestone not found.")
+    with session_scope(request.app.state.session_factory) as session:
+        reservation = session.get(BuildingReservation, reservation_id)
+        if reservation is None or reservation.kind != "event":
+            raise HTTPException(status_code=404, detail="Event booking not found.")
+        result = attempt_booking_message(
+            session,
+            request=request,
+            reservation=reservation,
+            milestone=milestone,
+            actor=_actor(user),
+        )
+    status = str(result.get("status") or "blocked")
+    query = (
+        {"notice": f"Customer message is {status}."}
+        if status in {"sent", "delivered", "delivery_delayed"}
+        else {"error": str(result.get("reason") or f"Message is {status}.")}
+    )
+    return RedirectResponse(
+        f"/admin/building/bookings/{reservation_id}?{urlencode(query)}",
         status_code=303,
     )
 
@@ -151,6 +195,11 @@ def booking_workspace(
             select(BuildingInvoice)
             .where(BuildingInvoice.reservation_id == reservation.id)
             .order_by(BuildingInvoice.created_at.desc())
+        ).scalars().all()
+        communications = session.execute(
+            select(BuildingTransactionalMessage)
+            .where(BuildingTransactionalMessage.reservation_id == reservation.id)
+            .order_by(BuildingTransactionalMessage.created_at.desc())
         ).scalars().all()
         calendar = session.execute(
             select(BuildingCalendarProjection).where(
@@ -299,6 +348,21 @@ def booking_workspace(
                     for row in invoices
                 ],
             },
+            "communications": [
+                {
+                    "id": row.id,
+                    "milestone": row.milestone,
+                    "template_version": row.template_version,
+                    "status": row.status,
+                    "provider_reference": row.provider_message_id,
+                    "last_error": row.last_error,
+                    "sent_at": row.sent_at.isoformat() if row.sent_at else "",
+                    "delivered_at": (
+                        row.delivered_at.isoformat() if row.delivered_at else ""
+                    ),
+                }
+                for row in communications
+            ],
             "calendar": (
                 {"status": calendar.status}
                 if calendar

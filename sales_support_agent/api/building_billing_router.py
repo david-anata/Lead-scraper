@@ -40,6 +40,9 @@ from sales_support_agent.models.entities import (
     BuildingStripeEvent,
     BuildingSuppression,
 )
+from sales_support_agent.services.building_transactional_messages import (
+    attempt_booking_message,
+)
 
 
 internal_router = APIRouter(prefix="/api/internal/building/billing", tags=["building-billing"])
@@ -1015,6 +1018,28 @@ def sync_quickbooks_invoice(
                 "provider_observed": True,
             },
         ))
+        reservation = (
+            session.get(BuildingReservation, row.reservation_id)
+            if row.reservation_id
+            else None
+        )
+        if reservation is not None and reservation.kind == "event":
+            if row.status in {"open", "paid"}:
+                attempt_booking_message(
+                    session,
+                    request=request,
+                    reservation=reservation,
+                    milestone="invoice_ready",
+                    actor=payload.actor,
+                )
+            if row.status == "paid" and reservation.deposit_status == "paid":
+                attempt_booking_message(
+                    session,
+                    request=request,
+                    reservation=reservation,
+                    milestone="payment_received",
+                    actor=payload.actor,
+                )
         return {"ok": True, "invoice": _invoice_payload(row)}
 
 

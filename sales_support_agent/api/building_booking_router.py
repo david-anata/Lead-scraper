@@ -9,7 +9,7 @@ import base64
 import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, Optional
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
@@ -33,6 +33,7 @@ from sales_support_agent.models.entities import (
     BuildingReservation,
     BuildingCalendarProjection,
     BuildingSignatureRequestReadiness,
+    BuildingServiceRequest,
     BuildingSpace,
     BuildingTour,
 )
@@ -45,6 +46,9 @@ from sales_support_agent.services.building_checklists import (
 )
 from sales_support_agent.services.building_agreement_readiness import (
     propagate_event_readiness_terminal_state,
+)
+from sales_support_agent.services.building_transactional_messages import (
+    attempt_booking_message,
 )
 
 
@@ -132,6 +136,30 @@ class ReservationInput(BaseModel):
 
 class CustomerStatusAccessInput(BaseModel):
     expires_in_days: int = Field(default=30, ge=1, le=90)
+    actor: str = Field(min_length=1, max_length=255)
+
+
+class CustomerBookingRequestInput(BaseModel):
+    request_type: Literal["reschedule", "cancellation", "question"]
+    details: str = Field(min_length=10, max_length=4000)
+    requested_starts_at: datetime | None = None
+    requested_ends_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def valid_requested_window(self) -> "CustomerBookingRequestInput":
+        if bool(self.requested_starts_at) != bool(self.requested_ends_at):
+            raise ValueError("Provide both requested start and end times.")
+        if (
+            self.requested_starts_at
+            and self.requested_ends_at
+            and self.requested_ends_at <= self.requested_starts_at
+        ):
+            raise ValueError("Requested end must be after requested start.")
+        return self
+
+
+class CommunicationRunInput(BaseModel):
+    execute: bool = False
     actor: str = Field(min_length=1, max_length=255)
 
 
@@ -451,6 +479,27 @@ def _customer_status_projection(
                 if calendar
                 else "not_started"
             ),
+        },
+        "documents": {
+            "quote_url": (
+                proposal.document_url
+                if proposal and proposal.status in {"sent", "accepted"}
+                else ""
+            ),
+            "agreement_url": (
+                agreement.document_url
+                if agreement and agreement.status == "signed"
+                else ""
+            ),
+            "invoice_url": (
+                invoice.hosted_invoice_url
+                if invoice and invoice.status in {"open", "paid"}
+                else ""
+            ),
+        },
+        "requests": {
+            "accepted_types": ["reschedule", "cancellation", "question"],
+            "changes_booking_directly": False,
         },
         "communications": {
             "delivery_claimed": False,
@@ -1219,6 +1268,129 @@ def public_customer_status(token: str, request: Request) -> dict[str, Any]:
         }
 
 
+@public_router.post("/status/requests", status_code=202)
+def submit_customer_booking_request(
+    token: str,
+    payload: CustomerBookingRequestInput,
+    request: Request,
+    idempotency_key: str = Header(
+        alias="Idempotency-Key", min_length=8, max_length=128
+    ),
+) -> dict[str, Any]:
+    """Create staff work from a customer request; never mutate the booking."""
+
+    claims = _decode_customer_status_token(request, token)
+    with session_scope(request.app.state.session_factory) as session:
+        reservation = session.get(BuildingReservation, str(claims["reservation_id"]))
+        if (
+            reservation is None
+            or reservation.kind != "event"
+            or reservation.contact_id != str(claims["contact_id"])
+        ):
+            raise HTTPException(status_code=404, detail="Status link is invalid.")
+        request_id = str(uuid5(
+            NAMESPACE_URL,
+            f"building-customer-request:{reservation.id}:{idempotency_key}",
+        ))
+        existing = session.get(BuildingServiceRequest, request_id)
+        if existing is not None:
+            return {
+                "ok": True,
+                "duplicate": True,
+                "request_id": existing.id,
+                "booking_changed": False,
+            }
+        requested_window = ""
+        if payload.requested_starts_at and payload.requested_ends_at:
+            requested_window = (
+                f"\nRequested window: {payload.requested_starts_at.isoformat()} "
+                f"to {payload.requested_ends_at.isoformat()}"
+            )
+        row = BuildingServiceRequest(
+            id=request_id,
+            category="event_support",
+            priority="high" if payload.request_type == "cancellation" else "normal",
+            status="new",
+            title=f"Customer {payload.request_type} request",
+            description=f"{payload.details.strip()}{requested_window}",
+            space_id=reservation.space_id,
+            contact_id=reservation.contact_id,
+            reservation_id=reservation.id,
+            source="customer_status",
+            source_reference=idempotency_key,
+            assigned_owner=reservation.assigned_owner,
+            reported_by="customer-status-link",
+        )
+        session.add(row)
+        session.add(BuildingAuditEvent(
+            entity_type="reservation",
+            entity_id=reservation.id,
+            action="customer_booking_change_requested",
+            actor="customer-status-link",
+            after_json={
+                "request_id": row.id,
+                "request_type": payload.request_type,
+                "booking_changed": False,
+                "inventory_changed": False,
+            },
+        ))
+        return {
+            "ok": True,
+            "duplicate": False,
+            "request_id": row.id,
+            "booking_changed": False,
+        }
+
+
+@router.post("/communications/run")
+def run_booking_communications(
+    payload: CommunicationRunInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Preview or deliver due event reminders through the idempotent outbox."""
+
+    _require_internal_key(request, x_internal_api_key)
+    now = _now()
+    window_start = now + timedelta(days=6)
+    window_end = now + timedelta(days=8)
+    with session_scope(request.app.state.session_factory) as session:
+        rows = session.execute(
+            select(BuildingReservation).where(
+                BuildingReservation.kind == "event",
+                BuildingReservation.status.in_(("confirmed", "pre_event")),
+                BuildingReservation.starts_at >= window_start,
+                BuildingReservation.starts_at <= window_end,
+            )
+        ).scalars().all()
+        if not payload.execute:
+            return {
+                "ok": True,
+                "execute": False,
+                "due_count": len(rows),
+                "reservation_ids": [row.id for row in rows],
+            }
+        results = [
+            {
+                "reservation_id": row.id,
+                **attempt_booking_message(
+                    session,
+                    request=request,
+                    reservation=row,
+                    milestone="event_reminder",
+                    actor=payload.actor,
+                ),
+            }
+            for row in rows
+        ]
+        return {
+            "ok": all(item["status"] in {"sent", "delivered"} for item in results),
+            "execute": True,
+            "due_count": len(rows),
+            "results": results,
+        }
+
+
 @router.get("/{reservation_id}/lifecycle")
 def get_event_lifecycle(
     reservation_id: str,
@@ -1550,6 +1722,20 @@ def transition_reservation(
             before_json={"status": before},
             after_json={"status": row.status, "reason": payload.reason},
         ))
+        if row.kind == "event":
+            milestone = {
+                "confirmed": "booking_confirmed",
+                "cancelled": "booking_cancelled",
+                "completed": "post_event",
+            }.get(payload.target_status)
+            if milestone:
+                attempt_booking_message(
+                    session,
+                    request=request,
+                    reservation=row,
+                    milestone=milestone,
+                    actor=payload.actor,
+                )
         return {"ok": True, "reservation": _reservation_payload(row)}
 
 
@@ -2346,6 +2532,14 @@ def record_proposal(
                 "pricing_adjustment": pricing_adjustment,
             },
         ))
+        if reservation.kind == "event" and payload.status == "sent":
+            attempt_booking_message(
+                session,
+                request=request,
+                reservation=reservation,
+                milestone="quote_sent",
+                actor=payload.actor,
+            )
         return {
             "ok": True,
             "proposal_id": row.id,
@@ -2466,6 +2660,14 @@ def record_agreement(
                 "evidence": dict(row.evidence_json or {}),
             },
         ))
+        if reservation.kind == "event" and payload.status == "signed":
+            attempt_booking_message(
+                session,
+                request=request,
+                reservation=reservation,
+                milestone="agreement_signed",
+                actor=payload.actor,
+            )
         return {"ok": True, "agreement_id": row.id, "status": row.status}
 
 
@@ -2510,4 +2712,12 @@ def record_deposit(
                 "provider_reference": row.provider_reference,
             },
         ))
+        if reservation.kind == "event" and payload.status == "paid":
+            attempt_booking_message(
+                session,
+                request=request,
+                reservation=reservation,
+                milestone="payment_received",
+                actor=payload.actor,
+            )
         return {"ok": True, "deposit_id": row.id, "status": row.status}

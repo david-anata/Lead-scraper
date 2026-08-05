@@ -23,6 +23,7 @@ from sales_support_agent.models.entities import (
     BuildingEmailEvent,
     BuildingInquiry,
     BuildingInquiryReceipt,
+    BuildingTransactionalMessage,
     BuildingSuppression,
 )
 
@@ -160,6 +161,7 @@ async def ingest_resend_webhook(request: Request) -> dict[str, Any]:
 
         recipient = None
         receipt = None
+        transactional = None
         if provider_message_id:
             recipient = session.execute(
                 select(BuildingCampaignRecipient).where(
@@ -170,6 +172,12 @@ async def ingest_resend_webhook(request: Request) -> dict[str, Any]:
             receipt = session.execute(
                 select(BuildingInquiryReceipt).where(
                     BuildingInquiryReceipt.provider_message_id == provider_message_id
+                )
+            ).scalar_one_or_none()
+            transactional = session.execute(
+                select(BuildingTransactionalMessage).where(
+                    BuildingTransactionalMessage.provider_message_id
+                    == provider_message_id
                 )
             ).scalar_one_or_none()
         if recipient is None and email:
@@ -222,6 +230,16 @@ async def ingest_resend_webhook(request: Request) -> dict[str, Any]:
                 }
                 inquiry.payload_json = inquiry_payload
                 inquiry.updated_at = _now()
+        if transactional is not None and supported:
+            transactional.status = RECIPIENT_STATUSES[event_type]
+            transactional.updated_at = _now()
+            if event_type == "email.delivered":
+                transactional.delivered_at = _now()
+                transactional.last_error = ""
+            elif event_type in {"email.bounced", "email.complained", "email.failed"}:
+                transactional.last_error = (
+                    f"Provider reported {event_type.removeprefix('email.').replace('_', ' ')}."
+                )
         if suppression_reason and email:
             suppression = session.get(BuildingSuppression, email)
             if suppression is None:
@@ -263,6 +281,7 @@ async def ingest_resend_webhook(request: Request) -> dict[str, Any]:
                 "email": email,
                 "campaign_recipient_id": recipient.id if recipient else None,
                 "inquiry_id": receipt.inquiry_id if receipt else None,
+                "transactional_message_id": transactional.id if transactional else None,
                 "suppression_reason": suppression_reason or "",
             },
         ))
@@ -271,6 +290,8 @@ async def ingest_resend_webhook(request: Request) -> dict[str, Any]:
             "duplicate": False,
             "event_type": event_type,
             "status": status,
-            "recipient_matched": recipient is not None or receipt is not None,
+            "recipient_matched": (
+                recipient is not None or receipt is not None or transactional is not None
+            ),
             "suppressed": bool(suppression_reason and email),
         }
