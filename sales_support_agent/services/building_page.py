@@ -1760,6 +1760,8 @@ def render_building_page(
           <div class="metric"><span>30-day scheduled utilization</span><strong>{_pct(operation_metrics.get("scheduled_utilization_30d"))}</strong></div>
           <div class="metric"><span>Posted collected cash</span><strong>${int(finance_metrics.get("posted_collected_cents") or 0) / 100:,.0f}</strong></div>
           <div class="metric"><span>Overdue receivables</span><strong>${int(finance_metrics.get("overdue_cents") or 0) / 100:,.0f}</strong></div>
+          <div class="metric"><span>Overdue event work</span><strong>{int(operation_metrics.get("overdue_required_item_count") or 0)}</strong></div>
+          <div class="metric"><span>Unowned event work</span><strong>{int(operation_metrics.get("unowned_required_item_count") or 0)}</strong></div>
         </div>
         <details class="advanced-disclosure">
           <summary>View funnel and source detail</summary>

@@ -375,6 +375,16 @@ def booking_workspace(
                     if required
                     else "No event-day checklist yet"
                 ),
+                "items": [
+                    {
+                        "label": row.label,
+                        "status": row.status,
+                        "assigned_owner": row.assigned_owner,
+                        "due_at": row.due_at.isoformat() if row.due_at else "",
+                        "evidence_reference": row.evidence_reference,
+                    }
+                    for row in sorted(checklist_items, key=lambda item: item.sort_order)
+                ],
             },
         }
     return HTMLResponse(

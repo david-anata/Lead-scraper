@@ -406,6 +406,15 @@ def _ensure_building_columns(engine: Any) -> None:
                 else "DATETIME"
             ),
         },
+        "building_operational_checklist_items": {
+            "assigned_owner": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "due_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+            "evidence_reference": "TEXT NOT NULL DEFAULT ''",
+        },
         "building_agreement_templates": {
             "contract_type": "VARCHAR(32) NOT NULL DEFAULT 'event'",
             "body_markdown": "TEXT NOT NULL DEFAULT ''",

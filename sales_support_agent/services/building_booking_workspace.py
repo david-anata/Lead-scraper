@@ -393,6 +393,18 @@ def render_booking_workspace(
         <div class="booking-workspace__header"><div><h2>Customer communications</h2><p>Versioned operational messages use The Anata Team and retain provider delivery evidence.</p></div></div>
         <div class="booking-version-table"><table><thead><tr><th>Milestone</th><th>State</th><th>Sent or delivered</th><th>Evidence</th><th>Recovery</th></tr></thead><tbody>{communication_rows}</tbody></table></div>
       </section>'''
+    checklist_rows = "".join(
+        f'<tr><td>{_esc(item.get("label"))}</td><td>{_status(item.get("status") or "pending")}</td>'
+        f'<td>{_esc(item.get("assigned_owner") or "Unassigned")}</td>'
+        f'<td>{_esc(item.get("due_at") or "No due date")}</td>'
+        f'<td>{_esc(item.get("evidence_reference") or "Not recorded")}</td></tr>'
+        for item in checklist.get("items", [])
+    ) or '<tr><td colspan="5">Operations work begins after confirmation.</td></tr>'
+    operations_section = f'''<section class="booking-workspace" id="booking-operations">
+        <div class="booking-workspace__header"><div><h2>Event operations</h2><p>Every required task has an owner, deadline, and completion or waiver evidence.</p></div>{_status(checklist.get("status") or "not_started")}</div>
+        <div class="booking-version-table"><table><thead><tr><th>Work</th><th>State</th><th>Owner</th><th>Due</th><th>Evidence</th></tr></thead><tbody>{checklist_rows}</tbody></table></div>
+        <p class="booking-billing-link"><a class="booking-button booking-button--secondary" href="/admin/building#operations">Update checklist evidence</a></p>
+      </section>'''
     body = f"""
       <header class="app-page-header booking-header">
         <div>
@@ -425,6 +437,7 @@ def render_booking_workspace(
       {quote_section}
       {billing_section}
       {communications_section}
+      {operations_section}
       <section class="booking-actions" aria-labelledby="booking-actions-title">
         <div><h2 id="booking-actions-title">Common staff actions</h2><p>Use the governed workspace for each action; every write keeps its existing permission and audit checks.</p></div>
         <div>
