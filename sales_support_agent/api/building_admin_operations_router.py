@@ -760,6 +760,7 @@ def record_proposal_from_control_room(
     return _run_form_action(
         action,
         f"{proposal_type.title()} version {version} recorded as {status}.",
+        success_target=f"/admin/building/bookings/{reservation_id}",
     )
 
 

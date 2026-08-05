@@ -1039,6 +1039,7 @@ def create_event_review(
             "tax_status": plan.tax_status,
             "tax_rate_bps": plan.tax_rate_bps,
             "tax_note": plan.tax_note,
+            "transaction_date": event_date.isoformat(),
             "approval_evidence": plan.approval_evidence,
             "approved_by": plan.approved_by,
             "approved_at": plan.approved_at.isoformat() if plan.approved_at else None,
@@ -2252,6 +2253,7 @@ def record_proposal(
                 "tax_rate_bps": selected_rate_plan.tax_rate_bps,
                 "tax_cents": tax_cents,
                 "final_amount_cents": calculated_amount_cents,
+                "transaction_date": reservation.starts_at.date().isoformat(),
             }
         if (
             payload.status in {"approved", "sent", "accepted"}
@@ -2296,6 +2298,7 @@ def record_proposal(
                         else None
                     ),
                     "pricing_adjustment": pricing_adjustment,
+                    "transaction_date": reservation.starts_at.date().isoformat(),
                     "snapshotted_at": _now().isoformat(),
                 }
             row.terms_summary = payload.terms_summary.strip()

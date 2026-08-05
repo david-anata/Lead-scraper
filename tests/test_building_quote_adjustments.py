@@ -116,8 +116,15 @@ class BuildingQuoteAdjustmentTests(unittest.TestCase):
         with self.factory() as session:
             quote = session.query(BuildingProposal).one()
             self.assertEqual(quote.amount_cents, 188_038)
+            pricing_adjustment = dict(
+                quote.rate_plan_snapshot_json["pricing_adjustment"]
+            )
             self.assertEqual(
-                quote.rate_plan_snapshot_json["pricing_adjustment"],
+                pricing_adjustment.pop("transaction_date"),
+                quote.rate_plan_snapshot_json["transaction_date"],
+            )
+            self.assertEqual(
+                pricing_adjustment,
                 {
                     "pricing_subtotal_cents": 200_000,
                     "discount_cents": 25_000,
