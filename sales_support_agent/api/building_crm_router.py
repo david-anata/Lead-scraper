@@ -5164,6 +5164,16 @@ def building_control_room(
                 for item in agreement_template_rows
             ],
             provider_readiness={
+                "arena_space_public_available": any(
+                    item.id == "arena" and item.is_public and item.status == "available"
+                    for item in space_rows
+                ),
+                "arena_offering_published": any(
+                    item.id == "arena-events"
+                    and item.space_id == "arena"
+                    and item.is_published
+                    for item in offering_rows
+                ),
                 # Was hardcoded False, so this row could never go green however
                 # much setup was done. The agreement_template decision is the
                 # record that names the approved template and the e-sign

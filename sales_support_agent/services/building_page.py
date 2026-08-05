@@ -1774,7 +1774,7 @@ def render_building_page(
         </details>
       </section>
       <details class="setup-workspace building-view view-settings" id="building-setup">
-        <summary><span><strong>Arena setup and administration</strong><span>{launch_ready_count} of 10 launch requirements are complete. Open this only to change business rules or finish provider setup.</span></span></summary>
+        <summary><span><strong>Arena setup and administration</strong><span>{launch_ready_count} of {len(launch_status_items)} launch requirements are complete. Open this only to change business rules or finish provider setup.</span></span></summary>
         <div class="setup-workspace__content">
       <section class="panel panel--wide" id="arena-launch-readiness">
         <div class="panel-head"><div><h2>{"Nothing left to finish" if not launch_open_items else "What still needs finishing"}</h2><p>{"Everything Agent can check is done." if not launch_open_items else "Everything else is done. These are the only items left, and each one waits on someone outside Agent."}</p></div><span class="count">{len(launch_open_items)} left</span></div>
