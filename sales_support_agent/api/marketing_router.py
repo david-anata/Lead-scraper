@@ -1759,6 +1759,25 @@ def _assemble_shelf_payload(
     }
 
 
+def _shelf_has_complete_comparison(shelf: Any) -> bool:
+    """Validate stored shelf evidence, including legacy payloads marked ready."""
+    if not isinstance(shelf, dict) or shelf.get("status") != "ready":
+        return False
+    target = shelf.get("target") if isinstance(shelf.get("target"), dict) else {}
+    target_brand = re.sub(r"[^a-z0-9]+", "", str(target.get("brand", "") or "").lower())
+    keys: set[str] = set()
+    for competitor in shelf.get("competitors") or []:
+        if not isinstance(competitor, dict):
+            continue
+        brand = re.sub(r"[^a-z0-9]+", "", str(competitor.get("brand", "") or "").lower())
+        if target_brand and brand == target_brand:
+            continue
+        key = brand or str(competitor.get("asin", "") or "").strip().upper()
+        if key:
+            keys.add(key)
+    return len(keys) >= _SHELF_REQUIRED_ITEMS
+
+
 def _build_shelf(app, intake_run_id: int, asin: str) -> None:
     """Background digital-shelf builder for ASIN intakes.
 
@@ -1824,8 +1843,7 @@ async def marketing_site_intake_needs(
         summary = {**(run.summary_json or {}), "needs": needs}
         kind = str(summary.get("kind", "") or "")
         asin = str(summary.get("asin", "") or "")
-        shelf_status = str((summary.get("shelf") or {}).get("status", "") or "")
-        if kind == "asin" and asin and shelf_status in {"", "empty", "incomplete"}:
+        if kind == "asin" and asin and not _shelf_has_complete_comparison(summary.get("shelf")):
             summary["shelf"] = {"status": "pending"}
             background_tasks.add_task(_build_shelf, request.app, run.id, asin)
         run.summary_json = summary
