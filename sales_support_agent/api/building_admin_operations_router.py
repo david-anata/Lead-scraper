@@ -101,6 +101,7 @@ from sales_support_agent.services.building_security import (
 )
 from sales_support_agent.services.building_lead_intake import (
     advance_follow_up_sequence,
+    event_qualification_missing,
     notify_new_building_lead,
 )
 from sales_support_agent.services.building_inquiry_receipt import attempt_inquiry_receipt
@@ -318,6 +319,12 @@ async def save_event_interview_from_control_room(
     )
     answers = {name: str(form.get(name) or "").strip() for name in field_names}
     reviewed = str(form.get("save_mode") or "").strip() == "reviewed"
+    # Whether this was a background keystroke autosave is a property of the
+    # request, not of the review checkbox. The audit action keyed off `reviewed`
+    # before, so a deliberate operator save was recorded as an autosave.
+    is_autosave = (
+        request.headers.get("X-Requested-With") == "building-interview-autosave"
+    )
     if not any(answers.values()):
         return _redirect(
             error="Record at least one interview answer before saving.",
@@ -352,18 +359,29 @@ async def save_event_interview_from_control_room(
         lifecycle_stage = str(
             (payload.get("_lifecycle") or {}).get("stage") or "new"
         )
+        # "Complete" means one thing across the app. event_qualification_missing
+        # is the same check that gates moving an event to qualified, so an
+        # interview that satisfies it completes the checklist step too, whether
+        # or not the operator also ticked the explicit review box. Previously the
+        # step stayed queued unless save_mode=reviewed was posted, so a fully
+        # answered interview and the qualification gate disagreed.
+        qualification_missing = event_qualification_missing(answers, payload)
         payload["_follow_up_sequence"] = advance_follow_up_sequence(
             list(payload.get("_follow_up_sequence") or []),
             lifecycle_stage=lifecycle_stage,
             changed_at=datetime.now(timezone.utc),
-            interview_complete=bool(interview_meta.get("reviewed")) or reviewed,
+            interview_complete=(
+                bool(interview_meta.get("reviewed"))
+                or reviewed
+                or not qualification_missing
+            ),
         )
         inquiry.payload_json = payload
         inquiry.updated_at = datetime.now(timezone.utc)
         session.add(BuildingAuditEvent(
             entity_type="inquiry",
             entity_id=inquiry.id,
-            action=("event_interview_saved" if reviewed else "event_interview_autosaved"),
+            action=("event_interview_autosaved" if is_autosave else "event_interview_saved"),
             actor=_actor(user),
             before_json=before,
             after_json={
@@ -373,7 +391,7 @@ async def save_event_interview_from_control_room(
                 "provider_write": False,
             },
         ))
-    if request.headers.get("X-Requested-With") == "building-interview-autosave":
+    if is_autosave:
         return JSONResponse({"ok": True, "saved": True, "reviewed": reviewed})
     return _redirect(
         notice="Event interview saved. No date, price, or booking was promised.",
