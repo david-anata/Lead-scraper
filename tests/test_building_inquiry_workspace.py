@@ -113,6 +113,8 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
         self.assertIn("Need a stage and accessible seating.", page.text)
         self.assertIn("Do this next", page.text)
         self.assertIn("Record response", page.text)
+        self.assertIn('href="mailto:jordan@example.com"', page.text)
+        self.assertIn("801-555-0142", page.text)
         self.assertIn("Staff Slack alert", page.text)
         self.assertNotIn("Production QA Test", page.text)
 
