@@ -672,8 +672,10 @@ def list_public_availability(request: Request) -> dict[str, Any]:
 def event_date_availability(
     request: Request,
     dates: str = Query(min_length=10, max_length=32),
+    setup_start_time: str = Query(default="", max_length=8),
     guest_start_time: str = Query(default="", max_length=8),
     guest_end_time: str = Query(default="", max_length=8),
+    teardown_end_time: str = Query(default="", max_length=8),
     x_internal_api_key: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     """Return a privacy-safe conflict status for one to three candidate dates."""
@@ -690,13 +692,18 @@ def event_date_availability(
     if any(item < today or item > today + timedelta(days=730) for item in candidates):
         raise HTTPException(status_code=422, detail="Candidate dates must be within the next two years.")
     with session_scope(request.app.state.session_factory) as session:
-        return candidate_date_availability(
-            session,
-            calendar=BuildingGoogleCalendarClient(),
-            candidates=candidates,
-            guest_start_time=guest_start_time,
-            guest_end_time=guest_end_time,
-        )
+        try:
+            return candidate_date_availability(
+                session,
+                calendar=BuildingGoogleCalendarClient(),
+                candidates=candidates,
+                setup_start_time=setup_start_time,
+                guest_start_time=guest_start_time,
+                guest_end_time=guest_end_time,
+                teardown_end_time=teardown_end_time,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @public_router.post("/inquiries", status_code=201)

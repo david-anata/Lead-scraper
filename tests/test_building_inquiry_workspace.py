@@ -27,6 +27,7 @@ from sales_support_agent.models.entities import (
     BuildingContact,
     BuildingInquiry,
     BuildingRelationship,
+    BuildingReservation,
 )
 from sales_support_agent.services.admin_auth import create_user_session_token
 
@@ -264,6 +265,42 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
         with self.factory() as session:
             inquiry = session.get(BuildingInquiry, "jordan-inquiry")
             self.assertTrue(inquiry.payload_json["_event_interview_meta"]["reviewed"])
+
+    def test_qualified_inquiry_compares_prefilled_dates_without_creating_hold(self) -> None:
+        with self.factory() as session:
+            inquiry = session.get(BuildingInquiry, "jordan-inquiry")
+            payload = dict(inquiry.payload_json or {})
+            payload["_lifecycle"] = {"stage": "qualified"}
+            inquiry.payload_json = payload
+            session.add(inquiry)
+            session.commit()
+        page = self.client.get("/admin/building/inquiries/jordan-inquiry")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("Date review", page.text)
+        self.assertIn("2026-09-19", page.text)
+        self.assertIn("2026-09-26", page.text)
+        self.assertIn("Read-only check; this creates no hold", page.text)
+        calendar = mock.Mock(configured=False)
+        with mock.patch(
+            "sales_support_agent.api.building_inquiry_workspace_router.BuildingGoogleCalendarClient",
+            return_value=calendar,
+        ):
+            result = self.client.get(
+                "/admin/building/inquiries/jordan-inquiry/availability",
+                params={"dates": "2026-09-19,2026-09-26"},
+            )
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(
+            [item["status"] for item in result.json()["dates"]],
+            ["unknown", "unknown"],
+        )
+        with self.factory() as session:
+            self.assertEqual(
+                session.query(BuildingReservation).filter_by(
+                    inquiry_id="jordan-inquiry"
+                ).count(),
+                0,
+            )
 
     def test_delivered_staff_alert_retry_is_idempotent(self) -> None:
         page = self.client.get("/admin/building/inquiries/jordan-inquiry")
