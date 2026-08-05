@@ -209,20 +209,30 @@ class RainforestClient:
     ) -> list[str]:
         """Fallback: derive competitors from a keyword search on the product title."""
         title = target_product.get("title", "")
+        brand_words = {
+            word.lower()
+            for word in re.sub(r"[^a-zA-Z0-9 ]", " ", str(target_product.get("brand", ""))).split()
+            if word
+        }
         # Strip size/count/flavor modifiers — keep 3-5 meaningful nouns
-        words = [w for w in re.sub(r"[^a-zA-Z0-9 ]", " ", title).split() if len(w) > 3][:5]
+        words = [
+            word
+            for word in re.sub(r"[^a-zA-Z0-9 ]", " ", title).split()
+            if len(word) > 3 and word.lower() not in brand_words
+        ][:5]
         if not words:
             return []
         search_term = " ".join(words)
         asins: list[str] = []
         try:
-            data = self.search(search_term)
-            for item in data.get("search_results") or []:
-                asin = (item.get("asin") or "").strip()
-                if asin and asin != target_asin and asin not in asins:
-                    asins.append(asin)
-                    if len(asins) >= limit:
-                        break
+            for page in (1, 2):
+                data = self.search(search_term, page=page)
+                for item in data.get("search_results") or []:
+                    asin = (item.get("asin") or "").strip()
+                    if asin and asin != target_asin and asin not in asins:
+                        asins.append(asin)
+                        if len(asins) >= limit:
+                            return asins
         except Exception as exc:
             logger.warning("Rainforest search error for %r: %s", search_term, exc)
         return asins
@@ -347,9 +357,15 @@ class RainforestClient:
             target_product, target_asin, limit=candidate_limit
         )
         competitor_asins = []
-        for asin in [*bestseller_asins, *search_asins]:
-            if asin not in competitor_asins:
-                competitor_asins.append(asin)
+        for index in range(max(len(bestseller_asins), len(search_asins))):
+            for source in (bestseller_asins, search_asins):
+                if index >= len(source):
+                    continue
+                asin = source[index]
+                if asin not in competitor_asins:
+                    competitor_asins.append(asin)
+                if len(competitor_asins) >= candidate_limit:
+                    break
             if len(competitor_asins) >= candidate_limit:
                 break
 

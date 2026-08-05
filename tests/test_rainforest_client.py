@@ -277,5 +277,27 @@ class TestRainforestWarnings(unittest.TestCase):
         self.assertTrue(any("BSR" in w for w in report.warnings))
 
 
+class TestCompetitorSearchBreadth(unittest.TestCase):
+    def test_search_excludes_target_brand_and_uses_second_page(self):
+        client = RainforestClient(api_key="key")
+        client.search = MagicMock(side_effect=[
+            {"search_results": [{"asin": "B000000001"}]},
+            {"search_results": [{"asin": "B000000002"}]},
+        ])
+
+        asins = client._competitor_asins_from_search(
+            {
+                "brand": "Freelivity",
+                "title": "Freelivity In-Wash Scent Booster Beads Fresh Essence",
+            },
+            "B09TARGET01",
+            limit=4,
+        )
+
+        self.assertEqual(asins, ["B000000001", "B000000002"])
+        self.assertEqual(client.search.call_args_list[0].args[0], "Wash Scent Booster Beads Fresh")
+        self.assertEqual(client.search.call_args_list[1].kwargs["page"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
