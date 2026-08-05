@@ -153,6 +153,33 @@ class ArenaLaunchStatusTests(unittest.TestCase):
             {row["key"] for row in status["items"]},
         )
 
+    def test_private_catalog_keeps_customer_launch_closed(self) -> None:
+        status = build_arena_launch_status(
+            launch_decisions=_decisions(include_calendar=True),
+            rate_plans=[_plan(status="approved", tax_status="taxable", tax_rate_bps=725)],
+            agreement_templates=[{
+                "template_key": "arena-event-agreement",
+                "version": 1,
+                "status": "approved",
+            }],
+            provider_readiness={
+                "esign_verified": True,
+                "payment_credentials": True,
+                "payment_webhook": True,
+                "calendar_configured": True,
+                "calendar_writes_enabled": True,
+                "sender_credentials": True,
+                "sender_webhook": True,
+                "sender_matches_owner_choice": True,
+                "arena_space_public_available": False,
+                "arena_offering_published": False,
+            },
+        )
+        by_key = {row["key"]: row for row in status["items"]}
+        self.assertEqual(by_key["public_catalog"]["state"], "blocked")
+        self.assertFalse(status["customer_launch_ready"])
+        self.assertEqual(by_key["customer_launch"]["state"], "automatic")
+
 
 if __name__ == "__main__":
     unittest.main()

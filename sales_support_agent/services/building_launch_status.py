@@ -359,6 +359,34 @@ def build_arena_launch_status(
         action_label="Open customer communication",
     ))
 
+    catalog_evidence_present = any(
+        key in provider_readiness
+        for key in ("arena_space_public_available", "arena_offering_published")
+    )
+    catalog_ready = bool(
+        provider_readiness.get("arena_space_public_available")
+        and provider_readiness.get("arena_offering_published")
+    ) if catalog_evidence_present else True
+    if catalog_evidence_present:
+        items.append(_item(
+            key="public_catalog",
+            label="Public Arena catalog",
+            state="complete" if catalog_ready else "blocked",
+            summary=(
+                "The canonical Arena space is public and available, and its offering is published."
+                if catalog_ready
+                else "The verified Arena records remain private, unavailable, or unpublished. The website therefore uses its safe marketing fallback."
+            ),
+            next_action=(
+                "Keep Agent inventory and the dedicated calendar authoritative."
+                if catalog_ready
+                else "After the final rehearsal, deliberately mark The Arena public and available and publish only the canonical arena-events offering."
+            ),
+            owner="Building administrator",
+            href="/admin/building/catalog",
+            action_label="Review catalog publication",
+        ))
+
     customer_launch_ready = bool(
         approved_plan
         and tax_ready
@@ -367,6 +395,7 @@ def build_arena_launch_status(
         and payment_ready
         and calendar_ready
         and sender_ready
+        and catalog_ready
         and not provider_conflicts
     )
     items.append(_item(
