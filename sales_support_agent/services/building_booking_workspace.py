@@ -353,9 +353,19 @@ def render_booking_workspace(
         and payment.get("status") == "approved"
         and not billing.get("schedules")
     )
+    billing_prepare_form = ""
+    if can_prepare_billing:
+        billing_prepare_form = (
+            f'<form class="booking-billing-prepare" method="post" '
+            f'action="/admin/building/bookings/{_esc(reservation.get("id"))}/billing/prepare">'
+            f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+            '<button class="booking-button booking-button--primary" type="submit">'
+            'Prepare exact billing drafts</button><small>Uses the signed package and accepted quote. '
+            'Creates no QuickBooks object and sends nothing.</small></form>'
+        )
     billing_section = f'''<section class="booking-workspace" id="booking-billing">
         <div class="booking-workspace__header"><div><h2>QuickBooks billing</h2><p>Prepared drafts, provider invoices, and cleared payment remain separate states.</p></div></div>
-        {f'''<form class="booking-billing-prepare" method="post" action="/admin/building/bookings/{_esc(reservation.get("id"))}/billing/prepare"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><button class="booking-button booking-button--primary" type="submit">Prepare exact billing drafts</button><small>Uses the signed package and accepted quote. Creates no QuickBooks object and sends nothing.</small></form>''' if can_prepare_billing else ''}
+        {billing_prepare_form}
         <div class="booking-version-table"><table><thead><tr><th>Charge</th><th>Amount</th><th>Invoice on</th><th>State</th></tr></thead><tbody>{billing_schedule_rows}</tbody></table></div>
         <div class="booking-version-table"><table><thead><tr><th>QuickBooks</th><th>State</th><th>Due</th><th>Paid</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div>
         <p class="booking-billing-link"><a class="booking-button booking-button--secondary" href="/admin/building#billing-and-collections">Approve drafts, create invoices, or refresh payment evidence</a></p>
