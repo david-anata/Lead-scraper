@@ -100,7 +100,11 @@ class MarketingShelfPayloadTests(unittest.TestCase):
         self.assertEqual(payload["visible_revenue"], 15_000.0)
         self.assertEqual(payload["median_revenue"], 3_000.0)
         self.assertEqual(payload["target"]["units_source"], "recent_sales")
-        self.assertEqual(payload["revenue_warning"], "Mixed evidence.")
+        self.assertEqual(
+            payload["revenue_warning"],
+            "Unit/revenue figures are BSR-based estimates because Amazon did not expose "
+            "a recent-sales floor for the visible comparison listings.",
+        )
         self.assertTrue(payload["captured_at"])
         self.assertEqual(payload["status"], "ready")
         self.assertEqual(payload["required_comparison_count"], 5)

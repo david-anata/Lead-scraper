@@ -1736,6 +1736,29 @@ def _assemble_shelf_payload(
     ]
     prices = [float(product.price) for product in visible_products if product.price is not None]
     ratings = [float(product.rating) for product in visible_products if product.rating is not None]
+    real_revenue_count = sum(
+        1
+        for product in visible_products
+        if str(product.units_label or "").endswith("+") and product.revenue is not None
+    )
+    if visible_products and real_revenue_count == len(visible_products):
+        revenue_warning = (
+            "Unit/revenue figures use Amazon's real \"bought in past month\" "
+            f"data for all {len(visible_products)} visible comparison listings (a reported floor)."
+        )
+    elif real_revenue_count:
+        revenue_warning = (
+            "Unit/revenue figures use Amazon's real \"bought in past month\" data "
+            f"where available ({real_revenue_count} of {len(visible_products)} visible listings); "
+            "the rest are BSR-based estimates."
+        )
+    elif visible_products:
+        revenue_warning = (
+            "Unit/revenue figures are BSR-based estimates because Amazon did not expose "
+            "a recent-sales floor for the visible comparison listings."
+        )
+    else:
+        revenue_warning = str(warnings[0]) if warnings else ""
 
     return {
         "status": (
@@ -1757,7 +1780,7 @@ def _assemble_shelf_payload(
         "revenue_product_count": len(revenues),
         "visible_revenue": round(sum(revenues), 2) if revenues else None,
         "median_revenue": round(float(median(revenues)), 2) if revenues else None,
-        "revenue_warning": str(warnings[0]) if warnings else "",
+        "revenue_warning": revenue_warning,
         "captured_at": datetime.now(timezone.utc).isoformat(),
     }
 
