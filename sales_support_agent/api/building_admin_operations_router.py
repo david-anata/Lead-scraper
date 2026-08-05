@@ -176,9 +176,9 @@ def _run_form_action(
             message = exc.errors()[0].get("msg", "Review the form values.")
         else:
             message = str(exc)
-        return _redirect(error=message)
+        return _redirect(error=message, target=success_target)
     except HTTPException as exc:
-        return _redirect(error=str(exc.detail))
+        return _redirect(error=str(exc.detail), target=success_target)
     return _redirect(notice=success, target=success_target)
 
 
@@ -271,6 +271,7 @@ def update_inquiry_lifecycle_from_control_room(
     return _run_form_action(
         action,
         f"Inquiry moved to {target_stage.replace('_', ' ')}.",
+        success_target=f"/admin/building/inquiries/{inquiry_id}",
     )
 
 
@@ -317,13 +318,13 @@ async def save_event_interview_from_control_room(
     if not any(answers.values()):
         return _redirect(
             error="Record at least one interview answer before saving.",
-            target="/admin/building/sales",
+            target=f"/admin/building/inquiries/{inquiry_id}",
         )
     with session_scope(request.app.state.session_factory) as session:
         inquiry = session.get(BuildingInquiry, inquiry_id)
         if inquiry is None or inquiry.kind != "event":
             return _redirect(
-                error="Event inquiry not found.", target="/admin/building/sales"
+                error="Event inquiry not found.", target=f"/admin/building/inquiries/{inquiry_id}"
             )
         payload = dict(inquiry.payload_json or {})
         before = dict(payload.get("_event_interview") or {})
@@ -365,7 +366,7 @@ async def save_event_interview_from_control_room(
         ))
     return _redirect(
         notice="Event interview saved. No date, price, or booking was promised.",
-        target="/admin/building/sales",
+        target=f"/admin/building/inquiries/{inquiry_id}",
     )
 
 
@@ -380,7 +381,7 @@ def retry_new_lead_notification_from_control_room(
     with session_scope(request.app.state.session_factory) as session:
         inquiry = session.get(BuildingInquiry, inquiry_id)
         if inquiry is None:
-            return _redirect(error="Inquiry not found.", target="/admin/building/sales")
+            return _redirect(error="Inquiry not found.", target=f"/admin/building/inquiries/{inquiry_id}")
         try:
             result = notify_new_building_lead(request.app.state.settings, inquiry)
         except Exception as exc:
@@ -407,11 +408,11 @@ def retry_new_lead_notification_from_control_room(
     if result["status"] != "delivered":
         return _redirect(
             error="Staff notification was not delivered; the lead remains safely in Agent.",
-            target="/admin/building/sales",
+            target=f"/admin/building/inquiries/{inquiry_id}",
         )
     return _redirect(
         notice="Staff Slack notification delivered.",
-        target="/admin/building/sales",
+        target=f"/admin/building/inquiries/{inquiry_id}",
     )
 
 
@@ -426,7 +427,7 @@ def retry_inquiry_receipt_from_control_room(
     with session_scope(request.app.state.session_factory) as session:
         inquiry = session.get(BuildingInquiry, inquiry_id)
         if inquiry is None or inquiry.kind != "event":
-            return _redirect(error="Event inquiry not found.", target="/admin/building/sales")
+            return _redirect(error="Event inquiry not found.", target=f"/admin/building/inquiries/{inquiry_id}")
         result = attempt_inquiry_receipt(
             session,
             settings=request.app.state.settings,
@@ -436,9 +437,9 @@ def retry_inquiry_receipt_from_control_room(
     if result.get("status") not in {"sent", "delivered", "delivery_delayed"}:
         return _redirect(
             error="Customer acknowledgement was not sent; the inquiry remains safely in Agent.",
-            target="/admin/building/sales",
+            target=f"/admin/building/inquiries/{inquiry_id}",
         )
-    return _redirect(notice="Customer acknowledgement is sent.", target="/admin/building/sales")
+    return _redirect(notice="Customer acknowledgement is sent.", target=f"/admin/building/inquiries/{inquiry_id}")
 
 
 @router.post("/reservations", dependencies=FORM_DEPS)

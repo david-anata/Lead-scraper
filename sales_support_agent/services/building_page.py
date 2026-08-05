@@ -238,6 +238,7 @@ def render_building_page(
     calendar_projections: list[dict[str, Any]],
     checklists: list[dict[str, Any]],
     service_requests: list[dict[str, Any]],
+    inquiry_filters: dict[str, Any] | None = None,
     rate_plans: list[dict[str, Any]] | None = None,
     launch_decisions: list[dict[str, Any]] | None = None,
     launch_status: dict[str, Any] | None = None,
@@ -270,6 +271,7 @@ def render_building_page(
     launch_decisions = list(launch_decisions or [])
     launch_status = dict(launch_status or {})
     collections = list(collections or [])
+    inquiry_filters = dict(inquiry_filters or {})
     nav = render_agent_nav(
         "building",
         user=user,
@@ -753,7 +755,7 @@ def render_building_page(
     inquiry_rows = "".join(
         f"""
         <tr>
-          <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("email"))}</span>{original_submission(item)}</td>
+          <td><a href="/admin/building/inquiries/{_esc(item.get('id'))}"><strong>{_esc(item.get("name"))}</strong></a><span class="sub">{_esc(item.get("email"))}</span>{original_submission(item)}</td>
           <td>{_esc(item.get("kind"))}</td>
           <td>{_esc(item.get("preferred_date") or "—")}{tour_handoff_action(item)}{inquiry_interview_action(item)}</td>
           <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")} · respond by {_esc(item.get("response_due_at") or "not set")}</span>{inquiry_sequence(item)}{inquiry_lifecycle_action(item)}</td>
@@ -1518,7 +1520,7 @@ def render_building_page(
                 f" · respond by {item.get('response_due_at') or 'not set'}"
             ),
             "next": "Respond and qualify",
-            "href": "/admin/building/sales",
+            "href": f"/admin/building/inquiries/{item.get('id')}",
         })
     for item in calendar_projections:
         if item.get("status") != "error":
@@ -1661,6 +1663,7 @@ def render_building_page(
     .field[hidden]{{display:none;}}
     label{{font-size:12px;font-weight:700;color:rgba(43,54,68,.72);}} input,select,textarea{{box-sizing:border-box;width:100%;min-height:42px;border:1px solid rgba(43,54,68,.22);border-radius:8px;background:#fff;padding:10px 11px;color:var(--ink);font:inherit;}} textarea{{min-height:92px;resize:vertical;}} input:focus,select:focus,textarea:focus{{outline:3px solid rgba(133,187,218,.34);border-color:#397a9d;}}
     .check{{display:flex;align-items:center;gap:9px;font-size:13px;}} .check input{{width:18px;min-height:18px;}} .check-stack{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;padding:11px;border:1px solid rgba(43,54,68,.14);border-radius:8px;}} .form-actions{{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid var(--border);padding-top:16px;}} .form-note{{font-size:12px;color:rgba(43,54,68,.62);line-height:1.45;}} .primary,.secondary{{min-height:42px;border:0;border-radius:8px;background:var(--ink);color:#fff;padding:0 17px;font-weight:700;cursor:pointer;}} .primary:hover{{background:#17222d;}} .secondary{{border:1px solid var(--border);background:#fff;color:var(--ink);}} .secondary--small{{min-height:34px;padding:0 11px;font-size:12px;white-space:nowrap;}} .action-stack{{display:grid;gap:7px;min-width:210px;}} .inline-send{{display:flex;gap:6px;align-items:center;}} .inline-send input{{min-height:34px;padding:7px 8px;font-size:12px;}}
+    .lead-filters{{display:grid;grid-template-columns:minmax(220px,1.5fr) repeat(3,minmax(130px,.7fr)) auto auto;gap:10px;align-items:end;padding:14px 18px;border-top:1px solid var(--border);background:rgba(240,247,250,.55);}} .lead-filters label{{display:grid;gap:5px;font-size:12px;font-weight:700;}} .lead-filters .sub{{grid-column:1/-1;}}
     .row-actions{{min-width:220px;}} .row-actions summary{{cursor:pointer;font-weight:700;color:#397a9d;}} .row-actions form{{display:grid;gap:7px;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:9px;background:#f8f8f6;}} .row-actions label{{display:grid;gap:4px;}} .row-actions input,.row-actions select,.row-actions textarea{{min-height:34px;padding:7px 8px;font-size:12px;}}
     .interview-workspace{{min-width:min(640px,80vw);}} .interview-grid{{grid-template-columns:repeat(2,minmax(0,1fr))!important;max-height:70vh;overflow:auto;}} .interview-grid>p,.interview-grid>button,.interview-grid>.sub{{grid-column:1/-1;}} .sequence-list{{display:grid;gap:8px;margin:10px 0 0;padding-left:20px;}} .sequence-list .sub{{display:block;}}
     .decision-list{{display:grid;gap:12px;padding:18px 20px;background:#f8fafb;}}
@@ -1715,7 +1718,7 @@ def render_building_page(
     .adjustment-evidence{{display:grid;grid-template-columns:repeat(2,minmax(130px,1fr));gap:6px;min-width:360px;}} .adjustment-evidence button{{justify-self:start;}}
     @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.daily-guide{{grid-template-columns:1fr}}.daily-guide__item{{border-right:0;border-bottom:1px solid var(--border)}}.daily-guide__item:last-child{{border-bottom:0}}.grid,.setup-workspace__content{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}}}
     @media(max-width:700px){{.decision-card__summary{{grid-template-columns:42px minmax(0,1fr)}}.decision-card__state{{grid-column:2;justify-self:start;text-align:left;max-width:none}}.decision-card__evidence{{grid-template-columns:1fr}}.decision-card__evidence>div+div{{border-left:0;border-top:1px solid var(--border)}}}}
-    @media(max-width:600px){{.page-head,.panel-head{{align-items:start;flex-direction:column}}.panel-head{{gap:9px;padding:18px}}.metric{{padding:14px 15px}}.metric strong{{font-size:22px}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.form-grid,.decision-form,.interview-grid{{grid-template-columns:1fr!important}}.interview-workspace{{min-width:min(300px,80vw)}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
+    @media(max-width:600px){{.page-head,.panel-head{{align-items:start;flex-direction:column}}.panel-head{{gap:9px;padding:18px}}.metric{{padding:14px 15px}}.metric strong{{font-size:22px}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.form-grid,.decision-form,.interview-grid{{grid-template-columns:1fr!important}}.interview-workspace{{min-width:min(300px,80vw)}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}.lead-filters{{grid-template-columns:1fr}}.lead-filters .secondary{{width:100%}}}}
   </style>
 </head>
 <body class="app app--operator view-{_esc(view)}">
@@ -2085,7 +2088,16 @@ def render_building_page(
         </form>
         </details>
       </section>
-      <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>Agent owns each lead through response and qualification. Date blocking moves to Google Calendar; contracts and invoices move to QuickBooks; customer follow-up moves through email.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status and action</th><th>Source</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>Agent owns each lead through response and qualification. Open a customer to see the complete original submission and one next action.</p></div><span class="count">{len(inquiries)} shown</span></div>
+        <form class="lead-filters" method="get" action="/admin/building/sales">
+          <label>Search<input type="search" name="q" value="{_esc(inquiry_filters.get('q'))}" placeholder="Name, email, phone, date, or event"></label>
+          <label>Lifecycle<select name="lead_status"><option value="open"{' selected' if inquiry_filters.get('status') == 'open' else ''}>Open leads</option><option value="new"{' selected' if inquiry_filters.get('status') == 'new' else ''}>New</option><option value="responded"{' selected' if inquiry_filters.get('status') == 'responded' else ''}>Responded</option><option value="qualified"{' selected' if inquiry_filters.get('status') == 'qualified' else ''}>Qualified</option><option value="closed_won"{' selected' if inquiry_filters.get('status') == 'closed_won' else ''}>Closed won</option><option value="closed_lost"{' selected' if inquiry_filters.get('status') == 'closed_lost' else ''}>Closed lost</option><option value="all"{' selected' if inquiry_filters.get('status') == 'all' else ''}>All stages</option></select></label>
+          <label>Records<select name="lead_scope"><option value="live"{' selected' if inquiry_filters.get('scope') == 'live' else ''}>Prospects</option><option value="test"{' selected' if inquiry_filters.get('scope') == 'test' else ''}>Test records</option><option value="all"{' selected' if inquiry_filters.get('scope') == 'all' else ''}>All records</option></select></label>
+          <label>Sort<select name="lead_sort"><option value="priority"{' selected' if inquiry_filters.get('sort') == 'priority' else ''}>Needs attention</option><option value="newest"{' selected' if inquiry_filters.get('sort') == 'newest' else ''}>Newest first</option><option value="event_date"{' selected' if inquiry_filters.get('sort') == 'event_date' else ''}>Event date</option></select></label>
+          <button class="secondary" type="submit">Apply</button><a href="/admin/building/sales">Reset</a>
+          <span class="sub">{_esc(inquiry_filters.get('test_count', 0))} recognized test records are hidden from the default prospect queue.</span>
+        </form>
+        <div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status and action</th><th>Source</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-bookings" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/contracts">Open contracts →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-sales view-operations" id="building-tours"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-operations">
