@@ -91,6 +91,7 @@ def inquiry_workspace(
             "attribution": dict(payload.get("_attribution") or {}),
             "event_interview": dict(payload.get("_event_interview") or {}),
             "lead_notification": dict(payload.get("_lead_notification") or {}),
+            "lead_escalation": dict(payload.get("_lead_escalation") or {}),
             "customer_receipt": dict(payload.get("_customer_receipt") or {}),
             "follow_up_sequence": list(payload.get("_follow_up_sequence") or []),
             "reservation_id": reservation.id if reservation else "",
@@ -118,4 +119,3 @@ def inquiry_workspace(
         ),
         headers={"Cache-Control": "private, no-store"},
     )
-

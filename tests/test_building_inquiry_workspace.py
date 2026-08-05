@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import tempfile
 import unittest
 import uuid
+from unittest import mock
 from datetime import date, datetime, timedelta, timezone
 
 os.environ.setdefault(
@@ -101,7 +103,11 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
                 source="production_qa",
                 name="Production QA Test",
                 email="building+qa@anatainc.com",
-                payload_json={"_lifecycle": {"stage": "new"}},
+                payload_json={
+                    "_lifecycle": {"stage": "new"},
+                    "_lead_notification": {"status": "failed"},
+                    "_customer_receipt": {"status": "not_configured"},
+                },
             ))
             session.add(BuildingAuditEvent(
                 entity_type="inquiry",
@@ -152,6 +158,33 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
     def test_today_links_directly_to_the_customer_workspace(self) -> None:
         page = self.client.get("/admin/building")
         self.assertIn('href="/admin/building/inquiries/jordan-inquiry"', page.text)
+
+    def test_failed_delivery_evidence_has_permissioned_retry_actions(self) -> None:
+        page = self.client.get("/admin/building/inquiries/internal-qa-inquiry")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("Retry staff alert", page.text)
+        self.assertIn("Retry acknowledgement", page.text)
+        self.assertIn('name="_csrf_token"', page.text)
+
+    def test_delivered_staff_alert_retry_is_idempotent(self) -> None:
+        page = self.client.get("/admin/building/inquiries/jordan-inquiry")
+        token = re.search(r'name="_csrf_token" value="([^"]+)"', page.text)
+        self.assertIsNotNone(token)
+        with mock.patch(
+            "sales_support_agent.api.building_admin_operations_router.notify_new_building_lead",
+            side_effect=AssertionError("Delivered alerts must not be sent twice."),
+        ):
+            response = self.client.post(
+                "/admin/building/inquiries/jordan-inquiry/notify",
+                data={"_csrf_token": token.group(1)},
+                headers={
+                    "Origin": "http://testserver",
+                    "Sec-Fetch-Mode": "navigate",
+                },
+                follow_redirects=False,
+            )
+        self.assertEqual(response.status_code, 303, response.text)
+        self.assertIn("already+delivered", response.headers["location"])
 
     def test_missing_and_unauthenticated_records_fail_closed(self) -> None:
         self.assertEqual(

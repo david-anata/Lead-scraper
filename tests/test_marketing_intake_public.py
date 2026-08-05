@@ -116,6 +116,22 @@ class MarketingShelfPayloadTests(unittest.TestCase):
         self.assertEqual(payload["comparison_count"], 1)
         self.assertEqual(payload["competitors"][0]["brand"], "Outside Brand")
 
+    def test_stored_legacy_ready_payload_requires_five_distinct_outside_brands(self) -> None:
+        legacy = {
+            "status": "ready",
+            "target": {"brand": "Freelivity", "asin": "B09TARGET01"},
+            "competitors": [
+                {"brand": "Downy", "asin": f"B09DOWNY0{i}"}
+                for i in range(5)
+            ],
+        }
+        self.assertFalse(M._shelf_has_complete_comparison(legacy))
+        legacy["competitors"] = [
+            {"brand": f"Brand {i}", "asin": f"B09OTHER0{i}"}
+            for i in range(5)
+        ]
+        self.assertTrue(M._shelf_has_complete_comparison(legacy))
+
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
 class MarketingIntakeTests(unittest.TestCase):
