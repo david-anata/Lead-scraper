@@ -2699,4 +2699,15 @@ input:focus, select:focus, textarea:focus {
   .finance-batch-bar__actions button { flex: 1 1 42%; }
   .trim-selection-bar { align-items: stretch; flex-direction: column; top: 104px; }
   .trim-selection-bar > div:last-child { justify-content: stretch; }.trim-selection-bar button { flex: 1 1 42%; }
+  .finance-nav-link,
+  .finance-global-command button,
+  .finance-batch-bar button,
+  .trim-summary button,
+  .trim-choice,
+  .trim-review-link,
+  .cash-calendar-filters button,
+  .cash-calendar-select-day,
+  .finance-bookkeeping button,
+  .finance-bookkeeping select { min-height: 44px; }
+  .trim-review-link { display: inline-flex; align-items: center; }
 }
