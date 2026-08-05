@@ -1652,7 +1652,7 @@ async def marketing_site_intake_create(
 _SHELF_COMPETITOR_LIMIT = 24
 _SHELF_MAX_ITEMS = 5
 _SHELF_REQUIRED_ITEMS = 5
-_SHELF_TIMEOUT_SECONDS = 90
+_SHELF_TIMEOUT_SECONDS = 180
 
 
 def _write_shelf(app, intake_run_id: int, shelf: dict[str, Any]) -> None:
