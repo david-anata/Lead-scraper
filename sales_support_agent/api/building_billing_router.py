@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import calendar
+import hashlib
+import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -24,6 +26,7 @@ from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
+    BuildingAgreement,
     BuildingBillingAccount,
     BuildingBillingSchedule,
     BuildingCollectionCase,
@@ -31,6 +34,7 @@ from sales_support_agent.models.entities import (
     BuildingDepositEvidence,
     BuildingInvoice,
     BuildingPayment,
+    BuildingPaymentRequestReadiness,
     BuildingProposal,
     BuildingReservation,
     BuildingStripeEvent,
@@ -41,7 +45,13 @@ from sales_support_agent.models.entities import (
 internal_router = APIRouter(prefix="/api/internal/building/billing", tags=["building-billing"])
 webhook_router = APIRouter(prefix="/api/integrations/stripe", tags=["stripe-webhook"])
 
-SCHEDULE_TYPES = {"one_time", "monthly", "deposit", "final_balance"}
+SCHEDULE_TYPES = {
+    "one_time",
+    "monthly",
+    "deposit",
+    "final_balance",
+    "security_deposit",
+}
 COLLECTION_METHODS = {"send_invoice", "charge_automatically"}
 SCHEDULE_STATUSES = {"draft", "approved", "paused", "completed", "cancelled"}
 COLLECTION_STATUSES = {
@@ -158,6 +168,26 @@ class InvoiceRunInput(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=128)
     execute: bool = False
     actor: str = Field(min_length=1, max_length=255)
+
+
+class EventBillingPreparationInput(BaseModel):
+    actor: str = Field(min_length=1, max_length=255)
+
+
+def _quote_checksum(proposal: BuildingProposal) -> str:
+    evidence = {
+        "id": proposal.id,
+        "version": proposal.version,
+        "status": proposal.status,
+        "amount_cents": proposal.amount_cents,
+        "currency": proposal.currency,
+        "line_items": list(proposal.line_items_json or []),
+        "rate_plan_id": proposal.rate_plan_id,
+        "rate_plan_snapshot": dict(proposal.rate_plan_snapshot_json or {}),
+    }
+    return hashlib.sha256(
+        json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 class AccountingLinkInput(BaseModel):
@@ -380,6 +410,179 @@ def upsert_billing_schedule(
         return {"ok": True, "schedule_id": row.id, "status": row.status}
 
 
+@internal_router.post("/reservations/{reservation_id}/prepare", status_code=201)
+def prepare_event_billing(
+    reservation_id: str,
+    payload: EventBillingPreparationInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Prepare the signed booking's exact QuickBooks billing components.
+
+    This creates only Agent billing drafts. It neither creates a QuickBooks
+    customer nor writes or sends an invoice.
+    """
+
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        reservation = session.get(BuildingReservation, reservation_id)
+        if reservation is None or reservation.kind != "event":
+            raise HTTPException(status_code=404, detail="Event booking not found.")
+        contact = (
+            session.get(BuildingContact, reservation.contact_id)
+            if reservation.contact_id
+            else None
+        )
+        if contact is None or contact.status != "active":
+            raise HTTPException(status_code=409, detail="An active billing contact is required.")
+        agreement = session.execute(
+            select(BuildingAgreement)
+            .where(BuildingAgreement.reservation_id == reservation_id)
+            .order_by(BuildingAgreement.version.desc())
+        ).scalars().first()
+        if agreement is None or agreement.status != "signed" or not agreement.provider_reference:
+            raise HTTPException(
+                status_code=409,
+                detail="Provider-verified signed agreement evidence is required before billing.",
+            )
+        payment_readiness = session.execute(
+            select(BuildingPaymentRequestReadiness)
+            .where(BuildingPaymentRequestReadiness.reservation_id == reservation_id)
+            .order_by(BuildingPaymentRequestReadiness.version.desc())
+        ).scalars().first()
+        if payment_readiness is None or payment_readiness.status != "approved":
+            raise HTTPException(status_code=409, detail="Approve payment readiness first.")
+        quote_id = str(
+            (agreement.package_snapshot_json or {}).get("quote", {}).get("id") or ""
+        )
+        proposal = session.get(BuildingProposal, quote_id) if quote_id else None
+        if proposal is None or proposal.status != "accepted":
+            raise HTTPException(status_code=409, detail="The frozen quote must be accepted first.")
+        frozen_quote = dict((agreement.package_snapshot_json or {}).get("quote") or {})
+        if (
+            frozen_quote.get("version") != proposal.version
+            or int(frozen_quote.get("amount_cents") or 0) != proposal.amount_cents
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="The accepted quote differs from the signed agreement package.",
+            )
+
+        account_id = str(uuid5(NAMESPACE_URL, f"building-billing-contact:{contact.id}"))
+        account = session.get(BuildingBillingAccount, account_id)
+        if account is None:
+            account = BuildingBillingAccount(
+                id=account_id,
+                contact_id=contact.id,
+                account_name=contact.full_name,
+                billing_email=contact.email.strip().lower(),
+                metadata_json={"source": "signed_event_booking"},
+            )
+            session.add(account)
+        elif account.contact_id != contact.id:
+            raise HTTPException(status_code=409, detail="Billing account identity conflict.")
+
+        rate = dict(proposal.rate_plan_snapshot_json or {})
+        commercial = dict(rate.get("commercial_terms") or {})
+        security = dict(commercial.get("security_deposit") or {})
+        balance_days = int(commercial.get("balance_due_days_before_event") or 7)
+        quote_checksum = _quote_checksum(proposal)
+        components: list[tuple[str, int, date, str]] = []
+        required_cents = int(payment_readiness.amount_cents or 0)
+        if required_cents <= 0 or required_cents > proposal.amount_cents:
+            raise HTTPException(status_code=409, detail="Approved payment amount is invalid.")
+        if payment_readiness.request_type == "deposit":
+            components.append(("deposit", required_cents, _now().date(), "Booking deposit"))
+            balance_cents = proposal.amount_cents - required_cents
+            if balance_cents:
+                components.append((
+                    "final_balance",
+                    balance_cents,
+                    reservation.starts_at.date() - timedelta(days=balance_days),
+                    "Remaining event balance",
+                ))
+        else:
+            components.append(("one_time", required_cents, _now().date(), "Event balance"))
+        security_cents = int(security.get("amount_cents") or 0)
+        if security_cents:
+            if not security.get("refundable"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Security-deposit tax treatment is not verified as refundable.",
+                )
+            components.append((
+                "security_deposit",
+                security_cents,
+                reservation.starts_at.date() - timedelta(days=balance_days),
+                "Refundable security deposit — non-taxable unless retained or applied",
+            ))
+
+        schedule_ids: list[str] = []
+        duplicates = 0
+        for component, amount_cents, starts_on, description in components:
+            schedule_id = str(uuid5(
+                NAMESPACE_URL,
+                f"building-event-billing:{reservation.id}:{proposal.id}:{proposal.version}:{component}",
+            ))
+            schedule_ids.append(schedule_id)
+            existing = session.get(BuildingBillingSchedule, schedule_id)
+            if existing is not None:
+                if (
+                    existing.source_quote_checksum != quote_checksum
+                    or existing.amount_cents != amount_cents
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Existing {component.replace('_', ' ')} draft differs from the signed quote.",
+                    )
+                duplicates += 1
+                continue
+            session.add(BuildingBillingSchedule(
+                id=schedule_id,
+                billing_account_id=account.id,
+                reservation_id=reservation.id,
+                schedule_type=component,
+                billing_component=component,
+                description=description,
+                amount_cents=amount_cents,
+                currency=(proposal.currency or "USD").lower(),
+                collection_method="send_invoice",
+                days_until_due=balance_days if component != "deposit" else 2,
+                starts_on=starts_on,
+                next_invoice_on=starts_on,
+                status="draft",
+                created_by=payload.actor,
+                source_proposal_id=proposal.id,
+                source_proposal_version=proposal.version,
+                source_amount_cents=amount_cents,
+                source_quote_total_cents=proposal.amount_cents,
+                source_quote_checksum=quote_checksum,
+            ))
+        session.add(BuildingAuditEvent(
+            entity_type="reservation",
+            entity_id=reservation.id,
+            action="quickbooks_billing_drafts_prepared",
+            actor=payload.actor,
+            after_json={
+                "account_id": account.id,
+                "schedule_ids": schedule_ids,
+                "quote_id": proposal.id,
+                "quote_version": proposal.version,
+                "quote_checksum": quote_checksum,
+                "provider_write": False,
+                "invoice_sent": False,
+            },
+        ))
+        return {
+            "ok": True,
+            "duplicate": duplicates == len(components),
+            "billing_account_id": account.id,
+            "schedule_ids": schedule_ids,
+            "component_count": len(components),
+            "provider_write": False,
+        }
+
+
 @internal_router.post("/schedules/from-proposal", status_code=201)
 def create_schedule_from_proposal(
     payload: ScheduleFromProposalInput,
@@ -552,10 +755,16 @@ def create_invoice_from_schedule(
                     status_code=409,
                     detail="The quote behind this schedule no longer exists.",
                 )
+            quote_total = int(schedule.source_quote_total_cents or schedule.source_amount_cents)
+            checksum_mismatch = bool(
+                schedule.source_quote_checksum
+                and _quote_checksum(proposal) != schedule.source_quote_checksum
+            )
             if (
                 proposal.version != schedule.source_proposal_version
-                or proposal.amount_cents != schedule.source_amount_cents
+                or proposal.amount_cents != quote_total
                 or schedule.amount_cents != schedule.source_amount_cents
+                or checksum_mismatch
             ):
                 raise HTTPException(
                     status_code=409,
@@ -622,6 +831,10 @@ def create_invoice_from_schedule(
         provider_id = str(provider_invoice.get("Id") or "")
         if not provider_id:
             raise HTTPException(status_code=502, detail="QuickBooks invoice creation returned no ID.")
+        provider_total_cents = round(
+            float(provider_invoice.get("TotalAmt") or schedule.amount_cents / 100) * 100
+        )
+        total_matches = provider_total_cents == schedule.amount_cents
         due_date = date.fromisoformat(
             str(provider_invoice.get("DueDate") or (_now().date() + timedelta(days=schedule.days_until_due)).isoformat())
         )
@@ -637,13 +850,18 @@ def create_invoice_from_schedule(
             qbo_invoice_id=provider_id,
             description=schedule.description,
             status="draft",
-            accounting_status="synced_qbo",
-            amount_due_cents=round(float(provider_invoice.get("TotalAmt") or schedule.amount_cents / 100) * 100),
+            accounting_status="synced_qbo" if total_matches else "failed",
+            amount_due_cents=schedule.amount_cents,
             amount_paid_cents=0,
             currency=schedule.currency,
             due_at=due_at,
             hosted_invoice_url=f"https://qbo.intuit.com/app/invoice?txnId={provider_id}",
-            provider_payload_json=provider_invoice,
+            provider_payload_json={
+                **provider_invoice,
+                "agent_expected_total_cents": schedule.amount_cents,
+                "agent_provider_total_cents": provider_total_cents,
+                "agent_total_matches": total_matches,
+            },
             created_by=payload.actor,
         )
         session.add(row)
@@ -660,13 +878,19 @@ def create_invoice_from_schedule(
         session.add(BuildingAuditEvent(
             entity_type="invoice",
             entity_id=row.id,
-            action="draft_created_in_quickbooks",
+            action=(
+                "draft_created_in_quickbooks"
+                if total_matches
+                else "qbo_draft_created_with_total_mismatch"
+            ),
             actor=payload.actor,
             after_json={
                 "provider_invoice_id": row.provider_invoice_id,
                 "amount_due_cents": row.amount_due_cents,
                 "accounting_status": row.accounting_status,
                 "sent": False,
+                "provider_total_cents": provider_total_cents,
+                "total_matches": total_matches,
             },
         ))
         return {"ok": True, "duplicate": False, "invoice": _invoice_payload(row)}
@@ -685,6 +909,113 @@ def list_invoices(
             query = query.where(BuildingInvoice.status == status)
         rows = session.execute(query).scalars().all()
         return {"invoices": [_invoice_payload(row) for row in rows]}
+
+
+@internal_router.post("/invoices/{invoice_id}/sync-qbo")
+def sync_quickbooks_invoice(
+    invoice_id: str,
+    payload: EventBillingPreparationInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Refresh invoice and cleared-balance evidence from QuickBooks."""
+
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        row = session.get(BuildingInvoice, invoice_id)
+        if row is None or row.provider != "quickbooks" or not row.qbo_invoice_id:
+            raise HTTPException(status_code=404, detail="QuickBooks invoice not found.")
+        client = BuildingQuickBooksClient()
+        if not client.is_configured:
+            raise HTTPException(status_code=503, detail="QuickBooks billing is not configured.")
+        try:
+            provider = client.get_invoice(row.qbo_invoice_id)
+        except BuildingQuickBooksError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if str(provider.get("Id") or "") != row.qbo_invoice_id:
+            raise HTTPException(status_code=409, detail="QuickBooks returned the wrong invoice.")
+        provider_total = round(float(provider.get("TotalAmt") or 0) * 100)
+        if provider_total != row.amount_due_cents:
+            row.accounting_status = "failed"
+            row.provider_payload_json = {
+                **provider,
+                "agent_sync_error": "total_mismatch",
+                "agent_expected_total_cents": row.amount_due_cents,
+                "agent_synced_at": _now().isoformat(),
+            }
+            row.updated_at = _now()
+            session.add(BuildingAuditEvent(
+                entity_type="invoice",
+                entity_id=row.id,
+                action="qbo_invoice_total_mismatch",
+                actor=payload.actor,
+                after_json={
+                    "expected_cents": row.amount_due_cents,
+                    "provider_cents": provider_total,
+                    "qbo_invoice_id": row.qbo_invoice_id,
+                },
+            ))
+            return {"ok": False, "invoice": _invoice_payload(row), "recovery": "review_in_qbo"}
+        balance_cents = round(float(provider.get("Balance") or 0) * 100)
+        amount_paid_cents = max(0, provider_total - balance_cents)
+        before = {"status": row.status, "amount_paid_cents": row.amount_paid_cents}
+        row.amount_paid_cents = amount_paid_cents
+        row.status = "paid" if provider_total > 0 and balance_cents == 0 else (
+            "open" if str(provider.get("EmailStatus") or "").lower() == "emailsent" else "draft"
+        )
+        row.accounting_status = "reconciled"
+        row.provider_payload_json = {
+            **provider,
+            "agent_synced_at": _now().isoformat(),
+        }
+        row.updated_at = _now()
+        if row.status == "paid" and row.reservation_id and row.billing_schedule_id:
+            schedule = session.get(BuildingBillingSchedule, row.billing_schedule_id)
+            reservation = session.get(BuildingReservation, row.reservation_id)
+            if (
+                schedule is not None
+                and reservation is not None
+                and schedule.billing_component in {"deposit", "full_amount", "one_time"}
+            ):
+                evidence_id = str(uuid5(NAMESPACE_URL, f"qbo-deposit:{row.qbo_invoice_id}"))
+                evidence = session.get(BuildingDepositEvidence, evidence_id)
+                if evidence is None:
+                    evidence = BuildingDepositEvidence(
+                        id=evidence_id,
+                        reservation_id=reservation.id,
+                    )
+                evidence.status = "paid"
+                evidence.amount_cents = amount_paid_cents
+                evidence.provider = "quickbooks"
+                evidence.provider_reference = row.qbo_invoice_id
+                evidence.evidence_json = {
+                    "invoice_id": row.id,
+                    "qbo_invoice_id": row.qbo_invoice_id,
+                    "balance_cents": balance_cents,
+                    "total_cents": provider_total,
+                    "sync_token": str(provider.get("SyncToken") or ""),
+                    "provider_observed_at": _now().isoformat(),
+                }
+                evidence.recorded_by = payload.actor
+                evidence.recorded_at = _now()
+                session.add(evidence)
+                reservation.deposit_status = "paid"
+                reservation.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="invoice",
+            entity_id=row.id,
+            action="qbo_invoice_synced",
+            actor=payload.actor,
+            before_json=before,
+            after_json={
+                "status": row.status,
+                "amount_paid_cents": row.amount_paid_cents,
+                "balance_cents": balance_cents,
+                "qbo_invoice_id": row.qbo_invoice_id,
+                "provider_observed": True,
+            },
+        ))
+        return {"ok": True, "invoice": _invoice_payload(row)}
 
 
 @internal_router.get("/qbo-export")

@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 
 from sales_support_agent.models.database import session_scope
+from sales_support_agent.api.building_billing_router import (
+    EventBillingPreparationInput,
+    prepare_event_billing,
+)
 from sales_support_agent.models.entities import (
     BuildingAgreement,
+    BuildingBillingSchedule,
     BuildingCalendarProjection,
     BuildingContact,
     BuildingInquiry,
     BuildingOperationalChecklist,
     BuildingOperationalChecklistItem,
     BuildingPaymentRequestReadiness,
+    BuildingInvoice,
     BuildingProposal,
     BuildingRatePlan,
     BuildingReservation,
@@ -26,12 +32,61 @@ from sales_support_agent.services.building_booking_workspace import (
     render_booking_workspace,
 )
 from sales_support_agent.services.building_security import csrf_token
+from sales_support_agent.services.building_security import require_building_form_security
 
 
 router = APIRouter(
     prefix="/admin/building/bookings",
     tags=["building-booking-workspace"],
 )
+FORM_DEPS = [Depends(require_building_form_security)]
+
+
+def _actor(user: dict) -> str:
+    return str(user.get("email") or "building-operator")
+
+
+@router.post("/{reservation_id}/billing/prepare", dependencies=FORM_DEPS)
+def prepare_booking_billing(
+    reservation_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Prepare exact booking billing drafts; create no provider objects."""
+
+    internal_key = str(
+        getattr(request.app.state.settings, "internal_api_key", "") or ""
+    ).strip()
+    if not internal_key:
+        return RedirectResponse(
+            f"/admin/building/bookings/{reservation_id}?error=Internal+billing+API+is+not+configured.",
+            status_code=303,
+        )
+    try:
+        result = prepare_event_billing(
+            reservation_id,
+            EventBillingPreparationInput(actor=_actor(user)),
+            request,
+            internal_key,
+        )
+    except HTTPException as exc:
+        from urllib.parse import urlencode
+
+        return RedirectResponse(
+            f"/admin/building/bookings/{reservation_id}?{urlencode({'error': str(exc.detail)})}",
+            status_code=303,
+        )
+    from urllib.parse import urlencode
+
+    notice = (
+        "Billing drafts already match this signed booking; nothing was sent."
+        if result.get("duplicate")
+        else f"Prepared {result['component_count']} billing drafts; nothing was sent to QuickBooks or the customer."
+    )
+    return RedirectResponse(
+        f"/admin/building/bookings/{reservation_id}?{urlencode({'notice': notice})}",
+        status_code=303,
+    )
 
 
 @router.get("/{reservation_id}", response_class=HTMLResponse)
@@ -87,6 +142,16 @@ def booking_workspace(
             .where(BuildingPaymentRequestReadiness.reservation_id == reservation.id)
             .order_by(BuildingPaymentRequestReadiness.version.desc())
         ).scalars().first()
+        billing_schedules = session.execute(
+            select(BuildingBillingSchedule)
+            .where(BuildingBillingSchedule.reservation_id == reservation.id)
+            .order_by(BuildingBillingSchedule.starts_on, BuildingBillingSchedule.id)
+        ).scalars().all()
+        invoices = session.execute(
+            select(BuildingInvoice)
+            .where(BuildingInvoice.reservation_id == reservation.id)
+            .order_by(BuildingInvoice.created_at.desc())
+        ).scalars().all()
         calendar = session.execute(
             select(BuildingCalendarProjection).where(
                 BuildingCalendarProjection.reservation_id == reservation.id
@@ -209,6 +274,31 @@ def booking_workspace(
                 if payment
                 else None
             ),
+            "billing": {
+                "schedules": [
+                    {
+                        "id": row.id,
+                        "component": row.billing_component or row.schedule_type,
+                        "status": row.status,
+                        "amount_cents": row.amount_cents,
+                        "currency": row.currency,
+                        "starts_on": row.starts_on.isoformat(),
+                    }
+                    for row in billing_schedules
+                ],
+                "invoices": [
+                    {
+                        "id": row.id,
+                        "status": row.status,
+                        "amount_due_cents": row.amount_due_cents,
+                        "amount_paid_cents": row.amount_paid_cents,
+                        "currency": row.currency,
+                        "qbo_invoice_id": row.qbo_invoice_id,
+                        "url": row.hosted_invoice_url,
+                    }
+                    for row in invoices
+                ],
+            },
             "calendar": (
                 {"status": calendar.status}
                 if calendar

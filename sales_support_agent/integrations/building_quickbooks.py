@@ -110,16 +110,31 @@ class BuildingQuickBooksClient:
         due_date: date,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        if schedule_type not in {"one_time", "deposit", "final_balance"}:
+        if schedule_type not in {
+            "one_time",
+            "deposit",
+            "final_balance",
+            "security_deposit",
+        }:
             raise BuildingQuickBooksError(
                 "This Building schedule is not an event charge and has no verified QuickBooks item."
             )
         item_id = (
             BUILDING_ITEM_IDS["deposit"]
-            if schedule_type == "deposit"
+            if schedule_type == "security_deposit"
             else BUILDING_ITEM_IDS["event"]
         )
         amount = round(amount_cents / 100, 2)
+        sales_detail: dict[str, Any] = {
+            "ItemRef": {"value": item_id},
+            "Qty": 1,
+            "UnitPrice": amount,
+        }
+        if schedule_type == "security_deposit":
+            # The approved Arena terms treat this as refundable property, not
+            # taxable revenue, unless it is later retained/applied. Any such
+            # later application must be a separate accounting adjustment.
+            sales_detail["TaxCodeRef"] = {"value": "NON"}
         data = self._request(
             "POST",
             "invoice",
@@ -133,15 +148,24 @@ class BuildingQuickBooksClient:
                     "Amount": amount,
                     "Description": description.strip(),
                     "DetailType": "SalesItemLineDetail",
-                    "SalesItemLineDetail": {
-                        "ItemRef": {"value": item_id},
-                        "Qty": 1,
-                        "UnitPrice": amount,
-                    },
+                    "SalesItemLineDetail": sales_detail,
                 }],
             },
         )
         invoice = data.get("Invoice") or {}
         if not invoice.get("Id"):
             raise BuildingQuickBooksError("QuickBooks returned no invoice ID.")
+        return invoice
+
+    def get_invoice(self, invoice_id: str) -> dict[str, Any]:
+        """Read one authoritative QuickBooks invoice for reconciliation."""
+
+        data = self._request(
+            "GET",
+            f"invoice/{self._quoted(invoice_id)}",
+            params={"minorversion": "70"},
+        )
+        invoice = data.get("Invoice") or {}
+        if not invoice.get("Id"):
+            raise BuildingQuickBooksError("QuickBooks returned no invoice evidence.")
         return invoice

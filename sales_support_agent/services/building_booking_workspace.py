@@ -167,11 +167,21 @@ def _build_phases(data: dict[str, Any]) -> tuple[list[dict[str, str]], dict[str,
             "label": "Open contracts",
         }
     elif not payment_done:
+        billing = data.get("billing") or {}
+        billing_ready = bool(billing.get("schedules"))
         next_action = {
-            "title": "Record cleared payment evidence.",
-            "body": "A prepared payment request is not a payment. Confirm only provider-cleared or approved manual evidence.",
-            "href": "/admin/building/billing",
-            "label": "Open billing",
+            "title": (
+                "Create and review the QuickBooks invoice."
+                if billing_ready
+                else "Prepare billing from the signed booking."
+            ),
+            "body": (
+                "The exact booking, balance, and refundable security-deposit drafts are ready for review. QuickBooks creation remains a separate confirmed action."
+                if billing_ready
+                else "Create reviewed billing drafts from the signed agreement and accepted quote. This sends nothing."
+            ),
+            "href": "#booking-billing",
+            "label": "Review billing",
         }
     elif not is_confirmed:
         next_action = {
@@ -208,6 +218,7 @@ def render_booking_workspace(
     payment = data.get("payment") or {}
     calendar = data.get("calendar") or {}
     checklist = data.get("checklist") or {}
+    billing = data.get("billing") or {}
     customer_name = (
         contact.get("full_name")
         or inquiry.get("name")
@@ -314,6 +325,33 @@ def render_booking_workspace(
         </section>'''
         if reservation.get("kind") == "event" else ""
     )
+    billing_schedule_rows = "".join(
+        f'<tr><td>{_esc(str(item.get("component") or "charge").replace("_", " ").title())}</td>'
+        f'<td>{_esc(_money(item.get("amount_cents"), item.get("currency") or "USD"))}</td>'
+        f'<td>{_esc(item.get("starts_on") or "—")}</td><td>{_status(item.get("status") or "draft")}</td></tr>'
+        for item in billing.get("schedules", [])
+    ) or '<tr><td colspan="4">No billing drafts prepared for this booking.</td></tr>'
+    invoice_rows = "".join(
+        f'<tr><td>{_esc(item.get("qbo_invoice_id") or "Agent draft")}</td>'
+        f'<td>{_status(item.get("status") or "draft")}</td>'
+        f'<td>{_esc(_money(item.get("amount_due_cents"), item.get("currency") or "USD"))}</td>'
+        f'<td>{_esc(_money(item.get("amount_paid_cents"), item.get("currency") or "USD"))}</td>'
+        f'<td>{f"<a href=\"{_esc(item.get("url"))}\" target=\"_blank\" rel=\"noopener\">Open QuickBooks</a>" if item.get("url") else "Not created"}</td></tr>'
+        for item in billing.get("invoices", [])
+    ) or '<tr><td colspan="5">No QuickBooks invoice has been created.</td></tr>'
+    can_prepare_billing = bool(
+        reservation.get("agreement_status") == "signed"
+        and proposal.get("status") == "accepted"
+        and payment.get("status") == "approved"
+        and not billing.get("schedules")
+    )
+    billing_section = f'''<section class="booking-workspace" id="booking-billing">
+        <div class="booking-workspace__header"><div><h2>QuickBooks billing</h2><p>Prepared drafts, provider invoices, and cleared payment remain separate states.</p></div></div>
+        {f'''<form class="booking-billing-prepare" method="post" action="/admin/building/bookings/{_esc(reservation.get("id"))}/billing/prepare"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><button class="booking-button booking-button--primary" type="submit">Prepare exact billing drafts</button><small>Uses the signed package and accepted quote. Creates no QuickBooks object and sends nothing.</small></form>''' if can_prepare_billing else ''}
+        <div class="booking-version-table"><table><thead><tr><th>Charge</th><th>Amount</th><th>Invoice on</th><th>State</th></tr></thead><tbody>{billing_schedule_rows}</tbody></table></div>
+        <div class="booking-version-table"><table><thead><tr><th>QuickBooks</th><th>State</th><th>Due</th><th>Paid</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div>
+        <p class="booking-billing-link"><a class="booking-button booking-button--secondary" href="/admin/building#billing-and-collections">Approve drafts, create invoices, or refresh payment evidence</a></p>
+      </section>'''
     body = f"""
       <header class="app-page-header booking-header">
         <div>
@@ -344,12 +382,13 @@ def render_booking_workspace(
         <div class="booking-evidence">{evidence_rows}</div>
       </section>
       {quote_section}
+      {billing_section}
       <section class="booking-actions" aria-labelledby="booking-actions-title">
         <div><h2 id="booking-actions-title">Common staff actions</h2><p>Use the governed workspace for each action; every write keeps its existing permission and audit checks.</p></div>
         <div>
           <a class="booking-button booking-button--secondary" href="/admin/building/bookings#bookings-and-holds">Manage quote or status</a>
           <a class="booking-button booking-button--secondary" href="{contract_href}">Open contract</a>
-          <a class="booking-button booking-button--secondary" href="/admin/building/billing">Open billing</a>
+          <a class="booking-button booking-button--secondary" href="#booking-billing">Open billing</a>
         </div>
         {(
           f'''<form method="post" action="/admin/building/reservations/{_esc(reservation.get("id"))}/customer-status-access">
@@ -378,6 +417,7 @@ def render_booking_workspace(
       .booking-button{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:9px 14px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);font:700 .8rem/1.2 "Montserrat",sans-serif;text-decoration:none;cursor:pointer}.booking-button--primary{border-color:var(--agent-blue-strong);background:var(--agent-blue-strong);color:#fff}.booking-button--secondary{background:var(--agent-surface);color:var(--agent-ink)}
       .booking-layout{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.75fr);gap:20px}
       .booking-workspace{min-width:0;overflow:hidden;border:1px solid var(--agent-border);border-radius:var(--agent-radius-panel);background:var(--agent-surface)}.booking-workspace__header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:18px 20px}.booking-workspace__header h2{margin:0}.booking-workspace__header p{margin:5px 0 0;color:var(--agent-ink-muted)}
+      .booking-billing-prepare{display:flex;align-items:center;gap:12px;padding:0 20px 18px}.booking-billing-prepare small{color:var(--agent-ink-muted)}.booking-billing-link{padding:0 20px 20px}
       .booking-journey ol{margin:0;padding:0;list-style:none}.booking-phase{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:14px;align-items:center;padding:15px 20px;border-top:1px solid var(--agent-border)}
       .booking-phase__number{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--agent-surface-soft);font-weight:800}
       .booking-phase strong,.booking-phase small{display:block}.booking-phase small{margin-top:3px;color:var(--agent-ink-muted);line-height:1.4}.booking-phase__state{font-size:12px;font-weight:800;color:var(--agent-ink-muted)}

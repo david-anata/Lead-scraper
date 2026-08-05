@@ -934,10 +934,11 @@ def render_building_page(
           <td>{_badge(str(item.get("status") or "draft"))}</td>
           <td>{_badge(str(item.get("accounting_status") or "pending qbo"))}</td>
           <td>{f'<a href="{_esc(item.get("hosted_invoice_url"))}" target="_blank" rel="noreferrer">Open ↗</a>' if item.get("hosted_invoice_url") else "—"}</td>
+          <td>{f'<form class="inline-send" method="post" action="/admin/building/billing/invoices/{_esc(item.get("id"))}/sync-qbo"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><button class="secondary secondary--small" type="submit">Refresh from QuickBooks</button></form>' if item.get("provider") == "quickbooks" and item.get("qbo_invoice_id") else '<span class="sub">No provider link</span>'}</td>
         </tr>
         """
         for item in invoices
-    ) or '<tr><td colspan="6"><div class="empty"><strong>No native invoices yet.</strong><br>Approved event billing schedules can create an unsent QuickBooks invoice for staff review.</div></td></tr>'
+    ) or '<tr><td colspan="7"><div class="empty"><strong>No native invoices yet.</strong><br>Approved event billing schedules can create an unsent QuickBooks invoice for staff review.</div></td></tr>'
 
     collection_rows = "".join(
         f"""<tr>
@@ -2121,7 +2122,7 @@ def render_building_page(
         <div class="checklist-list">{checklist_blocks}</div>
       </section>
       <section class="panel panel--wide building-view view-billing"><div class="panel-head"><div><h2>Billing schedules</h2><p>Drafts are editable; approved schedules are locked and provider writes require typed confirmation.</p></div><span class="count">{len(billing_schedules)} schedules</span></div><div class="table-wrap"><table><thead><tr><th>Schedule</th><th>Amount</th><th>Next invoice</th><th>Status</th><th>Action</th></tr></thead><tbody>{billing_schedule_rows}</tbody></table></div></section>
-      <section class="panel panel--wide building-view view-billing" id="billing-and-collections"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-billing" id="billing-and-collections"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th><th>Evidence</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>
       {(
         f'''<section class="panel panel--wide building-view view-billing"><div class="panel-head"><div><h2>Collection work</h2><p>Overdue balances become owned follow-up cases. Reminders require typed confirmation and retain delivery evidence.</p></div><span class="count">{len(collections)} cases</span></div>
         <form class="inline-send" method="post" action="/admin/building/billing/collections/refresh"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="default_owner" placeholder="Default collection owner"><button class="secondary secondary--small" type="submit">Refresh invoice aging</button></form>
