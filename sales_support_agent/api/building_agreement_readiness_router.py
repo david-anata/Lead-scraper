@@ -785,6 +785,37 @@ def transition_agreement_package(
                 status_code=409,
                 detail="Agreement package checksum mismatch; prepare a new version.",
             )
+        if payload.target_status == "approved":
+            snapshot = dict(agreement.package_snapshot_json or {})
+            frozen_template = dict(snapshot.get("template") or {})
+            template = session.get(BuildingAgreementTemplate, agreement.template_id)
+            if template is None or template.status != "approved":
+                raise HTTPException(
+                    status_code=409,
+                    detail="The frozen agreement template is no longer approved.",
+                )
+            if (
+                frozen_template.get("id") != template.id
+                or frozen_template.get("version") != template.version
+                or frozen_template.get("reference") != template.template_reference
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="The template evidence differs from the frozen package; prepare a new version.",
+                )
+            frozen_document = dict(snapshot.get("document") or {})
+            if frozen_document.get("text"):
+                current_text = render_document_text(
+                    name=template.name,
+                    body_markdown=template.body_markdown or "",
+                    clauses=template.clauses_json or [],
+                    merge_values=dict(snapshot.get("merge_values") or {}),
+                )
+                if document_checksum(current_text) != frozen_document.get("checksum"):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="The rendered template differs from the frozen package; prepare a new version.",
+                    )
         _transition_readiness(
             session,
             row=agreement,

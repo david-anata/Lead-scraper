@@ -194,7 +194,32 @@ class BuildingSignatureReadinessTests(unittest.TestCase):
             page.text,
         )
         self.assertIn("QuickBooks Contract Builder", page.text)
+        self.assertIn("Copy-ready handoff manifest", page.text)
+        self.assertIn("agreement_checksum", page.text)
         self.assertNotIn("Send for signature", page.text)
+
+    def test_03a_failed_handoff_is_explicit_and_retryable_without_delivery(self) -> None:
+        failed = self._post(
+            "/admin/building/contracts/signature-agreement/signature-readiness/recovery",
+            {"target_status": "failed", "failure_reason": "QuickBooks upload timed out."},
+        )
+        self.assertIn("nothing+was+sent", failed.headers["location"])
+        with self.factory() as session:
+            row = session.query(BuildingSignatureRequestReadiness).one()
+            self.assertEqual(row.delivery_status, "failed")
+            audit = session.query(BuildingAuditEvent).filter_by(
+                entity_id=row.id,
+                action="signature_handoff_failed",
+            ).one()
+            self.assertFalse(audit.after_json["message_sent"])
+        retried = self._post(
+            "/admin/building/contracts/signature-agreement/signature-readiness/recovery",
+            {"target_status": "not_sent"},
+        )
+        self.assertIn("ready+to+retry", retried.headers["location"])
+        with self.factory() as session:
+            row = session.query(BuildingSignatureRequestReadiness).one()
+            self.assertEqual(row.delivery_status, "not_sent")
 
     def test_04_csrf_and_auth_fail_closed(self) -> None:
         no_csrf = self.client.post(
