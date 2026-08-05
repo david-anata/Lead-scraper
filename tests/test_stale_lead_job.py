@@ -120,6 +120,26 @@ class StaleLeadJobTests(unittest.TestCase):
         finally:
             session.close()
 
+    def _insert_lead_named(self, task_id: str, created_at: datetime) -> None:
+        session = self.session_factory()
+        try:
+            session.add(
+                LeadMirror(
+                    clickup_task_id=task_id,
+                    list_id=self.settings.clickup_list_id,
+                    task_name=f"Example Lead {task_id}",
+                    task_url=f"https://app.clickup.com/t/{task_id}",
+                    status="new lead",
+                    created_at=created_at,
+                    updated_at=created_at,
+                    last_sync_at=created_at,
+                    raw_task_payload={},
+                )
+            )
+            session.commit()
+        finally:
+            session.close()
+
     def test_run_falls_back_to_existing_mirror_if_sync_refresh_fails(self) -> None:
         self._insert_lead()
         session = self.session_factory()
@@ -139,6 +159,9 @@ class StaleLeadJobTests(unittest.TestCase):
             self.assertEqual(result["inspected"], 1)
             self.assertEqual(result["synced_tasks"], 0)
             self.assertTrue(result["sync_failed"])
+            # A run that could not refresh from ClickUp acted on a stale mirror;
+            # it must not be recorded as a successful run.
+            self.assertEqual(result["run_status"], "failed")
         finally:
             session.close()
 
@@ -299,6 +322,31 @@ class StaleLeadJobTests(unittest.TestCase):
             self.assertEqual(len(slack_client.messages), 1)
         finally:
             session.close()
+
+
+    def test_run_reports_leads_the_scan_cap_never_reached(self) -> None:
+        for index in range(7):
+            self._insert_lead_named(f"task-{index}", self.ROUTINE_DUE_ANCHOR)
+        session = self.session_factory()
+        try:
+            with patch("sales_support_agent.jobs.stale_leads.ClickUpSyncService") as sync_service_cls:
+                sync_service_cls.return_value.sync_list.return_value = {"synced_tasks": 7}
+
+                result = StaleLeadJob(
+                    self.settings,
+                    _FakeClickUpClient(),
+                    _FakeSlackClient(),
+                    session,
+                ).run(dry_run=True, as_of_date=date(2026, 3, 13), max_tasks=3)
+        finally:
+            session.close()
+
+        self.assertEqual(result["active_leads"], 7)
+        self.assertEqual(result["inspected"], 3)
+        self.assertEqual(result["not_inspected"], 4)
+        self.assertTrue(result["scan_truncated"])
+        self.assertEqual(result["run_status"], "success")
+
 
 
 if __name__ == "__main__":

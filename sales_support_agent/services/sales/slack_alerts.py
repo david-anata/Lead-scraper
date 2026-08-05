@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from sales_support_agent.integrations.slack import SlackClient
 from sales_support_agent.models.database import kv_get_json, kv_set_json
 from sales_support_agent.models.entities import HubSpotDeal
+from sales_support_agent.rules.business_days import business_days_between
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +42,18 @@ class AlertBatch:
 
 
 def _days_overdue(cd: Optional[datetime], as_of: datetime) -> int:
+    """Business days past the close date.
+
+    Business days, not calendar days, so this agrees with the follow-up policies
+    in ``rules/follow_up.py``. A deal four calendar days past close over a
+    weekend is two business days late, and both surfaces now say so.
+    """
+
     if cd is None:
         return 0
     if cd.tzinfo is None:
         cd = cd.replace(tzinfo=timezone.utc)
-    delta = (as_of - cd).days
-    return max(0, delta)
+    return business_days_between(cd, as_of)
 
 
 def build_alert_batch(
@@ -72,14 +79,17 @@ def build_alert_batch(
             if cd.tzinfo is None:
                 cd = cd.replace(tzinfo=timezone.utc)
             if cd < as_of:
-                days = (as_of - cd).days
-                issues.append(f"overdue by {days}d")
+                days = business_days_between(cd, as_of)
+                issues.append(f"overdue by {days} business day"
+                              f"{'s' if days != 1 else ''}")
 
         touch = d.last_meaningful_touch_at
         if touch is not None and touch.tzinfo is None:
             touch = touch.replace(tzinfo=timezone.utc)
         if touch is None or touch < stale_cutoff:
-            issues.append(f"no touch in {stale_days}+ days")
+            # Calendar days: stale_deal_days is a shared configured threshold,
+            # so the unit is labelled rather than silently redefined.
+            issues.append(f"no touch in {stale_days}+ calendar days")
 
         if (d.amount_cents or 0) <= 0:
             issues.append("missing amount")

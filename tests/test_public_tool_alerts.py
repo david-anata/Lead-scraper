@@ -1,6 +1,18 @@
 from __future__ import annotations
 
 import os
+import tempfile
+
+# Self-sufficient: these tests previously read SALES_AGENT_DB_URL straight from
+# the environment, so they only passed when an earlier test file happened to
+# set it. Alone they raised KeyError.
+os.environ.setdefault(
+    "SALES_AGENT_DB_URL",
+    "sqlite:///" + os.path.join(tempfile.gettempdir(), "test_public_tool_alerts.db"),
+)
+
+
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
