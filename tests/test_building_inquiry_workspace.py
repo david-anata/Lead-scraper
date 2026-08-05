@@ -32,6 +32,37 @@ from sales_support_agent.services.admin_auth import create_user_session_token
 
 
 class BuildingInquiryWorkspaceTests(unittest.TestCase):
+    @staticmethod
+    def _jordan_payload() -> dict:
+        return {
+            "eventType": "Company celebration",
+            "groupSize": "85",
+            "alternateDate": "2026-09-19",
+            "backupDate2": "2026-09-26",
+            "dateFlexibility": "Same month is workable",
+            "accessStartTime": "14:00",
+            "accessEndTime": "23:00",
+            "avNeeds": "Presentation display",
+            "accessibilityNeeds": "Step-free guest route",
+            "vendorPlan": "Caterer only",
+            "tourInterest": "Yes, please contact me",
+            "notes": "Need a stage and accessible seating.",
+            "_event_interview": {
+                "event_format": "Company celebration",
+                "candidate_dates": "2026-09-19; 2026-09-26",
+                "access_schedule": "14:00–23:00",
+                "attendance": "85",
+                "av_and_sound": "Presentation display",
+                "accessibility": "Step-free guest route",
+                "vendors_and_load_in": "Caterer only",
+                "special_requests": "Need a stage and accessible seating.",
+            },
+            "_event_interview_meta": {"reviewed": False},
+            "_lifecycle": {"stage": "new"},
+            "_lead_notification": {"status": "delivered"},
+            "_customer_receipt": {"status": "sent"},
+        }
+
     @classmethod
     def setUpClass(cls) -> None:
         path = os.path.join(
@@ -78,23 +109,7 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
                 preferred_date=date.today() + timedelta(days=30),
                 assigned_owner="building@anatainc.com",
                 response_due_at=now - timedelta(hours=1),
-                payload_json={
-                    "eventType": "Company celebration",
-                    "groupSize": "85",
-                    "alternateDate": "2026-09-19",
-                    "backupDate2": "2026-09-26",
-                    "dateFlexibility": "Same month is workable",
-                    "accessStartTime": "14:00",
-                    "accessEndTime": "23:00",
-                    "avNeeds": "Presentation display",
-                    "accessibilityNeeds": "Step-free guest route",
-                    "vendorPlan": "Caterer only",
-                    "tourInterest": "Yes, please contact me",
-                    "notes": "Need a stage and accessible seating.",
-                    "_lifecycle": {"stage": "new"},
-                    "_lead_notification": {"status": "delivered"},
-                    "_customer_receipt": {"status": "sent"},
-                },
+                payload_json=cls._jordan_payload(),
             ))
             session.add(BuildingInquiry(
                 id="internal-qa-inquiry",
@@ -115,6 +130,13 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
                 action="inquiry_created",
                 actor="public-site",
             ))
+            session.commit()
+
+    def setUp(self) -> None:
+        with self.factory() as session:
+            inquiry = session.get(BuildingInquiry, "jordan-inquiry")
+            inquiry.payload_json = self._jordan_payload()
+            session.add(inquiry)
             session.commit()
 
     def test_workspace_preserves_submission_and_excludes_other_records(self) -> None:
@@ -165,6 +187,94 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
         self.assertIn("Retry staff alert", page.text)
         self.assertIn("Retry acknowledgement", page.text)
         self.assertIn('name="_csrf_token"', page.text)
+
+    def test_event_interview_is_structured_prefilled_and_missing_first(self) -> None:
+        page = self.client.get("/admin/building/inquiries/jordan-inquiry")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("Event and timing", page.text)
+        self.assertIn("People and decision", page.text)
+        self.assertIn("Call guide", page.text)
+        self.assertIn("2026-09-19; 2026-09-26", page.text)
+        self.assertIn("14:00–23:00", page.text)
+        self.assertIn("Presentation display", page.text)
+        self.assertIn("Step-free guest route", page.text)
+        self.assertIn("Caterer only", page.text)
+        self.assertIn("is-missing", page.text)
+        self.assertIn("Changes save automatically", page.text)
+
+    def test_interview_autosave_persists_without_marking_reviewed(self) -> None:
+        page = self.client.get("/admin/building/inquiries/jordan-inquiry")
+        token = re.search(r'name="_csrf_token" value="([^"]+)"', page.text)
+        self.assertIsNotNone(token)
+        response = self.client.post(
+            "/admin/building/inquiries/jordan-inquiry/event-interview",
+            data={
+                "_csrf_token": token.group(1),
+                "event_purpose": "Celebrate the product launch",
+            },
+            headers={
+                "Origin": "http://testserver",
+                "X-Requested-With": "building-interview-autosave",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"ok": True, "saved": True, "reviewed": False})
+        refreshed = self.client.get("/admin/building/inquiries/jordan-inquiry")
+        self.assertIn("Celebrate the product launch", refreshed.text)
+        with self.factory() as session:
+            inquiry = session.get(BuildingInquiry, "jordan-inquiry")
+            self.assertFalse(inquiry.payload_json["_event_interview_meta"]["reviewed"])
+            audit = session.query(BuildingAuditEvent).filter_by(
+                entity_id="jordan-inquiry", action="event_interview_autosaved"
+            ).order_by(BuildingAuditEvent.id.desc()).first()
+            self.assertIsNotNone(audit)
+
+    def test_qualification_lists_exact_missing_answers_then_unlocks(self) -> None:
+        page = self.client.get("/admin/building/inquiries/jordan-inquiry")
+        token = re.search(r'name="_csrf_token" value="([^"]+)"', page.text)
+        self.assertIsNotNone(token)
+        responded = self.client.post(
+            "/admin/building/inquiries/jordan-inquiry/lifecycle",
+            data={
+                "_csrf_token": token.group(1),
+                "target_stage": "responded",
+                "assigned_owner": "building@anatainc.com",
+                "channel": "phone",
+                "notes": "Customer replied.",
+            },
+            headers={"Origin": "http://testserver", "Sec-Fetch-Mode": "navigate"},
+            follow_redirects=False,
+        )
+        self.assertEqual(responded.status_code, 303, responded.text)
+        incomplete = self.client.get("/admin/building/inquiries/jordan-inquiry")
+        self.assertIn("Still needed before qualification", incomplete.text)
+        self.assertIn("event purpose", incomplete.text)
+        self.assertIn("agreed next step", incomplete.text)
+
+        token = re.search(r'name="_csrf_token" value="([^"]+)"', incomplete.text)
+        saved = self.client.post(
+            "/admin/building/inquiries/jordan-inquiry/event-interview",
+            data={
+                "_csrf_token": token.group(1),
+                "save_mode": "reviewed",
+                "event_purpose": "Celebrate the product launch",
+                "event_format": "Company celebration",
+                "candidate_dates": "2026-09-19; 2026-09-26",
+                "guest_schedule": "18:00–22:00",
+                "access_schedule": "14:00–23:00",
+                "attendance": "85",
+                "agreed_next_step": "Send the date review by August 6",
+            },
+            headers={"Origin": "http://testserver", "Sec-Fetch-Mode": "navigate"},
+            follow_redirects=False,
+        )
+        self.assertEqual(saved.status_code, 303, saved.text)
+        ready = self.client.get("/admin/building/inquiries/jordan-inquiry")
+        self.assertIn("Qualify this event request", ready.text)
+        self.assertIn("Qualify for date review", ready.text)
+        with self.factory() as session:
+            inquiry = session.get(BuildingInquiry, "jordan-inquiry")
+            self.assertTrue(inquiry.payload_json["_event_interview_meta"]["reviewed"])
 
     def test_delivered_staff_alert_retry_is_idempotent(self) -> None:
         page = self.client.get("/admin/building/inquiries/jordan-inquiry")

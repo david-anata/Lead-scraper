@@ -9,6 +9,9 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from sales_support_agent.services.ui_shell import render_operator_document
+from sales_support_agent.services.building_lead_intake import (
+    event_qualification_missing,
+)
 
 
 MOUNTAIN = ZoneInfo("America/Denver")
@@ -40,35 +43,37 @@ DETAIL_LABELS = {
     "utmCampaign": "Campaign",
 }
 
-INTERVIEW_FIELDS = (
-    ("event_purpose", "Event purpose"),
-    ("event_format", "Event format"),
-    ("candidate_dates", "Candidate dates"),
-    ("guest_schedule", "Guest schedule"),
-    ("access_schedule", "Full access, setup, and teardown window"),
-    ("attendance", "Expected and maximum attendance"),
-    ("decision_maker", "Decision maker"),
-    ("authorized_signer", "Authorized signer"),
-    ("billing_contact", "Billing contact"),
-    ("decision_timeline", "Decision timeline"),
-    ("room_layout", "Room layout"),
-    ("furniture", "Furniture needs"),
-    ("av_and_sound", "AV and sound"),
-    ("internet_and_power", "Internet and power"),
-    ("catering", "Catering"),
-    ("alcohol", "Alcohol"),
-    ("vendors_and_load_in", "Vendors and load-in"),
-    ("parking_and_transportation", "Parking and transportation"),
-    ("accessibility", "Accessibility"),
-    ("security_and_staffing", "Security and staffing"),
-    ("insurance", "Insurance"),
-    ("decor_and_signage", "Decor and signage"),
-    ("cleanup_and_waste", "Cleanup and waste"),
-    ("marketing_and_media", "Marketing and media"),
-    ("special_requests", "Special requests"),
-    ("known_risks", "Known risks"),
-    ("agreed_next_step", "Agreed next step"),
-    ("operator_notes", "Internal operator notes"),
+INTERVIEW_SECTIONS = (
+    ("Event and timing", "Confirm the outcome, date choices, and complete access window.", (
+        ("event_purpose", "Event purpose"), ("event_format", "Event format"),
+        ("candidate_dates", "Candidate dates"), ("guest_schedule", "Guest schedule"),
+        ("access_schedule", "Full access, setup, and teardown window"),
+        ("attendance", "Expected and maximum attendance"),
+    )),
+    ("People and decision", "Know who decides, signs, pays, and when.", (
+        ("decision_maker", "Decision maker"), ("authorized_signer", "Authorized signer"),
+        ("billing_contact", "Billing contact"), ("decision_timeline", "Decision timeline"),
+    )),
+    ("Room and production", "Plan the physical room and technical experience.", (
+        ("room_layout", "Room layout"), ("furniture", "Furniture needs"),
+        ("av_and_sound", "AV and sound"), ("internet_and_power", "Internet and power"),
+    )),
+    ("Food, access, and vendors", "Capture regulated services and guest access needs.", (
+        ("catering", "Catering"), ("alcohol", "Alcohol"),
+        ("vendors_and_load_in", "Vendors and load-in"),
+        ("parking_and_transportation", "Parking and transportation"),
+        ("accessibility", "Accessibility"), ("security_and_staffing", "Security and staffing"),
+        ("insurance", "Insurance"),
+    )),
+    ("Finish and follow-up", "Close open risks and leave one dated next step.", (
+        ("decor_and_signage", "Decor and signage"), ("cleanup_and_waste", "Cleanup and waste"),
+        ("marketing_and_media", "Marketing and media"), ("special_requests", "Special requests"),
+        ("known_risks", "Known risks"), ("agreed_next_step", "Agreed next step"),
+        ("operator_notes", "Internal operator notes"),
+    )),
+)
+INTERVIEW_FIELDS = tuple(
+    field for _, _, fields in INTERVIEW_SECTIONS for field in fields
 )
 
 
@@ -126,11 +131,23 @@ def _next_action(data: dict[str, Any]) -> dict[str, str]:
             "label": "Record response",
         }
     if data.get("kind") == "event" and stage == "responded":
+        missing = event_qualification_missing(
+            dict(data.get("event_interview") or {}),
+            dict(data.get("details") or {}),
+        )
+        if not missing:
+            return {
+                "title": "Qualify this event request.",
+                "body": "The minimum discovery record is complete. Qualification carries the request into date review without promising availability.",
+                "kind": "qualify",
+                "href": "",
+                "label": "Qualify for date review",
+            }
         return {
-            "title": "Complete the event interview.",
-            "body": "Confirm the event requirements before qualifying the opportunity or promising a date.",
+            "title": "Finish the minimum event interview.",
+            "body": "Still needed before qualification: " + ", ".join(missing) + ".",
             "kind": "link",
-            "href": f"/admin/building/sales?q={quote(str(data.get('email') or ''))}#incoming-inquiries",
+            "href": "#event-interview",
             "label": "Continue interview",
         }
     if stage == "qualified" and not data.get("reservation_id"):
@@ -208,13 +225,16 @@ def render_inquiry_workspace(
     answered = sum(
         bool(str(interview.get(key) or "").strip()) for key, _ in INTERVIEW_FIELDS
     )
-    interview_controls = "".join(
-        f'<label>{_esc(label)}<textarea name="{_esc(key)}">{_esc(interview.get(key) or "")}</textarea></label>'
-        for key, label in INTERVIEW_FIELDS
+    section_blocks = "".join(
+        f'''<fieldset class="lead-interview__section"><legend>{_esc(title)}</legend><p>{_esc(description)}</p><span>{sum(bool(str(interview.get(key) or '').strip()) for key, _ in fields)}/{len(fields)} answered</span><div class="lead-interview__grid">{''.join(
+            f'<label class="{"is-answered" if str(interview.get(key) or "").strip() else "is-missing"}">{_esc(label)}<textarea name="{_esc(key)}">{_esc(interview.get(key) or "")}</textarea></label>'
+            for key, label in sorted(fields, key=lambda field: bool(str(interview.get(field[0]) or '').strip()))
+        )}</div></fieldset>'''
+        for title, description, fields in INTERVIEW_SECTIONS
     )
     interview_section = (
         f'''<section class="lead-panel"><div class="lead-panel__head"><div><h2>Event interview</h2><p>{answered} of {len(INTERVIEW_FIELDS)} questions currently answered. Save partial progress at any time; this does not promise a date or price.</p></div></div>
-            <details class="lead-interview"{' open' if stage == 'responded' else ''}><summary>Review or update interview</summary><form method="post" action="/admin/building/inquiries/{_esc(data.get('id'))}/event-interview"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><div class="lead-interview__grid">{interview_controls}</div><button class="lead-button lead-button--primary" type="submit">Save interview</button></form></details>
+            <details class="lead-interview" id="event-interview"{' open' if stage == 'responded' else ''}><summary>Review or update interview</summary><div class="lead-call-guide"><strong>Call guide</strong><span>Why this event? Which dates and full access window work? Who decides? What must the room support? What happens next, and when?</span></div><form data-interview-autosave method="post" action="/admin/building/inquiries/{_esc(data.get('id'))}/event-interview"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">{section_blocks}<div class="lead-interview__save"><button class="lead-button lead-button--primary" type="submit" name="save_mode" value="reviewed">Save and mark reviewed</button><span data-autosave-status role="status">Changes save automatically after you pause.</span></div></form></details>
           </section>'''
         if data.get("kind") == "event"
         else ""
@@ -239,6 +259,8 @@ def render_inquiry_workspace(
           <label>What happened<textarea name="notes" required placeholder="Record the meaningful response and agreed next step."></textarea></label>
           <button class="lead-button lead-button--primary" type="submit">Record response</button>
         </form>"""
+    elif next_action["kind"] == "qualify":
+        response_form = f'''<form method="post" action="/admin/building/inquiries/{_esc(data.get('id'))}/lifecycle"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input type="hidden" name="target_stage" value="qualified"><input type="hidden" name="assigned_owner" value="{_esc(data.get('assigned_owner'))}"><input type="hidden" name="channel" value="other"><input type="hidden" name="notes" value="Minimum event discovery completed; ready for date review."><button class="lead-button lead-button--primary" type="submit">Qualify for date review</button></form>'''
     else:
         response_form = f'<a class="lead-button lead-button--primary" href="{_esc(next_action["href"])}">{_esc(next_action["label"])} →</a>'
 
@@ -280,6 +302,24 @@ def render_inquiry_workspace(
         </aside>
       </section>
       <details class="lead-technical"><summary>Technical record details</summary><p>Inquiry reference: <code>{_esc(data.get('id'))}</code></p></details>
+      <script>
+      (() => {{
+        const form = document.querySelector('[data-interview-autosave]');
+        const status = document.querySelector('[data-autosave-status]');
+        if (!form || !status || !window.fetch) return;
+        let timer;
+        const save = async () => {{
+          status.textContent = 'Saving…';
+          try {{
+            const response = await fetch(form.action, {{method:'POST', body:new FormData(form), headers:{{'X-Requested-With':'building-interview-autosave'}}}});
+            if (!response.ok) throw new Error('save failed');
+            status.textContent = 'Saved.';
+          }} catch (_error) {{ status.textContent = 'Could not autosave. Use “Save and mark reviewed.”'; }}
+        }};
+        form.addEventListener('input', () => {{ clearTimeout(timer); timer = setTimeout(save, 900); }});
+        form.addEventListener('change', () => {{ clearTimeout(timer); timer = setTimeout(save, 250); }});
+      }})();
+      </script>
     """
     styles = """
     <style>
@@ -292,7 +332,7 @@ def render_inquiry_workspace(
       .lead-details,.lead-contact dl{display:grid;grid-template-columns:minmax(130px,.45fr) minmax(0,1fr);margin:0}.lead-details dt,.lead-details dd,.lead-contact dt,.lead-contact dd{margin:0;padding:11px 18px;border-top:1px solid var(--agent-border)}.lead-details dt,.lead-contact dt{color:var(--agent-ink-muted);font-size:12px;font-weight:800}.lead-details dd,.lead-contact dd{overflow-wrap:anywhere}
       .lead-follow-up,.lead-activity{margin:0;padding:0;list-style:none}.lead-follow-up li,.lead-activity li{display:grid;gap:3px;padding:13px 18px;border-top:1px solid var(--agent-border)}.lead-follow-up span,.lead-activity span,.lead-activity time{color:var(--agent-ink-muted);font-size:12px}.lead-activity li{grid-template-columns:150px 1fr}.lead-activity div{display:grid;gap:3px}.lead-technical{padding:14px 18px;border:1px dashed var(--agent-border);border-radius:var(--agent-radius-control)}
       .lead-delivery-actions{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px;border-top:1px solid var(--agent-border)}
-      .lead-interview{border-top:1px solid var(--agent-border)}.lead-interview>summary{padding:14px 20px;color:var(--agent-blue-strong);font-weight:800;cursor:pointer}.lead-interview form{display:grid;gap:16px;padding:0 20px 20px}.lead-interview__grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.lead-interview label{display:grid;gap:5px;font-weight:700}.lead-interview textarea{min-height:80px}
+      .lead-interview{border-top:1px solid var(--agent-border);scroll-margin-top:140px}.lead-interview>summary{padding:14px 20px;color:var(--agent-blue-strong);font-weight:800;cursor:pointer}.lead-interview form{display:grid;gap:16px;padding:0 20px 20px}.lead-interview__section{display:grid;gap:10px;margin:0;padding:16px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control)}.lead-interview__section legend{padding:0 6px;font-weight:800}.lead-interview__section>p{margin:0;color:var(--agent-ink-muted);font-size:13px}.lead-interview__section>span{color:var(--agent-blue-strong);font-size:12px;font-weight:800}.lead-interview__grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.lead-interview label{display:grid;gap:5px;font-weight:700}.lead-interview label.is-missing{order:-1}.lead-interview textarea{min-height:80px}.lead-call-guide{display:grid;gap:4px;margin:0 20px 16px;padding:14px;border-radius:var(--agent-radius-control);background:#f1f8fb}.lead-call-guide span{color:var(--agent-ink-muted);font-size:13px;line-height:1.5}.lead-interview__save{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.lead-interview__save span{color:var(--agent-ink-muted);font-size:12px}
       @media(max-width:900px){.lead-next,.lead-layout{grid-template-columns:1fr}.lead-next .lead-button{justify-self:start}}
       @media(max-width:600px){.lead-details,.lead-contact dl,.lead-interview__grid{grid-template-columns:1fr}.lead-details dt,.lead-contact dt{padding-bottom:0}.lead-details dd,.lead-contact dd{padding-top:4px}.lead-activity li{grid-template-columns:1fr}.lead-panel__head{display:grid}.lead-next{padding:20px}.lead-response{width:100%}}
     </style>
