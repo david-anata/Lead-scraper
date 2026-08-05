@@ -35,18 +35,30 @@ def _clock(value: str) -> time | None:
 def _window(
     candidate: date,
     *,
+    setup_start_time: str = "",
     guest_start_time: str,
     guest_end_time: str,
+    teardown_end_time: str = "",
 ) -> tuple[datetime, datetime, bool]:
+    setup_clock = _clock(setup_start_time)
     start_clock = _clock(guest_start_time)
     end_clock = _clock(guest_end_time)
+    teardown_clock = _clock(teardown_end_time)
     if start_clock is None or end_clock is None:
         start = datetime.combine(candidate, time.min, MOUNTAIN)
         return start, start + timedelta(days=1), False
-    start = datetime.combine(candidate, start_clock, MOUNTAIN)
-    end = datetime.combine(candidate, end_clock, MOUNTAIN)
-    if end <= start:
+    if setup_clock is not None and setup_clock > start_clock:
+        raise ValueError("Setup must begin no later than guest arrival.")
+    start = datetime.combine(candidate, setup_clock or start_clock, MOUNTAIN)
+    guest_start = datetime.combine(candidate, start_clock, MOUNTAIN)
+    guest_end = datetime.combine(candidate, end_clock, MOUNTAIN)
+    if guest_end <= guest_start:
+        guest_end += timedelta(days=1)
+    end = datetime.combine(candidate, teardown_clock or end_clock, MOUNTAIN)
+    if end <= guest_start:
         end += timedelta(days=1)
+    if end < guest_end:
+        raise ValueError("Teardown must end no earlier than the guest event.")
     return start, end, True
 
 
@@ -100,8 +112,11 @@ def candidate_date_availability(
     *,
     calendar: BuildingCalendarAdapter,
     candidates: Iterable[date],
+    setup_start_time: str = "",
     guest_start_time: str = "",
     guest_end_time: str = "",
+    teardown_end_time: str = "",
+    suggest_nearby: bool = True,
 ) -> dict[str, Any]:
     """Return only available/limited/unavailable/unknown, never event details."""
 
@@ -111,6 +126,9 @@ def candidate_date_availability(
         return {
             "calendar_status": "unavailable",
             "checked_at": checked_at.isoformat(),
+            "checked_by": "Anata Events calendar and Agent holds",
+            "freshness_seconds": 0,
+            "nearby_alternatives": [],
             "dates": [
                 {
                     "date": item.isoformat(),
@@ -125,8 +143,10 @@ def candidate_date_availability(
     for candidate in unique:
         starts_at, ends_at, exact_window = _window(
             candidate,
+            setup_start_time=setup_start_time,
             guest_start_time=guest_start_time,
             guest_end_time=guest_end_time,
+            teardown_end_time=teardown_end_time,
         )
         blocks = _active_blocks(
             session, starts_at=starts_at, ends_at=ends_at
@@ -173,9 +193,48 @@ def candidate_date_availability(
             "date": candidate.isoformat(),
             "status": status,
             "message": message,
+            "window_start": starts_at.isoformat(),
+            "window_end": ends_at.isoformat(),
         })
+    alternatives: list[dict[str, str]] = []
+    if suggest_nearby and any(item["status"] == "unavailable" for item in results):
+        requested = set(unique)
+        nearby = []
+        for offset in range(1, 8):
+            for base in unique:
+                for direction in (-1, 1):
+                    option = base + timedelta(days=offset * direction)
+                    if option >= checked_at.astimezone(MOUNTAIN).date() and option not in requested:
+                        requested.add(option)
+                        nearby.append(option)
+        for option in sorted(nearby, key=lambda item: min(abs((item - base).days) for base in unique)):
+            starts_at, ends_at, exact_window = _window(
+                option,
+                setup_start_time=setup_start_time,
+                guest_start_time=guest_start_time,
+                guest_end_time=guest_end_time,
+                teardown_end_time=teardown_end_time,
+            )
+            if _active_blocks(session, starts_at=starts_at, ends_at=ends_at):
+                continue
+            try:
+                if calendar.find_conflicts(starts_at=starts_at, ends_at=ends_at):
+                    continue
+            except Exception:
+                alternatives = []
+                break
+            alternatives.append({
+                "date": option.isoformat(),
+                "status": "available",
+                "message": "No calendar conflict found. Final confirmation follows staff review.",
+            })
+            if len(alternatives) == 3:
+                break
     return {
         "calendar_status": "connected",
         "checked_at": checked_at.isoformat(),
+        "checked_by": "Anata Events calendar and Agent holds",
+        "freshness_seconds": 0,
+        "nearby_alternatives": alternatives,
         "dates": results,
     }

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -17,6 +17,7 @@ from sales_support_agent.services.building_calendar import queue_calendar_projec
 from sales_support_agent.services.building_agreement_readiness import (
     propagate_event_readiness_terminal_state,
 )
+from sales_support_agent.integrations.slack import SlackClient
 
 
 def _aware(value: datetime) -> datetime:
@@ -28,6 +29,7 @@ def expire_building_holds(
     *,
     as_of: datetime | None = None,
     dry_run: bool = False,
+    settings: Any | None = None,
     actor: str = "job:building-hold-expiration",
 ) -> dict[str, Any]:
     """Release every soft hold whose approved expiration has passed."""
@@ -45,6 +47,20 @@ def expire_building_holds(
             if row.hold_expires_at is not None
             and _aware(row.hold_expires_at) <= now
         ]
+        delivered_warning_ids = set(
+            session.execute(
+                select(BuildingAuditEvent.entity_id).where(
+                    BuildingAuditEvent.entity_type == "reservation",
+                    BuildingAuditEvent.action == "hold_expiry_warning_delivered",
+                )
+            ).scalars().all()
+        )
+        expiring = [
+            row for row in rows
+            if row.hold_expires_at is not None
+            and now < _aware(row.hold_expires_at) <= now + timedelta(hours=24)
+            and row.id not in delivered_warning_ids
+        ]
         preview = [
             {
                 "reservation_id": row.id,
@@ -59,7 +75,51 @@ def expire_building_holds(
                 "dry_run": True,
                 "expired_count": len(expired),
                 "expired": preview,
+                "expiring_count": len(expiring),
+                "expiring_ids": [row.id for row in expiring],
             }
+
+        warning_status = "skipped"
+        warning_reference = ""
+        warning_reason = ""
+        if expiring:
+            client = SlackClient(settings) if settings is not None else None
+            if client is None or not client.is_configured():
+                warning_status = "not_configured"
+                warning_reason = "slack_not_configured"
+            else:
+                lines = [
+                    f"• <https://agent.anatainc.com/admin/building/bookings/{row.id}|{row.id}> expires {_aware(row.hold_expires_at).strftime('%b %d · %I:%M %p UTC')}"
+                    for row in expiring[:20]
+                ]
+                try:
+                    provider_result = client.post_message(
+                        text=f"{len(expiring)} Building hold(s) expire within 24 hours.",
+                        blocks=[
+                            {"type": "header", "text": {"type": "plain_text", "text": "Building holds expire soon"}},
+                            {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}},
+                            {"type": "context", "elements": [{"type": "mrkdwn", "text": "Review or release each hold. This alert does not contact customers."}]},
+                        ],
+                    )
+                except Exception as exc:
+                    provider_result = {"ok": False, "reason": str(exc)[:500]}
+                warning_status = "delivered" if provider_result.get("ok") else "failed"
+                warning_reference = str(provider_result.get("ts") or "")
+                warning_reason = str(provider_result.get("reason") or "")
+            for row in expiring:
+                session.add(BuildingAuditEvent(
+                    entity_type="reservation",
+                    entity_id=row.id,
+                    action=f"hold_expiry_warning_{warning_status}",
+                    actor=actor,
+                    after_json={
+                        "provider": "slack",
+                        "provider_reference": warning_reference,
+                        "reason": warning_reason,
+                        "hold_expires_at": _aware(row.hold_expires_at).isoformat(),
+                        "customer_contacted": False,
+                    },
+                ))
 
         for row in expired:
             before = {
@@ -99,4 +159,8 @@ def expire_building_holds(
             "dry_run": False,
             "expired_count": len(expired),
             "expired": preview,
+            "expiring_count": len(expiring),
+            "expiring_ids": [row.id for row in expiring],
+            "warning_status": warning_status,
+            "warning_provider_reference": warning_reference,
         }

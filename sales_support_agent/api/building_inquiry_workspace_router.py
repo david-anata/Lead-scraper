@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from datetime import date, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
@@ -21,6 +23,8 @@ from sales_support_agent.services.building_inquiry_workspace import (
     render_inquiry_workspace,
 )
 from sales_support_agent.services.building_lead_intake import prefill_event_interview
+from sales_support_agent.services.building_public_availability import candidate_date_availability
+from sales_support_agent.integrations.building_google_calendar import BuildingGoogleCalendarClient
 from sales_support_agent.services.building_security import csrf_token
 
 
@@ -28,6 +32,48 @@ router = APIRouter(
     prefix="/admin/building/inquiries",
     tags=["building-inquiry-workspace"],
 )
+
+
+@router.get("/{inquiry_id}/availability")
+def inquiry_date_availability(
+    inquiry_id: str,
+    request: Request,
+    dates: str = Query(min_length=10, max_length=32),
+    setup_start_time: str = Query(default="", max_length=8),
+    guest_start_time: str = Query(default="", max_length=8),
+    guest_end_time: str = Query(default="", max_length=8),
+    teardown_end_time: str = Query(default="", max_length=8),
+    user: dict = Depends(require_tool("building.events.manage")),
+) -> dict:
+    """Compare candidate dates without exposing calendar event details."""
+
+    del user
+    raw_dates = list(dict.fromkeys(item.strip() for item in dates.split(",") if item.strip()))
+    if not raw_dates or len(raw_dates) > 3:
+        raise HTTPException(status_code=422, detail="Provide one to three candidate dates.")
+    try:
+        candidates = [date.fromisoformat(item) for item in raw_dates]
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Candidate dates must use YYYY-MM-DD.") from exc
+    today = date.today()
+    if any(item < today or item > today + timedelta(days=730) for item in candidates):
+        raise HTTPException(status_code=422, detail="Candidate dates must be within the next two years.")
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None or inquiry.kind != "event":
+            raise HTTPException(status_code=404, detail="Event inquiry not found.")
+        try:
+            return candidate_date_availability(
+                session,
+                calendar=BuildingGoogleCalendarClient(),
+                candidates=candidates,
+                setup_start_time=setup_start_time,
+                guest_start_time=guest_start_time,
+                guest_end_time=guest_end_time,
+                teardown_end_time=teardown_end_time,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/{inquiry_id}", response_class=HTMLResponse)
