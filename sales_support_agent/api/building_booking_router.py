@@ -2100,6 +2100,11 @@ def record_proposal(
         reservation = session.get(BuildingReservation, reservation_id)
         if reservation is None:
             raise HTTPException(status_code=404, detail="Reservation not found.")
+        if reservation.status in {"cancelled", "expired", "completed"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"This booking is {reservation.status}; quote history is read-only.",
+            )
         expected_type = "quote" if reservation.kind == "event" else "proposal"
         if payload.proposal_type != expected_type:
             raise HTTPException(

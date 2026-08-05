@@ -235,6 +235,24 @@ class BuildingBookingWorkspaceTests(unittest.TestCase):
             page.text,
         )
 
+    def test_terminal_booking_keeps_quote_history_read_only(self) -> None:
+        with self.factory() as session:
+            reservation = session.get(BuildingReservation, "guided-event")
+            reservation.status = "cancelled"
+            session.add(reservation)
+            session.commit()
+        try:
+            page = self.client.get("/admin/building/bookings/guided-event")
+            self.assertEqual(page.status_code, 200, page.text)
+            self.assertIn("Quote history is read-only", page.text)
+            self.assertIn('class="booking-quote-fields" disabled', page.text)
+        finally:
+            with self.factory() as session:
+                reservation = session.get(BuildingReservation, "guided-event")
+                reservation.status = "soft_hold"
+                session.add(reservation)
+                session.commit()
+
 
 if __name__ == "__main__":
     unittest.main()

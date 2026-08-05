@@ -482,6 +482,11 @@ class BuildingBookingTests(unittest.TestCase):
         self.assertEqual(analytics["operations"]["holds_started"], 2)
 
     def test_06_sent_proposal_content_is_immutable_and_revisions_use_new_version(self) -> None:
+        with self.factory() as session:
+            reservation = session.get(BuildingReservation, "event-one")
+            reservation.status = "quote_sent"
+            session.add(reservation)
+            session.commit()
         changed = self._proposal(
             "event-one", "accepted", amount_cents=300000
         )
