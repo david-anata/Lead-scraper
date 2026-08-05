@@ -2709,5 +2709,6 @@ input:focus, select:focus, textarea:focus {
   .cash-calendar-select-day,
   .finance-bookkeeping button,
   .finance-bookkeeping select { min-height: 44px; }
+  .finance-global-command [data-finance-save-view] { min-height: 44px; }
   .trim-review-link { display: inline-flex; align-items: center; }
 }
