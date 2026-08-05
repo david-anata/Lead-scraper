@@ -331,14 +331,22 @@ def render_booking_workspace(
         f'<td>{_esc(item.get("starts_on") or "—")}</td><td>{_status(item.get("status") or "draft")}</td></tr>'
         for item in billing.get("schedules", [])
     ) or '<tr><td colspan="4">No billing drafts prepared for this booking.</td></tr>'
-    invoice_rows = "".join(
-        f'<tr><td>{_esc(item.get("qbo_invoice_id") or "Agent draft")}</td>'
-        f'<td>{_status(item.get("status") or "draft")}</td>'
-        f'<td>{_esc(_money(item.get("amount_due_cents"), item.get("currency") or "USD"))}</td>'
-        f'<td>{_esc(_money(item.get("amount_paid_cents"), item.get("currency") or "USD"))}</td>'
-        f'<td>{f"<a href=\"{_esc(item.get("url"))}\" target=\"_blank\" rel=\"noopener\">Open QuickBooks</a>" if item.get("url") else "Not created"}</td></tr>'
-        for item in billing.get("invoices", [])
-    ) or '<tr><td colspan="5">No QuickBooks invoice has been created.</td></tr>'
+    invoice_rows_list = []
+    for item in billing.get("invoices", []):
+        invoice_link = (
+            f'<a href="{_esc(item.get("url"))}" target="_blank" '
+            'rel="noopener">Open QuickBooks</a>'
+            if item.get("url")
+            else "Not created"
+        )
+        invoice_rows_list.append(
+            f'<tr><td>{_esc(item.get("qbo_invoice_id") or "Agent draft")}</td>'
+            f'<td>{_status(item.get("status") or "draft")}</td>'
+            f'<td>{_esc(_money(item.get("amount_due_cents"), item.get("currency") or "USD"))}</td>'
+            f'<td>{_esc(_money(item.get("amount_paid_cents"), item.get("currency") or "USD"))}</td>'
+            f'<td>{invoice_link}</td></tr>'
+        )
+    invoice_rows = "".join(invoice_rows_list) or '<tr><td colspan="5">No QuickBooks invoice has been created.</td></tr>'
     can_prepare_billing = bool(
         reservation.get("agreement_status") == "signed"
         and proposal.get("status") == "accepted"
@@ -352,14 +360,25 @@ def render_booking_workspace(
         <div class="booking-version-table"><table><thead><tr><th>QuickBooks</th><th>State</th><th>Due</th><th>Paid</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div>
         <p class="booking-billing-link"><a class="booking-button booking-button--secondary" href="/admin/building#billing-and-collections">Approve drafts, create invoices, or refresh payment evidence</a></p>
       </section>'''
-    communication_rows = "".join(
-        f'<tr><td>{_esc(str(item.get("milestone") or "update").replace("_", " ").title())}<small>Template v{_esc(item.get("template_version"))}</small></td>'
-        f'<td>{_status(item.get("status") or "queued")}</td>'
-        f'<td>{_esc(item.get("delivered_at") or item.get("sent_at") or "Not delivered")}</td>'
-        f'<td>{_esc(item.get("provider_reference") or item.get("last_error") or "No provider evidence")}</td>'
-        f'<td>{f"<form method=\"post\" action=\"/admin/building/bookings/{_esc(reservation.get("id"))}/communications/{_esc(item.get("milestone"))}/retry\"><input type=\"hidden\" name=\"_csrf_token\" value=\"{_esc(csrf_token)}\"><button class=\"booking-button booking-button--secondary\" type=\"submit\">Retry</button></form>" if item.get("status") in {"failed", "not_configured"} else "—"}</td></tr>'
-        for item in data.get("communications", [])
-    ) or '<tr><td colspan="5">No later-stage customer message has been prepared yet. The inquiry receipt is tracked with the inquiry.</td></tr>'
+    communication_rows_list = []
+    for item in data.get("communications", []):
+        recovery = "—"
+        if item.get("status") in {"failed", "not_configured"}:
+            recovery = (
+                f'<form method="post" action="/admin/building/bookings/{_esc(reservation.get("id"))}'
+                f'/communications/{_esc(item.get("milestone"))}/retry">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                '<button class="booking-button booking-button--secondary" type="submit">Retry</button></form>'
+            )
+        communication_rows_list.append(
+            f'<tr><td>{_esc(str(item.get("milestone") or "update").replace("_", " ").title())}'
+            f'<small>Template v{_esc(item.get("template_version"))}</small></td>'
+            f'<td>{_status(item.get("status") or "queued")}</td>'
+            f'<td>{_esc(item.get("delivered_at") or item.get("sent_at") or "Not delivered")}</td>'
+            f'<td>{_esc(item.get("provider_reference") or item.get("last_error") or "No provider evidence")}</td>'
+            f'<td>{recovery}</td></tr>'
+        )
+    communication_rows = "".join(communication_rows_list) or '<tr><td colspan="5">No later-stage customer message has been prepared yet. The inquiry receipt is tracked with the inquiry.</td></tr>'
     communications_section = f'''<section class="booking-workspace" id="booking-communications">
         <div class="booking-workspace__header"><div><h2>Customer communications</h2><p>Versioned operational messages use The Anata Team and retain provider delivery evidence.</p></div></div>
         <div class="booking-version-table"><table><thead><tr><th>Milestone</th><th>State</th><th>Sent or delivered</th><th>Evidence</th><th>Recovery</th></tr></thead><tbody>{communication_rows}</tbody></table></div>
