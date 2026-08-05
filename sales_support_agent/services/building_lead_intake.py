@@ -45,26 +45,72 @@ def prefill_event_interview(
     dates = event_candidate_dates(preferred_date, details)
     guest_start = _detail(details, "guestStartTime", "guest_start_time")
     guest_end = _detail(details, "guestEndTime", "guest_end_time")
+    access_start = _detail(details, "accessStartTime", "access_start_time")
+    access_end = _detail(details, "accessEndTime", "access_end_time")
     guest_schedule = ""
     if guest_start or guest_end:
         guest_schedule = f"{guest_start or 'Start not provided'}–{guest_end or 'End not provided'}"
+    access_schedule = ""
+    if access_start or access_end:
+        access_schedule = f"{access_start or 'Start not provided'}–{access_end or 'End not provided'}"
+    elif _detail(details, "setupRequired", "setup_required").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        access_schedule = "Setup or vendor access requested before guests arrive."
     values = {
         "event_format": _detail(details, "eventType", "event_type"),
         "candidate_dates": "; ".join(dates),
         "guest_schedule": guest_schedule,
-        "access_schedule": (
-            "Setup or vendor access requested before guests arrive."
-            if _detail(details, "setupRequired", "setup_required").lower()
-            in {"1", "true", "yes", "on"}
-            else ""
-        ),
+        "access_schedule": access_schedule,
         "attendance": _detail(details, "groupSize", "attendance"),
         "catering": _detail(details, "catering"),
         "alcohol": _detail(details, "alcohol"),
+        "av_and_sound": _detail(details, "avNeeds", "av_needs"),
+        "accessibility": _detail(
+            details, "accessibilityNeeds", "accessibility_needs"
+        ),
+        "vendors_and_load_in": _detail(details, "vendorPlan", "vendor_plan"),
         "special_requests": _detail(details, "notes"),
     }
     answers = {key: value for key, value in values.items() if value}
     return answers, sorted(answers)
+
+
+EVENT_QUALIFICATION_REQUIREMENTS = (
+    ("event_purpose", "event purpose"),
+    ("event_format", "event format"),
+    ("candidate_dates", "candidate dates"),
+    ("guest_schedule", "guest schedule"),
+    ("attendance", "attendance"),
+    ("agreed_next_step", "agreed next step"),
+)
+
+
+def event_qualification_missing(
+    interview: dict[str, Any], details: dict[str, Any] | None = None
+) -> list[str]:
+    """Return the smallest evidence set required before event qualification."""
+
+    missing = [
+        label
+        for key, label in EVENT_QUALIFICATION_REQUIREMENTS
+        if not str(interview.get(key) or "").strip()
+    ]
+    raw_details = dict(details or {})
+    setup_requested = _detail(
+        raw_details, "setupRequired", "setup_required"
+    ).lower() in {"1", "true", "yes", "on"}
+    if setup_requested and not str(interview.get("access_schedule") or "").strip():
+        missing.append("setup and teardown access")
+    if (
+        _detail(raw_details, "alcohol").casefold() == "yes"
+        and not str(interview.get("alcohol") or "").strip()
+    ):
+        missing.append("alcohol plan")
+    return missing
 
 
 def build_follow_up_sequence(received_at: datetime, response_sla_hours: int) -> list[dict[str, Any]]:

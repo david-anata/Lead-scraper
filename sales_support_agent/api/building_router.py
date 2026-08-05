@@ -29,6 +29,7 @@ from sales_support_agent.services.building_launch_readiness import (
 from sales_support_agent.services.building_lead_intake import (
     advance_follow_up_sequence,
     build_follow_up_sequence,
+    event_qualification_missing,
     notify_new_building_lead,
     prefill_event_interview,
 )
@@ -1068,6 +1069,20 @@ def update_inquiry_lifecycle(
                 status_code=409,
                 detail=f"Cannot move inquiry from {current} to {payload.target_stage}.",
             )
+        if inquiry.kind == "event" and payload.target_stage == "qualified":
+            missing = event_qualification_missing(
+                dict(inquiry_payload.get("_event_interview") or {}),
+                inquiry_payload,
+            )
+            if missing:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Complete the event interview before qualifying: "
+                        + ", ".join(missing)
+                        + "."
+                    ),
+                )
         changed_at = _now()
         before = dict(lifecycle)
         lifecycle["stage"] = payload.target_stage

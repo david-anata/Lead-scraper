@@ -652,6 +652,20 @@ class BuildingOperationsTests(unittest.TestCase):
         self.assertEqual(responded.status_code, 200, responded.text)
         self.assertEqual(responded.json()["crm_sync_status"], sync_status)
         self.assertTrue(responded.json()["lifecycle"]["first_responded_at"])
+        with self.factory() as session:
+            inquiry = session.get(BuildingInquiry, inquiry_id)
+            payload = dict(inquiry.payload_json or {})
+            payload["_event_interview"] = {
+                "event_purpose": "Customer celebration",
+                "event_format": "Reception",
+                "candidate_dates": "2026-09-19; 2026-09-26",
+                "guest_schedule": "18:00-22:00",
+                "attendance": "85",
+                "agreed_next_step": "Review dates with the customer tomorrow",
+            }
+            inquiry.payload_json = payload
+            session.add(inquiry)
+            session.commit()
         qualified = self.client.post(
             f"/api/internal/building/inquiries/{inquiry_id}/lifecycle",
             headers=self.internal_headers,

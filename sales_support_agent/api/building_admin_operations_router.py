@@ -11,7 +11,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import ValidationError
 
 from sales_support_agent.api.building_billing_router import (
@@ -280,7 +280,7 @@ async def save_event_interview_from_control_room(
     inquiry_id: str,
     request: Request,
     user: dict = Depends(require_tool("building.manage")),
-) -> RedirectResponse:
+) -> Response:
     """Save the operational discovery record without promising a date or price."""
 
     form = await request.form()
@@ -315,6 +315,7 @@ async def save_event_interview_from_control_room(
         "operator_notes",
     )
     answers = {name: str(form.get(name) or "").strip() for name in field_names}
+    reviewed = str(form.get("save_mode") or "").strip() == "reviewed"
     if not any(answers.values()):
         return _redirect(
             error="Record at least one interview answer before saving.",
@@ -336,9 +337,15 @@ async def save_event_interview_from_control_room(
         interview_meta = dict(payload.get("_event_interview_meta") or {})
         payload["_event_interview_meta"] = {
             **interview_meta,
-            "reviewed": True,
-            "reviewed_by": _actor(user),
-            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+            "reviewed": bool(interview_meta.get("reviewed")) or reviewed,
+            **(
+                {
+                    "reviewed_by": _actor(user),
+                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if reviewed
+                else {}
+            ),
         }
         lifecycle_stage = str(
             (payload.get("_lifecycle") or {}).get("stage") or "new"
@@ -347,14 +354,14 @@ async def save_event_interview_from_control_room(
             list(payload.get("_follow_up_sequence") or []),
             lifecycle_stage=lifecycle_stage,
             changed_at=datetime.now(timezone.utc),
-            interview_complete=True,
+            interview_complete=bool(interview_meta.get("reviewed")) or reviewed,
         )
         inquiry.payload_json = payload
         inquiry.updated_at = datetime.now(timezone.utc)
         session.add(BuildingAuditEvent(
             entity_type="inquiry",
             entity_id=inquiry.id,
-            action="event_interview_saved",
+            action=("event_interview_saved" if reviewed else "event_interview_autosaved"),
             actor=_actor(user),
             before_json=before,
             after_json={
@@ -364,6 +371,8 @@ async def save_event_interview_from_control_room(
                 "provider_write": False,
             },
         ))
+    if request.headers.get("X-Requested-With") == "building-interview-autosave":
+        return JSONResponse({"ok": True, "saved": True, "reviewed": reviewed})
     return _redirect(
         notice="Event interview saved. No date, price, or booking was promised.",
         target=f"/admin/building/inquiries/{inquiry_id}",
