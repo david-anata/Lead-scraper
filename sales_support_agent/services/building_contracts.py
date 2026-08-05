@@ -23,6 +23,10 @@ from sales_support_agent.models.entities import (
     BuildingSignatureRequestReadiness,
     BuildingSpace,
 )
+from sales_support_agent.services.building_contract_templates import (
+    document_checksum,
+    render_document_text,
+)
 
 
 #: Shared operator state vocabulary from DESIGN.md, mapped to ``app-status--*``.
@@ -385,6 +389,38 @@ def load_contract_detail(session: Any, agreement_id: str) -> Optional[dict[str, 
         else None
     )
     snapshot = dict(agreement.package_snapshot_json or {})
+    frozen_template = dict(snapshot.get("template") or {})
+    frozen_document = dict(snapshot.get("document") or {})
+    template_differences: list[str] = []
+    current_document_checksum = ""
+    if template is None:
+        template_differences.append("The frozen template version no longer exists.")
+    else:
+        if template.status != "approved":
+            template_differences.append(
+                f"The template is now {template.status}, not approved."
+            )
+        for key, current in (
+            ("id", template.id),
+            ("version", template.version),
+            ("reference", template.template_reference),
+        ):
+            if frozen_template.get(key) != current:
+                template_differences.append(
+                    f"Template {key.replace('_', ' ')} differs from the frozen package."
+                )
+        if frozen_document.get("text"):
+            current_text = render_document_text(
+                name=template.name,
+                body_markdown=template.body_markdown or "",
+                clauses=template.clauses_json or [],
+                merge_values=dict(snapshot.get("merge_values") or {}),
+            )
+            current_document_checksum = document_checksum(current_text)
+            if current_document_checksum != frozen_document.get("checksum"):
+                template_differences.append(
+                    "Rendered contract text differs from the frozen package."
+                )
     quote_id = str((snapshot.get("quote") or {}).get("id") or "")
     quote = session.get(BuildingProposal, quote_id) if quote_id else None
     audit_ids = (
@@ -454,6 +490,12 @@ def load_contract_detail(session: Any, agreement_id: str) -> Optional[dict[str, 
             "version": template.version if template else None,
             "status": str(template.status if template else ""),
             "reference": str(template.template_reference if template else ""),
+        },
+        "template_comparison": {
+            "matches": not template_differences,
+            "differences": template_differences,
+            "frozen_document_checksum": str(frozen_document.get("checksum") or ""),
+            "current_document_checksum": current_document_checksum,
         },
         "quote": {
             "id": quote_id,

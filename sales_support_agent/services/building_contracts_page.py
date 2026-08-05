@@ -373,6 +373,26 @@ def render_contract_detail(
     payment = contract.get("payment") or {}
     signature = contract.get("signature") or {}
     document = dict((contract.get("snapshot") or {}).get("document") or {})
+    comparison = dict(contract.get("template_comparison") or {})
+    handoff_manifest = json.dumps(
+        {
+            "provider": "QuickBooks Contract Builder",
+            "agreement_id": contract["id"],
+            "agreement_version": contract["version"],
+            "agreement_checksum": contract["checksum"],
+            "document_checksum": str(document.get("checksum") or ""),
+            "customer_name": contract["customer_name"],
+            "signer_email": str(signature.get("signer_email") or contract["customer_email"]),
+            "event_space": contract["space_name"],
+            "event_starts_at": (
+                contract["starts_at"].isoformat() if contract.get("starts_at") else ""
+            ),
+            "contract_total_cents": contract["amount_cents"],
+            "currency": contract["currency"],
+        },
+        indent=2,
+        sort_keys=True,
+    )
     # The document link only appears once the package is approved, matching the
     # route's own precondition.
     has_document = bool(
@@ -415,6 +435,22 @@ def render_contract_detail(
             "no verifiable terms and offers no governed action.</p>",
         )
 
+    if comparison.get("matches"):
+        template_comparison = _alert(
+            "notice",
+            "<p><strong>Template and package match.</strong> The approved template "
+            "identity and rendered document checksum match this frozen package.</p>",
+        )
+    else:
+        difference_items = "".join(
+            f"<li>{_esc(item)}</li>" for item in comparison.get("differences", [])
+        ) or "<li>No comparison evidence is available.</li>"
+        template_comparison = _alert(
+            "blocked",
+            "<p><strong>Template/package differences require a new package.</strong></p>"
+            f"<ul>{difference_items}</ul>",
+        )
+
     audit_rows = "".join(
         f"<tr><td>{_esc(_when(item['created_at']))}</td>"
         f"<td>{_esc(item['action'].replace('_', ' '))}</td>"
@@ -438,7 +474,16 @@ def render_contract_detail(
             "I confirm this frozen contract package has completed the required review.",
         ),
     }.get(contract["preparation_status"])
-    if contract["verified"] and can_approve and agreement_next:
+    agreement_comparison_allows_action = bool(
+        comparison.get("matches")
+        or (agreement_next and agreement_next[0] == "in_review")
+    )
+    if (
+        contract["verified"]
+        and can_approve
+        and agreement_next
+        and agreement_comparison_allows_action
+    ):
         target, confirmation, action_label, confirmation_copy = agreement_next
         actions.append(f"""<form class="app-form-grid" method="post" action="{CONTRACTS_URL}/{_esc(contract['id'])}/transition">
         <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
@@ -501,7 +546,27 @@ def render_contract_detail(
           <a class="admin-btn" href="{CONTRACTS_URL}/{_esc(contract['id'])}/document" target="_blank" rel="noopener">Open frozen contract</a>
           <a class="admin-btn admin-btn--secondary" href="https://qbo.intuit.com/" target="_blank" rel="noopener">Open QuickBooks</a>
         </div>
+        <label class="app-field"><span>Copy-ready handoff manifest</span>
+          <textarea rows="12" readonly>{_esc(handoff_manifest)}</textarea></label>
       </section>""")
+        if signature.get("delivery_status") in {"not_sent", "failed"}:
+            if signature.get("delivery_status") == "failed":
+                actions.append(f"""<form class="app-form-grid" method="post" action="{CONTRACTS_URL}/{_esc(contract['id'])}/signature-readiness/recovery">
+        <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+        <input type="hidden" name="target_status" value="not_sent">
+        <h3>Retry QuickBooks handoff</h3>
+        <p class="app-muted">Reset only Agent's manual handoff state. This does not create or resend a customer document.</p>
+        <div class="app-form-grid__actions"><button class="admin-btn" type="submit">Mark ready to retry</button></div>
+      </form>""")
+            else:
+                actions.append(f"""<form class="app-form-grid" method="post" action="{CONTRACTS_URL}/{_esc(contract['id'])}/signature-readiness/recovery">
+        <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+        <input type="hidden" name="target_status" value="failed">
+        <h3>Record a failed handoff</h3>
+        <label class="app-field"><span>What failed</span>
+          <textarea name="failure_reason" rows="3" required placeholder="QuickBooks error or recovery detail"></textarea></label>
+        <div class="app-form-grid__actions"><button class="admin-btn admin-btn--secondary" type="submit">Record failure</button><span class="app-muted">No customer message is sent.</span></div>
+      </form>""")
     payment_next = {
         "prepared": (
             "in_review",
@@ -592,6 +657,7 @@ def render_contract_detail(
       )}
     </div>
     <section class="admin-panel"><h2>Frozen terms</h2>{_terms(contract['snapshot'], payment)}</section>
+    <section class="admin-panel"><h2>Template/package comparison</h2>{template_comparison}</section>
     <section class="admin-panel"><h2>Signature handoff</h2>{
       (
         '<dl class="app-detail-list">'
