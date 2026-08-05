@@ -20,6 +20,7 @@ from sales_support_agent.services.building_inquiry_workspace import (
     is_test_inquiry,
     render_inquiry_workspace,
 )
+from sales_support_agent.services.building_lead_intake import prefill_event_interview
 from sales_support_agent.services.building_security import csrf_token
 
 
@@ -68,6 +69,17 @@ def inquiry_workspace(
             .limit(100)
         ).scalars().all()
         payload = dict(inquiry.payload_json or {})
+        public_details = {
+            key: value for key, value in payload.items() if not str(key).startswith("_")
+        }
+        prefilled_interview, _ = prefill_event_interview(
+            preferred_date=inquiry.preferred_date,
+            details=public_details,
+        )
+        event_interview = {
+            **prefilled_interview,
+            **dict(payload.get("_event_interview") or {}),
+        }
         data = {
             "id": inquiry.id,
             "name": inquiry.name,
@@ -82,14 +94,10 @@ def inquiry_workspace(
             "assigned_owner": inquiry.assigned_owner,
             "response_due_at": inquiry.response_due_at,
             "created_at": inquiry.created_at,
-            "details": {
-                key: value
-                for key, value in payload.items()
-                if not str(key).startswith("_")
-            },
+            "details": public_details,
             "lifecycle": dict(payload.get("_lifecycle") or {}),
             "attribution": dict(payload.get("_attribution") or {}),
-            "event_interview": dict(payload.get("_event_interview") or {}),
+            "event_interview": event_interview,
             "lead_notification": dict(payload.get("_lead_notification") or {}),
             "lead_escalation": dict(payload.get("_lead_escalation") or {}),
             "customer_receipt": dict(payload.get("_customer_receipt") or {}),
