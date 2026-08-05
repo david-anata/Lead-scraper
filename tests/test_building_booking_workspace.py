@@ -115,6 +115,22 @@ class BuildingBookingWorkspaceTests(unittest.TestCase):
                 status="draft",
                 currency="USD",
                 amount_cents=265000,
+                line_items_json=[
+                    {"type": "pricing_subtotal", "description": "Arena event package", "amount_cents": 250000},
+                    {"type": "tax", "description": "Lehi, Utah sales tax", "amount_cents": 15000},
+                ],
+                rate_plan_id="guided-rate",
+                rate_plan_snapshot_json={
+                    "name": "Arena standard",
+                    "version": 1,
+                    "tax_rate_bps": 600,
+                    "transaction_date": (now + timedelta(days=30)).date().isoformat(),
+                    "pricing_adjustment": {
+                        "pricing_subtotal_cents": 250000,
+                        "discount_cents": 0,
+                        "tax_rate_bps": 600,
+                    },
+                },
                 terms_summary="Frozen reviewed terms.",
             ))
             session.add(BuildingCalendarProjection(
@@ -156,6 +172,12 @@ class BuildingBookingWorkspaceTests(unittest.TestCase):
         self.assertIn("No signature success is claimed", page.text)
         self.assertIn("Readiness is not payment", page.text)
         self.assertIn("Creates a copyable link only. Nothing is sent.", page.text)
+        self.assertIn("Quote builder", page.text)
+        self.assertIn("Customer preview", page.text)
+        self.assertIn("Version comparison", page.text)
+        self.assertIn("Arena event package", page.text)
+        self.assertIn("Transaction date", page.text)
+        self.assertIn("Sent versions stay frozen", page.text)
         self.assertNotIn("Unrelated Private Contact", page.text)
         self.assertEqual(page.text.count("<h1>"), 1)
         self.assertEqual(page.text.count('id="agent-main-content"'), 1)

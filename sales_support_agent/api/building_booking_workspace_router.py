@@ -16,6 +16,7 @@ from sales_support_agent.models.entities import (
     BuildingOperationalChecklistItem,
     BuildingPaymentRequestReadiness,
     BuildingProposal,
+    BuildingRatePlan,
     BuildingReservation,
     BuildingSpace,
 )
@@ -58,11 +59,24 @@ def booking_workspace(
             else None
         )
         space = session.get(BuildingSpace, reservation.space_id)
-        proposal = session.execute(
+        proposals = session.execute(
             select(BuildingProposal)
             .where(BuildingProposal.reservation_id == reservation.id)
             .order_by(BuildingProposal.version.desc())
-        ).scalars().first()
+        ).scalars().all()
+        proposal = proposals[0] if proposals else None
+        transaction_date = reservation.starts_at.date()
+        rate_plans = session.execute(
+            select(BuildingRatePlan).where(
+                BuildingRatePlan.offering_id == reservation.offering_id,
+                BuildingRatePlan.status == "approved",
+                BuildingRatePlan.effective_from <= transaction_date,
+                (
+                    BuildingRatePlan.effective_until.is_(None)
+                    | (BuildingRatePlan.effective_until >= transaction_date)
+                ),
+            )
+        ).scalars().all() if reservation.offering_id else []
         agreement = session.execute(
             select(BuildingAgreement)
             .where(BuildingAgreement.reservation_id == reservation.id)
@@ -111,6 +125,7 @@ def booking_workspace(
                 "status": reservation.status,
                 "inquiry_id": reservation.inquiry_id,
                 "contact_id": reservation.contact_id,
+                "offering_id": reservation.offering_id,
                 "starts_at": reservation.starts_at,
                 "ends_at": reservation.ends_at,
                 "guest_starts_at": reservation.guest_starts_at,
@@ -145,10 +160,41 @@ def booking_workspace(
                     "status": proposal.status,
                     "currency": proposal.currency,
                     "amount_cents": proposal.amount_cents,
+                    "line_items": list(proposal.line_items_json or []),
+                    "rate_plan_id": proposal.rate_plan_id,
+                    "rate_plan_snapshot": dict(proposal.rate_plan_snapshot_json or {}),
+                    "terms_summary": proposal.terms_summary,
+                    "valid_until": proposal.valid_until.isoformat() if proposal.valid_until else "",
+                    "document_url": proposal.document_url,
                 }
                 if proposal
                 else None
             ),
+            "quote_versions": [
+                {
+                    "id": row.id,
+                    "version": row.version,
+                    "status": row.status,
+                    "currency": row.currency,
+                    "amount_cents": row.amount_cents,
+                    "line_items": list(row.line_items_json or []),
+                    "rate_plan_snapshot": dict(row.rate_plan_snapshot_json or {}),
+                    "terms_summary": row.terms_summary,
+                    "valid_until": row.valid_until.isoformat() if row.valid_until else "",
+                    "document_url": row.document_url,
+                }
+                for row in proposals
+            ],
+            "approved_rate_plans": [
+                {
+                    "id": row.id,
+                    "name": row.name,
+                    "version": row.version,
+                    "tax_status": row.tax_status,
+                    "tax_rate_bps": row.tax_rate_bps,
+                }
+                for row in rate_plans
+            ],
             "agreement": (
                 {
                     "id": agreement.id,
