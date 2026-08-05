@@ -739,3 +739,20 @@ separate payment-request readiness outbox. Approved template versions use a
 fixed merge-field allow-list; package and payment evidence carry independent
 checksums and prepare/review/approve states. No provider object or success state
 is created. See `../docs/building-agreement-payment-readiness.md`.
+
+## Event customer communications
+
+Evidence-backed event milestones create an idempotent, versioned transactional
+message record. The message is sent through the configured Building sender only
+when the matching quote, signed agreement, QuickBooks invoice/payment, booking,
+or completion evidence exists. Provider delivery webhooks update the exact
+message record; delivery failures remain visible and retryable without changing
+booking state. Confirmed customers are added to the dedicated Building calendar
+projection, while holds never invite customers.
+
+Signed customer status links expose only safe current documents and accept
+questions, reschedule requests, and cancellation requests. These requests create
+staff work and never mutate the booking or availability directly. The hourly
+operator cron invokes
+`POST /api/internal/building/bookings/communications/run` for the idempotent
+seven-day event reminder.

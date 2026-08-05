@@ -1827,6 +1827,58 @@ class BuildingInquiryReceipt(Base):
     )
 
 
+class BuildingTransactionalMessage(Base):
+    """One immutable, idempotent customer message for a booking milestone."""
+
+    __tablename__ = "building_transactional_messages"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reservation_id: Mapped[str] = mapped_column(
+        ForeignKey("building_reservations.id"), index=True
+    )
+    contact_id: Mapped[str] = mapped_column(
+        ForeignKey("building_contacts.id"), index=True
+    )
+    milestone: Mapped[str] = mapped_column(String(64), index=True)
+    template_version: Mapped[int] = mapped_column(Integer, default=1)
+    template_reference: Mapped[str] = mapped_column(String(255))
+    to_email: Mapped[str] = mapped_column(String(255), index=True)
+    subject: Mapped[str] = mapped_column(String(255))
+    body_text: Mapped[str] = mapped_column(Text)
+    content_checksum: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="resend")
+    provider_message_id: Mapped[str] = mapped_column(
+        String(255), default="", index=True
+    )
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    attempted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_building_transactional_message_unique",
+            "reservation_id",
+            "milestone",
+            "template_version",
+            unique=True,
+        ),
+    )
+
+
 class BuildingAuditEvent(Base):
     __tablename__ = "building_audit_events"
 

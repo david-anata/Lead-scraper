@@ -135,15 +135,22 @@ class BuildingGoogleCalendarClient:
         event_id = provider_event_id or deterministic_event_id(reservation_id)
         calendar_id = quote(self.calendar_id, safe="")
         event_url = f"{self.api_base_url}/calendars/{calendar_id}/events/{event_id}"
-        response = session.patch(event_url, json=payload, timeout=20)
+        delivery_params = {"sendUpdates": "all"} if payload.get("attendees") else None
+        response = session.patch(
+            event_url, params=delivery_params, json=payload, timeout=20
+        )
         if response.status_code == 404:
             collection_url = (
                 f"{self.api_base_url}/calendars/{calendar_id}/events"
             )
             body = {"id": event_id, **payload}
-            response = session.post(collection_url, json=body, timeout=20)
+            response = session.post(
+                collection_url, params=delivery_params, json=body, timeout=20
+            )
             if response.status_code == 409:
-                response = session.patch(event_url, json=payload, timeout=20)
+                response = session.patch(
+                    event_url, params=delivery_params, json=payload, timeout=20
+                )
         response.raise_for_status()
         result = response.json()
         return str(result.get("id") or event_id)
