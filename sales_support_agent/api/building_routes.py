@@ -25,6 +25,9 @@ from sales_support_agent.api.building_booking_router import (
 from sales_support_agent.api.building_booking_workspace_router import (
     router as building_booking_workspace_router,
 )
+from sales_support_agent.api.building_inquiry_workspace_router import (
+    router as building_inquiry_workspace_router,
+)
 from sales_support_agent.api.building_calendar_router import (
     router as building_calendar_router,
 )
@@ -72,6 +75,7 @@ BUILDING_ROUTERS = (
     building_booking_router,
     building_booking_public_router,
     building_booking_workspace_router,
+    building_inquiry_workspace_router,
     building_agreement_readiness_internal_router,
     building_agreement_readiness_admin_router,
     building_contract_router,

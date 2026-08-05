@@ -173,8 +173,8 @@ def notify_new_building_lead(settings: Any, inquiry: Any) -> dict[str, Any]:
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    "Open <https://agent.anatainc.com/admin/building/sales|"
-                    "Agent → Building → Sales> to review the original submission, "
+                    f"Open <https://agent.anatainc.com/admin/building/inquiries/{inquiry.id}|"
+                    "this lead in Agent> to review the original submission, "
                     "respond, and complete the event interview."
                 ),
             },

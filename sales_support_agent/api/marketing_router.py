@@ -1648,6 +1648,7 @@ async def marketing_site_intake_create(
 # until the next status poll after completion, or lands "empty" on failure).
 _SHELF_COMPETITOR_LIMIT = 8
 _SHELF_MAX_ITEMS = 5
+_SHELF_REQUIRED_ITEMS = 5
 _SHELF_TIMEOUT_SECONDS = 90
 
 
@@ -1710,7 +1711,20 @@ def _assemble_shelf_payload(
     warnings: list[str],
 ) -> dict[str, Any]:
     """Build the bounded public comparison payload used by the website."""
-    visible_products = products[:_SHELF_MAX_ITEMS]
+    target_brand = re.sub(
+        r"[^a-z0-9]+", "", str(getattr(target_product, "brand", "") or "").lower()
+    )
+    visible_products = []
+    seen: set[str] = set()
+    for product in products:
+        brand = re.sub(r"[^a-z0-9]+", "", str(getattr(product, "brand", "") or "").lower())
+        key = brand or str(getattr(product, "asin", "") or "").strip().upper()
+        if not key or key in seen or (target_brand and brand == target_brand):
+            continue
+        seen.add(key)
+        visible_products.append(product)
+        if len(visible_products) >= _SHELF_MAX_ITEMS:
+            break
     competitors = [_shelf_product_payload(product) for product in visible_products]
     revenues = [
         float(product.revenue)
@@ -1721,7 +1735,13 @@ def _assemble_shelf_payload(
     ratings = [float(product.rating) for product in visible_products if product.rating is not None]
 
     return {
-        "status": "ready" if competitors else "empty",
+        "status": (
+            "ready"
+            if len(competitors) >= _SHELF_REQUIRED_ITEMS
+            else "incomplete"
+            if competitors
+            else "empty"
+        ),
         "target": _shelf_product_payload(target_product) if target_product is not None else None,
         "competitors": competitors,
         # Existing fields remain for backwards compatibility.
@@ -1730,6 +1750,7 @@ def _assemble_shelf_payload(
         "avg_rating": f"{sum(ratings) / len(ratings):.1f}" if ratings else "",
         # New evidence contract.
         "comparison_count": len(competitors),
+        "required_comparison_count": _SHELF_REQUIRED_ITEMS,
         "revenue_product_count": len(revenues),
         "visible_revenue": round(sum(revenues), 2) if revenues else None,
         "median_revenue": round(float(median(revenues)), 2) if revenues else None,
@@ -1803,7 +1824,8 @@ async def marketing_site_intake_needs(
         summary = {**(run.summary_json or {}), "needs": needs}
         kind = str(summary.get("kind", "") or "")
         asin = str(summary.get("asin", "") or "")
-        if kind == "asin" and asin and not summary.get("shelf"):
+        shelf_status = str((summary.get("shelf") or {}).get("status", "") or "")
+        if kind == "asin" and asin and shelf_status in {"", "empty", "incomplete"}:
             summary["shelf"] = {"status": "pending"}
             background_tasks.add_task(_build_shelf, request.app, run.id, asin)
         run.summary_json = summary

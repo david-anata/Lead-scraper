@@ -90,6 +90,7 @@ from sales_support_agent.services.building_arena_rate_plan_seed import (
     build_arena_commercial_draft,
 )
 from sales_support_agent.services.building_page import render_building_page
+from sales_support_agent.services.building_inquiry_workspace import is_test_inquiry
 from sales_support_agent.services.building_launch_readiness import (
     ARENA_LAUNCH_DECISIONS,
     arena_rate_plan_decision_blockers,
@@ -4698,6 +4699,10 @@ def building_control_room(
     request: Request,
     notice: str = "",
     error: str = "",
+    q: str = "",
+    lead_status: str = "open",
+    lead_scope: str = "live",
+    lead_sort: str = "priority",
     user: dict = Depends(require_tool("building.manage")),
 ) -> HTMLResponse:
     requested_view = request.url.path.rstrip("/").rsplit("/", 1)[-1]
@@ -4801,8 +4806,69 @@ def building_control_room(
         inquiry_rows = session.execute(
             select(BuildingInquiry)
             .order_by(BuildingInquiry.created_at.desc())
-            .limit(50)
+            .limit(200)
         ).scalars().all()
+
+        valid_statuses = {"open", "all", "new", "responded", "qualified", "closed_won", "closed_lost"}
+        valid_scopes = {"live", "test", "all"}
+        valid_sorts = {"priority", "newest", "event_date"}
+        lead_status = lead_status if lead_status in valid_statuses else "open"
+        lead_scope = lead_scope if lead_scope in valid_scopes else "live"
+        lead_sort = lead_sort if lead_sort in valid_sorts else "priority"
+        normalized_query = q.strip().casefold()
+
+        def include_inquiry(item: BuildingInquiry) -> bool:
+            payload = dict(item.payload_json or {})
+            stage = str((payload.get("_lifecycle") or {}).get("stage") or "new")
+            test_record = is_test_inquiry(
+                name=item.name, email=item.email, source=item.source
+            )
+            if lead_scope == "live" and test_record:
+                return False
+            if lead_scope == "test" and not test_record:
+                return False
+            if lead_status == "open" and stage in {"closed_won", "closed_lost"}:
+                return False
+            if lead_status not in {"open", "all"} and stage != lead_status:
+                return False
+            if normalized_query:
+                haystack = " ".join(
+                    str(value or "")
+                    for value in (
+                        item.name,
+                        item.email,
+                        item.phone,
+                        item.preferred_date,
+                        item.source_reference,
+                        payload.get("eventType"),
+                        payload.get("notes"),
+                    )
+                ).casefold()
+                if normalized_query not in haystack:
+                    return False
+            return True
+
+        visible_inquiry_rows = [item for item in inquiry_rows if include_inquiry(item)]
+        if lead_sort == "event_date":
+            visible_inquiry_rows.sort(
+                key=lambda item: (item.preferred_date is None, item.preferred_date or date.max)
+            )
+        elif lead_sort == "priority":
+            now = _now()
+            visible_inquiry_rows.sort(
+                key=lambda item: (
+                    not bool(
+                        item.response_due_at
+                        and (
+                            item.response_due_at.replace(tzinfo=timezone.utc)
+                            if item.response_due_at.tzinfo is None
+                            else item.response_due_at
+                        ) < now
+                    ),
+                    item.response_due_at or datetime.max.replace(tzinfo=timezone.utc),
+                    -item.created_at.timestamp(),
+                )
+            )
         conversion_dispatch_inquiry_ids = {
             event.entity_id
             for event in session.execute(
@@ -5289,8 +5355,20 @@ def building_control_room(
                     ),
                     "id": item.id,
                 }
-                for item in inquiry_rows
+                for item in visible_inquiry_rows
             ],
+            inquiry_filters={
+                "q": q.strip(),
+                "status": lead_status,
+                "scope": lead_scope,
+                "sort": lead_sort,
+                "visible_count": len(visible_inquiry_rows),
+                "total_count": len(inquiry_rows),
+                "test_count": sum(
+                    is_test_inquiry(name=item.name, email=item.email, source=item.source)
+                    for item in inquiry_rows
+                ),
+            },
             reservations=[
                 {
                     "id": item.id,
