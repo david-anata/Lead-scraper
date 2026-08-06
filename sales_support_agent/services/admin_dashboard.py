@@ -1510,6 +1510,11 @@ def build_executive_data(
         ],
     )
 
+    # NOTE: this counts `lead_records`, the attention queue — leads with no
+    # assessment and routine follow_up_due ones are skipped above. So the
+    # headline "N active leads are currently tracked" reports leads needing
+    # attention, not the active pipeline (len(active_leads)). Behaviour is
+    # preserved deliberately; changing the KPI's meaning is a product call.
     total_active_leads = len(lead_records)
     overdue_count = sum(1 for item in lead_records if item.urgency == "overdue")
     review_count = sum(1 for item in lead_records if item.urgency == "needs_immediate_review")
