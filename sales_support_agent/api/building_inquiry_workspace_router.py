@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 
 from sales_support_agent.models.database import session_scope
@@ -26,9 +27,13 @@ from sales_support_agent.services.building_inquiry_workspace import (
 from sales_support_agent.services.building_lead_intake import prefill_event_interview
 from sales_support_agent.services.building_public_availability import candidate_date_availability
 from sales_support_agent.integrations.building_google_calendar import BuildingGoogleCalendarClient
-from sales_support_agent.services.building_security import csrf_token
+from sales_support_agent.services.building_security import (
+    csrf_token,
+    require_building_form_security,
+)
 
 
+FORM_DEPS = [Depends(require_building_form_security)]
 router = APIRouter(
     prefix="/admin/building/inquiries",
     tags=["building-inquiry-workspace"],
@@ -115,6 +120,15 @@ def inquiry_workspace(
             .order_by(BuildingAuditEvent.created_at.desc())
             .limit(100)
         ).scalars().all()
+        contact_options = [] if contact is not None else [
+            {"id": row.id, "label": f"{row.full_name or row.email} · {row.email}"}
+            for row in session.execute(
+                select(BuildingContact)
+                .where(BuildingContact.status == "active")
+                .order_by(BuildingContact.full_name, BuildingContact.email)
+                .limit(500)
+            ).scalars().all()
+        ]
         rate_plan_rows = session.execute(
             select(BuildingRatePlan)
             .where(BuildingRatePlan.status == "approved")
@@ -161,6 +175,7 @@ def inquiry_workspace(
                 "email": contact.email,
                 "phone": contact.phone or "",
             } if contact is not None else {},
+            "contact_options": contact_options,
             "rate_plans": [
                 {
                     "name": row.name,
@@ -198,4 +213,67 @@ def inquiry_workspace(
             error=error,
         ),
         headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@router.post("/{inquiry_id}/link-contact", dependencies=FORM_DEPS)
+def link_existing_contact(
+    inquiry_id: str,
+    request: Request,
+    contact_id: str = Form(...),
+    user: dict = Depends(require_tool("building.crm.manage")),
+) -> RedirectResponse:
+    """Attach an existing customer to this lead.
+
+    Only the relationship is written. The saved contact's name, email, phone,
+    and company are left exactly as they are — the control-room contact form
+    overwrites those fields, so linking deliberately does not go through it.
+    """
+
+    target = f"/admin/building/inquiries/{inquiry_id}"
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        contact = session.get(BuildingContact, contact_id.strip())
+        if contact is None:
+            return RedirectResponse(
+                f"{target}?error=That+customer+no+longer+exists.", status_code=303
+            )
+        reference = f"inquiry:{inquiry.id}"
+        existing = session.execute(
+            select(BuildingRelationship).where(
+                BuildingRelationship.source_reference == reference,
+                BuildingRelationship.status == "active",
+            )
+        ).scalars().first()
+        if existing is not None:
+            if existing.contact_id == contact.id:
+                return RedirectResponse(
+                    f"{target}?notice=That+customer+is+already+linked.", status_code=303
+                )
+            return RedirectResponse(
+                f"{target}?error=This+lead+is+already+linked+to+another+customer.",
+                status_code=303,
+            )
+        session.add(BuildingRelationship(
+            id=str(uuid4()),
+            contact_id=contact.id,
+            relationship_type="prospect",
+            status="active",
+            source_reference=reference,
+        ))
+        session.add(BuildingAuditEvent(
+            entity_type="inquiry",
+            entity_id=inquiry.id,
+            action="inquiry_contact_linked",
+            actor=str(user.get("email") or "building-operator"),
+            after_json={
+                "contact_id": contact.id,
+                "created_contact": False,
+                "contact_details_modified": False,
+            },
+        ))
+    return RedirectResponse(
+        f"{target}?notice=Customer+linked+to+this+lead.", status_code=303
     )

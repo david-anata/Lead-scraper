@@ -291,6 +291,29 @@ def render_inquiry_workspace(
         + optional_blocks
         + "</details>"
     )
+    contact_options = list(data.get("contact_options") or [])
+    if contact_options:
+        options = "".join(
+            f'<option value="{_esc(item.get("id"))}">{_esc(item.get("label"))}</option>'
+            for item in contact_options
+        )
+        # A dedicated link action: it writes the relationship only, so an
+        # existing customer's saved details are never overwritten.
+        link_existing_block = (
+            f'<form class="lead-interview" method="post" action="/admin/building/inquiries/{_esc(data.get("id"))}/link-contact">'
+            f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+            '<div class="lead-interview__grid" style="padding:0 20px">'
+            f'<label style="grid-column:1/-1">Existing customer<select name="contact_id" required>'
+            '<option value="">Choose a saved customer…</option>'
+            f'{options}</select></label></div>'
+            '<div class="lead-interview__save" style="padding:0 20px 16px">'
+            '<button class="lead-button lead-button--primary" type="submit">Link this customer</button>'
+            "<span>Links only. Their saved details are not changed.</span>"
+            "</div></form>"
+            '<p style="padding:0 20px;color:var(--agent-ink-muted);font-size:13px">Or add a new customer:</p>'
+        )
+    else:
+        link_existing_block = ""
     contact = dict(data.get("contact") or {})
     if contact:
         customer_section = (
@@ -308,8 +331,9 @@ def render_inquiry_workspace(
         # is a confirmation rather than re-typing what the customer already sent.
         customer_section = (
             '<section class="lead-panel"><div class="lead-panel__head"><div>'
-            "<h2>Customer record</h2><p>No saved customer yet. Save one to attach "
-            "quotes, contracts, and billing to this person.</p></div></div>"
+            "<h2>Customer record</h2><p>No saved customer yet. Link an existing "
+            "customer, or add a new one.</p></div></div>"
+            + link_existing_block +
             '<form class="lead-interview" method="post" action="/admin/building/contacts">'
             f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
             f'<input type="hidden" name="source_reference" value="inquiry:{_esc(data.get("id"))}">'
