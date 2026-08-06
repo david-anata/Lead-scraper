@@ -34,6 +34,7 @@ class BuildingLeadFollowUpTests(unittest.TestCase):
         )
         cls.factory = create_session_factory("sqlite:///" + path)
         init_database(cls.factory)
+        cls.original_session_factory = app.state.session_factory
         app.state.session_factory = cls.factory
         cls.original_settings = app.state.settings
         app.state.settings = dataclasses.replace(
@@ -98,6 +99,10 @@ class BuildingLeadFollowUpTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         app.state.settings = cls.original_settings
+        # Restore the shared factory too. Leaving it pointed at this class's
+        # database made later files run against the wrong one — reproducible on
+        # main as `pytest test_building_lead_follow_up.py test_hr_section.py`.
+        app.state.session_factory = cls.original_session_factory
 
     def test_job_is_authenticated_previewable_and_idempotent(self) -> None:
         denied = self.client.post("/api/jobs/building-leads/run", json={})
