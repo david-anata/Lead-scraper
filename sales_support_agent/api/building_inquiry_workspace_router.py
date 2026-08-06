@@ -13,6 +13,7 @@ from sales_support_agent.models.entities import (
     BuildingAuditEvent,
     BuildingContact,
     BuildingInquiry,
+    BuildingRatePlan,
     BuildingRelationship,
     BuildingReservation,
 )
@@ -114,6 +115,11 @@ def inquiry_workspace(
             .order_by(BuildingAuditEvent.created_at.desc())
             .limit(100)
         ).scalars().all()
+        rate_plan_rows = session.execute(
+            select(BuildingRatePlan)
+            .where(BuildingRatePlan.status == "approved")
+            .order_by(BuildingRatePlan.name, BuildingRatePlan.version.desc())
+        ).scalars().all()
         payload = dict(inquiry.payload_json or {})
         public_details = {
             key: value for key, value in payload.items() if not str(key).startswith("_")
@@ -149,6 +155,26 @@ def inquiry_workspace(
             "customer_receipt": dict(payload.get("_customer_receipt") or {}),
             "follow_up_sequence": list(payload.get("_follow_up_sequence") or []),
             "reservation_id": reservation.id if reservation else "",
+            "contact": {
+                "id": contact.id,
+                "full_name": contact.full_name,
+                "email": contact.email,
+                "phone": contact.phone or "",
+            } if contact is not None else {},
+            "rate_plans": [
+                {
+                    "name": row.name,
+                    "version": row.version,
+                    "currency": row.currency,
+                    "unit_amount_cents": row.unit_amount_cents,
+                    "public_price_display": row.public_price_display,
+                    "booking_unit": row.booking_unit,
+                    "deposit_type": row.deposit_type,
+                    "deposit_amount_cents": row.deposit_amount_cents,
+                    "deposit_percent_bps": row.deposit_percent_bps,
+                }
+                for row in rate_plan_rows
+            ],
             "is_test": is_test_inquiry(
                 name=inquiry.name,
                 email=inquiry.email,
