@@ -28,6 +28,7 @@ from sales_support_agent.services.admin_nav import (
     render_agent_nav_styles,
 )
 from sales_support_agent.services.sales import hubspot_links
+from sales_support_agent.services.sales.security import csrf_token
 
 
 def _esc(value: object) -> str:
@@ -379,6 +380,7 @@ def render_deal_board_page(
     show_my: bool = False,
     portal_id: str = "",
 ) -> str:
+    _csrf = csrf_token(user)
     as_of = as_of or datetime.now(timezone.utc)
     styles = _STYLES.replace("__NAV__", render_agent_nav_styles())
 
@@ -496,6 +498,7 @@ def render_deal_board_page(
             <a href="/admin/sales/deals?my=1" class="tab{my_active}">My deals</a>
           </div>
           <form method="post" action="/admin/sales/deals/sync" style="margin:0">
+            <input type="hidden" name="_csrf_token" value="{_csrf}">
             <button type="submit" onclick="this.textContent='Syncing…';this.disabled=true">Sync now</button>
           </form>
           <a href="/admin/sales/deals/cleanup" class="cleanup-link">Review HubSpot fixes -></a>
