@@ -108,3 +108,66 @@ class ContractDocsClientTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContractDocsPreflightTests(unittest.TestCase):
+    """Configuration being set is not the same as access being granted."""
+
+    def _client(self) -> BuildingContractDocsClient:
+        return BuildingContractDocsClient(
+            service_account_json='{"client_email": "agent@proj.iam.gserviceaccount.com"}',
+            template_document_id="tpl", drive_folder_id="folder",
+        )
+
+    def test_it_names_the_account_to_share_with(self) -> None:
+        self.assertEqual(
+            self._client().service_account_email,
+            "agent@proj.iam.gserviceaccount.com",
+        )
+
+    def test_an_unshared_template_is_reported_with_the_address(self) -> None:
+        class _Resp:
+            def __init__(self, code): self.status_code = code
+            def json(self): return {}
+        class _Session:
+            def get(self, url, **kwargs): return _Resp(404)
+        client = self._client()
+        with mock.patch.object(client, "_authorized_session", return_value=_Session()):
+            report = client.preflight()
+        self.assertFalse(report["template_readable"])
+        self.assertFalse(report["folder_writable"])
+        joined = " ".join(report["problems"])
+        self.assertIn("agent@proj.iam.gserviceaccount.com", joined)
+        self.assertIn("template", joined.lower())
+
+    def test_a_readable_folder_without_write_access_is_distinguished(self) -> None:
+        class _Resp:
+            def __init__(self, payload): self.status_code = 200; self._p = payload
+            def json(self): return self._p
+        class _Session:
+            def get(self, url, **kwargs):
+                if "tpl" in url:
+                    return _Resp({"id": "tpl"})
+                return _Resp({"id": "folder", "capabilities": {"canAddChildren": False}})
+        client = self._client()
+        with mock.patch.object(client, "_authorized_session", return_value=_Session()):
+            report = client.preflight()
+        self.assertTrue(report["template_readable"])
+        self.assertFalse(report["folder_writable"])
+        self.assertIn("Editor", " ".join(report["problems"]))
+
+    def test_everything_shared_reports_no_problems(self) -> None:
+        class _Resp:
+            def __init__(self, payload): self.status_code = 200; self._p = payload
+            def json(self): return self._p
+        class _Session:
+            def get(self, url, **kwargs):
+                if "tpl" in url:
+                    return _Resp({"id": "tpl"})
+                return _Resp({"id": "folder", "capabilities": {"canAddChildren": True}})
+        client = self._client()
+        with mock.patch.object(client, "_authorized_session", return_value=_Session()):
+            report = client.preflight()
+        self.assertTrue(report["template_readable"])
+        self.assertTrue(report["folder_writable"])
+        self.assertEqual(report["problems"], [])

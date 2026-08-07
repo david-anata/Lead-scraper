@@ -9,6 +9,8 @@ signature request, invoice, payment object, or booking confirmation.
 
 from __future__ import annotations
 
+import logging
+
 from typing import Any, Literal
 from urllib.parse import urlencode
 from uuid import uuid4
@@ -77,6 +79,7 @@ from sales_support_agent.services.building_security import (
 from sales_support_agent.services.ui_shell import render_transition_document
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/building/contracts", tags=["building-contracts"])
 FORM_DEPS = [Depends(require_building_form_security)]
 
@@ -149,6 +152,26 @@ def _detail_redirect(
     return _redirect(
         f"{CONTRACTS_URL}/{agreement_id}", notice=notice, error=error
     )
+
+
+def _contract_docs_blocker() -> str:
+    """One sentence naming what stops a contract Doc being created, if anything.
+
+    Configuration being set is not the same as access being granted, so this
+    asks Google rather than assuming, and names the account to share with.
+    """
+
+    client = BuildingContractDocsClient()
+    if not client.configured:
+        return client.readiness_error
+    try:
+        report = client.preflight()
+    except BuildingGoogleDocsError as exc:
+        return str(exc)
+    except Exception as exc:  # noqa: BLE001 — a broken check must not break the page
+        logger.exception("Contract Docs preflight failed")
+        return f"Could not reach Google Drive: {exc}"
+    return " ".join(report["problems"])
 
 
 @router.get("", response_class=HTMLResponse)
@@ -721,7 +744,7 @@ def contract_detail(
         can_prepare_signature=_may(user, "building.agreements.prepare"),
         can_prepare_payment=_may(user, "building.payments.prepare"),
         google_doc_url=str(contract.get("document_url") or ""),
-        google_doc_error=BuildingContractDocsClient().readiness_error,
+        google_doc_error=_contract_docs_blocker(),
         can_manage=_may(user, "building.manage"),
         csrf_token=csrf_token(user),
         notice=notice,
