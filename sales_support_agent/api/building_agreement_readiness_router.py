@@ -46,7 +46,7 @@ from sales_support_agent.services.building_contract_templates import (
     merge_fields_for,
     normalize_clauses,
     render_document_text,
-    unresolved_fields,
+    missing_merge_fields,
     validate_template_content,
 )
 from sales_support_agent.services.building_contracts import (
@@ -585,12 +585,17 @@ def prepare_agreement_package(
                 clauses=template.clauses_json or [],
                 merge_values=selected_merge_values,
             )
-            if unresolved_fields(document_text):
+            gaps = missing_merge_fields(
+                body_markdown=template.body_markdown or "",
+                clauses=template.clauses_json or [],
+                merge_values=selected_merge_values,
+            )
+            if gaps:
                 raise HTTPException(
                     status_code=409,
                     detail=(
                         "The template uses merge fields this booking cannot "
-                        "supply. Resolve the missing values or approve a "
+                        f"supply: {', '.join(gaps)}. Resolve them or approve a "
                         "template version that does not require them."
                     ),
                 )

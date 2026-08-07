@@ -272,9 +272,34 @@ def document_checksum(text: str) -> str:
 
 
 def unresolved_fields(text: str) -> bool:
-    """True when the rendered document still contains a missing value."""
+    """True when the rendered document still contains a missing value.
+
+    Kept for callers that only have the text. Prefer
+    :func:`missing_merge_fields`, which distinguishes a field the booking cannot
+    supply from one it supplies as empty. "[not provided]" is also the display
+    convention for a legitimately empty answer, so scanning for it treats every
+    undiscounted booking as incomplete.
+    """
 
     return "[not provided]" in text
+
+
+def missing_merge_fields(
+    *,
+    body_markdown: str,
+    clauses: Iterable[dict[str, str]],
+    merge_values: dict[str, Any],
+) -> list[str]:
+    """Return tokens the booking cannot supply at all.
+
+    A field present with an empty value is an answer — no discount, no add-ons —
+    and is not reported here.
+    """
+
+    clause_list = normalize_clauses(clauses)
+    sources = [str(body_markdown or "")]
+    sources += [c["title"] for c in clause_list] + [c["body"] for c in clause_list]
+    return [token for token in tokens_used(*sources) if token not in merge_values]
 
 
 def render_document_html(text: str) -> str:
