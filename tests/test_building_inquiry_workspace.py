@@ -27,7 +27,9 @@ from sales_support_agent.models.entities import (
     BuildingContact,
     BuildingInquiry,
     BuildingRelationship,
+    BuildingOffering,
     BuildingReservation,
+    BuildingSpace,
 )
 from sales_support_agent.services.admin_auth import create_user_session_token
 
@@ -441,3 +443,98 @@ class InquiryContactLinkingTests(unittest.TestCase):
         )
         self.assertEqual(second.status_code, 303, second.text)
         self.assertIn("error=", second.headers["location"])
+
+
+class LeadPricingRouteTests(unittest.TestCase):
+    """Pricing set on one lead must not reach the standard or another lead."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        path = os.path.join(tempfile.gettempdir(), f"lead_pricing_{uuid.uuid4().hex}.db")
+        cls.factory = create_session_factory("sqlite:///" + path)
+        init_database(cls.factory)
+        cls.original_session_factory = app.state.session_factory
+        cls.original_settings = app.state.settings
+        app.state.session_factory = cls.factory
+        app.state.settings = dataclasses.replace(
+            app.state.settings, building_campaign_token_secret="inquiry-workspace-csrf"
+        )
+        cls.client = TestClient(app)
+        cls.client.cookies.set(
+            app.state.agent_settings.admin_cookie_name,
+            create_user_session_token(
+                app.state.agent_settings, email="david@anatainc.com",
+                name="David", role="admin",
+            ),
+        )
+        from sales_support_agent.models.entities import BuildingRatePlan
+        from datetime import date as _date
+        with cls.factory() as session:
+            session.add(BuildingOffering(
+                id="off", slug="off", name="Event", offering_type="event", space_id="sp"))
+            session.add(BuildingSpace(
+                id="sp", slug="sp", name="Arena", space_type="event",
+                capacity=200, status="available"))
+            session.add(BuildingRatePlan(
+                id="plan-v1", offering_id="off", version=1, name="Standard",
+                status="approved", currency="USD", unit_amount_cents=17_500,
+                minimum_units=6, deposit_type="percent", deposit_percent_bps=5_000,
+                effective_from=_date.today()))
+            for ident in ("lead-a", "lead-b"):
+                session.add(BuildingInquiry(
+                    id=ident, idempotency_key=f"{ident}-key", kind="event",
+                    name=ident, email=f"{ident}@example.com",
+                    payload_json={"_lifecycle": {"stage": "responded"}}))
+            session.commit()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        app.state.session_factory = cls.original_session_factory
+        app.state.settings = cls.original_settings
+
+    def _csrf(self, lead: str) -> str:
+        page = self.client.get(f"/admin/building/inquiries/{lead}")
+        match = re.search(r'name="_csrf_token" value="([^"]+)"', page.text)
+        self.assertIsNotNone(match)
+        return match.group(1)
+
+    def test_a_lead_opens_seeded_from_the_standard_rate(self) -> None:
+        page = self.client.get("/admin/building/inquiries/lead-a")
+        self.assertIn("Pricing for this event", page.text)
+        self.assertIn("175.00", page.text)
+
+    def test_changing_one_lead_leaves_the_standard_and_other_leads_alone(self) -> None:
+        from sales_support_agent.models.entities import BuildingRatePlan
+        response = self.client.post(
+            "/admin/building/inquiries/lead-a/pricing",
+            headers={"Origin": "http://testserver", "Sec-Fetch-Mode": "navigate"},
+            follow_redirects=False,
+            data={"_csrf_token": self._csrf("lead-a"), "hourly_rate": "200",
+                  "hours": "8", "cleaning_fee": "250", "discount": "100",
+                  "discount_reason": "Repeat customer", "deposit_percent": "25"},
+        )
+        self.assertEqual(response.status_code, 303, response.text)
+        self.assertIn("notice=", response.headers["location"])
+
+        with self.factory() as session:
+            priced = session.get(BuildingInquiry, "lead-a").payload_json["_pricing"]
+            self.assertEqual(priced["hourly_rate_cents"], 20_000)
+            self.assertEqual(priced["discount_reason"], "Repeat customer")
+            # The standard is untouched.
+            self.assertEqual(
+                session.get(BuildingRatePlan, "plan-v1").unit_amount_cents, 17_500)
+            # And so is every other lead.
+            self.assertEqual(
+                session.get(BuildingInquiry, "lead-b").payload_json.get("_pricing"), None)
+
+    def test_a_discount_without_a_reason_is_refused(self) -> None:
+        response = self.client.post(
+            "/admin/building/inquiries/lead-b/pricing",
+            headers={"Origin": "http://testserver", "Sec-Fetch-Mode": "navigate"},
+            follow_redirects=False,
+            data={"_csrf_token": self._csrf("lead-b"), "hourly_rate": "175",
+                  "hours": "6", "cleaning_fee": "250", "discount": "500",
+                  "discount_reason": "", "deposit_percent": "50"},
+        )
+        self.assertEqual(response.status_code, 303, response.text)
+        self.assertIn("error=", response.headers["location"])
