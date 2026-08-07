@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from urllib.parse import quote_plus
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
@@ -25,6 +26,12 @@ from sales_support_agent.services.building_inquiry_workspace import (
     render_inquiry_workspace,
 )
 from sales_support_agent.services.building_lead_intake import prefill_event_interview
+from sales_support_agent.services.building_lead_pricing import (
+    LeadPricingError,
+    compute_totals,
+    default_pricing,
+    parse_pricing_form,
+)
 from sales_support_agent.services.building_public_availability import candidate_date_availability
 from sales_support_agent.integrations.building_google_calendar import BuildingGoogleCalendarClient
 from sales_support_agent.services.building_security import (
@@ -135,6 +142,15 @@ def inquiry_workspace(
             .order_by(BuildingRatePlan.name, BuildingRatePlan.version.desc())
         ).scalars().all()
         payload = dict(inquiry.payload_json or {})
+        stored_pricing = dict(payload.get("_pricing") or {})
+        if not stored_pricing:
+            plan = rate_plan_rows[0] if rate_plan_rows else None
+            stored_pricing = default_pricing({
+                "id": plan.id, "name": plan.name, "currency": plan.currency,
+                "unit_amount_cents": plan.unit_amount_cents,
+                "minimum_units": plan.minimum_units,
+                "deposit_percent_bps": plan.deposit_percent_bps,
+            } if plan is not None else None)
         public_details = {
             key: value for key, value in payload.items() if not str(key).startswith("_")
         }
@@ -176,6 +192,8 @@ def inquiry_workspace(
                 "phone": contact.phone or "",
             } if contact is not None else {},
             "contact_options": contact_options,
+            "pricing": stored_pricing,
+            "pricing_totals": compute_totals(stored_pricing),
             "rate_plans": [
                 {
                     "name": row.name,
@@ -276,4 +294,58 @@ def link_existing_contact(
         ))
     return RedirectResponse(
         f"{target}?notice=Customer+linked+to+this+lead.", status_code=303
+    )
+
+
+@router.post("/{inquiry_id}/pricing", dependencies=FORM_DEPS)
+async def save_lead_pricing(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Save pricing for this lead only.
+
+    Never writes to the rate plan, so the standard rate and every other lead are
+    untouched. Deliberately editable at any stage; each generated contract keeps
+    its own copy of the numbers it was built from.
+    """
+
+    target = f"/admin/building/inquiries/{inquiry_id}"
+    form = await request.form()
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        payload = dict(inquiry.payload_json or {})
+        try:
+            pricing = parse_pricing_form(
+                form,
+                existing=dict(payload.get("_pricing") or {}) or default_pricing(None),
+                actor=str(user.get("email") or "building-operator"),
+            )
+        except LeadPricingError as exc:
+            return RedirectResponse(
+                f"{target}?error={quote_plus(str(exc))}", status_code=303
+            )
+        before = dict(payload.get("_pricing") or {})
+        payload["_pricing"] = pricing
+        inquiry.payload_json = payload
+        inquiry.updated_at = datetime.now(timezone.utc)
+        session.add(inquiry)
+        totals = compute_totals(pricing)
+        session.add(BuildingAuditEvent(
+            entity_type="inquiry",
+            entity_id=inquiry.id,
+            action="lead_pricing_updated",
+            actor=str(user.get("email") or "building-operator"),
+            before_json={"total_cents": compute_totals(before)["total_cents"]} if before else {},
+            after_json={
+                "total_cents": totals["total_cents"],
+                "deposit_cents": totals["deposit_cents"],
+                "rate_plan_changed": False,
+                "customer_contacted": False,
+            },
+        ))
+    return RedirectResponse(
+        f"{target}?notice=Pricing+saved+for+this+lead+only.", status_code=303
     )
