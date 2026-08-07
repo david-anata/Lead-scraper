@@ -122,6 +122,71 @@ class BuildingContractDocsClient:
             )
         return response.json() if response.content else {}
 
+    @property
+    def service_account_email(self) -> str:
+        """The identity that must be shared on the template and folder.
+
+        An address, not a secret. Surfacing it turns "permission denied" into
+        "share with this account", which is the actual fix.
+        """
+
+        try:
+            return str(json.loads(self.service_account_json).get("client_email") or "")
+        except (json.JSONDecodeError, TypeError):
+            return ""
+
+    def preflight(self) -> dict[str, Any]:
+        """Check the template and folder are actually reachable.
+
+        Configuration being present is not the same as access being granted, and
+        a service account starts with access to nothing. Reports which of the two
+        is missing rather than failing later inside a copy.
+        """
+
+        report: dict[str, Any] = {
+            "configured": self.configured,
+            "service_account_email": self.service_account_email,
+            "template_readable": False,
+            "folder_writable": False,
+            "problems": [],
+        }
+        if not self.configured:
+            report["problems"].append(self.readiness_error)
+            return report
+        session = self._authorized_session()
+        template = session.get(
+            f"{DRIVE_API}/files/{self.template_document_id}",
+            params={"fields": "id,name", "supportsAllDrives": "true"},
+            timeout=20,
+        )
+        if template.status_code < 400:
+            report["template_readable"] = True
+        else:
+            report["problems"].append(
+                f"The template Doc is not shared with {self.service_account_email or 'the service account'} "
+                "(Viewer is enough)."
+            )
+        folder = session.get(
+            f"{DRIVE_API}/files/{self.drive_folder_id}",
+            params={"fields": "id,name,capabilities/canAddChildren",
+                    "supportsAllDrives": "true"},
+            timeout=20,
+        )
+        if folder.status_code < 400:
+            if (folder.json().get("capabilities") or {}).get("canAddChildren"):
+                report["folder_writable"] = True
+            else:
+                report["problems"].append(
+                    f"{self.service_account_email or 'The service account'} can see the "
+                    "contracts folder but cannot add files to it. Give it Editor."
+                )
+        else:
+            report["problems"].append(
+                f"The contracts folder is not shared with {self.service_account_email or 'the service account'} "
+                "(Editor is required)."
+            )
+        return report
+
     def template_placeholders(self) -> list[str]:
         """Return the placeholder names the template actually uses.
 
