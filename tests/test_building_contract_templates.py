@@ -39,6 +39,7 @@ try:
     )
     from sales_support_agent.services.building_contract_templates import (
         TemplateValidationError,
+        missing_merge_fields,
         document_checksum,
         render_document_text,
         validate_template_content,
@@ -461,3 +462,34 @@ class ContractTemplateEditorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class EmptyValueIsAnAnswerTests(unittest.TestCase):
+    """An empty answer must not read as a missing field.
+
+    Every booking without a discount supplies discount_reason="". Treating that
+    as a gap made the readiness guard refuse to prepare a contract for it.
+    """
+
+    def test_an_empty_answer_is_not_reported_as_a_gap(self) -> None:
+        # Every undiscounted booking supplies discount_reason="". Reporting it
+        # as missing blocked those bookings from producing a contract at all.
+        self.assertEqual(
+            missing_merge_fields(
+                body_markdown="Discount reason: {{discount_reason}}. Add-ons: {{addons}}.",
+                clauses=[],
+                merge_values={"discount_reason": "", "addons": []},
+            ),
+            [],
+        )
+
+    def test_a_field_the_booking_cannot_supply_is_named(self) -> None:
+        self.assertEqual(
+            missing_merge_fields(
+                body_markdown="Signer: {{customer_name}} for {{event_space}}.",
+                clauses=[],
+                merge_values={"customer_name": "Rosa"},
+            ),
+            ["event_space"],
+        )

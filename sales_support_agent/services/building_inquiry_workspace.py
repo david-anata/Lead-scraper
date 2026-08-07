@@ -354,16 +354,21 @@ def render_inquiry_workspace(
     if rate_plans:
         rows = ""
         for plan in rate_plans:
-            price = plan.get("public_price_display") or (
+            # A public price display usually already states its unit ("$175 per
+            # venue hour"), so only add the booking unit when it does not.
+            display = str(plan.get("public_price_display") or "").strip()
+            price = display or (
                 f"{plan.get('currency', 'USD')} "
                 f"{int(plan.get('unit_amount_cents') or 0) / 100:,.2f}"
             )
+            unit = "" if display else f"per {plan.get('booking_unit') or 'booking'}"
             rows += (
                 "<tr>"
                 f"<td>{_esc(plan.get('name'))}"
                 f'<span class="lead-activity__meta">v{_esc(plan.get("version"))}</span></td>'
                 f"<td>{_esc(price)}"
-                f'<span class="lead-activity__meta">per {_esc(plan.get("booking_unit") or "booking")}</span></td>'
+                + (f'<span class="lead-activity__meta">{_esc(unit)}</span>' if unit else "")
+                + "</td>"
                 f"<td>{_esc(_deposit_label(plan))}</td>"
                 "</tr>"
             )
