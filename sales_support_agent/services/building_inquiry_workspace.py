@@ -494,15 +494,8 @@ def render_inquiry_workspace(
             <div class="lead-interview__save"><button class="lead-button lead-button--primary" type="submit">Hold this date</button><span>Conflict-checked, held seven days, and freezes a quote. Nothing is sent.</span></div>
           </form>
         </section>'''
-        if data.get("kind") == "event" and stage == "qualified" and not data.get("reservation_id")
-        else (
-            '<section class="lead-panel" id="date-review"><div class="lead-panel__head"><div>'
-            "<h2>Date review</h2><p>Qualify this lead first — the six answers under "
-            "<strong>Needed to qualify</strong> — and the date tools appear here.</p>"
-            "</div></div></section>"
-            if data.get("kind") == "event" and not data.get("reservation_id")
-            else ""
-        )
+        if data.get("kind") == "event" and not data.get("reservation_id")
+        else ""
     )
     activity_rows = "".join(
         f"<li><time>{_esc(_when(item.get('created_at')))}</time><div><strong>{_esc(str(item.get('action') or 'updated').replace('_', ' ').title())}</strong><span>{_esc(item.get('actor') or 'System')}</span></div></li>"

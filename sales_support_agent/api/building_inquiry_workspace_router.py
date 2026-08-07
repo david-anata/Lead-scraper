@@ -396,13 +396,15 @@ def create_contract_from_lead(
         ).scalars().first()
         if reservation is None:
             return RedirectResponse(
-                f"{target}?error={quote_plus('Review an event date for this lead first; a contract needs a booking to attach to.')}",
+                f"{target}?error={quote_plus('Hold the date first — use Take this date under Date review on this page. A contract attaches to a held date.')}"
+                "#date-review",
                 status_code=303,
             )
         pricing = dict((inquiry.payload_json or {}).get("_pricing") or {})
         if not pricing:
             return RedirectResponse(
-                f"{target}?error={quote_plus('Save the pricing for this lead first.')}",
+                f"{target}?error={quote_plus('Save the pricing first — use Pricing for this event on this page.')}"
+                "#lead-pricing",
                 status_code=303,
             )
         quote = sync_quote_from_lead_pricing(

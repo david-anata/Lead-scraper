@@ -233,7 +233,9 @@ class LeadToContractTests(unittest.TestCase):
         )
         self.assertEqual(blocked.status_code, 303, blocked.text)
         self.assertIn("error=", blocked.headers["location"])
-        self.assertIn("event", blocked.headers["location"].lower())
+        # The message must name the control on this page, not a screen elsewhere.
+        self.assertIn("take+this+date", blocked.headers["location"].lower())
+        self.assertIn("#date-review", blocked.headers["location"])
 
     def test_04_a_qualified_lead_can_take_its_own_date(self) -> None:
         """The whole point: no detour to a booking screen to hold a date."""
@@ -311,6 +313,21 @@ class LeadToContractTests(unittest.TestCase):
         )
         self.assertEqual(refused.status_code, 303, refused.text)
         self.assertIn("error=", refused.headers["location"])
+
+    def test_06_an_unqualified_lead_can_still_take_its_date(self) -> None:
+        """The date panel used to render only for qualified leads, so the one
+        control that unblocks a contract was invisible on most leads."""
+        with self.factory() as session:
+            session.add(BuildingInquiry(
+                id="lead-5", idempotency_key="lead-5-key", kind="event",
+                name="Not Yet Qualified", email="new@example.com",
+                payload_json={"_lifecycle": {"stage": "new"}},
+            ))
+            session.commit()
+        page = self.client.get("/admin/building/inquiries/lead-5")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Take this date", page.text)
+        self.assertIn("Date review", page.text)
 
 
 if __name__ == "__main__":
