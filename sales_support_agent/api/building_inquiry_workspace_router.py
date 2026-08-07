@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from typing import Optional
+from zoneinfo import ZoneInfo
 from urllib.parse import quote_plus
 from uuid import uuid4
 
@@ -17,6 +19,7 @@ from sales_support_agent.models.entities import (
     BuildingAuditEvent,
     BuildingContact,
     BuildingInquiry,
+    BuildingOffering,
     BuildingRatePlan,
     BuildingRelationship,
     BuildingReservation,
@@ -30,6 +33,10 @@ from sales_support_agent.services.building_inquiry_workspace import (
 from sales_support_agent.services.building_lead_intake import prefill_event_interview
 from pydantic import ValidationError
 
+from sales_support_agent.api.building_booking_router import (
+    EventReviewInput,
+    create_event_review,
+)
 from sales_support_agent.api.building_agreement_readiness_router import (
     AgreementPackageInput,
     prepare_agreement_package,
@@ -51,6 +58,7 @@ from sales_support_agent.services.building_security import (
 )
 
 
+MOUNTAIN = ZoneInfo("America/Denver")
 FORM_DEPS = [Depends(require_building_form_security)]
 router = APIRouter(
     prefix="/admin/building/inquiries",
@@ -388,13 +396,15 @@ def create_contract_from_lead(
         ).scalars().first()
         if reservation is None:
             return RedirectResponse(
-                f"{target}?error={quote_plus('Review an event date for this lead first; a contract needs a booking to attach to.')}",
+                f"{target}?error={quote_plus('Hold the date first — use Take this date under Date review on this page. A contract attaches to a held date.')}"
+                "#date-review",
                 status_code=303,
             )
         pricing = dict((inquiry.payload_json or {}).get("_pricing") or {})
         if not pricing:
             return RedirectResponse(
-                f"{target}?error={quote_plus('Save the pricing for this lead first.')}",
+                f"{target}?error={quote_plus('Save the pricing first — use Pricing for this event on this page.')}"
+                "#lead-pricing",
                 status_code=303,
             )
         quote = sync_quote_from_lead_pricing(
@@ -473,3 +483,118 @@ def _internal_api_key(request: Request) -> str:
     if not key:
         raise HTTPException(status_code=503, detail="Internal API is not configured.")
     return key
+
+
+@router.post("/{inquiry_id}/hold-date", dependencies=FORM_DEPS)
+async def hold_date_from_lead(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.events.manage")),
+) -> RedirectResponse:
+    """Take the date for this lead without leaving it.
+
+    Creates the authoritative access window and its frozen quote through the
+    same conflict-checked path the booking workspace uses, so nothing about how
+    a hold is made changes — only where it can be started.
+    """
+
+    target = f"/admin/building/inquiries/{inquiry_id}"
+    actor = str(user.get("email") or "building-operator")
+    form = await request.form()
+
+    def fail(message: str) -> RedirectResponse:
+        return RedirectResponse(f"{target}?error={quote_plus(message)}", status_code=303)
+
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        if inquiry.kind != "event":
+            return fail("Only event inquiries take a date this way.")
+        existing = session.execute(
+            select(BuildingReservation).where(
+                BuildingReservation.inquiry_id == inquiry.id
+            )
+        ).scalars().first()
+        if existing is not None:
+            return fail("This lead already has a booking.")
+        relationship = session.execute(
+            select(BuildingRelationship).where(
+                BuildingRelationship.source_reference == f"inquiry:{inquiry.id}"
+            )
+        ).scalars().first()
+        if relationship is None:
+            return fail("Link or create the customer on this lead first.")
+        contact_id = relationship.contact_id
+        offering = session.execute(
+            select(BuildingOffering)
+            .where(BuildingOffering.offering_type == "event")
+            .order_by(BuildingOffering.name)
+        ).scalars().first()
+        if offering is None:
+            return fail("No event offering exists to book against.")
+        offering_id, space_id = offering.id, offering.space_id
+        pricing = dict((inquiry.payload_json or {}).get("_pricing") or {})
+        interview = dict((inquiry.payload_json or {}).get("_event_interview") or {})
+        assigned_owner = str(inquiry.assigned_owner or "").strip()
+
+    def _at(field: str) -> Optional[datetime]:
+        raw = str(form.get(field) or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=MOUNTAIN)
+
+    setup = _at("setup_starts_at")
+    guest_start = _at("guest_starts_at")
+    guest_end = _at("guest_ends_at")
+    teardown = _at("teardown_ends_at")
+    if not all((setup, guest_start, guest_end, teardown)):
+        return fail("Give the full window: setup, guests in, guests out, teardown.")
+    if not setup <= guest_start < guest_end <= teardown:
+        return fail("The window must run setup, guests in, guests out, teardown in order.")
+
+    try:
+        attendance = int(str(form.get("attendance") or "0").strip() or 0)
+    except ValueError:
+        return fail("Attendance must be a whole number.")
+    if attendance < 1:
+        attendance = int(str(interview.get("attendance") or "0").split()[0] or 0) or 1
+
+    hours = max(1, int(pricing.get("hours") or 1))
+    try:
+        result = create_event_review(
+            EventReviewInput(
+                inquiry_id=inquiry_id,
+                reservation_id=f"event-{uuid4().hex[:12]}",
+                space_id=space_id,
+                offering_id=offering_id,
+                contact_id=contact_id,
+                setup_starts_at=setup.astimezone(timezone.utc),
+                guest_starts_at=guest_start.astimezone(timezone.utc),
+                guest_ends_at=guest_end.astimezone(timezone.utc),
+                teardown_ends_at=teardown.astimezone(timezone.utc),
+                hold_expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+                attendance=attendance,
+                units=hours,
+                addons=[],
+                terms_summary=(
+                    f"{hours} hour booking held from this lead by {actor}."
+                ),
+                assigned_owner=assigned_owner or actor,
+                actor=actor,
+            ),
+            request,
+            f"lead-hold-{uuid4().hex[:16]}",
+            _internal_api_key(request),
+        )
+    except (HTTPException, ValidationError, ValueError) as exc:
+        return fail(str(getattr(exc, "detail", exc)))
+    del result
+    return RedirectResponse(
+        f"{target}?notice={quote_plus('Date held for seven days and a quote frozen. Nothing was sent.')}",
+        status_code=303,
+    )

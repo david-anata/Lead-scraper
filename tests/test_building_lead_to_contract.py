@@ -87,6 +87,7 @@ class LeadToContractTests(unittest.TestCase):
                     deposit_percent_bps=5_000,
                     cancellation_policy="Non-refundable inside 30 days.",
                     tax_status="non_taxable", effective_from=date.today(),
+                    approval_evidence="owner-approved 2026-07-31",
                 ),
                 BuildingContact(
                     id="c1", email="rosa@example.com", full_name="Rosa Delgado",
@@ -232,7 +233,101 @@ class LeadToContractTests(unittest.TestCase):
         )
         self.assertEqual(blocked.status_code, 303, blocked.text)
         self.assertIn("error=", blocked.headers["location"])
-        self.assertIn("event", blocked.headers["location"].lower())
+        # The message must name the control on this page, not a screen elsewhere.
+        self.assertIn("take+this+date", blocked.headers["location"].lower())
+        self.assertIn("#date-review", blocked.headers["location"])
+
+    def test_04_a_qualified_lead_can_take_its_own_date(self) -> None:
+        """The whole point: no detour to a booking screen to hold a date."""
+        starts = datetime.now(timezone.utc) + timedelta(days=90)
+
+        def stamp(hours: int) -> str:
+            return (starts + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
+
+        with self.factory() as session:
+            session.add(BuildingInquiry(
+                id="lead-3", idempotency_key="lead-3-key", kind="event",
+                name="Priya Nair", email="priya@example.com",
+                payload_json={"_lifecycle": {"stage": "qualified"}},
+            ))
+            session.add(BuildingContact(
+                id="c3", email="priya@example.com", full_name="Priya Nair",
+                status="active",
+            ))
+            session.add(BuildingRelationship(
+                id="rel-3", contact_id="c3", relationship_type="prospect",
+                status="active", source_reference="inquiry:lead-3",
+            ))
+            session.commit()
+
+        page = self.client.get("/admin/building/inquiries/lead-3")
+        self.assertIn("Take this date", page.text)
+        token = re.search(r'name="_csrf_token" value="([^"]+)"', page.text).group(1)
+
+        held = self.client.post(
+            "/admin/building/inquiries/lead-3/hold-date",
+            headers=self.headers, follow_redirects=False,
+            data={"_csrf_token": token, "setup_starts_at": stamp(0),
+                  "guest_starts_at": stamp(2), "guest_ends_at": stamp(7),
+                  "teardown_ends_at": stamp(9), "attendance": "80"},
+        )
+        self.assertEqual(held.status_code, 303, held.text)
+        self.assertIn("notice=", held.headers["location"])
+
+        with self.factory() as session:
+            reservation = session.query(BuildingReservation).filter_by(
+                inquiry_id="lead-3"
+            ).one()
+            self.assertEqual(reservation.status, "soft_hold")
+            self.assertEqual(reservation.attendance, 80)
+            session.query(BuildingProposal).filter_by(
+                reservation_id=reservation.id
+            ).one()
+
+    def test_05_an_out_of_order_window_is_refused(self) -> None:
+        starts = datetime.now(timezone.utc) + timedelta(days=120)
+
+        def stamp(hours: int) -> str:
+            return (starts + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
+
+        with self.factory() as session:
+            session.add(BuildingInquiry(
+                id="lead-4", idempotency_key="lead-4-key", kind="event",
+                name="Out Of Order", email="ooo@example.com",
+                payload_json={"_lifecycle": {"stage": "qualified"}},
+            ))
+            session.add(BuildingContact(id="c4", email="ooo@example.com",
+                                        full_name="Out Of Order", status="active"))
+            session.add(BuildingRelationship(
+                id="rel-4", contact_id="c4", relationship_type="prospect",
+                status="active", source_reference="inquiry:lead-4",
+            ))
+            session.commit()
+        token = self._csrf("lead-4")
+        refused = self.client.post(
+            "/admin/building/inquiries/lead-4/hold-date",
+            headers=self.headers, follow_redirects=False,
+            data={"_csrf_token": token, "setup_starts_at": stamp(9),
+                  "guest_starts_at": stamp(2), "guest_ends_at": stamp(7),
+                  "teardown_ends_at": stamp(0), "attendance": "40"},
+        )
+        self.assertEqual(refused.status_code, 303, refused.text)
+        self.assertIn("error=", refused.headers["location"])
+
+    def test_06_an_unqualified_lead_can_still_take_its_date(self) -> None:
+        """The date panel used to render only for qualified leads, so the one
+        control that unblocks a contract was invisible on most leads."""
+        with self.factory() as session:
+            session.add(BuildingInquiry(
+                id="lead-5", idempotency_key="lead-5-key", kind="event",
+                name="Not Yet Qualified", email="new@example.com",
+                payload_json={"_lifecycle": {"stage": "new"}},
+            ))
+            session.commit()
+        page = self.client.get("/admin/building/inquiries/lead-5")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Take this date", page.text)
+        self.assertIn("Date review", page.text)
 
 
 if __name__ == "__main__":
