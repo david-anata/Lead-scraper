@@ -195,6 +195,15 @@ def _next_action(data: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _attendance_guess(interview: dict[str, Any]) -> str:
+    """Pull a number out of a free-text attendance answer, if there is one."""
+
+    for token in str(interview.get("attendance") or "").replace(",", " ").split():
+        if token.isdigit():
+            return token
+    return ""
+
+
 def _deposit_label(plan: dict[str, Any]) -> str:
     kind = str(plan.get("deposit_type") or "none")
     if kind == "fixed":
@@ -470,9 +479,30 @@ def render_inquiry_workspace(
             </div>
             <div class="lead-interview__save"><button class="lead-button lead-button--primary" type="submit">Check dates</button><span>Read-only check; this creates no hold.</span></div>
           </form><div class="lead-availability__results" data-availability-results aria-live="polite"></div>
+          <form class="lead-availability lead-availability--hold" method="post" action="/admin/building/inquiries/{_esc(data.get('id'))}/hold-date">
+            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+            <h3>Take this date</h3>
+            <div class="lead-availability__times">
+              <label>Setup begins<input type="datetime-local" name="setup_starts_at" required></label>
+              <label>Guests begin<input type="datetime-local" name="guest_starts_at" required></label>
+              <label>Guests end<input type="datetime-local" name="guest_ends_at" required></label>
+              <label>Teardown ends<input type="datetime-local" name="teardown_ends_at" required></label>
+            </div>
+            <div class="lead-availability__times">
+              <label>Attendance<input type="number" name="attendance" min="1" value="{_esc(_attendance_guess(interview))}"></label>
+            </div>
+            <div class="lead-interview__save"><button class="lead-button lead-button--primary" type="submit">Hold this date</button><span>Conflict-checked, held seven days, and freezes a quote. Nothing is sent.</span></div>
+          </form>
         </section>'''
         if data.get("kind") == "event" and stage == "qualified" and not data.get("reservation_id")
-        else ""
+        else (
+            '<section class="lead-panel" id="date-review"><div class="lead-panel__head"><div>'
+            "<h2>Date review</h2><p>Qualify this lead first — the six answers under "
+            "<strong>Needed to qualify</strong> — and the date tools appear here.</p>"
+            "</div></div></section>"
+            if data.get("kind") == "event" and not data.get("reservation_id")
+            else ""
+        )
     )
     activity_rows = "".join(
         f"<li><time>{_esc(_when(item.get('created_at')))}</time><div><strong>{_esc(str(item.get('action') or 'updated').replace('_', ' ').title())}</strong><span>{_esc(item.get('actor') or 'System')}</span></div></li>"
@@ -594,7 +624,7 @@ def render_inquiry_workspace(
       .lead-follow-up,.lead-activity{margin:0;padding:0;list-style:none}.lead-follow-up li,.lead-activity li{display:grid;gap:3px;padding:13px 18px;border-top:1px solid var(--agent-border)}.lead-follow-up span,.lead-activity span,.lead-activity time{color:var(--agent-ink-muted);font-size:12px}.lead-activity li{grid-template-columns:150px 1fr}.lead-activity div{display:grid;gap:3px}.lead-technical{padding:14px 18px;border:1px dashed var(--agent-border);border-radius:var(--agent-radius-control)}
       .lead-delivery-actions{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px;border-top:1px solid var(--agent-border)}
       .lead-interview{border-top:1px solid var(--agent-border);scroll-margin-top:140px}.lead-interview>summary{padding:14px 20px;color:var(--agent-blue-strong);font-weight:800;cursor:pointer}.lead-interview form{display:grid;gap:16px;padding:0 20px 20px}.lead-interview__section{display:grid;gap:10px;margin:0;padding:16px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control)}.lead-interview__section legend{padding:0 6px;font-weight:800}.lead-price{display:grid;gap:14px;padding:0 20px 18px}.lead-price__grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.lead-price label{display:grid;gap:5px;font-weight:700;font-size:13px}.lead-price input{min-height:38px;padding:7px 9px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);font:14px/1.4 Inter,sans-serif}.lead-price__addons{display:grid;gap:8px}.lead-price__addons>span{font-weight:700;font-size:13px}.lead-price__addon{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:8px}.lead-price__total{font:800 1.1rem/1 Montserrat,sans-serif}.lead-price__contract{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:14px 0 0;border-top:1px solid var(--agent-border)}.lead-price__contract span{color:var(--agent-ink-muted);font-size:12px}.lead-price__note{display:block;font-weight:400;color:var(--agent-ink-muted);font-size:11px}.lead-price__standard{margin:0;padding:0 20px 18px;color:var(--agent-ink-muted);font-size:12px}.lead-pricing .is-num{text-align:right;font-variant-numeric:tabular-nums}.lead-pricing .is-total td{font-weight:800;border-top:2px solid var(--agent-border)}.lead-pricing{width:100%;border-collapse:collapse}.lead-pricing th,.lead-pricing td{padding:10px 12px;border-bottom:1px solid var(--agent-border);text-align:left}.lead-pricing th{color:var(--agent-ink-muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}.lead-pricing-wrap{padding:0 20px 18px}.lead-pricing-wrap p{margin:12px 0 0;color:var(--agent-ink-muted);font-size:13px}.lead-interview__more{margin:4px 0}.lead-interview__more>summary{padding:10px 4px;color:var(--agent-blue-strong);font-weight:800;cursor:pointer}.lead-interview__more>fieldset{margin-top:12px}.lead-interview__section>p{margin:0;color:var(--agent-ink-muted);font-size:13px}.lead-interview__section>span{color:var(--agent-blue-strong);font-size:12px;font-weight:800}.lead-interview__grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.lead-interview label{display:grid;gap:5px;font-weight:700}.lead-interview label.is-missing{order:-1}.lead-interview textarea{min-height:80px}.lead-call-guide{display:grid;gap:4px;margin:0 20px 16px;padding:14px;border-radius:var(--agent-radius-control);background:#f1f8fb}.lead-call-guide span{color:var(--agent-ink-muted);font-size:13px;line-height:1.5}.lead-interview__save{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.lead-interview__save span{color:var(--agent-ink-muted);font-size:12px}
-      .lead-availability{display:grid;gap:14px;padding:0 20px 18px}.lead-availability__dates,.lead-availability__times{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.lead-availability__dates{grid-template-columns:repeat(3,minmax(0,1fr))}.lead-availability label{display:grid;gap:5px;font-weight:700}.lead-availability__results{padding:0 20px 20px}.lead-availability__results>p{color:var(--agent-ink-muted)}.lead-availability__results ul{display:grid;gap:8px;margin:0;padding:0;list-style:none}.lead-availability__results li{display:grid;grid-template-columns:130px auto minmax(0,1fr);gap:10px;align-items:center;padding:10px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control)}.lead-availability__results small{color:var(--agent-ink-muted)}
+      .lead-availability--hold{border-top:1px solid var(--agent-border);padding-top:16px;margin-top:4px}.lead-availability--hold h3{margin:0;font:800 .95rem/1.2 Montserrat,sans-serif}.lead-availability{display:grid;gap:14px;padding:0 20px 18px}.lead-availability__dates,.lead-availability__times{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.lead-availability__dates{grid-template-columns:repeat(3,minmax(0,1fr))}.lead-availability label{display:grid;gap:5px;font-weight:700}.lead-availability__results{padding:0 20px 20px}.lead-availability__results>p{color:var(--agent-ink-muted)}.lead-availability__results ul{display:grid;gap:8px;margin:0;padding:0;list-style:none}.lead-availability__results li{display:grid;grid-template-columns:130px auto minmax(0,1fr);gap:10px;align-items:center;padding:10px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control)}.lead-availability__results small{color:var(--agent-ink-muted)}
       @media(max-width:900px){.lead-next,.lead-layout{grid-template-columns:1fr}.lead-next .lead-button{justify-self:start}}
       @media(max-width:600px){.lead-details,.lead-contact dl,.lead-interview__grid,.lead-availability__dates,.lead-availability__times,.lead-availability__results li{grid-template-columns:1fr}.lead-details dt,.lead-contact dt{padding-bottom:0}.lead-details dd,.lead-contact dd{padding-top:4px}.lead-activity li{grid-template-columns:1fr}.lead-panel__head{display:grid}.lead-next{padding:20px}.lead-response{width:100%}}
     </style>
