@@ -349,10 +349,20 @@ services:
       run -X POST "$SALES_SUPPORT_AGENT_URL/api/internal/building/bookings/communications/run" \n        -H "Content-Type: application/json" \n        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \n        -d '{"execute":true,"actor":"job:building-event-communications"}'
       exit "$failed"
     envVars:
+      # Inherited from the web service so this cron needs no manual setup in
+      # the dashboard. A new service with sync:false vars starts unable to
+      # run, and its failures would look like Building being broken.
       - key: SALES_SUPPORT_AGENT_URL
-        sync: false
+        fromService:
+          type: web
+          name: sales-support-agent
+          envVarKey: SALES_SUPPORT_AGENT_URL
       - key: SALES_AGENT_INTERNAL_API_KEY
-        sync: false
+        fromService:
+          type: web
+          name: sales-support-agent
+          envVarKey: SALES_AGENT_INTERNAL_API_KEY
+
   - type: cron
     name: agent-outbound-morning
     runtime: python
