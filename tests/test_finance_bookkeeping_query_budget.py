@@ -90,3 +90,41 @@ def test_the_merchant_reader_can_be_given_the_combinations_to_reuse(seeded):
 def test_the_merchant_reader_still_works_without_being_given_one(seeded):
     """Callers outside a loop stay simple and must keep resolving correctly."""
     assert merchant_key("Madison Bicycle Shop") == "madison bicycle shop"
+
+
+def test_a_dead_engine_is_not_remembered_as_having_the_alias_table():
+    """The schema check is remembered per engine to keep it off the hot path.
+    Keyed on id() that is a trap: CPython gives a dead object's address to the
+    next one allocated, so a brand new engine inherits "already done" and never
+    gets its table. The failure is intermittent and looks like anything but a
+    caching bug, which is how it was actually found.
+
+    Asserting the memory is emptied when an engine dies is the deterministic
+    way to state that, because waiting for a real address collision is not.
+    """
+    import gc
+    import weakref
+
+    from sqlalchemy import inspect as sa_inspect
+
+    from sales_support_agent.services.cashflow.vendor_aliases import (
+        _SCHEMA_READY,
+        ensure_vendor_alias_schema,
+    )
+
+    engine = create_engine("sqlite:///:memory:", future=True,
+                           connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    ensure_vendor_alias_schema(engine)
+    assert "finance_vendor_aliases" in sa_inspect(engine).get_table_names()
+
+    remembered = len(_SCHEMA_READY)
+    watch = weakref.ref(engine)
+    engine.dispose()
+    del engine
+    gc.collect()
+
+    assert watch() is None, "the engine did not actually die, so this proves nothing"
+    assert len(_SCHEMA_READY) < remembered, (
+        "a dead engine is still remembered, so the next engine allocated at that "
+        "address will be told its table exists when it does not"
+    )

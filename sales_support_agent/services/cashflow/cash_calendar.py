@@ -442,12 +442,19 @@ def _historical_data(
     return events, patterns
 
 
-def load_cash_calendar(*, as_of: date | None = None) -> dict[str, Any]:
-    """Load the live ledger, settlement evidence, and bank-pattern warnings."""
+def load_cash_calendar(
+    *, as_of: date | None = None, rows: Sequence[Mapping[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Load the live ledger, settlement evidence, and bank-pattern warnings.
+
+    Pass ``rows`` when something else on the same page has already read the
+    ledger. Reading ten thousand rows twice for one page is the round-trip cost
+    that makes this section feel slow.
+    """
     from sales_support_agent.services.cashflow.obligations import list_obligations
 
     today = as_of or date.today()
-    rows = list_obligations(limit=10_000)
+    rows = list(rows) if rows is not None else list_obligations(limit=10_000)
     # Pattern analysis is advisory. A temporary issue there must not hide the
     # posted bank truth or known obligations from the owner.
     try:
@@ -500,7 +507,154 @@ def _event_html(event: Mapping[str, Any]) -> str:
       </li>"""
 
 
-def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -> str:
+def _next_week_headline(calendar: Mapping[str, Any]) -> str:
+    """One answer to "what leaves next week" so the table need not be read.
+
+    The two figures stay apart. A bill nobody has confirmed is not the same kind
+    of fact as one that is dated and owed, and adding them would hide which is
+    which at exactly the moment the operator is deciding what to pay.
+    """
+    week = next(
+        (item for item in calendar.get("weeks") or []
+         if str(item.get("label") or "") == "Next week"),
+        None,
+    )
+    if week is None:
+        return ""
+
+    days = {str(bucket.get("date")): bucket for bucket in calendar.get("days") or []}
+    heaviest_label, heaviest_cents = "", 0
+    day = _as_date_or_none(week.get("start"))
+    end = _as_date_or_none(week.get("end"))
+    while day is not None and end is not None and day <= end:
+        bucket = days.get(day.isoformat())
+        if bucket:
+            amount = int(bucket.get("planned_cents") or 0)
+            if amount > heaviest_cents:
+                heaviest_cents = amount
+                heaviest_label = day.strftime("%A %-d")
+        day += timedelta(days=1)
+
+    unpaid = int(week.get("unpaid_cents") or 0)
+    possible = int(week.get("possible_cents") or 0)
+    heaviest = (
+        f"<p class=\"cash-calendar-next__heaviest\">Heaviest day: "
+        f"{html.escape(heaviest_label)}, {_money(heaviest_cents)}</p>"
+        if heaviest_cents else ""
+    )
+    return f"""
+      <section class="cash-calendar-next" aria-labelledby="cash-calendar-next-title">
+        <div class="money-section-heading"><div><p class="finance-eyebrow">Next week</p>
+        <h2 id="cash-calendar-next-title">{html.escape(str(week.get('date_label') or ''))}</h2></div></div>
+        <div class="cash-calendar-next__figures">
+          <div>
+            <span>Leaving your account</span>
+            <strong class="amount-out">{_money(unpaid)}</strong>
+            <small>{int(week.get('unpaid_count') or 0)} dated and owed</small>
+          </div>
+          <div>
+            <span>Possibly also</span>
+            <strong>{_money(possible)}</strong>
+            <small>{int(week.get('possible_count') or 0)} nobody has confirmed</small>
+          </div>
+        </div>
+        {heaviest}
+      </section>"""
+
+
+def _as_date_or_none(value: Any) -> date | None:
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _paydown_block(plan: Mapping[str, Any] | None) -> str:
+    """What can go toward the biggest repeating bill, and when.
+
+    Dated on purpose. A figure with no date attached leaves the operator doing
+    the same arithmetic again nine days later, which is the job this removes.
+    """
+    if not plan or plan.get("status") == "no_vendor":
+        return ""
+
+    vendor = html.escape(str(plan.get("vendor") or "this bill"))
+    monthly = int(plan.get("monthly_cents") or 0)
+    paid = int(plan.get("paid_this_month_cents") or 0)
+    remaining = int(plan.get("remaining_cents") or 0)
+
+    if remaining <= 0:
+        return f"""
+      <section class="cash-calendar-paydown">
+        <div class="money-section-heading"><div><p class="finance-eyebrow">Paying down</p>
+        <h2>{vendor}</h2></div></div>
+        <p class="finance-plan-ok">Nothing left to pay this month. You have sent
+        {_money(paid)} of about {_money(monthly)}.</p>
+      </section>"""
+
+    reserved = int(plan.get("reserved_cents") or 0)
+    unconfirmed = int(plan.get("unconfirmed_reserved_cents") or 0)
+    savings = int(plan.get("savings_would_unlock_cents") or 0)
+    savings_line = (
+        '<p class="cash-calendar-paydown__savings">Only if you move money across: '
+        f"{_money(savings)} from savings would let you send that much more.</p>"
+        if savings > 0 else ""
+    )
+
+    if not plan.get("instalments"):
+        return f"""
+      <section class="cash-calendar-paydown">
+        <div class="money-section-heading"><div><p class="finance-eyebrow">Paying down</p>
+        <h2>{vendor}</h2></div></div>
+        <p class="finance-plan-short">Nothing spare this month. {_money(remaining)} still to
+        pay, but everything already dated uses your cash and your
+        {_money(int(plan.get('floor_cents') or 0))} cushion.</p>
+        <p><a class="btn btn-secondary btn-sm" href="/admin/finances/collections">See who owes you</a></p>
+        {savings_line}
+      </section>"""
+
+    rows = "".join(
+        f"<tr><th scope=\"row\">{html.escape(_instalment_when(item.get('date')))}</th>"
+        f"<td class=\"amount-out\">{_money(int(item.get('amount_cents') or 0))}</td>"
+        f"<td>{html.escape(str(item.get('why') or ''))}</td></tr>"
+        for item in plan["instalments"]
+    )
+    total = int(plan.get("planned_total_cents") or 0)
+    shortfall = int(plan.get("shortfall_cents") or 0)
+    shortfall_line = (
+        f'<p class="cash-calendar-paydown__note">{_money(shortfall)} of it has nowhere '
+        "to come from this month on current figures.</p>"
+        if shortfall > 0 else ""
+    )
+    return f"""
+      <section class="cash-calendar-paydown" aria-labelledby="cash-calendar-paydown-title">
+        <div class="money-section-heading"><div><p class="finance-eyebrow">Paying down</p>
+        <h2 id="cash-calendar-paydown-title">{vendor}</h2></div></div>
+        <p class="cash-calendar-paydown__lead">About {_money(monthly)} this month. You have sent
+        {_money(paid)}. Remaining {_money(remaining)}.</p>
+        <table>
+          <thead><tr><th scope="col">When</th><th scope="col">Amount</th><th scope="col">Why then</th></tr></thead>
+          <tbody>{rows}</tbody>
+          <tfoot><tr><th scope="row">Total</th><td class="amount-out">{_money(total)}</td><td></td></tr></tfoot>
+        </table>
+        <p class="cash-calendar-paydown__note">Reserved for the rest of the month:
+        {_money(reserved)}, of which {_money(unconfirmed)} is not confirmed. If those do
+        not arrive you can send more, sooner.</p>
+        {shortfall_line}
+        {savings_line}
+      </section>"""
+
+
+def _instalment_when(value: Any) -> str:
+    when = _as_date_or_none(value) if not isinstance(value, date) else value
+    if when is None:
+        return "Later"
+    return "Today" if when == date.today() else when.strftime("%a %-d %b")
+
+
+def render_cash_calendar_page(
+    calendar: Mapping[str, Any], *, flash: str = "", paydown: Mapping[str, Any] | None = None
+) -> str:
     """Render the 7-day history, today, and 14-day forward expense view."""
     if calendar.get("status") != "ready":
         body = f"""<div class="money-brief">{render_finance_nav('calendar', counts={})}
@@ -557,7 +711,7 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
       {render_finance_nav('calendar', counts={})}
       <header class="money-page-header"><div><p class="finance-eyebrow">Cash calendar</p>
       <h1>See expenses before they surprise you</h1>
-      <p class="money-page-subtitle">Seven days of posted spending, today, and the next fourteen days—separated into planned costs and historical warnings.</p></div>
+      <p class="money-page-subtitle">Seven days of posted spending, today, and the next fourteen days, separated into planned costs and historical warnings.</p></div>
       <div class="money-page-status"><span class="money-status money-status--ready">Read-only</span>
       <span>Posted source: {html.escape(str(calendar.get('actual_source') or 'unavailable').title())} · As of {html.escape(str(calendar.get('as_of') or 'today'))}</span></div></header>
 
@@ -575,6 +729,9 @@ def render_cash_calendar_page(calendar: Mapping[str, Any], *, flash: str = "") -
         <span><i class="is-planned"></i>Unpaid means a known balance still needs payment.</span>
         <span><i class="is-warning"></i>Unconfirmed is an early warning, not a bill or payment.</span>
       </aside>
+
+      {_next_week_headline(calendar)}
+      {_paydown_block(paydown)}
 
       <section class="cash-calendar-weekly" aria-labelledby="cash-calendar-weekly-title">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Weekly roll-up</p>

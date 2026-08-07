@@ -467,12 +467,32 @@ async def finance_cash_plan(request: Request):
 @router.get("/calendar", response_class=HTMLResponse)
 async def finance_cash_calendar(request: Request, flash: str = ""):
     """Show posted, planned, and historically likely expenses by day."""
+    from sales_support_agent.services.cashflow.obligations import list_obligations
+
+    # Read the ledger once and share it. The calendar and the paydown plan both
+    # need every row, and reading it twice doubles the slowest part of the page.
     try:
-        calendar = await asyncio.to_thread(load_cash_calendar)
+        ledger = await asyncio.to_thread(list_obligations, limit=10_000)
+    except Exception:
+        logger.exception("The Finance ledger could not be read")
+        ledger = None
+    try:
+        calendar = await asyncio.to_thread(load_cash_calendar, rows=ledger)
     except Exception:
         logger.exception("The Finance cash calendar could not load")
         calendar = {"status": "error", "days": [], "totals": {}}
-    return HTMLResponse(render_cash_calendar_page(calendar, flash=flash))
+    # A failure working out what can go toward a bill must never take the
+    # calendar itself down: the calendar is the record, the plan is advice.
+    paydown = None
+    try:
+        from sales_support_agent.services.cashflow.rent_paydown import load_paydown_plan
+
+        paydown = await asyncio.to_thread(load_paydown_plan, rows=ledger)
+    except Exception:
+        logger.exception("The Finance paydown plan could not be worked out")
+    return HTMLResponse(
+        render_cash_calendar_page(calendar, flash=flash, paydown=paydown)
+    )
 
 
 @router.get("/budget", response_class=HTMLResponse)
