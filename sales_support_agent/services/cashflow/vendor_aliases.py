@@ -31,9 +31,20 @@ def clean_vendor_display_name(value: str) -> str:
     return (cleaned or str(value or "Unknown vendor").strip()).title()[:120]
 
 
+_SCHEMA_READY: set[int] = set()
+
+
 def ensure_vendor_alias_schema(engine: Any | None = None) -> None:
     db = engine or get_engine()
+    # Listing every table in the database to answer "does one table exist" is a
+    # round trip, and this is called from the merchant reader that runs once per
+    # transaction. Remembering the answer per engine keeps that off the hot path
+    # without weakening the guard: the table cannot disappear under a live
+    # process, and a new engine (a test, a fresh worker) checks again.
+    if id(db) in _SCHEMA_READY:
+        return
     if "finance_vendor_aliases" in set(inspect(db).get_table_names()):
+        _SCHEMA_READY.add(id(db))
         return
     timestamp = "TIMESTAMPTZ" if db.dialect.name == "postgresql" else "DATETIME"
     with db.begin() as connection:
@@ -55,6 +66,7 @@ def ensure_vendor_alias_schema(engine: Any | None = None) -> None:
             "CREATE INDEX IF NOT EXISTS ix_finance_vendor_aliases_canonical "
             "ON finance_vendor_aliases(scope_key, canonical_key)"
         ))
+    _SCHEMA_READY.add(id(db))
 
 
 def alias_map(*, scope: str = "default", connection: Any | None = None) -> dict[str, dict[str, str]]:
@@ -94,9 +106,18 @@ def list_vendor_aliases(*, scope: str = "default") -> list[dict[str, str]]:
     } for row in rows]
 
 
-def resolve_vendor_key(key: str, *, scope: str = "default") -> str:
+def resolve_vendor_key(
+    key: str, *, scope: str = "default", aliases: dict[str, dict[str, str]] | None = None
+) -> str:
+    """Follow a merchant key to the vendor it has been combined into.
+
+    Pass ``aliases`` when resolving many keys in a loop. Without it every call
+    queries the alias table, which is one round trip per transaction: grouping a
+    1,700 row queue cost roughly 3,500 of them.
+    """
     current = str(key or "").strip().lower()
-    aliases = alias_map(scope=scope)
+    if aliases is None:
+        aliases = alias_map(scope=scope)
     seen: set[str] = set()
     while current not in seen:
         seen.add(current)
@@ -113,9 +134,15 @@ def resolve_vendor_key(key: str, *, scope: str = "default") -> str:
     return current
 
 
-def canonical_name(key: str, fallback: str = "", *, scope: str = "default") -> str:
-    resolved = resolve_vendor_key(key, scope=scope)
-    for value in alias_map(scope=scope).values():
+def canonical_name(
+    key: str, fallback: str = "", *, scope: str = "default",
+    aliases: dict[str, dict[str, str]] | None = None,
+) -> str:
+    """The display name for a combined vendor. Pass ``aliases`` inside a loop."""
+    if aliases is None:
+        aliases = alias_map(scope=scope)
+    resolved = resolve_vendor_key(key, scope=scope, aliases=aliases)
+    for value in aliases.values():
         if value["canonical_key"] == resolved and value["canonical_name"]:
             return value["canonical_name"]
     return fallback or resolved.title()

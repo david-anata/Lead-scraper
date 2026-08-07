@@ -62,13 +62,21 @@ _BANK_NOISE = (
 _BANK_NOISE_RE = re.compile("|".join(_BANK_NOISE), re.IGNORECASE)
 
 
-def merchant_key(description: str) -> str:
+def merchant_key(
+    description: str, *, aliases: dict[str, dict[str, str]] | None = None
+) -> str:
     """The merchant inside a bank descriptor, used to group the filing queue.
 
     Real descriptors bury the payee in boilerplate: "Ach Withdrawal Company:
     Anata Entry: Stripe Cap David Narayan". Grouping on the raw leading words
     would file unrelated payments together, so the boilerplate is removed before
     the identifying words are taken.
+
+    Pass ``aliases`` when calling this for every row of a queue. Resolving a
+    combined vendor otherwise queries the alias table once per transaction, so
+    grouping a 1,700 row queue cost around 3,500 round trips: milliseconds on a
+    local database, tens of seconds on a remote one. ``bill_patterns`` loads the
+    map once and does the same work with none.
     """
     cleaned = _BANK_NOISE_RE.sub(" ", _normalise(description))
     cleaned = re.sub(r"[^a-z0-9 ]+", " ", cleaned)
@@ -83,7 +91,7 @@ def merchant_key(description: str) -> str:
     if not raw_key:
         return ""
     from sales_support_agent.services.cashflow.vendor_aliases import resolve_vendor_key
-    return resolve_vendor_key(raw_key)
+    return resolve_vendor_key(raw_key, aliases=aliases)
 
 
 def suggest_rule_pattern(description: str) -> str:
@@ -224,11 +232,19 @@ def group_needs_decision(*, limit: int = 3000, top: int = 60) -> dict[str, Any]:
     """
     from sales_support_agent.services.cashflow.categorizer import categorize
 
+    from sales_support_agent.services.cashflow.vendor_aliases import alias_map
+
     pending = _unfiled_transactions(limit=limit)
+    # Loaded once for the whole queue rather than per row. See merchant_key.
+    aliases = alias_map()
     groups: dict[str, dict[str, Any]] = {}
     for row in pending:
         description = str(row.get("description") or row.get("name") or "")
-        key = merchant_key(description) or _normalise(row.get("name") or "") or "unknown"
+        key = (
+            merchant_key(description, aliases=aliases)
+            or _normalise(row.get("name") or "")
+            or "unknown"
+        )
         group = groups.setdefault(key, {
             "key": key,
             # The cleaned merchant reads better than a raw descriptor with a
@@ -273,9 +289,13 @@ def file_merchant(
     if not key:
         raise ValueError("no merchant given")
 
+    from sales_support_agent.services.cashflow.vendor_aliases import alias_map
+
+    # Loaded once and reused across both passes below, rather than once per row.
+    aliases = alias_map()
     matches = [
         row for row in _unfiled_transactions(limit=limit)
-        if merchant_key(str(row.get("description") or row.get("name") or "")) == key
+        if merchant_key(str(row.get("description") or row.get("name") or ""), aliases=aliases) == key
     ]
     if not matches:
         # A page opened before deposits left the queue can still post one of
@@ -283,7 +303,7 @@ def file_merchant(
         # that would file every future deposit as spend.
         incoming = [
             row for row in _unfiled_transactions(limit=limit, money_in=True)
-            if merchant_key(str(row.get("description") or row.get("name") or "")) == key
+            if merchant_key(str(row.get("description") or row.get("name") or ""), aliases=aliases) == key
         ]
         if incoming:
             raise ValueError(MONEY_IN_NOT_FILED_HERE)

@@ -1037,7 +1037,7 @@ def _load_bill_history(
         alias = aliases.get(merchant)
         if alias:
             merchant = alias["canonical_key"]
-            readable = canonical_name(merchant, readable)
+            readable = canonical_name(merchant, readable, aliases=aliases)
         if not merchant or _is_not_a_merchant(merchant):
             continue
         grouped.setdefault(merchant, []).append((
