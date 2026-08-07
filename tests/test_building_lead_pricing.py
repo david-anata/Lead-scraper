@@ -98,3 +98,46 @@ class LeadPricingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SecurityDepositTests(unittest.TestCase):
+    """The security deposit is refundable and sits outside the contract total.
+
+    The approved terms exclude it from the booking-deposit percentage, so
+    folding it into the total would overstate what the customer owes and inflate
+    every percentage calculated from it.
+    """
+
+    def _priced(self, **overrides):
+        base = {
+            "hourly_rate_cents": 17_500, "hours": 6, "cleaning_fee_cents": 25_000,
+            "addons": [], "discount_cents": 0, "deposit_percent_bps": 5_000,
+            "security_deposit_cents": 50_000,
+        }
+        base.update(overrides)
+        return compute_totals(base)
+
+    def test_it_is_excluded_from_the_total_and_the_percentage(self) -> None:
+        totals = self._priced()
+        self.assertEqual(totals["total_cents"], 130_000)      # venue + cleaning only
+        self.assertEqual(totals["deposit_cents"], 65_000)     # 50% of the total
+        self.assertEqual(totals["security_deposit_cents"], 50_000)
+
+    def test_due_to_book_is_the_deposit_plus_the_security_deposit(self) -> None:
+        totals = self._priced()
+        self.assertEqual(totals["due_to_book_cents"], 115_000)
+
+    def test_the_balance_excludes_the_refundable_deposit(self) -> None:
+        totals = self._priced()
+        self.assertEqual(totals["balance_cents"], 65_000)
+        self.assertEqual(
+            totals["deposit_cents"] + totals["balance_cents"], totals["total_cents"]
+        )
+
+    def test_waiving_it_leaves_the_contract_total_unchanged(self) -> None:
+        waived = self._priced(security_deposit_cents=0)
+        self.assertEqual(waived["total_cents"], 130_000)
+        self.assertEqual(waived["due_to_book_cents"], 65_000)
+
+    def test_a_lead_starts_with_the_approved_five_hundred(self) -> None:
+        self.assertEqual(default_pricing(None)["security_deposit_cents"], 50_000)

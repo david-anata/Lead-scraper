@@ -21,6 +21,9 @@ DEFAULT_HOURLY_RATE_CENTS = 17_500
 DEFAULT_MINIMUM_HOURS = 6
 DEFAULT_CLEANING_FEE_CENTS = 25_000
 DEFAULT_DEPOSIT_PERCENT_BPS = 5_000
+#: Refundable, held against damage, and returned after inspection. Separate
+#: from the booking deposit and deliberately excluded from its percentage.
+DEFAULT_SECURITY_DEPOSIT_CENTS = 50_000
 MAX_ADDONS = 20
 
 
@@ -58,6 +61,7 @@ def default_pricing(rate_plan: Optional[dict[str, Any]] = None) -> dict[str, Any
         "deposit_percent_bps": int(
             plan.get("deposit_percent_bps") or DEFAULT_DEPOSIT_PERCENT_BPS
         ),
+        "security_deposit_cents": DEFAULT_SECURITY_DEPOSIT_CENTS,
         "updated_by": "",
         "updated_at": "",
     }
@@ -78,6 +82,11 @@ def compute_totals(pricing: dict[str, Any]) -> dict[str, int]:
     discount = min(max(0, int(pricing.get("discount_cents") or 0)), subtotal)
     total = subtotal - discount
     deposit = (total * max(0, int(pricing.get("deposit_percent_bps") or 0)) + 5_000) // 10_000
+    booking_deposit = min(deposit, total)
+    # Refundable and excluded from the booking-deposit percentage, per the
+    # approved terms, so it is added to what is collected but never to the
+    # contract total.
+    security = max(0, int(pricing.get("security_deposit_cents") or 0))
     return {
         "venue_cents": venue,
         "cleaning_cents": cleaning,
@@ -85,7 +94,10 @@ def compute_totals(pricing: dict[str, Any]) -> dict[str, int]:
         "subtotal_cents": subtotal,
         "discount_cents": discount,
         "total_cents": total,
-        "deposit_cents": min(deposit, total),
+        "deposit_cents": booking_deposit,
+        "security_deposit_cents": security,
+        "due_to_book_cents": booking_deposit + security,
+        "balance_cents": total - booking_deposit,
     }
 
 
@@ -102,6 +114,9 @@ def parse_pricing_form(form: Any, *, existing: dict[str, Any], actor: str) -> di
         raise LeadPricingError("Hours cannot be negative.")
     pricing["hours"] = hours
     pricing["cleaning_fee_cents"] = _cents(form.get("cleaning_fee"), field="Cleaning fee")
+    pricing["security_deposit_cents"] = _cents(
+        form.get("security_deposit"), field="Security deposit"
+    )
     pricing["discount_cents"] = _cents(form.get("discount"), field="Discount")
     pricing["discount_reason"] = str(form.get("discount_reason") or "").strip()[:300]
 
