@@ -154,9 +154,16 @@ def test_a_bill_already_settled_this_month_says_so():
     assert "Today" not in block
 
 
-def test_nothing_worth_planning_around_renders_nothing():
-    assert _paydown_block({"status": "no_vendor"}) == ""
-    assert _paydown_block(None) == ""
+def test_it_never_disappears_silently():
+    """A section that vanishes is indistinguishable from one that was never
+    built. Two features in this app were rediscovered and nearly rebuilt for
+    exactly that reason."""
+    no_vendor = _paydown_block({"status": "no_vendor"})
+    failed = _paydown_block(None)
+
+    assert "No repeating bill to plan around yet" in no_vendor
+    assert "Could not work this out" in failed
+    assert "Nothing was" in failed, "and it must say the calendar is unaffected"
 
 
 def test_operator_copy_carries_no_em_dashes_or_leaked_placeholders():
