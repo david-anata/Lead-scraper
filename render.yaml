@@ -306,33 +306,62 @@ services:
     schedule: "5 * * * *"
     buildCommand: pip install -r requirements.txt
     startCommand: |
-      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/sales-operator/run" \
-        -H "Content-Type: application/json" \
-        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
-        -d '{"dry_run":false,"limit":25,"run_hubspot_sync":true,"run_mailbox_sync":false,"trigger":"scheduled"}'
-      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/hr-reminders/run" \
-        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")"
-      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/building-holds/run" \
-        -H "Content-Type: application/json" \
-        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
-        -d '{"dry_run":false}'
-      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/building-leads/run" \
-        -H "Content-Type: application/json" \
-        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
-        -d '{"dry_run":false}'
-      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/internal/building/crm/scheduled-campaigns/run" \
-        -H "Content-Type: application/json" \
-        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
-        -d '{"dry_run":false,"max_campaigns":10,"actor":"job:building-campaign-scheduler"}'
-      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/internal/building/bookings/communications/run" \
-        -H "Content-Type: application/json" \
-        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
-        -d '{"execute":true,"actor":"job:building-event-communications"}'
+      # Independent steps: all of them run even if an earlier one fails,
+      # but the cron exits non-zero if any did, so a failure cannot hide.
+      failed=0
+      run() {
+        if ! curl -sS --fail "$@"; then
+          echo "cron step failed: $*" >&2
+          failed=1
+        fi
+      }
+      run -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/sales-operator/run" \n        -H "Content-Type: application/json" \n        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \n        -d '{"dry_run":false,"limit":25,"run_hubspot_sync":true,"run_mailbox_sync":false,"trigger":"scheduled"}'
+      run -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/hr-reminders/run" \n        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")"
+      exit "$failed"
     envVars:
       - key: SALES_SUPPORT_AGENT_URL
         sync: false
       - key: SALES_AGENT_INTERNAL_API_KEY
         sync: false
+
+  - type: cron
+    # Building runs on its own schedule. It used to be four extra steps
+    # inside the sales cron, so a building failure was reported against a
+    # sales run and the two could not be scheduled or paused separately.
+    # Offset to :20 so it does not contend with the sales run at :05.
+    name: building-operations-hourly
+    runtime: python
+    schedule: "20 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: |
+      # Independent steps: all of them run even if an earlier one fails,
+      # but the cron exits non-zero if any did, so a failure cannot hide.
+      failed=0
+      run() {
+        if ! curl -sS --fail "$@"; then
+          echo "cron step failed: $*" >&2
+          failed=1
+        fi
+      }
+      run -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/building-holds/run" \n        -H "Content-Type: application/json" \n        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \n        -d '{"dry_run":false}'
+      run -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/building-leads/run" \n        -H "Content-Type: application/json" \n        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \n        -d '{"dry_run":false}'
+      run -X POST "$SALES_SUPPORT_AGENT_URL/api/internal/building/crm/scheduled-campaigns/run" \n        -H "Content-Type: application/json" \n        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \n        -d '{"dry_run":false,"max_campaigns":10,"actor":"job:building-campaign-scheduler"}'
+      run -X POST "$SALES_SUPPORT_AGENT_URL/api/internal/building/bookings/communications/run" \n        -H "Content-Type: application/json" \n        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \n        -d '{"execute":true,"actor":"job:building-event-communications"}'
+      exit "$failed"
+    envVars:
+      # Inherited from the web service so this cron needs no manual setup in
+      # the dashboard. A new service with sync:false vars starts unable to
+      # run, and its failures would look like Building being broken.
+      - key: SALES_SUPPORT_AGENT_URL
+        fromService:
+          type: web
+          name: sales-support-agent
+          envVarKey: SALES_SUPPORT_AGENT_URL
+      - key: SALES_AGENT_INTERNAL_API_KEY
+        fromService:
+          type: web
+          name: sales-support-agent
+          envVarKey: SALES_AGENT_INTERNAL_API_KEY
 
   - type: cron
     name: agent-outbound-morning

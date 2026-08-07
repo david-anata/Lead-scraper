@@ -363,6 +363,8 @@ def render_contract_detail(
     can_approve: bool,
     can_prepare_signature: bool,
     can_prepare_payment: bool,
+    google_doc_url: str = "",
+    google_doc_error: str = "",
     can_manage: bool,
     csrf_token: str,
     notice: str = "",
@@ -535,6 +537,38 @@ def render_contract_detail(
         and signature.get("status") == "approved"
         and has_document
     ):
+        # Google Docs path: Agent copies the approved template and fills it in.
+        # It never sends and never signs — the signature block comes from the
+        # template untouched, and requesting the signature stays a Docs action.
+        if google_doc_url:
+            google_block = (
+                f'<p class="app-muted">Draft created. Open it, check it reads '
+                f'correctly, then use <strong>Tools &rarr; eSignature</strong> in '
+                f'Google Docs to send it to '
+                f'{_esc(signature.get("signer_email"))}.</p>'
+                f'<div class="app-form-grid__actions">'
+                f'<a class="admin-btn" href="{_esc(google_doc_url)}" target="_blank" rel="noopener">Open the contract Doc</a>'
+                f'</div>'
+            )
+        elif google_doc_error:
+            google_block = (
+                f'<div class="app-alert app-alert--blocked"><p>{_esc(google_doc_error)}</p></div>'
+            )
+        else:
+            google_block = (
+                f'<p class="app-muted">Copies the approved template Doc and fills '
+                f'in this booking. Nothing is sent and the signature block is left '
+                f'exactly as the template has it.</p>'
+                f'<form method="post" action="{CONTRACTS_URL}/{_esc(contract["id"])}/google-doc">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                f'<div class="app-form-grid__actions">'
+                f'<button class="admin-btn" type="submit">Create the contract Doc</button>'
+                f'</div></form>'
+            )
+        actions.append(
+            '<section class="app-form-grid" aria-label="Google Docs contract draft">'
+            '<h3>Signing copy in Google Docs</h3>' + google_block + '</section>'
+        )
         actions.append(f"""<section class="app-form-grid" aria-label="QuickBooks contract handoff">
         <h3>Create in QuickBooks</h3>
         <ol class="app-muted">
@@ -632,6 +666,7 @@ def render_contract_detail(
       <div class="app-page-actions">
         {_status(contract['state_label'], contract['state_modifier'])}
         {f'<a class="admin-btn" href="{CONTRACTS_URL}/{_esc(contract["id"])}/document">Read contract</a>' if has_document else ''}
+        {f'<a class="admin-btn" href="{_esc(google_doc_url)}" target="_blank" rel="noopener">Open Google Doc</a>' if google_doc_url else ''}
       </div>
     </header>
     {_messages(notice, error)}

@@ -6,7 +6,7 @@ import html
 import json
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -62,13 +62,16 @@ class DashboardData:
     owner_queues: list[DashboardOwnerQueue]
     latest_sync_at: datetime | None
     latest_run_summary: dict
-    sync_auto_enabled: bool
-    sync_stale_after_minutes: int
-    lead_builder_ready: bool
-    lead_builder_missing: list[str]
-    deck_generator_ready: bool
-    deck_generator_missing: list[str]
-    recent_deck_runs: list[dict[str, object]]
+    # Capability and readiness flags default to the conservative "off/unknown"
+    # value so adding one never breaks an existing caller. Both real
+    # construction sites pass every field explicitly.
+    sync_auto_enabled: bool = False
+    sync_stale_after_minutes: int = 0
+    lead_builder_ready: bool = False
+    lead_builder_missing: list[str] = field(default_factory=list)
+    deck_generator_ready: bool = False
+    deck_generator_missing: list[str] = field(default_factory=list)
+    recent_deck_runs: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1507,6 +1510,11 @@ def build_executive_data(
         ],
     )
 
+    # NOTE: this counts `lead_records`, the attention queue — leads with no
+    # assessment and routine follow_up_due ones are skipped above. So the
+    # headline "N active leads are currently tracked" reports leads needing
+    # attention, not the active pipeline (len(active_leads)). Behaviour is
+    # preserved deliberately; changing the KPI's meaning is a product call.
     total_active_leads = len(lead_records)
     overdue_count = sum(1 for item in lead_records if item.urgency == "overdue")
     review_count = sum(1 for item in lead_records if item.urgency == "needs_immediate_review")

@@ -3,6 +3,18 @@
 from __future__ import annotations
 
 import os
+import tempfile
+
+# Self-sufficient: these tests previously read SALES_AGENT_DB_URL straight from
+# the environment, so they only passed when an earlier test file happened to
+# set it. Alone they raised KeyError.
+os.environ.setdefault(
+    "SALES_AGENT_DB_URL",
+    "sqlite:///" + os.path.join(tempfile.gettempdir(), "test_sales_fulfillment_linker.db"),
+)
+
+
+import os
 import unittest
 
 from sales_support_agent.models.database import create_session_factory, init_database, session_scope

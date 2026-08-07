@@ -27,6 +27,7 @@ from sales_support_agent.services.admin_nav import (
     render_agent_nav,
     render_agent_nav_styles,
 )
+from sales_support_agent.services.sales.security import csrf_token
 
 TARGET_STAGE_LABELS = [
     "New Lead",
@@ -1727,7 +1728,12 @@ def _render_queue_panel(title: str, items: list[dict[str, Any]], empty_text: str
     """
 
 
-def _render_next_best_action(summary: dict[str, Any], queues: dict[str, list[dict[str, Any]]]) -> str:
+def _render_next_best_action(
+    summary: dict[str, Any],
+    queues: dict[str, list[dict[str, Any]]],
+    *,
+    _csrf: str = "",
+) -> str:
     queue_specs = [
         ("replyNow", "Reply now", "Respond to the newest prospect message.", "Open deal"),
         ("shareLatestAsset", "Send latest asset", "Share the newest deck, rate sheet, or audit.", "Open deal"),
@@ -1780,6 +1786,7 @@ def _render_next_best_action(summary: dict[str, Any], queues: dict[str, list[dic
       </div>
       <div class="action-command__side">
         <form method="post" action="/admin/sales/deals/sync" style="margin:0">
+          <input type="hidden" name="_csrf_token" value="{_csrf}">
           <button class="btn btn--dark" type="submit">Refresh HubSpot mirror</button>
         </form>
         <a class="btn" href="/admin/sales/deals">Open deals</a>
@@ -1937,13 +1944,14 @@ def _build_proposed_actions(
 
 
 def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, Any]] = None, writeback: Optional[dict[str, Any]] = None, status_message: str = "") -> str:
+    _csrf = csrf_token(user)
     nav_styles = render_agent_nav_styles()
     nav = render_agent_nav("sales", sales_section="sales_operator", user=user)
     favicons = render_agent_favicon_links()
     summary = snapshot.get("summary", {})
     schema = snapshot.get("schema", {})
     queues = snapshot.get("operatorQueues", {}) or {}
-    next_best_action = _render_next_best_action(summary, queues)
+    next_best_action = _render_next_best_action(summary, queues, _csrf=_csrf)
     automation_schedules = list(snapshot.get("automationSchedules") or [])
     website_notes = list(snapshot.get("websiteNotes") or [])
     website_intakes = list(snapshot.get("websiteIntakes") or [])
@@ -1997,7 +2005,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
           <p class="muted">{_esc(note.get("email") or "No email")}{(" · " + _esc(note.get("company"))) if note.get("company") else ""}</p>
           <p>{_esc(note.get("message") or "No message")}</p>
           <p class="muted">HubSpot: {"recorded" if note.get("hubspot") else "needs retry"} · Internal alert: {"sent" if note.get("notified") else "needs retry"} · {_esc(note.get("startedAt") or "")}</p>
-          {f'<form method="post" action="/admin/sales/website-notes/{int(note.get("id") or 0)}/retry"><button class="btn" type="submit">Retry missing handoffs</button></form>' if not note.get("hubspot") or not note.get("notified") else ""}
+          {f'<form method="post" action="/admin/sales/website-notes/{int(note.get("id") or 0)}/retry"><input type="hidden" name="_csrf_token" value="{_csrf}"><button class="btn" type="submit">Retry missing handoffs</button></form>' if not note.get("hubspot") or not note.get("notified") else ""}
         </article>
         """
         for note in website_notes
@@ -2012,7 +2020,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
           <p class="muted">Report: {"ready" if intake.get("reportReady") else "not ready"} · Final email: {_esc(intake.get("emailDelivery") or "pending")} · HubSpot: {_esc(intake.get("hubspot") or "unknown")}</p>
           <p class="muted">Acknowledgement: {_esc(intake.get("acknowledgement") or "unknown")} · Internal alert: {_esc(intake.get("internalNotification") or "unknown")}</p>
           {f'<p class="flash">Blocker: {_esc(intake.get("error"))}</p>' if intake.get("error") else ""}
-          {f'<form method="post" action="/admin/sales/website-intakes/{int(intake.get("id") or 0)}/retry"><button class="btn" type="submit">Retry analysis delivery</button></form>' if intake.get("retryable") else ""}
+          {f'<form method="post" action="/admin/sales/website-intakes/{int(intake.get("id") or 0)}/retry"><input type="hidden" name="_csrf_token" value="{_csrf}"><button class="btn" type="submit">Retry analysis delivery</button></form>' if intake.get("retryable") else ""}
         </article>
         """
         for intake in website_intakes
@@ -2137,6 +2145,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
           <a class="btn" href="/admin/sales/deals">Open deal board</a>
           <a class="btn" href="/admin/sales/deals/cleanup">Open cleanup review</a>
           <form method="post" action="/admin/sales/deals/sync" style="margin:0">
+            <input type="hidden" name="_csrf_token" value="{_csrf}">
             <button class="btn btn--dark" type="submit">Refresh HubSpot mirror</button>
           </form>
         </div>
@@ -2179,6 +2188,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
         <h2>First write-back action layer</h2>
         <p class="muted">Preview candidate actions first. Apply writes only when the service inference or communication-backed next step is high confidence, then support that with internal notes and follow-up tasks.</p>
         <form method="post" action="/admin/sales/writeback" class="inline-form">
+          <input type="hidden" name="_csrf_token" value="{_csrf}">
           <label for="limit">Candidate limit</label>
           <input id="limit" name="limit" type="text" value="10">
           <div class="inline-row">

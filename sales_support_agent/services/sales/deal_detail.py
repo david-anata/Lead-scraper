@@ -38,6 +38,7 @@ from sales_support_agent.services.admin_nav import (
 from sales_support_agent.services.sales import hubspot_links
 from sales_support_agent.services.sales.actions import ContactInfo, SalesAction, compute_pending_actions
 from sales_support_agent.services.fulfillment_deck.pricing_rules import validate_quote_readiness
+from sales_support_agent.services.sales.security import csrf_token
 
 
 def _esc(value: object) -> str:
@@ -766,7 +767,7 @@ _STYLES = """
 """
 
 
-def _pending_actions_html(d: DealDetail) -> str:
+def _pending_actions_html(d: DealDetail, *, _csrf: str = "") -> str:
     mid = [a for a in d.pending_actions if a.confidence == "mid"]
     low = [a for a in d.pending_actions if a.confidence == "low"]
     if not mid and not low:
@@ -780,6 +781,7 @@ def _pending_actions_html(d: DealDetail) -> str:
             f'<div class="action-desc">{_esc(a.description)}</div>'
             f'</div>'
             f'<form method="post" action="/admin/sales/deals/{_esc(d.deal_id)}/actions/approve" style="margin:0">'
+            f'<input type="hidden" name="_csrf_token" value="{_csrf}">'
             f'<input type="hidden" name="action_id" value="{_esc(a.action_id)}">'
             f'<button class="approve-btn" type="submit">Approve →</button>'
             f'</form></div>'
@@ -822,6 +824,7 @@ def _pending_actions_html(d: DealDetail) -> str:
 
 
 def render_deal_detail_page(d: DealDetail, *, user: dict | None = None, flash: str = "", flash_ok: bool = True) -> str:
+    _csrf = csrf_token(user)
     styles = _STYLES.replace("__NAV__", render_agent_nav_styles())
 
     badge = (
@@ -870,7 +873,7 @@ def render_deal_detail_page(d: DealDetail, *, user: dict | None = None, flash: s
             f'✉ Draft follow-up email →</a>'
         )
 
-    pending_actions_html = _pending_actions_html(d)
+    pending_actions_html = _pending_actions_html(d, _csrf=_csrf)
 
     return f"""<!doctype html>
 <html lang="en">

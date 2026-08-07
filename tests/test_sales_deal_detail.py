@@ -47,10 +47,13 @@ class SalesDealDetailTests(unittest.TestCase):
         cls.client = TestClient(app)
         cookie_name, token = _cookie_for("david@anatainc.com", "David")  # seeded superadmin
         cls.client.cookies.set(cookie_name, token)
-        # Settings is frozen; bypass with object.__setattr__ so the portal id
-        # is present regardless of which test file initializes the app first.
-        object.__setattr__(app.state.settings, "hubspot_portal_id", "999")
         cls._seed()
+
+    def setUp(self) -> None:
+        # Per test, not per class: app.state.settings is a shared global that
+        # other test files replace wholesale, which silently discarded a
+        # setUpClass mutation and made this suite fail only when run after them.
+        object.__setattr__(app.state.settings, "hubspot_portal_id", "999")
 
     @classmethod
     def _seed(cls) -> None:
