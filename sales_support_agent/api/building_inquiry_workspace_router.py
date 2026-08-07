@@ -12,6 +12,8 @@ from sqlalchemy import select
 
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
+    BuildingAgreement,
+    BuildingAgreementTemplate,
     BuildingAuditEvent,
     BuildingContact,
     BuildingInquiry,
@@ -26,6 +28,15 @@ from sales_support_agent.services.building_inquiry_workspace import (
     render_inquiry_workspace,
 )
 from sales_support_agent.services.building_lead_intake import prefill_event_interview
+from pydantic import ValidationError
+
+from sales_support_agent.api.building_agreement_readiness_router import (
+    AgreementPackageInput,
+    prepare_agreement_package,
+)
+from sales_support_agent.services.building_lead_quote_sync import (
+    sync_quote_from_lead_pricing,
+)
 from sales_support_agent.services.building_lead_pricing import (
     LeadPricingError,
     compute_totals,
@@ -349,3 +360,116 @@ async def save_lead_pricing(
     return RedirectResponse(
         f"{target}?notice=Pricing+saved+for+this+lead+only.", status_code=303
     )
+
+
+@router.post("/{inquiry_id}/contract", dependencies=FORM_DEPS)
+def create_contract_from_lead(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.agreements.prepare")),
+) -> RedirectResponse:
+    """Turn this lead into a contract without leaving it.
+
+    Writes the lead's pricing into the booking's quote, then prepares the
+    agreement package from it. The quote keeps its existing shape, so billing,
+    invoicing, and the QuickBooks handoff are untouched.
+    """
+
+    target = f"/admin/building/inquiries/{inquiry_id}"
+    actor = str(user.get("email") or "building-operator")
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        reservation = session.execute(
+            select(BuildingReservation)
+            .where(BuildingReservation.inquiry_id == inquiry.id)
+            .order_by(BuildingReservation.created_at.desc())
+        ).scalars().first()
+        if reservation is None:
+            return RedirectResponse(
+                f"{target}?error={quote_plus('Review an event date for this lead first; a contract needs a booking to attach to.')}",
+                status_code=303,
+            )
+        pricing = dict((inquiry.payload_json or {}).get("_pricing") or {})
+        if not pricing:
+            return RedirectResponse(
+                f"{target}?error={quote_plus('Save the pricing for this lead first.')}",
+                status_code=303,
+            )
+        quote = sync_quote_from_lead_pricing(
+            session, reservation=reservation, pricing=pricing, actor=actor
+        )
+        session.flush()
+        quote_id = quote.id
+        session.add(BuildingAuditEvent(
+            entity_type="inquiry",
+            entity_id=inquiry.id,
+            action="lead_quote_synced",
+            actor=actor,
+            after_json={
+                "quote_id": quote_id,
+                "quote_version": quote.version,
+                "amount_cents": quote.amount_cents,
+                "customer_contacted": False,
+            },
+        ))
+
+    template = _approved_template_id(request)
+    if not template:
+        return RedirectResponse(
+            f"{target}?error={quote_plus('No approved contract template exists yet.')}",
+            status_code=303,
+        )
+    try:
+        result = prepare_agreement_package(
+            AgreementPackageInput(
+                reservation_id=reservation.id,
+                quote_id=quote_id,
+                template_id=template,
+                agreement_version=_next_agreement_version(request, reservation.id),
+                payment_version=_next_agreement_version(request, reservation.id),
+                actor=actor,
+            ),
+            request,
+            f"lead-contract-{uuid4().hex[:16]}",
+            _internal_api_key(request),
+        )
+    except (HTTPException, ValidationError, ValueError) as exc:
+        return RedirectResponse(
+            f"{target}?error={quote_plus(str(getattr(exc, 'detail', exc)))}",
+            status_code=303,
+        )
+    agreement_id = str((result.get("agreement") or {}).get("id") or "")
+    return RedirectResponse(
+        f"/admin/building/contracts/{agreement_id}"
+        "?notice=Contract+prepared+from+this+lead.+Nothing+was+sent.",
+        status_code=303,
+    )
+
+
+def _approved_template_id(request: Request) -> str:
+    with session_scope(request.app.state.session_factory) as session:
+        row = session.execute(
+            select(BuildingAgreementTemplate.id)
+            .where(BuildingAgreementTemplate.status == "approved")
+            .order_by(BuildingAgreementTemplate.version.desc())
+        ).scalars().first()
+    return str(row or "")
+
+
+def _next_agreement_version(request: Request, reservation_id: str) -> int:
+    with session_scope(request.app.state.session_factory) as session:
+        used = session.execute(
+            select(BuildingAgreement.version).where(
+                BuildingAgreement.reservation_id == reservation_id
+            )
+        ).scalars().all()
+    return (max(used) + 1) if used else 1
+
+
+def _internal_api_key(request: Request) -> str:
+    key = str(getattr(request.app.state.settings, "internal_api_key", "") or "").strip()
+    if not key:
+        raise HTTPException(status_code=503, detail="Internal API is not configured.")
+    return key
