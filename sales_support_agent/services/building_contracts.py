@@ -123,18 +123,10 @@ def compute_event_merge_values(
         "customer_name": contact.full_name,
         "customer_email": contact.email,
         "event_space": space.name,
-        "setup_starts_at": reservation.starts_at.isoformat(),
-        "guest_starts_at": (
-            reservation.guest_starts_at.isoformat()
-            if reservation.guest_starts_at
-            else None
-        ),
-        "guest_ends_at": (
-            reservation.guest_ends_at.isoformat()
-            if reservation.guest_ends_at
-            else None
-        ),
-        "teardown_ends_at": reservation.ends_at.isoformat(),
+        "setup_starts_at": instant_iso(reservation.starts_at),
+        "guest_starts_at": instant_iso(reservation.guest_starts_at),
+        "guest_ends_at": instant_iso(reservation.guest_ends_at),
+        "teardown_ends_at": instant_iso(reservation.ends_at),
         "attendance": reservation.attendance,
         **_discount_terms(quote),
         "quote_total": quote.amount_cents,
@@ -187,6 +179,18 @@ def _aware(value: Optional[datetime]) -> Optional[datetime]:
     if value is None:
         return None
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def instant_iso(value: Optional[datetime]) -> Optional[str]:
+    """Serialise a stored instant with its offset attached.
+
+    SQLite returns these naive. Without the offset the contract renderer reads a
+    UTC instant as local time, which printed a 5 PM event as 9 PM on the page
+    and in the agreement the customer signs.
+    """
+
+    aware = _aware(value)
+    return aware.isoformat() if aware is not None else None
 
 
 def contract_state(agreement: BuildingAgreement) -> tuple[str, str]:

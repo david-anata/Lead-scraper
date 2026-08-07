@@ -66,6 +66,32 @@ router = APIRouter(
 )
 
 
+def _seeded_pricing(session: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Return this lead's pricing, seeded from the approved plan when unset.
+
+    The page and the save path must seed identically. When they did not, the
+    first save replaced the plan the operator was looking at with an unbound
+    baseline, and the contract lost its cancellation policy with it.
+    """
+
+    stored = dict(payload.get("_pricing") or {})
+    if stored:
+        return stored
+    plan = session.execute(
+        select(BuildingRatePlan)
+        .where(BuildingRatePlan.status == "approved")
+        .order_by(BuildingRatePlan.name, BuildingRatePlan.version.desc())
+    ).scalars().first()
+    return default_pricing({
+        "id": plan.id,
+        "name": plan.name,
+        "currency": plan.currency,
+        "unit_amount_cents": plan.unit_amount_cents,
+        "minimum_units": plan.minimum_units,
+        "deposit_percent_bps": plan.deposit_percent_bps,
+    } if plan is not None else None)
+
+
 @router.get("/{inquiry_id}/availability")
 def inquiry_date_availability(
     inquiry_id: str,
@@ -161,15 +187,7 @@ def inquiry_workspace(
             .order_by(BuildingRatePlan.name, BuildingRatePlan.version.desc())
         ).scalars().all()
         payload = dict(inquiry.payload_json or {})
-        stored_pricing = dict(payload.get("_pricing") or {})
-        if not stored_pricing:
-            plan = rate_plan_rows[0] if rate_plan_rows else None
-            stored_pricing = default_pricing({
-                "id": plan.id, "name": plan.name, "currency": plan.currency,
-                "unit_amount_cents": plan.unit_amount_cents,
-                "minimum_units": plan.minimum_units,
-                "deposit_percent_bps": plan.deposit_percent_bps,
-            } if plan is not None else None)
+        stored_pricing = _seeded_pricing(session, payload)
         public_details = {
             key: value for key, value in payload.items() if not str(key).startswith("_")
         }
@@ -339,7 +357,7 @@ async def save_lead_pricing(
         try:
             pricing = parse_pricing_form(
                 form,
-                existing=dict(payload.get("_pricing") or {}) or default_pricing(None),
+                existing=_seeded_pricing(session, payload),
                 actor=str(user.get("email") or "building-operator"),
             )
         except LeadPricingError as exc:

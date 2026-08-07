@@ -47,6 +47,9 @@ from sales_support_agent.services.building_checklists import (
 from sales_support_agent.services.building_agreement_readiness import (
     propagate_event_readiness_terminal_state,
 )
+from sales_support_agent.services.building_lead_intake import (
+    event_qualification_missing,
+)
 from sales_support_agent.services.building_transactional_messages import (
     attempt_booking_message,
 )
@@ -912,12 +915,30 @@ def create_event_review(
         inquiry = session.get(BuildingInquiry, payload.inquiry_id)
         if inquiry is None or inquiry.kind != "event":
             raise HTTPException(status_code=404, detail="Accepted event inquiry not found.")
-        lifecycle = dict((inquiry.payload_json or {}).get("_lifecycle") or {})
-        if str(lifecycle.get("stage") or "new") not in {"qualified", "closed_won"}:
+        inquiry_payload = dict(inquiry.payload_json or {})
+        lifecycle = dict(inquiry_payload.get("_lifecycle") or {})
+        entry_stage = str(lifecycle.get("stage") or "new")
+        if entry_stage == "closed_lost":
             raise HTTPException(
                 status_code=409,
-                detail="The inquiry must be qualified before authoritative date review.",
+                detail="This inquiry is closed lost; reopen it before holding a date.",
             )
+        # An already-qualified lead keeps the decision it recorded. Anything
+        # earlier is qualified by this hold instead of by a separate step on
+        # another screen, so it must meet the same evidence bar here.
+        if entry_stage not in {"qualified", "closed_won"}:
+            unanswered = event_qualification_missing(
+                dict(inquiry_payload.get("_event_interview") or {}), inquiry_payload
+            )
+            if unanswered:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Answer these before holding a date: "
+                        + ", ".join(unanswered)
+                        + "."
+                    ),
+                )
         if session.get(BuildingReservation, payload.reservation_id) is not None:
             raise HTTPException(
                 status_code=409,
@@ -1149,6 +1170,29 @@ def create_event_review(
             actor=payload.actor,
         )
         session.add(command)
+        if entry_stage not in {"qualified", "closed_won"}:
+            # Taking a date is the qualifying act, and the evidence for it was
+            # already checked above. Recording it here keeps the lead honest
+            # without sending the operator to another screen to say so.
+            held_at = _now()
+            before_lifecycle = dict(lifecycle)
+            lifecycle["stage"] = "qualified"
+            lifecycle.setdefault("qualified_at", held_at.isoformat())
+            lifecycle["last_changed_at"] = held_at.isoformat()
+            lifecycle["last_changed_by"] = payload.actor
+            lifecycle["qualified_by"] = "event_review_hold"
+            inquiry_payload["_lifecycle"] = lifecycle
+            inquiry.payload_json = inquiry_payload
+            inquiry.updated_at = held_at
+            session.add(inquiry)
+            session.add(BuildingAuditEvent(
+                entity_type="inquiry",
+                entity_id=inquiry.id,
+                action="lifecycle_changed",
+                actor=payload.actor,
+                before_json=before_lifecycle,
+                after_json={**lifecycle, "reservation_id": row.id},
+            ))
         session.flush()
         if calendar_client is not None:
             if os.getenv(

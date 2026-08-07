@@ -467,6 +467,28 @@ def render_inquiry_workspace(
         f'<label>Choice {index}<input type="date" name="candidate_date" value="{_esc(value)}"></label>'
         for index, value in enumerate(candidate_values + [""] * (3 - len(candidate_values)), start=1)
     )
+    # A hold needs the same interview answers the hold endpoint checks. Saying
+    # so here beats letting an operator fill the form and be refused after.
+    hold_blockers = (
+        event_qualification_missing(interview, details)
+        if data.get("kind") == "event"
+        else []
+    )
+    if hold_blockers:
+        hold_control = (
+            '<div class="lead-interview__save">'
+            '<button class="lead-button" type="submit" disabled>Hold this date</button>'
+            '<span>Answer these in the interview above first: '
+            + _esc(", ".join(hold_blockers))
+            + '.</span></div>'
+        )
+    else:
+        hold_control = (
+            '<div class="lead-interview__save">'
+            '<button class="lead-button lead-button--primary" type="submit">Hold this date</button>'
+            '<span>Conflict-checked, held seven days, and freezes a quote. '
+            'Nothing is sent.</span></div>'
+        )
     availability_section = (
         f'''<section class="lead-panel" id="date-review"><div class="lead-panel__head"><div><h2>Date review</h2><p>Compare up to three dates against Agent holds and the Anata Events calendar. Unknown never means available.</p></div></div>
           <form class="lead-availability" data-availability-form data-endpoint="/admin/building/inquiries/{_esc(data.get('id'))}/availability">
@@ -491,7 +513,7 @@ def render_inquiry_workspace(
             <div class="lead-availability__times">
               <label>Attendance<input type="number" name="attendance" min="1" value="{_esc(_attendance_guess(interview))}"></label>
             </div>
-            <div class="lead-interview__save"><button class="lead-button lead-button--primary" type="submit">Hold this date</button><span>Conflict-checked, held seven days, and freezes a quote. Nothing is sent.</span></div>
+            {hold_control}
           </form>
         </section>'''
         if data.get("kind") == "event" and not data.get("reservation_id")
