@@ -336,3 +336,108 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InquiryContactLinkingTests(unittest.TestCase):
+    """Linking an existing customer must never rewrite their saved details.
+
+    The control-room contact form overwrites name, phone, and company on every
+    save, so reusing it to attach an existing customer would quietly erase them.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        path = os.path.join(
+            tempfile.gettempdir(), f"inquiry_contact_link_{uuid.uuid4().hex}.db"
+        )
+        cls.factory = create_session_factory("sqlite:///" + path)
+        init_database(cls.factory)
+        cls.original_session_factory = app.state.session_factory
+        cls.original_settings = app.state.settings
+        app.state.session_factory = cls.factory
+        app.state.settings = dataclasses.replace(
+            app.state.settings,
+            internal_api_key="inquiry-link-internal",
+            building_campaign_token_secret="inquiry-workspace-csrf",
+        )
+        cls.client = TestClient(app)
+        cls.client.cookies.set(
+            app.state.agent_settings.admin_cookie_name,
+            create_user_session_token(
+                app.state.agent_settings,
+                email="david@anatainc.com",
+                name="David",
+                role="admin",
+            ),
+        )
+        cls.inquiry_id = "link-inquiry"
+        cls.existing_contact_id = "existing-customer"
+        cls.other_contact_id = "other-customer"
+        with cls.factory() as session:
+            session.add_all([
+                BuildingContact(
+                    id=cls.existing_contact_id,
+                    email="rosa@example.com",
+                    full_name="Rosa Delgado",
+                    phone="801-555-0180",
+                    status="active",
+                ),
+                BuildingContact(
+                    id=cls.other_contact_id,
+                    email="milo@example.com",
+                    full_name="Milo Chen",
+                    status="active",
+                ),
+                BuildingInquiry(
+                    id=cls.inquiry_id,
+                    idempotency_key="link-inquiry-key",
+                    kind="event",
+                    name="Rosa Delgado",
+                    email="rosa@example.com",
+                    payload_json={"_lifecycle": {"stage": "responded"}},
+                ),
+            ])
+            session.commit()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        app.state.session_factory = cls.original_session_factory
+        app.state.settings = cls.original_settings
+
+    def setUp(self) -> None:
+        page = self.client.get(f"/admin/building/inquiries/{self.inquiry_id}")
+        match = re.search(r'name="_csrf_token" value="([^"]+)"', page.text)
+        self.assertIsNotNone(match)
+        self.csrf = match.group(1)
+
+    def test_existing_customer_links_without_changing_their_record(self) -> None:
+        with self.factory() as session:
+            before = session.get(BuildingContact, self.existing_contact_id)
+            original = (before.full_name, before.phone, before.email)
+
+        response = self.client.post(
+            f"/admin/building/inquiries/{self.inquiry_id}/link-contact",
+            headers={"Origin": "http://testserver", "Sec-Fetch-Mode": "navigate"},
+            follow_redirects=False,
+            data={"_csrf_token": self.csrf, "contact_id": self.existing_contact_id},
+        )
+        self.assertEqual(response.status_code, 303, response.text)
+        self.assertIn("notice=", response.headers["location"])
+
+        with self.factory() as session:
+            after = session.get(BuildingContact, self.existing_contact_id)
+            self.assertEqual((after.full_name, after.phone, after.email), original)
+            link = session.query(BuildingRelationship).filter_by(
+                source_reference=f"inquiry:{self.inquiry_id}"
+            ).one()
+            self.assertEqual(link.contact_id, self.existing_contact_id)
+
+    def test_relinking_a_different_customer_is_refused(self) -> None:
+        second = self.client.post(
+            f"/admin/building/inquiries/{self.inquiry_id}/link-contact",
+            headers={"Origin": "http://testserver", "Sec-Fetch-Mode": "navigate"},
+            follow_redirects=False,
+            data={"_csrf_token": self.csrf, "contact_id": self.other_contact_id},
+        )
+        self.assertEqual(second.status_code, 303, second.text)
+        self.assertIn("error=", second.headers["location"])

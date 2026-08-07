@@ -20,6 +20,7 @@ import os
 import urllib.parse
 from dataclasses import dataclass, field
 from typing import Optional
+from sales_support_agent.services.sales.security import csrf_token
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +257,7 @@ def render_draft_followup_page(
     deal_name: str,
     user: dict | None = None,
 ) -> str:
+    _csrf = csrf_token(user)
     import html as _html
 
     def _esc(v: object) -> str:
@@ -360,6 +362,7 @@ def render_draft_followup_page(
         {"<div class='field-label'>Deal materials</div><p class='note' style='margin:-4px 0 8px'>Referenced in this draft</p><div class='hooks'>" + hook_tags + "</div>" if hook_tags else ""}
 
         <form method="post" action="/admin/sales/deals/{_esc(deal_id)}/send-followup" id="send-form">
+          <input type="hidden" name="_csrf_token" value="{_csrf}">
           <input type="hidden" name="to_emails" value="{_esc(to_emails_csv)}">
 
           <div class="field-label">Subject</div>
@@ -433,6 +436,7 @@ def render_send_preview_page(
     from_email: str,
     user: dict | None = None,
 ) -> str:
+    _csrf = csrf_token(user)
     """Confirmation page shown before the email is actually sent.
 
     The rep sees exactly what will go out; clicking "Confirm & Send" is the
@@ -534,6 +538,7 @@ def render_send_preview_page(
 
         <div class="actions">
           <form method="post" action="/admin/sales/deals/{_esc(deal_id)}/send-followup" style="margin:0">
+            <input type="hidden" name="_csrf_token" value="{_csrf}">
             <input type="hidden" name="subject" value="{subject_escaped}">
             <input type="hidden" name="body" value="{_esc(body)}">
             <input type="hidden" name="to_emails" value="{_esc(to_emails)}">

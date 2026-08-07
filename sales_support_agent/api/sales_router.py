@@ -75,6 +75,10 @@ from sales_support_agent.services.sales.rep_dashboard import (
     render_rep_dashboard_page,
 )
 from sales_support_agent.services.sales.slack_alerts import send_critical_deal_alerts
+from sales_support_agent.services.sales.security import (
+    csrf_token,
+    require_sales_form_security,
+)
 
 from sqlalchemy import func, select
 from typing import Any, List
@@ -281,6 +285,7 @@ def _render_create_deal_page(
         render_agent_nav_styles,
     )
 
+    _csrf = csrf_token(get_current_user(request))
     values = values or dict(request.query_params)
     errors = errors or []
     error_html = ""
@@ -463,6 +468,7 @@ def _render_create_deal_page(
         {warning_html}
         {audit_html}
         <form method="post" action="/admin/sales/deals/create">
+          <input type="hidden" name="_csrf_token" value="{_csrf}">
           <input type="hidden" name="return_to" value="{_esc(return_to)}">
           <input type="hidden" name="rate_sheet_run_id" value="{_esc(rate_sheet_run_id)}">
           {context_hidden}
@@ -532,6 +538,9 @@ router = APIRouter(
     tags=["sales-deals"],
     dependencies=[Depends(require_tool("sales.deals"))],
 )
+#: Sales writes reach ClickUp, HubSpot, and Slack. Building, Finance, and HR
+#: already gate their browser writes this way; sales did not.
+FORM_DEPS = [Depends(require_sales_form_security)]
 
 
 def _sales_settings(request: Request):
@@ -581,7 +590,7 @@ def sales_operator_snapshot(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc) or "Sales operator unavailable."}, status_code=503)
 
 
-@router.post("/writeback")
+@router.post("/writeback", dependencies=FORM_DEPS)
 def sales_operator_writeback(
     request: Request,
     mode: str = Form(default="preview"),
@@ -611,7 +620,7 @@ def sales_operator_writeback(
         return HTMLResponse(_render_sales_operator_unavailable(request, str(exc)), status_code=503)
 
 
-@router.post("/website-notes/{lead_id}/retry")
+@router.post("/website-notes/{lead_id}/retry", dependencies=FORM_DEPS)
 def retry_website_note(request: Request, lead_id: int) -> Response:
     from sales_support_agent.api.leads_router import deliver_website_note
     from sales_support_agent.models.database import session_scope
@@ -643,7 +652,7 @@ def retry_website_note(request: Request, lead_id: int) -> Response:
     return RedirectResponse(url="/admin/sales", status_code=303)
 
 
-@router.post("/website-intakes/{intake_id}/retry")
+@router.post("/website-intakes/{intake_id}/retry", dependencies=FORM_DEPS)
 def retry_website_intake(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -784,7 +793,7 @@ def create_deal_form(request: Request) -> HTMLResponse:
     return HTMLResponse(_render_create_deal_page(request))
 
 
-@router.post("/deals/create")
+@router.post("/deals/create", dependencies=FORM_DEPS)
 async def create_deal(request: Request) -> Response:
     settings = _sales_settings(request)
     payload: dict[str, Any] = {}
@@ -955,7 +964,7 @@ def deal_board(request: Request, my: bool = False) -> HTMLResponse:
         )
 
 
-@router.post("/deals/sync")
+@router.post("/deals/sync", dependencies=FORM_DEPS)
 def trigger_sync(request: Request) -> RedirectResponse:
     start_hubspot_sync(request.app, force=True)
     return RedirectResponse(url="/admin/sales/deals", status_code=303)
@@ -985,7 +994,7 @@ def batch_cleanup(
     ))
 
 
-@router.post("/deals/cleanup")
+@router.post("/deals/cleanup", dependencies=FORM_DEPS)
 def batch_cleanup_apply(
     request: Request,
     action_ids: List[str] = Form(default=[]),
@@ -1071,7 +1080,7 @@ def deal_detail(
     return HTMLResponse(html)
 
 
-@router.post("/deals/{deal_id}/actions/approve")
+@router.post("/deals/{deal_id}/actions/approve", dependencies=FORM_DEPS)
 def approve_action(
     request: Request,
     deal_id: str,
@@ -1231,7 +1240,7 @@ def draft_followup(request: Request, deal_id: str) -> Response:
     return HTMLResponse(html)
 
 
-@router.post("/deals/{deal_id}/send-followup")
+@router.post("/deals/{deal_id}/send-followup", dependencies=FORM_DEPS)
 def send_followup(
     request: Request,
     deal_id: str,
@@ -1338,7 +1347,7 @@ def rep_accountability(request: Request) -> HTMLResponse:
     return HTMLResponse(render_rep_dashboard_page(dashboard, user=user))
 
 
-@router.post("/deals/alerts/send")
+@router.post("/deals/alerts/send", dependencies=FORM_DEPS)
 def send_slack_alerts(request: Request) -> JSONResponse:
     settings = _sales_settings(request)
     with session_scope(request.app.state.session_factory) as session:

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 try:
     from sales_support_agent.config import ACTIVE_FOLLOW_UP_STATUSES, DEFAULT_STATUS_POLICIES, INACTIVE_STATUSES, ManagedFieldSettings, Settings, build_normalized_status_policies, normalize_status_key
+    from tests.settings_factory import make_settings
     from sales_support_agent.integrations.gmail import GmailClient, GmailIntegrationError
     from sales_support_agent.jobs.daily_digest import DailyDigestJob
     from sales_support_agent.jobs.mailbox_sync import GmailMailboxSyncJob
@@ -36,24 +37,17 @@ class _Response:
 
 
 def _build_settings(database_path: Path) -> Settings:
-    return Settings(
-        app_name="sales-support-agent",
+    """Only the fields this suite depends on; the rest come from the factory so a
+    new ``Settings`` field can never break these tests again."""
+    return make_settings(
         admin_username="admin",
         admin_password="password",
         admin_session_secret="secret",
         admin_cookie_name="cookie",
-        admin_session_ttl_hours=24,
         clickup_api_token="token",
-        clickup_base_url="https://api.clickup.com/api/v2",
         clickup_list_id="list-123",
-        clickup_request_timeout_seconds=30,
-        clickup_discovery_sample_size=10,
-        stale_lead_scan_max_tasks=5,
-        stale_lead_scan_sync_max_tasks=7,
         stale_lead_slack_digest_enabled=False,
         stale_lead_slack_digest_mention_channel=False,
-        stale_lead_slack_digest_max_items=20,
-        stale_lead_immediate_alert_urgencies=(),
         daily_digest_enabled=True,
         daily_digest_email_to=("david@anatainc.com",),
         daily_digest_email_cc=(),
@@ -63,9 +57,6 @@ def _build_settings(database_path: Path) -> Settings:
         slack_channel_id="channel-123",
         slack_assignee_map={},
         slack_immediate_event_types=("inbound_reply_received", "meeting_notes_missing"),
-        gmail_api_base_url="https://gmail.googleapis.com/gmail/v1",
-        gmail_oauth_token_url="https://oauth2.googleapis.com/token",
-        gmail_access_token="",
         gmail_client_id="client-id",
         gmail_client_secret="client-secret",
         gmail_refresh_token="refresh-token",
@@ -75,31 +66,6 @@ def _build_settings(database_path: Path) -> Settings:
         gmail_source_domains=("fulfil.com",),
         sales_agent_db_url=f"sqlite:///{database_path}",
         internal_api_key="internal-key",
-        discovery_snapshot_path=Path("runtime/clickup_schema_snapshot.json"),
-        use_due_date_for_follow_up=False,
-        openai_api_key="",
-        openai_model="gpt-4o-mini",
-        instantly_webhook_secret="",
-        instantly_webhook_secret_header="X-Instantly-Webhook-Secret",
-        instantly_webhook_allowed_event_types=("reply_received",),
-        google_sheets_api_base_url="",
-        google_sheets_spreadsheet_id="",
-        google_sheets_sales_range="",
-        google_service_account_json="",
-        canva_api_base_url="",
-        canva_authorize_url="",
-        canva_token_url="",
-        canva_client_id="",
-        canva_client_secret="",
-        canva_redirect_uri="",
-        canva_brand_template_id="",
-        canva_scopes=(),
-        canva_token_secret="",
-        deck_canva_poll_interval_seconds=5,
-        deck_canva_poll_attempts=1,
-        deck_competitor_required_columns=(),
-        deck_competitor_allowed_columns=(),
-        deck_required_template_fields=(),
         active_statuses=tuple(normalize_status_key(status) for status in ACTIVE_FOLLOW_UP_STATUSES),
         inactive_statuses=tuple(normalize_status_key(status) for status in INACTIVE_STATUSES),
         managed_fields=ManagedFieldSettings(),
@@ -118,6 +84,11 @@ class _FakeSlackClient:
 
 
 class _FailingGmailClient:
+    #: Mirrors GmailClient, which exposes the mailbox it is bound to; the sync
+    #: job reads these to attribute signals when no explicit account is passed.
+    account_key = "primary"
+    account_label = "Primary inbox"
+
     def is_configured(self) -> bool:
         return True
 
@@ -232,6 +203,11 @@ class GmailJobTests(unittest.TestCase):
         init_database(self.session_factory)
 
     def tearDown(self) -> None:
+        # Windows refuses to delete a SQLite file while the pool still holds it
+        # open, so drop the connections before removing the directory.
+        bind = getattr(self.session_factory, "kw", {}).get("bind")
+        if bind is not None:
+            bind.dispose()
         self.tempdir.cleanup()
 
     def test_mailbox_sync_returns_failed_summary_for_auth_error(self) -> None:

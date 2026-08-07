@@ -70,6 +70,14 @@ class StaleLeadJob:
             .order_by(LeadMirror.updated_at.asc(), LeadMirror.last_sync_at.asc())
         )
         leads = list(self.session.execute(query).scalars())
+        active_leads = [
+            lead for lead in leads
+            if is_active_pipeline_status(
+                lead.status or "",
+                active_statuses=self.settings.active_statuses,
+                inactive_statuses=self.settings.inactive_statuses,
+            )
+        ]
 
         inspected = 0
         alerted = 0
@@ -82,15 +90,9 @@ class StaleLeadJob:
         digest_posted = False
         urgency_counts: dict[str, int] = {}
         assignee_counts: dict[str, int] = {}
-        for lead in leads:
+        for lead in active_leads:
             if processing_limit and inspected >= processing_limit:
                 break
-            if not is_active_pipeline_status(
-                lead.status or "",
-                active_statuses=self.settings.active_statuses,
-                inactive_statuses=self.settings.inactive_statuses,
-            ):
-                continue
             inspected += 1
             try:
                 comments = self.clickup_client.get_task_comments(lead.clickup_task_id)
@@ -209,10 +211,21 @@ class StaleLeadJob:
                         after={},
                     )
 
+        # Leads the scan cap kept it from ever looking at. Reported so a capped
+        # run can never read as full coverage of the active pipeline.
+        not_inspected = max(0, len(active_leads) - inspected)
+        # A run that failed to refresh from ClickUp, or that failed on individual
+        # leads, is not a successful run. Matches daily_digest and mailbox_sync,
+        # which have always recorded failure honestly.
+        run_status = "failed" if (failed or sync_failed) else "success"
         self.audit.finish_run(
             run,
-            status="success",
+            status=run_status,
             summary={
+                "run_status": run_status,
+                "active_leads": len(active_leads),
+                "not_inspected": not_inspected,
+                "scan_truncated": not_inspected > 0,
                 "inspected": inspected,
                 "alerted": alerted,
                 "immediate_alerted": immediate_alerted,
@@ -230,6 +243,10 @@ class StaleLeadJob:
         )
         return {
             "status": "ok",
+            "run_status": run_status,
+            "active_leads": len(active_leads),
+            "not_inspected": not_inspected,
+            "scan_truncated": not_inspected > 0,
             "inspected": inspected,
             "alerted": alerted,
             "immediate_alerted": immediate_alerted,

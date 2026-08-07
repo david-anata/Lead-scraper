@@ -31,7 +31,12 @@ from sales_support_agent.api.building_agreement_readiness_router import (
     upsert_agreement_template,
 )
 from sales_support_agent.models.database import session_scope
+from sales_support_agent.integrations.building_google_docs import (
+    BuildingContractDocsClient,
+    BuildingGoogleDocsError,
+)
 from sales_support_agent.models.entities import (
+    BuildingAgreement,
     BuildingAgreementTemplate,
     BuildingAuditEvent,
 )
@@ -607,6 +612,83 @@ def contract_document(
     ))
 
 
+@router.post("/{agreement_id}/google-doc", dependencies=FORM_DEPS)
+def create_contract_google_doc(
+    agreement_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.agreements.prepare")),
+) -> RedirectResponse:
+    """Copy the approved template Doc and fill it from the frozen package.
+
+    Creates a draft and stops. Nothing is emailed, no signature is requested,
+    and the template's signature block is untouched because only placeholder
+    text is replaced.
+    """
+
+    with session_scope(request.app.state.session_factory) as session:
+        contract = load_contract_detail(session, agreement_id)
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Contract not found.")
+    if contract["preparation_status"] != "approved":
+        return _detail_redirect(
+            agreement_id,
+            error="Approve the contract package before creating the signing draft.",
+        )
+
+    snapshot = dict(contract.get("snapshot") or {})
+    merge_values = dict(snapshot.get("merge_values") or {})
+    values = {
+        field: format_merge_value(field, value)
+        for field, value in merge_values.items()
+    }
+    # Useful in a contract even though they are not merge fields.
+    values.setdefault("customer_name", contract["customer_name"])
+    values.setdefault("event_space", contract["space_name"])
+
+    client = BuildingContractDocsClient()
+    if not client.configured:
+        return _detail_redirect(agreement_id, error=client.readiness_error)
+    try:
+        missing = sorted(set(client.template_placeholders()) - set(values))
+        if missing:
+            return _detail_redirect(
+                agreement_id,
+                error=(
+                    "The template uses placeholders this booking cannot fill: "
+                    + ", ".join(missing)
+                    + ". Fix the template or the booking before drafting."
+                ),
+            )
+        created = client.create_contract_draft(
+            title=f"{contract['customer_name']} · {contract['space_name']} · contract",
+            values=values,
+        )
+    except BuildingGoogleDocsError as exc:
+        return _detail_redirect(agreement_id, error=str(exc))
+
+    with session_scope(request.app.state.session_factory) as session:
+        agreement = session.get(BuildingAgreement, agreement_id)
+        if agreement is not None:
+            agreement.document_url = created["document_url"]
+            session.add(agreement)
+        session.add(BuildingAuditEvent(
+            entity_type="agreement",
+            entity_id=agreement_id,
+            action="contract_google_doc_drafted",
+            actor=_actor(user),
+            after_json={
+                "document_id": created["document_id"],
+                "document_url": created["document_url"],
+                "sent": False,
+                "signature_requested": False,
+            },
+        ))
+    return _detail_redirect(
+        agreement_id,
+        notice="Contract Doc created. Nothing was sent; request the signature from Google Docs.",
+    )
+
+
 @router.get("/{agreement_id}", response_class=HTMLResponse)
 def contract_detail(
     agreement_id: str,
@@ -638,6 +720,8 @@ def contract_detail(
         can_approve=_may(user, "building.agreements.approve"),
         can_prepare_signature=_may(user, "building.agreements.prepare"),
         can_prepare_payment=_may(user, "building.payments.prepare"),
+        google_doc_url=str(contract.get("document_url") or ""),
+        google_doc_error=BuildingContractDocsClient().readiness_error,
         can_manage=_may(user, "building.manage"),
         csrf_token=csrf_token(user),
         notice=notice,
