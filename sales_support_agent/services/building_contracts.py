@@ -474,6 +474,8 @@ def load_contract_detail(session: Any, agreement_id: str) -> Optional[dict[str, 
         "space_name": str(space.name if space else "") or "Unlinked space",
         "reservation_id": str(agreement.reservation_id or ""),
         "reservation_status": str(reservation.status if reservation else ""),
+        # The lead this contract came from, so the two are one click apart.
+        "inquiry_id": str(reservation.inquiry_id if reservation else "") or "",
         "hold_expires_at": hold_expires_at,
         "hold_active": hold_active,
         "owner": str(reservation.assigned_owner if reservation else ""),

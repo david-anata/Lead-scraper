@@ -251,6 +251,37 @@ def _calendar_section(
         </section>'''
 
 
+def _contract_link(data: dict[str, Any], *, csrf_token: str) -> str:
+    """Offer to create the contract, or link to the one this lead already has."""
+
+    agreement = dict(data.get("agreement") or {})
+    if agreement:
+        state = str(agreement.get("status") or "").replace("_", " ")
+        signing = (
+            f' · <a href="{_esc(agreement.get("document_url"))}" target="_blank" '
+            'rel="noopener">Open the signing Doc</a>'
+            if agreement.get("document_url")
+            else ""
+        )
+        return (
+            '<div class="lead-price__contract">'
+            f'<a class="lead-button lead-button--primary" '
+            f'href="/admin/building/contracts/{_esc(agreement.get("id"))}">'
+            f'Open the contract</a>'
+            f'<span>Version {_esc(agreement.get("version"))} · {_esc(state)}{signing}</span>'
+            "</div>"
+        )
+    return (
+        '<form class="lead-price__contract" method="post" '
+        f'action="/admin/building/inquiries/{_esc(data.get("id"))}/contract">'
+        f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+        '<button class="lead-button" type="submit">Create the contract</button>'
+        "<span>Writes this pricing into the booking and prepares the contract. "
+        "Nothing is sent.</span>"
+        "</form>"
+    )
+
+
 def _confirm_contract_panel(
     data: dict[str, Any],
     *,
@@ -695,13 +726,9 @@ def render_inquiry_workspace(
         '<span data-price-status>Applies to this lead only. Nothing is sent.</span>'
         "</div></form>"
         # The contract is an output of the lead, not a separate place to go.
-        f'<form class="lead-price__contract" method="post" '
-        f'action="/admin/building/inquiries/{_esc(data.get("id"))}/contract">'
-        f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
-        '<button class="lead-button" type="submit">Create the contract</button>'
-        "<span>Writes this pricing into the booking and prepares the contract. "
-        "Nothing is sent.</span>"
-        "</form>"
+        # Once it exists the lead links straight to it rather than offering to
+        # make a second one.
+        + _contract_link(data, csrf_token=csrf_token)
         + (
             '<p class="lead-price__standard">Standard rates: '
             + ", ".join(

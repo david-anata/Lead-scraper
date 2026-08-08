@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -710,6 +710,92 @@ def create_contract_google_doc(
         agreement_id,
         notice="Contract Doc created. Nothing was sent; request the signature from Google Docs.",
     )
+
+
+#: Readiness runs in this order, so a step already past can be skipped rather
+#: than re-run into a refusal.
+_READINESS_ORDER = ("prepared", "in_review", "approved")
+
+
+@router.post("/{agreement_id}/ready-to-send", dependencies=FORM_DEPS)
+def make_contract_ready_to_send(
+    agreement_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.agreements.approve")),
+) -> RedirectResponse:
+    """Approve the contract and its payment request, then draft the signing copy.
+
+    The review and approval steps existed as separate clicks because one person
+    prepares and another approves. When the same authorised person does both,
+    seven confirmations say nothing seven times. Each transition is still made
+    individually and still writes its own audit record — only the clicking is
+    gone, and the permission needed to do it is unchanged.
+    """
+
+    key = _internal_key(request)
+    actor = _actor(user)
+    with session_scope(request.app.state.session_factory) as session:
+        contract = load_contract_detail(session, agreement_id)
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Contract not found.")
+
+    def advance(current: str, run: Any) -> Optional[str]:
+        """Walk a readiness record up to approved, skipping what is behind us."""
+
+        try:
+            start = _READINESS_ORDER.index(current)
+        except ValueError:
+            return f"This contract is {current.replace('_', ' ')} and cannot be approved."
+        for target in _READINESS_ORDER[start + 1:]:
+            try:
+                run(target)
+            except (HTTPException, ValidationError, ValueError) as exc:
+                return str(getattr(exc, "detail", exc))
+        return None
+
+    problem = advance(
+        str(contract["preparation_status"]),
+        lambda target: transition_agreement_package(
+            agreement_id,
+            ReadinessTransitionInput(
+                target_status=target,
+                confirmation=f"{'REVIEW' if target == 'in_review' else 'APPROVE'} AGREEMENT {agreement_id}",
+                actor=actor,
+            ),
+            request,
+            key,
+        ),
+    )
+    if problem:
+        return _detail_redirect(agreement_id, error=problem)
+
+    payment = dict(contract.get("payment") or {})
+    payment_id = str(payment.get("id") or "")
+    if payment_id:
+        problem = advance(
+            str(payment.get("status") or ""),
+            lambda target: transition_payment_readiness(
+                payment_id,
+                ReadinessTransitionInput(
+                    target_status=target,
+                    confirmation=f"{'REVIEW' if target == 'in_review' else 'APPROVE'} PAYMENT {payment_id}",
+                    actor=actor,
+                ),
+                request,
+                key,
+            ),
+        )
+        if problem:
+            return _detail_redirect(agreement_id, error=problem)
+
+    if contract.get("document_url"):
+        return _detail_redirect(
+            agreement_id,
+            notice="Contract approved. The signing copy already exists.",
+        )
+    # The signing copy is the point of the exercise, so it is made here rather
+    # than left as one more button to find.
+    return create_contract_google_doc(agreement_id, request, user)
 
 
 @router.get("/{agreement_id}", response_class=HTMLResponse)

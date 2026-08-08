@@ -459,6 +459,33 @@ def render_contract_detail(
         for item in contract["audit"]
     ) or '<tr><td colspan="4">No audit history for this contract yet.</td></tr>'
 
+    # One action, at the top, for the person who both prepares and approves.
+    # The step-by-step forms stay below for a split-duty review.
+    ready = str(contract["preparation_status"]) == "approved" and bool(
+        google_doc_url
+    )
+    one_step = ""
+    if contract["verified"] and can_approve and not ready:
+        one_step = f"""<section class="app-panel app-panel--lead">
+      <h2>Ready this contract</h2>
+      <p class="app-muted">Approves the contract and its payment request, then
+      creates the Google Doc you send for signature. Every step is recorded
+      separately. Nothing is emailed and no signature is requested.</p>
+      <form method="post" action="{CONTRACTS_URL}/{_esc(contract['id'])}/ready-to-send">
+        <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+        <button class="admin-btn" type="submit">Approve and create the signing copy</button>
+      </form>
+    </section>"""
+    elif ready:
+        one_step = f"""<section class="app-panel app-panel--lead">
+      <h2>Ready to send</h2>
+      <p class="app-muted">Open the Doc, read it through, then use
+      <strong>Tools &rarr; eSignature</strong> in Google Docs to send it to
+      {_esc(str(signature.get("signer_email") or contract["customer_email"]))}.
+      Agent does not send it for you.</p>
+      <p><a class="admin-btn" href="{_esc(google_doc_url)}" target="_blank" rel="noopener">Open the contract Doc</a></p>
+    </section>"""
+
     actions: list[str] = []
     agreement_next = {
         "prepared": (
@@ -532,10 +559,12 @@ def render_contract_detail(
       </form>""")
     if (
         contract["verified"]
-        and signature.get("status") == "approved"
+        and contract["preparation_status"] == "approved"
         and has_document
     ):
-        # Google Docs path: Agent copies the approved template and fills it in.
+        # Drafting the Doc only ever needed an approved agreement. Gating it on
+        # the QuickBooks handoff being approved too hid it behind three steps
+        # that have nothing to do with Google.
         # It never sends and never signs — the signature block comes from the
         # template untouched, and requesting the signature stays a Docs action.
         if google_doc_url:
@@ -646,20 +675,35 @@ def render_contract_detail(
           <span class="app-muted">Records what QuickBooks already did. Agent sends nothing and does not infer a signature.</span>
         </div>
       </form>""")
+    # The individual steps stay available for a split-duty review, folded away
+    # so the page leads with the one thing most people came here to do.
     actions_section = (
-        f'<section class="admin-panel"><h2>Actions</h2><div class="app-action-grid">{"".join(actions)}</div></section>'
+        '<section class="admin-panel"><h2>Actions</h2>'
+        '<details class="app-step-by-step"><summary>Work the steps individually'
+        '</summary><div class="app-action-grid">' + "".join(actions)
+        + "</div></details></section>"
         if actions
         else '<section class="admin-panel"><h2>Actions</h2><div class="app-state-panel">'
         "<h3>No action available</h3><p>Either this record is unverified or your "
         "role does not grant contract approval.</p></div></section>"
     )
 
-    body = f"""<p class="app-backlink"><a href="{CONTRACTS_URL}">← All contracts</a></p>
+    # A contract is an output of a lead, so the way back to that lead belongs
+    # at the top rather than in a list of record identifiers.
+    lead_id = str(contract.get("inquiry_id") or "")
+    backlink = (
+        f'<p class="app-backlink"><a href="/admin/building/inquiries/{_esc(lead_id)}">'
+        f'← Back to {_esc(contract["customer_name"])}’s lead</a>'
+        f' · <a href="{CONTRACTS_URL}">All contracts</a></p>'
+        if lead_id
+        else f'<p class="app-backlink"><a href="{CONTRACTS_URL}">← All contracts</a></p>'
+    )
+    body = f"""{backlink}
     <header class="app-page-header">
       <div>
         <p class="app-eyebrow">Contract · v{_esc(contract['version'])}</p>
         <h1>{_esc(contract['customer_name'])}</h1>
-        <p>{_esc(contract['contract_type_label'])} contract for {_esc(contract['space_name'])}, {_esc(_when(contract['starts_at'], with_time=False))}. Agent freezes the terms; QuickBooks Contract Builder is the signature and contract workspace.</p>
+        <p>{_esc(contract['contract_type_label'])} contract for {_esc(contract['space_name'])}, {_esc(_when(contract['starts_at'], with_time=False))}. Agent freezes the terms; the signature is requested from Google Docs.</p>
       </div>
       <div class="app-page-actions">
         {_status(contract['state_label'], contract['state_modifier'])}
@@ -668,6 +712,7 @@ def render_contract_detail(
       </div>
     </header>
     {_messages(notice, error)}
+    {one_step}
     <div class="app-metric-strip">
       {_metric(_money(contract['amount_cents'], contract['currency']), "Contract value")}
       {_metric(_money(int(payment.get('amount_cents') or 0), str(payment.get('currency') or contract['currency'])), "Required payment")}

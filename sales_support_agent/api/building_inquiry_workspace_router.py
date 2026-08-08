@@ -425,6 +425,21 @@ def inquiry_workspace(
                 for row in activity
             ],
         }
+        if reservation is not None:
+            # A contract belongs to the lead that produced it, so the lead has
+            # to be able to reach it without going through a separate section.
+            agreement = session.execute(
+                select(BuildingAgreement)
+                .where(BuildingAgreement.reservation_id == reservation.id)
+                .order_by(BuildingAgreement.version.desc())
+            ).scalars().first()
+            if agreement is not None:
+                data["agreement"] = {
+                    "id": agreement.id,
+                    "version": agreement.version,
+                    "status": str(agreement.preparation_status or ""),
+                    "document_url": str(agreement.document_url or ""),
+                }
         if inquiry.kind == "event" and reservation is None:
             data.update(
                 _calendar_view(
