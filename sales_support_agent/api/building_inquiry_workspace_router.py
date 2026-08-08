@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Any, Optional
 from zoneinfo import ZoneInfo
 from urllib.parse import quote_plus
 from uuid import uuid4
@@ -26,6 +26,12 @@ from sales_support_agent.models.entities import (
 )
 from sales_support_agent.services.admin_nav import render_agent_nav
 from sales_support_agent.services.auth_deps import require_tool
+from sales_support_agent.services.building_event_calendar import (
+    access_window,
+    clock_label,
+    guest_hour_options,
+    month_availability,
+)
 from sales_support_agent.services.building_inquiry_workspace import (
     is_test_inquiry,
     render_inquiry_workspace,
@@ -64,6 +70,117 @@ router = APIRouter(
     prefix="/admin/building/inquiries",
     tags=["building-inquiry-workspace"],
 )
+
+
+def _clock_value(raw: Any) -> str:
+    """Read a stored time as a whole-hour option value, or return empty."""
+
+    text = str(raw or "").strip().upper().replace(".", "")
+    if not text:
+        return ""
+    for pattern in ("%I:%M %p", "%I %p", "%H:%M", "%H"):
+        try:
+            return f"{datetime.strptime(text, pattern).hour:02d}:00"
+        except ValueError:
+            continue
+    return ""
+
+
+def _calendar_view(
+    session: Any,
+    *,
+    inquiry: BuildingInquiry,
+    details: dict[str, Any],
+    month: str,
+    date_choice: str,
+) -> dict[str, Any]:
+    """Build the month grid and, when a day is chosen, that day's hours.
+
+    The prospect's own submission decides what is preselected, so an operator
+    confirms a date rather than retyping one that is already on the page.
+    """
+
+    offering = session.execute(
+        select(BuildingOffering)
+        .where(BuildingOffering.offering_type == "event")
+        .order_by(BuildingOffering.name)
+    ).scalars().first()
+    if offering is None:
+        return {}
+
+    preferred = inquiry.preferred_date
+    selected: Optional[date] = None
+    for candidate in (date_choice, preferred.isoformat() if preferred else ""):
+        try:
+            selected = date.fromisoformat(str(candidate))
+            break
+        except ValueError:
+            continue
+    try:
+        shown = date.fromisoformat(f"{month}-01") if month else None
+    except ValueError:
+        shown = None
+    if shown is None:
+        shown = (selected or datetime.now(MOUNTAIN).date()).replace(day=1)
+
+    requested: list[date] = []
+    for raw in (
+        preferred.isoformat() if preferred else "",
+        details.get("alternateDate") or details.get("alternate_date") or "",
+        details.get("backupDate2") or details.get("backup_date_2") or "",
+    ):
+        try:
+            requested.append(date.fromisoformat(str(raw)))
+        except ValueError:
+            continue
+
+    calendar_client = BuildingGoogleCalendarClient()
+    view = month_availability(
+        session,
+        calendar=calendar_client,
+        month=shown,
+        space_id=offering.space_id,
+        exclude_inquiry_id=inquiry.id,
+        requested=requested,
+    )
+    result: dict[str, Any] = {"calendar": view}
+    if selected is None or not any(
+        cell["iso"] == selected.isoformat() and cell["selectable"]
+        for cell in view["cells"]
+    ):
+        return result
+
+    busy = view["busy"].get(selected.isoformat(), [])
+    options = guest_hour_options(busy, selected)
+    open_values = [item["value"] for item in options if not item["taken"]]
+    guest_start = _clock_value(details.get("guestStartTime")) or (
+        open_values[0] if open_values else options[0]["value"]
+    )
+    guest_end = _clock_value(details.get("guestEndTime")) or (
+        open_values[-1] if open_values else options[-1]["value"]
+    )
+    setup, guests_in, guests_out, teardown = access_window(
+        selected,
+        time(int(guest_start[:2])),
+        time(int(guest_end[:2])),
+    )
+
+    def stamp(value: datetime) -> str:
+        return value.strftime("%a %b %d, ") + clock_label(value.hour)
+
+    result.update({
+        "selected_date": selected.isoformat(),
+        "selected_label": selected.strftime("%A, %B %d, %Y"),
+        "hour_options": options,
+        "guest_start": guest_start,
+        "guest_end": guest_end,
+        "preview_window": {
+            "setup": stamp(setup),
+            "teardown": stamp(teardown),
+            "guests": f"{clock_label(guests_in.hour)} to {clock_label(guests_out.hour)}",
+        },
+    })
+    return result
 
 
 def _seeded_pricing(session: Any, payload: dict[str, Any]) -> dict[str, Any]:
@@ -140,6 +257,8 @@ def inquiry_workspace(
     request: Request,
     notice: str = "",
     error: str = "",
+    month: str = "",
+    date_choice: str = Query(default="", alias="date"),
     user: dict = Depends(require_tool("building.manage")),
 ) -> HTMLResponse:
     """Show one inquiry without exposing unrelated customer records."""
@@ -168,6 +287,9 @@ def inquiry_workspace(
             .where(
                 BuildingAuditEvent.entity_type == "inquiry",
                 BuildingAuditEvent.entity_id == inquiry.id,
+                # Autosaves stay in the record but not on the page: they are a
+                # keystroke mechanic, not something an operator did.
+                BuildingAuditEvent.action != "event_interview_autosaved",
             )
             .order_by(BuildingAuditEvent.created_at.desc())
             .limit(100)
@@ -259,6 +381,16 @@ def inquiry_workspace(
                 for row in activity
             ],
         }
+        if inquiry.kind == "event" and reservation is None:
+            data.update(
+                _calendar_view(
+                    session,
+                    inquiry=inquiry,
+                    details=public_details,
+                    month=month,
+                    date_choice=date_choice,
+                )
+            )
     return HTMLResponse(
         render_inquiry_workspace(
             navigation=render_agent_nav("building", user=user),
@@ -556,24 +688,25 @@ async def hold_date_from_lead(
         interview = dict((inquiry.payload_json or {}).get("_event_interview") or {})
         assigned_owner = str(inquiry.assigned_owner or "").strip()
 
-    def _at(field: str) -> Optional[datetime]:
+    # The operator picks a day and the guest hours; setup and teardown are the
+    # owner-set three-hour buffers, so there is nothing to retype and nothing to
+    # put out of order.
+    try:
+        event_day = date.fromisoformat(str(form.get("event_date") or "").strip())
+    except ValueError:
+        return fail("Choose a date on the calendar first.")
+    hours: list[time] = []
+    for field in ("guest_start_time", "guest_end_time"):
         raw = str(form.get(field) or "").strip()
-        if not raw:
-            return None
         try:
-            parsed = datetime.fromisoformat(raw)
+            hours.append(time.fromisoformat(raw))
         except ValueError:
-            return None
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=MOUNTAIN)
-
-    setup = _at("setup_starts_at")
-    guest_start = _at("guest_starts_at")
-    guest_end = _at("guest_ends_at")
-    teardown = _at("teardown_ends_at")
-    if not all((setup, guest_start, guest_end, teardown)):
-        return fail("Give the full window: setup, guests in, guests out, teardown.")
-    if not setup <= guest_start < guest_end <= teardown:
-        return fail("The window must run setup, guests in, guests out, teardown in order.")
+            return fail("Choose when guests arrive and when they leave.")
+    if hours[0] == hours[1]:
+        return fail("Guests cannot arrive and leave at the same time.")
+    setup, guest_start, guest_end, teardown = access_window(
+        event_day, hours[0], hours[1]
+    )
 
     try:
         attendance = int(str(form.get("attendance") or "0").strip() or 0)

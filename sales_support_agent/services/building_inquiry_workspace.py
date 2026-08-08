@@ -125,6 +125,185 @@ def is_test_inquiry(*, name: str, email: str, source: str) -> bool:
     )
 
 
+#: Activity entries shown before the rest folds away.
+ACTIVITY_VISIBLE = 3
+
+#: How each calendar state reads to an operator, and the tone it carries.
+_DAY_STATES = {
+    "open": ("Open", "open"),
+    "pending": ("Held", "pending"),
+    "booked": ("Booked", "booked"),
+    "external": ("Busy", "external"),
+    "heads_up": ("Next to a full day", "headsup"),
+}
+
+
+def _calendar_section(
+    data: dict[str, Any],
+    *,
+    interview: dict[str, Any],
+    csrf_token: str,
+    hold_control: str,
+) -> str:
+    """Render the month calendar and, once a day is chosen, its time picker.
+
+    Choosing a date is a link, not a script, so the page works the same way the
+    rest of Agent does and a chosen date survives a refresh.
+    """
+
+    view = dict(data.get("calendar") or {})
+    inquiry_id = _esc(data.get("id"))
+    if not view:
+        # Rendering nothing here would leave an operator with no way to take a
+        # date and no reason given. Say what is missing instead.
+        return (
+            '<section class="lead-panel" id="date-review">'
+            '<div class="lead-panel__head"><div><h2>Pick the date</h2>'
+            '<p>No event offering is set up yet, so there is nothing to book '
+            'against. Add one under Building settings, then this calendar '
+            'appears.</p></div></div></section>'
+        )
+    selected = str(data.get("selected_date") or "")
+    base = f"/admin/building/inquiries/{inquiry_id}"
+
+    def month_link(value: Any, label: str, arrow: str) -> str:
+        target = f"{base}?month={_esc(value)}"
+        if selected:
+            target += f"&date={_esc(selected)}"
+        return (
+            f'<a class="lead-cal__nav" href="{target}#date-review" '
+            f'aria-label="{_esc(label)}">{arrow}</a>'
+        )
+
+    headers = "".join(
+        f"<th scope=\"col\"><abbr title=\"{day}\">{day[:3]}</abbr></th>"
+        for day in (
+            "Monday", "Tuesday", "Wednesday", "Thursday",
+            "Friday", "Saturday", "Sunday",
+        )
+    )
+    cells: list[str] = []
+    for cell in view.get("cells", []):
+        label, tone = _DAY_STATES.get(str(cell.get("state")), ("Open", "open"))
+        classes = [f"lead-cal__day lead-cal__day--{tone}"]
+        if not cell.get("in_month"):
+            classes.append("is-outside")
+        if cell.get("is_today"):
+            classes.append("is-today")
+        if cell.get("is_past"):
+            classes.append("is-past")
+        if cell.get("iso") == selected:
+            classes.append("is-selected")
+        if cell.get("requested"):
+            classes.append("is-requested")
+        inner = f'<span class="lead-cal__num">{_esc(cell.get("day"))}</span>'
+        note = str(cell.get("note") or "")
+        if cell.get("requested"):
+            note = f"Asked for · {note}" if note else "Asked for"
+        if note:
+            inner += f'<span class="lead-cal__note">{_esc(note)}</span>'
+        described = f"{cell.get('iso')} · {note or label}"
+        if cell.get("selectable"):
+            body = (
+                f'<a href="{base}?month={_esc(view.get("month"))}'
+                f'&date={_esc(cell.get("iso"))}#date-review" '
+                f'title="{_esc(described)}">{inner}</a>'
+            )
+        else:
+            body = f'<span title="{_esc(described)}">{inner}</span>'
+        cells.append(f'<td class="{" ".join(classes)}">{body}</td>')
+    weeks = "".join(
+        "<tr>" + "".join(cells[index:index + 7]) + "</tr>"
+        for index in range(0, len(cells), 7)
+    )
+    legend = "".join(
+        f'<span class="lead-cal__key lead-cal__key--{tone}">{_esc(label)}</span>'
+        for label, tone in (
+            ("Open", "open"), ("Held", "pending"), ("Booked", "booked"),
+            ("Busy elsewhere", "external"), ("Next to a full day", "headsup"),
+            ("Asked for", "requested"),
+        )
+    )
+    warning = ""
+    if str(view.get("calendar_status")) != "connected":
+        warning = (
+            '<p class="lead-cal__warning">The Anata Events calendar could not be '
+            'read, so only Agent\'s own holds are shown here. An open day is not '
+            'confirmed until that calendar is reachable.</p>'
+        )
+    picker = _time_picker(
+        data,
+        interview=interview,
+        csrf_token=csrf_token,
+        hold_control=hold_control,
+    )
+    return f'''<section class="lead-panel" id="date-review"><div class="lead-panel__head"><div><h2>Pick the date</h2><p>Open days are clear on both Agent and the Anata Events calendar. Choose a day, then the hours.</p></div></div>
+          <div class="lead-cal">
+            <div class="lead-cal__bar">{month_link(view.get("previous"), "Previous month", "←")}<strong>{_esc(view.get("label"))}</strong>{month_link(view.get("next"), "Next month", "→")}</div>
+            <table class="lead-cal__grid" aria-label="Arena availability for {_esc(view.get("label"))}"><thead><tr>{headers}</tr></thead><tbody>{weeks}</tbody></table>
+            <div class="lead-cal__legend">{legend}</div>{warning}
+          </div>{picker}
+        </section>'''
+
+
+def _time_picker(
+    data: dict[str, Any],
+    *,
+    interview: dict[str, Any],
+    csrf_token: str,
+    hold_control: str,
+) -> str:
+    """The hours for a chosen day, with setup and teardown already worked out."""
+
+    selected = str(data.get("selected_date") or "")
+    if not selected:
+        return (
+            '<p class="lead-cal__prompt">Choose an open day above to set the '
+            'hours and take the date.</p>'
+        )
+    options = list(data.get("hour_options") or [])
+    guest_start = str(data.get("guest_start") or "")
+    guest_end = str(data.get("guest_end") or "")
+
+    def select(name: str, chosen: str, label: str) -> str:
+        items = "".join(
+            '<option value="{value}"{sel}{dis}>{text}</option>'.format(
+                value=_esc(option.get("value")),
+                sel=" selected" if option.get("value") == chosen else "",
+                dis=" disabled" if option.get("taken") else "",
+                text=_esc(
+                    f"{option.get('label')} — taken"
+                    if option.get("taken")
+                    else option.get("label")
+                ),
+            )
+            for option in options
+        )
+        return f"<label>{_esc(label)}<select name=\"{name}\" required>{items}</select></label>"
+
+    window = dict(data.get("preview_window") or {})
+    summary = ""
+    if window:
+        summary = (
+            '<p class="lead-cal__summary">In the building '
+            f'<strong>{_esc(window.get("setup"))}</strong> to '
+            f'<strong>{_esc(window.get("teardown"))}</strong>, '
+            f'guests {_esc(window.get("guests"))}. '
+            'Setup and teardown are three hours either side.</p>'
+        )
+    return f'''<form class="lead-availability lead-availability--hold" method="post" action="/admin/building/inquiries/{_esc(data.get('id'))}/hold-date">
+            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+            <input type="hidden" name="event_date" value="{_esc(selected)}">
+            <h3>{_esc(data.get("selected_label") or selected)}</h3>
+            <div class="lead-availability__times">
+              {select("guest_start_time", guest_start, "Guests arrive")}
+              {select("guest_end_time", guest_end, "Guests leave")}
+              <label>Attendance<input type="number" name="attendance" min="1" value="{_esc(_attendance_guess(interview))}"></label>
+            </div>{summary}
+            {hold_control}
+          </form>'''
+
+
 def _status(value: str) -> str:
     normalized = str(value or "new").replace("_", " ")
     tone = (
@@ -456,17 +635,6 @@ def render_inquiry_workspace(
         if data.get("kind") == "event"
         else ""
     )
-    candidate_values = list(dict.fromkeys(
-        value for value in (
-            data.get("preferred_date"),
-            details.get("alternateDate") or details.get("alternate_date"),
-            details.get("backupDate2") or details.get("backup_date_2"),
-        ) if value
-    ))[:3]
-    candidate_inputs = "".join(
-        f'<label>Choice {index}<input type="date" name="candidate_date" value="{_esc(value)}"></label>'
-        for index, value in enumerate(candidate_values + [""] * (3 - len(candidate_values)), start=1)
-    )
     # A hold needs the same interview answers the hold endpoint checks. Saying
     # so here beats letting an operator fill the form and be refused after.
     hold_blockers = (
@@ -490,39 +658,37 @@ def render_inquiry_workspace(
             'Nothing is sent.</span></div>'
         )
     availability_section = (
-        f'''<section class="lead-panel" id="date-review"><div class="lead-panel__head"><div><h2>Date review</h2><p>Compare up to three dates against Agent holds and the Anata Events calendar. Unknown never means available.</p></div></div>
-          <form class="lead-availability" data-availability-form data-endpoint="/admin/building/inquiries/{_esc(data.get('id'))}/availability">
-            <div class="lead-availability__dates">{candidate_inputs}</div>
-            <div class="lead-availability__times">
-              <label>Setup begins<input type="time" name="setup_start_time" value="{_esc(details.get('accessStartTime') or '')}"></label>
-              <label>Guests begin<input type="time" name="guest_start_time" value="{_esc(details.get('guestStartTime') or '')}"></label>
-              <label>Guests end<input type="time" name="guest_end_time" value="{_esc(details.get('guestEndTime') or '')}"></label>
-              <label>Teardown ends<input type="time" name="teardown_end_time" value="{_esc(details.get('accessEndTime') or '')}"></label>
-            </div>
-            <div class="lead-interview__save"><button class="lead-button lead-button--primary" type="submit">Check dates</button><span>Read-only check; this creates no hold.</span></div>
-          </form><div class="lead-availability__results" data-availability-results aria-live="polite"></div>
-          <form class="lead-availability lead-availability--hold" method="post" action="/admin/building/inquiries/{_esc(data.get('id'))}/hold-date">
-            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-            <h3>Take this date</h3>
-            <div class="lead-availability__times">
-              <label>Setup begins<input type="datetime-local" name="setup_starts_at" required></label>
-              <label>Guests begin<input type="datetime-local" name="guest_starts_at" required></label>
-              <label>Guests end<input type="datetime-local" name="guest_ends_at" required></label>
-              <label>Teardown ends<input type="datetime-local" name="teardown_ends_at" required></label>
-            </div>
-            <div class="lead-availability__times">
-              <label>Attendance<input type="number" name="attendance" min="1" value="{_esc(_attendance_guess(interview))}"></label>
-            </div>
-            {hold_control}
-          </form>
-        </section>'''
+        _calendar_section(
+            data,
+            interview=interview,
+            csrf_token=csrf_token,
+            hold_control=hold_control,
+        )
         if data.get("kind") == "event" and not data.get("reservation_id")
         else ""
     )
-    activity_rows = "".join(
-        f"<li><time>{_esc(_when(item.get('created_at')))}</time><div><strong>{_esc(str(item.get('action') or 'updated').replace('_', ' ').title())}</strong><span>{_esc(item.get('actor') or 'System')}</span></div></li>"
-        for item in data.get("activity", [])
-    ) or "<li><div><strong>No activity recorded.</strong></div></li>"
+    def activity_line(item: dict[str, Any]) -> str:
+        action = str(item.get("action") or "updated").replace("_", " ").title()
+        return (
+            f"<li><time>{_esc(_when(item.get('created_at')))}</time><div>"
+            f"<strong>{_esc(action)}</strong>"
+            f"<span>{_esc(item.get('actor') or 'System')}</span></div></li>"
+        )
+
+    entries = list(data.get("activity", []))
+    recent = "".join(activity_line(item) for item in entries[:ACTIVITY_VISIBLE])
+    activity_rows = recent or "<li><div><strong>No activity recorded.</strong></div></li>"
+    older = entries[ACTIVITY_VISIBLE:]
+    if older:
+        # The rest stays on the page but folded away, so the record is complete
+        # without the lead reading as a log file.
+        activity_rows += (
+            '<li class="lead-activity__more"><details><summary>'
+            f"Show {len(older)} earlier {'entry' if len(older) == 1 else 'entries'}"
+            '</summary><ul class="lead-activity__list">'
+            + "".join(activity_line(item) for item in older)
+            + "</ul></details></li>"
+        )
     messages = ""
     if notice:
         messages += f'<div class="app-alert app-alert--notice"><p>{_esc(notice)}</p></div>'
@@ -541,8 +707,25 @@ def render_inquiry_workspace(
         </form>"""
     elif next_action["kind"] == "qualify":
         response_form = f'''<form method="post" action="/admin/building/inquiries/{_esc(data.get('id'))}/lifecycle"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input type="hidden" name="target_stage" value="qualified"><input type="hidden" name="assigned_owner" value="{_esc(data.get('assigned_owner'))}"><input type="hidden" name="channel" value="other"><input type="hidden" name="notes" value="Minimum event discovery completed; ready for date review."><button class="lead-button lead-button--primary" type="submit">Qualify for date review</button></form>'''
-    else:
-        response_form = f'<a class="lead-button lead-button--primary" href="{_esc(next_action["href"])}">{_esc(next_action["label"])} →</a>'
+
+    # Everything after responding now happens on this page, so a panel sending
+    # the operator to another screen is a leftover from when it did not. A
+    # prompt that points further down this page still earns its place.
+    on_page = next_action["kind"] in {"respond", "qualify"} or str(
+        next_action.get("href") or ""
+    ).startswith("#")
+    next_section = ""
+    if on_page:
+        if next_action["kind"] not in {"respond", "qualify"}:
+            response_form = (
+                f'<a class="lead-button lead-button--primary" '
+                f'href="{_esc(next_action["href"])}">{_esc(next_action["label"])} →</a>'
+            )
+        next_section = f"""
+      <section class="lead-next" aria-labelledby="lead-next-title">
+        <div><p class="app-eyebrow">Do this next</p><h2 id="lead-next-title">{_esc(next_action['title'])}</h2><p>{_esc(next_action['body'])}</p><div class="lead-next__contact"><a href="mailto:{_esc(data.get('email'))}">{_esc(data.get('email'))}</a><span>{_esc(data.get('phone') or 'No phone provided')}</span></div></div>
+        {response_form}
+      </section>"""
 
     body = f"""
       <header class="app-page-header lead-header">
@@ -554,11 +737,7 @@ def render_inquiry_workspace(
         </div>
         <div class="lead-header__states">{_status(stage)}{_status('test record') if data.get('is_test') else ''}</div>
       </header>
-      {messages}
-      <section class="lead-next" aria-labelledby="lead-next-title">
-        <div><p class="app-eyebrow">Do this next</p><h2 id="lead-next-title">{_esc(next_action['title'])}</h2><p>{_esc(next_action['body'])}</p><div class="lead-next__contact"><a href="mailto:{_esc(data.get('email'))}">{_esc(data.get('email'))}</a><span>{_esc(data.get('phone') or 'No phone provided')}</span></div></div>
-        {response_form}
-      </section>
+      {messages}{next_section}
       <section class="lead-layout">
         <div class="lead-stack">
           <section class="lead-panel"><div class="lead-panel__head"><div><h2>Original website submission</h2><p>The prospect's words, preserved under plain-language labels.</p></div></div><dl class="lead-details">{submitted_rows}</dl></section>
@@ -602,29 +781,6 @@ def render_inquiry_workspace(
         form.addEventListener('input', () => {{ clearTimeout(timer); timer = setTimeout(save, 900); }});
         form.addEventListener('change', () => {{ clearTimeout(timer); timer = setTimeout(save, 250); }});
       }})();
-      (() => {{
-        const form = document.querySelector('[data-availability-form]');
-        const output = document.querySelector('[data-availability-results]');
-        if (!form || !output || !window.fetch) return;
-        const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[char]));
-        form.addEventListener('submit', async event => {{
-          event.preventDefault();
-          const values = new FormData(form);
-          const dates = values.getAll('candidate_date').map(value => String(value).trim()).filter(Boolean);
-          if (!dates.length) {{ output.innerHTML = '<p class="app-alert app-alert--error">Add at least one candidate date.</p>'; return; }}
-          const params = new URLSearchParams({{dates: dates.join(',')}});
-          for (const key of ['setup_start_time','guest_start_time','guest_end_time','teardown_end_time']) params.set(key, String(values.get(key) || ''));
-          output.innerHTML = '<p>Checking Agent and Anata Events…</p>';
-          try {{
-            const response = await fetch(`${{form.dataset.endpoint}}?${{params}}`, {{headers:{{'Accept':'application/json'}}}});
-            const result = await response.json();
-            if (!response.ok) throw new Error(result.detail || 'Date review failed.');
-            const rows = result.dates.map(item => `<li><strong>${{esc(item.date)}}</strong><span class="app-status app-status--${{item.status === 'available' ? 'confirmed' : item.status === 'unknown' ? 'neutral' : 'blocked'}}">${{esc(item.status)}}</span><small>${{esc(item.message)}}</small></li>`).join('');
-            const alternatives = result.nearby_alternatives.length ? `<p><strong>Nearby options:</strong> ${{result.nearby_alternatives.map(item => esc(item.date)).join(', ')}}</p>` : '';
-            output.innerHTML = `<p>Checked ${{esc(result.checked_at)}} by ${{esc(result.checked_by)}}.</p><ul>${{rows}}</ul>${{alternatives}}<p><a class="lead-button lead-button--primary" href="/admin/building/bookings#review-event-date">Continue to governed hold</a></p>`;
-          }} catch (error) {{ output.innerHTML = `<p class="app-alert app-alert--error">${{esc(error.message)}} No hold was created.</p>`; }}
-        }});
-      }})();
       </script>
     """
     styles = """
@@ -640,6 +796,12 @@ def render_inquiry_workspace(
       .lead-delivery-actions{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px;border-top:1px solid var(--agent-border)}
       .lead-interview{border-top:1px solid var(--agent-border);scroll-margin-top:140px}.lead-interview>summary{padding:14px 20px;color:var(--agent-blue-strong);font-weight:800;cursor:pointer}.lead-interview form{display:grid;gap:16px;padding:0 20px 20px}.lead-interview__section{display:grid;gap:10px;margin:0;padding:16px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control)}.lead-interview__section legend{padding:0 6px;font-weight:800}.lead-price{display:grid;gap:14px;padding:0 20px 18px}.lead-price__grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.lead-price label{display:grid;gap:5px;font-weight:700;font-size:13px}.lead-price input{min-height:38px;padding:7px 9px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);font:14px/1.4 Inter,sans-serif}.lead-price__addons{display:grid;gap:8px}.lead-price__addons>span{font-weight:700;font-size:13px}.lead-price__addon{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:8px}.lead-price__total{font:800 1.1rem/1 Montserrat,sans-serif}.lead-price__contract{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:14px 0 0;border-top:1px solid var(--agent-border)}.lead-price__contract span{color:var(--agent-ink-muted);font-size:12px}.lead-price__note{display:block;font-weight:400;color:var(--agent-ink-muted);font-size:11px}.lead-price__standard{margin:0;padding:0 20px 18px;color:var(--agent-ink-muted);font-size:12px}.lead-pricing .is-num{text-align:right;font-variant-numeric:tabular-nums}.lead-pricing .is-total td{font-weight:800;border-top:2px solid var(--agent-border)}.lead-pricing{width:100%;border-collapse:collapse}.lead-pricing th,.lead-pricing td{padding:10px 12px;border-bottom:1px solid var(--agent-border);text-align:left}.lead-pricing th{color:var(--agent-ink-muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}.lead-pricing-wrap{padding:0 20px 18px}.lead-pricing-wrap p{margin:12px 0 0;color:var(--agent-ink-muted);font-size:13px}.lead-interview__more{margin:4px 0}.lead-interview__more>summary{padding:10px 4px;color:var(--agent-blue-strong);font-weight:800;cursor:pointer}.lead-interview__more>fieldset{margin-top:12px}.lead-interview__section>p{margin:0;color:var(--agent-ink-muted);font-size:13px}.lead-interview__section>span{color:var(--agent-blue-strong);font-size:12px;font-weight:800}.lead-interview__grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.lead-interview label{display:grid;gap:5px;font-weight:700}.lead-interview label.is-missing{order:-1}.lead-interview textarea{min-height:80px}.lead-call-guide{display:grid;gap:4px;margin:0 20px 16px;padding:14px;border-radius:var(--agent-radius-control);background:#f1f8fb}.lead-call-guide span{color:var(--agent-ink-muted);font-size:13px;line-height:1.5}.lead-interview__save{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.lead-interview__save span{color:var(--agent-ink-muted);font-size:12px}
       .lead-availability--hold{border-top:1px solid var(--agent-border);padding-top:16px;margin-top:4px}.lead-availability--hold h3{margin:0;font:800 .95rem/1.2 Montserrat,sans-serif}.lead-availability{display:grid;gap:14px;padding:0 20px 18px}.lead-availability__dates,.lead-availability__times{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.lead-availability__dates{grid-template-columns:repeat(3,minmax(0,1fr))}.lead-availability label{display:grid;gap:5px;font-weight:700}.lead-availability__results{padding:0 20px 20px}.lead-availability__results>p{color:var(--agent-ink-muted)}.lead-availability__results ul{display:grid;gap:8px;margin:0;padding:0;list-style:none}.lead-availability__results li{display:grid;grid-template-columns:130px auto minmax(0,1fr);gap:10px;align-items:center;padding:10px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control)}.lead-availability__results small{color:var(--agent-ink-muted)}
+      .lead-cal{display:grid;gap:14px;padding:0 20px 4px}.lead-cal__bar{display:flex;align-items:center;justify-content:space-between;gap:12px}.lead-cal__bar strong{font:800 1rem/1 Montserrat,sans-serif}.lead-cal__nav{display:inline-flex;align-items:center;justify-content:center;min-width:38px;min-height:38px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);color:var(--agent-blue-strong);font-weight:800;text-decoration:none}.lead-cal__nav:hover{background:#f1f8fb}
+      .lead-cal__grid{width:100%;border-collapse:collapse;table-layout:fixed}.lead-cal__grid th{padding:6px 0;color:var(--agent-ink-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}.lead-cal__grid abbr{text-decoration:none;border:0}.lead-cal__day{padding:2px;vertical-align:top}.lead-cal__day>a,.lead-cal__day>span{display:grid;gap:2px;align-content:start;min-height:58px;padding:6px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);text-decoration:none;color:inherit}.lead-cal__day>a:hover{border-color:var(--agent-blue-strong);background:#f1f8fb}.lead-cal__num{font-weight:800;font-size:13px}.lead-cal__note{color:var(--agent-ink-muted);font-size:10px;line-height:1.25}
+      .lead-cal__day--pending>a,.lead-cal__day--pending>span{background:#fff6e5;border-color:#e6c384}.lead-cal__day--booked>a,.lead-cal__day--booked>span{background:#eceff3;border-color:#c3cbd6;color:var(--agent-ink-muted)}.lead-cal__day--external>a,.lead-cal__day--external>span{background:#f4f1fa;border-color:#cec3e6;color:var(--agent-ink-muted)}.lead-cal__day--headsup>a,.lead-cal__day--headsup>span{background:#fffdf2;border-color:#ded7a8}.lead-cal__day.is-outside>a,.lead-cal__day.is-outside>span{opacity:.45}.lead-cal__day.is-past>a,.lead-cal__day.is-past>span{opacity:.35}.lead-cal__day.is-today .lead-cal__num{color:var(--agent-blue-strong)}.lead-cal__day.is-selected>a{border:2px solid var(--agent-blue-strong);background:#e8f4fa}
+      .lead-cal__legend{display:flex;flex-wrap:wrap;gap:8px}.lead-cal__key{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border:1px solid var(--agent-border);border-radius:999px;font-size:11px;font-weight:700;color:var(--agent-ink-muted)}.lead-cal__key--pending{background:#fff6e5;border-color:#e6c384}.lead-cal__key--booked{background:#eceff3;border-color:#c3cbd6}.lead-cal__key--external{background:#f4f1fa;border-color:#cec3e6}.lead-cal__key--headsup{background:#fffdf2;border-color:#ded7a8}.lead-cal__key--requested{border-left:4px solid var(--agent-blue-strong)}.lead-cal__day.is-requested>a,.lead-cal__day.is-requested>span{border-left:4px solid var(--agent-blue-strong)}
+      .lead-cal__warning{margin:0;padding:10px 12px;border:1px solid #e6c384;border-radius:var(--agent-radius-control);background:#fff6e5;font-size:12px}.lead-cal__prompt{margin:0;padding:0 20px 18px;color:var(--agent-ink-muted);font-size:13px}.lead-cal__summary{margin:0;color:var(--agent-ink-muted);font-size:13px}.lead-availability__times select{min-height:38px;padding:7px 9px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);font:14px/1.4 Inter,sans-serif}
+      .lead-activity__more{display:block}.lead-activity__more>summary{padding:8px 0;color:var(--agent-blue-strong);font-weight:800;cursor:pointer}.lead-activity__list{margin:0;padding:0;list-style:none}
       @media(max-width:900px){.lead-next,.lead-layout{grid-template-columns:1fr}.lead-next .lead-button{justify-self:start}}
       @media(max-width:600px){.lead-details,.lead-contact dl,.lead-interview__grid,.lead-availability__dates,.lead-availability__times,.lead-availability__results li{grid-template-columns:1fr}.lead-details dt,.lead-contact dt{padding-bottom:0}.lead-details dd,.lead-contact dd{padding-top:4px}.lead-activity li{grid-template-columns:1fr}.lead-panel__head{display:grid}.lead-next{padding:20px}.lead-response{width:100%}}
     </style>
