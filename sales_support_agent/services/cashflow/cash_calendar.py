@@ -507,6 +507,19 @@ def _event_html(event: Mapping[str, Any]) -> str:
       </li>"""
 
 
+def _charge_link(week: Mapping[str, Any], state: str, cents: int, note: str) -> str:
+    """A total you can open. Zero is not a link: there is nothing behind it."""
+    figure = f"<strong>{_money(cents)}</strong><small>{html.escape(note)}</small>"
+    if cents <= 0:
+        return figure
+    start = html.escape(str(week.get("start") or ""), quote=True)
+    return (
+        f'<a class="cash-calendar-weekly__open" '
+        f'href="/admin/finances/calendar/charges?week={start}&amp;state={state}" '
+        f'title="See the charges behind this">{figure}</a>'
+    )
+
+
 def _next_week_headline(calendar: Mapping[str, Any]) -> str:
     """One answer to "what leaves next week" so the table need not be read.
 
@@ -691,9 +704,9 @@ def render_cash_calendar_page(
         week_rows.append(f"""
           <tr>
             <th scope="row"><strong>{html.escape(str(week.get('label') or 'Week'))}</strong><small>{html.escape(str(week.get('date_label') or ''))}</small></th>
-            <td><strong>{_money(int(week.get('paid_cents') or 0))}</strong><small>{int(week.get('paid_count') or 0)} paid</small></td>
-            <td><strong>{_money(int(week.get('unpaid_cents') or 0))}</strong><small>{int(week.get('unpaid_count') or 0)} still due</small></td>
-            <td><strong>{_money(int(week.get('possible_cents') or 0))}</strong><small>{int(week.get('possible_count') or 0)} unconfirmed</small></td>
+            <td>{_charge_link(week, 'paid', int(week.get('paid_cents') or 0), f"{int(week.get('paid_count') or 0)} paid")}</td>
+            <td>{_charge_link(week, 'unpaid', int(week.get('unpaid_cents') or 0), f"{int(week.get('unpaid_count') or 0)} still due")}</td>
+            <td>{_charge_link(week, 'possible', int(week.get('possible_cents') or 0), f"{int(week.get('possible_count') or 0)} unconfirmed")}</td>
           </tr>""")
     day_rows: list[str] = []
     day_buttons: list[str] = []

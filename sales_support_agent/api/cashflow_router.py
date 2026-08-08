@@ -464,6 +464,100 @@ async def finance_cash_plan(request: Request):
     return HTMLResponse(render_cash_plan_page(brief))
 
 
+CHARGE_ANSWER_PATH = "/admin/finances/calendar/charges/answer"
+
+
+@router.get("/calendar/charges", response_class=HTMLResponse)
+async def finance_calendar_charges(
+    request: Request, week: str = "", state: str = "unpaid", flash: str = ""
+):
+    """The individual charges behind one figure in the weekly roll-up."""
+    from datetime import date as _date
+
+    from sales_support_agent.services.cashflow.charge_drilldown import (
+        build_charge_drilldown,
+        render_charge_panel,
+    )
+    from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
+    from sales_support_agent.services.cashflow.overview import _page_shell
+
+    try:
+        week_start = _date.fromisoformat(str(week)[:10])
+    except ValueError:
+        return _redirect_finance_error("That week could not be read, so nothing was opened.")
+
+    def _build() -> str:
+        from sales_support_agent.services.cashflow.bill_patterns import list_bill_patterns
+
+        calendar = load_cash_calendar()
+        try:
+            listing = list_bill_patterns()
+            patterns = [*listing.get("patterns", []), *listing.get("tracked", [])]
+        except Exception:
+            logger.exception("Bill patterns unavailable for the charge panel")
+            patterns = []
+        view = build_charge_drilldown(
+            calendar, week_start=week_start, state=state, patterns=patterns
+        )
+        return render_charge_panel(view, action=CHARGE_ANSWER_PATH)
+
+    try:
+        body = await asyncio.to_thread(_build)
+    except ValueError:
+        return _redirect_finance_error("Choose paid, still due, or possible.")
+    except Exception:
+        logger.exception("The charges behind that figure could not be listed")
+        return _redirect_finance_error("Those charges could not be listed. Nothing was changed.")
+    shell = (
+        '<div class="money-brief">'
+        + render_finance_nav("calendar", counts={})
+        + '<p><a class="btn btn-secondary btn-sm" href="/admin/finances/calendar">'
+        "Back to the calendar</a></p>" + body + "</div>"
+    )
+    return HTMLResponse(_page_shell("Charges", "calendar", shell, flash=flash))
+
+
+@router.post("/calendar/charges/answer")
+async def finance_calendar_charge_answer(
+    request: Request,
+    pattern_key: str = Form(""),
+    cadence: str = Form(""),
+    vendor: str = Form(""),
+    return_to: str = Form(""),
+):
+    """Record what a charge is. The same act as tracking it under What is coming,
+    written to the same place so one charge cannot have two answers."""
+    from sales_support_agent.services.cashflow.charge_drilldown import cadence_to_decision
+    from sales_support_agent.services.cashflow.bill_patterns import (
+        record_bill_pattern_decision,
+    )
+
+    request.state.finance_return_to = return_to or "/admin/finances/calendar"
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        decision = cadence_to_decision(str(cadence or "").strip())
+        await asyncio.to_thread(
+            record_bill_pattern_decision,
+            str(pattern_key or "").strip(),
+            decision,
+            actor=actor,
+            evidence={"said": cadence, "vendor": vendor, "from": "calendar"},
+        )
+    except ValueError as exc:
+        return _redirect_finance_error(f"That could not be saved: {exc}")
+    except Exception:
+        logger.exception("A charge answer could not be saved pattern_key=%s", pattern_key)
+        return _redirect_finance_error("That could not be saved. Nothing was changed.")
+    words = {
+        "monthly": "Noted as monthly. It now counts from its next date.",
+        "weekly": "Noted as weekly. It now counts from its next date.",
+        "one_time": "Noted as a one-off. We will keep watching this supplier.",
+        "not_a_bill": "Noted. We will stop suggesting this supplier.",
+    }
+    return _redirect_finance_home(words.get(cadence, "Saved."))
+
+
 @router.get("/calendar", response_class=HTMLResponse)
 async def finance_cash_calendar(request: Request, flash: str = ""):
     """Show posted, planned, and historically likely expenses by day."""

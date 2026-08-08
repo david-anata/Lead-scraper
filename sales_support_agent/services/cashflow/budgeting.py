@@ -1502,11 +1502,7 @@ def render_budget_page(
         updateSaveState();
         if (restored && unsaved) unsaved.textContent = `Recovered ${restored} protected draft change${restored === 1 ? '' : 's'}`;
       });
-      window.addEventListener('beforeunload', event => {
-        if (submitting || !stagedChanges().length) return;
-        event.preventDefault();
-        event.returnValue = '';
-      });
+      // No leave-page warning here either. See finance-workspace.js.
     })();
     </script>"""
     return _page_shell("Budget & savings", "budget", body, flash=flash)

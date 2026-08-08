@@ -212,11 +212,9 @@
     } catch (error) { announce(error.message, "error"); }
   });
 
-  window.addEventListener("beforeunload", event => {
-    if (!state.changes.length || state.allowNavigation) return;
-    event.preventDefault();
-    event.returnValue = "";
-  });
+  // No leave-page warning. Staged changes survive in the draft and are shown
+  // when the page is reopened, so blocking navigation bought nothing and fired
+  // on stale drafts the operator could not see anything unsaved for.
 
   window.FinanceWorkspace = {stage, replaceScope, persist, discard, reviewAndSave, openObject, getState: () => ({...state, changes: [...state.changes]})};
 

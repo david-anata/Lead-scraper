@@ -430,7 +430,11 @@ def test_budget_page_is_explicitly_advisory_and_explainable() -> None:
     assert "Discard draft" in page
     assert "finance-workspace.js" in page
     assert "localStorage" not in page
-    assert "beforeunload" in page
+    # Deliberately reversed on 2026-08-08. The leave-page warning blocked
+    # navigation to protect staged changes that already survive in the draft,
+    # and it fired on stale drafts where nothing unsaved was visible. The
+    # recovery notice below is what makes the warning unnecessary.
+    assert "beforeunload" not in page
     assert "Recovered ${restored} unsaved change" in page
     assert "has-unsaved-changes" in page
     assert 'data-trim-batch-form' in page
