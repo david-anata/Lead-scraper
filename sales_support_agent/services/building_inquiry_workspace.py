@@ -565,8 +565,8 @@ def render_inquiry_workspace(
         f"<p>Started from {_esc(seeded_from)}. Change anything here for this customer; "
         "the standard rate and every other lead stay as they are.</p></div>"
         f'<span class="lead-price__total">{_esc(pricing.get("currency") or "USD")} '
-        f'{_money(totals.get("total_cents"))}</span></div>'
-        f'<form class="lead-price" method="post" action="/admin/building/inquiries/{_esc(data.get("id"))}/pricing">'
+        f'<span data-total="total">{_money(totals.get("total_cents"))}</span></span></div>'
+        f'<form class="lead-price" data-price-form method="post" action="/admin/building/inquiries/{_esc(data.get("id"))}/pricing">'
         f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
         '<div class="lead-price__grid">'
         f'<label>Hourly rate<input name="hourly_rate" inputmode="decimal" '
@@ -589,21 +589,21 @@ def render_inquiry_workspace(
         'placeholder="Required if there is a discount"></label>'
         "</div>"
         '<table class="lead-pricing"><tbody>'
-        f'<tr><td>Venue</td><td class="is-num">{_money(totals.get("venue_cents"))}</td></tr>'
-        f'<tr><td>Cleaning</td><td class="is-num">{_money(totals.get("cleaning_cents"))}</td></tr>'
-        f'<tr><td>Add-ons</td><td class="is-num">{_money(totals.get("addons_cents"))}</td></tr>'
-        f'<tr><td>Subtotal</td><td class="is-num">{_money(totals.get("subtotal_cents"))}</td></tr>'
-        f'<tr><td>Discount</td><td class="is-num">-{_money(totals.get("discount_cents"))}</td></tr>'
-        f'<tr class="is-total"><td>Contract total</td><td class="is-num">{_money(totals.get("total_cents"))}</td></tr>'
-        f'<tr><td>Booking deposit</td><td class="is-num">{_money(totals.get("deposit_cents"))}</td></tr>'
+        f'<tr><td>Venue</td><td class="is-num" data-total="venue">{_money(totals.get("venue_cents"))}</td></tr>'
+        f'<tr><td>Cleaning</td><td class="is-num" data-total="cleaning">{_money(totals.get("cleaning_cents"))}</td></tr>'
+        f'<tr><td>Add-ons</td><td class="is-num" data-total="addons">{_money(totals.get("addons_cents"))}</td></tr>'
+        f'<tr><td>Subtotal</td><td class="is-num" data-total="subtotal">{_money(totals.get("subtotal_cents"))}</td></tr>'
+        f'<tr><td>Discount</td><td class="is-num">-<span data-total="discount">{_money(totals.get("discount_cents"))}</span></td></tr>'
+        f'<tr class="is-total"><td>Contract total</td><td class="is-num" data-total="total">{_money(totals.get("total_cents"))}</td></tr>'
+        f'<tr><td>Booking deposit</td><td class="is-num" data-total="deposit">{_money(totals.get("deposit_cents"))}</td></tr>'
         f'<tr><td>Security deposit <span class="lead-price__note">refundable, not part of the total</span></td>'
-        f'<td class="is-num">{_money(totals.get("security_deposit_cents"))}</td></tr>'
-        f'<tr class="is-total"><td>Due to book</td><td class="is-num">{_money(totals.get("due_to_book_cents"))}</td></tr>'
-        f'<tr><td>Balance before the event</td><td class="is-num">{_money(totals.get("balance_cents"))}</td></tr>'
+        f'<td class="is-num" data-total="security">{_money(totals.get("security_deposit_cents"))}</td></tr>'
+        f'<tr class="is-total"><td>Due to book</td><td class="is-num" data-total="due">{_money(totals.get("due_to_book_cents"))}</td></tr>'
+        f'<tr><td>Balance before the event</td><td class="is-num" data-total="balance">{_money(totals.get("balance_cents"))}</td></tr>'
         "</tbody></table>"
         '<div class="lead-interview__save">'
-        '<button class="lead-button lead-button--primary" type="submit">Save pricing</button>'
-        "<span>Applies to this lead only. Nothing is sent.</span>"
+        '<button class="lead-button lead-button--primary" type="submit" data-price-save>Save pricing</button>'
+        '<span data-price-status>Applies to this lead only. Nothing is sent.</span>'
         "</div></form>"
         # The contract is an output of the lead, not a separate place to go.
         f'<form class="lead-price__contract" method="post" '
@@ -781,6 +781,98 @@ def render_inquiry_workspace(
         form.addEventListener('input', () => {{ clearTimeout(timer); timer = setTimeout(save, 900); }});
         form.addEventListener('change', () => {{ clearTimeout(timer); timer = setTimeout(save, 250); }});
       }})();
+      (() => {{
+        // A live echo of compute_totals in building_lead_pricing.py. Every step
+        // below mirrors that function, including how it rounds, because a
+        // preview that disagrees with the saved number is worse than no preview.
+        const form = document.querySelector('[data-price-form]');
+        if (!form) return;
+        const status = form.querySelector('[data-price-status]');
+        const save = form.querySelector('[data-price-save]');
+        const contract = document.querySelector('.lead-price__contract button');
+        const settled = status ? status.textContent : '';
+        const cell = key => document.querySelectorAll(`[data-total="${{key}}"]`);
+        // Python rounds half to even; Math.round does not. On "1.005" that is a
+        // one cent disagreement, which is exactly the kind of thing nobody
+        // believes until it reaches an invoice.
+        const halfEven = value => {{
+          const low = Math.floor(value), rest = value - low;
+          if (Math.abs(rest - 0.5) > 1e-9) return Math.round(value);
+          return low % 2 === 0 ? low : low + 1;
+        }};
+        const cents = name => {{
+          const raw = String((form.elements[name] || {{}}).value ?? '')
+            .trim().replace(/,/g, '').replace(/\\$/g, '');
+          if (!raw) return 0;
+          const amount = Number(raw);
+          if (!Number.isFinite(amount)) return null;
+          return halfEven(amount * 100);
+        }};
+        const money = value => (value / 100).toLocaleString('en-US', {{
+          minimumFractionDigits: 2, maximumFractionDigits: 2,
+        }});
+        const recompute = () => {{
+          const rate = cents('hourly_rate');
+          const cleaning = cents('cleaning_fee');
+          const security = cents('security_deposit');
+          const discountRaw = cents('discount');
+          const hoursText = String((form.elements['hours'] || {{}}).value ?? '').trim();
+          const hours = hoursText === '' ? 0 : Number(hoursText);
+          const percentText = String((form.elements['deposit_percent'] || {{}}).value ?? '').trim();
+          const percent = percentText === '' ? 0 : Number(percentText);
+          let addons = 0, broken = false;
+          for (const field of form.querySelectorAll('[name^="addon_amount_"]')) {{
+            const value = cents(field.name);
+            if (value === null) {{ broken = true; break; }}
+            addons += Math.max(0, value);
+          }}
+          // Say which field is wrong. Blaming "the amounts" when the deposit
+          // percent is out of range sends someone hunting the wrong box.
+          let wrong = '';
+          if (broken || rate === null || cleaning === null
+              || security === null || discountRaw === null) {{
+            wrong = 'Amounts need to be numbers.';
+          }} else if (!Number.isInteger(hours) || hours < 0) {{
+            wrong = 'Hours needs to be a whole number.';
+          }} else if (!Number.isFinite(percent) || percent < 0 || percent > 100) {{
+            wrong = 'Deposit % needs to be between 0 and 100.';
+          }}
+          if (wrong) {{
+            // Leaving save enabled here would send the operator into a server
+            // refusal, and the redirect takes every unsaved edit with it.
+            if (save) save.disabled = true;
+            if (contract) contract.disabled = true;
+            if (status) status.textContent = wrong;
+            return;
+          }}
+          const venue = Math.max(0, hours) * Math.max(0, rate);
+          const subtotal = venue + Math.max(0, cleaning) + addons;
+          const discount = Math.min(Math.max(0, discountRaw), subtotal);
+          const total = subtotal - discount;
+          const bps = halfEven(percent * 100);
+          const deposit = Math.min(Math.floor((total * Math.max(0, bps) + 5000) / 10000), total);
+          const held = Math.max(0, security);
+          const values = {{
+            venue, cleaning: Math.max(0, cleaning), addons, subtotal, discount,
+            total, deposit, security: held,
+            due: deposit + held, balance: total - deposit,
+          }};
+          for (const [key, value] of Object.entries(values)) {{
+            for (const node of cell(key)) node.textContent = money(value);
+          }}
+          // Saving a discount with no reason is refused by the server, and the
+          // redirect would take every unsaved edit on this form with it.
+          const reason = String((form.elements['discount_reason'] || {{}}).value ?? '').trim();
+          const blocked = discount > 0 && !reason;
+          if (save) save.disabled = blocked;
+          if (contract) contract.disabled = blocked;
+          if (status) status.textContent = blocked
+            ? 'Add a reason for the discount before saving.'
+            : settled;
+        }};
+        form.addEventListener('input', recompute);
+        recompute();
+      }})();
       </script>
     """
     styles = """
@@ -789,7 +881,7 @@ def render_inquiry_workspace(
       .lead-header{align-items:flex-start;margin:0}.lead-back{display:inline-flex;margin-bottom:18px;color:var(--agent-blue-strong);font-weight:700}.lead-header__states{display:flex;flex-wrap:wrap;gap:8px}
       .lead-next{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,.7fr);gap:24px;align-items:start;padding:24px 26px;border:1px solid rgba(94,159,196,.35);border-radius:var(--agent-radius-panel);background:linear-gradient(135deg,#fff,#f1f8fb)}.lead-next h2{margin:3px 0 7px}.lead-next p{margin:0;color:var(--agent-ink-muted)}
       .lead-next__contact{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:14px;font-weight:700}.lead-next__contact a,.lead-next__contact span{overflow-wrap:anywhere}
-      .lead-response{display:grid;gap:10px}.lead-response label{display:grid;gap:5px;font-weight:700}.lead-response textarea{min-height:86px}.lead-button{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:9px 14px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);font:700 .8rem/1.2 "Montserrat",sans-serif;text-decoration:none;cursor:pointer}.lead-button--primary{border-color:var(--agent-blue-strong);background:var(--agent-blue-strong);color:#fff}
+      .lead-response{display:grid;gap:10px}.lead-response label{display:grid;gap:5px;font-weight:700}.lead-response textarea{min-height:86px}.lead-button{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:9px 14px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);font:700 .8rem/1.2 "Montserrat",sans-serif;text-decoration:none;cursor:pointer}.lead-button--primary{border-color:var(--agent-blue-strong);background:var(--agent-blue-strong);color:#fff}.lead-button:disabled{opacity:.45;cursor:not-allowed}
       .lead-layout{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(300px,.7fr);gap:20px;align-items:start}.lead-stack{display:grid;gap:20px}.lead-panel{min-width:0;overflow:hidden;border:1px solid var(--agent-border);border-radius:var(--agent-radius-panel);background:var(--agent-surface)}.lead-panel__head{display:flex;justify-content:space-between;gap:16px;align-items:start;padding:18px 20px}.lead-panel__head h2{margin:0}.lead-panel__head p{margin:5px 0 0;color:var(--agent-ink-muted)}
       .lead-details,.lead-contact dl{display:grid;grid-template-columns:minmax(130px,.45fr) minmax(0,1fr);margin:0}.lead-details dt,.lead-details dd,.lead-contact dt,.lead-contact dd{margin:0;padding:11px 18px;border-top:1px solid var(--agent-border)}.lead-details dt,.lead-contact dt{color:var(--agent-ink-muted);font-size:12px;font-weight:800}.lead-details dd,.lead-contact dd{overflow-wrap:anywhere}
       .lead-follow-up,.lead-activity{margin:0;padding:0;list-style:none}.lead-follow-up li,.lead-activity li{display:grid;gap:3px;padding:13px 18px;border-top:1px solid var(--agent-border)}.lead-follow-up span,.lead-activity span,.lead-activity time{color:var(--agent-ink-muted);font-size:12px}.lead-activity li{grid-template-columns:150px 1fr}.lead-activity div{display:grid;gap:3px}.lead-technical{padding:14px 18px;border:1px dashed var(--agent-border);border-radius:var(--agent-radius-control)}

@@ -515,6 +515,27 @@ class LeadPricingRouteTests(unittest.TestCase):
         self.assertIn("Pricing for this event", page.text)
         self.assertIn("175.00", page.text)
 
+    def test_every_total_has_a_hook_the_live_preview_can_update(self) -> None:
+        """The totals update as an operator types, from a script that finds each
+        figure by name. A total added to compute_totals without a matching hook
+        would silently stop updating and quietly show a stale number."""
+        from sales_support_agent.services.building_lead_pricing import compute_totals
+
+        page = self.client.get("/admin/building/inquiries/lead-a")
+        self.assertIn("data-price-form", page.text)
+        hooks = set(re.findall(r'data-total="([a-z_]+)"', page.text))
+        expected = {
+            key.replace("_cents", "")
+            .replace("security_deposit", "security")
+            .replace("due_to_book", "due")
+            for key in compute_totals({})
+        }
+        self.assertEqual(
+            expected - hooks,
+            set(),
+            "a figure in compute_totals has no hook, so it would never refresh",
+        )
+
     def test_changing_one_lead_leaves_the_standard_and_other_leads_alone(self) -> None:
         from sales_support_agent.models.entities import BuildingRatePlan
         response = self.client.post(
