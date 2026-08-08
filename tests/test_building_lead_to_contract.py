@@ -32,6 +32,14 @@ from sales_support_agent.models.entities import (
     BuildingSpace,
 )
 from sales_support_agent.services.admin_auth import create_user_session_token
+from sales_support_agent.services.building_event_calendar import MOUNTAIN
+
+
+def _mountain(value: datetime) -> datetime:
+    """Read a stored instant the way an operator in Denver reads it."""
+
+    aware = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return aware.astimezone(MOUNTAIN)
 
 
 class LeadToContractTests(unittest.TestCase):
@@ -239,10 +247,7 @@ class LeadToContractTests(unittest.TestCase):
 
     def test_04_a_qualified_lead_can_take_its_own_date(self) -> None:
         """The whole point: no detour to a booking screen to hold a date."""
-        starts = datetime.now(timezone.utc) + timedelta(days=90)
-
-        def stamp(hours: int) -> str:
-            return (starts + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
+        event_day = (datetime.now(MOUNTAIN) + timedelta(days=90)).date()
 
         with self.factory() as session:
             session.add(BuildingInquiry(
@@ -261,15 +266,15 @@ class LeadToContractTests(unittest.TestCase):
             session.commit()
 
         page = self.client.get("/admin/building/inquiries/lead-3")
-        self.assertIn("Take this date", page.text)
+        self.assertIn("Pick the date", page.text)
         token = re.search(r'name="_csrf_token" value="([^"]+)"', page.text).group(1)
 
         held = self.client.post(
             "/admin/building/inquiries/lead-3/hold-date",
             headers=self.headers, follow_redirects=False,
-            data={"_csrf_token": token, "setup_starts_at": stamp(0),
-                  "guest_starts_at": stamp(2), "guest_ends_at": stamp(7),
-                  "teardown_ends_at": stamp(9), "attendance": "80"},
+            data={"_csrf_token": token, "event_date": event_day.isoformat(),
+                  "guest_start_time": "17:00", "guest_end_time": "22:00",
+                  "attendance": "80"},
         )
         self.assertEqual(held.status_code, 303, held.text)
         self.assertIn("notice=", held.headers["location"])
@@ -283,12 +288,20 @@ class LeadToContractTests(unittest.TestCase):
             session.query(BuildingProposal).filter_by(
                 reservation_id=reservation.id
             ).one()
+            # Setup and teardown are the owner's three-hour buffers, derived
+            # rather than retyped, so guests at 5pm means doors open at 2pm.
+            local_setup = _mountain(reservation.starts_at)
+            local_guests = _mountain(reservation.guest_starts_at)
+            local_end = _mountain(reservation.ends_at)
+            self.assertEqual(local_guests.hour, 17)
+            self.assertEqual(local_setup.hour, 14)
+            self.assertEqual(local_end.hour, 1)
+            self.assertEqual(local_setup.date(), event_day)
 
     def test_05_an_out_of_order_window_is_refused(self) -> None:
-        starts = datetime.now(timezone.utc) + timedelta(days=120)
-
-        def stamp(hours: int) -> str:
-            return (starts + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
+        """An operator picks hours, not a window, so the only way to describe an
+        impossible event is to have guests arrive and leave at the same time."""
+        event_day = (datetime.now(MOUNTAIN) + timedelta(days=120)).date()
 
         with self.factory() as session:
             session.add(BuildingInquiry(
@@ -307,12 +320,57 @@ class LeadToContractTests(unittest.TestCase):
         refused = self.client.post(
             "/admin/building/inquiries/lead-4/hold-date",
             headers=self.headers, follow_redirects=False,
-            data={"_csrf_token": token, "setup_starts_at": stamp(9),
-                  "guest_starts_at": stamp(2), "guest_ends_at": stamp(7),
-                  "teardown_ends_at": stamp(0), "attendance": "40"},
+            data={"_csrf_token": token, "event_date": event_day.isoformat(),
+                  "guest_start_time": "18:00", "guest_end_time": "18:00",
+                  "attendance": "40"},
         )
         self.assertEqual(refused.status_code, 303, refused.text)
         self.assertIn("error=", refused.headers["location"])
+        with self.factory() as session:
+            self.assertEqual(
+                session.query(BuildingReservation).filter_by(
+                    inquiry_id="lead-4"
+                ).count(),
+                0,
+            )
+
+    def test_05b_an_evening_event_carries_past_midnight(self) -> None:
+        """Guests leaving at 1am belong to the night they arrived, not to the
+        morning of the same calendar day."""
+        event_day = (datetime.now(MOUNTAIN) + timedelta(days=150)).date()
+        with self.factory() as session:
+            session.add(BuildingInquiry(
+                id="lead-6", idempotency_key="lead-6-key", kind="event",
+                name="Late Night", email="late@example.com",
+                payload_json={"_lifecycle": {"stage": "qualified"}},
+            ))
+            session.add(BuildingContact(id="c6", email="late@example.com",
+                                        full_name="Late Night", status="active"))
+            session.add(BuildingRelationship(
+                id="rel-6", contact_id="c6", relationship_type="prospect",
+                status="active", source_reference="inquiry:lead-6",
+            ))
+            session.commit()
+        held = self.client.post(
+            "/admin/building/inquiries/lead-6/hold-date",
+            headers=self.headers, follow_redirects=False,
+            data={"_csrf_token": self._csrf("lead-6"),
+                  "event_date": event_day.isoformat(),
+                  "guest_start_time": "20:00", "guest_end_time": "01:00",
+                  "attendance": "60"},
+        )
+        self.assertEqual(held.status_code, 303, held.text)
+        self.assertIn("notice=", held.headers["location"])
+        with self.factory() as session:
+            reservation = session.query(BuildingReservation).filter_by(
+                inquiry_id="lead-6"
+            ).one()
+            self.assertEqual(_mountain(reservation.guest_starts_at).date(), event_day)
+            self.assertEqual(
+                _mountain(reservation.guest_ends_at).date(),
+                event_day + timedelta(days=1),
+            )
+            self.assertEqual(_mountain(reservation.ends_at).hour, 4)
 
     def test_06_an_unqualified_lead_can_still_take_its_date(self) -> None:
         """The date panel used to render only for qualified leads, so the one
@@ -326,8 +384,8 @@ class LeadToContractTests(unittest.TestCase):
             session.commit()
         page = self.client.get("/admin/building/inquiries/lead-5")
         self.assertEqual(page.status_code, 200)
-        self.assertIn("Take this date", page.text)
-        self.assertIn("Date review", page.text)
+        self.assertIn("Pick the date", page.text)
+        self.assertIn("lead-cal__grid", page.text)
 
 
 if __name__ == "__main__":

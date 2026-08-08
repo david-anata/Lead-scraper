@@ -17,6 +17,9 @@ from sales_support_agent.services.building_contracts import (
     CONTRACT_STATE_FILTERS,
     CONTRACT_TYPE_LABELS,
 )
+from sales_support_agent.services.building_contract_templates import (
+    format_merge_value,
+)
 from sales_support_agent.services.ui_shell import render_operator_document
 
 
@@ -119,7 +122,9 @@ def _terms(snapshot: dict[str, Any], payment: Optional[dict[str, Any]] = None) -
         ("teardown_ends_at", "Teardown ends"),
     ):
         if window.get(key):
-            rows.append((label, _esc(str(window.get(key)).replace("T", " ")[:16])))
+            # Rendered exactly as the contract renders it. Showing the stored
+            # UTC instant here told an operator the party started at 23:00.
+            rows.append((label, _esc(format_merge_value(key, window.get(key)))))
     if payment:
         rows.append((
             "Required payment",
@@ -143,17 +148,10 @@ def _terms(snapshot: dict[str, Any], payment: Optional[dict[str, Any]] = None) -
     for key, value in merge_values.items():
         if key in _rendered_above:
             continue
-        if isinstance(value, dict):
-            rendered = ", ".join(
-                f"{item_key.replace('_', ' ')}: {item_value}"
-                for item_key, item_value in value.items()
-                if item_value not in (None, "", 0)
-            )
-            rendered = _esc(rendered or json.dumps(value, sort_keys=True))
-        elif isinstance(value, list):
-            rendered = _esc(", ".join(str(item) for item in value)) if value else "None"
-        else:
-            rendered = _esc(value)
+        # The same renderer the contract uses, so this page is a true preview:
+        # money reads as dollars, not the stored cents, and tax reads as the
+        # sentence the customer will sign.
+        rendered = _esc(format_merge_value(key, value))
         rows.append((key.replace("_", " ").capitalize(), rendered or "—"))
     body = "".join(
         f"<div class=\"app-detail-list__row\"><dt>{_esc(label)}</dt><dd>{value}</dd></div>"

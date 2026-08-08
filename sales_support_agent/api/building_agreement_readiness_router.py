@@ -51,6 +51,7 @@ from sales_support_agent.services.building_contract_templates import (
 )
 from sales_support_agent.services.building_contracts import (
     compute_event_merge_values,
+    instant_iso,
 )
 from sales_support_agent.services.building_launch_readiness import (
     sync_arena_agreement_template_decision,
@@ -568,18 +569,13 @@ def prepare_agreement_package(
                 "merge_fields": list(template.merge_fields_json or []),
             },
             "event_window": {
-                "setup_starts_at": reservation.starts_at.isoformat(),
-                "guest_starts_at": (
-                    reservation.guest_starts_at.isoformat()
-                    if reservation.guest_starts_at
-                    else None
-                ),
-                "guest_ends_at": (
-                    reservation.guest_ends_at.isoformat()
-                    if reservation.guest_ends_at
-                    else None
-                ),
-                "teardown_ends_at": reservation.ends_at.isoformat(),
+                # Offset-bearing, like the merge values. A naive instant here
+                # was read back as local time and displayed the window four
+                # hours late on the contract review page.
+                "setup_starts_at": instant_iso(reservation.starts_at),
+                "guest_starts_at": instant_iso(reservation.guest_starts_at),
+                "guest_ends_at": instant_iso(reservation.guest_ends_at),
+                "teardown_ends_at": instant_iso(reservation.ends_at),
             },
             "quote": {
                 "id": quote.id,

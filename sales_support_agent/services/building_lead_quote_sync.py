@@ -68,13 +68,32 @@ def _line_items(pricing: dict[str, Any], totals: dict[str, int]) -> list[dict[st
 
 
 def _rate_snapshot(
-    pricing: dict[str, Any], plan: Optional[BuildingRatePlan]
+    pricing: dict[str, Any],
+    plan: Optional[BuildingRatePlan],
+    previous: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Freeze the commercial terms this contract is built on."""
+    """Freeze the commercial terms this contract is built on.
 
+    Only the money comes from the lead. The policy terms come from the approved
+    plan, and when that cannot be resolved they are carried forward from the
+    quote already on the booking — editing a price must never quietly strip a
+    cancellation policy out of a contract.
+    """
+
+    prior = dict(previous or {})
+
+    def carried(key: str, planned: Any) -> Any:
+        text = str(planned or "").strip()
+        return text or prior.get(key) or ""
+
+    included = list((plan.included_json or []) if plan else [])
+    if not included and plan is not None:
+        included = list((plan.commercial_terms_json or {}).get("included") or [])
+    if not included:
+        included = list(prior.get("included") or [])
     return {
-        "id": str(pricing.get("rate_plan_id") or (plan.id if plan else "")),
-        "version": int(plan.version) if plan else 1,
+        "id": str(pricing.get("rate_plan_id") or (plan.id if plan else "") or prior.get("id") or ""),
+        "version": int(plan.version) if plan else int(prior.get("version") or 1),
         "source": "lead_pricing",
         "hourly_rate_cents": int(pricing.get("hourly_rate_cents") or 0),
         "hours": int(pricing.get("hours") or 0),
@@ -82,14 +101,15 @@ def _rate_snapshot(
         "security_deposit_cents": int(pricing.get("security_deposit_cents") or 0),
         "deposit_type": "percent",
         "deposit_percent_bps": int(pricing.get("deposit_percent_bps") or 0),
-        "cancellation_policy": str(
-            (plan.cancellation_policy if plan else "") or ""
+        "cancellation_policy": carried(
+            "cancellation_policy", plan.cancellation_policy if plan else ""
         ),
-        "tax_status": str((plan.tax_status if plan else "") or "review_required"),
+        "tax_status": (
+            carried("tax_status", plan.tax_status if plan else "") or "review_required"
+        ),
         "tax_rate_bps": 0,
-        "tax_note": str((plan.tax_note if plan else "") or ""),
-        "included": list((plan.commercial_terms_json or {}).get("included") or [])
-        if plan else [],
+        "tax_note": carried("tax_note", plan.tax_note if plan else ""),
+        "included": included,
         "addons": [
             str(item.get("name") or "")
             for item in list(pricing.get("addons") or [])
@@ -118,7 +138,7 @@ def sync_quote_from_lead_pricing(
         if pricing.get("rate_plan_id")
         else None
     )
-    existing = session.execute(
+    existing_quote = session.execute(
         select(BuildingProposal)
         .where(
             BuildingProposal.reservation_id == reservation.id,
@@ -126,14 +146,27 @@ def sync_quote_from_lead_pricing(
         )
         .order_by(BuildingProposal.version.desc())
     ).scalars().first()
+    existing = existing_quote
+    prior_snapshot = dict(
+        (existing.rate_plan_snapshot_json or {}) if existing is not None else {}
+    )
+    if plan is None and existing is not None and existing.rate_plan_id:
+        # The hold already bound the one approved plan effective for this date.
+        # Reuse it rather than producing an unbound quote.
+        plan = session.get(BuildingRatePlan, str(existing.rate_plan_id))
 
     now = datetime.now(timezone.utc)
     fields = {
         "currency": str(pricing.get("currency") or "USD"),
         "amount_cents": totals["total_cents"],
         "line_items_json": _line_items(pricing, totals),
-        "rate_plan_id": str(pricing.get("rate_plan_id") or ""),
-        "rate_plan_snapshot_json": _rate_snapshot(pricing, plan),
+        "rate_plan_id": str(
+            pricing.get("rate_plan_id")
+            or (plan.id if plan is not None else "")
+            or (existing.rate_plan_id if existing is not None else "")
+            or ""
+        ),
+        "rate_plan_snapshot_json": _rate_snapshot(pricing, plan, prior_snapshot),
         "terms_summary": (
             f"{pricing.get('hours') or 0} hours at "
             f"{int(pricing.get('hourly_rate_cents') or 0) / 100:,.2f}, "

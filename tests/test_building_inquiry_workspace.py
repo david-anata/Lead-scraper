@@ -78,6 +78,16 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
         cls.client.cookies.set(app.state.agent_settings.admin_cookie_name, token)
         now = datetime.now(timezone.utc)
         with cls.factory() as session:
+            # The date calendar books against a real event offering, so the
+            # workspace needs one to show anything to pick.
+            session.add(BuildingSpace(
+                id="sp", slug="sp", name="Arena", space_type="event",
+                capacity=200, status="available",
+            ))
+            session.add(BuildingOffering(
+                id="off", slug="off", name="Event", offering_type="event",
+                space_id="sp",
+            ))
             session.add(BuildingContact(
                 id="jordan-contact",
                 email="jordan@example.com",
@@ -278,10 +288,12 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
             session.commit()
         page = self.client.get("/admin/building/inquiries/jordan-inquiry")
         self.assertEqual(page.status_code, 200, page.text)
-        self.assertIn("Date review", page.text)
+        self.assertIn("Pick the date", page.text)
+        # Every date the prospect asked for stays on the calendar. Replacing the
+        # three-date form must not quietly lose their alternates.
         self.assertIn("2026-09-19", page.text)
         self.assertIn("2026-09-26", page.text)
-        self.assertIn("Read-only check; this creates no hold", page.text)
+        self.assertIn("Asked for", page.text)
         calendar = mock.Mock(configured=False)
         with mock.patch(
             "sales_support_agent.api.building_inquiry_workspace_router.BuildingGoogleCalendarClient",
