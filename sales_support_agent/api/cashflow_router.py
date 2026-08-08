@@ -488,8 +488,11 @@ async def finance_cash_calendar(request: Request, flash: str = ""):
         from sales_support_agent.services.cashflow.rent_paydown import load_paydown_plan
 
         paydown = await asyncio.to_thread(load_paydown_plan, rows=ledger)
-    except Exception:
+    except Exception as exc:
         logger.exception("The Finance paydown plan could not be worked out")
+        # The operator can read this back in one glance, which beats guessing
+        # from here. Deliberately the failure's name only, never its detail.
+        paydown = {"status": "failed", "reason": type(exc).__name__}
     return HTMLResponse(
         render_cash_calendar_page(calendar, flash=flash, paydown=paydown)
     )

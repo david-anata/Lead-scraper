@@ -578,13 +578,18 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
     # A section that silently disappears is indistinguishable from one that was
     # never built, which is how features in this app have gone missing before.
     # Say what happened instead.
-    if plan is None:
-        return """
+    if plan is None or plan.get("status") == "failed":
+        reason = str((plan or {}).get("reason") or "")
+        note = (
+            f'<p class="metric-note">Reference: {html.escape(reason)}</p>' if reason else ""
+        )
+        return f"""
       <section class="cash-calendar-paydown">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Paying down</p>
         <h2>Could not work this out</h2></div></div>
         <p class="finance-plan-short">Your calendar above is unaffected. Nothing was
         changed. If this keeps happening it is worth a look.</p>
+        {note}
       </section>"""
     if plan.get("status") == "no_vendor":
         return """
