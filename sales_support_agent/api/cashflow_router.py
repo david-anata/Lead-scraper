@@ -464,6 +464,28 @@ async def finance_cash_plan(request: Request):
     return HTMLResponse(render_cash_plan_page(brief))
 
 
+@router.post("/cutover/archive")
+async def finance_cutover_archive(request: Request):
+    """Take every ClickUp estimate out of the numbers, reversibly."""
+    from sales_support_agent.services.cashflow.cutover import archive_clickup_ledger
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        result = await asyncio.to_thread(archive_clickup_ledger, actor=actor)
+    except Exception:
+        logger.exception("Archiving the ClickUp estimates failed")
+        return _redirect_finance_error(
+            "Those could not be archived, so nothing was changed."
+        )
+    if not result["archived"]:
+        return _redirect_finance_home("Nothing left to archive. The old list is already out.")
+    return _redirect_finance_home(
+        f"{result['message']} Your numbers now come from the bank. "
+        f"Undo reference {result['batch_id'][:8]}."
+    )
+
+
 CHARGE_ANSWER_PATH = "/admin/finances/calendar/charges/answer"
 
 
