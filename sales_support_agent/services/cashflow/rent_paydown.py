@@ -24,7 +24,7 @@ over-reserving only means paying more next week.
 from __future__ import annotations
 
 import calendar as _calendar
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 
 # Below this a separate instalment is noise rather than a plan.
@@ -40,6 +40,15 @@ def _month_end(day: date) -> date:
 
 
 def _as_date(value: Any) -> date | None:
+    """A plain date, whatever the database handed back.
+
+    datetime is a subclass of date, so testing for date first returns the
+    timestamp untouched and every later comparison against a plain date raises.
+    That is what broke this against the live ledger while every local fixture,
+    which used plain dates and ISO strings, passed.
+    """
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
     try:

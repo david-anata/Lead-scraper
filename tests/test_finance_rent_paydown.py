@@ -262,3 +262,57 @@ def test_every_instalment_says_what_it_is_waiting_for():
 
     for item in plan["instalments"]:
         assert item["why"], "a date with no reason cannot be argued with"
+
+
+# --- what the database actually hands back --------------------------------
+
+def test_timestamps_from_the_database_are_handled_like_dates():
+    """This is the bug that reached production. A date column comes back as a
+    full timestamp, datetime is a subclass of date, so a naive check returns it
+    untouched and the next comparison against a plain date raises TypeError.
+    Every local fixture used plain dates and ISO strings, so nothing caught it.
+    """
+    from datetime import datetime
+
+    rows = [
+        {"event_type": "outflow", "status": "posted",
+         "due_date": datetime(2026, 6, 6, 14, 30), "amount_cents": 2_000_000,
+         "vendor_or_customer": "Boulder Ranch", "name": "Boulder Ranch"},
+        {"event_type": "outflow", "status": "posted",
+         "due_date": datetime(2026, 5, 6, 9, 15), "amount_cents": 2_000_000,
+         "vendor_or_customer": "Boulder Ranch", "name": "Boulder Ranch"},
+        {"event_type": "outflow", "status": "posted",
+         "due_date": datetime(2026, 4, 6, 0, 0), "amount_cents": 2_000_000,
+         "vendor_or_customer": "Boulder Ranch", "name": "Boulder Ranch"},
+    ]
+
+    chosen = largest_recurring_outflow(rows, as_of=AS_OF)
+
+    assert chosen, "timestamps must not make the vendor search fall over"
+    assert chosen["vendor_key"] == "boulder ranch"
+
+
+def test_a_whole_plan_can_be_built_from_timestamped_rows():
+    from datetime import datetime
+
+    rows = [
+        {"event_type": "outflow", "status": "posted",
+         "due_date": datetime(2026, 7, 2, 11, 0), "amount_cents": 1_000_000,
+         "vendor_or_customer": "Boulder Ranch", "name": "Boulder Ranch"},
+        {"event_type": "inflow", "status": "planned", "confidence": "confirmed",
+         "due_date": datetime(2026, 7, 20, 8, 0), "amount_cents": 500_000,
+         "open_amount_cents": 500_000, "vendor_or_customer": "A customer",
+         "name": "A customer"},
+    ]
+
+    plan = build_paydown_plan(
+        calendar={"days": [{"date": datetime(2026, 7, 12, 6, 0), "events": [
+            {"kind": "planned", "amount_cents": 200_000,
+             "vendor_or_customer": "Someone", "name": "Someone"}]}]},
+        rows=rows, spendable_cents=5_000_000, reserve_cents=0, floor_cents=FLOOR,
+        vendor_key="boulder ranch", vendor_label="Boulder Ranch",
+        monthly_cents=3_000_000, as_of=AS_OF,
+    )
+
+    assert plan["status"] in {"ok", "nothing_spare"}
+    assert plan["paid_this_month_cents"] == 1_000_000
