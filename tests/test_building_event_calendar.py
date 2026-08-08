@@ -128,7 +128,10 @@ class MonthAvailabilityTests(unittest.TestCase):
         cell = _cell(self._view(), day)
         self.assertEqual(cell["state"], "pending")
         self.assertIn("not yet signed", cell["note"])
-        self.assertFalse(cell["selectable"])
+        self.assertTrue(cell["occupied"])
+        # Still selectable: double-booking is the owner's call, and the picker
+        # names the clash before it can be taken.
+        self.assertTrue(cell["selectable"])
 
     def test_a_confirmed_booking_reads_as_booked(self) -> None:
         day = self.month.replace(day=11)
@@ -218,7 +221,7 @@ class MonthAvailabilityTests(unittest.TestCase):
             )
         cell = _cell(view, day)
         self.assertEqual(cell["state"], "external")
-        self.assertFalse(cell["selectable"])
+        self.assertTrue(cell["occupied"])
 
     def test_past_days_cannot_be_picked(self) -> None:
         today = datetime.now(MOUNTAIN).date()

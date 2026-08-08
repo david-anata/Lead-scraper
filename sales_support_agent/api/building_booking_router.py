@@ -193,6 +193,10 @@ class EventReviewInput(BaseModel):
     operator_notes: str = Field(default="", max_length=4000)
     assigned_owner: str = Field(min_length=1, max_length=255)
     actor: str = Field(min_length=1, max_length=255)
+    #: Take the date even though something else already occupies it. A double
+    #: booking is the owner's call to make, never the system's to make quietly,
+    #: so the clash it overrode is written into the audit trail and the booking.
+    override_conflicts: bool = False
 
     @model_validator(mode="after")
     def valid_windows(self) -> "EventReviewInput":
@@ -836,12 +840,22 @@ def _calendar_is_authoritative() -> bool:
 
 
 def _require_calendar_availability(
-    *, starts_at: datetime, ends_at: datetime, reservation_id: str = ""
-) -> BuildingGoogleCalendarClient | None:
-    """Fail closed against the Anata Events calendar when authority is enabled."""
+    *,
+    starts_at: datetime,
+    ends_at: datetime,
+    reservation_id: str = "",
+    override: bool = False,
+) -> tuple[BuildingGoogleCalendarClient | None, list[dict[str, Any]]]:
+    """Fail closed against the Anata Events calendar when authority is enabled.
+
+    ``override`` lets a named operator take a date the calendar says is busy,
+    and returns what they overrode so it can be recorded. It never applies to a
+    calendar that could not be read: overriding a clash you were shown is a
+    decision, and booking blind is not the same thing.
+    """
 
     if not _calendar_is_authoritative():
-        return None
+        return None, []
     client = BuildingGoogleCalendarClient()
     if not client.configured:
         raise HTTPException(status_code=503, detail=client.readiness_error)
@@ -856,12 +870,15 @@ def _require_calendar_availability(
             status_code=503,
             detail="Anata Events calendar availability could not be verified; no hold was created.",
         ) from exc
-    if conflicts:
+    if conflicts and not override:
         raise HTTPException(
             status_code=409,
             detail="The full setup-through-teardown window is occupied on the Anata Events calendar.",
         )
-    return client
+    return client, [
+        {"source": "anata_events_calendar", "summary": str(item.get("summary") or "Busy")}
+        for item in conflicts
+    ]
 
 
 def _availability_block(
@@ -964,16 +981,23 @@ def create_event_review(
             ends_at=payload.teardown_ends_at,
             reservation_id=payload.reservation_id,
         )
-        if conflicts:
+        if conflicts and not payload.override_conflicts:
             raise HTTPException(
                 status_code=409,
                 detail="The full setup-through-teardown window conflicts with Agent availability.",
             )
-        calendar_client = _require_calendar_availability(
+        calendar_client, calendar_conflicts = _require_calendar_availability(
             starts_at=payload.setup_starts_at,
             ends_at=payload.teardown_ends_at,
             reservation_id=payload.reservation_id,
+            override=payload.override_conflicts,
         )
+        # What was overridden is part of the record. A double booking nobody can
+        # trace back to a decision is indistinguishable from a bug.
+        overridden = [
+            {"source": "agent_hold", "reservation_id": str(row.source_reference or "")}
+            for row in conflicts
+        ] + calendar_conflicts
 
         event_date = payload.guest_starts_at.date()
         plans = session.execute(
@@ -1066,6 +1090,11 @@ def create_event_review(
                 "access_window_reviewed": True,
                 "units": payload.units,
                 "addons": payload.addons,
+                **({
+                    "double_booked": True,
+                    "double_booked_by": payload.actor,
+                    "double_booked_over": overridden,
+                } if overridden else {}),
             },
             source="agent_event_review",
             source_reference=f"inquiry:{inquiry.id}",
@@ -1157,8 +1186,21 @@ def create_event_review(
                 "quote_id": proposal.id,
                 "rate_plan_id": plan.id,
                 "operator_notes": payload.operator_notes,
+                **({"double_booked_over": overridden} if overridden else {}),
             },
         ))
+        if overridden:
+            session.add(BuildingAuditEvent(
+                entity_type="reservation",
+                entity_id=row.id,
+                action="double_booking_authorised",
+                actor=payload.actor,
+                after_json={
+                    "inquiry_id": inquiry.id,
+                    "access_window": snapshot["access_window"],
+                    "over": overridden,
+                },
+            ))
         command = BuildingEventLifecycleCommand(
             id=str(uuid4()),
             idempotency_key=idempotency_key,

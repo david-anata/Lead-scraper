@@ -144,6 +144,7 @@ def _calendar_section(
     interview: dict[str, Any],
     csrf_token: str,
     hold_control: str,
+    blockers: list[str],
 ) -> str:
     """Render the month calendar and, once a day is chosen, its time picker.
 
@@ -231,12 +232,16 @@ def _calendar_section(
             'read, so only Agent\'s own holds are shown here. An open day is not '
             'confirmed until that calendar is reachable.</p>'
         )
-    picker = _time_picker(
-        data,
-        interview=interview,
-        csrf_token=csrf_token,
-        hold_control=hold_control,
+    picker = _confirm_contract_panel(
+        data, interview=interview, csrf_token=csrf_token, blockers=blockers
     )
+    if not picker:
+        picker = _time_picker(
+            data,
+            interview=interview,
+            csrf_token=csrf_token,
+            hold_control=hold_control,
+        )
     return f'''<section class="lead-panel" id="date-review"><div class="lead-panel__head"><div><h2>Pick the date</h2><p>Open days are clear on both Agent and the Anata Events calendar. Choose a day, then the hours.</p></div></div>
           <div class="lead-cal">
             <div class="lead-cal__bar">{month_link(view.get("previous"), "Previous month", "←")}<strong>{_esc(view.get("label"))}</strong>{month_link(view.get("next"), "Next month", "→")}</div>
@@ -244,6 +249,67 @@ def _calendar_section(
             <div class="lead-cal__legend">{legend}</div>{warning}
           </div>{picker}
         </section>'''
+
+
+def _confirm_contract_panel(
+    data: dict[str, Any],
+    *,
+    interview: dict[str, Any],
+    csrf_token: str,
+    blockers: list[str],
+) -> str:
+    """Ask before a contract takes a date, instead of refusing to make one.
+
+    Shows the exact window and any clash, so agreeing is a decision about a
+    named date rather than a click through a warning.
+    """
+
+    confirm = dict(data.get("confirm_contract") or {})
+    if not confirm:
+        return ""
+    action = f"/admin/building/inquiries/{_esc(data.get('id'))}/contract"
+    if blockers:
+        # Offering a button the hold would refuse just moves the dead end one
+        # click later.
+        return (
+            '<div class="lead-cal__confirm"><h3>A few answers first</h3>'
+            '<p>Taking a date needs these from the interview above: '
+            f'{_esc(", ".join(blockers))}. Answer them and create the contract '
+            'again.</p></div>'
+        )
+    if not confirm.get("ready"):
+        return (
+            '<div class="lead-cal__confirm"><h3>Which date is this contract for?</h3>'
+            f'<p>{_esc(confirm.get("message"))}</p></div>'
+        )
+    clash = str(confirm.get("clash") or "")
+    warning = (
+        '<p class="lead-cal__clash"><strong>That date is already taken '
+        f'({_esc(clash)}).</strong> Going ahead books two things at once, on '
+        'your authority, and it is recorded against the booking.</p>'
+        if clash else ""
+    )
+    label = "Double-book it and create the contract" if clash else "Yes, hold it and create the contract"
+    return f'''<div class="lead-cal__confirm">
+            <h3>Hold {_esc(confirm.get("label"))} and create the contract?</h3>
+            <p>In the building <strong>{_esc(confirm.get("setup"))}</strong> to
+            <strong>{_esc(confirm.get("teardown"))}</strong>, guests
+            {_esc(confirm.get("guests"))}. The date is held for seven days and the
+            pricing on this page is frozen into the contract. Nothing is sent.</p>{warning}
+            <form method="post" action="{action}">
+              <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+              <input type="hidden" name="confirm_hold" value="yes">
+              <input type="hidden" name="event_date" value="{_esc(confirm.get("date"))}">
+              <input type="hidden" name="guest_start_time" value="{_esc(confirm.get("guest_start"))}">
+              <input type="hidden" name="guest_end_time" value="{_esc(confirm.get("guest_end"))}">
+              <input type="hidden" name="attendance" value="{_esc(_attendance_guess(interview))}">
+              {'<input type="hidden" name="override_conflicts" value="yes">' if clash else ''}
+              <div class="lead-interview__save">
+                <button class="lead-button {'lead-button--danger' if clash else 'lead-button--primary'}" type="submit">{_esc(label)}</button>
+                <a class="lead-button" href="/admin/building/inquiries/{_esc(data.get('id'))}#date-review">Pick a different date</a>
+              </div>
+            </form>
+          </div>'''
 
 
 def _time_picker(
@@ -264,13 +330,16 @@ def _time_picker(
     options = list(data.get("hour_options") or [])
     guest_start = str(data.get("guest_start") or "")
     guest_end = str(data.get("guest_end") or "")
+    # On a day being deliberately double-booked, every hour is already taken.
+    # Disabling them would block the very submission the warning is inviting.
+    occupied_day = bool(data.get("selected_occupied"))
 
     def select(name: str, chosen: str, label: str) -> str:
         items = "".join(
             '<option value="{value}"{sel}{dis}>{text}</option>'.format(
                 value=_esc(option.get("value")),
                 sel=" selected" if option.get("value") == chosen else "",
-                dis=" disabled" if option.get("taken") else "",
+                dis=" disabled" if option.get("taken") and not occupied_day else "",
                 text=_esc(
                     f"{option.get('label')} — taken"
                     if option.get("taken")
@@ -291,16 +360,36 @@ def _time_picker(
             f'guests {_esc(window.get("guests"))}. '
             'Setup and teardown are three hours either side.</p>'
         )
+    # An occupied day can still be taken. It says so plainly, carries the
+    # override, and the button stops pretending this is an ordinary hold.
+    occupied = bool(data.get("selected_occupied"))
+    override_field = ""
+    control = hold_control
+    if occupied:
+        override_field = '<input type="hidden" name="override_conflicts" value="yes">'
+        summary += (
+            '<p class="lead-cal__clash"><strong>This date is already taken '
+            f'({_esc(data.get("selected_note") or "occupied")}).</strong> '
+            'Taking it books two things at once, on your authority, and it is '
+            'recorded against the booking.</p>'
+        )
+        if not str(hold_control).count("disabled"):
+            control = (
+                '<div class="lead-interview__save">'
+                '<button class="lead-button lead-button--danger" type="submit">'
+                'Double-book this date</button>'
+                '<span>Recorded as your decision. Nothing is sent.</span></div>'
+            )
     return f'''<form class="lead-availability lead-availability--hold" method="post" action="/admin/building/inquiries/{_esc(data.get('id'))}/hold-date">
             <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-            <input type="hidden" name="event_date" value="{_esc(selected)}">
+            <input type="hidden" name="event_date" value="{_esc(selected)}">{override_field}
             <h3>{_esc(data.get("selected_label") or selected)}</h3>
             <div class="lead-availability__times">
               {select("guest_start_time", guest_start, "Guests arrive")}
               {select("guest_end_time", guest_end, "Guests leave")}
               <label>Attendance<input type="number" name="attendance" min="1" value="{_esc(_attendance_guess(interview))}"></label>
             </div>{summary}
-            {hold_control}
+            {control}
           </form>'''
 
 
@@ -565,8 +654,8 @@ def render_inquiry_workspace(
         f"<p>Started from {_esc(seeded_from)}. Change anything here for this customer; "
         "the standard rate and every other lead stay as they are.</p></div>"
         f'<span class="lead-price__total">{_esc(pricing.get("currency") or "USD")} '
-        f'{_money(totals.get("total_cents"))}</span></div>'
-        f'<form class="lead-price" method="post" action="/admin/building/inquiries/{_esc(data.get("id"))}/pricing">'
+        f'<span data-total="total">{_money(totals.get("total_cents"))}</span></span></div>'
+        f'<form class="lead-price" data-price-form method="post" action="/admin/building/inquiries/{_esc(data.get("id"))}/pricing">'
         f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
         '<div class="lead-price__grid">'
         f'<label>Hourly rate<input name="hourly_rate" inputmode="decimal" '
@@ -589,21 +678,21 @@ def render_inquiry_workspace(
         'placeholder="Required if there is a discount"></label>'
         "</div>"
         '<table class="lead-pricing"><tbody>'
-        f'<tr><td>Venue</td><td class="is-num">{_money(totals.get("venue_cents"))}</td></tr>'
-        f'<tr><td>Cleaning</td><td class="is-num">{_money(totals.get("cleaning_cents"))}</td></tr>'
-        f'<tr><td>Add-ons</td><td class="is-num">{_money(totals.get("addons_cents"))}</td></tr>'
-        f'<tr><td>Subtotal</td><td class="is-num">{_money(totals.get("subtotal_cents"))}</td></tr>'
-        f'<tr><td>Discount</td><td class="is-num">-{_money(totals.get("discount_cents"))}</td></tr>'
-        f'<tr class="is-total"><td>Contract total</td><td class="is-num">{_money(totals.get("total_cents"))}</td></tr>'
-        f'<tr><td>Booking deposit</td><td class="is-num">{_money(totals.get("deposit_cents"))}</td></tr>'
+        f'<tr><td>Venue</td><td class="is-num" data-total="venue">{_money(totals.get("venue_cents"))}</td></tr>'
+        f'<tr><td>Cleaning</td><td class="is-num" data-total="cleaning">{_money(totals.get("cleaning_cents"))}</td></tr>'
+        f'<tr><td>Add-ons</td><td class="is-num" data-total="addons">{_money(totals.get("addons_cents"))}</td></tr>'
+        f'<tr><td>Subtotal</td><td class="is-num" data-total="subtotal">{_money(totals.get("subtotal_cents"))}</td></tr>'
+        f'<tr><td>Discount</td><td class="is-num">-<span data-total="discount">{_money(totals.get("discount_cents"))}</span></td></tr>'
+        f'<tr class="is-total"><td>Contract total</td><td class="is-num" data-total="total">{_money(totals.get("total_cents"))}</td></tr>'
+        f'<tr><td>Booking deposit</td><td class="is-num" data-total="deposit">{_money(totals.get("deposit_cents"))}</td></tr>'
         f'<tr><td>Security deposit <span class="lead-price__note">refundable, not part of the total</span></td>'
-        f'<td class="is-num">{_money(totals.get("security_deposit_cents"))}</td></tr>'
-        f'<tr class="is-total"><td>Due to book</td><td class="is-num">{_money(totals.get("due_to_book_cents"))}</td></tr>'
-        f'<tr><td>Balance before the event</td><td class="is-num">{_money(totals.get("balance_cents"))}</td></tr>'
+        f'<td class="is-num" data-total="security">{_money(totals.get("security_deposit_cents"))}</td></tr>'
+        f'<tr class="is-total"><td>Due to book</td><td class="is-num" data-total="due">{_money(totals.get("due_to_book_cents"))}</td></tr>'
+        f'<tr><td>Balance before the event</td><td class="is-num" data-total="balance">{_money(totals.get("balance_cents"))}</td></tr>'
         "</tbody></table>"
         '<div class="lead-interview__save">'
-        '<button class="lead-button lead-button--primary" type="submit">Save pricing</button>'
-        "<span>Applies to this lead only. Nothing is sent.</span>"
+        '<button class="lead-button lead-button--primary" type="submit" data-price-save>Save pricing</button>'
+        '<span data-price-status>Applies to this lead only. Nothing is sent.</span>'
         "</div></form>"
         # The contract is an output of the lead, not a separate place to go.
         f'<form class="lead-price__contract" method="post" '
@@ -663,6 +752,7 @@ def render_inquiry_workspace(
             interview=interview,
             csrf_token=csrf_token,
             hold_control=hold_control,
+            blockers=hold_blockers,
         )
         if data.get("kind") == "event" and not data.get("reservation_id")
         else ""
@@ -781,6 +871,98 @@ def render_inquiry_workspace(
         form.addEventListener('input', () => {{ clearTimeout(timer); timer = setTimeout(save, 900); }});
         form.addEventListener('change', () => {{ clearTimeout(timer); timer = setTimeout(save, 250); }});
       }})();
+      (() => {{
+        // A live echo of compute_totals in building_lead_pricing.py. Every step
+        // below mirrors that function, including how it rounds, because a
+        // preview that disagrees with the saved number is worse than no preview.
+        const form = document.querySelector('[data-price-form]');
+        if (!form) return;
+        const status = form.querySelector('[data-price-status]');
+        const save = form.querySelector('[data-price-save]');
+        const contract = document.querySelector('.lead-price__contract button');
+        const settled = status ? status.textContent : '';
+        const cell = key => document.querySelectorAll(`[data-total="${{key}}"]`);
+        // Python rounds half to even; Math.round does not. On "1.005" that is a
+        // one cent disagreement, which is exactly the kind of thing nobody
+        // believes until it reaches an invoice.
+        const halfEven = value => {{
+          const low = Math.floor(value), rest = value - low;
+          if (Math.abs(rest - 0.5) > 1e-9) return Math.round(value);
+          return low % 2 === 0 ? low : low + 1;
+        }};
+        const cents = name => {{
+          const raw = String((form.elements[name] || {{}}).value ?? '')
+            .trim().replace(/,/g, '').replace(/\\$/g, '');
+          if (!raw) return 0;
+          const amount = Number(raw);
+          if (!Number.isFinite(amount)) return null;
+          return halfEven(amount * 100);
+        }};
+        const money = value => (value / 100).toLocaleString('en-US', {{
+          minimumFractionDigits: 2, maximumFractionDigits: 2,
+        }});
+        const recompute = () => {{
+          const rate = cents('hourly_rate');
+          const cleaning = cents('cleaning_fee');
+          const security = cents('security_deposit');
+          const discountRaw = cents('discount');
+          const hoursText = String((form.elements['hours'] || {{}}).value ?? '').trim();
+          const hours = hoursText === '' ? 0 : Number(hoursText);
+          const percentText = String((form.elements['deposit_percent'] || {{}}).value ?? '').trim();
+          const percent = percentText === '' ? 0 : Number(percentText);
+          let addons = 0, broken = false;
+          for (const field of form.querySelectorAll('[name^="addon_amount_"]')) {{
+            const value = cents(field.name);
+            if (value === null) {{ broken = true; break; }}
+            addons += Math.max(0, value);
+          }}
+          // Say which field is wrong. Blaming "the amounts" when the deposit
+          // percent is out of range sends someone hunting the wrong box.
+          let wrong = '';
+          if (broken || rate === null || cleaning === null
+              || security === null || discountRaw === null) {{
+            wrong = 'Amounts need to be numbers.';
+          }} else if (!Number.isInteger(hours) || hours < 0) {{
+            wrong = 'Hours needs to be a whole number.';
+          }} else if (!Number.isFinite(percent) || percent < 0 || percent > 100) {{
+            wrong = 'Deposit % needs to be between 0 and 100.';
+          }}
+          if (wrong) {{
+            // Leaving save enabled here would send the operator into a server
+            // refusal, and the redirect takes every unsaved edit with it.
+            if (save) save.disabled = true;
+            if (contract) contract.disabled = true;
+            if (status) status.textContent = wrong;
+            return;
+          }}
+          const venue = Math.max(0, hours) * Math.max(0, rate);
+          const subtotal = venue + Math.max(0, cleaning) + addons;
+          const discount = Math.min(Math.max(0, discountRaw), subtotal);
+          const total = subtotal - discount;
+          const bps = halfEven(percent * 100);
+          const deposit = Math.min(Math.floor((total * Math.max(0, bps) + 5000) / 10000), total);
+          const held = Math.max(0, security);
+          const values = {{
+            venue, cleaning: Math.max(0, cleaning), addons, subtotal, discount,
+            total, deposit, security: held,
+            due: deposit + held, balance: total - deposit,
+          }};
+          for (const [key, value] of Object.entries(values)) {{
+            for (const node of cell(key)) node.textContent = money(value);
+          }}
+          // Saving a discount with no reason is refused by the server, and the
+          // redirect would take every unsaved edit on this form with it.
+          const reason = String((form.elements['discount_reason'] || {{}}).value ?? '').trim();
+          const blocked = discount > 0 && !reason;
+          if (save) save.disabled = blocked;
+          if (contract) contract.disabled = blocked;
+          if (status) status.textContent = blocked
+            ? 'Add a reason for the discount before saving.'
+            : settled;
+        }};
+        form.addEventListener('input', recompute);
+        recompute();
+      }})();
       </script>
     """
     styles = """
@@ -789,7 +971,7 @@ def render_inquiry_workspace(
       .lead-header{align-items:flex-start;margin:0}.lead-back{display:inline-flex;margin-bottom:18px;color:var(--agent-blue-strong);font-weight:700}.lead-header__states{display:flex;flex-wrap:wrap;gap:8px}
       .lead-next{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,.7fr);gap:24px;align-items:start;padding:24px 26px;border:1px solid rgba(94,159,196,.35);border-radius:var(--agent-radius-panel);background:linear-gradient(135deg,#fff,#f1f8fb)}.lead-next h2{margin:3px 0 7px}.lead-next p{margin:0;color:var(--agent-ink-muted)}
       .lead-next__contact{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:14px;font-weight:700}.lead-next__contact a,.lead-next__contact span{overflow-wrap:anywhere}
-      .lead-response{display:grid;gap:10px}.lead-response label{display:grid;gap:5px;font-weight:700}.lead-response textarea{min-height:86px}.lead-button{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:9px 14px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);font:700 .8rem/1.2 "Montserrat",sans-serif;text-decoration:none;cursor:pointer}.lead-button--primary{border-color:var(--agent-blue-strong);background:var(--agent-blue-strong);color:#fff}
+      .lead-response{display:grid;gap:10px}.lead-response label{display:grid;gap:5px;font-weight:700}.lead-response textarea{min-height:86px}.lead-button{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:9px 14px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);font:700 .8rem/1.2 "Montserrat",sans-serif;text-decoration:none;cursor:pointer}.lead-button--primary{border-color:var(--agent-blue-strong);background:var(--agent-blue-strong);color:#fff}.lead-button:disabled{opacity:.45;cursor:not-allowed}.lead-button--danger{border-color:#a3372f;background:#a3372f;color:#fff}
       .lead-layout{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(300px,.7fr);gap:20px;align-items:start}.lead-stack{display:grid;gap:20px}.lead-panel{min-width:0;overflow:hidden;border:1px solid var(--agent-border);border-radius:var(--agent-radius-panel);background:var(--agent-surface)}.lead-panel__head{display:flex;justify-content:space-between;gap:16px;align-items:start;padding:18px 20px}.lead-panel__head h2{margin:0}.lead-panel__head p{margin:5px 0 0;color:var(--agent-ink-muted)}
       .lead-details,.lead-contact dl{display:grid;grid-template-columns:minmax(130px,.45fr) minmax(0,1fr);margin:0}.lead-details dt,.lead-details dd,.lead-contact dt,.lead-contact dd{margin:0;padding:11px 18px;border-top:1px solid var(--agent-border)}.lead-details dt,.lead-contact dt{color:var(--agent-ink-muted);font-size:12px;font-weight:800}.lead-details dd,.lead-contact dd{overflow-wrap:anywhere}
       .lead-follow-up,.lead-activity{margin:0;padding:0;list-style:none}.lead-follow-up li,.lead-activity li{display:grid;gap:3px;padding:13px 18px;border-top:1px solid var(--agent-border)}.lead-follow-up span,.lead-activity span,.lead-activity time{color:var(--agent-ink-muted);font-size:12px}.lead-activity li{grid-template-columns:150px 1fr}.lead-activity div{display:grid;gap:3px}.lead-technical{padding:14px 18px;border:1px dashed var(--agent-border);border-radius:var(--agent-radius-control)}
@@ -800,7 +982,7 @@ def render_inquiry_workspace(
       .lead-cal__grid{width:100%;border-collapse:collapse;table-layout:fixed}.lead-cal__grid th{padding:6px 0;color:var(--agent-ink-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}.lead-cal__grid abbr{text-decoration:none;border:0}.lead-cal__day{padding:2px;vertical-align:top}.lead-cal__day>a,.lead-cal__day>span{display:grid;gap:2px;align-content:start;min-height:58px;padding:6px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);text-decoration:none;color:inherit}.lead-cal__day>a:hover{border-color:var(--agent-blue-strong);background:#f1f8fb}.lead-cal__num{font-weight:800;font-size:13px}.lead-cal__note{color:var(--agent-ink-muted);font-size:10px;line-height:1.25}
       .lead-cal__day--pending>a,.lead-cal__day--pending>span{background:#fff6e5;border-color:#e6c384}.lead-cal__day--booked>a,.lead-cal__day--booked>span{background:#eceff3;border-color:#c3cbd6;color:var(--agent-ink-muted)}.lead-cal__day--external>a,.lead-cal__day--external>span{background:#f4f1fa;border-color:#cec3e6;color:var(--agent-ink-muted)}.lead-cal__day--headsup>a,.lead-cal__day--headsup>span{background:#fffdf2;border-color:#ded7a8}.lead-cal__day.is-outside>a,.lead-cal__day.is-outside>span{opacity:.45}.lead-cal__day.is-past>a,.lead-cal__day.is-past>span{opacity:.35}.lead-cal__day.is-today .lead-cal__num{color:var(--agent-blue-strong)}.lead-cal__day.is-selected>a{border:2px solid var(--agent-blue-strong);background:#e8f4fa}
       .lead-cal__legend{display:flex;flex-wrap:wrap;gap:8px}.lead-cal__key{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border:1px solid var(--agent-border);border-radius:999px;font-size:11px;font-weight:700;color:var(--agent-ink-muted)}.lead-cal__key--pending{background:#fff6e5;border-color:#e6c384}.lead-cal__key--booked{background:#eceff3;border-color:#c3cbd6}.lead-cal__key--external{background:#f4f1fa;border-color:#cec3e6}.lead-cal__key--headsup{background:#fffdf2;border-color:#ded7a8}.lead-cal__key--requested{border-left:4px solid var(--agent-blue-strong)}.lead-cal__day.is-requested>a,.lead-cal__day.is-requested>span{border-left:4px solid var(--agent-blue-strong)}
-      .lead-cal__warning{margin:0;padding:10px 12px;border:1px solid #e6c384;border-radius:var(--agent-radius-control);background:#fff6e5;font-size:12px}.lead-cal__prompt{margin:0;padding:0 20px 18px;color:var(--agent-ink-muted);font-size:13px}.lead-cal__summary{margin:0;color:var(--agent-ink-muted);font-size:13px}.lead-availability__times select{min-height:38px;padding:7px 9px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);font:14px/1.4 Inter,sans-serif}
+      .lead-cal__warning{margin:0;padding:10px 12px;border:1px solid #e6c384;border-radius:var(--agent-radius-control);background:#fff6e5;font-size:12px}.lead-cal__prompt{margin:0;padding:0 20px 18px;color:var(--agent-ink-muted);font-size:13px}.lead-cal__clash{margin:0;padding:10px 12px;border:1px solid #d9a49e;border-radius:var(--agent-radius-control);background:#fdf1ef;font-size:13px}.lead-cal__confirm{display:grid;gap:12px;margin:0 20px 18px;padding:16px;border:1px solid var(--agent-blue-strong);border-radius:var(--agent-radius-control);background:#f1f8fb}.lead-cal__confirm h3{margin:0;font:800 .95rem/1.3 Montserrat,sans-serif}.lead-cal__confirm p{margin:0;font-size:13px;line-height:1.5}.lead-cal__summary{margin:0;color:var(--agent-ink-muted);font-size:13px}.lead-availability__times select{min-height:38px;padding:7px 9px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);font:14px/1.4 Inter,sans-serif}
       .lead-activity__more{display:block}.lead-activity__more>summary{padding:8px 0;color:var(--agent-blue-strong);font-weight:800;cursor:pointer}.lead-activity__list{margin:0;padding:0;list-style:none}
       @media(max-width:900px){.lead-next,.lead-layout{grid-template-columns:1fr}.lead-next .lead-button{justify-self:start}}
       @media(max-width:600px){.lead-details,.lead-contact dl,.lead-interview__grid,.lead-availability__dates,.lead-availability__times,.lead-availability__results li{grid-template-columns:1fr}.lead-details dt,.lead-contact dt{padding-bottom:0}.lead-details dd,.lead-contact dd{padding-top:4px}.lead-activity li{grid-template-columns:1fr}.lead-panel__head{display:grid}.lead-next{padding:20px}.lead-response{width:100%}}
