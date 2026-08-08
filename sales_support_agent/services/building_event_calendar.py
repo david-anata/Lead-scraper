@@ -252,7 +252,10 @@ def month_availability(
             "state": states[day],
             "note": notes.get(day, ""),
             "requested": day in asked_for,
-            "selectable": states[day] in {"open", "heads_up"} and day >= today,
+            "occupied": states[day] in {"pending", "booked", "external"},
+            # Any future day can be chosen, including an occupied one. Taking it
+            # is the owner's call; the picker names the clash before they do.
+            "selectable": day >= today,
         }
         for day in days
     ]

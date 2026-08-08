@@ -168,9 +168,14 @@ def _calendar_view(
     def stamp(value: datetime) -> str:
         return value.strftime("%a %b %d, ") + clock_label(value.hour)
 
+    chosen = next(
+        (item for item in view["cells"] if item["iso"] == selected.isoformat()), {}
+    )
     result.update({
         "selected_date": selected.isoformat(),
         "selected_label": selected.strftime("%A, %B %d, %Y"),
+        "selected_occupied": bool(chosen.get("occupied")),
+        "selected_note": str(chosen.get("note") or ""),
         "hour_options": options,
         "guest_start": guest_start,
         "guest_end": guest_end,
@@ -181,6 +186,44 @@ def _calendar_view(
         },
     })
     return result
+
+
+def _contract_confirmation(view: dict[str, Any]) -> dict[str, Any]:
+    """Describe the date a contract is about to take, and what it would sit on.
+
+    Named plainly rather than hidden behind a refusal: taking an occupied date
+    is allowed, but only as a decision someone made looking at the clash.
+    """
+
+    selected = str(view.get("selected_date") or "")
+    if not selected:
+        return {
+            "ready": False,
+            "message": (
+                "Choose a day on the calendar above, then create the contract. "
+                "It attaches to that date."
+            ),
+        }
+    cell = next(
+        (item for item in view.get("calendar", {}).get("cells", [])
+         if item["iso"] == selected),
+        {},
+    )
+    window = dict(view.get("preview_window") or {})
+    clash = str(cell.get("note") or "") if cell.get("state") in {
+        "pending", "booked", "external",
+    } else ""
+    return {
+        "ready": True,
+        "date": selected,
+        "label": str(view.get("selected_label") or selected),
+        "setup": window.get("setup", ""),
+        "teardown": window.get("teardown", ""),
+        "guests": window.get("guests", ""),
+        "guest_start": str(view.get("guest_start") or ""),
+        "guest_end": str(view.get("guest_end") or ""),
+        "clash": clash,
+    }
 
 
 def _seeded_pricing(session: Any, payload: dict[str, Any]) -> dict[str, Any]:
@@ -258,6 +301,7 @@ def inquiry_workspace(
     notice: str = "",
     error: str = "",
     month: str = "",
+    confirm: str = "",
     date_choice: str = Query(default="", alias="date"),
     user: dict = Depends(require_tool("building.manage")),
 ) -> HTMLResponse:
@@ -391,6 +435,8 @@ def inquiry_workspace(
                     date_choice=date_choice,
                 )
             )
+            if confirm == "contract":
+                data["confirm_contract"] = _contract_confirmation(data)
     return HTMLResponse(
         render_inquiry_workspace(
             navigation=render_agent_nav("building", user=user),
@@ -521,12 +567,16 @@ async def save_lead_pricing(
 
 
 @router.post("/{inquiry_id}/contract", dependencies=FORM_DEPS)
-def create_contract_from_lead(
+async def create_contract_from_lead(
     inquiry_id: str,
     request: Request,
     user: dict = Depends(require_tool("building.agreements.prepare")),
 ) -> RedirectResponse:
     """Turn this lead into a contract without leaving it.
+
+    A contract needs a date to attach to, so one is taken here rather than sent
+    back for. The operator is shown the exact window first, and any clash it
+    would double-book, because that decision is theirs to make knowingly.
 
     Writes the lead's pricing into the booking's quote, then prepares the
     agreement package from it. The quote keeps its existing shape, so billing,
@@ -535,6 +585,13 @@ def create_contract_from_lead(
 
     target = f"/admin/building/inquiries/{inquiry_id}"
     actor = str(user.get("email") or "building-operator")
+    form = await request.form()
+    confirmed = str(form.get("confirm_hold") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    override = str(form.get("override_conflicts") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
     with session_scope(request.app.state.session_factory) as session:
         inquiry = session.get(BuildingInquiry, inquiry_id)
         if inquiry is None:
@@ -544,19 +601,37 @@ def create_contract_from_lead(
             .where(BuildingReservation.inquiry_id == inquiry.id)
             .order_by(BuildingReservation.created_at.desc())
         ).scalars().first()
-        if reservation is None:
+        has_reservation = reservation is not None
+        reservation_id = reservation.id if reservation else ""
+    if not has_reservation:
+        if not confirmed:
+            # Ask rather than refuse. The page shows the window it is about to
+            # take, and whatever it would be booked over.
             return RedirectResponse(
-                f"{target}?error={quote_plus('Hold the date first — use Take this date under Date review on this page. A contract attaches to a held date.')}"
-                "#date-review",
-                status_code=303,
+                f"{target}?confirm=contract#date-review", status_code=303
             )
-        pricing = dict((inquiry.payload_json or {}).get("_pricing") or {})
-        if not pricing:
+        reservation_id, error = _take_the_date(
+            request, inquiry_id=inquiry_id, form=form, actor=actor, override=override
+        )
+        if error:
             return RedirectResponse(
-                f"{target}?error={quote_plus('Save the pricing first — use Pricing for this event on this page.')}"
-                "#lead-pricing",
-                status_code=303,
+                f"{target}?error={quote_plus(error)}#date-review", status_code=303
             )
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        reservation = session.get(BuildingReservation, reservation_id)
+        if inquiry is None or reservation is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        payload = dict(inquiry.payload_json or {})
+        # The pricing shown on the page is the pricing, whether or not anyone
+        # pressed Save on figures they never changed. Seeding here uses the same
+        # approved plan the panel displays, so the contract cannot disagree with
+        # what the operator was looking at.
+        pricing = _seeded_pricing(session, payload)
+        if not payload.get("_pricing"):
+            payload["_pricing"] = pricing
+            inquiry.payload_json = payload
+            session.add(inquiry)
         quote = sync_quote_from_lead_pricing(
             session, reservation=reservation, pricing=pricing, actor=actor
         )
@@ -584,11 +659,11 @@ def create_contract_from_lead(
     try:
         result = prepare_agreement_package(
             AgreementPackageInput(
-                reservation_id=reservation.id,
+                reservation_id=reservation_id,
                 quote_id=quote_id,
                 template_id=template,
-                agreement_version=_next_agreement_version(request, reservation.id),
-                payment_version=_next_agreement_version(request, reservation.id),
+                agreement_version=_next_agreement_version(request, reservation_id),
+                payment_version=_next_agreement_version(request, reservation_id),
                 actor=actor,
             ),
             request,
@@ -635,46 +710,41 @@ def _internal_api_key(request: Request) -> str:
     return key
 
 
-@router.post("/{inquiry_id}/hold-date", dependencies=FORM_DEPS)
-async def hold_date_from_lead(
-    inquiry_id: str,
+def _take_the_date(
     request: Request,
-    user: dict = Depends(require_tool("building.events.manage")),
-) -> RedirectResponse:
-    """Take the date for this lead without leaving it.
+    *,
+    inquiry_id: str,
+    form: Any,
+    actor: str,
+    override: bool,
+) -> tuple[str, str]:
+    """Hold a date for this lead. Returns (reservation_id, error message).
 
-    Creates the authoritative access window and its frozen quote through the
-    same conflict-checked path the booking workspace uses, so nothing about how
-    a hold is made changes — only where it can be started.
+    Shared by the date panel and by creating a contract, so a contract that
+    holds its own date goes through exactly the same conflict checks, quote
+    freeze, and audit trail as one held by hand.
     """
-
-    target = f"/admin/building/inquiries/{inquiry_id}"
-    actor = str(user.get("email") or "building-operator")
-    form = await request.form()
-
-    def fail(message: str) -> RedirectResponse:
-        return RedirectResponse(f"{target}?error={quote_plus(message)}", status_code=303)
 
     with session_scope(request.app.state.session_factory) as session:
         inquiry = session.get(BuildingInquiry, inquiry_id)
         if inquiry is None:
             raise HTTPException(status_code=404, detail="Inquiry not found.")
         if inquiry.kind != "event":
-            return fail("Only event inquiries take a date this way.")
+            return "", "Only event inquiries take a date this way."
         existing = session.execute(
             select(BuildingReservation).where(
                 BuildingReservation.inquiry_id == inquiry.id
             )
         ).scalars().first()
         if existing is not None:
-            return fail("This lead already has a booking.")
+            return "", "This lead already has a booking."
         relationship = session.execute(
             select(BuildingRelationship).where(
                 BuildingRelationship.source_reference == f"inquiry:{inquiry.id}"
             )
         ).scalars().first()
         if relationship is None:
-            return fail("Link or create the customer on this lead first.")
+            return "", "Link or create the customer on this lead first."
         contact_id = relationship.contact_id
         offering = session.execute(
             select(BuildingOffering)
@@ -682,7 +752,7 @@ async def hold_date_from_lead(
             .order_by(BuildingOffering.name)
         ).scalars().first()
         if offering is None:
-            return fail("No event offering exists to book against.")
+            return "", "No event offering exists to book against."
         offering_id, space_id = offering.id, offering.space_id
         pricing = dict((inquiry.payload_json or {}).get("_pricing") or {})
         interview = dict((inquiry.payload_json or {}).get("_event_interview") or {})
@@ -694,33 +764,34 @@ async def hold_date_from_lead(
     try:
         event_day = date.fromisoformat(str(form.get("event_date") or "").strip())
     except ValueError:
-        return fail("Choose a date on the calendar first.")
-    hours: list[time] = []
+        return "", "Choose a date on the calendar first."
+    clock: list[time] = []
     for field in ("guest_start_time", "guest_end_time"):
         raw = str(form.get(field) or "").strip()
         try:
-            hours.append(time.fromisoformat(raw))
+            clock.append(time.fromisoformat(raw))
         except ValueError:
-            return fail("Choose when guests arrive and when they leave.")
-    if hours[0] == hours[1]:
-        return fail("Guests cannot arrive and leave at the same time.")
+            return "", "Choose when guests arrive and when they leave."
+    if clock[0] == clock[1]:
+        return "", "Guests cannot arrive and leave at the same time."
     setup, guest_start, guest_end, teardown = access_window(
-        event_day, hours[0], hours[1]
+        event_day, clock[0], clock[1]
     )
 
     try:
         attendance = int(str(form.get("attendance") or "0").strip() or 0)
     except ValueError:
-        return fail("Attendance must be a whole number.")
+        return "", "Attendance must be a whole number."
     if attendance < 1:
         attendance = int(str(interview.get("attendance") or "0").split()[0] or 0) or 1
 
+    reservation_id = f"event-{uuid4().hex[:12]}"
     hours = max(1, int(pricing.get("hours") or 1))
     try:
-        result = create_event_review(
+        create_event_review(
             EventReviewInput(
                 inquiry_id=inquiry_id,
-                reservation_id=f"event-{uuid4().hex[:12]}",
+                reservation_id=reservation_id,
                 space_id=space_id,
                 offering_id=offering_id,
                 contact_id=contact_id,
@@ -737,15 +808,47 @@ async def hold_date_from_lead(
                 ),
                 assigned_owner=assigned_owner or actor,
                 actor=actor,
+                override_conflicts=override,
             ),
             request,
             f"lead-hold-{uuid4().hex[:16]}",
             _internal_api_key(request),
         )
     except (HTTPException, ValidationError, ValueError) as exc:
-        return fail(str(getattr(exc, "detail", exc)))
-    del result
+        return "", str(getattr(exc, "detail", exc))
+    return reservation_id, ""
+
+
+@router.post("/{inquiry_id}/hold-date", dependencies=FORM_DEPS)
+async def hold_date_from_lead(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.events.manage")),
+) -> RedirectResponse:
+    """Take the date for this lead without leaving it.
+
+    Creates the authoritative access window and its frozen quote through the
+    same conflict-checked path the booking workspace uses, so nothing about how
+    a hold is made changes — only where it can be started.
+    """
+
+    target = f"/admin/building/inquiries/{inquiry_id}"
+    form = await request.form()
+    override = str(form.get("override_conflicts") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    _reservation, error = _take_the_date(
+        request,
+        inquiry_id=inquiry_id,
+        form=form,
+        actor=str(user.get("email") or "building-operator"),
+        override=override,
+    )
+    if error:
+        return RedirectResponse(
+            f"{target}?error={quote_plus(error)}#date-review", status_code=303
+        )
     return RedirectResponse(
-        f"{target}?notice={quote_plus('Date held for seven days and a quote frozen. Nothing was sent.')}",
+        f"{target}?notice={quote_plus(('Date double-booked on your authority; held seven days and a quote frozen. Nothing was sent.' if override else 'Date held for seven days and a quote frozen. Nothing was sent.'))}",
         status_code=303,
     )

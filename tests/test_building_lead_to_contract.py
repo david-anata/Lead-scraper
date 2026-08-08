@@ -226,7 +226,10 @@ class LeadToContractTests(unittest.TestCase):
             )
             self.assertEqual(totals, [130_000, 175_000])
 
-    def test_03_a_lead_with_no_booking_is_told_what_to_do(self) -> None:
+    def test_03_a_lead_with_no_booking_is_asked_not_refused(self) -> None:
+        """A contract needs a date, but wanting one is not an error. The page
+        asks which date it is about to take rather than sending the operator
+        away to do it first."""
         with self.factory() as session:
             session.add(BuildingInquiry(
                 id="lead-2", idempotency_key="lead-2-key", kind="event",
@@ -234,16 +237,183 @@ class LeadToContractTests(unittest.TestCase):
                 payload_json={"_lifecycle": {"stage": "new"}},
             ))
             session.commit()
-        blocked = self.client.post(
+        asked = self.client.post(
             "/admin/building/inquiries/lead-2/contract",
             headers=self.headers, follow_redirects=False,
             data={"_csrf_token": self._csrf("lead-2")},
         )
-        self.assertEqual(blocked.status_code, 303, blocked.text)
-        self.assertIn("error=", blocked.headers["location"])
-        # The message must name the control on this page, not a screen elsewhere.
-        self.assertIn("take+this+date", blocked.headers["location"].lower())
-        self.assertIn("#date-review", blocked.headers["location"])
+        self.assertEqual(asked.status_code, 303, asked.text)
+        self.assertNotIn("error=", asked.headers["location"])
+        self.assertIn("confirm=contract", asked.headers["location"])
+        self.assertIn("#date-review", asked.headers["location"])
+        with self.factory() as session:
+            self.assertEqual(
+                session.query(BuildingReservation).filter_by(
+                    inquiry_id="lead-2"
+                ).count(),
+                0,
+                "asking must not take a date by itself",
+            )
+
+    def test_03a_the_confirmation_names_the_window_it_will_take(self) -> None:
+        """The panel has to say which date and hours it is about to hold, or
+        agreeing to it means nothing."""
+        preferred = (datetime.now(MOUNTAIN) + timedelta(days=210)).date()
+        with self.factory() as session:
+            session.add(BuildingInquiry(
+                id="lead-9", idempotency_key="lead-9-key", kind="event",
+                name="Confirm Me", email="confirm@example.com",
+                preferred_date=preferred,
+                payload_json={
+                    "_lifecycle": {"stage": "qualified"},
+                    "guestStartTime": "5:00 PM",
+                    "guestEndTime": "10:00 PM",
+                    "_event_interview": {
+                        "event_purpose": "Party", "event_format": "Dinner",
+                        "candidate_dates": preferred.isoformat(),
+                        "guest_schedule": "5pm to 10pm", "attendance": "80",
+                        "agreed_next_step": "Send the agreement",
+                        "access_schedule": "3pm", "alcohol": "Licensed bar",
+                    },
+                },
+            ))
+            session.commit()
+        page = self.client.get(
+            f"/admin/building/inquiries/lead-9?confirm=contract"
+            f"&month={preferred.strftime('%Y-%m')}"
+        )
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("and create the contract?", page.text)
+        self.assertIn("2:00 PM", page.text)      # setup, three hours before 5pm
+        self.assertIn("1:00 AM", page.text)      # teardown, three hours after 10pm
+        self.assertIn("Pick a different date", page.text)
+
+    def test_03b_a_clash_is_refused_unless_the_owner_authorises_it(self) -> None:
+        """Double booking is allowed, but only as a named decision, and the
+        booking has to carry what it was booked over."""
+        from sales_support_agent.models.entities import BuildingAuditEvent
+
+        event_day = (datetime.now(MOUNTAIN) + timedelta(days=200)).date()
+        for suffix in ("7", "8"):
+            with self.factory() as session:
+                session.add(BuildingInquiry(
+                    id=f"lead-{suffix}", idempotency_key=f"lead-{suffix}-key",
+                    kind="event", name=f"Clash {suffix}",
+                    email=f"clash{suffix}@example.com",
+                    payload_json={"_lifecycle": {"stage": "qualified"}},
+                ))
+                session.add(BuildingContact(
+                    id=f"c{suffix}", email=f"clash{suffix}@example.com",
+                    full_name=f"Clash {suffix}", status="active",
+                ))
+                session.add(BuildingRelationship(
+                    id=f"rel-{suffix}", contact_id=f"c{suffix}",
+                    relationship_type="prospect", status="active",
+                    source_reference=f"inquiry:lead-{suffix}",
+                ))
+                session.commit()
+
+        booked = {"event_date": event_day.isoformat(),
+                  "guest_start_time": "17:00", "guest_end_time": "22:00",
+                  "attendance": "50"}
+        first = self.client.post(
+            "/admin/building/inquiries/lead-7/hold-date",
+            headers=self.headers, follow_redirects=False,
+            data={"_csrf_token": self._csrf("lead-7"), **booked},
+        )
+        self.assertIn("notice=", first.headers["location"], first.headers["location"])
+
+        refused = self.client.post(
+            "/admin/building/inquiries/lead-8/hold-date",
+            headers=self.headers, follow_redirects=False,
+            data={"_csrf_token": self._csrf("lead-8"), **booked},
+        )
+        self.assertIn("error=", refused.headers["location"])
+        with self.factory() as session:
+            self.assertEqual(
+                session.query(BuildingReservation).filter_by(
+                    inquiry_id="lead-8"
+                ).count(),
+                0,
+            )
+
+        authorised = self.client.post(
+            "/admin/building/inquiries/lead-8/hold-date",
+            headers=self.headers, follow_redirects=False,
+            data={"_csrf_token": self._csrf("lead-8"), **booked,
+                  "override_conflicts": "yes"},
+        )
+        self.assertIn("notice=", authorised.headers["location"],
+                      authorised.headers["location"])
+        with self.factory() as session:
+            reservation = session.query(BuildingReservation).filter_by(
+                inquiry_id="lead-8"
+            ).one()
+            requirements = dict(reservation.requirements_json or {})
+            self.assertTrue(requirements.get("double_booked"))
+            self.assertEqual(requirements.get("double_booked_by"), "david@anatainc.com")
+            self.assertTrue(requirements.get("double_booked_over"))
+            trail = session.query(BuildingAuditEvent).filter_by(
+                entity_id=reservation.id, action="double_booking_authorised"
+            ).one()
+            self.assertEqual(trail.actor, "david@anatainc.com")
+
+    def test_03c_a_double_bookable_day_can_actually_be_submitted(self) -> None:
+        """Every hour of an occupied day is taken. Marking those options
+        disabled made the form unsubmittable, so the one button offering to
+        double-book could never do it."""
+        event_day = (datetime.now(MOUNTAIN) + timedelta(days=230)).date()
+        for suffix, ident in (("10", "c10"), ("11", "c11")):
+            with self.factory() as session:
+                session.add(BuildingInquiry(
+                    id=f"lead-{suffix}", idempotency_key=f"lead-{suffix}-key",
+                    kind="event", name=f"Rival {suffix}",
+                    email=f"rival{suffix}@example.com",
+                    payload_json={
+                        "_lifecycle": {"stage": "qualified"},
+                        "_event_interview": {
+                            "event_purpose": "Party", "event_format": "Dinner",
+                            "candidate_dates": event_day.isoformat(),
+                            "guest_schedule": "5pm to 10pm", "attendance": "60",
+                            "agreed_next_step": "Send it",
+                            "access_schedule": "2pm", "alcohol": "Licensed",
+                        },
+                    },
+                ))
+                session.add(BuildingContact(
+                    id=ident, email=f"rival{suffix}@example.com",
+                    full_name=f"Rival {suffix}", status="active",
+                ))
+                session.add(BuildingRelationship(
+                    id=f"rel-{ident}", contact_id=ident,
+                    relationship_type="prospect", status="active",
+                    source_reference=f"inquiry:lead-{suffix}",
+                ))
+                session.commit()
+        booked = {"event_date": event_day.isoformat(),
+                  "guest_start_time": "17:00", "guest_end_time": "22:00",
+                  "attendance": "60"}
+        first = self.client.post(
+            "/admin/building/inquiries/lead-10/hold-date",
+            headers=self.headers, follow_redirects=False,
+            data={"_csrf_token": self._csrf("lead-10"), **booked},
+        )
+        self.assertIn("notice=", first.headers["location"], first.headers["location"])
+
+        page = self.client.get(
+            f"/admin/building/inquiries/lead-11?date={event_day.isoformat()}"
+            f"&month={event_day.strftime('%Y-%m')}"
+        )
+        self.assertEqual(page.status_code, 200, page.text)
+        form = page.text.split(
+            '<form class="lead-availability lead-availability--hold"'
+        )[1].split("</form>")[0]
+        self.assertIn("already taken", form)
+        self.assertIn("override_conflicts", form)
+        self.assertNotIn(
+            "disabled", form,
+            "an hour the operator is being invited to double-book must submit",
+        )
 
     def test_04_a_qualified_lead_can_take_its_own_date(self) -> None:
         """The whole point: no detour to a booking screen to hold a date."""
