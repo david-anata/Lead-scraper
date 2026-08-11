@@ -690,22 +690,30 @@ def _ensure_plaid_account_columns(engine: Any) -> None:
     if "plaid_accounts" not in set(inspector.get_table_names()):
         return
     columns = {column["name"] for column in inspector.get_columns("plaid_accounts")}
-    if "cash_role" in columns:
-        return
-    if engine.dialect.name == "postgresql":
-        add_stmt = (
-            "ALTER TABLE plaid_accounts "
-            "ADD COLUMN IF NOT EXISTS cash_role VARCHAR(16) NOT NULL DEFAULT 'reserve'"
-        )
-    elif engine.dialect.name == "sqlite":
-        add_stmt = "ALTER TABLE plaid_accounts ADD COLUMN cash_role VARCHAR(16) NOT NULL DEFAULT 'reserve'"
-    else:
-        return
+    add_stmt = ""
+    if "cash_role" not in columns:
+        if engine.dialect.name == "postgresql":
+            add_stmt = (
+                "ALTER TABLE plaid_accounts "
+                "ADD COLUMN IF NOT EXISTS cash_role VARCHAR(16) NOT NULL DEFAULT 'reserve'"
+            )
+        elif engine.dialect.name == "sqlite":
+            add_stmt = "ALTER TABLE plaid_accounts ADD COLUMN cash_role VARCHAR(16) NOT NULL DEFAULT 'reserve'"
+        else:
+            return
     with engine.begin() as connection:
-        connection.execute(text(add_stmt))
+        if add_stmt:
+            connection.execute(text(add_stmt))
+            connection.execute(text(
+                "UPDATE plaid_accounts SET cash_role='spendable' "
+                "WHERE LOWER(COALESCE(subtype, ''))='checking'"
+            ))
         connection.execute(text(
-            "UPDATE plaid_accounts SET cash_role='spendable' "
-            "WHERE LOWER(COALESCE(subtype, ''))='checking'"
+            "UPDATE plaid_accounts SET cash_role='liability' "
+            "WHERE cash_role='reserve' AND ("
+            "LOWER(COALESCE(account_type, ''))='credit' OR "
+            "LOWER(COALESCE(subtype, '')) IN ('credit card', 'credit')"
+            ")"
         ))
 
 

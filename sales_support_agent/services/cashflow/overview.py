@@ -3379,10 +3379,10 @@ async def render_cashflow_overview_page(
     try:
         accounts_overview = load_accounts_overview()
     except Exception:
-        accounts_overview = {"spendable_cents": 0, "reserve_cents": 0, "as_of": "", "account_count": 0, "banks": []}
+        accounts_overview = {"spendable_cents": 0, "reserve_cents": 0, "liability_cents": 0, "as_of": "", "account_count": 0, "banks": []}
     plaid_accounts_html = ""
     if accounts_overview["account_count"]:
-        _role_labels = {"spendable": "Spendable", "reserve": "Reserve", "excluded": "Not counted"}
+        _role_labels = {"spendable": "Spendable", "reserve": "Reserve", "liability": "Amount owed", "excluded": "Not counted"}
         _acct_rows = []
         for _bank in accounts_overview["banks"]:
             _acct_rows.append(
@@ -3395,7 +3395,7 @@ async def render_cashflow_overview_page(
                 _role = str(_acct["cash_role"])
                 _options = "".join(
                     '<option value="' + _r + '"' + (" selected" if _r == _role else "") + '>' + _role_labels[_r] + '</option>'
-                    for _r in ("spendable", "reserve", "excluded")
+                    for _r in ("spendable", "reserve", "liability", "excluded")
                 )
                 _acct_id = html.escape(str(_acct["id"]), quote=True)
                 _acct_rows.append(
@@ -3415,6 +3415,7 @@ async def render_cashflow_overview_page(
             + '<div class="finance-accounts-totals">'
             + '<div><span>Spendable cash (checking)</span><strong>' + _money(accounts_overview["spendable_cents"]) + '</strong></div>'
             + '<div><span>Savings &amp; reserves</span><strong>' + _money(accounts_overview["reserve_cents"]) + '</strong></div>'
+            + '<div><span>Credit cards owed</span><strong>' + _money(accounts_overview["liability_cents"]) + '</strong></div>'
             + '</div>'
             + '<table class="finance-accounts-table"><thead><tr>'
             + '<th>Bank / Account</th><th>Type</th><th>Balance</th><th>Counts as</th>'

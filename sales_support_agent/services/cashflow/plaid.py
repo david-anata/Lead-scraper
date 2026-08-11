@@ -509,7 +509,11 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
                 # Default cash role from subtype on first insert only; the
                 # ON CONFLICT UPDATE deliberately omits cash_role so a manual
                 # reclassification survives every future sync.
-                default_cash_role = "spendable" if subtype.lower() == "checking" else "reserve"
+                default_cash_role = (
+                    "spendable" if subtype.lower() == "checking"
+                    else "liability" if account_type.lower() == "credit"
+                    else "reserve"
+                )
                 connection.execute(text("""
                     INSERT INTO plaid_accounts (
                         id, plaid_item_id, external_account_id, name, official_name, mask,

@@ -521,6 +521,7 @@ def render_accounts_page(brief: FinanceBrief, settings: Any) -> str:
         accounts = {
             "spendable_cents": 0,
             "reserve_cents": 0,
+            "liability_cents": 0,
             "as_of": "",
             "account_count": 0,
             "banks": [],
@@ -561,6 +562,7 @@ def render_accounts_page(brief: FinanceBrief, settings: Any) -> str:
       <section class="money-account-summary">
         <article><span>Spendable cash</span><strong>{_money(int(accounts.get("spendable_cents") or 0), exact=True)}</strong></article>
         <article><span>Savings &amp; reserves</span><strong>{_money(int(accounts.get("reserve_cents") or 0), exact=True)}</strong></article>
+        <article><span>Credit cards owed</span><strong>{_money(int(accounts.get("liability_cents") or 0), exact=True)}</strong></article>
         <article><span>Connected accounts</span><strong>{int(accounts.get("account_count") or 0)}</strong></article>
       </section>
       <div class="money-bank-list">{''.join(bank_html)}</div>
