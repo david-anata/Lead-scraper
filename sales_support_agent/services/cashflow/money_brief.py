@@ -528,14 +528,28 @@ def render_accounts_page(brief: FinanceBrief, settings: Any) -> str:
         }
     bank_html: list[str] = []
     for bank in accounts.get("banks") or []:
-        rows = "".join(
-            f"<li><div><strong>{html.escape(str(account.get('name') or 'Account'))}</strong>"
-            f"<span>{html.escape(str(account.get('subtype') or account.get('account_type') or '').title())}"
-            f"{' · ••' + html.escape(str(account.get('mask'))) if account.get('mask') else ''}</span></div>"
-            f"<div><strong>{_money(int(account.get('balance_cents') or 0), exact=True)}</strong>"
-            f"<span>{html.escape(str(account.get('cash_role') or 'excluded').replace('_', ' ').title())}</span></div></li>"
-            for account in bank.get("accounts") or []
-        )
+        rows = ""
+        for account in bank.get("accounts") or []:
+            account_id = html.escape(str(account.get("id") or ""), quote=True)
+            current_role = str(account.get("cash_role") or "excluded")
+            options = "".join(
+                f'<option value="{role}"{" selected" if role == current_role else ""}>{label}</option>'
+                for role, label in (
+                    ("spendable", "Spendable cash"), ("reserve", "Savings or reserve"),
+                    ("liability", "Money owed"), ("excluded", "Do not count"),
+                )
+            )
+            rows += (
+                f"<li><div><strong>{html.escape(str(account.get('name') or 'Account'))}</strong>"
+                f"<span>{html.escape(str(account.get('subtype') or account.get('account_type') or '').title())}"
+                f"{' · ••' + html.escape(str(account.get('mask'))) if account.get('mask') else ''}</span></div>"
+                f"<div><strong>{_money(int(account.get('balance_cents') or 0), exact=True)}</strong>"
+                f'<form class="money-account-role" method="post" action="/admin/finances/plaid/accounts/{account_id}/cash-role">'
+                '<input type="hidden" name="return_to" value="/admin/finances/accounts">'
+                f'<label><span class="sr-only">How Finance counts {html.escape(str(account.get("name") or "account"))}</span>'
+                f'<select name="role">{options}</select></label><button class="btn btn-secondary btn-sm" type="submit">Save role</button>'
+                "</form></div></li>"
+            )
         bank_html.append(
             f"<article class='money-bank'><h2>{html.escape(str(bank.get('display_name') or 'Connected bank'))}</h2>"
             f"<ul>{rows}</ul></article>"
@@ -566,6 +580,8 @@ def render_accounts_page(brief: FinanceBrief, settings: Any) -> str:
         <article><span>Connected accounts</span><strong>{int(accounts.get("account_count") or 0)}</strong></article>
       </section>
       <div class="money-bank-list">{''.join(bank_html)}</div>
+      <div class="money-state-note"><strong>You control what counts as cash</strong>
+      <p>Use Spendable cash only for money available to pay bills. Savings or reserve stays visible but does not raise available cash. Money owed is for credit cards and other liabilities.</p></div>
       <div class="money-state-note"><strong>Balance freshness</strong>
       <p>Last available account evidence: {html.escape(str(accounts.get("as_of") or brief.amount("cash").as_of or "Unavailable"))}. A cached balance is labeled by date; it is not described as real-time.</p></div>
       <p class="money-connection-error" role="alert" data-plaid-error hidden></p>

@@ -2000,6 +2000,9 @@ input:focus, select:focus, textarea:focus {
 .money-bank ul { margin: 0; padding: 0; list-style: none; }
 .money-bank li { display: flex; justify-content: space-between; gap: 20px; padding: 16px 0; border-top: 1px solid var(--anata-line); }
 .money-bank li > div:last-child { text-align: right; }
+.money-account-role { display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-top:8px; }
+.money-account-role label { margin:0; }
+.money-account-role select { max-width:180px; padding:8px 30px 8px 10px; }
 .money-bank li span { display: block; margin-top: 4px; color: var(--anata-muted); font-size: 12px; }
 .money-empty { padding: 32px; text-align: center; background: rgba(255, 253, 249, .92); border: 1px dashed rgba(43, 54, 68, .25); border-radius: 24px; }
 .money-empty p { margin: 8px 0 18px; color: var(--anata-muted); }
