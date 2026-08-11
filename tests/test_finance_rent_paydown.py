@@ -162,6 +162,23 @@ def test_posted_payment_after_confirmed_balance_reduces_what_is_owed():
     assert plan["paid_since_balance_cents"] == 500_000
 
 
+def test_mirrored_bank_sources_do_not_double_count_sent_amount():
+    rows = [
+        {**_posted("Boulder Ranch", 1_007_516, AS_OF), "source": "plaid", "source_id": "p1"},
+        {**_posted("Boulder Ranch", 1_007_516, AS_OF), "source": "qbo_bank", "source_id": "q1"},
+    ]
+    plan = build_paydown_plan(
+        calendar=_calendar([]), rows=rows, spendable_cents=5_000_000,
+        reserve_cents=0, floor_cents=FLOOR, vendor_key="boulder ranch",
+        vendor_label="Boulder Ranch", monthly_cents=4_000_000,
+        authoritative_balance_cents=3_000_000, balance_as_of=AS_OF,
+        as_of=AS_OF,
+    )
+
+    assert plan["paid_this_month_cents"] == 1_007_516
+    assert plan["remaining_cents"] == 3_000_000
+
+
 # --- the double counting trap --------------------------------------------
 
 def test_the_bill_being_paid_is_not_also_reserved_against():

@@ -278,11 +278,17 @@ def build_paydown_plan(
         vendor_label = vendor_label or chosen["vendor"]
         monthly_cents = monthly_cents or chosen["monthly_cents"]
 
-    paid = _paid_this_month(rows, vendor_key=vendor_key, as_of=as_of)
+    # Plaid and QuickBooks may mirror the same bank withdrawal. Use the same
+    # canonical-source rule as the calendar so "sent" cannot double-count it.
+    from sales_support_agent.services.cashflow.budgeting import _canonical_transactions
+
+    _payment_source, canonical_payments = _canonical_transactions(rows, as_of=as_of)
+    payment_rows = canonical_payments or list(rows)
+    paid = _paid_this_month(payment_rows, vendor_key=vendor_key, as_of=as_of)
     paid_since_balance = 0
     if authoritative_balance_cents is not None and balance_as_of is not None:
         paid_since_balance = _paid_after_balance_date(
-            rows, vendor_key=vendor_key, balance_as_of=balance_as_of, as_of=as_of
+            payment_rows, vendor_key=vendor_key, balance_as_of=balance_as_of, as_of=as_of
         )
         remaining = max(0, int(authoritative_balance_cents) - paid_since_balance)
         balance_basis = "operator_confirmed"
