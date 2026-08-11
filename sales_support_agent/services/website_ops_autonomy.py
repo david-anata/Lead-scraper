@@ -72,6 +72,18 @@ MVP_FAQ_FORCE_CTR_THRESHOLD = 0.015
 MVP_THIN_TEXT_THRESHOLD = 5000
 
 
+def website_ops_content_execution_mode() -> str:
+    """Return the single owner for generative Website Ops content work.
+
+    Codex is the production default. The API implementation remains available
+    only as an explicit rollback path; Website Ops must never infer API usage
+    merely because a provider key exists on the shared Agent service.
+    """
+
+    configured = os.getenv("WEBSITE_OPS_CONTENT_EXECUTION_MODE", "codex").strip().lower()
+    return "api" if configured == "api" else "codex"
+
+
 @dataclass(frozen=True)
 class AnalyticsConfig:
     service_account_json: str
@@ -1721,7 +1733,8 @@ def build_autonomy_overlay(
         run_mode=run_mode,
     )
     content_strategy = build_content_strategy(query_intelligence)
-    if run_mode in {"daily", "weekly", "monthly"}:
+    content_execution_mode = website_ops_content_execution_mode()
+    if run_mode in {"daily", "weekly", "monthly"} and content_execution_mode == "api":
         for _ in range(article_batch_size(settings)):
             try:
                 article_action = build_article_action(
@@ -1738,6 +1751,13 @@ def build_autonomy_overlay(
                     f"{type(exc).__name__}: {exc}"
                 )
                 break
+    elif run_mode in {"daily", "weekly", "monthly"}:
+        support_requests.append(
+            "Article research, authoring, publication, deployment, and production "
+            "verification are owned by the once-per-workday Codex routine; Agent "
+            "model API generation is disabled."
+        )
+    content_strategy["content_execution_mode"] = content_execution_mode
     content_strategy["production_quota"] = article_generation_progress(settings)
     content_strategy["summary"]["generated_today"] = int(
         content_strategy["production_quota"].get("generated_today", 0) or 0
