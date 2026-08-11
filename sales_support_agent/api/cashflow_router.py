@@ -338,6 +338,7 @@ async def cashflow_health(request: Request):
         finance_v2_tables = {
             "payment_installments", "settlement_allocations", "finance_source_records",
             "finance_import_batches", "finance_import_rows",
+            "finance_economic_transaction_groups", "finance_economic_transaction_members",
         }
         checks["finance_v2_tables_present"] = finance_v2_tables.issubset(tables)
         savings_review_tables = {"finance_savings_reviews", "finance_savings_review_events"}
@@ -675,6 +676,49 @@ async def finance_accounts_refresh(request: Request):
     else:
         message = quote("ok:Connected bank balances and transactions refreshed.")
     return RedirectResponse(f"/admin/finances/accounts?flash={message}", status_code=303)
+
+
+@router.get("/api/economic-transactions/preview")
+async def finance_economic_transactions_preview(request: Request):
+    """Preview cross-feed cleanup without changing any transaction."""
+    from sales_support_agent.services.cashflow.economic_transactions import (
+        reconcile_cross_feed_transactions,
+    )
+
+    return JSONResponse(await asyncio.to_thread(
+        reconcile_cross_feed_transactions, dry_run=True,
+        actor=str((get_current_user(request) or {}).get("email") or "finance-operator"),
+    ))
+
+
+@router.post(
+    "/api/economic-transactions/apply",
+    dependencies=[Depends(require_finance_write_security)],
+)
+async def finance_economic_transactions_apply(request: Request):
+    """Apply exact-only grouping; uncertain pairs remain protected Review cases."""
+    from sales_support_agent.services.cashflow.economic_transactions import (
+        reconcile_cross_feed_transactions,
+    )
+
+    return JSONResponse(await asyncio.to_thread(
+        reconcile_cross_feed_transactions, dry_run=False,
+        actor=str((get_current_user(request) or {}).get("email") or "finance-operator"),
+    ))
+
+
+@router.post(
+    "/api/economic-transactions/{group_id}/undo",
+    dependencies=[Depends(require_finance_write_security)],
+)
+async def finance_economic_transactions_undo(request: Request, group_id: str):
+    """Undo one exact cross-feed classification without deleting history."""
+    from sales_support_agent.services.cashflow.economic_transactions import undo_cross_feed_group
+
+    return JSONResponse(await asyncio.to_thread(
+        undo_cross_feed_group, group_id,
+        actor=str((get_current_user(request) or {}).get("email") or "finance-operator"),
+    ))
 
 
 @router.get("/calculations/{calculation_id}", response_class=HTMLResponse)

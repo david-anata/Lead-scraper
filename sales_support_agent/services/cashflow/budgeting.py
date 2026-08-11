@@ -302,6 +302,11 @@ def _canonical_transactions(
             continue
         if str(row.get("status") or "").lower() not in {"posted", "matched"}:
             continue
+        if (
+            str(row.get("match_status") or "").lower() == "duplicate"
+            or str(row.get("source_status") or "").lower() == "probable_duplicate"
+        ):
+            continue
         occurred = _event_date(row)
         amount = int(row.get("amount_cents") or 0)
         category = _category(row)

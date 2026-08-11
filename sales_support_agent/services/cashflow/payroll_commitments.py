@@ -58,6 +58,12 @@ def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
             FROM hr_payroll_runs
             ORDER BY pay_date, id
         """)).fetchall()]
+        existing_rows = [dict(row._mapping) for row in connection.execute(text("""
+            SELECT id, source_id, amount_cents, due_date, status, source_status,
+                   confidence, workflow_status, pay_priority, owner, archived_at
+            FROM cash_events WHERE source='hr_payroll'
+        """)).fetchall()]
+    existing_by_id = {str(row["id"]): row for row in existing_rows}
 
     active_ids: set[str] = set()
     synced = 0
@@ -70,7 +76,9 @@ def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
         active = hr_status in ACTIVE_STATUSES and run.get("pay_date") is not None
         if active:
             active_ids.add(event_id)
-        finance_status = "cancelled" if not active else "planned"
+        # ``upsert_cash_event`` canonicalizes planned obligations to pending.
+        # Compare against that stored value so a stable read stays read-only.
+        finance_status = "cancelled" if not active else "pending"
         workflow_status = {
             "draft": "draft",
             "processing": "approved",
@@ -86,8 +94,14 @@ def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
             f"{gross} cents. Employees: {max(0, int(run.get('employee_count') or 0))}. "
             "Paid requires allocated posted bank evidence."
         )
-        with engine.begin() as connection:
-            upsert_cash_event(connection, {
+        current = existing_by_id.get(event_id)
+        if active and str((current or {}).get("workflow_status") or "") in {
+            "paid", "partially_paid",
+        }:
+            # A later HR read must never erase settlement truth established by
+            # posted bank allocations.
+            workflow_status = str(current["workflow_status"])
+        desired = {
                 "id": event_id,
                 "source": "hr_payroll",
                 "source_id": run_id,
@@ -110,7 +124,24 @@ def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
                 "notes": note,
                 "preserve_settlement_truth": True,
                 "archived_at": None if active else datetime.now(timezone.utc),
-            })
+            }
+        unchanged = bool(current) and all((
+            str(current.get("source_id") or "") == run_id,
+            int(current.get("amount_cents") or 0) == net,
+            _as_date(current.get("due_date")) == _as_date(run.get("pay_date")),
+            str(current.get("status") or "") == finance_status,
+            str(current.get("source_status") or "") == hr_status,
+            str(current.get("confidence") or "") == confidence,
+            str(current.get("workflow_status") or "") == workflow_status,
+            str(current.get("pay_priority") or "") == desired["pay_priority"],
+            str(current.get("owner") or "") == desired["owner"],
+            bool(current.get("archived_at")) == (not active),
+        ))
+        if unchanged:
+            synced += 1
+            continue
+        with engine.begin() as connection:
+            upsert_cash_event(connection, desired)
             connection.execute(text("""
                 UPDATE cash_events SET
                     commitment_type='payroll', workflow_status=:workflow_status,
@@ -129,13 +160,12 @@ def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
             })
         synced += 1
 
-    with engine.begin() as connection:
-        existing = [str(row[0]) for row in connection.execute(text("""
-            SELECT id FROM cash_events
-            WHERE source='hr_payroll' AND archived_at IS NULL
-        """)).fetchall()]
-        stale = [event_id for event_id in existing if event_id not in active_ids]
-        if stale:
+    existing_active = [
+        str(row["id"]) for row in existing_rows if not row.get("archived_at")
+    ]
+    stale = [event_id for event_id in existing_active if event_id not in active_ids]
+    if stale:
+        with engine.begin() as connection:
             params = {f"id_{index}": value for index, value in enumerate(stale)}
             placeholders = ", ".join(f":id_{index}" for index in range(len(stale)))
             params["now"] = datetime.now(timezone.utc)
@@ -154,7 +184,7 @@ def active_hr_pay_dates() -> list[date]:
             WHERE status IN ('draft', 'processing', 'partial', 'completed')
               AND pay_date IS NOT NULL
         """)).scalars().all()
-    return [value if isinstance(value, date) else date.fromisoformat(str(value)[:10]) for value in values]
+    return [parsed for value in values if (parsed := _as_date(value)) is not None]
 
 
 def reconcile_hr_payroll(*, actor: str = "plaid-sync") -> dict[str, Any]:

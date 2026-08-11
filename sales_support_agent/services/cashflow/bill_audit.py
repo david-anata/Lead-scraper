@@ -94,12 +94,15 @@ def _load_outflows() -> list[dict[str, Any]]:
     with get_engine().connect() as connection:
         rows = connection.execute(text(f"""
             SELECT name, vendor_or_customer, description, category, source,
+                   match_status, source_status,
                    amount_cents, COALESCE(effective_date, due_date) AS paid_on
             FROM cash_events
             WHERE event_type='outflow'
               AND record_kind='transaction'
               AND LOWER(COALESCE(status,'')) IN ({placeholders})
               AND COALESCE(amount_cents,0) > 0
+              AND COALESCE(match_status,'') <> 'duplicate'
+              AND COALESCE(source_status,'') <> 'probable_duplicate'
         """)).fetchall()  # noqa: S608 - statuses are a fixed internal allowlist
     return [dict(row._mapping) for row in rows if not is_internal_transfer(dict(row._mapping))]
 

@@ -495,7 +495,7 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
     api = client or PlaidClient(settings)
     now = datetime.now(timezone.utc)
     counts = {"accounts": 0, "added": 0, "modified": 0, "removed": 0, "matched": 0,
-              "payroll_matched": 0, "payroll_review": 0}
+              "payroll_matched": 0, "payroll_review": 0, "cross_feed_groups": 0}
     try:
         accounts_payload = api.accounts_get(access_token)
         with get_engine().begin() as connection:
@@ -587,6 +587,14 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
             counts["payroll_review"] = int(payroll_result.get("review_count") or 0)
         except Exception as exc:
             logger.warning("Plaid payroll reconciliation failed item_id=%s: %s", local_item_id, exc)
+        try:
+            from sales_support_agent.services.cashflow.economic_transactions import (
+                reconcile_cross_feed_transactions,
+            )
+            grouped = reconcile_cross_feed_transactions(dry_run=False, actor="plaid-sync")
+            counts["cross_feed_groups"] = int(grouped.get("groups_written") or 0)
+        except Exception as exc:
+            logger.warning("Cross-feed reconciliation failed item_id=%s: %s", local_item_id, exc)
     except Exception as exc:
         code = exc.code if isinstance(exc, PlaidError) else "sync_error"
         with get_engine().begin() as connection:

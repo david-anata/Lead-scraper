@@ -875,6 +875,43 @@ class FinanceActionAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class FinanceEconomicTransactionGroup(Base):
+    """Auditable cross-feed identity for one real-world bank transaction."""
+
+    __tablename__ = "finance_economic_transaction_groups"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="review", index=True)
+    canonical_event_id: Mapped[str] = mapped_column(String(255), default="", index=True)
+    evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    undone_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FinanceEconomicTransactionMember(Base):
+    """One source row and its reversible classification within a group."""
+
+    __tablename__ = "finance_economic_transaction_members"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    group_id: Mapped[str] = mapped_column(
+        ForeignKey("finance_economic_transaction_groups.id"), index=True,
+    )
+    event_id: Mapped[str] = mapped_column(String(255), index=True)
+    source: Mapped[str] = mapped_column(String(32), default="")
+    role: Mapped[str] = mapped_column(String(16), default="candidate")
+    prior_match_status: Mapped[str] = mapped_column(String(16), default="")
+    prior_source_status: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("uq_finance_economic_group_event", "group_id", "event_id", unique=True),
+    )
+
+
 class FinanceWorkspaceDraft(Base):
     """Encrypted, actor-scoped Finance edits that have not been applied yet."""
 

@@ -6,6 +6,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy import event as sqlalchemy_event
 
 from sales_support_agent.models import database
 from sales_support_agent.models.database import create_session_factory, init_database, upsert_cash_event
@@ -169,10 +170,34 @@ def test_exact_split_plaid_withdrawals_auto_settle_one_hr_run(payroll_engine):
     assert result["review_count"] == 0
     assert repeated["confirmed_allocations"] == 0
     with payroll_engine.connect() as connection:
-        assert connection.execute(text("""
-            SELECT COALESCE(SUM(amount_cents), 0) FROM settlement_allocations
-            WHERE obligation_event_id=:id
-        """), {"id": finance_payroll_id("run-auto")}).scalar_one() == 125_000
+        row = connection.execute(text("""
+            SELECT workflow_status, (SELECT COALESCE(SUM(amount_cents), 0)
+              FROM settlement_allocations WHERE obligation_event_id=:id) AS settled
+            FROM cash_events WHERE id=:id
+        """), {"id": finance_payroll_id("run-auto")}).one()
+    assert row.settled == 125_000
+    assert row.workflow_status == "paid"
+
+
+def test_stable_hr_projection_costs_three_statements_not_one_write_per_run(payroll_engine):
+    for index in range(8):
+        _run(payroll_engine, f"run-{index}", "draft")
+    list_obligations()
+    statements: list[str] = []
+
+    def record(_conn, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    sqlalchemy_event.listen(payroll_engine, "before_cursor_execute", record)
+    try:
+        list_obligations()
+    finally:
+        sqlalchemy_event.remove(payroll_engine, "before_cursor_execute", record)
+
+    assert len(statements) <= 3, (
+        f"A stable Finance read issued {len(statements)} statements. HR payroll "
+        "must be read in bulk and must not rewrite every run on every page load."
+    )
 
 
 def test_payroll_variance_creates_one_plain_review_and_no_false_settlement(payroll_engine):
