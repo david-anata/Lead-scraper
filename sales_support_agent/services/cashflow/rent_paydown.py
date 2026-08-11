@@ -159,7 +159,7 @@ def _outgoings_by_day(
     unconfirmed: dict[date, int] = {}
     for bucket in calendar.get("days") or []:
         when = _as_date(bucket.get("date"))
-        if when is None or when <= as_of or when > horizon_end:
+        if when is None or when < as_of or when > horizon_end:
             continue
         for event in bucket.get("events") or []:
             kind = str(event.get("kind") or "")
@@ -266,6 +266,20 @@ def build_paydown_plan(
     as_of = as_of or date.today()
     horizon_end = _month_end(as_of)
 
+    calculation_id = str(calendar.get("calculation_id") or "")
+    calendar_end = _as_date(calendar.get("end"))
+    if (
+        str(calendar.get("history_status") or "ready") != "ready"
+        or (calendar_end is not None and calendar_end < horizon_end)
+    ):
+        return {
+            "status": "paused",
+            "message": "Rent recommendation paused because not all upcoming expenses were included.",
+            "reason": "Recurring expense history or the month-end calendar is unavailable.",
+            "calculation_id": calculation_id,
+            "instalments": [],
+        }
+
     if not vendor_key:
         chosen = largest_recurring_outflow(rows, as_of=as_of)
         if not chosen:
@@ -350,18 +364,19 @@ def build_paydown_plan(
         "spendable_cents": int(spendable_cents),
         "savings_available_cents": int(reserve_cents),
         "savings_would_unlock_cents": savings_unlock,
+        "calculation_id": calculation_id,
+        "source_as_of": calendar.get("as_of"),
     }
 
 
 def load_paydown_plan(
-    *, rows: Iterable[Mapping[str, Any]] | None = None, as_of: date | None = None
+    *, rows: Iterable[Mapping[str, Any]] | None = None,
+    calendar: Mapping[str, Any] | None = None,
+    as_of: date | None = None,
 ) -> dict[str, Any]:
     """Convenience loader. Pass ``rows`` to share one ledger read with the page."""
     from sales_support_agent.services.cashflow.accounts_view import load_accounts_overview
-    from sales_support_agent.services.cashflow.cash_calendar import (
-        build_cash_calendar,
-        load_cash_calendar,
-    )
+    from sales_support_agent.services.cashflow.cash_calendar import load_cash_calendar
     from sales_support_agent.services.cashflow.obligations import list_obligations
     from sales_support_agent.services.cashflow.settings import get_paydown_settings
 
@@ -369,11 +384,9 @@ def load_paydown_plan(
     ledger = list(rows) if rows is not None else list_obligations(limit=10_000)
     # The walk needs to reach month end, which is further than the calendar page
     # itself shows.
-    horizon = max(1, (_month_end(today) - today).days + 1)
-    try:
-        calendar = build_cash_calendar(ledger, as_of=today, future_days=horizon)
-    except Exception:
-        calendar = load_cash_calendar(as_of=today)
+    horizon = max(0, (_month_end(today) - today).days)
+    if calendar is None:
+        calendar = load_cash_calendar(as_of=today, rows=ledger, future_days=horizon)
     accounts = load_accounts_overview()
     configured = get_paydown_settings()
     return build_paydown_plan(

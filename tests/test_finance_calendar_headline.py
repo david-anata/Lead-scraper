@@ -179,6 +179,19 @@ def test_it_never_disappears_silently():
     assert "Nothing was" in failed, "and it must say the calendar is unaffected"
 
 
+def test_a_missing_month_end_feed_pauses_the_rent_recommendation():
+    block = _paydown_block({
+        "status": "paused",
+        "message": "Rent recommendation paused because not all upcoming expenses were included.",
+        "reason": "Recurring expense history is unavailable.",
+    })
+
+    assert "Rent recommendation paused" in block
+    assert "not all upcoming expenses" in block
+    assert "Recurring expense history is unavailable" in block
+    assert "Nothing spare" not in block
+
+
 def test_operator_copy_carries_no_em_dashes_or_leaked_placeholders():
     for block in (_paydown_block(_plan()), _next_week_headline(_calendar(_week()))):
         assert "—" not in block

@@ -13,6 +13,8 @@ or described as confirmed bills until the operator explicitly tracks them.
 from __future__ import annotations
 
 import html
+import hashlib
+import json
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
@@ -154,11 +156,12 @@ def build_cash_calendar(
     as_of: date | None = None,
     past_days: int = PAST_DAYS,
     future_days: int = FUTURE_DAYS,
+    history_status: str = "ready",
 ) -> dict[str, Any]:
     """Build one daily view while preserving each item's evidence class."""
     today = as_of or date.today()
     past_days = max(1, int(past_days))
-    future_days = max(1, int(future_days))
+    future_days = max(0, int(future_days))
     start = today - timedelta(days=past_days)
     end = today + timedelta(days=future_days)
     source_rows = [dict(row) for row in rows]
@@ -370,6 +373,16 @@ def build_cash_calendar(
                    for event in bucket["events"] if str(event["kind"]).startswith("posted_")]
     future_events = [event for bucket in ordered_days if bucket["period"] in {"today", "future"}
                      for event in bucket["events"]]
+    snapshot_basis = {
+        "as_of": today.isoformat(),
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "actual_source": source,
+        "days": ordered_days,
+    }
+    calculation_id = hashlib.sha256(
+        json.dumps(snapshot_basis, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
     return {
         "status": "ready",
         "as_of": today.isoformat(),
@@ -378,6 +391,8 @@ def build_cash_calendar(
         "past_days": past_days,
         "future_days": future_days,
         "actual_source": source,
+        "history_status": history_status,
+        "calculation_id": calculation_id,
         "days": ordered_days,
         "weeks": weeks,
         "totals": {
@@ -480,7 +495,8 @@ def _historical_data(
 
 
 def load_cash_calendar(
-    *, as_of: date | None = None, rows: Sequence[Mapping[str, Any]] | None = None
+    *, as_of: date | None = None, rows: Sequence[Mapping[str, Any]] | None = None,
+    future_days: int = FUTURE_DAYS,
 ) -> dict[str, Any]:
     """Load the live ledger, settlement evidence, and bank-pattern warnings.
 
@@ -499,7 +515,7 @@ def load_cash_calendar(
         )
         for vendor in list_vendors_with_progress():
             rows.extend(preview_agreement_obligations(
-                vendor, as_of=today, horizon_days=FUTURE_DAYS,
+                vendor, as_of=today, horizon_days=future_days,
             ))
     except Exception:
         # Vendor terms are supporting forecast evidence. They must not hide
@@ -512,16 +528,73 @@ def load_cash_calendar(
     except Exception:
         allocations = []
     try:
-        history, patterns = _historical_data(as_of=today, future_days=FUTURE_DAYS)
+        history, patterns = _historical_data(as_of=today, future_days=future_days)
+        history_status = "ready"
     except Exception:
         history, patterns = [], []
+        history_status = "unavailable"
     return build_cash_calendar(
         rows,
         allocations=allocations,
         historical_events=history,
         historical_patterns=patterns,
         as_of=today,
+        future_days=future_days,
+        history_status=history_status,
     )
+
+
+def overlay_paydown_proposals(
+    calendar: Mapping[str, Any], plan: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the shared calendar with advisory rent proposals visible.
+
+    The plan must be calculated first.  This one-way overlay prevents a rent
+    proposal from feeding back into its own affordability calculation.
+    """
+    result = {
+        **dict(calendar),
+        "days": [{**dict(bucket), "events": [dict(item) for item in bucket.get("events") or []]}
+                 for bucket in calendar.get("days") or []],
+        "weeks": [dict(week) for week in calendar.get("weeks") or []],
+    }
+    if not plan or plan.get("status") not in {"ok", "nothing_spare"}:
+        return result
+    if str(plan.get("calculation_id") or "") != str(calendar.get("calculation_id") or ""):
+        return result
+
+    day_map = {str(bucket.get("date") or ""): bucket for bucket in result["days"]}
+    for item in plan.get("instalments") or []:
+        when = _as_date(item.get("date"))
+        bucket = day_map.get(when.isoformat() if when else "")
+        amount = max(0, int(item.get("amount_cents") or 0))
+        if bucket is None or amount <= 0:
+            continue
+        bucket["events"].append({
+            "id": f"proposed-rent-{when.isoformat()}",
+            "kind": "proposed_rent",
+            "state_label": "Proposed · not scheduled",
+            "payment_status": "unconfirmed",
+            "name": f"{plan.get('vendor') or 'Rent'} — proposed rent payment",
+            "vendor_or_customer": str(plan.get("vendor") or ""),
+            "amount_cents": amount,
+            "category": "rent",
+            "evidence": "Calculated after other planned and possible expenses",
+            "href": "#cash-calendar-paydown-title",
+            "action_label": "See rent plan",
+            "protected": True,
+            "advisory": True,
+        })
+        bucket["warning_cents"] = int(bucket.get("warning_cents") or 0) + amount
+
+        for week in result["weeks"]:
+            start, end = _as_date(week.get("start")), _as_date(week.get("end"))
+            if start and end and start <= when <= end:
+                week["possible_cents"] = int(week.get("possible_cents") or 0) + amount
+                week["possible_count"] = int(week.get("possible_count") or 0) + 1
+                week["proposed_rent_cents"] = int(week.get("proposed_rent_cents") or 0) + amount
+                break
+    return result
 
 
 def _event_html(event: Mapping[str, Any]) -> str:
@@ -529,7 +602,11 @@ def _event_html(event: Mapping[str, Any]) -> str:
     payment_status = html.escape(str(event.get("payment_status") or "unconfirmed"), quote=True)
     protected = bool(event.get("protected"))
     event_id = str(event.get("id") or "").strip()
-    is_canonical = bool(event_id and not str(event.get("kind") or "").startswith("history_"))
+    is_canonical = bool(
+        event_id
+        and not str(event.get("kind") or "").startswith("history_")
+        and not event.get("advisory")
+    )
     selection = (
         f'<label class="cash-calendar-select"><input type="checkbox" data-calendar-select '
         f'data-object-id="{html.escape(event_id, quote=True)}" data-amount-cents="{int(event.get("amount_cents") or 0)}" '
@@ -662,6 +739,14 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
         <p class="metric-note">This needs a few months of payments to the same
         supplier before it can suggest anything.</p>
       </section>"""
+    if plan.get("status") == "paused":
+        return f"""
+      <section class="cash-calendar-paydown cash-calendar-paydown--paused" role="alert">
+        <div class="money-section-heading"><div><p class="finance-eyebrow">Paying down</p>
+        <h2>Rent recommendation paused</h2></div></div>
+        <p class="finance-plan-short">{html.escape(str(plan.get('message') or 'Not all upcoming expenses were included.'))}</p>
+        <p class="metric-note">{html.escape(str(plan.get('reason') or 'Refresh the calendar sources before deciding what to pay.'))}</p>
+      </section>"""
 
     vendor = html.escape(str(plan.get("vendor") or "this bill"))
     monthly = int(plan.get("monthly_cents") or 0)
@@ -757,8 +842,6 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
           </form>
         </details>
       </section>"""
-
-
 def _instalment_when(value: Any) -> str:
     when = _as_date_or_none(value) if not isinstance(value, date) else value
     if when is None:
@@ -782,12 +865,16 @@ def render_cash_calendar_page(
     totals = calendar.get("totals") or {}
     week_rows = []
     for week in calendar.get("weeks") or []:
+        proposed_rent = int(week.get("proposed_rent_cents") or 0)
+        possible_note = f"{int(week.get('possible_count') or 0)} unconfirmed"
+        if proposed_rent:
+            possible_note += f" · Includes {_money(proposed_rent)} proposed rent"
         week_rows.append(f"""
           <tr>
             <th scope="row"><strong>{html.escape(str(week.get('label') or 'Week'))}</strong><small>{html.escape(str(week.get('date_label') or ''))}</small></th>
             <td>{_charge_link(week, 'paid', int(week.get('paid_cents') or 0), f"{int(week.get('paid_count') or 0)} paid")}</td>
             <td>{_charge_link(week, 'unpaid', int(week.get('unpaid_cents') or 0), f"{int(week.get('unpaid_count') or 0)} still due")}</td>
-            <td>{_charge_link(week, 'possible', int(week.get('possible_cents') or 0), f"{int(week.get('possible_count') or 0)} unconfirmed")}</td>
+            <td>{_charge_link(week, 'possible', int(week.get('possible_cents') or 0), possible_note)}</td>
           </tr>""")
     day_rows: list[str] = []
     day_buttons: list[str] = []
@@ -827,7 +914,7 @@ def render_cash_calendar_page(
       {render_finance_nav('calendar', counts={})}
       <header class="money-page-header"><div><p class="finance-eyebrow">Cash calendar</p>
       <h1>See expenses before they surprise you</h1>
-      <p class="money-page-subtitle">Seven days of posted spending, today, and the next fourteen days, separated into planned costs and historical warnings.</p></div>
+      <p class="money-page-subtitle">Seven days of posted spending and every remaining day this month, separated into planned costs, historical warnings, and proposed rent.</p></div>
       <div class="money-page-status"><span class="money-status money-status--ready">Read-only</span>
       <span>Posted source: {html.escape(str(calendar.get('actual_source') or 'unavailable').title())} · As of {html.escape(str(calendar.get('as_of') or 'today'))}</span></div></header>
 
@@ -835,7 +922,7 @@ def render_cash_calendar_page(
         <article><span>Posted in the last 7 days</span><strong>{_money(int(totals.get('posted_cents') or 0))}</strong></article>
         <article class="cash-calendar-summary__expected"><span>Recognized automatically</span><strong>{_money(int(totals.get('expected_posted_cents') or 0))}</strong><small>{int(totals.get('expected_count') or 0)} recurring charge(s)</small></article>
         <article class="cash-calendar-summary__attention"><span>Still needs review</span><strong>{_money(int(totals.get('unplanned_posted_cents') or 0))}</strong><small>{int(totals.get('unplanned_count') or 0)} charge(s)</small></article>
-        <article><span>Planned next 14 days</span><strong>{_money(int(totals.get('planned_cents') or 0))}</strong></article>
+        <article><span>Planned through month-end</span><strong>{_money(int(totals.get('planned_cents') or 0))}</strong></article>
         <article class="cash-calendar-summary__warning"><span>Possible from history</span><strong>{_money(int(totals.get('warning_cents') or 0))}</strong><small>{int(totals.get('warning_count') or 0)} warning(s), not counted as required</small></article>
       </section>
 
@@ -863,7 +950,7 @@ def render_cash_calendar_page(
 
       <section class="cash-calendar-workspace" aria-labelledby="cash-calendar-title">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Daily drill-down</p>
-        <h2 id="cash-calendar-title">Past 7 days · today · next 14 days</h2></div>
+        <h2 id="cash-calendar-title">Past 7 days · today · through month-end</h2></div>
         <span class="money-section-state">{len(calendar.get('days') or [])} days</span></div>
         <div class="cash-calendar-filters" role="group" aria-label="Filter expense calendar">
           <button type="button" class="is-active" data-calendar-filter="all" aria-pressed="true">All expenses</button>

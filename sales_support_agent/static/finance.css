@@ -1619,6 +1619,27 @@ input:focus, select:focus, textarea:focus {
   border-top: 1px solid var(--anata-line);
   padding-top: 14px;
 }
+.cash-calendar-paydown {
+  padding: 20px;
+  border: 1px solid var(--anata-line);
+  border-radius: 14px;
+  background: var(--anata-surface);
+  overflow-x: auto;
+}
+.cash-calendar-paydown--paused {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 8%, var(--anata-surface));
+}
+.cash-calendar-paydown table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.cash-calendar-paydown th,
+.cash-calendar-paydown td {
+  padding: 10px;
+  border-bottom: 1px solid var(--anata-line);
+  text-align: left;
+}
 .cash-calendar-paydown__settings summary {
   cursor: pointer;
   font-weight: 700;
@@ -2525,6 +2546,8 @@ input:focus, select:focus, textarea:focus {
 }
 .cash-calendar-state--posted_unplanned { background: rgba(185, 28, 28, .07); color: var(--bad); }
 .cash-calendar-state--history_warning { background: rgba(180, 105, 10, .09); color: var(--warn); }
+.cash-calendar-state--proposed_rent { background: rgba(180, 105, 10, .09); color: var(--warn); }
+.cash-calendar-event--proposed_rent { border-color: var(--warn); }
 .cash-calendar-state--posted_planned { background: rgba(36, 113, 181, .08); color: var(--anata-blue); }
 .cash-calendar-state--posted_expected { background: rgba(13, 119, 107, .08); color: var(--good); }
 .cash-calendar-empty { padding: 9px 12px; color: var(--anata-muted); font-size: 11px; font-style: italic; }
