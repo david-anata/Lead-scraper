@@ -13,7 +13,10 @@ from sales_support_agent.services.cashflow.cash_calendar import build_cash_calen
 from sales_support_agent.services.cashflow.cash_calendar import _historical_data
 from sales_support_agent.services.cashflow.control import build_finance_control_state
 from sales_support_agent.services.cashflow.obligations import list_obligations
-from sales_support_agent.services.cashflow.payroll_commitments import finance_payroll_id
+from sales_support_agent.services.cashflow.payroll_commitments import (
+    finance_payroll_id,
+    reconcile_hr_payroll,
+)
 
 
 @pytest.fixture()
@@ -140,3 +143,53 @@ def test_hr_run_suppresses_the_same_period_historical_payroll_guess(
     events, _patterns = _historical_data(as_of=date(2026, 8, 10), future_days=14)
 
     assert events == []
+
+
+def _plaid_payroll(engine, event_id: str, amount: int, paid_on: date):
+    with engine.begin() as connection:
+        upsert_cash_event(connection, {
+            "id": event_id, "source": "plaid", "source_id": event_id,
+            "record_kind": "transaction", "event_type": "outflow",
+            "category": "payroll", "name": "Intuit Payroll",
+            "description": "Intuit Payroll", "amount_cents": amount,
+            "due_date": paid_on, "effective_date": paid_on,
+            "status": "posted", "confidence": "confirmed",
+        })
+
+
+def test_exact_split_plaid_withdrawals_auto_settle_one_hr_run(payroll_engine):
+    _run(payroll_engine, "run-auto", "completed")
+    _plaid_payroll(payroll_engine, "auto-1", 60_000, date(2026, 8, 9))
+    _plaid_payroll(payroll_engine, "auto-2", 65_000, date(2026, 8, 10))
+
+    result = reconcile_hr_payroll(actor="qa")
+    repeated = reconcile_hr_payroll(actor="qa")
+
+    assert result["confirmed_allocations"] == 2
+    assert result["review_count"] == 0
+    assert repeated["confirmed_allocations"] == 0
+    with payroll_engine.connect() as connection:
+        assert connection.execute(text("""
+            SELECT COALESCE(SUM(amount_cents), 0) FROM settlement_allocations
+            WHERE obligation_event_id=:id
+        """), {"id": finance_payroll_id("run-auto")}).scalar_one() == 125_000
+
+
+def test_payroll_variance_creates_one_plain_review_and_no_false_settlement(payroll_engine):
+    _run(payroll_engine, "run-variance", "processing")
+    _plaid_payroll(payroll_engine, "variance-1", 120_000, date(2026, 8, 9))
+
+    result = reconcile_hr_payroll(actor="qa")
+
+    assert result["confirmed_allocations"] == 0
+    assert result["review_count"] == 1
+    assert result["reviews"][0]["variance_cents"] == -5_000
+    assert "do not agree" in result["reviews"][0]["reason"]
+    with payroll_engine.connect() as connection:
+        row = connection.execute(text("""
+            SELECT match_status, workflow_status, match_candidates_json
+            FROM cash_events WHERE id=:id
+        """), {"id": finance_payroll_id("run-variance")}).one()
+    assert row.match_status == "review"
+    assert row.workflow_status == "needs_review"
+    assert '"variance_cents": -5000' in row.match_candidates_json

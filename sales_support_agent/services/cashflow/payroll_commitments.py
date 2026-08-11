@@ -7,6 +7,8 @@ settlement allocations remain the only proof that the money left the bank.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from itertools import combinations
+import json
 from typing import Any
 
 from sqlalchemy import text
@@ -23,6 +25,20 @@ def _external_run_id(row: dict[str, Any]) -> str:
 def finance_payroll_id(run_id: str) -> str:
     """Return the stable Finance obligation identity for one HR payroll run."""
     return f"hr-payroll-{run_id}"[:64]
+
+
+def _as_date(value: Any) -> date | None:
+    """Normalize SQLite strings and native database date values."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
 
 
 def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
@@ -141,4 +157,156 @@ def active_hr_pay_dates() -> list[date]:
     return [value if isinstance(value, date) else date.fromisoformat(str(value)[:10]) for value in values]
 
 
-__all__ = ["active_hr_pay_dates", "finance_payroll_id", "sync_hr_payroll_commitments"]
+def reconcile_hr_payroll(*, actor: str = "plaid-sync") -> dict[str, Any]:
+    """Allocate only one unambiguous exact set of posted payroll withdrawals."""
+    from sales_support_agent.services.cashflow.settlements import create_settlement_allocation
+
+    sync_hr_payroll_commitments(actor=actor)
+    engine = get_engine()
+    with engine.connect() as connection:
+        obligations = [dict(row._mapping) for row in connection.execute(text("""
+            SELECT event.id, event.source_id, event.amount_cents, event.due_date,
+                   event.source_status,
+                   COALESCE(SUM(allocation.amount_cents), 0) AS allocated_cents
+            FROM cash_events AS event
+            LEFT JOIN settlement_allocations AS allocation
+              ON allocation.obligation_event_id=event.id
+             AND allocation.reversed_allocation_id IS NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM settlement_allocations AS reversal
+               WHERE reversal.reversed_allocation_id=allocation.id
+             )
+            WHERE event.source='hr_payroll' AND event.archived_at IS NULL
+              AND event.source_status IN ('processing','partial','completed')
+            GROUP BY event.id, event.source_id, event.amount_cents,
+                     event.due_date, event.source_status
+        """)).fetchall()]
+        transactions = [dict(row._mapping) for row in connection.execute(text("""
+            SELECT event.id, event.amount_cents,
+                   COALESCE(event.effective_date, event.due_date) AS paid_on,
+                   event.name, event.description, event.vendor_or_customer,
+                   COALESCE(SUM(allocation.amount_cents), 0) AS allocated_cents
+            FROM cash_events AS event
+            LEFT JOIN settlement_allocations AS allocation
+              ON allocation.transaction_event_id=event.id
+             AND allocation.reversed_allocation_id IS NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM settlement_allocations AS reversal
+               WHERE reversal.reversed_allocation_id=allocation.id
+             )
+            WHERE event.source='plaid' AND event.record_kind='transaction'
+              AND event.event_type='outflow' AND event.status IN ('posted','matched')
+              AND (
+                event.category='payroll' OR LOWER(COALESCE(event.name,'')) LIKE '%payroll%'
+                OR LOWER(COALESCE(event.description,'')) LIKE '%payroll%'
+                OR LOWER(COALESCE(event.vendor_or_customer,'')) LIKE '%payroll%'
+              )
+            GROUP BY event.id, event.amount_cents, event.effective_date,
+                     event.due_date, event.name, event.description,
+                     event.vendor_or_customer
+        """)).fetchall()]
+
+    confirmed = 0
+    reviews: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    for obligation in obligations:
+        remaining = max(0, int(obligation["amount_cents"] or 0) - int(obligation["allocated_cents"] or 0))
+        if remaining == 0:
+            continue
+        due_day = _as_date(obligation["due_date"])
+        candidates = []
+        for transaction in transactions:
+            if str(transaction["id"]) in used_ids:
+                continue
+            paid_day = _as_date(transaction["paid_on"])
+            available = max(0, int(transaction["amount_cents"] or 0) - int(transaction["allocated_cents"] or 0))
+            if due_day and paid_day and abs((paid_day - due_day).days) <= 5 and available > 0:
+                candidates.append({**transaction, "available_cents": available, "paid_day": paid_day})
+        # Keep matching deterministic and bounded. More than twelve nearby
+        # withdrawals is itself review territory, not a safe automatic match.
+        candidates.sort(key=lambda item: (item["paid_day"], str(item["id"])))
+        candidates = candidates[:12]
+        exact_sets = [
+            group for size in range(1, min(len(candidates), 12) + 1)
+            for group in combinations(candidates, size)
+            if sum(int(item["available_cents"]) for item in group) == remaining
+        ]
+        if len(exact_sets) != 1:
+            candidate_total = sum(int(item["available_cents"]) for item in candidates)
+            if candidates:
+                review = {
+                    "payroll_run_id": str(obligation["source_id"]),
+                    "expected_cents": remaining, "posted_candidate_cents": candidate_total,
+                    "variance_cents": candidate_total - remaining,
+                    "reason": (
+                        "More than one payroll match is possible. Review the posted withdrawals."
+                        if len(exact_sets) > 1 else
+                        "HR payroll and posted bank withdrawals do not agree yet."
+                    ),
+                }
+                reviews.append(review)
+                with engine.begin() as connection:
+                    connection.execute(text("""
+                        UPDATE cash_events SET
+                            match_status='review',
+                            match_candidates_json=:candidates,
+                            workflow_status='needs_review',
+                            updated_at=:now
+                        WHERE id=:id
+                    """), {
+                        "id": obligation["id"],
+                        "candidates": json.dumps({
+                            "reason": review["reason"],
+                            "expected_cents": remaining,
+                            "posted_candidate_cents": candidate_total,
+                            "variance_cents": review["variance_cents"],
+                            "transaction_ids": [str(item["id"]) for item in candidates],
+                        }),
+                        "now": datetime.now(timezone.utc),
+                    })
+            continue
+        for transaction in exact_sets[0]:
+            create_settlement_allocation(
+                obligation_event_id=str(obligation["id"]),
+                transaction_event_id=str(transaction["id"]),
+                amount_cents=int(transaction["available_cents"]),
+                allocation_date=transaction["paid_day"], source="plaid",
+                confidence="confirmed",
+                idempotency_key=f"hr-payroll:{obligation['id']}:{transaction['id']}",
+                notes="Exact HR net payroll matched to posted Plaid withdrawal.",
+            )
+            used_ids.add(str(transaction["id"]))
+            confirmed += 1
+        with engine.begin() as connection:
+            connection.execute(text("""
+                UPDATE cash_events SET match_status='', match_candidates_json='[]',
+                    workflow_status='paid', updated_at=:now
+                WHERE id=:id
+            """), {"id": obligation["id"], "now": datetime.now(timezone.utc)})
+            already = connection.execute(text("""
+                SELECT 1 FROM finance_action_audit
+                WHERE action_type='hr_payroll_plaid_matched' AND entity_id=:id
+                LIMIT 1
+            """), {"id": obligation["id"]}).fetchone()
+            if not already:
+                connection.execute(text("""
+                    INSERT INTO finance_action_audit (
+                        id, scope_key, action_type, entity_type, entity_id,
+                        actor, evidence_json, created_at
+                    ) VALUES (
+                        :id, 'default', 'hr_payroll_plaid_matched',
+                        'hr_payroll_run', :entity_id, :actor, :evidence, :now
+                    )
+                """), {
+                    "id": f"payroll-match-{obligation['id']}"[:64],
+                    "entity_id": obligation["id"], "actor": actor,
+                    "evidence": json.dumps({"allocation_count": len(exact_sets[0]), "amount_cents": remaining}),
+                    "now": datetime.now(timezone.utc),
+                })
+    return {"confirmed_allocations": confirmed, "review_count": len(reviews), "reviews": reviews}
+
+
+__all__ = [
+    "active_hr_pay_dates", "finance_payroll_id", "reconcile_hr_payroll",
+    "sync_hr_payroll_commitments",
+]

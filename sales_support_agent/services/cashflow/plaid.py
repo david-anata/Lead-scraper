@@ -494,7 +494,8 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
     access_token = unseal_token(settings.plaid_token_secret, str(item["sealed_access_token"]))
     api = client or PlaidClient(settings)
     now = datetime.now(timezone.utc)
-    counts = {"accounts": 0, "added": 0, "modified": 0, "removed": 0, "matched": 0}
+    counts = {"accounts": 0, "added": 0, "modified": 0, "removed": 0, "matched": 0,
+              "payroll_matched": 0, "payroll_review": 0}
     try:
         accounts_payload = api.accounts_get(access_token)
         with get_engine().begin() as connection:
@@ -506,6 +507,7 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
                 active_ids.add(external_id)
                 balances = account.get("balances") or {}
                 subtype = str(account.get("subtype") or "")
+                account_type = str(account.get("type") or "")
                 # Default cash role from subtype on first insert only; the
                 # ON CONFLICT UPDATE deliberately omits cash_role so a manual
                 # reclassification survives every future sync.
@@ -534,7 +536,7 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
                     "name": str(account.get("name") or ""),
                     "official_name": str(account.get("official_name") or ""),
                     "mask": str(account.get("mask") or "")[-4:],
-                    "account_type": str(account.get("type") or ""),
+                    "account_type": account_type,
                     "subtype": subtype, "cash_role": default_cash_role,
                     "currency": str(balances.get("iso_currency_code") or "USD"),
                     "current": _cents(balances.get("current")),
@@ -578,6 +580,13 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
             counts["matched"] = int(match_result.get("confirmed") or 0)
         except Exception as exc:
             logger.warning("Plaid auto-match after sync failed item_id=%s: %s", local_item_id, exc)
+        try:
+            from sales_support_agent.services.cashflow.payroll_commitments import reconcile_hr_payroll
+            payroll_result = reconcile_hr_payroll(actor="plaid-sync")
+            counts["payroll_matched"] = int(payroll_result.get("confirmed_allocations") or 0)
+            counts["payroll_review"] = int(payroll_result.get("review_count") or 0)
+        except Exception as exc:
+            logger.warning("Plaid payroll reconciliation failed item_id=%s: %s", local_item_id, exc)
     except Exception as exc:
         code = exc.code if isinstance(exc, PlaidError) else "sync_error"
         with get_engine().begin() as connection:
