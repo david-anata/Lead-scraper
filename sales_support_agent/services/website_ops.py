@@ -2468,6 +2468,7 @@ def _page_shell(title: str, body: str) -> str:
       .query-label {{ display:grid; gap:5px; min-width:220px; }}
       .query-label strong {{ font-family:"Montserrat",sans-serif; font-size:14px; }}
       .query-owner {{ max-width:240px; overflow-wrap:anywhere; }}
+      .mobile-output {{ display:none; }}
       @media (max-width: 900px) {{
         .hero, .grid-2, .detail-layout, .stats, .form-grid, .setup-grid, .diff-grid, .mini-grid, .ops-state, .loop-grid {{ grid-template-columns: 1fr; }}
         .ops-state__action {{ justify-items:start; }}
@@ -2482,6 +2483,17 @@ def _page_shell(title: str, body: str) -> str:
         .row-actions > * {{ min-width: 0; }}
         input[type="file"] {{ max-width: 100%; }}
         .help-copy {{ right: auto; left: 0; width: min(300px, 70vw); }}
+        .command-header {{ padding:18px; gap:9px; }}
+        .command-header h1 {{ font-size:32px; }}
+        .command-header .lead {{ font-size:15px; }}
+        .command-header .muted {{ font-size:13px; line-height:1.35; }}
+        .today-state {{ padding:18px; gap:10px; }}
+        .today-state h2 {{ font-size:26px; }}
+        .today-state p {{ font-size:14px; line-height:1.35; }}
+        .mobile-output {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin-top:10px; }}
+        .mobile-output .summary-chip {{ padding:8px; border-radius:12px; }}
+        .mobile-output .summary-chip span {{ font-size:9px; }}
+        .mobile-output .summary-chip strong {{ font-size:18px; }}
       }}
     </style>
   </head>
@@ -2914,7 +2926,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             </div>
             <p class="muted">One report is emailed after the workday cycle. Last result: {html.escape(str(run_state.get('finished_at') or run_state.get('updated_at') or 'time unavailable'))}.</p>
         </section>
-        <section class="ops-state ops-state--{'blocked' if state_tone == 'bad' else 'ready'} today-state" aria-labelledby="today-status"><div><p class="eyebrow">Today</p><h2 id="today-status">{state_label}</h2><p>{html.escape(state_copy)}</p><p class="muted"><strong>Needs you:</strong> {html.escape(needs_inline)}</p></div><span class="status-pill status-{state_tone}">{state_label}</span></section>
+        <section class="ops-state ops-state--{'blocked' if state_tone == 'bad' else 'ready'} today-state" aria-labelledby="today-status"><div><p class="eyebrow">Today</p><h2 id="today-status">{state_label}</h2><p>{html.escape(state_copy)}</p><div class="mobile-output" aria-label="Today’s production output">{_summary_chip("Published", published_today, tone="good" if published_today else "neutral")}{_summary_chip("To goal", max(0, 8-published_today), tone="neutral")}{_summary_chip("Live", live_articles, tone="neutral")}</div><p class="muted"><strong>Needs you:</strong> {html.escape(needs_inline)}</p></div><span class="status-pill status-{state_tone}">{state_label}</span></section>
         <section class="grid-2 today-grid">
           <div class="card stack"><p class="eyebrow">Today’s publishing</p><div class="summary-grid">{_summary_chip("Published", published_today, tone="good" if published_today else "neutral")}{_summary_chip("Remaining toward goal", max(0, 8-published_today), tone="neutral")}{_summary_chip("Live articles", live_articles, tone="neutral")}</div><p>The goal is up to eight qualified articles. Unsafe or duplicate topics are skipped, not forced.</p><div class="widget-scroll compact-scroll">{verified_rows}</div></div>
           <div class="card stack"><p class="eyebrow">Needs you</p>{_team_help_cards(support_requests[:1], analytics_status)}</div>
