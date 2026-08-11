@@ -840,7 +840,7 @@ async def plaid_set_account_cash_role(
         applied = await asyncio.to_thread(set_cash_role, account_id, role, actor=actor)
     except ValueError as exc:
         return _redirect_finance_error(f"That account could not be updated: {exc}")
-    label = {"spendable": "spendable cash", "reserve": "savings/reserve", "excluded": "not counted"}.get(applied, applied)
+    label = {"spendable": "spendable cash", "reserve": "savings/reserve", "liability": "money owed", "excluded": "not counted"}.get(applied, applied)
     return _redirect_finance_home(f"Account updated. It now counts as {label}.")
 
 
@@ -856,15 +856,50 @@ def _vendor_form_data(form: Any) -> dict:
         "match_terms": form.get("match_terms", ""),
         "running_account": str(form.get("running_account", "")).lower() in {"true", "on", "1", "yes"},
         "notes": form.get("notes", ""),
+        "agreement_name": form.get("agreement_name", ""),
+        "agreement_reference_url": form.get("agreement_reference_url", ""),
+        "agreement_status": form.get("agreement_status", "active"),
+        "term_type": form.get("term_type", "month_to_month"),
+        "amount_type": form.get("amount_type", "fixed"),
+        "payment_account_label": form.get("payment_account_label", ""),
+        "renewal_date": form.get("renewal_date", ""),
+        "auto_renewal": form.get("auto_renewal", "unknown"),
+        "cancellation_notice_days": form.get("cancellation_notice_days", "0"),
+        "owner": form.get("owner", ""),
+        "evidence_note": form.get("evidence_note", ""),
     }
+
+
+@router.post("/vendors/preview", response_class=HTMLResponse)
+async def preview_vendor_endpoint(request: Request):
+    from sales_support_agent.services.cashflow.overview import render_vendor_agreement_preview
+    form = await request.form()
+    data = _vendor_form_data(form)
+    try:
+        return HTMLResponse(render_vendor_agreement_preview(data))
+    except ValueError as exc:
+        return _redirect_finance_error(f"Vendor agreement needs attention: {exc}")
+
+
+@router.post("/vendors/{vendor_id}/preview", response_class=HTMLResponse)
+async def preview_vendor_update_endpoint(request: Request, vendor_id: str):
+    from sales_support_agent.services.cashflow.overview import render_vendor_agreement_preview
+    form = await request.form()
+    data = _vendor_form_data(form)
+    try:
+        return HTMLResponse(render_vendor_agreement_preview(data, vendor_id=vendor_id))
+    except ValueError as exc:
+        return _redirect_finance_error(f"Vendor agreement needs attention: {exc}")
 
 
 @router.post("/vendors")
 async def create_vendor_endpoint(request: Request):
     from sales_support_agent.services.cashflow.vendors import create_vendor
     form = await request.form()
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
     try:
-        await asyncio.to_thread(create_vendor, _vendor_form_data(form))
+        await asyncio.to_thread(create_vendor, _vendor_form_data(form), actor=actor)
     except ValueError as exc:
         return _redirect_finance_error(f"Vendor could not be saved: {exc}")
     return _redirect_finance_home("Vendor added.")
@@ -874,8 +909,10 @@ async def create_vendor_endpoint(request: Request):
 async def update_vendor_endpoint(request: Request, vendor_id: str):
     from sales_support_agent.services.cashflow.vendors import update_vendor
     form = await request.form()
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
     try:
-        await asyncio.to_thread(update_vendor, vendor_id, _vendor_form_data(form))
+        await asyncio.to_thread(update_vendor, vendor_id, _vendor_form_data(form), actor=actor)
     except ValueError as exc:
         return _redirect_finance_error(f"Vendor could not be updated: {exc}")
     return _redirect_finance_home("Vendor updated.")
@@ -884,7 +921,9 @@ async def update_vendor_endpoint(request: Request, vendor_id: str):
 @router.post("/vendors/{vendor_id}/delete")
 async def delete_vendor_endpoint(request: Request, vendor_id: str):
     from sales_support_agent.services.cashflow.vendors import deactivate_vendor
-    await asyncio.to_thread(deactivate_vendor, vendor_id)
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    await asyncio.to_thread(deactivate_vendor, vendor_id, actor=actor)
     return _redirect_finance_home("Vendor removed.")
 
 

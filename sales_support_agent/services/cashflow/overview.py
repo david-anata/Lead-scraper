@@ -2287,6 +2287,12 @@ def _render_vendor_fields(vendor: dict | None = None) -> str:
         '<option value="' + f + '"' + (" selected" if f == freq else "") + '>' + f.title() + '</option>'
         for f in ("week", "biweekly", "month", "quarter", "year", "once")
     )
+    def _options(key: str, values: tuple[tuple[str, str], ...], default: str) -> str:
+        selected = str(v.get(key) or default)
+        return "".join(
+            '<option value="' + value + '"' + (" selected" if value == selected else "") + '>' + label + '</option>'
+            for value, label in values
+        )
     return (
         '<div class="finance-vendor-fields">'
         + '<label>Name<input name="name" value="' + _val("name") + '" required></label>'
@@ -2297,6 +2303,17 @@ def _render_vendor_fields(vendor: dict | None = None) -> str:
         + '<label>Start<input name="start_date" type="date" value="' + _val("start_date") + '"></label>'
         + '<label>End / payoff<input name="end_date" type="date" value="' + _val("end_date") + '"></label>'
         + '<label>Match words in bank<input name="match_terms" value="' + _val("match_terms") + '" placeholder="fora, stripe capital"></label>'
+        + '<label>Agreement name<input name="agreement_name" value="' + _val("agreement_name") + '" placeholder="Main service agreement"></label>'
+        + '<label>Agreement status<select name="agreement_status">' + _options("agreement_status", (("draft", "Draft"), ("active", "Active"), ("ending", "Ending"), ("ended", "Ended"), ("disputed", "Disputed")), "active") + '</select></label>'
+        + '<label>Term type<select name="term_type">' + _options("term_type", (("month_to_month", "Month to month"), ("fixed_term", "Fixed term"), ("evergreen", "Evergreen"), ("one_time", "One time")), "month_to_month") + '</select></label>'
+        + '<label>Amount type<select name="amount_type">' + _options("amount_type", (("fixed", "Fixed"), ("variable", "Variable"), ("minimum", "Minimum commitment")), "fixed") + '</select></label>'
+        + '<label>Renewal date<input name="renewal_date" type="date" value="' + _val("renewal_date") + '"></label>'
+        + '<label>Auto-renewal<select name="auto_renewal">' + _options("auto_renewal", (("unknown", "Unknown"), ("yes", "Yes"), ("no", "No")), "unknown") + '</select></label>'
+        + '<label>Cancellation notice days<input name="cancellation_notice_days" type="number" min="0" max="730" value="' + _val("cancellation_notice_days") + '"></label>'
+        + '<label>Payment account label<input name="payment_account_label" value="' + _val("payment_account_label") + '" placeholder="Checking ending 1234"></label>'
+        + '<label>Owner<input name="owner" value="' + _val("owner") + '"></label>'
+        + '<label>Agreement link<input name="agreement_reference_url" type="url" value="' + _val("agreement_reference_url") + '"></label>'
+        + '<label>Evidence and notes<textarea name="evidence_note" rows="3">' + html.escape(str(v.get("evidence_note") or "")) + '</textarea></label>'
         + '<label class="finance-book-always"><input type="checkbox" name="running_account" value="true"'
         + (' checked' if v.get('running_account') else '')
         + '> Pay-as-you-go (we pay into this in pieces)</label>'
@@ -2335,11 +2352,20 @@ def _render_vendors_section() -> str:
             payoff = ('balance ' + _money(int(remaining))) if remaining is not None else 'running account'
         else:
             payoff = html.escape(str(v.get("payoff_date") or "ongoing"))
+        deadline = str(v.get("cancellation_deadline") or "")
+        renewal = str(v.get("renewal_date") or "")
+        timing = (
+            ('Renewal ' + html.escape(renewal) + '<br>Cancel by ' + html.escape(deadline))
+            if renewal and deadline else ('Renewal ' + html.escape(renewal) if renewal else payoff)
+        )
+        review_items = list(v.get("review_items") or [])
+        if review_items:
+            name += '<span class="status-badge status-badge--review">Needs review</span><small>' + html.escape(str(review_items[0].get("message") or "Agreement mismatch")) + '</small>'
         edit = (
             '<details class="finance-vendor-edit"><summary>Edit</summary>'
-            + '<form method="post" action="/admin/finances/vendors/' + vid + '">'
+            + '<form method="post" action="/admin/finances/vendors/' + vid + '/preview">'
             + _render_vendor_fields(v)
-            + '<div class="finance-vendor-actions"><button type="submit" class="btn btn-secondary btn-sm">Save</button></div></form>'
+            + '<div class="finance-vendor-actions"><button type="submit" class="btn btn-secondary btn-sm">Review changes</button></div></form>'
             + '<form method="post" action="/admin/finances/vendors/' + vid + '/delete" '
             + 'onsubmit="return confirm(\'Remove this vendor?\');">'
             + '<button type="submit" class="btn btn-secondary btn-sm">Remove</button></form></details>'
@@ -2348,13 +2374,13 @@ def _render_vendors_section() -> str:
             '<tr><td>' + name + '</td><td>' + terms_txt + '</td>'
             + '<td class="finance-accounts-amount">' + total_txt + '</td>'
             + '<td class="finance-accounts-amount">' + paid_txt + progress + '</td>'
-            + '<td>' + payoff + '</td><td>' + edit + '</td></tr>'
+            + '<td>' + timing + '</td><td>' + edit + '</td></tr>'
         )
 
     if rows:
         table = (
             '<table class="finance-accounts-table finance-vendors-table"><thead><tr>'
-            + '<th>Vendor</th><th>Terms</th><th>Total</th><th>Paid</th><th>Payoff</th><th></th>'
+            + '<th>Vendor</th><th>Terms</th><th>Total</th><th>Paid</th><th>Renewal / payoff</th><th></th>'
             + '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
         )
     else:
@@ -2362,15 +2388,74 @@ def _render_vendors_section() -> str:
 
     add_form = (
         '<details class="finance-vendor-add"><summary>+ Add a vendor</summary>'
-        + '<form method="post" action="/admin/finances/vendors">'
+        + '<form method="post" action="/admin/finances/vendors/preview">'
         + _render_vendor_fields(None)
-        + '<div class="finance-vendor-actions"><button type="submit" class="btn btn-primary btn-sm">Save vendor</button></div></form></details>'
+        + '<div class="finance-vendor-actions"><button type="submit" class="btn btn-primary btn-sm">Review agreement</button></div></form></details>'
     )
     return (
         '<section class="finance-source-row finance-vendors"><div style="width:100%">'
-        + '<strong>Vendors</strong><span>Terms, totals, and payoff dates, tracked from your real payments.</span>'
+        + '<strong>Vendors and agreements</strong><span>Future obligations, renewal dates, cancellation deadlines, and progress from posted payments.</span>'
         + table + add_form + '</div></section>'
     )
+
+
+def render_vendor_agreement_preview(
+    data: dict[str, Any], *, vendor_id: str = "", flash: str = "",
+) -> str:
+    """Full-page old/new Calendar preview before agreement terms are saved."""
+    from sales_support_agent.services.cashflow.vendors import (
+        get_vendor, preview_agreement_obligations,
+    )
+    from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
+    candidate = {**data, "id": vendor_id or "new-vendor"}
+    old = get_vendor(vendor_id) if vendor_id else None
+    old_rows = preview_agreement_obligations(old, horizon_days=120) if old else []
+    new_rows = preview_agreement_obligations(candidate, horizon_days=120)
+
+    def _rows(items: list[dict[str, Any]]) -> str:
+        return "".join(
+            '<li><strong>' + html.escape(str(item["due_date"])) + '</strong><span>'
+            + _money(int(item["amount_cents"])) + '</span></li>' for item in items
+        ) or '<li>No fixed obligations in the next 120 days.</li>'
+
+    form_data = dict(data)
+    form_data["payment_amount"] = (
+        "" if data.get("payment_amount_cents") is None
+        else f"{int(data['payment_amount_cents']) / 100:.2f}"
+    )
+    form_data["total_committed"] = (
+        "" if data.get("total_committed_cents") is None
+        else f"{int(data['total_committed_cents']) / 100:.2f}"
+    )
+    form_data.pop("payment_amount_cents", None)
+    form_data.pop("total_committed_cents", None)
+    hidden = "".join(
+        '<input type="hidden" name="' + html.escape(str(key), quote=True)
+        + '" value="' + html.escape(str(value if value is not None else ""), quote=True) + '">'
+        for key, value in form_data.items()
+    )
+    action = (
+        f"/admin/finances/vendors/{html.escape(vendor_id, quote=True)}"
+        if vendor_id else "/admin/finances/vendors"
+    )
+    body = f"""
+      {render_finance_nav('setup')}
+      <header class="money-page-header"><div><p class="finance-eyebrow">Vendor agreement</p>
+      <h1>Review the Calendar effect</h1><p class="money-page-subtitle">Nothing has been saved and no vendor has been contacted.</p></div></header>
+      <section class="card finance-agreement-preview">
+        <div><h2>Before</h2><ul>{_rows(old_rows)}</ul></div>
+        <div><h2>After</h2><ul>{_rows(new_rows)}</ul></div>
+      </section>
+      <section class="card"><h2>Agreement facts</h2>
+        <p><strong>{html.escape(str(data.get('name') or 'Vendor'))}</strong> · {html.escape(str(data.get('agreement_status') or 'active').replace('_', ' '))}</p>
+        <p>Potential savings stay potential until later Plaid activity verifies a reduction.</p>
+        <form method="post" action="{action}">{hidden}
+          <div class="action-row"><button class="btn btn-primary" type="submit">Save agreement</button>
+          <a class="btn btn-secondary" href="/admin/finances/setup">Go back without saving</a></div>
+        </form>
+      </section>
+    """
+    return _page_shell("Review vendor agreement", "setup", body, flash=flash)
 
 
 def _todays_plan_inner() -> str:

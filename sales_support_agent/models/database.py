@@ -625,29 +625,51 @@ def _ensure_savings_review_columns(engine: Any) -> None:
 
 
 def _ensure_vendor_columns(engine: Any) -> None:
-    """Add the additive running-account flag to an existing vendors table."""
+    """Add native agreement fields without replacing saved vendor history."""
     inspector = inspect(engine)
     if "finance_vendors" not in set(inspector.get_table_names()):
         return
     columns = {column["name"] for column in inspector.get_columns("finance_vendors")}
-    if "running_account" in columns and "payment_method" in columns:
-        return
-    if engine.dialect.name == "postgresql":
-        statement = (
-            "ALTER TABLE finance_vendors "
-            "ADD COLUMN IF NOT EXISTS running_account BOOLEAN NOT NULL DEFAULT FALSE"
-        )
-    elif engine.dialect.name == "sqlite":
-        statement = "ALTER TABLE finance_vendors ADD COLUMN running_account BOOLEAN NOT NULL DEFAULT 0"
-    else:
-        return
+    timestamp_columns = {
+        "renewal_date": "DATE",
+    }
+    common = {
+        "agreement_name": "VARCHAR(255) NOT NULL DEFAULT ''",
+        "agreement_reference_url": "TEXT NOT NULL DEFAULT ''",
+        "agreement_status": "VARCHAR(16) NOT NULL DEFAULT 'active'",
+        "term_type": "VARCHAR(24) NOT NULL DEFAULT 'month_to_month'",
+        "amount_type": "VARCHAR(16) NOT NULL DEFAULT 'fixed'",
+        "payment_account_label": "VARCHAR(128) NOT NULL DEFAULT ''",
+        "auto_renewal": "VARCHAR(16) NOT NULL DEFAULT 'unknown'",
+        "cancellation_notice_days": "INTEGER NOT NULL DEFAULT 0",
+        "owner": "VARCHAR(255) NOT NULL DEFAULT ''",
+        "evidence_note": "TEXT NOT NULL DEFAULT ''",
+        "created_by": "VARCHAR(255) NOT NULL DEFAULT 'system'",
+        "updated_by": "VARCHAR(255) NOT NULL DEFAULT 'system'",
+    }
+    additions = {**common, **timestamp_columns}
     with engine.begin() as connection:
         if "running_account" not in columns:
-            connection.execute(text(statement))
+            ddl = "BOOLEAN NOT NULL DEFAULT FALSE" if engine.dialect.name == "postgresql" else "BOOLEAN NOT NULL DEFAULT 0"
+            connection.execute(text(f"ALTER TABLE finance_vendors ADD COLUMN running_account {ddl}"))
         if "payment_method" not in columns:
             connection.execute(text(
                 "ALTER TABLE finance_vendors ADD COLUMN payment_method VARCHAR(16) NOT NULL DEFAULT 'manual'"
             ))
+        for column, ddl in additions.items():
+            if column not in columns:
+                clause = "ADD COLUMN IF NOT EXISTS" if engine.dialect.name == "postgresql" else "ADD COLUMN"
+                connection.execute(text(
+                    f"ALTER TABLE finance_vendors {clause} {column} {ddl}"
+                ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_finance_vendors_agreement_status "
+            "ON finance_vendors(agreement_status)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_finance_vendors_renewal_date "
+            "ON finance_vendors(renewal_date)"
+        ))
 
 
 def _ensure_collection_draft_columns(engine: Any) -> None:

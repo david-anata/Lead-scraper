@@ -492,6 +492,19 @@ def load_cash_calendar(
 
     today = as_of or date.today()
     rows = list(rows) if rows is not None else list_obligations(limit=10_000)
+    try:
+        from sales_support_agent.services.cashflow.vendors import (
+            list_vendors_with_progress,
+            preview_agreement_obligations,
+        )
+        for vendor in list_vendors_with_progress():
+            rows.extend(preview_agreement_obligations(
+                vendor, as_of=today, horizon_days=FUTURE_DAYS,
+            ))
+    except Exception:
+        # Vendor terms are supporting forecast evidence. They must not hide
+        # posted bank truth when the agreement store is temporarily unavailable.
+        pass
     # Pattern analysis is advisory. A temporary issue there must not hide the
     # posted bank truth or known obligations from the owner.
     try:

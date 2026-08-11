@@ -2653,6 +2653,12 @@ input:focus, select:focus, textarea:focus {
 .finance-draft-status[data-tone="success"] { color: #0b766e; }
 .finance-draft-status[data-tone="warning"] { color: #8a5a00; }
 .finance-draft-status[data-tone="error"] { color: #b42318; }
+.finance-agreement-preview { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.finance-agreement-preview > div { min-width: 0; padding: 18px; border: 1px solid var(--anata-line); border-radius: 12px; }
+.finance-agreement-preview h2 { margin-top: 0; }
+.finance-agreement-preview ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.finance-agreement-preview li { display: flex; justify-content: space-between; gap: 14px; padding-bottom: 8px; border-bottom: 1px solid var(--anata-line); }
+@media (max-width: 640px) { .finance-agreement-preview { grid-template-columns: 1fr; } }
 .cash-calendar-detail { border: 0; padding: 3px 0; background: transparent; color: #356f91; font: 700 12px/1.2 "Montserrat", sans-serif; text-decoration: underline; cursor: pointer; }
 .cash-calendar-event { position: relative; }
 .cash-calendar-select { align-self: center; padding: 4px; }
