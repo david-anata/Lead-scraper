@@ -4,6 +4,14 @@ Status: Approved for phased implementation
 Prepared: 2026-08-04  
 Scope: Public Arena discovery through post-event operations
 
+Implementation follow-on: the ten phases established the governed data and
+provider workflow. The approved consolidation in
+[`building-streamlined-end-to-end-implementation-spec.md`](building-streamlined-end-to-end-implementation-spec.md)
+now governs staff navigation and action placement. In particular, its decision
+to complete inquiry-originated events from the canonical inquiry page supersedes
+the earlier preference for separate detail pages; it does not weaken any
+provider, evidence, permission, checksum, idempotency, or audit gate.
+
 ## Outcome
 
 Make the complete Arena journey feel like one continuous customer record:
@@ -296,4 +304,3 @@ behind existing Building permissions. Redirects preserve old bookmarks.
 Rollback disables the new route or UI while retaining additive data and audit
 history. Provider-writing phases require controlled production verification
 with test identities and immediate cleanup before general staff use.
-

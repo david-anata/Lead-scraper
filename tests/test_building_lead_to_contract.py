@@ -255,6 +255,19 @@ class LeadToContractTests(unittest.TestCase):
                 "asking must not take a date by itself",
             )
 
+    def test_02b_the_lead_and_its_contract_link_to_each_other(self) -> None:
+        """A contract is an output of a lead. Reaching one from the other should
+        not mean going out to a separate section and searching."""
+        page = self.client.get("/admin/building/inquiries/lead-1")
+        self.assertEqual(page.status_code, 200, page.text)
+        match = re.search(r'href="/admin/building/contracts/([a-z0-9-]+)"', page.text)
+        self.assertIsNotNone(match, "the lead must link to the contract it produced")
+        self.assertIn("Open the contract", page.text)
+
+        contract = self.client.get(f"/admin/building/contracts/{match.group(1)}")
+        self.assertEqual(contract.status_code, 200, contract.text)
+        self.assertIn("/admin/building/inquiries/lead-1", contract.text)
+
     def test_03a_the_confirmation_names_the_window_it_will_take(self) -> None:
         """The panel has to say which date and hours it is about to hold, or
         agreeing to it means nothing."""
