@@ -129,6 +129,14 @@ def _day_label(day: date, as_of: date) -> tuple[str, str]:
     return day.strftime("%A"), day.strftime("%b %d").replace(" 0", " ")
 
 
+def _date_label(day: date, *, weekday: str = "%A", month: str = "") -> str:
+    """Format a date without platform-specific ``strftime`` directives."""
+    parts = [day.strftime(weekday), str(day.day)]
+    if month:
+        parts.append(day.strftime(month))
+    return " ".join(parts)
+
+
 def _week_label(start: date, end: date, as_of: date) -> str:
     if start <= as_of <= end:
         return "This week"
@@ -545,7 +553,7 @@ def _next_week_headline(calendar: Mapping[str, Any]) -> str:
             amount = int(bucket.get("planned_cents") or 0)
             if amount > heaviest_cents:
                 heaviest_cents = amount
-                heaviest_label = day.strftime("%A %-d")
+                heaviest_label = _date_label(day)
         day += timedelta(days=1)
 
     unpaid = int(week.get("unpaid_cents") or 0)
@@ -684,7 +692,9 @@ def _instalment_when(value: Any) -> str:
     when = _as_date_or_none(value) if not isinstance(value, date) else value
     if when is None:
         return "Later"
-    return "Today" if when == date.today() else when.strftime("%a %-d %b")
+    return "Today" if when == date.today() else _date_label(
+        when, weekday="%a", month="%b"
+    )
 
 
 def render_cash_calendar_page(

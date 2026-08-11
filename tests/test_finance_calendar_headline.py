@@ -9,8 +9,10 @@ formatting ones.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
 
 from sales_support_agent.services.cashflow.cash_calendar import (
+    _date_label,
     _next_week_headline,
     _paydown_block,
     build_cash_calendar,
@@ -19,6 +21,16 @@ from sales_support_agent.services.cashflow.overview import _money
 
 TODAY = date.today()
 NEXT_MONDAY = TODAY + timedelta(days=(7 - TODAY.weekday()))
+
+
+def test_calendar_date_labels_do_not_depend_on_linux_only_format_flags():
+    assert _date_label(date(2026, 8, 3)) == "Monday 3"
+    assert _date_label(date(2026, 8, 3), weekday="%a", month="%b") == "Mon 3 Aug"
+
+    source = Path(__file__).resolve().parents[1].joinpath(
+        "sales_support_agent/services/cashflow/cash_calendar.py"
+    ).read_text(encoding="utf-8")
+    assert "%-d" not in source
 
 
 def _week(**overrides) -> dict:

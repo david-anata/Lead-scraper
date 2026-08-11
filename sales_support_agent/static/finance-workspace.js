@@ -9,10 +9,13 @@
     ready: false,
     timer: null,
     allowNavigation: false,
+    unprotected: false,
+    saveFailed: false,
   };
   const status = document.querySelector("[data-finance-draft-status]");
   const statusMessage = document.querySelector("[data-finance-draft-message]");
   const reviewLink = document.querySelector("[data-finance-draft-review]");
+  const discardButton = document.querySelector("[data-finance-draft-discard]");
   const panel = document.querySelector("[data-finance-object-panel]");
   const panelTitle = document.querySelector("[data-finance-object-title]");
   const panelBody = document.querySelector("[data-finance-object-body]");
@@ -30,6 +33,7 @@
     else status.textContent = message;
     status.dataset.tone = tone;
     if (reviewLink) reviewLink.hidden = !state.changes.length;
+    if (discardButton) discardButton.hidden = !state.changes.length;
   };
 
   const request = async (path, options = {}) => {
@@ -60,17 +64,20 @@
       return;
     }
     state.saving = true;
-    announce("Protecting draft…");
+    announce("Saving");
     try {
       const result = await request("/admin/finances/api/workspace/draft", {
         method: "PUT",
         body: JSON.stringify({changes: state.changes, dataset_revision: document.body.dataset.financeRevision || ""}),
       });
       state.draft = result;
-      announce(`${result.change_count} draft change${result.change_count === 1 ? "" : "s"} protected`, "success");
+      state.unprotected = false;
+      state.saveFailed = false;
+      announce(`Draft protected: ${result.change_count} change${result.change_count === 1 ? "" : "s"}`, "success");
       document.dispatchEvent(new CustomEvent("finance:draft-saved", {detail: result}));
     } catch (error) {
-      announce(error.message, "error");
+      state.saveFailed = true;
+      announce(`Save failed: ${error.message}`, "error");
       document.dispatchEvent(new CustomEvent("finance:draft-error", {detail: {message: error.message}}));
     } finally {
       state.saving = false;
@@ -84,6 +91,8 @@
     );
     if (index >= 0) state.changes[index] = next;
     else state.changes.push(next);
+    state.unprotected = true;
+    state.saveFailed = false;
     announce(`${state.changes.length} unsaved change${state.changes.length === 1 ? "" : "s"}`, "warning");
     clearTimeout(state.timer);
     state.timer = setTimeout(persist, 450);
@@ -95,6 +104,9 @@
       ...state.changes.filter(item => item.object_type !== objectType),
       ...changes.map(normalize),
     ];
+    state.unprotected = true;
+    state.saveFailed = false;
+    announce(`${state.changes.length} unsaved change${state.changes.length === 1 ? "" : "s"}`, "warning");
     clearTimeout(state.timer);
     state.timer = setTimeout(persist, 450);
     document.dispatchEvent(new CustomEvent("finance:draft-changed", {detail: {changes: [...state.changes]}}));
@@ -104,6 +116,8 @@
     await request("/admin/finances/api/workspace/draft", {method: "DELETE"});
     state.changes = [];
     state.draft = null;
+    state.unprotected = false;
+    state.saveFailed = false;
     announce("Draft discarded", "success");
     document.dispatchEvent(new CustomEvent("finance:draft-discarded"));
   };
@@ -114,6 +128,15 @@
     state.allowNavigation = true;
     window.location.assign("/admin/finances/workspace/review");
   };
+
+  discardButton?.addEventListener("click", async () => {
+    try {
+      await discard();
+    } catch (error) {
+      state.saveFailed = true;
+      announce(`Save failed: ${error.message}`, "error");
+    }
+  });
 
   const openObject = async (type, id) => {
     if (!panel || !panelTitle || !panelBody) return;
@@ -212,9 +235,11 @@
     } catch (error) { announce(error.message, "error"); }
   });
 
-  // No leave-page warning. Staged changes survive in the draft and are shown
-  // when the page is reopened, so blocking navigation bought nothing and fired
-  // on stale drafts the operator could not see anything unsaved for.
+  window.addEventListener("beforeunload", event => {
+    if (state.allowNavigation || (!state.unprotected && !state.saving && !state.saveFailed)) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
 
   window.FinanceWorkspace = {stage, replaceScope, persist, discard, reviewAndSave, openObject, getState: () => ({...state, changes: [...state.changes]})};
 
@@ -225,7 +250,7 @@
       state.changes = result.draft?.changes || [];
       state.ready = true;
       renderSavedViews(result.saved_views);
-      if (state.changes.length) announce(`Recovered ${state.changes.length} protected draft change${state.changes.length === 1 ? "" : "s"}`, "warning");
+      if (state.changes.length) announce(`Draft protected: ${state.changes.length} recovered change${state.changes.length === 1 ? "" : "s"}`, "success");
       document.dispatchEvent(new CustomEvent("finance:workspace-ready", {detail: result}));
     })
     .catch(error => announce(`Draft protection unavailable: ${error.message}`, "error"));
