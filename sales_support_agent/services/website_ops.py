@@ -75,6 +75,7 @@ class WebsiteOpsActionResult:
 
 RUN_MODES = ("daily", "weekly", "monthly")
 RUN_STATUSES = {"idle", "queued", "running", "succeeded", "failed", "failed_outcome"}
+_LIVE_SITEMAP_CACHE: tuple[float, tuple[str, ...]] = (0.0, ())
 MVP_MODE_ACTIVE = True
 MVP_ALLOWED_ACTION_TYPES = {
     "inject_faq_block",
@@ -366,6 +367,38 @@ def discover_website_ops_urls(settings: Settings) -> tuple[str, ...]:
 
     unique = sorted(set(discovered), key=lambda value: (urlparse(value).path != "/", urlparse(value).path))
     return tuple(unique)
+
+
+def _live_sitemap_urls(settings: Settings) -> tuple[str, ...]:
+    """Return a short-lived production sitemap view, falling back safely to retained evidence."""
+
+    global _LIVE_SITEMAP_CACHE
+    configured = tuple(getattr(settings, "website_ops_site_urls", ()) or ())
+    host = (urlparse(str(configured[0])).hostname or "").lower() if configured else ""
+    if host.removeprefix("www.") != "anatainc.com":
+        return ()
+    now = datetime.now(timezone.utc).timestamp()
+    cached_at, cached_urls = _LIVE_SITEMAP_CACHE
+    if cached_urls and now - cached_at < 300:
+        return cached_urls
+    sitemap_url = str(getattr(settings, "website_ops_sitemap_url", "") or "https://anatainc.com/sitemap.xml")
+    try:
+        request = urllib.request.Request(sitemap_url, headers={"User-Agent": "anata-website-ops/2.0"})
+        with urllib.request.urlopen(request, timeout=3) as response:
+            root = ET.fromstring(response.read())
+        urls = tuple(sorted({
+            str(node.text).strip()
+            for node in root.iter()
+            if node.tag.rsplit("}", 1)[-1] == "loc"
+            and node.text
+            and (urlparse(str(node.text).strip()).hostname or "").lower().removeprefix("www.") == "anatainc.com"
+        }))
+        if urls:
+            _LIVE_SITEMAP_CACHE = (now, urls)
+            return urls
+    except (OSError, ValueError, ET.ParseError):
+        pass
+    return cached_urls
 
 
 def _report_change_fingerprint(report: Mapping[str, Any]) -> str:
@@ -2878,10 +2911,10 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         if str(item.get("verification_status", "")).lower() in {"verified", "passed", "production-verified"}
         or str(item.get("status", "")).lower() in {"published", "completed", "done"}
     ]
-    live_articles = sum(
-        1 for item in production_inventory.get("records", []) or []
-        if "/blog/" in str(item.get("url", ""))
-    )
+    live_sitemap_urls = _live_sitemap_urls(settings)
+    retained_article_count = sum(1 for item in production_inventory.get("records", []) or [] if "/blog/" in str(item.get("url", "")))
+    live_article_count = sum(1 for url in live_sitemap_urls if "/blog/" in url)
+    live_articles = live_article_count or retained_article_count
     published_today = len(published_actions)
     if run_status in {"queued", "running"}:
         state_label, state_tone = "Working", "neutral"
@@ -2948,7 +2981,11 @@ def render_content_page(settings: Settings, *, user: dict | None = None) -> str:
     strategy = load_content_strategy(settings.website_ops_root)
     strategy_summary = dict(strategy.get("summary") or {})
     records = [dict(item) for item in inventory.get("records", []) or [] if isinstance(item, Mapping)]
-    articles = [item for item in records if "/blog/" in str(item.get("url", ""))]
+    articles_by_url = {str(item.get("url", "")): item for item in records if "/blog/" in str(item.get("url", ""))}
+    for url in _live_sitemap_urls(settings):
+        if "/blog/" in url:
+            articles_by_url.setdefault(url, {"url": url})
+    articles = [articles_by_url[url] for url in sorted(articles_by_url)]
     candidates = list(strategy.get("candidates") or strategy.get("records") or [])
     status_counts: dict[str, int] = {}
     for item in candidates:
@@ -2976,9 +3013,10 @@ def render_site_health_page(settings: Settings, *, user: dict | None = None) -> 
     crawl_summary = dict(crawl.get("summary") or {})
     confirmed = int(summary.get("broken_candidates", 0) or 0)
     being_checked = int(crawl_summary.get("pending", 0) or crawl_summary.get("unverified", 0) or 0)
+    live_sitemap_count = len(_live_sitemap_urls(settings))
     body = f'''{_nav("website_ops", website_ops_section="site_health", user=user)}<main id="agent-main-content" class="shell app-container app-page">
       <section class="card stack"><p class="eyebrow">Website Ops</p><h1>Site health</h1><p class="lead">Confirmed website problems are separated from crawler warnings that still need verification.</p></section>
-      <section class="card stack"><div class="summary-grid">{_summary_chip("Confirmed problems", confirmed, tone="bad" if confirmed else "good")}{_summary_chip("Being checked", being_checked, tone="warn" if being_checked else "neutral")}{_summary_chip("Known pages", summary.get("known_production_urls", 0), tone="neutral")}{_summary_chip("Sitemap pages", summary.get("sitemap_urls", 0), tone="neutral")}</div><p>Crawler warnings never become work automatically. Repository and rendered-production evidence must agree first.</p></section>
+      <section class="card stack"><div class="summary-grid">{_summary_chip("Confirmed problems", confirmed, tone="bad" if confirmed else "good")}{_summary_chip("Being checked", being_checked, tone="warn" if being_checked else "neutral")}{_summary_chip("Known pages", max(int(summary.get("known_production_urls", 0) or 0), live_sitemap_count), tone="neutral")}{_summary_chip("Sitemap pages", live_sitemap_count or summary.get("sitemap_urls", 0), tone="neutral")}</div><p>Crawler warnings never become work automatically. Repository and rendered-production evidence must agree first.</p></section>
       <section class="grid-2"><div class="card stack"><h2>Confirmed problems</h2><p>{"Review the confirmed affected pages before any change runs." if confirmed else "No confirmed problem is recorded in the latest evidence."}</p><a class="text-link" href="/admin/website-ops/candidates">View affected-page evidence</a></div><div class="card stack"><h2>Being checked</h2><p>{being_checked} possible issue{'s are' if being_checked != 1 else ' is'} awaiting verification.</p><a class="text-link" href="/admin/website-ops/indexing">Open crawl and indexing details</a></div></section>
       <details class="card stack app-disclosure"><summary>Detailed inventory and rollback evidence</summary>{render_production_inventory_panel(inventory)}<div class="button-row"><a class="text-link" href="/admin/website-ops/queue">Open action and rollback ledger</a></div></details>
     </main>'''

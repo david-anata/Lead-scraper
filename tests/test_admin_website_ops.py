@@ -668,6 +668,27 @@ example
             self.assertIn("Confirmed problems", health)
             self.assertIn("Crawler warnings never become work automatically", health)
 
+    def test_command_center_reconciles_live_sitemap_articles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            settings.website_ops_site_urls = ("https://anatainc.com/",)
+            settings.website_ops_sitemap_url = "https://anatainc.com/sitemap.xml"
+            sitemap = b"""<?xml version='1.0'?><urlset><url><loc>https://anatainc.com/</loc></url><url><loc>https://anatainc.com/blog/one</loc></url><url><loc>https://anatainc.com/blog/two</loc></url></urlset>"""
+            with mock.patch(
+                "sales_support_agent.services.website_ops.urllib.request.urlopen",
+                return_value=io.BytesIO(sitemap),
+            ), mock.patch(
+                "sales_support_agent.services.website_ops._LIVE_SITEMAP_CACHE",
+                (0.0, ()),
+            ):
+                dashboard = render_dashboard_page(settings)
+                content = render_content_page(settings)
+                health = render_site_health_page(settings)
+            self.assertIn("<strong>2</strong>", dashboard)
+            self.assertIn("https://anatainc.com/blog/one", content)
+            self.assertIn("https://anatainc.com/blog/two", content)
+            self.assertIn("Sitemap pages</span><strong>3</strong>", health)
+
     def test_query_map_renders_evidence_ownership_and_shadow_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
