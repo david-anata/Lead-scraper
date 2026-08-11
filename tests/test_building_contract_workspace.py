@@ -32,6 +32,7 @@ try:
         BuildingPaymentRequestReadiness,
         BuildingProposal,
         BuildingReservation,
+        BuildingSignatureRequestReadiness,
         BuildingSpace,
     )
     from sales_support_agent.services.admin_auth import create_user_session_token
@@ -432,6 +433,13 @@ class BuildingContractWorkspaceTests(unittest.TestCase):
                 )
             ).scalars().one()
             self.assertEqual(payment_status, "approved")
+            signature = session.execute(
+                sqlalchemy.select(BuildingSignatureRequestReadiness).where(
+                    BuildingSignatureRequestReadiness.agreement_id == agreement_id
+                )
+            ).scalars().one()
+            self.assertEqual(signature.status, "approved")
+            self.assertEqual(signature.delivery_status, "not_sent")
             # Collapsing the clicking must not collapse the record: each move is
             # still its own audit entry.
             actions = session.execute(
