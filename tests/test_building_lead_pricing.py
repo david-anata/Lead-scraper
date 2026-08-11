@@ -18,10 +18,24 @@ class LeadPricingTests(unittest.TestCase):
         seeded = default_pricing({
             "id": "arena-rate-v1", "name": "Arena standard", "currency": "USD",
             "unit_amount_cents": 17_500, "minimum_units": 6, "deposit_percent_bps": 5_000,
+            "tax_status": "taxable", "tax_rate_bps": 745,
         })
         self.assertEqual(seeded["hourly_rate_cents"], 17_500)
         self.assertEqual(seeded["hours"], 6)
         self.assertEqual(seeded["deposit_percent_bps"], 5_000)
+        self.assertEqual(seeded["tax_rate_bps"], 745)
+
+    def test_tax_applies_after_discount_and_excludes_security_deposit(self) -> None:
+        totals = compute_totals({
+            "hourly_rate_cents": 17_500, "hours": 6,
+            "cleaning_fee_cents": 25_000, "addons": [],
+            "discount_cents": 10_000, "deposit_percent_bps": 5_000,
+            "security_deposit_cents": 50_000, "tax_rate_bps": 745,
+        })
+        self.assertEqual(totals["taxable_cents"], 120_000)
+        self.assertEqual(totals["tax_cents"], 8_940)
+        self.assertEqual(totals["total_cents"], 128_940)
+        self.assertEqual(totals["deposit_cents"], 64_470)
 
     def test_it_still_opens_filled_in_with_no_plan(self) -> None:
         seeded = default_pricing(None)

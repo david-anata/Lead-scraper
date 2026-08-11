@@ -61,6 +61,8 @@ def default_pricing(rate_plan: Optional[dict[str, Any]] = None) -> dict[str, Any
         "deposit_percent_bps": int(
             plan.get("deposit_percent_bps") or DEFAULT_DEPOSIT_PERCENT_BPS
         ),
+        "tax_status": str(plan.get("tax_status") or "review_required"),
+        "tax_rate_bps": int(plan.get("tax_rate_bps") or 0),
         "security_deposit_cents": DEFAULT_SECURITY_DEPOSIT_CENTS,
         "updated_by": "",
         "updated_at": "",
@@ -80,7 +82,10 @@ def compute_totals(pricing: dict[str, Any]) -> dict[str, int]:
     )
     subtotal = venue + cleaning + addons
     discount = min(max(0, int(pricing.get("discount_cents") or 0)), subtotal)
-    total = subtotal - discount
+    taxable = subtotal - discount
+    tax_rate_bps = max(0, int(pricing.get("tax_rate_bps") or 0))
+    tax = (taxable * tax_rate_bps + 5_000) // 10_000
+    total = taxable + tax
     deposit = (total * max(0, int(pricing.get("deposit_percent_bps") or 0)) + 5_000) // 10_000
     booking_deposit = min(deposit, total)
     # Refundable and excluded from the booking-deposit percentage, per the
@@ -93,6 +98,8 @@ def compute_totals(pricing: dict[str, Any]) -> dict[str, int]:
         "addons_cents": addons,
         "subtotal_cents": subtotal,
         "discount_cents": discount,
+        "taxable_cents": taxable,
+        "tax_cents": tax,
         "total_cents": total,
         "deposit_cents": booking_deposit,
         "security_deposit_cents": security,

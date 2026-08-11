@@ -64,6 +64,14 @@ def _line_items(pricing: dict[str, Any], totals: dict[str, int]) -> list[dict[st
             "quantity": 1,
             "amount_cents": -totals["discount_cents"],
         })
+    if totals["tax_cents"]:
+        items.append({
+            "type": "tax",
+            "name": "Sales tax",
+            "description": f"{int(pricing.get('tax_rate_bps') or 0) / 100:g}%",
+            "quantity": 1,
+            "amount_cents": totals["tax_cents"],
+        })
     return items
 
 
@@ -107,7 +115,12 @@ def _rate_snapshot(
         "tax_status": (
             carried("tax_status", plan.tax_status if plan else "") or "review_required"
         ),
-        "tax_rate_bps": 0,
+        "tax_rate_bps": int(
+            pricing.get("tax_rate_bps")
+            or (plan.tax_rate_bps if plan else 0)
+            or prior.get("tax_rate_bps")
+            or 0
+        ),
         "tax_note": carried("tax_note", plan.tax_note if plan else ""),
         "included": included,
         "addons": [

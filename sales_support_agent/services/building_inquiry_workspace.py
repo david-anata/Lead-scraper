@@ -635,8 +635,9 @@ def _journey_sections(data: dict[str, Any], *, csrf_token: str) -> str:
     elif reservation.get("status") == "confirmed" and calendar.get("status") == "synced":
         confirmation_action = f'''<form class="lead-primary-form" method="post" action="/admin/building/reservations/{_esc(reservation_id)}/transition"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input type="hidden" name="return_to" value="{_esc(return_to)}#operations"><input type="hidden" name="target_status" value="pre_event"><input type="hidden" name="reason" value="Confirmed booking and dedicated calendar projection verified; begin event operations."><button class="lead-button lead-button--primary" type="submit">Begin event operations</button></form>'''
     calendar_action = ''
-    if reservation.get("status") in {"confirmed", "pre_event"} and calendar.get("status") in {"pending", "error", "claimed"}:
-        calendar_action = f'''<form class="lead-primary-form" method="post" action="/admin/building/inquiries/{_esc(inquiry_id)}/calendar-sync"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input type="hidden" name="confirmation" value="SYNC {_esc(reservation_id)}"><button class="lead-button" type="submit">Retry this calendar update</button><span>Writes only this confirmed event to the dedicated Anata Events calendar.</span></form>'''
+    if reservation.get("status") in {"confirmed", "pre_event", "cancelled", "expired"} and calendar.get("status") in {"pending", "error", "claimed"}:
+        deleting = reservation.get("status") in {"cancelled", "expired"}
+        calendar_action = f'''<form class="lead-primary-form" method="post" action="/admin/building/inquiries/{_esc(inquiry_id)}/calendar-sync"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input type="hidden" name="confirmation" value="SYNC {_esc(reservation_id)}"><button class="lead-button" type="submit">{'Clear this date from Anata Events' if deleting else 'Retry this calendar update'}</button><span>{'Deletes only this cancelled event from the dedicated Anata Events calendar.' if deleting else 'Writes only this confirmed event to the dedicated Anata Events calendar.'}</span></form>'''
     confirmation_section = f'''<section class="lead-panel" id="confirmation"><div class="lead-panel__head"><div><h2>Confirmation and calendar</h2><p>Agent confirms only after agreement, payment, inventory, and calendar checks pass.</p></div>{_status(str(reservation.get("status") or "not started"))}</div>
       <dl class="lead-details"><dt>Agreement</dt><dd>{_status(str(reservation.get("agreement_status") or "not started"))}</dd><dt>Required payment</dt><dd>{_status(str(reservation.get("deposit_status") or "not started"))}</dd><dt>Anata Events projection</dt><dd>{_status(str(calendar.get("status") or "not started"))}<br>{_esc(calendar.get("last_error") or calendar.get("provider_event_id") or "No provider evidence yet")}</dd></dl>{confirmation_action}{calendar_action}
     </section>'''
@@ -880,6 +881,8 @@ def render_inquiry_workspace(
         f'<tr><td>Add-ons</td><td class="is-num" data-total="addons">{_money(totals.get("addons_cents"))}</td></tr>'
         f'<tr><td>Subtotal</td><td class="is-num" data-total="subtotal">{_money(totals.get("subtotal_cents"))}</td></tr>'
         f'<tr><td>Discount</td><td class="is-num">-<span data-total="discount">{_money(totals.get("discount_cents"))}</span></td></tr>'
+        f'<tr><td>Taxable amount after discount</td><td class="is-num" data-total="taxable">{_money(totals.get("taxable_cents"))}</td></tr>'
+        f'<tr><td>Sales tax ({int(pricing.get("tax_rate_bps") or 0) / 100:g}%)</td><td class="is-num" data-total="tax">{_money(totals.get("tax_cents"))}</td></tr>'
         f'<tr class="is-total"><td>Contract total</td><td class="is-num" data-total="total">{_money(totals.get("total_cents"))}</td></tr>'
         f'<tr><td>Booking deposit</td><td class="is-num" data-total="deposit">{_money(totals.get("deposit_cents"))}</td></tr>'
         f'<tr><td>Security deposit <span class="lead-price__note">refundable, not part of the total</span></td>'
@@ -1133,12 +1136,15 @@ def render_inquiry_workspace(
           const venue = Math.max(0, hours) * Math.max(0, rate);
           const subtotal = venue + Math.max(0, cleaning) + addons;
           const discount = Math.min(Math.max(0, discountRaw), subtotal);
-          const total = subtotal - discount;
+          const taxable = subtotal - discount;
+          const taxRate = {int(pricing.get("tax_rate_bps") or 0)};
+          const tax = Math.floor((taxable * taxRate + 5000) / 10000);
+          const total = taxable + tax;
           const bps = halfEven(percent * 100);
           const deposit = Math.min(Math.floor((total * Math.max(0, bps) + 5000) / 10000), total);
           const held = Math.max(0, security);
           const values = {{
-            venue, cleaning: Math.max(0, cleaning), addons, subtotal, discount,
+            venue, cleaning: Math.max(0, cleaning), addons, subtotal, discount, taxable, tax,
             total, deposit, security: held,
             due: deposit + held, balance: total - deposit,
           }};
