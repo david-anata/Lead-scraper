@@ -148,6 +148,7 @@ class BuildingContractDocsClient:
             "service_account_email": self.service_account_email,
             "template_readable": False,
             "folder_writable": False,
+            "folder_in_shared_drive": False,
             "problems": [],
         }
         if not self.configured:
@@ -168,12 +169,20 @@ class BuildingContractDocsClient:
             )
         folder = session.get(
             f"{DRIVE_API}/files/{self.drive_folder_id}",
-            params={"fields": "id,name,capabilities/canAddChildren",
+            params={"fields": "id,name,driveId,capabilities/canAddChildren",
                     "supportsAllDrives": "true"},
             timeout=20,
         )
         if folder.status_code < 400:
-            if (folder.json().get("capabilities") or {}).get("canAddChildren"):
+            folder_data = folder.json()
+            report["folder_in_shared_drive"] = bool(folder_data.get("driveId"))
+            if not report["folder_in_shared_drive"]:
+                report["problems"].append(
+                    "The contracts folder is in My Drive. Choose a folder in an "
+                    "Anata Shared drive; service accounts have no personal Drive "
+                    "storage quota for generated contracts."
+                )
+            elif (folder_data.get("capabilities") or {}).get("canAddChildren"):
                 report["folder_writable"] = True
             else:
                 report["problems"].append(
