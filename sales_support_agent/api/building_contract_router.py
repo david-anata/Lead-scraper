@@ -13,7 +13,7 @@ import logging
 import re
 
 from typing import Any, Literal, Optional
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -32,6 +32,10 @@ from sales_support_agent.api.building_agreement_readiness_router import (
     transition_agreement_template,
     transition_payment_readiness,
     upsert_agreement_template,
+)
+from sales_support_agent.api.building_signature_readiness_router import (
+    prepare_signature_readiness,
+    transition_signature_readiness,
 )
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.integrations.building_google_docs import (
@@ -818,10 +822,56 @@ def make_contract_ready_to_send(
                 agreement_id, error=problem, return_to=return_to
             )
 
+    # A signing copy without a frozen, approved signer handoff produces two
+    # contradictory states on the same page: "Ready to send" and "Not
+    # prepared". The single action must finish the governed signature ladder
+    # as well as the agreement and payment ladders. It still sends nothing.
+    signature = dict(contract.get("signature") or {})
+    if not signature:
+        prepared = prepare_signature_readiness(
+            agreement_id,
+            request,
+            user=user,
+        )
+        with session_scope(request.app.state.session_factory) as session:
+            refreshed = load_contract_detail(session, agreement_id)
+        signature = dict((refreshed or {}).get("signature") or {})
+        if not signature:
+            location = str(prepared.headers.get("location") or "")
+            error = parse_qs(urlsplit(location).query).get(
+                "error", ["The signature handoff could not be prepared."]
+            )[0]
+            return _detail_redirect(
+                agreement_id,
+                error=error,
+                return_to=return_to,
+            )
+    signature_id = str(signature.get("id") or "")
+    problem = advance(
+        str(signature.get("status") or ""),
+        lambda target: transition_signature_readiness(
+            agreement_id,
+            request,
+            target_status=target,
+            confirmation=(
+                f"{'REVIEW' if target == 'in_review' else 'APPROVE'} "
+                f"SIGNATURE {signature_id}"
+            ),
+            user=user,
+        ),
+    )
+    if problem:
+        return _detail_redirect(
+            agreement_id, error=problem, return_to=return_to
+        )
+
     if contract.get("document_url"):
         return _detail_redirect(
             agreement_id,
-            notice="Contract approved. The signing copy already exists.",
+            notice=(
+                "Contract and signature handoff approved. The private signing "
+                "copy already exists; nothing was sent."
+            ),
             return_to=return_to,
         )
     # The signing copy is the point of the exercise, so it is made here rather

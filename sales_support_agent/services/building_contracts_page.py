@@ -461,8 +461,10 @@ def render_contract_detail(
 
     # One action, at the top, for the person who both prepares and approves.
     # The step-by-step forms stay below for a split-duty review.
-    ready = str(contract["preparation_status"]) == "approved" and bool(
-        google_doc_url
+    ready = (
+        str(contract["preparation_status"]) == "approved"
+        and str(signature.get("status") or "") == "approved"
+        and bool(google_doc_url)
     )
     one_step = ""
     if contract["verified"] and can_approve and not ready:
