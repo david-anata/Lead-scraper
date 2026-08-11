@@ -154,8 +154,9 @@ def test_the_savings_line_only_appears_when_savings_could_cover_it():
     without = _paydown_block(_plan(instalments=[], savings_would_unlock_cents=0))
     with_savings = _paydown_block(_plan(instalments=[], savings_would_unlock_cents=6_000_00))
 
-    assert "Only if you move money" not in without
-    assert "Only if you move money" in with_savings
+    assert "Last-resort option only" not in without
+    assert "Last-resort option only" in with_savings
+    assert "including TAX" in with_savings
     assert "$6,000" in with_savings
 
 

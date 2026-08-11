@@ -1614,6 +1614,31 @@ input:focus, select:focus, textarea:focus {
 }
 @media (prefers-reduced-motion:reduce){.bill-queue tr{transition:none}}
 
+.cash-calendar-paydown__settings {
+  margin-top: 16px;
+  border-top: 1px solid var(--anata-line);
+  padding-top: 14px;
+}
+.cash-calendar-paydown__settings summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+.cash-calendar-paydown__settings form {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 12px;
+  align-items: end;
+  margin-top: 14px;
+}
+.cash-calendar-paydown__settings label {display:grid;gap:6px;font-size:12px;font-weight:700}
+.cash-calendar-paydown__settings input {min-width:0}
+@media (max-width:900px){
+  .cash-calendar-paydown__settings form {grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:600px){
+  .cash-calendar-paydown__settings form {grid-template-columns:1fr}
+}
+
 /* -------------------------------------------------------------------------
    Anata Money Brief — replacement Finance information architecture
    ------------------------------------------------------------------------- */

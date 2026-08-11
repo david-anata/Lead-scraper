@@ -631,6 +631,23 @@ class FinanceSetting(Base):
 
     scope_key: Mapped[str] = mapped_column(String(255), primary_key=True)
     cash_floor_cents: Mapped[int] = mapped_column(Integer, default=1_000_000)
+    emergency_floor_cents: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    paydown_vendor_key: Mapped[str] = mapped_column(
+        String(255), default="boulder ranch", server_default="boulder ranch"
+    )
+    paydown_vendor_label: Mapped[str] = mapped_column(
+        String(255), default="Boulder Ranch Property Management",
+        server_default="Boulder Ranch Property Management",
+    )
+    paydown_monthly_cents: Mapped[int] = mapped_column(
+        Integer, default=4_000_000, server_default="4000000"
+    )
+    paydown_balance_cents: Mapped[int] = mapped_column(
+        Integer, default=3_000_000, server_default="3000000"
+    )
+    paydown_balance_as_of: Mapped[date] = mapped_column(
+        Date, default=date.today, server_default="2026-08-11"
+    )
     active_actual_source: Mapped[str] = mapped_column(String(32), default="csv")
     updated_by: Mapped[str] = mapped_column(String(255), default="system")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

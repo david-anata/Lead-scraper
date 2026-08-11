@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
@@ -9,8 +11,10 @@ from sales_support_agent.services.cashflow.settings import (
     CashFloorUnavailableError,
     get_cash_floor_cents,
     get_cash_floor_health,
+    get_paydown_settings,
     resolve_cash_floor_cents,
     set_cash_floor_cents,
+    set_paydown_settings,
 )
 
 
@@ -44,6 +48,31 @@ def test_cash_floor_rejects_negative_values():
 
     with pytest.raises(ValueError, match="cannot be negative"):
         set_cash_floor_cents(-1, engine=engine)
+
+
+def test_operator_can_save_authoritative_rent_payoff_facts():
+    engine = _engine()
+
+    saved = set_paydown_settings(
+        balance_cents=3_000_000,
+        balance_as_of=date(2026, 8, 11),
+        monthly_cents=4_000_000,
+        cash_goal_cents=1_000_000,
+        emergency_floor_cents=0,
+        actor="david@anatainc.com",
+        engine=engine,
+    )
+
+    assert saved == get_paydown_settings(engine=engine)
+    assert saved["balance_cents"] == 3_000_000
+    assert saved["monthly_cents"] == 4_000_000
+    assert saved["cash_goal_cents"] == 1_000_000
+    assert saved["emergency_floor_cents"] == 0
+    with engine.connect() as connection:
+        action = connection.exec_driver_sql(
+            "SELECT action_type FROM finance_action_audit ORDER BY created_at DESC LIMIT 1"
+        ).scalar_one()
+    assert action == "rent_paydown_updated"
 
 
 def test_resolve_cash_floor_fails_closed_when_persistence_is_unavailable(monkeypatch):

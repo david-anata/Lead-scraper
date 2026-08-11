@@ -68,6 +68,12 @@ def load_accounts_overview() -> dict[str, Any]:
         row = dict(raw._mapping)
         balance = _account_balance_cents(row)
         role = str(row.get("cash_role") or "reserve")
+        account_name = str(row.get("name") or row.get("official_name") or "Account")
+        # Tax cash is a last-resort reserve, never ordinary bill-paying money.
+        # Protect it even when an old/default Plaid classification says checking.
+        tax_protected = "tax" in account_name.strip().lower()
+        if tax_protected and role == "spendable":
+            role = "reserve"
         if role == "spendable":
             spendable_cents += balance
         elif role == "reserve":
@@ -88,11 +94,12 @@ def load_accounts_overview() -> dict[str, Any]:
         })
         bank["accounts"].append({
             "id": str(row.get("id")),
-            "name": str(row.get("name") or row.get("official_name") or "Account"),
+            "name": account_name,
             "mask": str(row.get("mask") or ""),
             "subtype": str(row.get("subtype") or ""),
             "account_type": str(row.get("account_type") or ""),
             "cash_role": role,
+            "tax_protected": tax_protected,
             "balance_cents": balance,
             "current_balance_cents": row.get("current_balance_cents"),
             "available_balance_cents": row.get("available_balance_cents"),

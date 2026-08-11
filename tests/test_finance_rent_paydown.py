@@ -134,6 +134,34 @@ def test_what_has_already_been_paid_this_month_is_deducted():
     assert plan["remaining_cents"] == 1_800_000
 
 
+def test_operator_confirmed_balance_is_authoritative():
+    rows = [_posted("Boulder Ranch", 1_200_000, AS_OF - timedelta(days=4))]
+    plan = build_paydown_plan(
+        calendar=_calendar([]), rows=rows, spendable_cents=5_000_000,
+        reserve_cents=0, floor_cents=FLOOR, vendor_key="boulder ranch",
+        vendor_label="Boulder Ranch", monthly_cents=4_000_000,
+        authoritative_balance_cents=3_000_000, balance_as_of=AS_OF,
+        as_of=AS_OF,
+    )
+
+    assert plan["remaining_cents"] == 3_000_000
+    assert plan["balance_basis"] == "operator_confirmed"
+
+
+def test_posted_payment_after_confirmed_balance_reduces_what_is_owed():
+    rows = [_posted("Boulder Ranch", 500_000, AS_OF + timedelta(days=1))]
+    plan = build_paydown_plan(
+        calendar=_calendar([]), rows=rows, spendable_cents=5_000_000,
+        reserve_cents=0, floor_cents=FLOOR, vendor_key="boulder ranch",
+        vendor_label="Boulder Ranch", monthly_cents=4_000_000,
+        authoritative_balance_cents=3_000_000, balance_as_of=AS_OF,
+        as_of=AS_OF + timedelta(days=1),
+    )
+
+    assert plan["remaining_cents"] == 2_500_000
+    assert plan["paid_since_balance_cents"] == 500_000
+
+
 # --- the double counting trap --------------------------------------------
 
 def test_the_bill_being_paid_is_not_also_reserved_against():

@@ -62,6 +62,20 @@ def test_spendable_counts_only_spendable_accounts_and_prefers_available():
     assert spendable_cash_cents() == 41000_00
 
 
+def test_tax_account_is_protected_even_if_old_role_says_spendable():
+    engine, item_id = _setup()
+    _add_account(engine, item_id, ext="tax", name="TAX", subtype="checking",
+                 cash_role="spendable", available=16567_03)
+
+    result = load_accounts_overview()
+    account = result["banks"][0]["accounts"][0]
+
+    assert result["spendable_cents"] == 0
+    assert result["reserve_cents"] == 16567_03
+    assert account["cash_role"] == "reserve"
+    assert account["tax_protected"] is True
+
+
 def test_excluded_account_counts_toward_neither_total():
     engine, item_id = _setup()
     _add_account(engine, item_id, ext="chk", name="Checking", subtype="checking",
