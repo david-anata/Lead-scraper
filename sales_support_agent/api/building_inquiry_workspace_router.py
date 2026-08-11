@@ -465,11 +465,15 @@ def inquiry_workspace(
             # the richer joined journey powers every later section.
             contract = dict(data["journey"].get("contract") or {})
             if contract:
+                current_total = compute_totals(stored_pricing)["total_cents"]
                 data["agreement"] = {
                     "id": contract.get("id"),
                     "version": contract.get("version"),
                     "status": contract.get("preparation_status"),
                     "document_url": contract.get("document_url"),
+                    "amount_cents": contract.get("amount_cents"),
+                    "current_total_cents": current_total,
+                    "is_stale": int(contract.get("amount_cents") or 0) != current_total,
                 }
         if inquiry.kind == "event" and reservation is None:
             data.update(
