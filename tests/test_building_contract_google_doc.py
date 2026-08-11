@@ -148,7 +148,11 @@ class ContractDocsPreflightTests(unittest.TestCase):
             def get(self, url, **kwargs):
                 if "tpl" in url:
                     return _Resp({"id": "tpl"})
-                return _Resp({"id": "folder", "capabilities": {"canAddChildren": False}})
+                return _Resp({
+                    "id": "folder",
+                    "driveId": "drive-1",
+                    "capabilities": {"canAddChildren": False},
+                })
         client = self._client()
         with mock.patch.object(client, "_authorized_session", return_value=_Session()):
             report = client.preflight()
@@ -164,10 +168,31 @@ class ContractDocsPreflightTests(unittest.TestCase):
             def get(self, url, **kwargs):
                 if "tpl" in url:
                     return _Resp({"id": "tpl"})
-                return _Resp({"id": "folder", "capabilities": {"canAddChildren": True}})
+                return _Resp({
+                    "id": "folder",
+                    "driveId": "drive-1",
+                    "capabilities": {"canAddChildren": True},
+                })
         client = self._client()
         with mock.patch.object(client, "_authorized_session", return_value=_Session()):
             report = client.preflight()
         self.assertTrue(report["template_readable"])
         self.assertTrue(report["folder_writable"])
+        self.assertTrue(report["folder_in_shared_drive"])
         self.assertEqual(report["problems"], [])
+
+    def test_my_drive_folder_is_not_reported_as_production_ready(self) -> None:
+        class _Resp:
+            def __init__(self, payload): self.status_code = 200; self._p = payload
+            def json(self): return self._p
+        class _Session:
+            def get(self, url, **kwargs):
+                if "tpl" in url:
+                    return _Resp({"id": "tpl"})
+                return _Resp({"id": "folder", "capabilities": {"canAddChildren": True}})
+        client = self._client()
+        with mock.patch.object(client, "_authorized_session", return_value=_Session()):
+            report = client.preflight()
+        self.assertFalse(report["folder_in_shared_drive"])
+        self.assertFalse(report["folder_writable"])
+        self.assertIn("My Drive", " ".join(report["problems"]))

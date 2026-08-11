@@ -75,6 +75,12 @@ services:
         value: agent
       - key: BUILDING_SITE_INTAKE_KEY
         sync: false
+      - key: BUILDING_CONTRACT_GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: BUILDING_CONTRACT_TEMPLATE_DOC_ID
+        value: 1V3MzpYGOl3-qtst8ugfV03n1L2qKaoteibYgErVQuOk
+      - key: BUILDING_CONTRACT_DRIVE_FOLDER_ID
+        value: 1gA7xJU46VCLAAtEPIDdc0MyU72pE1HhM
       - key: BUILDING_PUBLIC_BASE_URL
         value: https://anatabuilding.com
       - key: BUILDING_CAMPAIGN_TOKEN_SECRET
