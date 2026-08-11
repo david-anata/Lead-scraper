@@ -101,6 +101,7 @@ from sales_support_agent.services.website_ops import (
     get_feedback_record,
     get_website_ops_run_state,
     latest_report_entry,
+    render_content_page as render_website_ops_content_page,
     render_dashboard_page as render_website_ops_dashboard_page,
     render_feedback_detail_page,
     render_candidates_page,
@@ -110,6 +111,7 @@ from sales_support_agent.services.website_ops import (
     render_queue_page as render_website_ops_queue_page,
     render_report_page,
     render_reports_page,
+    render_site_health_page as render_website_ops_site_health_page,
     review_feedback_record,
     run_website_ops,
     save_feedback_record,
@@ -1232,6 +1234,22 @@ def admin_website_ops_queue(request: Request, status: str = "") -> Response:
     if not _is_admin_authenticated(request):
         return RedirectResponse(url="/admin/login", status_code=302)
     return HTMLResponse(render_website_ops_queue_page(request.app.state.settings, status_filter=status))
+
+
+@router.get("/admin/website-ops/content", response_class=HTMLResponse)
+def admin_website_ops_content(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_website_ops_content_page(request.app.state.settings, user=_get_request_user(request)))
+
+
+@router.get("/admin/website-ops/site-health", response_class=HTMLResponse)
+def admin_website_ops_site_health(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_website_ops_site_health_page(request.app.state.settings, user=_get_request_user(request)))
 
 
 @router.get("/admin/website-ops/indexing", response_class=HTMLResponse)

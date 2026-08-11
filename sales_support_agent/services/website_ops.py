@@ -1890,7 +1890,14 @@ def _connection_summary_chips(analytics_status: dict[str, Any]) -> str:
 
 def _team_help_cards(support_requests: list[str], analytics_status: dict[str, Any]) -> str:
     analytics_notes = {str(item).strip() for item in analytics_status.get("notes", []) if str(item).strip()}
-    team_items = [str(item).strip() for item in support_requests if str(item).strip() and str(item).strip() not in analytics_notes]
+    system_phrases = ("codex owns", "website ops owns", "agent queue", "citation testing", "api-based")
+    team_items = [
+        str(item).strip()
+        for item in support_requests
+        if str(item).strip()
+        and str(item).strip() not in analytics_notes
+        and not any(phrase in str(item).casefold() for phrase in system_phrases)
+    ]
     if not team_items:
         return """
         <article class="task-card">
@@ -2851,185 +2858,119 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         "<p class='muted'>Scheduled hourly pulses from 8:00 AM through 3:00 PM America/Denver. "
         "Email is sent when completed work or the action state changes.</p>"
     )
+    run_status = _feedback_status(str(run_state.get("status", "") or "idle"))
+    report_status = str(latest_payload.get("status", "") or "").lower().replace("_", "-")
+    executed_actions = [dict(item) for item in latest_payload.get("executed_actions", []) or [] if isinstance(item, Mapping)]
+    published_actions = [
+        item for item in executed_actions
+        if str(item.get("verification_status", "")).lower() in {"verified", "passed", "production-verified"}
+        or str(item.get("status", "")).lower() in {"published", "completed", "done"}
+    ]
+    live_articles = sum(
+        1 for item in production_inventory.get("records", []) or []
+        if "/blog/" in str(item.get("url", ""))
+    )
+    published_today = len(published_actions)
+    if run_status in {"queued", "running"}:
+        state_label, state_tone = "Working", "neutral"
+        state_copy = "Today’s plan is running. The page will refresh when the next verified result is available."
+    elif run_status in {"failed", "failed-outcome"} or report_status in {"failed", "failed-outcome", "needs-attention"}:
+        state_label, state_tone = "Needs attention", "bad"
+        state_copy = "The latest required check did not finish successfully. Production remains unchanged unless a verified change is listed below."
+    elif published_today:
+        state_label, state_tone = "On track", "ok"
+        state_copy = f"{published_today} verified production change{'s' if published_today != 1 else ''} completed in the latest plan."
+    else:
+        state_label, state_tone = "Quiet day", "neutral"
+        state_copy = "No safe production change is verified in the latest plan. Duplicate or unsupported work is skipped."
+    actionable_requests = [
+        str(item).strip() for item in support_requests
+        if str(item).strip()
+        and str(item).strip() not in {str(note).strip() for note in analytics_status.get("notes", []) or []}
+        and not any(phrase in str(item).casefold() for phrase in ("codex owns", "website ops owns", "agent queue", "citation testing", "api-based"))
+    ]
+    needs_inline = actionable_requests[0] if actionable_requests else "Nothing needs you."
+    verified_rows = "".join(
+        f'''<article class="task-card"><div class="row-actions"><h3>{html.escape(str(item.get("title") or item.get("page_title") or item.get("action_type") or "Published change"))}</h3><span class="status-pill status-ok">Published</span></div><a class="text-link" href="{html.escape(str(item.get("page_url") or item.get("url") or "#"), quote=True)}">Open production page</a><p class="muted">Verified {html.escape(str(item.get("verified_at") or item.get("verification_time") or latest_payload.get("generated_at") or "time unavailable"))}</p></article>'''
+        for item in published_actions[:8]
+    ) or '<p class="muted">No production changes have been verified in the latest plan.</p>'
+    next_items = ([dict(program_plan.get("current") or {})] + [dict(item) for item in program_plan.get("next", []) or [] if isinstance(item, Mapping)])[:3]
+    next_rows = "".join(
+        f'''<article class="task-card"><p class="eyebrow">{("Now", "Next", "Later")[index]}</p><h3>{html.escape(str(item.get("title") or "Website check"))}</h3><p>{html.escape(str(item.get("next_operation") or item.get("evidence") or "Waiting for the next scheduled check."))}</p></article>'''
+        for index, item in enumerate(next_items)
+    ) or '<article class="task-card"><p class="eyebrow">Next</p><h3>Review the next safe opportunity</h3><p>The next scheduled plan will qualify content and site work.</p></article>'
     body = f"""
       {_nav("website_ops", website_ops_section="seo_dashboard", user=user)}
       <main id="agent-main-content" class="shell app-container app-page">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
-        <section class="card stack">
+        <section class="card stack command-header">
             <p class="eyebrow">Website Ops</p>
-            <h1>Continuous website <span style="color:var(--accent)">optimization</span>.</h1>
-            <p class="lead">Agent continuously observes, improves, verifies, and learns across the anatainc.com marketing site.</p>
+            <h1>Website growth</h1>
+            <p class="lead">Codex publishes. Website Ops verifies and measures.</p>
             <div class="button-row">
-              <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit">Run Daily Sweep</button></form>
-              {('<a class="btn btn--ghost" href="#data-sources">Repair Google connections</a>' if not decision_ready else '')}
-              {('<button class="ghost" type="button" disabled aria-disabled="true">Weekly sweep unavailable</button>' if not decision_ready else '<form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run Weekly Sweep</button></form>')}
-              <a class="btn btn--ghost" href="/admin/website-ops/reports/latest">Open Latest Report</a>
+              <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit" {'disabled aria-disabled="true"' if run_status in {'queued','running'} else ''}>{'Running' if run_status in {'queued','running'} else "Run today’s plan"}</button></form>
+              <a class="btn btn--ghost" href="/admin/website-ops/reports/latest">View latest report</a>
+              <details><summary class="btn btn--ghost">More</summary><form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run weekly maintenance</button></form></details>
             </div>
-            {schedule_note}
+            <p class="muted">One report is emailed after the workday cycle. Last result: {html.escape(str(run_state.get('finished_at') or run_state.get('updated_at') or 'time unavailable'))}.</p>
         </section>
-        {_operator_blocker_panel(analytics_status)}
-        {_program_plan_panel(program_plan)}
-        {render_daily_portfolio_panel(daily_action_portfolio)}
-        {render_production_inventory_panel(production_inventory)}
-        <section class="hero">
-          <div id="submit-issue" class="card stack">
-            <p class="eyebrow">Current scope</p>
-            <div class="summary-grid">
-              {_summary_chip("Marketing pages", monitored_count, tone="neutral")}
-              {_summary_chip("Approved action runner", "Enabled" if settings.website_ops_execute_approved else "Disabled", tone="good" if settings.website_ops_execute_approved else "warn")}
-              {_summary_chip("Metadata autopush", "Configured" if github_metadata_is_configured() else "Needs GitHub token", tone="good" if github_metadata_is_configured() else "warn")}
-              {_run_state_summary(run_state)}
-              {_connection_summary_chips(analytics_status)}
-            </div>
-            <p class="muted">Scope is restricted to anatainc.com and discovered from the production sitemap. High-confidence metadata changes require a documented reason and evidence, then commit to the marketing repository and verify on production.</p>
-          </div>
-          <div class="card stack">
-            <p class="eyebrow">Automation policy</p>
-            <h2>Validated autopush</h2>
-            <p class="lead-sm">Eligible marketing updates publish without routine approval only after evidence, scope, intent, build, deployment, production, and rollback checks pass.</p>
-            <div class="summary-grid">
-              {_summary_chip("Writable host", "anatainc.com", tone="good")}
-              {_summary_chip("Daily email", "Changes and your to-do list", tone="neutral")}
-              {_summary_chip("Schedule", "Hourly · 8 AM–3 PM", tone="neutral")}
-              {_summary_chip("Query validation", f"{query_summary.get('validated_clusters', 0)} validated", tone="good" if query_summary.get('validated_clusters') else "neutral")}
-            </div>
-            <a class="text-link" href="/admin/website-ops/queries">Inspect query ownership and citations</a>
-          </div>
+        <section class="ops-state ops-state--{'blocked' if state_tone == 'bad' else 'ready'} today-state" aria-labelledby="today-status"><div><p class="eyebrow">Today</p><h2 id="today-status">{state_label}</h2><p>{html.escape(state_copy)}</p><p class="muted"><strong>Needs you:</strong> {html.escape(needs_inline)}</p></div><span class="status-pill status-{state_tone}">{state_label}</span></section>
+        <section class="grid-2 today-grid">
+          <div class="card stack"><p class="eyebrow">Today’s publishing</p><div class="summary-grid">{_summary_chip("Published", published_today, tone="good" if published_today else "neutral")}{_summary_chip("Remaining toward goal", max(0, 8-published_today), tone="neutral")}{_summary_chip("Live articles", live_articles, tone="neutral")}</div><p>The goal is up to eight qualified articles. Unsafe or duplicate topics are skipped, not forced.</p><div class="widget-scroll compact-scroll">{verified_rows}</div></div>
+          <div class="card stack"><p class="eyebrow">Needs you</p>{_team_help_cards(support_requests[:1], analytics_status)}</div>
         </section>
-        <details class="card stack app-disclosure">
-          <summary>How the automation and content program work</summary>
-        {_continuous_loop_panel()}
-        <section class="card stack">
-          <div class="section-heading">
-            <div class="stack">
-              <p class="eyebrow">Next autonomous work</p>
-              <h2>Content program: brief, source, publish, measure.</h2>
-              <p class="lead-sm">{html.escape(str(article_pipeline.get("message", "The next sweep will calculate article eligibility.")))}</p>
-            </div>
-            <span class="status-pill {'status-ok' if article_pipeline.get('status') == 'eligible' else 'status-warn'}">{html.escape(str(article_pipeline.get("status", "not calculated")).replace("_", " ").title())}</span>
-          </div>
-          <div class="summary-grid">
-            {_summary_chip("Daily article minimum", "8", tone="good")}
-            {_summary_chip("Daily article target", "8", tone="neutral")}
-            {_summary_chip("Validated content gaps", article_pipeline.get("validated_informational_gaps", 0), tone="neutral")}
-            {_summary_chip("Source-qualified candidates", article_pipeline.get("source_qualified_candidates", 0), tone="good" if article_pipeline.get("source_qualified_candidates") else "neutral")}
-            {_summary_chip("Publishing policy", "Validated autopush", tone="good")}
-          </div>
-          <p class="muted">Each scheduled pulse audits the site, researches promising questions, advances briefs, completes eligible fixes, and verifies production. Agent targets eight qualified daily SEO actions, including two source-qualified educational articles for each service pillar when eight publishable intents pass every quality gate.</p>
-          <div class="button-row">
-            <a class="text-link" href="/admin/website-ops/strategy">Open content strategy and briefs</a>
-            <a class="text-link" href="/admin/website-ops/queries">Inspect query evidence</a>
-          </div>
-        </section>
-        <section class="grid-2">
-          <div class="card stack">
-            <p class="eyebrow">Authority growth</p>
-            <h2>Earn citations. Never manufacture links.</h2>
-            <p class="lead-sm">Agent monitors answer-engine citations and promotes only original, source-backed assets. Automated link creation, paid ranking links, excessive exchanges, and scaled guest-post outreach remain prohibited.</p>
-            <div class="summary-grid">
-              {_summary_chip("Cited clusters", query_summary.get("cited_clusters", 0), tone="good" if query_summary.get("cited_clusters") else "neutral")}
-              {_summary_chip("Citation gains", query_summary.get("citation_gains", 0), tone="good" if query_summary.get("citation_gains") else "neutral")}
-              {_summary_chip("Citation losses", query_summary.get("citation_losses", 0), tone="warn" if query_summary.get("citation_losses") else "neutral")}
-              {_summary_chip("Outreach policy", "Relevant and evidence-led", tone="good")}
-            </div>
-          </div>
-          <div class="card stack">
-            <p class="eyebrow">Outcome learning</p>
-            <h2>Measure movement without claiming causation.</h2>
-            <p class="lead-sm">Agent records comparable Search Console and GA4 observations after changes. Movement is labeled as an association until the evidence supports a stronger conclusion.</p>
-            <div class="summary-grid">
-              {_summary_chip("Observed pages", query_summary.get("observed_outcome_pages", 0), tone="neutral")}
-              {_summary_chip("Associated lead growth", query_summary.get("pages_with_associated_lead_growth", 0), tone="good" if query_summary.get("pages_with_associated_lead_growth") else "neutral")}
-              {_summary_chip("Lead-event trust", str(analytics_status.get("ga4_trust_status", "unavailable")).title(), tone="good" if analytics_status.get("ga4_trust_status") == "trusted" else "warn")}
-            </div>
-          </div>
-        </section>
-        </details>
-        <section class="stats">
-          {_dashboard_stat_card("Reports", len(reports), "Daily, weekly, monthly", "/admin/website-ops/reports")}
-          {_dashboard_stat_card("Validated Queries", query_summary.get('validated_clusters', 0), "One page, one intent", "/admin/website-ops/queries?status=validated")}
-          {_dashboard_stat_card("Needs Review", status_counts.get('new', 0), "Needs a decision", "/admin/website-ops/queue?status=new")}
-          {_dashboard_stat_card("Approved to Run", status_counts.get('approved', 0) + status_counts.get('in-progress', 0), "Approved or running", "/admin/website-ops/queue?status=approved")}
-          {_dashboard_stat_card("Completed", status_counts.get('done', 0), "Completed safely", "/admin/website-ops/queue?status=done")}
-          {_dashboard_stat_card("Failed", error_count, "Needs intervention", "/admin/website-ops/queue?status=error") if error_count else ""}
-        </section>
-        <section class="grid-2">
-          <div class="card stack">
-            <p class="eyebrow">Primary goal</p>
-            <h2>{html.escape(str((latest_payload.get('goal') or {}).get('primary', 'Increase qualified organic leads with less manual website work.')))}</h2>
-            <p class="lead">This is the system objective the dashboard should optimize against, not just a list of page checks.</p>
-          </div>
-          <div class="card stack">
-            <p class="eyebrow">Your to-do list</p>
-            <p class="lead">Only work the system cannot complete safely appears here.</p>
-            {_team_help_cards(support_requests, analytics_status)}
-          </div>
-        </section>
-        <section class="grid-2">
-          {_latest_report_panel(latest, latest_payload)}
-          <details class="card stack app-disclosure">
-            <summary>Submit a new website issue</summary>
-            <div class="row-actions"><h2>Describe the issue</h2>{_issue_help_block()}</div>
-            <form action="/admin/api/website-ops/feedback" method="post" class="form-grid">
-              <div><label for="website-issue-category">Category</label><select id="website-issue-category" name="category"><option>SEO</option><option>Content</option><option>UX</option><option>Conversion</option><option>Technical</option><option>Strategy</option></select></div>
-              <div><label for="website-issue-priority">Priority</label><select id="website-issue-priority" name="priority"><option>Low</option><option selected>Medium</option><option>High</option><option>Urgent</option></select></div>
-              <div class="span-2"><label for="website-issue-url">Page URL</label><input id="website-issue-url" type="text" name="page_url" placeholder="https://anatainc.com/services/..."></div>
-              <div class="span-2"><label for="website-issue-summary">Summary</label><input id="website-issue-summary" type="text" name="summary" placeholder="Short description of the issue"></div>
-              <div class="span-2"><label for="website-issue-details">Details</label><textarea id="website-issue-details" name="details" placeholder="What is wrong, why it matters, and what outcome is needed."></textarea></div>
-              <div class="span-2"><button type="submit">Save Feedback</button></div>
-            </form>
-          </details>
-        </section>
-        <details class="card stack app-disclosure">
-          <summary>Research evidence and recommendation detail</summary>
-        <section class="grid-2">
-          <div class="card stack">
-            <h2>Priority action queue</h2>
-            <p class="lead">Agent records why each change qualified, how it was validated, and what happened in production.</p>
-            <div class="button-row">
-              <a href="/admin/website-ops/queue" class="text-link">Inspect action ledger</a>
-              <span class="muted">Blocked, validating, published, failed, and rolled-back work remains auditable.</span>
-            </div>
-            <div class="widget-scroll">{_action_queue_cards(action_queue)}</div>
-          </div>
-          <div class="card stack">
-            <h2>Insight snapshots</h2>
-            <p class="lead">Compact page snapshots for quick triage across search demand, traffic, and conversion performance.</p>
-            <div class="widget-scroll">{_insight_snapshot_cards(page_insights)}</div>
-          </div>
-        </section>
-        <section class="grid-2">
-          <div class="card stack">
-            <h2>Customer-language evidence</h2>
-            <p class="lead">{'Gmail-derived questions are quarantined until relevance and privacy validation is complete.' if analytics_status.get('customer_language_status') == 'quarantined' else 'Sanitized, relevant customer questions available for content decisions.'}</p>
-            <div class="widget-scroll compact-scroll">{_customer_question_cards(customer_questions)}</div>
-          </div>
-          <div class="card stack">
-            <h2>Search patterns from ranking pages</h2>
-            <p class="lead">Repeated heading and FAQ patterns from ranking pages for the highest-signal service queries.</p>
-            <div class="widget-scroll compact-scroll">{_serp_blueprint_cards(serp_blueprints)}</div>
-          </div>
-        </section>
-        <section class="grid-2">
-          <div class="card stack">
-            <h2>Recommended content updates</h2>
-            <p class="lead">Structured content updates generated from search demand and buyer language.</p>
-            <div class="widget-scroll compact-scroll">{_content_task_cards(content_tasks)}</div>
-          </div>
-          <div class="card stack"><h2>Open issues</h2><div class="widget-scroll compact-scroll">{_feedback_cards(active_feedback[:8], with_actions=True, decision_data_ready=decision_ready)}</div></div>
-        </section>
-        <section class="grid-2">
-          <div class="card stack"><h2>Recent reports</h2><div class="widget-scroll compact-scroll">{_report_cards(reports[:8])}</div></div>
-          <div id="data-sources" class="card stack"><h2>Data sources</h2><p class="lead">Both sources must pass before ranking-led recommendations resume.</p><div class="setup-grid">{_analytics_connection_cards(analytics_status)}</div></div>
-        </section>
-        <section class="grid-2">
-          {_system_details_panel(settings, analytics_status)}
-        </section>
-        </details>
+        <section class="card stack"><p class="eyebrow">Next</p><div class="grid-2">{next_rows}</div></section>
+        <details class="card stack app-disclosure"><summary>Evidence and system details</summary>{render_daily_portfolio_panel(daily_action_portfolio)}{render_production_inventory_panel(production_inventory)}{_latest_report_panel(latest, latest_payload)}<p>API-based citation research is intentionally off. Answer-engine evidence is unavailable when no observation exists.</p><div class="button-row"><a class="text-link" href="/admin/website-ops/content">Open content</a><a class="text-link" href="/admin/website-ops/site-health">Open site health</a><a class="text-link" href="/admin/website-ops/queue">Open action ledger</a></div></details>
       </main>
       {_dashboard_auto_run_script(run_state)}
     """
     return _page_shell("agent | Website Ops", body)
+
+
+def render_content_page(settings: Settings, *, user: dict | None = None) -> str:
+    reports = _report_entries(settings)
+    payload = _mvp_filter_report_payload(_report_payload(reports[0]) if reports else {})
+    inventory = dict(payload.get("production_inventory") or {})
+    query_data = dict(payload.get("query_intelligence") or load_query_intelligence(settings))
+    query_summary = dict(query_data.get("summary") or {})
+    strategy = load_content_strategy(settings.website_ops_root)
+    strategy_summary = dict(strategy.get("summary") or {})
+    records = [dict(item) for item in inventory.get("records", []) or [] if isinstance(item, Mapping)]
+    articles = [item for item in records if "/blog/" in str(item.get("url", ""))]
+    candidates = list(strategy.get("candidates") or strategy.get("records") or [])
+    status_counts: dict[str, int] = {}
+    for item in candidates:
+        if isinstance(item, Mapping):
+            status = str(item.get("status") or item.get("stage") or "researching").lower()
+            status_counts[status] = status_counts.get(status, 0) + 1
+    article_rows = "".join(
+        f'<article class="task-card"><h3>{html.escape(str(item.get("title") or urlparse(str(item.get("url", ""))).path.rsplit("/", 1)[-1].replace("-", " ").title()))}</h3><a class="text-link" href="{html.escape(str(item.get("url", "")), quote=True)}">Open production page</a></article>'
+        for item in articles[-12:]
+    ) or '<p class="muted">No live articles are present in the latest reconciled inventory.</p>'
+    body = f'''{_nav("website_ops", website_ops_section="content", user=user)}<main id="agent-main-content" class="shell app-container app-page">
+      <section class="card stack"><p class="eyebrow">Website Ops</p><h1>Content</h1><p class="lead">Published pages, topic ownership, and the next safe content opportunities.</p></section>
+      <section class="card stack"><div class="summary-grid">{_summary_chip("Live articles", len(articles), tone="good" if articles else "neutral")}{_summary_chip("Qualified", status_counts.get("qualified", 0), tone="good")}{_summary_chip("Being researched", status_counts.get("researching", 0) + status_counts.get("validating", 0), tone="neutral")}{_summary_chip("Rejected", status_counts.get("rejected", 0), tone="neutral")}{_summary_chip("Topic conflicts", query_summary.get("ownership_conflicts", 0), tone="warn" if query_summary.get("ownership_conflicts") else "good")}</div><p>The goal is up to eight qualified articles per workday, balanced across four service pillars. Unsupported or competing topics are not forced.</p></section>
+      <section class="grid-2"><div class="card stack"><h2>Live content</h2><div class="widget-scroll">{article_rows}</div></div><div class="card stack"><h2>Possible improvements</h2><p>{html.escape(str(strategy_summary.get("truthful_summary") or "Candidates stay in research until sources, intent ownership, and production safety are verified."))}</p><div class="button-row"><a class="text-link" href="/admin/website-ops/strategy">Open content briefs</a><a class="text-link" href="/admin/website-ops/queries">Open page topics</a><a class="text-link" href="/admin/website-ops/candidates">Open detailed evidence</a></div></div></section>
+    </main>'''
+    return _page_shell("agent | Website Ops Content", body)
+
+
+def render_site_health_page(settings: Settings, *, user: dict | None = None) -> str:
+    reports = _report_entries(settings)
+    payload = _mvp_filter_report_payload(_report_payload(reports[0]) if reports else {})
+    inventory = dict(payload.get("production_inventory") or {})
+    summary = dict(inventory.get("summary") or {})
+    crawl = dict(payload.get("crawl_verification") or load_crawl_verification(settings.website_ops_root))
+    crawl_summary = dict(crawl.get("summary") or {})
+    confirmed = int(summary.get("broken_candidates", 0) or 0)
+    being_checked = int(crawl_summary.get("pending", 0) or crawl_summary.get("unverified", 0) or 0)
+    body = f'''{_nav("website_ops", website_ops_section="site_health", user=user)}<main id="agent-main-content" class="shell app-container app-page">
+      <section class="card stack"><p class="eyebrow">Website Ops</p><h1>Site health</h1><p class="lead">Confirmed website problems are separated from crawler warnings that still need verification.</p></section>
+      <section class="card stack"><div class="summary-grid">{_summary_chip("Confirmed problems", confirmed, tone="bad" if confirmed else "good")}{_summary_chip("Being checked", being_checked, tone="warn" if being_checked else "neutral")}{_summary_chip("Known pages", summary.get("known_production_urls", 0), tone="neutral")}{_summary_chip("Sitemap pages", summary.get("sitemap_urls", 0), tone="neutral")}</div><p>Crawler warnings never become work automatically. Repository and rendered-production evidence must agree first.</p></section>
+      <section class="grid-2"><div class="card stack"><h2>Confirmed problems</h2><p>{"Review the confirmed affected pages before any change runs." if confirmed else "No confirmed problem is recorded in the latest evidence."}</p><a class="text-link" href="/admin/website-ops/candidates">View affected-page evidence</a></div><div class="card stack"><h2>Being checked</h2><p>{being_checked} possible issue{'s are' if being_checked != 1 else ' is'} awaiting verification.</p><a class="text-link" href="/admin/website-ops/indexing">Open crawl and indexing details</a></div></section>
+      <details class="card stack app-disclosure"><summary>Detailed inventory and rollback evidence</summary>{render_production_inventory_panel(inventory)}<div class="button-row"><a class="text-link" href="/admin/website-ops/queue">Open action and rollback ledger</a></div></details>
+    </main>'''
+    return _page_shell("agent | Website Ops Site Health", body)
 
 
 def render_indexing_page(

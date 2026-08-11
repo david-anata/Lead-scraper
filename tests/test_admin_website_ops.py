@@ -40,11 +40,13 @@ from sales_support_agent.services.website_ops import (
     load_feedback_records,
     load_website_ops_run_state,
     render_dashboard_page,
+    render_content_page,
     render_feedback_detail_page,
     render_indexing_page,
     render_query_map_page,
     render_queue_page,
     render_report_page,
+    render_site_health_page,
     reconcile_missing_generated_articles,
     review_feedback_record,
     run_website_ops,
@@ -643,16 +645,28 @@ example
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir))
             html = render_dashboard_page(settings)
-            self.assertIn("Continuous website", html)
-            self.assertIn("How the automation and content program work", html)
-            self.assertIn("Research evidence and recommendation detail", html)
-            self.assertIn("Continuous optimization loop", html)
-            self.assertIn("Repair Google connections", html)
+            self.assertIn("Website growth", html)
+            self.assertIn("Codex publishes. Website Ops verifies and measures.", html)
+            self.assertIn("Today’s publishing", html)
+            self.assertIn("Needs you", html)
             self.assertIn('action="/admin/api/website-ops/run"', html)
-            self.assertIn("Run Daily Sweep", html)
-            self.assertIn("Weekly sweep unavailable", html)
-            self.assertIn("/admin/api/website-ops/feedback", html)
-            self.assertIn("hourly pulses from 8:00 AM through 3:00 PM America/Denver", html)
+            self.assertIn("Run today’s plan", html)
+            self.assertIn("Run weekly maintenance", html)
+            self.assertIn("One report is emailed after the workday cycle", html)
+            self.assertIn("Today", html)
+            self.assertIn("Site health", html)
+
+    def test_simple_command_center_detail_pages_render(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            content = render_content_page(settings)
+            health = render_site_health_page(settings)
+            self.assertIn("<h1>Content</h1>", content)
+            self.assertIn("Live articles", content)
+            self.assertIn("Possible improvements", content)
+            self.assertIn("<h1>Site health</h1>", health)
+            self.assertIn("Confirmed problems", health)
+            self.assertIn("Crawler warnings never become work automatically", health)
 
     def test_query_map_renders_evidence_ownership_and_shadow_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1462,17 +1476,13 @@ example
                 )
             )
             html = render_dashboard_page(settings)
-            self.assertIn("Primary goal", html)
-            self.assertIn("Increase qualified leads.", html)
+            self.assertIn("Needs attention", html)
             self.assertIn("Pages reviewed", html)
             self.assertIn("needs attention", html)
             self.assertIn("Insert structured shipping FAQ", html)
             self.assertIn("Provide proof assets for shipping.", html)
-            self.assertIn("GA4 unavailable", html)
             self.assertIn("Autonomous publishing guardrails active", html)
-            self.assertIn("Needs setup", html)
-            self.assertIn("sdr-support-agent", html)
-            self.assertIn("codex-website-ops@sdr-support-agent.iam.gserviceaccount.com", html)
+            self.assertIn("Answer-engine evidence is unavailable", html)
 
     def test_dashboard_fails_closed_for_legacy_unavailable_analytics(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1512,12 +1522,12 @@ example
                 )
             )
             html = render_dashboard_page(settings)
-            self.assertIn("Score Unavailable", html)
+            self.assertIn("Quiet day", html)
             self.assertIn("Ranking operations", html)
             self.assertIn("blocked", html)
-            self.assertIn("Gmail-derived questions are quarantined", html)
+            self.assertIn("Answer-engine evidence is unavailable", html)
             self.assertNotIn("private unrelated question", html)
-            self.assertNotIn("<a href=\"/admin/website-ops/reports/latest\"", html)
+            self.assertIn("View latest report", html)
 
     def test_legacy_report_suppresses_false_performance_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2866,21 +2876,19 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = ''' + json.dumps(
                 )
             )
             html = render_dashboard_page(settings)
-            self.assertIn("Questions", html)
-            self.assertIn("Blueprint", html)
-            self.assertIn("FAQ Demand", html)
-            self.assertIn("Task block reason", html)
-            self.assertIn("The page is not thin enough for MVP section expansion.", html)
+            self.assertIn("Website growth", html)
+            self.assertNotIn("The page is not thin enough for MVP section expansion.", html)
+            self.assertIn("Evidence and system details", html)
 
     def test_dashboard_render_shows_current_and_next_work(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir))
             html = render_dashboard_page(settings)
-            self.assertIn("What Agent is working on next", html)
+            self.assertIn("Next", html)
             self.assertIn("Import and classify Search Console indexing exclusions", html)
             self.assertIn("Validate qualified-lead attribution", html)
-            self.assertIn("Earn citations. Never manufacture links.", html)
-            self.assertIn("Measure movement without claiming causation.", html)
+            self.assertNotIn("Earn citations. Never manufacture links.", html)
+            self.assertNotIn("Measure movement without claiming causation.", html)
 
     def test_indexing_page_renders_classified_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
