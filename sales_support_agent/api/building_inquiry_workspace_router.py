@@ -232,7 +232,12 @@ def _contract_confirmation(view: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _seeded_pricing(session: Any, payload: dict[str, Any]) -> dict[str, Any]:
+def _seeded_pricing(
+    session: Any,
+    payload: dict[str, Any],
+    *,
+    transaction_date: date | None = None,
+) -> dict[str, Any]:
     """Return this lead's pricing, seeded from the approved plan when unset.
 
     The page and the save path must seed identically. When they did not, the
@@ -241,11 +246,20 @@ def _seeded_pricing(session: Any, payload: dict[str, Any]) -> dict[str, Any]:
     """
 
     stored = dict(payload.get("_pricing") or {})
-    plan = session.execute(
+    approved = session.execute(
         select(BuildingRatePlan)
         .where(BuildingRatePlan.status == "approved")
         .order_by(BuildingRatePlan.name, BuildingRatePlan.version.desc())
-    ).scalars().first()
+    ).scalars().all()
+    effective_on = transaction_date or date.today()
+    plan = next(
+        (
+            row for row in approved
+            if row.effective_from <= effective_on
+            and (row.effective_until is None or row.effective_until >= effective_on)
+        ),
+        None,
+    )
     if stored:
         # Pricing saved before tax approval keeps the customer's negotiated
         # money, but inherits the current approved tax determination. Tax is a
@@ -367,7 +381,11 @@ def inquiry_workspace(
             .order_by(BuildingRatePlan.name, BuildingRatePlan.version.desc())
         ).scalars().all()
         payload = dict(inquiry.payload_json or {})
-        stored_pricing = _seeded_pricing(session, payload)
+        stored_pricing = _seeded_pricing(
+            session,
+            payload,
+            transaction_date=(reservation.starts_at.date() if reservation else date.today()),
+        )
         public_details = {
             key: value for key, value in payload.items() if not str(key).startswith("_")
         }
