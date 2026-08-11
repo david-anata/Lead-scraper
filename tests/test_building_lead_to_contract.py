@@ -177,7 +177,11 @@ class LeadToContractTests(unittest.TestCase):
             data={"_csrf_token": self._csrf()},
         )
         self.assertEqual(created.status_code, 303, created.text)
-        self.assertIn("/admin/building/contracts/", created.headers["location"])
+        self.assertIn(
+            "/admin/building/inquiries/lead-1",
+            created.headers["location"],
+        )
+        self.assertTrue(created.headers["location"].endswith("#agreement"))
         self.assertIn("notice=", created.headers["location"])
 
         with self.factory() as session:
@@ -260,9 +264,21 @@ class LeadToContractTests(unittest.TestCase):
         not mean going out to a separate section and searching."""
         page = self.client.get("/admin/building/inquiries/lead-1")
         self.assertEqual(page.status_code, 200, page.text)
+        for section_id in (
+            "agreement",
+            "billing",
+            "confirmation",
+            "communications",
+            "operations",
+        ):
+            self.assertIn(f'id="{section_id}"', page.text)
+        self.assertIn("QuickBooks invoice and payment", page.text)
+        self.assertIn("Agreement and signature", page.text)
+        self.assertIn("creates a Google Doc", page.text)
+        self.assertEqual(page.text.count("Do this next"), 1)
         match = re.search(r'href="/admin/building/contracts/([a-z0-9-]+)"', page.text)
         self.assertIsNotNone(match, "the lead must link to the contract it produced")
-        self.assertIn("Open the contract", page.text)
+        self.assertIn("Advanced contract record", page.text)
 
         contract = self.client.get(f"/admin/building/contracts/{match.group(1)}")
         self.assertEqual(contract.status_code, 200, contract.text)

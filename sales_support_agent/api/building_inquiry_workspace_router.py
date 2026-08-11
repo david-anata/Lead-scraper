@@ -17,6 +17,7 @@ from sales_support_agent.models.entities import (
     BuildingAgreement,
     BuildingAgreementTemplate,
     BuildingAuditEvent,
+    BuildingCalendarProjection,
     BuildingContact,
     BuildingInquiry,
     BuildingOffering,
@@ -36,12 +37,17 @@ from sales_support_agent.services.building_inquiry_workspace import (
     is_test_inquiry,
     render_inquiry_workspace,
 )
+from sales_support_agent.services.building_event_journey import load_event_journey
 from sales_support_agent.services.building_lead_intake import prefill_event_interview
 from pydantic import ValidationError
 
 from sales_support_agent.api.building_booking_router import (
     EventReviewInput,
     create_event_review,
+)
+from sales_support_agent.api.building_calendar_router import (
+    CalendarSyncInput,
+    sync_calendar_projections,
 )
 from sales_support_agent.api.building_agreement_readiness_router import (
     AgreementPackageInput,
@@ -426,19 +432,16 @@ def inquiry_workspace(
             ],
         }
         if reservation is not None:
-            # A contract belongs to the lead that produced it, so the lead has
-            # to be able to reach it without going through a separate section.
-            agreement = session.execute(
-                select(BuildingAgreement)
-                .where(BuildingAgreement.reservation_id == reservation.id)
-                .order_by(BuildingAgreement.version.desc())
-            ).scalars().first()
-            if agreement is not None:
+            data["journey"] = load_event_journey(session, reservation)
+            # Compatibility for the existing pricing/contract control while
+            # the richer joined journey powers every later section.
+            contract = dict(data["journey"].get("contract") or {})
+            if contract:
                 data["agreement"] = {
-                    "id": agreement.id,
-                    "version": agreement.version,
-                    "status": str(agreement.preparation_status or ""),
-                    "document_url": str(agreement.document_url or ""),
+                    "id": contract.get("id"),
+                    "version": contract.get("version"),
+                    "status": contract.get("preparation_status"),
+                    "document_url": contract.get("document_url"),
                 }
         if inquiry.kind == "event" and reservation is None:
             data.update(
@@ -690,10 +693,9 @@ async def create_contract_from_lead(
             f"{target}?error={quote_plus(str(getattr(exc, 'detail', exc)))}",
             status_code=303,
         )
-    agreement_id = str((result.get("agreement") or {}).get("id") or "")
     return RedirectResponse(
-        f"/admin/building/contracts/{agreement_id}"
-        "?notice=Contract+prepared+from+this+lead.+Nothing+was+sent.",
+        f"{target}?notice=Contract+prepared+from+this+lead."
+        "+Nothing+was+sent.#agreement",
         status_code=303,
     )
 
@@ -865,5 +867,87 @@ async def hold_date_from_lead(
         )
     return RedirectResponse(
         f"{target}?notice={quote_plus(('Date double-booked on your authority; held seven days and a quote frozen. Nothing was sent.' if override else 'Date held for seven days and a quote frozen. Nothing was sent.'))}",
+        status_code=303,
+    )
+
+
+@router.post("/{inquiry_id}/calendar-sync", dependencies=FORM_DEPS)
+def sync_inquiry_calendar(
+    inquiry_id: str,
+    request: Request,
+    confirmation: str = Form(...),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Retry only this confirmed event's dedicated-calendar projection."""
+
+    target = f"/admin/building/inquiries/{inquiry_id}"
+    actor = str(user.get("email") or "building-operator")
+    with session_scope(request.app.state.session_factory) as session:
+        reservation = session.execute(
+            select(BuildingReservation)
+            .where(BuildingReservation.inquiry_id == inquiry_id)
+            .order_by(BuildingReservation.created_at.desc())
+        ).scalars().first()
+        if reservation is None:
+            raise HTTPException(status_code=404, detail="Event booking not found.")
+        expected = f"SYNC {reservation.id}"
+        if confirmation.strip() != expected:
+            return RedirectResponse(
+                f"{target}?error={quote_plus(f'Type {expected} to retry this calendar update.')}#confirmation",
+                status_code=303,
+            )
+        if reservation.status not in {"confirmed", "pre_event"}:
+            return RedirectResponse(
+                f"{target}?error=Only+a+confirmed+event+can+be+written+to+the+customer+calendar.#confirmation",
+                status_code=303,
+            )
+        projection = session.execute(
+            select(BuildingCalendarProjection).where(
+                BuildingCalendarProjection.reservation_id == reservation.id
+            )
+        ).scalar_one_or_none()
+        if projection is None:
+            return RedirectResponse(
+                f"{target}?error=No+calendar+projection+exists+for+this+event.#confirmation",
+                status_code=303,
+            )
+        if projection.status in {"error", "claimed"}:
+            before = {"status": projection.status, "last_error": projection.last_error}
+            projection.status = "pending"
+            projection.claim_token = ""
+            projection.claimed_at = None
+            projection.next_attempt_at = None
+            projection.updated_at = datetime.now(timezone.utc)
+            session.add(
+                BuildingAuditEvent(
+                    entity_type="calendar_projection",
+                    entity_id=projection.id,
+                    action="calendar_projection_retry_requested",
+                    actor=actor,
+                    before_json=before,
+                    after_json={"status": "pending", "reservation_id": reservation.id},
+                )
+            )
+        reservation_id = reservation.id
+    try:
+        result = sync_calendar_projections(
+            CalendarSyncInput(
+                execute=True,
+                dry_run=False,
+                max_items=1,
+                reservation_id=reservation_id,
+                actor=actor,
+            ),
+            request,
+            _internal_api_key(request),
+        )
+    except HTTPException as exc:
+        return RedirectResponse(
+            f"{target}?error={quote_plus(str(exc.detail))}#confirmation",
+            status_code=303,
+        )
+    delivered = int(result.get("synced_count") or 0)
+    return RedirectResponse(
+        f"{target}?notice={quote_plus(f'Calendar update completed for this event ({delivered} delivered).')}#confirmation",
         status_code=303,
     )

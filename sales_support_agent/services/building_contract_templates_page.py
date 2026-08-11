@@ -168,7 +168,7 @@ def render_template_index(
         <li><strong>Approve with evidence.</strong><span>Only the approved immutable version can create a customer agreement package.</span></li>
         <li><strong>Revise safely.</strong><span>Never alter an approved version. Open it and start the next version, make changes, preview, and approve again.</span></li>
       </ol>
-      <p class="app-muted">Approving a template or customer package does not send it. QuickBooks Contract Builder remains the staff-controlled delivery and signature step.</p>
+      <p class="app-muted">Approving a template or customer package does not send it. Google Docs eSignature remains the staff-controlled delivery and signature step.</p>
     </section>
     {workspace}
     {create}"""
