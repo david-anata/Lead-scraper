@@ -232,14 +232,14 @@ def build_arena_launch_status(
         label="Electronic signatures",
         state="complete" if esign_ready else "external",
         summary=(
-            "The approved e-sign connection is verified."
+            "The approved signing workflow created a frozen provider document successfully."
             if esign_ready
-            else "Agent can prepare agreements, but no approved e-sign provider is connected."
+            else "The signing workflow is selected, but it has not created a verified provider document."
         ),
         next_action=(
             "Monitor provider delivery and signed-document evidence."
             if esign_ready
-            else "Select the e-sign provider and authorize its production credentials and callback workflow."
+            else "Create one controlled signing copy and resolve any provider API error before launch."
         ),
         owner="Owner and platform administrator",
         href="/admin/building/contracts",

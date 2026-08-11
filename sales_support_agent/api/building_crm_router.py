@@ -41,6 +41,7 @@ from sales_support_agent.api.building_service_request_router import (
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
+    BuildingAgreement,
     BuildingAgreementTemplate,
     BuildingBillingAccount,
     BuildingBillingSchedule,
@@ -4744,6 +4745,16 @@ def building_control_room(
                 BuildingAgreementTemplate.version.desc(),
             )
         ).scalars().all()
+        # A saved provider choice is configuration, not proof that its API can
+        # create the signing artifact. At least one approved, frozen package
+        # with a provider document is the functional production evidence.
+        verified_signing_copy = session.execute(
+            select(BuildingAgreement.id).where(
+                BuildingAgreement.preparation_status == "approved",
+                BuildingAgreement.document_url != "",
+                BuildingAgreement.package_checksum != "",
+            ).limit(1)
+        ).scalars().first()
         contact_rows = session.execute(
             select(BuildingContact).order_by(BuildingContact.full_name, BuildingContact.email)
         ).scalars().all()
@@ -5174,15 +5185,11 @@ def building_control_room(
                     and item.is_published
                     for item in offering_rows
                 ),
-                # Was hardcoded False, so this row could never go green however
-                # much setup was done. The agreement_template decision is the
-                # record that names the approved template and the e-sign
-                # provider, so it is what "verified" actually means here.
                 "esign_verified": any(
                     item.decision_key == "agreement_template"
                     and item.status == "approved_reference"
                     for item in launch_decision_rows
-                ),
+                ) and bool(verified_signing_copy),
                 # The rail Anata bills on. Stripe below is only the optional
                 # automatic-confirmation path.
                 "quickbooks_connected": BuildingQuickBooksClient().is_configured,

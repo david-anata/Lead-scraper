@@ -241,13 +241,19 @@ def _seeded_pricing(session: Any, payload: dict[str, Any]) -> dict[str, Any]:
     """
 
     stored = dict(payload.get("_pricing") or {})
-    if stored:
-        return stored
     plan = session.execute(
         select(BuildingRatePlan)
         .where(BuildingRatePlan.status == "approved")
         .order_by(BuildingRatePlan.name, BuildingRatePlan.version.desc())
     ).scalars().first()
+    if stored:
+        # Pricing saved before tax approval keeps the customer's negotiated
+        # money, but inherits the current approved tax determination. Tax is a
+        # jurisdictional rule, not an operator discount field.
+        if plan is not None:
+            stored["tax_status"] = plan.tax_status
+            stored["tax_rate_bps"] = plan.tax_rate_bps
+        return stored
     return default_pricing({
         "id": plan.id,
         "name": plan.name,
@@ -255,6 +261,8 @@ def _seeded_pricing(session: Any, payload: dict[str, Any]) -> dict[str, Any]:
         "unit_amount_cents": plan.unit_amount_cents,
         "minimum_units": plan.minimum_units,
         "deposit_percent_bps": plan.deposit_percent_bps,
+        "tax_status": plan.tax_status,
+        "tax_rate_bps": plan.tax_rate_bps,
     } if plan is not None else None)
 
 
@@ -414,6 +422,8 @@ def inquiry_workspace(
                     "deposit_type": row.deposit_type,
                     "deposit_amount_cents": row.deposit_amount_cents,
                     "deposit_percent_bps": row.deposit_percent_bps,
+                    "tax_status": row.tax_status,
+                    "tax_rate_bps": row.tax_rate_bps,
                 }
                 for row in rate_plan_rows
             ],
@@ -878,7 +888,7 @@ def sync_inquiry_calendar(
     confirmation: str = Form(...),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
-    """Retry only this confirmed event's dedicated-calendar projection."""
+    """Retry only this event's dedicated-calendar upsert or deletion."""
 
     target = f"/admin/building/inquiries/{inquiry_id}"
     actor = str(user.get("email") or "building-operator")
@@ -896,9 +906,9 @@ def sync_inquiry_calendar(
                 f"{target}?error={quote_plus(f'Type {expected} to retry this calendar update.')}#confirmation",
                 status_code=303,
             )
-        if reservation.status not in {"confirmed", "pre_event"}:
+        if reservation.status not in {"confirmed", "pre_event", "cancelled", "expired"}:
             return RedirectResponse(
-                f"{target}?error=Only+a+confirmed+event+can+be+written+to+the+customer+calendar.#confirmation",
+                f"{target}?error=Only+a+confirmed+event+or+cancelled+event+cleanup+can+be+synced.#confirmation",
                 status_code=303,
             )
         projection = session.execute(
@@ -909,6 +919,14 @@ def sync_inquiry_calendar(
         if projection is None:
             return RedirectResponse(
                 f"{target}?error=No+calendar+projection+exists+for+this+event.#confirmation",
+                status_code=303,
+            )
+        expected_action = (
+            "delete" if reservation.status in {"cancelled", "expired"} else "upsert"
+        )
+        if projection.desired_action != expected_action:
+            return RedirectResponse(
+                f"{target}?error={quote_plus('The calendar projection does not match the booking state; no provider write was attempted.')}#confirmation",
                 status_code=303,
             )
         if projection.status in {"error", "claimed"}:
