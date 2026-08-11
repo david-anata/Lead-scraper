@@ -286,6 +286,12 @@ def list_obligations(
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
+    if source in {None, "hr_payroll"}:
+        from sales_support_agent.services.cashflow.payroll_commitments import (
+            sync_hr_payroll_commitments,
+        )
+        sync_hr_payroll_commitments()
+
     conditions = ["1=1"]
     params: dict[str, Any] = {}
 

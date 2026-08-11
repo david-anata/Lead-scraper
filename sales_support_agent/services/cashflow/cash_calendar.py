@@ -259,16 +259,28 @@ def build_cash_calendar(
         if open_amount <= 0:
             continue
         category = _category(row)
+        is_draft_payroll = (
+            str(row.get("source") or "").lower() == "hr_payroll"
+            and str(row.get("source_status") or "").lower() == "draft"
+        )
         event = {
             "id": str(row.get("id") or ""),
-            "kind": "planned",
-            "state_label": "Partially paid · balance due" if paid_amount else "Unpaid · planned",
-            "payment_status": "partially_paid" if paid_amount else "unpaid",
+            "kind": "history_warning" if is_draft_payroll else "planned",
+            "state_label": (
+                "Expected · HR draft" if is_draft_payroll
+                else "Partially paid · balance due" if paid_amount else "Unpaid · planned"
+            ),
+            "payment_status": (
+                "unconfirmed" if is_draft_payroll
+                else "partially_paid" if paid_amount else "unpaid"
+            ),
             "name": _name(row, "Planned payment"),
             "amount_cents": open_amount,
             "category": category,
             "evidence": (
-                f"{_money(paid_amount)} paid; {_money(open_amount)} remains"
+                "HR draft using net payroll; not required until processing"
+                if is_draft_payroll
+                else f"{_money(paid_amount)} paid; {_money(open_amount)} remains"
                 if paid_amount else "Known bill or schedule; no posted payment is matched"
             ),
             "href": "/admin/finances/review",
@@ -277,7 +289,7 @@ def build_cash_calendar(
         }
         bucket = days[due.isoformat()]
         bucket["events"].append(event)
-        bucket["planned_cents"] += open_amount
+        bucket["warning_cents" if is_draft_payroll else "planned_cents"] += open_amount
 
     for source_event in historical_events:
         row = dict(source_event)
@@ -417,9 +429,24 @@ def _historical_data(
         confirmed_bill_projections,
         list_bill_patterns,
     )
+    from sales_support_agent.services.cashflow.payroll_commitments import active_hr_pay_dates
+
+    try:
+        hr_pay_dates = active_hr_pay_dates()
+    except Exception:
+        hr_pay_dates = []
+
+    def covered_by_hr_payroll(item: Mapping[str, Any], due: date) -> bool:
+        category = str(item.get("category") or "").lower()
+        vendor = str(item.get("vendor") or item.get("name") or "").lower()
+        is_payroll = category == "payroll" or "payroll" in vendor
+        return is_payroll and any(abs((due - pay_date).days) <= 7 for pay_date in hr_pay_dates)
 
     events: list[dict[str, Any]] = []
     for projection in confirmed_bill_projections(as_of=as_of, horizon_days=future_days):
+        projection_due = _as_date(projection.get("due_date"))
+        if projection_due and covered_by_hr_payroll(projection, projection_due):
+            continue
         events.append({
             **projection,
             "date": projection.get("due_date"),
@@ -432,6 +459,8 @@ def _historical_data(
         if pattern.get("decision"):
             continue
         for due in _occurrences_in_window(pattern, as_of=as_of, horizon_end=horizon_end):
+            if covered_by_hr_payroll(pattern, due):
+                continue
             events.append({
                 "id": f"history-warning-{pattern['pattern_key']}-{due.isoformat()}",
                 "pattern_key": pattern["pattern_key"],
