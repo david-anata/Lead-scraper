@@ -180,7 +180,9 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: WEBSITE_OPS_CITATION_TESTING_ENABLED
-        value: "true"
+        value: "false"
+      - key: WEBSITE_OPS_CONTENT_EXECUTION_MODE
+        value: codex
       - key: WEBSITE_OPS_CITATION_PROVIDER
         value: auto
       - key: WEBSITE_OPS_OPENAI_CITATION_MODEL

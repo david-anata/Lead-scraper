@@ -15,6 +15,21 @@ from sales_support_agent.services.website_ops_article_engine import (
     _request_article,
 )
 from sales_support_agent.api.website_ops_jobs_router import WEBSITE_OPS_PULSE_HOURS
+from sales_support_agent.services.website_ops_autonomy import (
+    website_ops_content_execution_mode,
+)
+
+
+def test_codex_owns_content_execution_by_default() -> None:
+    with mock.patch.dict("os.environ", {}, clear=True):
+        assert website_ops_content_execution_mode() == "codex"
+
+
+def test_api_content_execution_requires_explicit_opt_in() -> None:
+    with mock.patch.dict(
+        "os.environ", {"WEBSITE_OPS_CONTENT_EXECUTION_MODE": "api"}, clear=True
+    ):
+        assert website_ops_content_execution_mode() == "api"
 
 
 def test_daily_article_quota_tracks_eight_topic_target_and_pillars(tmp_path) -> None:

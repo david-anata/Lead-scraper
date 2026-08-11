@@ -213,26 +213,29 @@ Recommended production scheduler:
 
 ### Website Ops query and citation intelligence
 
-Website Ops runs query collection daily, controlled citation testing weekly,
-and broader outcome review monthly through the existing 8:00 AM
-`America/Denver` scheduler.
+Website Ops runs query collection daily and broader outcome review monthly
+through the existing scheduler. Generative SEO work is owned by a
+once-per-workday Codex routine in production; the Agent retains inventory,
+measurement, verification, and reporting responsibilities without calling a
+model API.
 
 Configure:
 
 ```txt
 OPENAI_API_KEY=your-openai-project-key
-WEBSITE_OPS_CITATION_TESTING_ENABLED=true
+WEBSITE_OPS_CONTENT_EXECUTION_MODE=codex
+WEBSITE_OPS_CITATION_TESTING_ENABLED=false
 WEBSITE_OPS_CITATION_PROVIDER=auto
 WEBSITE_OPS_OPENAI_CITATION_MODEL=gpt-5-mini
 WEBSITE_OPS_ANTHROPIC_CITATION_MODEL=claude-sonnet-4-6
 WEBSITE_OPS_CITATION_MAX_CLUSTERS=5
 ```
 
-The citation harness uses the OpenAI Responses API web-search tool. Missing
-credentials or provider failures are stored as unavailable and cannot produce
-zero-valued citation claims. Query-led publishing remains in shadow mode until
-two comparable weekly cycles complete, then only exact low-risk metadata
-corrections may use the existing validated autopush and rollback pipeline.
+With the production values above, article generation and citation-model calls
+cannot originate from Agent even when a provider key exists for another Agent
+feature. `WEBSITE_OPS_CONTENT_EXECUTION_MODE=api` is an explicit rollback mode
+and must not be enabled while the Codex routine is active. Missing citation
+evidence remains unavailable and cannot produce zero-valued citation claims.
 
 ## HeyReach Setup
 
