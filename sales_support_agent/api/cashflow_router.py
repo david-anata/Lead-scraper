@@ -6,9 +6,10 @@ import asyncio
 import hashlib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import lru_cache
+from time import monotonic
 from typing import Any
 from contextvars import ContextVar
 from urllib.parse import quote, urlparse
@@ -79,6 +80,36 @@ from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
 
 
 logger = logging.getLogger(__name__)
+
+_FINANCE_BRIEF_CACHE_SECONDS = 30.0
+
+
+async def _load_request_finance_brief(request: Request) -> tuple[Any, bool]:
+    """Reuse the deterministic brief briefly between read-only page loads.
+
+    Finance's main pages all need the same large evidence packet.  Rebuilding
+    that packet for every navigation made each tab pay for the same database
+    reads again.  The cache is process-local, expires quickly, and every
+    Finance write invalidates it through the application middleware.  It never
+    caches or changes source records.
+    """
+    now = monotonic()
+    today = datetime.now(timezone.utc).date().isoformat()
+    cached = getattr(request.app.state, "finance_brief_cache", None)
+    if cached and cached[0] > now and cached[1] == today:
+        return cached[2], True
+    brief = await asyncio.to_thread(load_finance_brief, _finance_settings(request))
+    request.app.state.finance_brief_cache = (
+        now + _FINANCE_BRIEF_CACHE_SECONDS,
+        today,
+        brief,
+    )
+    return brief, False
+
+
+def clear_finance_brief_cache(app: Any) -> None:
+    """Make the next read rebuild from source evidence."""
+    app.state.finance_brief_cache = None
 
 
 def _finance_settings(request: Request) -> Any:
@@ -451,18 +482,22 @@ async def finance_overview(request: Request, flash: str = ""):
                     sync_connected_items,
                     settings=finance_settings, item_ids=item_ids,
                 )
+                clear_finance_brief_cache(request.app)
         except Exception as exc:
             _forecast_logger.warning("[overview] background Plaid refresh failed: %s", exc)
     asyncio.create_task(_refresh_stale_plaid())
-    settings = _finance_settings(request)
-    brief = await asyncio.to_thread(load_finance_brief, settings)
-    return HTMLResponse(render_money_brief_page(brief, flash=flash))
+    brief, cache_hit = await _load_request_finance_brief(request)
+    response = HTMLResponse(render_money_brief_page(brief, flash=flash))
+    response.headers["X-Finance-Brief-Cache"] = "hit" if cache_hit else "miss"
+    return response
 
 
 @router.get("/plan", response_class=HTMLResponse)
 async def finance_cash_plan(request: Request):
-    brief = await asyncio.to_thread(load_finance_brief, _finance_settings(request))
-    return HTMLResponse(render_cash_plan_page(brief))
+    brief, cache_hit = await _load_request_finance_brief(request)
+    response = HTMLResponse(render_cash_plan_page(brief))
+    response.headers["X-Finance-Brief-Cache"] = "hit" if cache_hit else "miss"
+    return response
 
 
 @router.post("/cutover/archive")
@@ -659,8 +694,10 @@ async def finance_budget_review(request: Request):
 @router.get("/accounts", response_class=HTMLResponse)
 async def finance_accounts(request: Request):
     settings = _finance_settings(request)
-    brief = await asyncio.to_thread(load_finance_brief, settings)
-    return HTMLResponse(render_accounts_page(brief, settings))
+    brief, cache_hit = await _load_request_finance_brief(request)
+    response = HTMLResponse(render_accounts_page(brief, settings))
+    response.headers["X-Finance-Brief-Cache"] = "hit" if cache_hit else "miss"
+    return response
 
 
 @router.post("/accounts/refresh")
@@ -723,22 +760,26 @@ async def finance_economic_transactions_undo(request: Request, group_id: str):
 
 @router.get("/calculations/{calculation_id}", response_class=HTMLResponse)
 async def finance_calculation(request: Request, calculation_id: str):
-    brief = await asyncio.to_thread(load_finance_brief, _finance_settings(request))
+    brief, cache_hit = await _load_request_finance_brief(request)
     flash = ""
     if calculation_id != brief.calculation_id:
         flash = (
             "warn:The source data changed after that calculation. "
             "This page shows the newest calculation and its new ID."
         )
-    return HTMLResponse(render_calculation_page(brief, flash=flash))
+    response = HTMLResponse(render_calculation_page(brief, flash=flash))
+    response.headers["X-Finance-Brief-Cache"] = "hit" if cache_hit else "miss"
+    return response
 
 
 @router.get("/plaid/oauth-return", response_class=HTMLResponse)
 async def plaid_oauth_return(request: Request):
     """Render Finance at Plaid's exact OAuth return URL so Link can resume."""
     settings = _finance_settings(request)
-    brief = await asyncio.to_thread(load_finance_brief, settings)
-    return HTMLResponse(render_accounts_page(brief, settings))
+    brief, cache_hit = await _load_request_finance_brief(request)
+    response = HTMLResponse(render_accounts_page(brief, settings))
+    response.headers["X-Finance-Brief-Cache"] = "hit" if cache_hit else "miss"
+    return response
 
 
 @router.post("/plaid/link-token")

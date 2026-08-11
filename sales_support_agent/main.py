@@ -181,6 +181,30 @@ def create_app() -> FastAPI:
             logger.info("lifecycle milestone=shutdown_complete commit=%s", commit)
 
     app = FastAPI(title="Sales Support Agent", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def finance_read_performance(request, call_next):
+        """Time Finance pages and invalidate cached reads after every write."""
+        started = perf_counter()
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/admin/finances"):
+            elapsed_ms = (perf_counter() - started) * 1000
+            response.headers["Server-Timing"] = f"finance;dur={elapsed_ms:.1f}"
+            logger.info(
+                "finance_page method=%s path=%s status=%s duration_ms=%.1f",
+                request.method,
+                path,
+                response.status_code,
+                elapsed_ms,
+            )
+            if request.method not in {"GET", "HEAD", "OPTIONS"}:
+                from sales_support_agent.api.cashflow_router import (
+                    clear_finance_brief_cache,
+                )
+
+                clear_finance_brief_cache(request.app)
+        return response
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     brand_static_dir = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),
