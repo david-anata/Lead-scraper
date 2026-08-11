@@ -585,12 +585,34 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:
         Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
-
     _ensure_plaid_account_columns(engine)
     _ensure_collection_draft_columns(engine)
     _ensure_vendor_columns(engine)
     _ensure_savings_review_columns(engine)
 
+
+def _ensure_finance_paydown_columns(target_engine: Any) -> None:
+    """Add operator-owned payoff facts without replacing existing settings."""
+    inspector = inspect(target_engine)
+    if "finance_settings" not in set(inspector.get_table_names()):
+        return
+    existing = {column["name"] for column in inspector.get_columns("finance_settings")}
+    additions = {
+        "emergency_floor_cents": "INTEGER NOT NULL DEFAULT 0",
+        "paydown_vendor_key": "VARCHAR(255) NOT NULL DEFAULT 'boulder ranch'",
+        "paydown_vendor_label": (
+            "VARCHAR(255) NOT NULL DEFAULT 'Boulder Ranch Property Management'"
+        ),
+        "paydown_monthly_cents": "INTEGER NOT NULL DEFAULT 4000000",
+        "paydown_balance_cents": "INTEGER NOT NULL DEFAULT 3000000",
+        "paydown_balance_as_of": "DATE NOT NULL DEFAULT '2026-08-11'",
+    }
+    with target_engine.begin() as connection:
+        for name, ddl in additions.items():
+            if name not in existing:
+                connection.execute(text(
+                    f"ALTER TABLE finance_settings ADD COLUMN {name} {ddl}"
+                ))
 
 def _ensure_savings_review_columns(engine: Any) -> None:
     """Add cancellation and verification fields without replacing saved reviews."""
@@ -929,6 +951,7 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:
         Base.metadata.create_all(bind=db_engine, tables=tables, checkfirst=True)
+    _ensure_finance_paydown_columns(db_engine)
     _ensure_savings_review_columns(db_engine)
 
     inspector = inspect(db_engine)

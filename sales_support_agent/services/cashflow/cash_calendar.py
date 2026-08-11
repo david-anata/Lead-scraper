@@ -681,8 +681,9 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
     unconfirmed = int(plan.get("unconfirmed_reserved_cents") or 0)
     savings = int(plan.get("savings_would_unlock_cents") or 0)
     savings_line = (
-        '<p class="cash-calendar-paydown__savings">Only if you move money across: '
-        f"{_money(savings)} from savings would let you send that much more.</p>"
+        '<p class="cash-calendar-paydown__savings">Last-resort option only: '
+        f"{_money(savings)} from protected reserves, including TAX, would let you send "
+        "that much more. It is not included in the recommendation.</p>"
         if savings > 0 else ""
     )
 
@@ -706,6 +707,18 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
     )
     total = int(plan.get("planned_total_cents") or 0)
     shortfall = int(plan.get("shortfall_cents") or 0)
+    balance_as_of = _as_date_or_none(plan.get("balance_as_of"))
+    basis = str(plan.get("balance_basis") or "")
+    balance_date_label = (
+        f"{balance_as_of.strftime('%b')} {balance_as_of.day}, {balance_as_of.year}"
+        if balance_as_of else "the saved date"
+    )
+    basis_copy = (
+        f"Confirmed by you as of {html.escape(balance_date_label)}. "
+        "Plaid payments posted after that date reduce it automatically."
+        if basis == "operator_confirmed" else
+        "Estimated from the monthly amount and posted payments."
+    )
     shortfall_line = (
         f'<p class="cash-calendar-paydown__note">{_money(shortfall)} of it has nowhere '
         "to come from this month on current figures.</p>"
@@ -717,16 +730,32 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
         <h2 id="cash-calendar-paydown-title">{vendor}</h2></div></div>
         <p class="cash-calendar-paydown__lead">About {_money(monthly)} this month. You have sent
         {_money(paid)}. Remaining {_money(remaining)}.</p>
+        <p class="metric-note"><strong>Balance source:</strong> {basis_copy}</p>
         <table>
           <thead><tr><th scope="col">When</th><th scope="col">Amount</th><th scope="col">Why then</th></tr></thead>
           <tbody>{rows}</tbody>
           <tfoot><tr><th scope="row">Total</th><td class="amount-out">{_money(total)}</td><td></td></tr></tfoot>
         </table>
         <p class="cash-calendar-paydown__note">Reserved for the rest of the month:
-        {_money(reserved)}, of which {_money(unconfirmed)} is not confirmed. If those do
-        not arrive you can send more, sooner.</p>
+        {_money(reserved)}, of which {_money(unconfirmed)} is not confirmed. If those
+        possible expenses do not occur you can send more, sooner.</p>
+        <p class="cash-calendar-paydown__note">Normal recommendations protect your
+        {_money(int(plan.get('floor_cents') or 0))} cash goal. Your emergency floor is
+        {_money(int(plan.get('emergency_floor_cents') or 0))}. TAX and other reserves are
+        shown only as a last resort and are never included automatically.</p>
         {shortfall_line}
         {savings_line}
+        <details class="cash-calendar-paydown__settings">
+          <summary>Update the rent balance</summary>
+          <form method="post" action="/admin/finances/calendar/paydown-settings">
+            <label>Payee<input name="vendor_label" value="{vendor}" required></label>
+            <label>Monthly rent<input name="monthly_amount" inputmode="decimal" value="{monthly / 100:.2f}" required></label>
+            <label>Amount owed now<input name="balance_amount" inputmode="decimal" value="{remaining / 100:.2f}" required></label>
+            <label>Balance confirmed on<input name="balance_as_of" type="date" value="{balance_as_of.isoformat() if balance_as_of else ''}" required></label>
+            <label>Cash goal<input name="cash_goal" inputmode="decimal" value="{int(plan.get('floor_cents') or 0) / 100:.2f}" required></label>
+            <button class="btn btn-secondary btn-sm" type="submit">Save payoff facts</button>
+          </form>
+        </details>
       </section>"""
 
 

@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import lru_cache
 from time import monotonic
@@ -647,6 +647,63 @@ async def finance_cash_calendar(request: Request, flash: str = ""):
         paydown = {"status": "failed", "reason": type(exc).__name__}
     return HTMLResponse(
         render_cash_calendar_page(calendar, flash=flash, paydown=paydown)
+    )
+
+
+@router.post("/calendar/paydown-settings", response_class=HTMLResponse)
+async def update_paydown_settings(
+    request: Request,
+    vendor_label: str = Form(...),
+    monthly_amount: str = Form(...),
+    balance_amount: str = Form(...),
+    balance_as_of: str = Form(...),
+    cash_goal: str = Form(...),
+):
+    """Save operator-confirmed rent facts; this never initiates a payment."""
+    from sales_support_agent.services.cashflow.settings import set_paydown_settings
+
+    def nonnegative_cents(raw: str) -> int:
+        try:
+            amount = Decimal(str(raw).replace("$", "").replace(",", "").strip())
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError("Enter valid dollar amounts") from exc
+        cents = int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        if cents < 0:
+            raise ValueError("Amounts cannot be negative")
+        return cents
+
+    try:
+        confirmed_on = date.fromisoformat(str(balance_as_of)[:10])
+        label = str(vendor_label or "").strip()
+        if not label:
+            raise ValueError("Payee is required")
+        actor = "finance-operator"
+        current_user = get_current_user(request)
+        if isinstance(current_user, dict):
+            actor = str(current_user.get("email") or current_user.get("name") or actor)
+        await asyncio.to_thread(
+            set_paydown_settings,
+            balance_cents=nonnegative_cents(balance_amount),
+            balance_as_of=confirmed_on,
+            monthly_cents=nonnegative_cents(monthly_amount),
+            cash_goal_cents=nonnegative_cents(cash_goal),
+            emergency_floor_cents=0,
+            vendor_key="boulder ranch",
+            vendor_label=label,
+            actor=actor,
+        )
+    except (ValueError, TypeError) as exc:
+        return RedirectResponse(
+            f"/admin/finances/calendar?flash={quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        logger.exception("Rent payoff settings could not be saved")
+        return RedirectResponse(
+            "/admin/finances/calendar?flash=Payoff%20facts%20could%20not%20be%20saved",
+            status_code=303,
+        )
+    return RedirectResponse(
+        "/admin/finances/calendar?flash=Rent%20payoff%20facts%20updated", status_code=303
     )
 
 

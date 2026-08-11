@@ -123,6 +123,29 @@ def _paid_this_month(
     return total
 
 
+def _paid_after_balance_date(
+    rows: Sequence[Mapping[str, Any]], *, vendor_key: str, balance_as_of: date, as_of: date
+) -> int:
+    """Posted payments after an operator-confirmed balance reduce that balance.
+
+    The starting day is excluded because the entered balance already includes
+    everything known on that date. This prevents a same-day bank transaction
+    from being subtracted twice.
+    """
+    total = 0
+    for row in rows:
+        if str(row.get("event_type") or "").lower() == "inflow":
+            continue
+        if str(row.get("status") or "").lower() not in {"posted", "matched", "paid"}:
+            continue
+        when = _as_date(row.get("effective_date") or row.get("due_date"))
+        if when is None or when <= balance_as_of or when > as_of:
+            continue
+        if _same_vendor(_vendor_of(row), vendor_key):
+            total += _cents(row.get("amount_cents"))
+    return total
+
+
 def _outgoings_by_day(
     calendar: Mapping[str, Any], *, vendor_key: str, as_of: date, horizon_end: date
 ) -> tuple[dict[date, int], dict[date, int]]:
@@ -234,6 +257,9 @@ def build_paydown_plan(
     vendor_key: str = "",
     vendor_label: str = "",
     monthly_cents: int = 0,
+    authoritative_balance_cents: int | None = None,
+    balance_as_of: date | None = None,
+    emergency_floor_cents: int = 0,
     as_of: date | None = None,
 ) -> dict[str, Any]:
     """Return dated instalments that never breach the floor on any later day."""
@@ -253,7 +279,16 @@ def build_paydown_plan(
         monthly_cents = monthly_cents or chosen["monthly_cents"]
 
     paid = _paid_this_month(rows, vendor_key=vendor_key, as_of=as_of)
-    remaining = max(0, int(monthly_cents) - paid)
+    paid_since_balance = 0
+    if authoritative_balance_cents is not None and balance_as_of is not None:
+        paid_since_balance = _paid_after_balance_date(
+            rows, vendor_key=vendor_key, balance_as_of=balance_as_of, as_of=as_of
+        )
+        remaining = max(0, int(authoritative_balance_cents) - paid_since_balance)
+        balance_basis = "operator_confirmed"
+    else:
+        remaining = max(0, int(monthly_cents) - paid)
+        balance_basis = "estimated_from_monthly_payments"
 
     outgoing, unconfirmed = _outgoings_by_day(
         calendar, vendor_key=vendor_key, as_of=as_of, horizon_end=horizon_end
@@ -295,13 +330,17 @@ def build_paydown_plan(
         "month_end": horizon_end,
         "monthly_cents": int(monthly_cents),
         "paid_this_month_cents": paid,
+        "paid_since_balance_cents": paid_since_balance,
         "remaining_cents": remaining,
+        "balance_basis": balance_basis,
+        "balance_as_of": balance_as_of,
         "instalments": instalments,
         "planned_total_cents": committed,
         "shortfall_cents": shortfall,
         "reserved_cents": reserved,
         "unconfirmed_reserved_cents": unconfirmed_total,
         "floor_cents": int(floor_cents),
+        "emergency_floor_cents": int(emergency_floor_cents),
         "spendable_cents": int(spendable_cents),
         "savings_available_cents": int(reserve_cents),
         "savings_would_unlock_cents": savings_unlock,
@@ -318,7 +357,7 @@ def load_paydown_plan(
         load_cash_calendar,
     )
     from sales_support_agent.services.cashflow.obligations import list_obligations
-    from sales_support_agent.services.cashflow.settings import get_cash_floor_cents
+    from sales_support_agent.services.cashflow.settings import get_paydown_settings
 
     today = as_of or date.today()
     ledger = list(rows) if rows is not None else list_obligations(limit=10_000)
@@ -330,11 +369,18 @@ def load_paydown_plan(
     except Exception:
         calendar = load_cash_calendar(as_of=today)
     accounts = load_accounts_overview()
+    configured = get_paydown_settings()
     return build_paydown_plan(
         calendar=calendar,
         rows=ledger,
         spendable_cents=int(accounts.get("spendable_cents") or 0),
         reserve_cents=int(accounts.get("reserve_cents") or 0),
-        floor_cents=get_cash_floor_cents(),
+        floor_cents=int(configured["cash_goal_cents"]),
+        emergency_floor_cents=int(configured["emergency_floor_cents"]),
+        vendor_key=str(configured["vendor_key"]),
+        vendor_label=str(configured["vendor_label"]),
+        monthly_cents=int(configured["monthly_cents"]),
+        authoritative_balance_cents=int(configured["balance_cents"]),
+        balance_as_of=_as_date(configured["balance_as_of"]),
         as_of=today,
     )
