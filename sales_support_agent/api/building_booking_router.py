@@ -26,6 +26,8 @@ from sales_support_agent.models.entities import (
     BuildingInvoice,
     BuildingInquiry,
     BuildingOffering,
+    BuildingOperationalChecklist,
+    BuildingOperationalChecklistItem,
     BuildingProposal,
     BuildingPaymentRequestReadiness,
     BuildingRatePlan,
@@ -1753,6 +1755,45 @@ def transition_reservation(
             block.updated_at = _now()
             session.add(block)
             row.hold_expires_at = None
+        if row.kind == "event" and payload.target_status == "completed":
+            checklists = session.execute(
+                select(BuildingOperationalChecklist).where(
+                    BuildingOperationalChecklist.reservation_id == row.id
+                )
+            ).scalars().all()
+            if not checklists:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The event operations checklist is required before closeout.",
+                )
+            required = session.execute(
+                select(BuildingOperationalChecklistItem).where(
+                    BuildingOperationalChecklistItem.checklist_id.in_(
+                        [item.id for item in checklists]
+                    ),
+                    BuildingOperationalChecklistItem.is_required.is_(True),
+                )
+            ).scalars().all()
+            incomplete = [
+                item.label
+                for item in required
+                if (
+                    item.status not in {"completed", "waived"}
+                    or not str(item.completion_reason or "").strip()
+                    or not str(item.evidence_reference or "").strip()
+                    or not str(item.assigned_owner or "").strip()
+                    or item.due_at is None
+                )
+            ]
+            if incomplete:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Complete or waive these required operations with an owner, due date, reason, and evidence before closeout: "
+                        + ", ".join(incomplete)
+                        + "."
+                    ),
+                )
         if payload.target_status == "occupied":
             block = _availability_block(session, row)
             if block:

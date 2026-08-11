@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable
@@ -113,6 +114,9 @@ from sales_support_agent.services.building_page import (
 router = APIRouter(prefix="/admin/building", tags=["building-admin-operations"])
 FORM_DEPS = [Depends(require_building_form_security)]
 MOUNTAIN = ZoneInfo("America/Denver")
+_INQUIRY_RETURN_RE = re.compile(
+    r"^/admin/building/inquiries/[A-Za-z0-9_-]+(?:#[A-Za-z0-9_-]+)?$"
+)
 
 
 def _redirect(
@@ -122,8 +126,19 @@ def _redirect(
     target: str = "/admin/building",
 ) -> RedirectResponse:
     query = urlencode({"notice": notice} if notice else {"error": error})
-    separator = "&" if "?" in target else "?"
-    return RedirectResponse(f"{target}{separator}{query}", status_code=303)
+    base, marker, fragment = target.partition("#")
+    separator = "&" if "?" in base else "?"
+    destination = f"{base}{separator}{query}"
+    if marker:
+        destination += f"#{fragment}"
+    return RedirectResponse(destination, status_code=303)
+
+
+def _form_target(return_to: str, fallback: str = "/admin/building") -> str:
+    """Allow forms to return to one inquiry section without open redirects."""
+
+    candidate = str(return_to or "").strip()
+    return candidate if _INQUIRY_RETURN_RE.fullmatch(candidate) else fallback
 
 
 def _internal_key(request: Request) -> str:
@@ -632,6 +647,7 @@ def transition_reservation_from_control_room(
     target_status: str = Form(...),
     hold_expires_at: str = Form(""),
     reason: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -647,7 +663,11 @@ def transition_reservation_from_control_room(
             reservation_id, payload, request, _internal_key(request)
         )
 
-    return _run_form_action(action, f"Booking moved to {target_status.replace('_', ' ')}.")
+    return _run_form_action(
+        action,
+        f"Booking moved to {target_status.replace('_', ' ')}.",
+        success_target=_form_target(return_to),
+    )
 
 
 @router.post(
@@ -708,6 +728,7 @@ def record_agreement_from_control_room(
     document_url: str = Form(""),
     esign_certificate_reference: str = Form(""),
     signed_document_checksum: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -727,7 +748,11 @@ def record_agreement_from_control_room(
         )
         record_agreement(reservation_id, payload, request, _internal_key(request))
 
-    return _run_form_action(action, f"Agreement evidence recorded as {status}.")
+    return _run_form_action(
+        action,
+        f"Agreement evidence recorded as {status}.",
+        success_target=_form_target(return_to),
+    )
 
 
 @router.post("/reservations/{reservation_id}/proposals", dependencies=FORM_DEPS)
@@ -875,6 +900,7 @@ def save_billing_account_from_control_room(
     account_name: str = Form(...),
     billing_email: str = Form(...),
     qbo_customer_id: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -891,7 +917,9 @@ def save_billing_account_from_control_room(
             payload.id, payload, request, _internal_key(request)
         )
 
-    return _run_form_action(action, "Billing account saved.")
+    return _run_form_action(
+        action, "Billing account saved.", success_target=_form_target(return_to)
+    )
 
 
 @router.post("/billing/schedules", dependencies=FORM_DEPS)
@@ -907,6 +935,7 @@ def save_billing_schedule_from_control_room(
     days_until_due: int = Form(7),
     starts_on: str = Form(...),
     ends_on: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -927,13 +956,18 @@ def save_billing_schedule_from_control_room(
             payload.id, payload, request, _internal_key(request)
         )
 
-    return _run_form_action(action, "Billing schedule saved as a draft.")
+    return _run_form_action(
+        action,
+        "Billing schedule saved as a draft.",
+        success_target=_form_target(return_to),
+    )
 
 
 @router.post("/billing/schedules/{schedule_id}/approve", dependencies=FORM_DEPS)
 def approve_billing_schedule_from_control_room(
     schedule_id: str,
     request: Request,
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -944,7 +978,11 @@ def approve_billing_schedule_from_control_room(
             _internal_key(request),
         )
 
-    return _run_form_action(action, "Billing schedule approved and locked.")
+    return _run_form_action(
+        action,
+        "Billing schedule approved and locked.",
+        success_target=_form_target(return_to),
+    )
 
 
 @router.post("/billing/schedules/{schedule_id}/invoice", dependencies=FORM_DEPS)
@@ -952,15 +990,21 @@ def create_invoice_from_control_room(
     schedule_id: str,
     request: Request,
     confirmation: str = Form(...),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     expected = f"INVOICE {schedule_id}"
     if confirmation.strip() != expected:
-        return _redirect(error=f"Type {expected} to create the provider invoice.")
+        return _redirect(
+            error=f"Type {expected} to create the provider invoice.",
+            target=_form_target(return_to),
+        )
     with session_scope(request.app.state.session_factory) as session:
         schedule = session.get(BuildingBillingSchedule, schedule_id)
         if schedule is None:
-            return _redirect(error="Billing schedule not found.")
+            return _redirect(
+                error="Billing schedule not found.", target=_form_target(return_to)
+            )
         invoice_for = schedule.next_invoice_on or date.today()
     idempotency_key = f"building:{schedule_id}:{invoice_for.isoformat()}"
 
@@ -980,18 +1024,25 @@ def create_invoice_from_control_room(
             message = exc.errors()[0].get("msg", "Review the form values.")
         else:
             message = str(exc)
-        return _redirect(error=message)
+        return _redirect(error=message, target=_form_target(return_to))
     except HTTPException as exc:
-        return _redirect(error=str(exc.detail))
+        return _redirect(error=str(exc.detail), target=_form_target(return_to))
     if result.get("duplicate"):
-        return _redirect(notice="That scheduled invoice already exists; no duplicate was created.")
-    return _redirect(notice="QuickBooks draft invoice created. Nothing was sent to the customer.")
+        return _redirect(
+            notice="That scheduled invoice already exists; no duplicate was created.",
+            target=_form_target(return_to),
+        )
+    return _redirect(
+        notice="QuickBooks draft invoice created. Nothing was sent to the customer.",
+        target=_form_target(return_to),
+    )
 
 
 @router.post("/billing/invoices/{invoice_id}/sync-qbo", dependencies=FORM_DEPS)
 def sync_quickbooks_invoice_from_control_room(
     invoice_id: str,
     request: Request,
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     try:
@@ -1002,14 +1053,16 @@ def sync_quickbooks_invoice_from_control_room(
             _internal_key(request),
         )
     except HTTPException as exc:
-        return _redirect(error=str(exc.detail))
+        return _redirect(error=str(exc.detail), target=_form_target(return_to))
     if not result.get("ok"):
         return _redirect(
-            error="QuickBooks total differs from Agent. Review the draft in QuickBooks before sending."
+            error="QuickBooks total differs from Agent. Review the draft in QuickBooks before sending.",
+            target=_form_target(return_to),
         )
     status = str((result.get("invoice") or {}).get("status") or "draft")
     return _redirect(
-        notice=f"QuickBooks invoice evidence refreshed as {status}; no message was sent."
+        notice=f"QuickBooks invoice evidence refreshed as {status}; no message was sent.",
+        target=_form_target(return_to),
     )
 
 
@@ -1138,6 +1191,9 @@ def add_checklist_item_from_control_room(
     request: Request,
     label: str = Form(...),
     is_required: bool = Form(False),
+    assigned_owner: str = Form(""),
+    due_at: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -1146,13 +1202,19 @@ def add_checklist_item_from_control_room(
             ChecklistItemInput(
                 label=label.strip(),
                 is_required=is_required,
+                assigned_owner=assigned_owner.strip(),
+                due_at=_local_datetime(due_at) if due_at.strip() else None,
                 actor=_actor(user),
             ),
             request,
             _internal_key(request),
         )
 
-    return _run_form_action(action, "Operational checklist item added.")
+    return _run_form_action(
+        action,
+        "Operational checklist item added.",
+        success_target=_form_target(return_to),
+    )
 
 
 @router.post("/checklists/items/{item_id}/status", dependencies=FORM_DEPS)
@@ -1161,6 +1223,10 @@ def update_checklist_item_from_control_room(
     request: Request,
     status: str = Form(...),
     reason: str = Form(""),
+    evidence_reference: str = Form(""),
+    assigned_owner: str = Form(""),
+    due_at: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -1169,6 +1235,9 @@ def update_checklist_item_from_control_room(
             ChecklistItemStatusInput(
                 status=status,
                 reason=reason.strip(),
+                evidence_reference=evidence_reference.strip(),
+                assigned_owner=assigned_owner.strip(),
+                due_at=_local_datetime(due_at) if due_at.strip() else None,
                 actor=_actor(user),
             ),
             request,
@@ -1178,6 +1247,7 @@ def update_checklist_item_from_control_room(
     return _run_form_action(
         action,
         f"Operational item marked {status.replace('_', ' ')}.",
+        success_target=_form_target(return_to),
     )
 
 
@@ -1318,6 +1388,7 @@ def create_service_request_from_control_room(
     source_reference: str = Form(""),
     assigned_owner: str = Form(""),
     due_at: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -1341,7 +1412,11 @@ def create_service_request_from_control_room(
             _internal_key(request),
         )
 
-    return _run_form_action(action, "Service request added to the operator queue.")
+    return _run_form_action(
+        action,
+        "Service request added to the operator queue.",
+        success_target=_form_target(return_to),
+    )
 
 
 @router.post(
@@ -1356,6 +1431,7 @@ def transition_service_request_from_control_room(
     due_at: str = Form(""),
     resolution: str = Form(""),
     reason: str = Form(...),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -1376,4 +1452,5 @@ def transition_service_request_from_control_room(
     return _run_form_action(
         action,
         f"Service request moved to {target_status.replace('_', ' ')}.",
+        success_target=_form_target(return_to),
     )

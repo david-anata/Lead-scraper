@@ -46,6 +46,7 @@ class CalendarSyncInput(BaseModel):
     execute: bool = False
     dry_run: bool = True
     max_items: int = Field(default=25, ge=1, le=100)
+    reservation_id: str = Field(default="", max_length=64)
     actor: str = Field(min_length=1, max_length=255)
 
 
@@ -157,9 +158,7 @@ def sync_calendar_projections(
     execute = bool(payload.execute and not payload.dry_run)
     with session_scope(request.app.state.session_factory) as session:
         stale_before = _now() - timedelta(minutes=10)
-        rows = session.execute(
-            select(BuildingCalendarProjection)
-            .where(
+        query = select(BuildingCalendarProjection).where(
                 (
                     BuildingCalendarProjection.status.in_(("pending", "error"))
                 )
@@ -175,7 +174,12 @@ def sync_calendar_projections(
                     | (BuildingCalendarProjection.next_attempt_at <= _now())
                 ),
             )
-            .order_by(BuildingCalendarProjection.updated_at)
+        if payload.reservation_id:
+            query = query.where(
+                BuildingCalendarProjection.reservation_id == payload.reservation_id
+            )
+        rows = session.execute(
+            query.order_by(BuildingCalendarProjection.updated_at)
             .limit(payload.max_items)
             .with_for_update(skip_locked=True)
         ).scalars().all()

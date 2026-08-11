@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+import re
+from urllib.parse import urlencode
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 
@@ -45,16 +48,40 @@ router = APIRouter(
     tags=["building-booking-workspace"],
 )
 FORM_DEPS = [Depends(require_building_form_security)]
+_INQUIRY_RETURN_RE = re.compile(
+    r"^/admin/building/inquiries/[A-Za-z0-9_-]+(?:#[A-Za-z0-9_-]+)?$"
+)
 
 
 def _actor(user: dict) -> str:
     return str(user.get("email") or "building-operator")
 
 
+def _workspace_redirect(
+    reservation_id: str,
+    *,
+    return_to: str = "",
+    notice: str = "",
+    error: str = "",
+) -> RedirectResponse:
+    target = (
+        return_to
+        if _INQUIRY_RETURN_RE.fullmatch(str(return_to or "").strip())
+        else f"/admin/building/bookings/{reservation_id}"
+    )
+    base, marker, fragment = target.partition("#")
+    query = urlencode({"notice": notice} if notice else {"error": error})
+    destination = f"{base}?{query}"
+    if marker:
+        destination += f"#{fragment}"
+    return RedirectResponse(destination, status_code=303)
+
+
 @router.post("/{reservation_id}/billing/prepare", dependencies=FORM_DEPS)
 def prepare_booking_billing(
     reservation_id: str,
     request: Request,
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     """Prepare exact booking billing drafts; create no provider objects."""
@@ -63,9 +90,10 @@ def prepare_booking_billing(
         getattr(request.app.state.settings, "internal_api_key", "") or ""
     ).strip()
     if not internal_key:
-        return RedirectResponse(
-            f"/admin/building/bookings/{reservation_id}?error=Internal+billing+API+is+not+configured.",
-            status_code=303,
+        return _workspace_redirect(
+            reservation_id,
+            return_to=return_to,
+            error="Internal billing API is not configured.",
         )
     try:
         result = prepare_event_billing(
@@ -75,22 +103,19 @@ def prepare_booking_billing(
             internal_key,
         )
     except HTTPException as exc:
-        from urllib.parse import urlencode
-
-        return RedirectResponse(
-            f"/admin/building/bookings/{reservation_id}?{urlencode({'error': str(exc.detail)})}",
-            status_code=303,
+        return _workspace_redirect(
+            reservation_id,
+            return_to=return_to,
+            error=str(exc.detail),
         )
-    from urllib.parse import urlencode
 
     notice = (
         "Billing drafts already match this signed booking; nothing was sent."
         if result.get("duplicate")
         else f"Prepared {result['component_count']} billing drafts; nothing was sent to QuickBooks or the customer."
     )
-    return RedirectResponse(
-        f"/admin/building/bookings/{reservation_id}?{urlencode({'notice': notice})}",
-        status_code=303,
+    return _workspace_redirect(
+        reservation_id, return_to=return_to, notice=notice
     )
 
 
@@ -102,11 +127,10 @@ def retry_booking_communication(
     reservation_id: str,
     milestone: str,
     request: Request,
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     """Retry one versioned milestone message without duplicating delivery."""
-
-    from urllib.parse import urlencode
 
     if milestone not in TEMPLATES:
         raise HTTPException(status_code=404, detail="Message milestone not found.")
@@ -127,9 +151,11 @@ def retry_booking_communication(
         if status in {"sent", "delivered", "delivery_delayed"}
         else {"error": str(result.get("reason") or f"Message is {status}.")}
     )
-    return RedirectResponse(
-        f"/admin/building/bookings/{reservation_id}?{urlencode(query)}",
-        status_code=303,
+    return _workspace_redirect(
+        reservation_id,
+        return_to=return_to,
+        notice=query.get("notice", ""),
+        error=query.get("error", ""),
     )
 
 

@@ -1,8 +1,8 @@
-"""Governed QuickBooks Contract Builder signature-request readiness.
+"""Governed provider-neutral signature-request readiness.
 
 This module freezes who would sign which approved agreement. It never calls an
 e-sign provider, sends email, creates a provider request, or records a
-signature. QuickBooks Contract Builder does not expose a supported public API,
+signature. The current Google Docs eSignature step remains staff-controlled,
 so delivery is a deliberate operator handoff and completion is recorded only
 from QuickBooks evidence.
 """

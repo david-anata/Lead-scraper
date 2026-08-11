@@ -190,12 +190,11 @@ class BuildingSignatureReadinessTests(unittest.TestCase):
         self.assertIn("Taylor Morgan", page.text)
         self.assertIn("Not Sent", page.text)
         self.assertIn(
-            "does not claim a QuickBooks request exists",
+            "does not claim a signature request exists",
             page.text,
         )
-        self.assertIn("QuickBooks Contract Builder", page.text)
-        self.assertIn("Copy-ready handoff manifest", page.text)
-        self.assertIn("agreement_checksum", page.text)
+        self.assertIn("Google Docs eSignature", page.text)
+        self.assertNotIn("Create in QuickBooks", page.text)
         self.assertNotIn("Send for signature", page.text)
 
     def test_03a_failed_handoff_is_explicit_and_retryable_without_delivery(self) -> None:

@@ -50,6 +50,8 @@ class ChecklistItemStatusInput(BaseModel):
     status: Literal["pending", "completed", "waived"]
     reason: str = Field(default="", max_length=2000)
     evidence_reference: str = Field(default="", max_length=2000)
+    assigned_owner: str | None = Field(default=None, max_length=255)
+    due_at: datetime | None = None
     actor: str = Field(min_length=1, max_length=255)
 
     @model_validator(mode="after")
@@ -222,12 +224,18 @@ def update_checklist_item_status(
             raise HTTPException(status_code=409, detail="Checklist record is missing.")
         before = {
             "status": row.status,
+            "assigned_owner": row.assigned_owner,
+            "due_at": row.due_at.isoformat() if row.due_at else None,
             "completion_reason": row.completion_reason,
             "completed_by": row.completed_by,
         }
         row.status = payload.status
         row.completion_reason = payload.reason.strip()
         row.evidence_reference = payload.evidence_reference.strip()
+        if payload.assigned_owner is not None:
+            row.assigned_owner = payload.assigned_owner.strip()
+        if payload.due_at is not None:
+            row.due_at = payload.due_at
         row.updated_at = _now()
         if payload.status in {"completed", "waived"}:
             row.completed_by = payload.actor
@@ -253,6 +261,8 @@ def update_checklist_item_status(
                     "status": row.status,
                     "completion_reason": row.completion_reason,
                     "evidence_reference": row.evidence_reference,
+                    "assigned_owner": row.assigned_owner,
+                    "due_at": row.due_at.isoformat() if row.due_at else None,
                     "checklist_status": checklist.status,
                 },
             )
