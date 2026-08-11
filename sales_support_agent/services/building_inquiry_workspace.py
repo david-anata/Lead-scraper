@@ -259,19 +259,30 @@ def _contract_link(data: dict[str, Any], *, csrf_token: str) -> str:
     agreement = dict(data.get("agreement") or {})
     if agreement:
         state = str(agreement.get("status") or "").replace("_", " ")
+        stale = bool(agreement.get("is_stale"))
         signing = (
             f' · <a href="{_esc(agreement.get("document_url"))}" target="_blank" '
             'rel="noopener">Open the signing Doc</a>'
             if agreement.get("document_url")
             else ""
         )
+        revision = ""
+        if stale:
+            revision = (
+                '<form class="lead-price__contract" method="post" '
+                f'action="/admin/building/inquiries/{_esc(data.get("id"))}/contract">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                '<button class="lead-button lead-button--primary" type="submit">Create revised agreement</button>'
+                '<span>Freezes the current tax-inclusive pricing as a new version. '
+                'The earlier agreement stays in the audit history; nothing is sent.</span></form>'
+            )
         return (
             '<div class="lead-price__contract">'
-            f'<a class="lead-button lead-button--primary" '
+            f'<a class="lead-button{"" if stale else " lead-button--primary"}" '
             f'href="/admin/building/contracts/{_esc(agreement.get("id"))}">'
             f'Open the contract</a>'
             f'<span>Version {_esc(agreement.get("version"))} · {_esc(state)}{signing}</span>'
-            "</div>"
+            "</div>" + revision
         )
     return (
         '<form class="lead-price__contract" method="post" '
@@ -480,6 +491,15 @@ def _next_action(data: dict[str, Any]) -> dict[str, str]:
             "label": "Review date",
         }
     if data.get("reservation_id"):
+        agreement = dict(data.get("agreement") or {})
+        if agreement.get("is_stale"):
+            return {
+                "title": "Revise the agreement before approval.",
+                "body": "Current pricing no longer matches the frozen agreement. Create a new audited version; nothing is sent.",
+                "kind": "link",
+                "href": "#agreement",
+                "label": "Create revised agreement",
+            }
         resolved = resolve_event_next_action(data)
         return {
             "title": str(resolved.get("title") or "Continue this event."),
@@ -557,7 +577,10 @@ def _journey_sections(data: dict[str, Any], *, csrf_token: str) -> str:
             '<ul class="lead-journey-list">' + ''.join(f'<li>{_esc(item)}</li>' for item in differences) + '</ul>'
             if differences else '<p class="lead-journey-ok">Frozen package matches the approved template.</p>'
         )
-        ready = contract.get("preparation_status") == "approved" and bool(contract.get("document_url"))
+        current_total = int((data.get("pricing_totals") or {}).get("total_cents") or 0)
+        frozen_total = int(contract.get("amount_cents") or 0)
+        stale = frozen_total != current_total
+        ready = contract.get("preparation_status") == "approved" and bool(contract.get("document_url")) and not stale
         agreement_section += f'''<dl class="lead-details">
           <dt>Package</dt><dd>Version {_esc(contract.get("version"))} · {_status(str(contract.get("preparation_status") or "not started"))}</dd>
           <dt>Frozen value</dt><dd>{_esc(_money_value(contract.get("amount_cents"), contract.get("currency") or "USD"))}</dd>
@@ -565,7 +588,14 @@ def _journey_sections(data: dict[str, Any], *, csrf_token: str) -> str:
           <dt>Signing</dt><dd>{_status(str(reservation.get("agreement_status") or "not started"))}</dd>
           <dt>Signer</dt><dd>{_esc(signature.get("signer_email") or data.get("email"))}</dd>
         </dl><div class="lead-journey-content"><h3>Template check</h3>{difference_html}'''
-        if not ready:
+        if stale:
+            agreement_section += f'''<div class="app-alert app-alert--blocked"><p>This agreement is out of date: it freezes {_esc(_money_value(frozen_total, contract.get("currency") or "USD"))}, while current pricing is {_esc(_money_value(current_total, contract.get("currency") or "USD"))}. Create a revised agreement before approval or delivery.</p></div>
+            <form method="post" action="/admin/building/inquiries/{_esc(inquiry_id)}/contract">
+              <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+              <button class="lead-button lead-button--primary" type="submit">Create revised agreement</button>
+              <span class="lead-action-note">Creates a new frozen version and sends nothing. The prior version remains auditable.</span>
+            </form>'''
+        elif not ready:
             agreement_section += f'''<form method="post" action="/admin/building/contracts/{_esc(contract.get("id"))}/ready-to-send">
               <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input type="hidden" name="return_to" value="{_esc(return_to)}#agreement">
               <button class="lead-button lead-button--primary" type="submit">Approve and create the signing copy</button>

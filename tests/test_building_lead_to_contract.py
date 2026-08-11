@@ -230,6 +230,14 @@ class LeadToContractTests(unittest.TestCase):
             )
             self.assertEqual(totals, [130_000, 175_000])
 
+    def test_99_stale_agreement_is_blocked_and_offers_a_revision(self) -> None:
+        self._price(hourly_rate="225", hours="8")
+        page = self.client.get("/admin/building/inquiries/lead-1")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("This agreement is out of date", page.text)
+        self.assertIn("Create revised agreement", page.text)
+        self.assertNotIn("Approve and create the signing copy", page.text)
+
     def test_03_a_lead_with_no_booking_is_asked_not_refused(self) -> None:
         """A contract needs a date, but wanting one is not an error. The page
         asks which date it is about to take rather than sending the operator
