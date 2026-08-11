@@ -2,6 +2,7 @@ from datetime import date, timedelta
 
 from sales_support_agent.services.cashflow.cash_calendar import (
     build_cash_calendar,
+    overlay_paydown_proposals,
     render_cash_calendar_page,
 )
 from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
@@ -211,7 +212,7 @@ def test_calendar_renderer_explains_evidence_and_filters_without_write_controls(
 
     page = render_cash_calendar_page(calendar)
 
-    assert "Past 7 days · today · next 14 days" in page
+    assert "Past 7 days · today · through month-end" in page
     assert "Unconfirmed · likely from history" in page
     assert "not counted as required" in page
     assert "data-calendar-filter=\"attention\"" in page
@@ -229,6 +230,53 @@ def test_calendar_renderer_explains_evidence_and_filters_without_write_controls(
     assert "data-calendar-batch-bar" in page
     assert "Review and save" in page
     assert "<form" not in page
+
+
+def test_rent_proposals_overlay_the_same_daily_and_weekly_calendar():
+    calendar = build_cash_calendar([], as_of=TODAY, future_days=27)
+    proposal_date = TODAY + timedelta(days=8)
+    plan = {
+        "status": "ok",
+        "vendor": "Boulder Ranch",
+        "calculation_id": calendar["calculation_id"],
+        "instalments": [{"date": proposal_date, "amount_cents": 825_000}],
+    }
+
+    overlaid = overlay_paydown_proposals(calendar, plan)
+    event = _events(overlaid, proposal_date)[0]
+    week = next(
+        item for item in overlaid["weeks"]
+        if date.fromisoformat(item["start"]) <= proposal_date <= date.fromisoformat(item["end"])
+    )
+
+    assert event["state_label"] == "Proposed · not scheduled"
+    assert event["payment_status"] == "unconfirmed"
+    assert event["amount_cents"] == 825_000
+    assert week["possible_cents"] == 825_000
+    assert week["proposed_rent_cents"] == 825_000
+    page = render_cash_calendar_page(overlaid, paydown={
+        **plan, "monthly_cents": 4_000_000, "paid_this_month_cents": 0,
+        "remaining_cents": 3_000_000, "planned_total_cents": 825_000,
+        "shortfall_cents": 2_175_000, "reserved_cents": 0,
+        "unconfirmed_reserved_cents": 0, "floor_cents": 1_000_000,
+        "emergency_floor_cents": 0, "savings_would_unlock_cents": 0,
+        "balance_basis": "operator_confirmed", "balance_as_of": TODAY,
+    })
+    assert "Includes $8,250 proposed rent" in page
+    assert "Boulder Ranch — proposed rent payment" in page
+
+
+def test_overlay_refuses_a_plan_from_a_different_snapshot():
+    calendar = build_cash_calendar([], as_of=TODAY)
+    overlaid = overlay_paydown_proposals(calendar, {
+        "status": "ok", "calculation_id": "different",
+        "instalments": [{"date": TODAY, "amount_cents": 100_000}],
+    })
+
+    assert not any(
+        event.get("kind") == "proposed_rent"
+        for bucket in overlaid["days"] for event in bucket["events"]
+    )
 
 
 def test_calendar_error_state_is_safe_and_actionable():

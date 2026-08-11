@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar as calendar_module
 import hashlib
 import json
 import logging
@@ -546,8 +547,19 @@ async def finance_calendar_charges(
 
     def _build() -> str:
         from sales_support_agent.services.cashflow.bill_patterns import list_bill_patterns
+        from sales_support_agent.services.cashflow.cash_calendar import overlay_paydown_proposals
+        from sales_support_agent.services.cashflow.obligations import list_obligations
+        from sales_support_agent.services.cashflow.rent_paydown import load_paydown_plan
 
-        calendar = load_cash_calendar()
+        today = date.today()
+        month_end = today.replace(day=calendar_module.monthrange(today.year, today.month)[1])
+        horizon_days = max(0, (month_end - today).days)
+        ledger = list_obligations(limit=10_000)
+        calendar = load_cash_calendar(
+            rows=ledger, as_of=today, future_days=horizon_days,
+        )
+        paydown = load_paydown_plan(rows=ledger, calendar=calendar, as_of=today)
+        calendar = overlay_paydown_proposals(calendar, paydown)
         try:
             listing = list_bill_patterns()
             patterns = [*listing.get("patterns", []), *listing.get("tracked", [])]
@@ -628,8 +640,13 @@ async def finance_cash_calendar(request: Request, flash: str = ""):
     except Exception:
         logger.exception("The Finance ledger could not be read")
         ledger = None
+    today = date.today()
+    month_end = today.replace(day=calendar_module.monthrange(today.year, today.month)[1])
+    horizon_days = max(0, (month_end - today).days)
     try:
-        calendar = await asyncio.to_thread(load_cash_calendar, rows=ledger)
+        calendar = await asyncio.to_thread(
+            load_cash_calendar, rows=ledger, as_of=today, future_days=horizon_days,
+        )
     except Exception:
         logger.exception("The Finance cash calendar could not load")
         calendar = {"status": "error", "days": [], "totals": {}}
@@ -639,12 +656,16 @@ async def finance_cash_calendar(request: Request, flash: str = ""):
     try:
         from sales_support_agent.services.cashflow.rent_paydown import load_paydown_plan
 
-        paydown = await asyncio.to_thread(load_paydown_plan, rows=ledger)
+        paydown = await asyncio.to_thread(
+            load_paydown_plan, rows=ledger, calendar=calendar, as_of=today,
+        )
     except Exception as exc:
         logger.exception("The Finance paydown plan could not be worked out")
         # The operator can read this back in one glance, which beats guessing
         # from here. Deliberately the failure's name only, never its detail.
         paydown = {"status": "failed", "reason": type(exc).__name__}
+    from sales_support_agent.services.cashflow.cash_calendar import overlay_paydown_proposals
+    calendar = overlay_paydown_proposals(calendar, paydown)
     return HTMLResponse(
         render_cash_calendar_page(calendar, flash=flash, paydown=paydown)
     )

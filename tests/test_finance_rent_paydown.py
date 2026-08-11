@@ -208,6 +208,41 @@ def test_unconfirmed_bills_are_reserved_for_as_well():
     assert plan["unconfirmed_reserved_cents"] == 800_000
 
 
+def test_a_planned_bill_due_today_is_reserved_before_rent():
+    plan = _plan(events=[_event(AS_OF, 800_000)], spendable=5_000_000)
+
+    assert plan["reserved_cents"] == 800_000
+
+
+def test_missing_history_feed_pauses_instead_of_claiming_zero_possible_costs():
+    calendar = {
+        **_calendar([]),
+        "end": MONTH_END.isoformat(),
+        "history_status": "unavailable",
+        "calculation_id": "snapshot-1",
+    }
+    plan = build_paydown_plan(
+        calendar=calendar, rows=[], spendable_cents=5_000_000,
+        reserve_cents=0, floor_cents=FLOOR, vendor_key="boulder ranch",
+        vendor_label="Boulder Ranch", monthly_cents=3_000_000, as_of=AS_OF,
+    )
+
+    assert plan["status"] == "paused"
+    assert "not all upcoming expenses" in plan["message"]
+    assert plan["instalments"] == []
+
+
+def test_plan_carries_the_shared_calendar_calculation_id():
+    calendar = {**_calendar([]), "calculation_id": "snapshot-1"}
+    plan = build_paydown_plan(
+        calendar=calendar, rows=[], spendable_cents=5_000_000,
+        reserve_cents=0, floor_cents=FLOOR, vendor_key="boulder ranch",
+        vendor_label="Boulder Ranch", monthly_cents=3_000_000, as_of=AS_OF,
+    )
+
+    assert plan["calculation_id"] == "snapshot-1"
+
+
 def test_money_owed_but_not_confirmed_is_not_counted_as_arriving():
     """A plan built on a wish is how a rent payment bounces."""
     confirmed = _plan(rows=[_incoming(2_000_000, AS_OF + timedelta(days=5))],
