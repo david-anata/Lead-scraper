@@ -2052,7 +2052,14 @@ def _connection_summary_chips(analytics_status: dict[str, Any]) -> str:
 
 def _team_help_cards(support_requests: list[str], analytics_status: dict[str, Any]) -> str:
     analytics_notes = {str(item).strip() for item in analytics_status.get("notes", []) if str(item).strip()}
-    system_phrases = ("codex owns", "website ops owns", "agent queue", "citation testing", "api-based")
+    system_phrases = (
+        "codex owns",
+        "website ops owns",
+        "owned by the once-per-workday codex routine",
+        "agent queue",
+        "citation testing",
+        "api-based",
+    )
     team_items = [
         str(item).strip()
         for item in support_requests
@@ -3080,7 +3087,17 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         str(item).strip() for item in support_requests
         if str(item).strip()
         and str(item).strip() not in {str(note).strip() for note in analytics_status.get("notes", []) or []}
-        and not any(phrase in str(item).casefold() for phrase in ("codex owns", "website ops owns", "agent queue", "citation testing", "api-based"))
+        and not any(
+            phrase in str(item).casefold()
+            for phrase in (
+                "codex owns",
+                "website ops owns",
+                "owned by the once-per-workday codex routine",
+                "agent queue",
+                "citation testing",
+                "api-based",
+            )
+        )
     ]
     needs_inline = actionable_requests[0] if actionable_requests else "Nothing needs you."
     verified_rows = "".join(
