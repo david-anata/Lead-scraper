@@ -116,7 +116,19 @@ def _normalize_change(raw: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _load_object(connection, object_type: str, object_id: str) -> dict[str, Any] | None:
+def _savings_read_model_index() -> dict[str, dict[str, Any]]:
+    """Load calculated savings opportunities once for a batch, not once per row."""
+    from sales_support_agent.services.cashflow.budgeting import load_budget_view
+
+    return {
+        str(candidate.get("opportunity_key") or ""): dict(candidate)
+        for candidate in load_budget_view().get("trim_items") or []
+        if str(candidate.get("opportunity_key") or "")
+    }
+
+
+def _load_object(connection, object_type: str, object_id: str,
+                 *, savings_read_models: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any] | None:
     if object_type == "cash_event":
         row = connection.execute(text("""
             SELECT id, record_kind, event_type, name, vendor_or_customer, description,
@@ -145,12 +157,9 @@ def _load_object(connection, object_type: str, object_id: str) -> dict[str, Any]
             return item
         # Unreviewed opportunities are deterministic read models. Reload the
         # current calculation so a stale browser snapshot never becomes truth.
-        from sales_support_agent.services.cashflow.budgeting import load_budget_view
-        view = load_budget_view()
-        opportunity = next((
-            dict(candidate) for candidate in view.get("trim_items") or []
-            if str(candidate.get("opportunity_key") or "") == object_id
-        ), None)
+        opportunity = dict((savings_read_models or {}).get(object_id) or {}) or None
+        if savings_read_models is None:
+            opportunity = _savings_read_model_index().get(object_id)
         if opportunity:
             return {
                 "id": object_id,
@@ -358,9 +367,17 @@ def preview_changes(changes: list[Mapping[str, Any]], *, actor: str, draft_revis
     db = engine or get_engine()
     ensure_finance_trust_schema(db)
     results: list[dict[str, Any]] = []
+    savings_read_models = (
+        _savings_read_model_index()
+        if any(change["object_type"] == "savings_opportunity" for change in normalized)
+        else None
+    )
     with db.begin() as connection:
         for change in normalized:
-            item = _load_object(connection, change["object_type"], change["object_id"])
+            item = _load_object(
+                connection, change["object_type"], change["object_id"],
+                savings_read_models=savings_read_models,
+            )
             current = _current_decision(connection, change["object_type"], change["object_id"])
             status = "eligible"
             reason = ""
@@ -433,6 +450,11 @@ def apply_preview(preview_token: str, *, actor: str, idempotency_key: str, reaso
             raise ValueError("This preview expired or was already used. Preview the changes again.")
         preview = row.preview_json if isinstance(row.preview_json, dict) else json.loads(row.preview_json)
         all_items = list(preview.get("items", []))
+        savings_read_models = (
+            _savings_read_model_index()
+            if any(item.get("object_type") == "savings_opportunity" for item in all_items)
+            else None
+        )
         eligible = [item for item in all_items if item.get("status") == "eligible"]
         if not eligible:
             raise ValueError("There are no eligible changes to apply.")
@@ -468,7 +490,9 @@ def apply_preview(preview_token: str, *, actor: str, idempotency_key: str, reaso
             object_key = (item["object_type"], item["object_id"])
             authoritative = batch_objects.get(object_key)
             if authoritative is None:
-                authoritative = _load_object(connection, *object_key)
+                authoritative = _load_object(
+                    connection, *object_key, savings_read_models=savings_read_models,
+                )
                 comparable = {key: value for key, value in (authoritative or {}).items() if key != "_evidence"}
                 if not authoritative or item.get("object_hash") != _payload_hash(_public(comparable)):
                     raise ValueError("A Finance item changed after preview. Preview the batch again.")
@@ -587,6 +611,30 @@ def apply_preview(preview_token: str, *, actor: str, idempotency_key: str, reaso
     return {"batch_id": batch_id, "status": save_state, "applied": len(eligible),
             "skipped": len(all_items) - len(eligible),
             "amount_cents": total, "idempotent_replay": False}
+
+
+def apply_draft(*, actor: str, idempotency_key: str, reason: str = "",
+                source_page: str = "", engine=None) -> dict[str, Any]:
+    """Validate and apply the operator's protected draft in one explicit save.
+
+    The preview remains part of the server-side safety contract, but low-risk,
+    reversible cleanup no longer requires the operator to visit a second page
+    and press a second save button.
+    """
+    draft = load_draft(actor=actor, engine=engine)
+    if not draft or not draft.get("changes"):
+        raise ValueError("There are no draft changes to save.")
+    preview = preview_changes(
+        draft["changes"], actor=actor,
+        draft_revision=int(draft.get("draft_revision") or 0), engine=engine,
+    )
+    if not int(preview.get("eligible_count") or 0):
+        raise ValueError("None of these changes can be saved. Open Review for details.")
+    return apply_preview(
+        str(preview.get("preview_token") or ""), actor=actor,
+        idempotency_key=idempotency_key, reason=reason,
+        source_page=source_page or "finance_single_save", engine=engine,
+    )
 
 
 def undo_batch(batch_id: str, *, actor: str, engine=None) -> dict[str, Any]:
