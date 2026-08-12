@@ -499,22 +499,10 @@ def prepare_event_billing(
             }
         balance_days = int(commercial.get("balance_due_days_before_event") or 7)
         quote_checksum = _quote_checksum(proposal)
-        components: list[tuple[str, int, date, str]] = []
         required_cents = int(payment_readiness.amount_cents or 0)
         if required_cents <= 0 or required_cents > proposal.amount_cents:
             raise HTTPException(status_code=409, detail="Approved payment amount is invalid.")
-        if payment_readiness.request_type == "deposit":
-            components.append(("deposit", required_cents, _now().date(), "Booking deposit"))
-            balance_cents = proposal.amount_cents - required_cents
-            if balance_cents:
-                components.append((
-                    "final_balance",
-                    balance_cents,
-                    reservation.starts_at.date() - timedelta(days=balance_days),
-                    "Remaining event balance",
-                ))
-        else:
-            components.append(("one_time", required_cents, _now().date(), "Event balance"))
+        balance_cents = max(0, proposal.amount_cents - required_cents)
         security_cents = int(security.get("amount_cents") or 0)
         if security_cents:
             if not security.get("refundable"):
@@ -522,12 +510,44 @@ def prepare_event_billing(
                     status_code=409,
                     detail="Security-deposit tax treatment is not verified as refundable.",
                 )
-            components.append((
-                "security_deposit",
-                security_cents,
-                reservation.starts_at.date() - timedelta(days=balance_days),
-                "Refundable security deposit — non-taxable unless retained or applied",
-            ))
+        final_due = reservation.starts_at.date() - timedelta(days=balance_days)
+        payment_note = (
+            f"Booking deposit {required_cents / 100:,.2f} due now; "
+            f"remaining event balance {balance_cents / 100:,.2f} due {final_due.isoformat()}"
+            if payment_readiness.request_type == "deposit"
+            else f"Event balance {required_cents / 100:,.2f} due now"
+        )
+        if security_cents:
+            payment_note += (
+                f"; refundable security deposit {security_cents / 100:,.2f} due "
+                f"{final_due.isoformat()} and non-taxable unless retained or applied"
+            )
+        components = [(
+            "full_amount",
+            proposal.amount_cents + security_cents,
+            _now().date(),
+            payment_note + ".",
+        )]
+
+        legacy_schedules = session.execute(
+            select(BuildingBillingSchedule).where(
+                BuildingBillingSchedule.reservation_id == reservation.id,
+                BuildingBillingSchedule.source_proposal_id == proposal.id,
+                BuildingBillingSchedule.billing_component.in_(
+                    ["deposit", "final_balance", "security_deposit"]
+                ),
+            )
+        ).scalars().all()
+        for legacy in legacy_schedules:
+            linked_invoice = session.execute(
+                select(BuildingInvoice.id).where(
+                    BuildingInvoice.billing_schedule_id == legacy.id
+                )
+            ).first()
+            if linked_invoice is None and legacy.status in {"draft", "approved"}:
+                legacy.status = "cancelled"
+                legacy.next_invoice_on = None
+                legacy.updated_at = _now()
 
         schedule_ids: list[str] = []
         duplicates = 0
@@ -785,7 +805,7 @@ def create_invoice_from_schedule(
                         "Re-draft the schedule from the current quote before invoicing."
                     ),
                 )
-            if schedule.reservation_id and schedule.billing_component != "full_amount":
+            if schedule.reservation_id:
                 agreement = session.execute(
                     select(BuildingAgreement)
                     .where(
@@ -820,6 +840,25 @@ def create_invoice_from_schedule(
         account = session.get(BuildingBillingAccount, schedule.billing_account_id)
         if account is None or account.status != "active":
             raise HTTPException(status_code=409, detail="Billing account is unavailable.")
+        invoice_line_items: list[dict[str, Any]] | None = None
+        if schedule.billing_component == "full_amount" and schedule.source_proposal_id:
+            event_proposal = session.get(BuildingProposal, schedule.source_proposal_id)
+            readiness = session.execute(
+                select(BuildingPaymentRequestReadiness)
+                .where(BuildingPaymentRequestReadiness.reservation_id == schedule.reservation_id)
+                .order_by(BuildingPaymentRequestReadiness.version.desc())
+            ).scalars().first()
+            deposit_cents = int(readiness.amount_cents or 0) if readiness else 0
+            event_total_cents = int(event_proposal.amount_cents or 0) if event_proposal else 0
+            balance_cents = max(0, event_total_cents - deposit_cents)
+            security_cents = max(0, schedule.amount_cents - event_total_cents)
+            invoice_line_items = []
+            if deposit_cents:
+                invoice_line_items.append({"type": "deposit", "description": "Booking deposit", "amount_cents": deposit_cents})
+            if balance_cents:
+                invoice_line_items.append({"type": "final_balance", "description": "Remaining event balance", "amount_cents": balance_cents})
+            if security_cents:
+                invoice_line_items.append({"type": "security_deposit", "description": "Refundable security deposit — non-taxable unless retained or applied", "amount_cents": security_cents})
         proposal = {
             "schedule_id": schedule.id,
             "account_id": account.id,
@@ -863,6 +902,7 @@ def create_invoice_from_schedule(
                 schedule_type=schedule.schedule_type,
                 due_date=_now().date() + timedelta(days=schedule.days_until_due),
                 idempotency_key=payload.idempotency_key,
+                line_items=invoice_line_items,
             )
         except BuildingQuickBooksError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
