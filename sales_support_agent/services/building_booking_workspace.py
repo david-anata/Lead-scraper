@@ -330,6 +330,7 @@ def render_booking_workspace(
         f'<td>{_esc(_money(item.get("amount_cents"), item.get("currency") or "USD"))}</td>'
         f'<td>{_esc(item.get("starts_on") or "—")}</td><td>{_status(item.get("status") or "draft")}</td></tr>'
         for item in billing.get("schedules", [])
+        if item.get("status") != "cancelled"
     ) or '<tr><td colspan="4">No billing drafts prepared for this booking.</td></tr>'
     invoice_rows_list = []
     for item in billing.get("invoices", []):
