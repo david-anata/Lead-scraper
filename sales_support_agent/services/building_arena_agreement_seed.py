@@ -20,9 +20,9 @@ from sales_support_agent.services.building_contract_templates import (
 )
 
 
-ARENA_TEMPLATE_ID = "arena-event-agreement-business-terms-v2"
+ARENA_TEMPLATE_ID = "arena-event-agreement-business-terms-v3"
 ARENA_TEMPLATE_KEY = "arena-event-agreement"
-ARENA_TEMPLATE_VERSION = 2
+ARENA_TEMPLATE_VERSION = 3
 ARENA_TEMPLATE_NAME = "Arena event agreement business terms"
 ARENA_DOCUMENT_PATH = (
     Path(__file__).resolve().parents[2]

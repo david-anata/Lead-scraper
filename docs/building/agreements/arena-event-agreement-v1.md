@@ -69,20 +69,15 @@ The policy for this booking is:
 
 `{{cancellation_policy}}`
 
-Unless the line above says otherwise:
-
-- **30 or more days before:** you forfeit the booking deposit. Other eligible
-  amounts are refunded.
-- **14 to 29 days before:** you owe the booking deposit plus half the remaining
-  balance.
-- **Fewer than 14 days before:** you owe the full total.
-
-You may request one date transfer at least 14 days before your event. The new
-date must fall within six months, is subject to availability and to pricing
-current at that time, and carries your existing deposit across. If we cannot
-offer a workable replacement date, the deposit is forfeited. A qualifying
-force-majeure event may transfer at no fee and does not use up your one
-transfer.
+Unless the line above says otherwise, all payments are non-refundable if you
+cancel. You may request a date transfer at least 14 days before your event, but
+we may approve or deny it in our sole discretion based on date availability and
+operational feasibility. An approved transfer may be used only once, must move
+your event to an available date within six months, and is subject to pricing
+current for the replacement date. Paid amounts are credited to the approved
+replacement event. If we do not approve a transfer, or you cancel the
+replacement event, all paid amounts are forfeited. A qualifying force-majeure
+event may receive a no-fee transfer within six months, subject to availability.
 
 If Anata cancels for a reason within our control, we refund everything you have
 paid.
