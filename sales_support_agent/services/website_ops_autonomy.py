@@ -1721,7 +1721,7 @@ def build_autonomy_overlay(
         support_requests.extend(ga4_notes)
     if ga4_trust_status != "trusted":
         support_requests.append(
-            f"Define or verify the GA4 primary lead event ({config.primary_lead_event}) on real service-page submits so Website Ops can trust conversion-driven prioritization."
+            f"Codex owns verification of the GA4 primary lead event ({config.primary_lead_event}) against service-page submits and matching CRM evidence."
         )
     if any(action.get("action_type") == "resolve_canonical_route" for action in action_queue):
         support_requests.append("Standardize all active commercial services under /services/, then redirect legacy /ecommerce-services/ routes so Website Ops can consolidate authority on one canonical page family.")
