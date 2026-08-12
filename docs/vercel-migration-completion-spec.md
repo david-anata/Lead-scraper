@@ -1,7 +1,9 @@
 # Anata Agent Vercel Migration Completion Spec
 
-Status: build-ready  
-Target: a fully verified Vercel duplicate before any production-domain cutover  
+Status: execution in progress — not ready for production cutover
+
+Target: a fully verified Vercel duplicate before any production-domain cutover
+
 Production safety rule: Render and `agent.anatainc.com` remain unchanged until every gate below passes and the owner explicitly approves cutover.
 
 ## Plain-English outcome
@@ -18,6 +20,45 @@ Anata Agent will run on Vercel with the same pages, permissions, data, integrati
 - Render production has not been changed.
 - Preview publishing, embedded schedulers, and external writes remain disabled for safety.
 - Remaining gaps are callback/domain registration, durable scheduled execution, persistent artifact parity, integration write-path testing, cold-start proof, full page/state coverage, and cutover rehearsal.
+
+## Current execution status (August 12, 2026)
+
+The Vercel duplicate is real and functional, but it is not yet a production-equivalent replacement. The following evidence has already been verified:
+
+- The staging project deploys from `codex/vercel-agent-duplicate` and uses an isolated Neon database in `pdx1`.
+- The stable hostname `agent-staging.anatainc.com` is attached to Vercel, but its DNS record has not yet been created, so the hostname does not resolve.
+- Vercel schedules exist for Website Ops, Content, stale-lead scanning, Gmail ingestion, Sales operations, HR reminders, Building operations, and Outbound. They are authenticated and globally disabled with `VERCEL_CRON_WRITES_ENABLED=false`.
+- Website Ops and Fulfillment retained-report caches no longer hydrate during application startup. The latest measured external cold readiness response was approximately 4.6 seconds, down from a startup path that previously exceeded two minutes.
+- Fulfillment report files have a PostgreSQL-backed durable mirror with hash validation and lazy restore.
+- Focused tests for cron authentication/leases, Building operations, Fulfillment storage, dashboards, Finance upload compatibility, intake compatibility, and canonical navigation pass.
+- Render production and `agent.anatainc.com` remain unchanged.
+
+The following items remain open and block a truthful claim of 100% completion:
+
+| Gate | Remaining work | Evidence required to close | Owner help required |
+| --- | --- | --- | --- |
+| Stable staging identity | Create DNS for `agent-staging.anatainc.com`; register staging callback and webhook URLs with every provider | Resolvable hostname; successful login/logout; callback registry with pass/fail receipts | Add the GoDaddy DNS record and provide access to provider consoles when an existing session is unavailable |
+| Production data parity | Export Render data, import/reconcile it in Neon, compare schema, counts, samples, sequences, and timestamps | Signed comparison report; repeatable full-plus-delta migration; successful restore rehearsal | Access to the authoritative Render database or an owner-provided export |
+| Artifact parity | Locate and migrate retained Website Ops/Fulfillment files and any uploaded/generated assets currently stored on Render | Source/destination counts, hashes, timestamps, and sampled rendered reports | Access to the Render persistent disk or an owner-provided archive |
+| Durable execution | Inventory every `BackgroundTasks` path; move must-survive work to a durable queue/job; add any missing digest or synthetic-health schedule | Job ledger, overlap/retry tests, forced-failure receipt, no orphan Render schedule | Provider sandbox records only if controlled write testing needs them |
+| Integration parity | Exercise OAuth, webhooks, reads, controlled writes, permission failures, and audit receipts for every major integration | Workflow matrix containing happy path, failure path, operator receipt, and source-system receipt | Login/approval in Google, QuickBooks, Plaid, HubSpot, ClickUp, Slack, Riverside, or other provider consoles as encountered |
+| Regression suite | Resolve or explicitly re-baseline stale/order-dependent tests, then run the complete suite from a clean process | One clean full-suite report against the release commit | Product decision only where a failing legacy assertion conflicts with documented current behavior |
+| Performance | Run three independent cold-start rounds plus warm p95, sequential, concurrent, timeout, and database-resume tests | Timestamped performance report meeting Phase 5 thresholds | None unless Vercel/Neon plan limits prevent the required test |
+| Product QA | Audit every major page and shared report at 1280px and 1440px; test keyboard, permissions, empty/loading/error/stale states | Three complete QA passes against one immutable deployment; screenshot and log evidence | Restricted-role test account or approval to create one in staging |
+| Rehearsal | Perform full snapshot plus delta rehearsal, validate jobs in shadow mode, prove rollback, time the runbook | Completed rehearsal record and rollback proof | Schedule a short rehearsal window and name the go/no-go and rollback owners |
+| Production cutover | Final delta, domain/callback move, one-at-a-time job enablement, verification, and monitoring | Owner sign-off, successful cutover log, two clean business days | Explicit cutover approval; DNS/provider-console access during the window |
+
+### Required external configuration
+
+The engineering work should continue without waiting on these items, but these owner-controlled actions are mandatory before the corresponding gates can close:
+
+1. Add this DNS record without changing the production domain: `A agent-staging.anatainc.com 76.76.21.21`.
+2. Make the Render database and persistent artifacts available for a read-only migration export.
+3. Permit or perform staging callback registration in the external provider consoles.
+4. Supply a restricted-role staging account for permission QA.
+5. Before cutover, name the go/no-go owner and rollback owner and explicitly approve the production move.
+
+No secret value belongs in this document, source control, screenshots, or QA reports.
 
 ## Users
 
@@ -244,6 +285,45 @@ Rollback action:
 - Cutover and rollback runbook
 - Owner-facing QA links and a short checklist per page
 - Final sign-off record naming the tested commit and immutable Vercel deployment
+
+## Remaining execution order
+
+Work proceeds in this order so that later QA is not invalidated by foundational changes:
+
+1. **Close infrastructure inventory:** finish the environment, route, scheduler, background-task, durable-state, callback, and artifact inventories.
+2. **Close durability:** complete Render-to-Neon migration tooling, artifact transfer, queue/job conversion, ledgering, idempotency, backup, and restore.
+3. **Close staging identity:** make the stable hostname resolve and register/test every staging callback and webhook.
+4. **Close workflow parity:** run the page/API/integration matrix with staging-safe data and resolve every permission, audit, and error-state defect.
+5. **Create the release candidate:** run the clean full suite, security/secret/dependency checks, and performance tests; deploy one immutable candidate.
+6. **Review the same candidate three times:** complete automated/structural, operator/visual, and fresh-session regression passes. A material code, schema, environment, callback, or job change invalidates the affected evidence and requires that pass to be repeated.
+7. **Rehearse cutover and rollback:** time the final migration, prove rollback, and resolve all rehearsal findings before requesting approval.
+8. **Cut over only after explicit approval:** move the production identity, enable jobs one at a time, and verify every critical workflow.
+9. **Complete monitoring:** hold Render rollback-ready and review application logs, Neon activity, job receipts, integration audit logs, data counts, and operator reports during two full business days.
+
+## Review and defect rules
+
+- Severity 1: security exposure, permission leak, financial-data corruption, destructive or duplicate external write, widespread outage, or unrecoverable data loss. Stop immediately; the release cannot proceed.
+- Severity 2: broken authentication, missing production-equivalent data/artifacts, recurring 5xx/timeout, failed critical workflow, failed scheduler, or incorrect audit evidence. Fix and repeat every affected gate.
+- Severity 3: contained usability, visual, accessibility, or non-critical workflow defect. Fix before cutover unless the owner explicitly accepts it in writing and it presents no migration risk.
+- Severity 4: cosmetic or documentation defect with no operational impact. Record it; it does not block cutover unless it violates the approved design system.
+- A review is not complete when only the HTTP status is correct. The rendered page, browser console, network calls, permissions, data freshness, operator actions, audit receipt, and upstream side effect must all match the test case.
+- Verbal confidence is not evidence. Each closed gate must link to a dated test report, screenshot set, log/query output, migration receipt, or provider audit receipt tied to the tested commit and deployment.
+
+## Final owner sign-off record
+
+The migration approval record must state:
+
+- release commit and immutable Vercel deployment URL;
+- database snapshot/export identifiers and final parity result;
+- artifact inventory and integrity result;
+- completed callback/provider registry;
+- completed job inventory and last shadow receipts;
+- results of QA Passes A, B, and C;
+- rehearsal duration and rollback result;
+- accepted non-blocking defects, if any;
+- named go/no-go and rollback owners;
+- explicit approval to change `agent.anatainc.com` and production callbacks;
+- start and end of the two-business-day monitoring window.
 
 ## Explicit non-goals
 
