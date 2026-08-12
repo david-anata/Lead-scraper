@@ -488,6 +488,15 @@ def prepare_event_billing(
         rate = dict(proposal.rate_plan_snapshot_json or {})
         commercial = dict(rate.get("commercial_terms") or {})
         security = dict(commercial.get("security_deposit") or {})
+        # Lead-priced quotes freeze the refundable security deposit directly on
+        # the rate snapshot. Older canonical plans used the nested commercial
+        # structure. Support both so the separately disclosed deposit cannot
+        # disappear between the customer workspace and QuickBooks.
+        if not security and int(rate.get("security_deposit_cents") or 0) > 0:
+            security = {
+                "amount_cents": int(rate["security_deposit_cents"]),
+                "refundable": True,
+            }
         balance_days = int(commercial.get("balance_due_days_before_event") or 7)
         quote_checksum = _quote_checksum(proposal)
         components: list[tuple[str, int, date, str]] = []

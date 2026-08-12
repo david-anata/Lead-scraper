@@ -48,9 +48,9 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
         quote_snapshot = {
             "deposit_type": "percent",
             "deposit_percent_bps": 5000,
+            "security_deposit_cents": 50000,
             "commercial_terms": {
                 "balance_due_days_before_event": 7,
-                "security_deposit": {"amount_cents": 50000, "refundable": True},
             },
         }
         with cls.factory() as session:
