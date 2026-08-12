@@ -1440,7 +1440,7 @@ def admin_website_ops_run(request: Request, mode: str = Form(default="daily")) -
         normalized_mode,
         {
             "status": "running",
-            "run_date": now.date().isoformat(),
+            "run_date": now.astimezone(ZoneInfo("America/Denver")).date().isoformat(),
             "trigger": "manual",
             "last_started_at": now.isoformat(),
             "last_error": "",
@@ -1456,13 +1456,14 @@ def admin_website_ops_run(request: Request, mode: str = Form(default="daily")) -
             normalized_mode,
             {
                 "status": "failed",
-                "run_date": finished_at.date().isoformat(),
+                "run_date": finished_at.astimezone(ZoneInfo("America/Denver")).date().isoformat(),
                 "last_completed_at": finished_at.isoformat(),
                 "last_error": str(exc) or traceback.format_exc().splitlines()[-1],
             },
         )
         return RedirectResponse(url="/admin/website-ops?run_status=failed", status_code=302)
     finished_at = datetime.now(timezone.utc)
+    business_date = finished_at.astimezone(ZoneInfo("America/Denver")).date().isoformat()
     outcome = dict((getattr(result, "report", None) or {}).get("run_outcome") or {})
     outcome_status = str(outcome.get("status", "") or "")
     production_delta_count = int(outcome.get("production_delta_count", 0) or 0)
@@ -1476,12 +1477,16 @@ def admin_website_ops_run(request: Request, mode: str = Form(default="daily")) -
         normalized_mode,
         {
             "status": "succeeded" if succeeded else "failed_outcome",
-            "run_date": finished_at.date().isoformat(),
+            "run_date": business_date,
             "last_completed_at": finished_at.isoformat(),
-            "last_successful_date": finished_at.date().isoformat() if succeeded else "",
+            "last_successful_date": business_date if succeeded else "",
             "last_error": "" if succeeded else str(outcome.get("summary") or result.message),
+            "attempt_count": "1",
+            "recovery_status": "not_needed" if succeeded else "outcome_failed",
             "outcome_status": outcome_status,
             "outcome_message": str(outcome.get("summary", "") or ""),
+            "expected_output": str(outcome.get("expected_output", "") or ""),
+            "actual_output": str(outcome.get("actual_output", "") or ""),
             "production_delta_count": str(production_delta_count),
             "last_stage": str(outcome.get("last_stage", "") or ""),
             "failure_stage": str(outcome.get("failure_stage", "") or ""),
