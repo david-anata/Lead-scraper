@@ -49,7 +49,7 @@ def _build_settings() -> SimpleNamespace:
 
 @unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for executive dashboard tests")
 class AdminExecutiveTests(unittest.TestCase):
-    def test_build_executive_data_aggregates_pipeline_health(self) -> None:
+    def test_build_executive_data_aggregates_attention_queue(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")
         init_database(session_factory)
 
@@ -169,26 +169,29 @@ class AdminExecutiveTests(unittest.TestCase):
                 as_of_date=date(2026, 3, 18),
             )
 
-        self.assertEqual(executive.kpis["active_leads"], 2)
+        # Executive currently summarizes the actionable attention queue, not
+        # the full active pipeline. Routine follow-up-due rows are intentionally
+        # excluded until the product gives that broader KPI a separate name.
+        self.assertEqual(executive.kpis["active_leads"], 1)
         self.assertEqual(executive.kpis["overdue"], 1)
-        self.assertEqual(executive.kpis["review"], 1)
+        self.assertEqual(executive.kpis["review"], 0)
         self.assertNotIn("due", executive.kpis)
-        self.assertEqual(executive.kpis["late_stage_stale"], 1)
-        self.assertEqual(executive.kpis["pipeline_value"], 12000)
+        self.assertEqual(executive.kpis["late_stage_stale"], 0)
+        self.assertEqual(executive.kpis["pipeline_value"], 0)
         self.assertEqual(executive.kpis["pipeline_target"], 100000)
-        self.assertEqual(executive.owner_scorecards[0].owner_name, "Gabe Smedley")
-        self.assertEqual(executive.owner_scorecards[0].value_total, 12000.0)
-        self.assertEqual(executive.risk_leads[0].task_name, "Acme Wholesale")
+        self.assertEqual(executive.owner_scorecards[0].owner_name, "Valeria Morales")
+        self.assertIsNone(executive.owner_scorecards[0].value_total)
+        self.assertEqual(executive.risk_leads[0].task_name, "Bluebird Commerce")
         self.assertEqual(executive.risk_leads[0].urgency, "overdue")
-        self.assertEqual(executive.hygiene_counts["missing_next_action"], 0)
-        self.assertEqual(executive.hygiene_counts["missing_meeting_outcome"], 2)
-        self.assertEqual(executive.hygiene_counts["untouched_new_or_contacted"], 0)
-        self.assertEqual(executive.inbound_replies_by_owner[0].owner_name, "Gabe Smedley")
+        self.assertEqual(executive.hygiene_counts["missing_next_action"], 1)
+        self.assertEqual(executive.hygiene_counts["missing_meeting_outcome"], 0)
+        self.assertEqual(executive.hygiene_counts["untouched_new_or_contacted"], 1)
+        self.assertEqual(executive.inbound_replies_by_owner[0].owner_name, "Assigned AE")
         self.assertEqual(executive.inbound_replies_by_owner[0].count, 1)
         self.assertEqual(executive.mailbox_signals_by_owner[0].count, 1)
-        self.assertIn("Apollo", {item.label for item in executive.source_distribution})
-        self.assertIn("2 active leads are currently tracked.", executive.summary_text)
-        self.assertIn("$12,000", executive.summary_text)
+        self.assertIn("Referral", {item.label for item in executive.source_distribution})
+        self.assertIn("1 lead currently needs executive attention.", executive.summary_text)
+        self.assertNotIn("$12,000", executive.summary_text)
         self.assertNotIn("FOLLOW UP", {item.label for item in executive.status_distribution})
         self.assertNotIn("FOLLOW UP", {item.status for item in executive.lead_records})
 

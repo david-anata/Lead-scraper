@@ -958,11 +958,14 @@ def _build_executive_summary_text(
     pipeline_target: float,
 ) -> str:
     if total_active_leads == 0:
-        return "No active leads are currently mirrored into the executive summary."
+        return "No leads currently need executive attention."
 
+    lead_word = "lead" if total_active_leads == 1 else "leads"
+    overdue_verb = "is" if overdue_count == 1 else "are"
+    review_verb = "needs" if review_count == 1 else "need"
     summary = (
-        f"{total_active_leads} active leads are currently tracked. "
-        f"{overdue_count} are overdue and {review_count} need review. "
+        f"{total_active_leads} {lead_word} currently needs executive attention. "
+        f"{overdue_count} {overdue_verb} overdue and {review_count} {review_verb} review. "
     )
     if pipeline_value > 0:
         progress_percent = int(round((pipeline_value / pipeline_target) * 100)) if pipeline_target > 0 else 0
@@ -1510,11 +1513,9 @@ def build_executive_data(
         ],
     )
 
-    # NOTE: this counts `lead_records`, the attention queue — leads with no
-    # assessment and routine follow_up_due ones are skipped above. So the
-    # headline "N active leads are currently tracked" reports leads needing
-    # attention, not the active pipeline (len(active_leads)). Behaviour is
-    # preserved deliberately; changing the KPI's meaning is a product call.
+    # This counts `lead_records`, the attention queue. Leads with no assessment
+    # and routine follow_up_due ones are skipped above, so visible copy must not
+    # describe this value as the full active pipeline.
     total_active_leads = len(lead_records)
     overdue_count = sum(1 for item in lead_records if item.urgency == "overdue")
     review_count = sum(1 for item in lead_records if item.urgency == "needs_immediate_review")
@@ -7815,7 +7816,7 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
         const overdueCount = leads.filter((lead) => lead.urgency === "overdue").length;
         const lateStageStaleCount = leads.filter((lead) => lead.late_stage_stale).length;
         const kpis = [
-          ["Active leads", leads.length, `${{formatNumber(leads.length)}} active -> inspect queue if risk rises`, "number", "Current active pipeline in the filtered view."],
+          ["Attention queue", leads.length, `${{formatNumber(leads.length)}} need attention -> inspect queue`, "number", "Leads requiring executive attention in the filtered view; this is not the full active pipeline."],
           ["Pipeline value", pipelineValue, "Parseable close value -> focus on at-risk revenue", "currency", "Only leads with parseable value are included in this rollup."],
           ["Overdue", overdueCount, `${{formatNumber(overdueCount)}} overdue -> clear these first`, "number", "Leads whose follow-up window has already passed."],
           ["Late-stage stale", lateStageStaleCount, `${{formatNumber(lateStageStaleCount)}} at risk -> review today`, "number", "Late-stage leads that are overdue or require immediate review."],

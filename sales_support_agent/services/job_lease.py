@@ -54,6 +54,11 @@ def claim_scheduled_job(
 ) -> JobLease | None:
     """Atomically claim a logical run, recovering failed or stale claims."""
 
+    # Predeploy normally creates this table. Keeping the claim self-healing is
+    # important for fresh preview databases and focused worker processes, and
+    # avoids turning a missing additive table into an unaudited cron failure.
+    ensure_job_lease_schema(engine)
+
     now = datetime.now(timezone.utc)
     now_text = now.isoformat()
     expires_text = (now + timedelta(minutes=max(1, lease_minutes))).isoformat()
