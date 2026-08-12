@@ -1526,7 +1526,7 @@ def render_budget_page(
           event.preventDefault();
           submitting = true;
           saveButton.disabled = true;
-          saveButton.textContent = 'Preparing review…';
+          saveButton.textContent = 'Saving changes…';
           try {
             await window.FinanceWorkspace.reviewAndSave();
           } catch (_) {

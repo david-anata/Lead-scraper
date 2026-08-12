@@ -36,8 +36,15 @@ def test_every_finance_page_exposes_draft_status_review_and_discard():
 
     for wording in ("saved securely", "Saving", "Save failed"):
         assert wording in workspace
-    assert "Review &amp; save all" in shell
+    assert ">Save changes<" in shell
     assert "Discard draft" in shell
+
+
+def test_single_save_commits_without_a_required_review_navigation():
+    workspace = (REPO / "sales_support_agent/static/finance-workspace.js").read_text(encoding="utf-8")
+
+    assert 'request("/admin/finances/api/workspace/commit"' in workspace
+    assert 'window.location.assign("/admin/finances/workspace/review")' not in workspace
 
 
 def test_review_page_global_save_submits_instead_of_reloading_review():

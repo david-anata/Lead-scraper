@@ -1687,6 +1687,25 @@ async def finance_workspace_apply(request: Request):
     return JSONResponse(result)
 
 
+@router.post("/api/workspace/commit", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_commit(request: Request):
+    """Apply the current reversible Finance draft with one operator action."""
+    from sales_support_agent.services.cashflow.transaction_workspace import apply_draft
+
+    body = await request.json()
+    try:
+        result = await asyncio.to_thread(
+            apply_draft,
+            actor=_finance_actor(request),
+            idempotency_key=str(body.get("idempotency_key") or ""),
+            reason=str(body.get("reason") or ""),
+            source_page=str(body.get("source_page") or "finance_single_save"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(result)
+
+
 @router.post("/api/workspace/batches/{batch_id}/undo", dependencies=[Depends(require_finance_write_security)])
 async def finance_workspace_undo(request: Request, batch_id: str):
     from sales_support_agent.services.cashflow.transaction_workspace import undo_batch
