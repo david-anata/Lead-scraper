@@ -136,7 +136,7 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
             self.assertTrue(invoice.source_quote_checksum)
             self.assertIn("Booking deposit 560.00 due now", invoice.description)
 
-    def test_02_quickbooks_paid_refresh_is_authoritative_and_idempotent(self) -> None:
+    def test_02_quickbooks_partial_payment_satisfies_deposit_and_is_idempotent(self) -> None:
         with self.factory() as session:
             schedule = session.query(BuildingBillingSchedule).filter_by(
                 billing_component="full_amount"
@@ -165,7 +165,7 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
         qbo_evidence = {
             "Id": "QB-INV-88",
             "TotalAmt": 1620.00,
-            "Balance": 0,
+            "Balance": 1060.00,
             "SyncToken": "3",
             "EmailStatus": "EmailSent",
         }
@@ -184,12 +184,12 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
                 json={"actor": "operator@example.com"},
             )
         self.assertEqual(synced.status_code, 200, synced.text)
-        self.assertEqual(synced.json()["invoice"]["status"], "paid")
-        self.assertEqual(replay.json()["invoice"]["status"], "paid")
+        self.assertEqual(synced.json()["invoice"]["status"], "open")
+        self.assertEqual(replay.json()["invoice"]["status"], "open")
         with self.factory() as session:
             invoice = session.get(BuildingInvoice, invoice_id)
             reservation = session.get(BuildingReservation, "billing-reservation")
-            self.assertEqual(invoice.amount_paid_cents, 162000)
+            self.assertEqual(invoice.amount_paid_cents, 56000)
             self.assertEqual(reservation.deposit_status, "paid")
             evidence = session.query(BuildingDepositEvidence).one()
             self.assertEqual(evidence.provider, "quickbooks")

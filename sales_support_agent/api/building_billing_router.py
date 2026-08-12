@@ -579,7 +579,7 @@ def prepare_event_billing(
                 amount_cents=amount_cents,
                 currency=(proposal.currency or "USD").lower(),
                 collection_method="send_invoice",
-                days_until_due=balance_days if component != "deposit" else 2,
+                days_until_due=max(1, (final_due - _now().date()).days),
                 starts_on=starts_on,
                 next_invoice_on=starts_on,
                 status="draft",
@@ -1047,7 +1047,7 @@ def sync_quickbooks_invoice(
             "agent_synced_at": _now().isoformat(),
         }
         row.updated_at = _now()
-        if row.status == "paid" and row.reservation_id and row.billing_schedule_id:
+        if amount_paid_cents > 0 and row.reservation_id and row.billing_schedule_id:
             schedule = session.get(BuildingBillingSchedule, row.billing_schedule_id)
             reservation = session.get(BuildingReservation, row.reservation_id)
             if (
@@ -1055,6 +1055,24 @@ def sync_quickbooks_invoice(
                 and reservation is not None
                 and schedule.billing_component in {"deposit", "full_amount", "one_time"}
             ):
+                readiness = session.execute(
+                    select(BuildingPaymentRequestReadiness)
+                    .where(BuildingPaymentRequestReadiness.reservation_id == reservation.id)
+                    .order_by(BuildingPaymentRequestReadiness.version.desc())
+                ).scalars().first()
+                required_deposit_cents = int(readiness.amount_cents or 0) if readiness else 0
+                if required_deposit_cents <= 0 or amount_paid_cents < required_deposit_cents:
+                    session.add(BuildingAuditEvent(
+                        entity_type="invoice",
+                        entity_id=row.id,
+                        action="qbo_partial_payment_below_deposit",
+                        actor=payload.actor,
+                        after_json={
+                            "amount_paid_cents": amount_paid_cents,
+                            "required_deposit_cents": required_deposit_cents,
+                        },
+                    ))
+                    return {"ok": True, "invoice": _invoice_payload(row)}
                 evidence_id = str(uuid5(NAMESPACE_URL, f"qbo-deposit:{row.qbo_invoice_id}"))
                 evidence = session.get(BuildingDepositEvidence, evidence_id)
                 if evidence is None:
@@ -1063,7 +1081,7 @@ def sync_quickbooks_invoice(
                         reservation_id=reservation.id,
                     )
                 evidence.status = "paid"
-                evidence.amount_cents = amount_paid_cents
+                evidence.amount_cents = required_deposit_cents
                 evidence.provider = "quickbooks"
                 evidence.provider_reference = row.qbo_invoice_id
                 evidence.evidence_json = {
