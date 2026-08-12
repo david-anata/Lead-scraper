@@ -32,6 +32,10 @@ The Vercel duplicate is real and functional, but it is not yet a production-equi
 - Fulfillment report files have a PostgreSQL-backed durable mirror with hash validation and lazy restore.
 - Focused tests for cron authentication/leases, Building operations, Fulfillment storage, dashboards, Finance upload compatibility, intake compatibility, and canonical navigation pass.
 - Render production and `agent.anatainc.com` remain unchanged.
+- Release candidate `c42153c` is deployed as Vercel deployment `dpl_7cBM4uCpv2u6fiJ9CFNrxuEdvkY7` and Vercel reports it ready.
+- The full regression collection reached 3,329 passing tests, one skipped test, and six remaining order-dependent fixture failures. The two corrected real-order boundaries then passed independently: 2,237 tests plus one skip through Parcel Quote, followed by 844 tests through Sales detail. A final clean full-suite pass remains required against `c42153c` before this gate closes.
+- Authenticated administrator login works on the immutable staging deployment. Ten major desktop sections render their canonical main navigation and expected page heading without browser console warnings or errors.
+- Sales Deal Board, Fulfillment Pipeline, HR Dashboard, and Finance were visually reviewed at 1440 by 900. Their global header, section navigation, content alignment, spacing, cards, and empty states are cohesive and unclipped.
 
 The following items remain open and block a truthful claim of 100% completion:
 
@@ -42,9 +46,9 @@ The following items remain open and block a truthful claim of 100% completion:
 | Artifact parity | Locate and migrate retained Website Ops/Fulfillment files and any uploaded/generated assets currently stored on Render | Source/destination counts, hashes, timestamps, and sampled rendered reports | Access to the Render persistent disk or an owner-provided archive |
 | Durable execution | Inventory every `BackgroundTasks` path; move must-survive work to a durable queue/job; add any missing digest or synthetic-health schedule | Job ledger, overlap/retry tests, forced-failure receipt, no orphan Render schedule | Provider sandbox records only if controlled write testing needs them |
 | Integration parity | Exercise OAuth, webhooks, reads, controlled writes, permission failures, and audit receipts for every major integration | Workflow matrix containing happy path, failure path, operator receipt, and source-system receipt | Login/approval in Google, QuickBooks, Plaid, HubSpot, ClickUp, Slack, Riverside, or other provider consoles as encountered |
-| Regression suite | Resolve or explicitly re-baseline stale/order-dependent tests, then run the complete suite from a clean process | One clean full-suite report against the release commit | Product decision only where a failing legacy assertion conflicts with documented current behavior |
+| Regression suite | Run one final clean full-suite pass against `c42153c`; the repaired full-order boundaries already pass | One clean full-suite report against the release commit | None currently |
 | Performance | Run three independent cold-start rounds plus warm p95, sequential, concurrent, timeout, and database-resume tests | Timestamped performance report meeting Phase 5 thresholds | None unless Vercel/Neon plan limits prevent the required test |
-| Product QA | Audit every major page and shared report at 1280px and 1440px; test keyboard, permissions, empty/loading/error/stale states | Three complete QA passes against one immutable deployment; screenshot and log evidence | Restricted-role test account or approval to create one in staging |
+| Product QA | Complete 1280px and shared-report coverage; test keyboard, restricted permissions, loading/error/stale states, and repeat fresh-eyes pass | Three complete QA passes against one immutable deployment; screenshot and log evidence | Restricted-role test account or approval to create one in staging |
 | Rehearsal | Perform full snapshot plus delta rehearsal, validate jobs in shadow mode, prove rollback, time the runbook | Completed rehearsal record and rollback proof | Schedule a short rehearsal window and name the go/no-go and rollback owners |
 | Production cutover | Final delta, domain/callback move, one-at-a-time job enablement, verification, and monitoring | Owner sign-off, successful cutover log, two clean business days | Explicit cutover approval; DNS/provider-console access during the window |
 
