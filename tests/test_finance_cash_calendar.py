@@ -1,14 +1,28 @@
 from datetime import date, timedelta
 
 from sales_support_agent.services.cashflow.cash_calendar import (
+    _operator_today,
     build_cash_calendar,
     overlay_paydown_proposals,
     render_cash_calendar_page,
 )
+from sales_support_agent.services.cashflow import cash_calendar as cash_calendar_module
 from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
 
 
 TODAY = date(2026, 8, 4)
+
+
+def test_calendar_business_day_uses_denver_time(monkeypatch):
+    class FrozenDateTime:
+        @staticmethod
+        def now(timezone):
+            assert str(timezone) == "America/Denver"
+            return __import__("datetime").datetime(2026, 8, 11, 18, 0)
+
+    monkeypatch.setattr(cash_calendar_module, "datetime", FrozenDateTime)
+
+    assert _operator_today() == date(2026, 8, 11)
 
 
 def _transaction(identifier: str, *, days_ago: int, amount: int, name: str = "Vendor", **extra):
