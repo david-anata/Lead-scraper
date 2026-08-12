@@ -34,7 +34,10 @@ def render_workspace_preview(preview: Mapping[str, Any], *, csrf_token: str, ide
       </section>
       <section class="budget-workspace"><div class="money-section-heading"><div><p class="finance-eyebrow">Exact preview</p><h2>What will change and what will be skipped</h2></div></div>
       <div class="money-table-wrap"><table class="budget-table"><thead><tr><th>Item</th><th>Change</th><th>New value</th><th>Affected value</th><th>Eligibility</th></tr></thead><tbody>{rows}</tbody></table></div></section>
-      <form class="workspace-confirm" method="post" action="/admin/finances/workspace/apply">
+      <form id="finance-workspace-confirm" class="workspace-confirm" method="post"
+        action="/admin/finances/workspace/apply"
+        data-finance-workspace-confirm
+        data-finance-eligible-count="{int(preview.get('eligible_count') or 0)}">
         <input type="hidden" name="_csrf_token" value="{html.escape(csrf_token, quote=True)}">
         <input type="hidden" name="preview_token" value="{html.escape(str(preview.get('preview_token') or ''), quote=True)}">
         <input type="hidden" name="idempotency_key" value="{html.escape(idempotency_key, quote=True)}">

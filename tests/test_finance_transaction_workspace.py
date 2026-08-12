@@ -319,6 +319,8 @@ def test_full_page_preview_apply_receipt_and_undo(monkeypatch, finance_engine):
     review = client.get("/admin/finances/workspace/review")
     assert review.status_code == 200
     assert "Review every change before saving" in review.text
+    assert 'id="finance-workspace-confirm"' in review.text
+    assert 'data-finance-eligible-count="1"' in review.text
     preview_token = re.search(r'name="preview_token" value="([^"]+)"', review.text).group(1)
     idempotency = re.search(r'name="idempotency_key" value="([^"]+)"', review.text).group(1)
     csrf = re.search(r'name="_csrf_token" value="([^"]+)"', review.text).group(1)
