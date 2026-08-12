@@ -15,6 +15,7 @@ from typing import Any
 from contextvars import ContextVar
 from urllib.parse import quote, urlparse
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 import requests
@@ -551,7 +552,7 @@ async def finance_calendar_charges(
         from sales_support_agent.services.cashflow.obligations import list_obligations
         from sales_support_agent.services.cashflow.rent_paydown import load_paydown_plan
 
-        today = date.today()
+        today = datetime.now(ZoneInfo("America/Denver")).date()
         month_end = today.replace(day=calendar_module.monthrange(today.year, today.month)[1])
         horizon_days = max(0, (month_end - today).days)
         ledger = list_obligations(limit=10_000)
@@ -640,7 +641,7 @@ async def finance_cash_calendar(request: Request, flash: str = ""):
     except Exception:
         logger.exception("The Finance ledger could not be read")
         ledger = None
-    today = date.today()
+    today = datetime.now(ZoneInfo("America/Denver")).date()
     month_end = today.replace(day=calendar_module.monthrange(today.year, today.month)[1])
     horizon_days = max(0, (month_end - today).days)
     try:

@@ -18,6 +18,7 @@ import json
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from sales_support_agent.services.cashflow.budgeting import _canonical_transactions
 from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
@@ -29,6 +30,11 @@ _OPEN_STATUSES = {"planned", "pending", "overdue", "completed"}
 _PROTECTED_CATEGORIES = {
     "payroll", "tax", "debt", "rent", "insurance", "utilities", "manual_check"
 }
+
+
+def _operator_today() -> date:
+    """Finance operates on the owner's Denver business day, not server UTC."""
+    return datetime.now(ZoneInfo("America/Denver")).date()
 
 
 def _as_date(value: Any) -> date | None:
@@ -159,7 +165,7 @@ def build_cash_calendar(
     history_status: str = "ready",
 ) -> dict[str, Any]:
     """Build one daily view while preserving each item's evidence class."""
-    today = as_of or date.today()
+    today = as_of or _operator_today()
     past_days = max(1, int(past_days))
     future_days = max(0, int(future_days))
     start = today - timedelta(days=past_days)
@@ -506,7 +512,7 @@ def load_cash_calendar(
     """
     from sales_support_agent.services.cashflow.obligations import list_obligations
 
-    today = as_of or date.today()
+    today = as_of or _operator_today()
     rows = list(rows) if rows is not None else list_obligations(limit=10_000)
     try:
         from sales_support_agent.services.cashflow.vendors import (
@@ -846,7 +852,7 @@ def _instalment_when(value: Any) -> str:
     when = _as_date_or_none(value) if not isinstance(value, date) else value
     if when is None:
         return "Later"
-    return "Today" if when == date.today() else _date_label(
+    return "Today" if when == _operator_today() else _date_label(
         when, weekday="%a", month="%b"
     )
 
