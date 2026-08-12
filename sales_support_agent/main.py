@@ -146,6 +146,18 @@ def create_app() -> FastAPI:
                 storage_stats["files"],
                 storage_stats["bytes"],
             )
+        from sales_support_agent.services.fulfillment_report_storage import (
+            synchronize_fulfillment_reports,
+        )
+        fulfillment_stats = synchronize_fulfillment_reports(
+            session_factory.kw["bind"],
+            settings.fulfillment_cs_reports_dir,
+        )
+        logger.info(
+            "lifecycle milestone=fulfillment_report_storage_ready files=%s bytes=%s",
+            fulfillment_stats["files"],
+            fulfillment_stats["bytes"],
+        )
         install_embedded_website_ops_scheduler(app)
         app.state.ready = True
         logger.info(

@@ -101,6 +101,9 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     from sales_support_agent.services.website_ops_storage import (
         ensure_website_ops_storage_schema,
     )
+    from sales_support_agent.services.fulfillment_report_storage import (
+        ensure_fulfillment_report_storage_schema,
+    )
 
     engine = session_factory.kw.get("bind")
     if engine is None:
@@ -117,6 +120,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
         _repair_legacy_building_event_inquiries(session_factory)
         ensure_job_lease_schema(engine)
         ensure_website_ops_storage_schema(engine)
+        ensure_fulfillment_report_storage_schema(engine)
         return
 
     # Production deployments use a persistent Postgres database. Serverless
@@ -146,6 +150,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
             _repair_legacy_building_event_inquiries(session_factory)
             ensure_job_lease_schema(engine)
             ensure_website_ops_storage_schema(engine)
+            ensure_fulfillment_report_storage_schema(engine)
         finally:
             lock_connection.execute(
                 text("SELECT pg_advisory_unlock(:lock_id)"),
