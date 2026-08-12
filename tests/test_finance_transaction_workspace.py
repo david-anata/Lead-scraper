@@ -14,6 +14,7 @@ from sales_support_agent.models.database import Base, _register_models
 from sales_support_agent.models.entities import CashEvent
 from sales_support_agent.api.cashflow_router import router as cashflow_router
 from sales_support_agent.services.cashflow.transaction_workspace import (
+    apply_draft,
     apply_preview,
     discard_draft,
     get_batch_receipt,
@@ -164,6 +165,26 @@ def test_mark_transfer_updates_authoritative_category(finance_engine):
     undo_batch(result["batch_id"], actor="owner@example.com", engine=finance_engine)
 
 
+def test_one_click_save_validates_and_applies_the_current_draft(finance_engine):
+    _cash_event(finance_engine, "tx-one-click", category="other")
+    save_draft([
+        {"object_type": "cash_event", "object_id": "tx-one-click",
+         "action": "set_category", "value": "software"},
+    ], actor="owner@example.com", engine=finance_engine)
+
+    result = apply_draft(
+        actor="owner@example.com", idempotency_key="one-click-001",
+        source_page="calendar", engine=finance_engine,
+    )
+
+    assert result["applied"] == 1
+    assert load_draft(actor="owner@example.com", engine=finance_engine) is None
+    with finance_engine.connect() as connection:
+        assert connection.execute(text(
+            "SELECT category FROM cash_events WHERE id='tx-one-click'"
+        )).scalar_one() == "software"
+
+
 def test_mark_duplicate_removes_transaction_from_finance_views_and_is_undoable(finance_engine):
     _cash_event(finance_engine, "tx-duplicate", category="software")
     preview = preview_changes([
@@ -261,6 +282,30 @@ def test_workspace_routes_expose_contract_and_enforce_csrf(monkeypatch, finance_
     recovered = client.get("/admin/finances/api/workspace/bootstrap")
     assert recovered.status_code == 200
     assert recovered.json()["draft"]["updated_at"]
+
+
+def test_workspace_commit_route_is_the_single_final_save(monkeypatch, finance_engine):
+    _cash_event(finance_engine, "tx-route-save", category="other")
+    client, _ = _workspace_client(monkeypatch, finance_engine)
+    bootstrap = client.get("/admin/finances/api/workspace/bootstrap").json()
+    saved = client.put(
+        "/admin/finances/api/workspace/draft",
+        json={"changes": [{"object_type": "cash_event", "object_id": "tx-route-save",
+                           "action": "set_category", "value": "software"}]},
+        headers={"Origin": "http://testserver", "Sec-Fetch-Mode": "cors",
+                 "X-CSRF-Token": bootstrap["csrf_token"]},
+    )
+    assert saved.status_code == 200
+
+    committed = client.post(
+        "/admin/finances/api/workspace/commit",
+        json={"idempotency_key": "route-one-click-001", "source_page": "calendar"},
+        headers={"Origin": "http://testserver", "Sec-Fetch-Mode": "cors",
+                 "X-CSRF-Token": bootstrap["csrf_token"]},
+    )
+    assert committed.status_code == 200
+    assert committed.json()["applied"] == 1
+    assert client.get("/admin/finances/api/workspace/bootstrap").json()["draft"] is None
 
 
 def test_shared_batch_updates_authoritative_savings_review(monkeypatch, finance_engine):

@@ -11,6 +11,8 @@
     allowNavigation: false,
     unprotected: false,
     saveFailed: false,
+    applying: false,
+    idempotencyKey: (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`),
   };
   const status = document.querySelector("[data-finance-draft-status]");
   const statusMessage = document.querySelector("[data-finance-draft-message]");
@@ -143,10 +145,29 @@
   };
 
   const reviewAndSave = async () => {
-    if (!state.changes.length) return;
+    if (!state.changes.length || state.applying) return;
     await persist();
+    state.applying = true;
     state.allowNavigation = true;
-    window.location.assign("/admin/finances/workspace/review");
+    announce(`Saving ${state.changes.length} change${state.changes.length === 1 ? "" : "s"}…`);
+    try {
+      const result = await request("/admin/finances/api/workspace/commit", {
+        method: "POST",
+        body: JSON.stringify({
+          idempotency_key: state.idempotencyKey,
+          source_page: document.body.dataset.financePage || "finance_single_save",
+        }),
+      });
+      state.changes = [];
+      state.draft = null;
+      window.location.assign(`/admin/finances/workspace/receipt/${encodeURIComponent(result.batch_id)}`);
+    } catch (error) {
+      state.applying = false;
+      state.allowNavigation = false;
+      state.saveFailed = true;
+      announce(`Save failed: ${error.message}`, "error");
+      throw error;
+    }
   };
 
   discardButton?.addEventListener("click", async () => {
@@ -159,10 +180,13 @@
   });
 
   reviewLink?.addEventListener("click", event => {
-    if (!confirmationForm) return;
     event.preventDefault();
-    if (confirmationForm.requestSubmit) confirmationForm.requestSubmit();
-    else confirmationForm.submit();
+    if (confirmationForm) {
+      if (confirmationForm.requestSubmit) confirmationForm.requestSubmit();
+      else confirmationForm.submit();
+      return;
+    }
+    reviewAndSave().catch(() => {});
   });
 
   const openObject = async (type, id) => {
