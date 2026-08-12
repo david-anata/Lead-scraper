@@ -11,7 +11,7 @@ from itertools import combinations
 import json
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from sales_support_agent.models.database import get_engine, upsert_cash_event
 
@@ -50,6 +50,11 @@ def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
     eligibility without touching any posted transaction.
     """
     engine = get_engine()
+    # Finance can be used against an older or narrowly initialized database
+    # during restore/cutover checks. HR payroll is an additive source; its
+    # absence must not break bank imports or other Finance reads.
+    if not inspect(engine).has_table("hr_payroll_runs"):
+        return {"synced": 0, "archived": 0}
     with engine.connect() as connection:
         runs = [dict(row._mapping) for row in connection.execute(text("""
             SELECT id, base44_id, pay_period_start, pay_period_end, pay_date,
