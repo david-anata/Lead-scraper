@@ -272,7 +272,7 @@ function editName(wrapId, currentVal, fieldName) {
       </div>
       <div class="finance-object-panel__body" data-finance-object-body aria-live="polite"></div>
     </dialog>
-    <div class="finance-draft-status" data-finance-draft-status hidden role="status" aria-live="polite"><span data-finance-draft-message></span><span class="finance-draft-status__actions"><a href="/admin/finances/workspace/review" data-finance-draft-review hidden>Review and save</a><button type="button" data-finance-draft-discard hidden>Discard draft</button></span></div>
+    <div class="finance-draft-status" data-finance-draft-status hidden role="status" aria-live="polite"><span data-finance-draft-message></span><span class="finance-draft-status__actions"><a href="/admin/finances/workspace/review" data-finance-draft-review hidden>Review &amp; save all</a><button type="button" data-finance-draft-discard hidden>Discard draft</button></span></div>
   </body>
 </html>"""
 

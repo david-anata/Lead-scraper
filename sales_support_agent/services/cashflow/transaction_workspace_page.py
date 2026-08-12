@@ -12,7 +12,7 @@ from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
 def render_workspace_preview(preview: Mapping[str, Any], *, csrf_token: str, idempotency_key: str) -> str:
     rows = "".join(
         f"""<tr class="workspace-preview-row workspace-preview-row--{html.escape(str(item.get('status') or 'invalid'), quote=True)}">
-          <td><strong>{html.escape(str(item.get('object_type') or '').replace('_', ' ').title())}</strong><span>{html.escape(str(item.get('object_id') or ''))}</span></td>
+          <td><strong>{html.escape(str(item.get('label') or item.get('object_type') or '').replace('_', ' ').title())}</strong><span>{html.escape(str(item.get('object_type') or '').replace('_', ' ').title())}</span></td>
           <td>{html.escape(str(item.get('action') or '').replace('_', ' ').title())}</td>
           <td>{html.escape(str(item.get('value') if item.get('value') is not None else ''))}</td>
           <td>{_dollar(abs(int(item.get('amount_cents') or 0)))}</td>

@@ -181,6 +181,28 @@ def test_mark_duplicate_removes_transaction_from_finance_views_and_is_undoable(f
         assert connection.execute(text("SELECT match_status FROM cash_events WHERE id='tx-duplicate'" )).scalar_one() == ""
 
 
+def test_possible_charge_answers_save_in_one_batch_and_undo(finance_engine):
+    from sales_support_agent.services.cashflow.bill_patterns import load_bill_pattern_decisions
+
+    pattern_key = "a" * 16
+    changes = [{
+        "object_type": "pattern", "object_id": pattern_key,
+        "action": "set_pattern_cadence", "value": "monthly",
+        "label": "Brevo", "amount_cents": 3_000,
+    }]
+    preview = preview_changes(changes, actor="owner@example.com", engine=finance_engine)
+    assert preview["eligible_count"] == 1
+    assert preview["items"][0]["label"] == "Brevo"
+    result = apply_preview(
+        preview["preview_token"], actor="owner@example.com",
+        idempotency_key="pattern-001", source_page="calendar",
+        engine=finance_engine,
+    )
+    assert load_bill_pattern_decisions()[pattern_key] == "track"
+    undo_batch(result["batch_id"], actor="owner@example.com", engine=finance_engine)
+    assert pattern_key not in load_bill_pattern_decisions()
+
+
 def test_stale_revision_is_reported_before_apply(finance_engine):
     _cash_event(finance_engine, "tx-1")
     first = preview_changes([

@@ -1364,7 +1364,7 @@ def render_budget_page(
         </div>
         <form method="post" action="/admin/finances/savings/reviews/batch" data-trim-batch-form data-trim-calculation="{html.escape(str(view['calculation_id']), quote=True)}">
         <input type="hidden" name="changes_json" data-trim-changes value="[]">
-        <div class="trim-savebar"><span data-trim-unsaved>No unsaved changes</span><div class="trim-savebar__actions"><button class="btn btn-secondary" type="button" data-trim-discard disabled>Discard draft</button><button class="btn btn-primary" type="submit" data-trim-save disabled>Save all changes</button></div></div>
+        <span class="sr-only" data-trim-unsaved>No unsaved changes</span>
         <div class="trim-selection-bar" data-trim-selection-bar hidden><div><strong data-trim-selection-count>0 selected</strong><span data-trim-selection-value>$0 monthly impact</span></div><div>
           <button type="button" data-trim-bulk-choice="needed">Needed</button><button type="button" data-trim-bulk-choice="unknown">Unknown</button><button type="button" data-trim-bulk-choice="investigate">Investigate</button><button type="button" data-trim-bulk-choice="waste">Waste</button><button type="button" data-trim-clear-selection>Clear selection</button>
         </div></div>

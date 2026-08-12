@@ -117,6 +117,8 @@ def test_the_panel_offers_all_four_answers_per_charge():
 
     for label in ("Monthly", "Weekly", "One-time", "Not a bill"):
         assert label in panel, label
+    assert panel.count("data-finance-pattern-cadence") == 4
+    assert 'name="amount_cents"' in panel
     assert "$890" in panel
     assert "Lehi City Power" in panel
 

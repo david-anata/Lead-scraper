@@ -207,7 +207,7 @@ def _charge_row(charge: Mapping[str, Any], *, action: str) -> str:
     key = html.escape(str(charge.get("pattern_key") or ""), quote=True)
     buttons = "".join(
         f'<button type="submit" name="cadence" value="{value}" '
-        f'class="btn btn-secondary btn-sm">{label}</button>'
+        f'data-finance-pattern-cadence="{value}" class="btn btn-secondary btn-sm">{label}</button>'
         for value, label in CADENCE_CHOICES
     ) if key else (
         '<span class="metric-note">Cannot be named yet: the bank wording gives '
@@ -218,6 +218,7 @@ def _charge_row(charge: Mapping[str, Any], *, action: str) -> str:
         <input type="hidden" name="pattern_key" value="{key}">
         <input type="hidden" name="merchant_key" value="{html.escape(str(charge.get('merchant_key') or ''), quote=True)}">
         <input type="hidden" name="vendor" value="{vendor}">
+        <input type="hidden" name="amount_cents" value="{int(charge.get('amount_cents') or 0)}">
         {buttons}
       </form>""" if key else f'<div class="charge-panel__actions">{buttons}</div>'
     return f"""

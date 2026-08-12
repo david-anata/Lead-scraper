@@ -24,7 +24,6 @@
   const searchCount = document.querySelector("[data-finance-search-count]");
   const savedViews = document.querySelector("[data-finance-saved-views]");
   const saveViewButton = document.querySelector("[data-finance-save-view]");
-  const hasBudgetEditor = Boolean(document.querySelector("[data-trim-batch-form]"));
   const esc = value => String(value ?? "").replace(/[&<>'"]/g, character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"})[character]);
   const financeDate = value => {
     const raw = String(value || "").slice(0, 10);
@@ -36,7 +35,7 @@
 
   const announce = (message, tone = "neutral") => {
     if (!status) return;
-    status.hidden = !message || (hasBudgetEditor && tone !== "error");
+    status.hidden = !message;
     if (statusMessage) statusMessage.textContent = message;
     else status.textContent = message;
     status.dataset.tone = tone;
@@ -61,6 +60,8 @@
     object_id: String(change.object_id || ""),
     action: String(change.action || ""),
     value: change.value,
+    label: String(change.label || ""),
+    amount_cents: Number(change.amount_cents || 0),
     expected_revision: Number(change.expected_revision || 0),
   });
 
@@ -81,7 +82,7 @@
       state.draft = result;
       state.unprotected = false;
       state.saveFailed = false;
-      announce(`Draft protected: ${result.change_count} change${result.change_count === 1 ? "" : "s"}`, "success");
+      announce(`${result.change_count} change${result.change_count === 1 ? "" : "s"} saved securely`, "success");
       document.dispatchEvent(new CustomEvent("finance:draft-saved", {detail: result}));
     } catch (error) {
       state.saveFailed = true;
@@ -197,6 +198,21 @@
   };
 
   document.addEventListener("click", event => {
+    const patternButton = event.target.closest("[data-finance-pattern-cadence]");
+    if (patternButton) {
+      event.preventDefault();
+      const form = patternButton.closest("form");
+      stage({
+        object_type: "pattern",
+        object_id: form?.querySelector('[name="pattern_key"]')?.value || "",
+        action: "set_pattern_cadence",
+        value: patternButton.dataset.financePatternCadence,
+        label: form?.querySelector('[name="vendor"]')?.value || "Possible charge",
+        amount_cents: Number(form?.querySelector('[name="amount_cents"]')?.value || 0),
+      });
+      form?.querySelectorAll("[data-finance-pattern-cadence]").forEach(button => button.classList.toggle("is-selected", button === patternButton));
+      return;
+    }
     const opener = event.target.closest("[data-finance-object-open]");
     if (opener) {
       event.preventDefault();
@@ -268,7 +284,7 @@
   });
 
   window.addEventListener("beforeunload", event => {
-    if (state.allowNavigation || (!state.changes.length && !state.unprotected && !state.saving && !state.saveFailed)) return;
+    if (state.allowNavigation || (!state.unprotected && !state.saving && !state.saveFailed)) return;
     event.preventDefault();
     event.returnValue = "";
   });
@@ -282,7 +298,7 @@
       state.changes = result.draft?.changes || [];
       state.ready = true;
       renderSavedViews(result.saved_views);
-      if (state.changes.length) announce(`Draft protected: ${state.changes.length} recovered change${state.changes.length === 1 ? "" : "s"}`, "success");
+      if (state.changes.length) announce(`${state.changes.length} recovered change${state.changes.length === 1 ? "" : "s"} saved securely`, "success");
       document.dispatchEvent(new CustomEvent("finance:workspace-ready", {detail: result}));
     })
     .catch(error => announce(`Draft protection unavailable: ${error.message}`, "error"));

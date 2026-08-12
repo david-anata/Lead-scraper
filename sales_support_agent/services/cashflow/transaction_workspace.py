@@ -26,8 +26,9 @@ OBJECT_TYPES = frozenset({"cash_event", "pattern", "savings_opportunity"})
 SAVINGS_STATES = frozenset({"needed", "waste", "unknown", "investigate"})
 LOW_RISK_ACTIONS = frozenset({
     "set_savings_state", "set_category", "set_note", "mark_internal_transfer",
-    "mark_duplicate",
+    "mark_duplicate", "set_pattern_cadence",
 })
+PATTERN_CADENCES = frozenset({"monthly", "weekly", "one_time", "not_a_bill"})
 PROTECTED_TERMS = frozenset({"payroll", "salary", "wages", "tax", "irs", "debt", "loan", "mortgage"})
 
 
@@ -100,11 +101,17 @@ def _normalize_change(raw: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("The staged value is missing or too long.")
     if action in {"mark_internal_transfer", "mark_duplicate"}:
         value = bool(value)
+    if action == "set_pattern_cadence" and str(value) not in PATTERN_CADENCES:
+        raise ValueError("Choose monthly, weekly, one-time, or not a bill.")
+    label = str(raw.get("label") or "").strip()[:255]
+    amount_cents = int(raw.get("amount_cents") or 0)
     return {
         "object_type": object_type,
         "object_id": object_id,
         "action": action,
         "value": value,
+        "label": label,
+        "amount_cents": amount_cents,
         "expected_revision": int(raw.get("expected_revision") or 0),
     }
 
@@ -157,6 +164,21 @@ def _load_object(connection, object_type: str, object_id: str) -> dict[str, Any]
                 "_evidence": opportunity,
             }
         return None
+    if object_type == "pattern":
+        if not __import__("re").fullmatch(r"[0-9a-f]{16}", object_id):
+            return None
+        row = connection.execute(text("""
+            SELECT actor, evidence_json, created_at AS updated_at
+            FROM finance_action_audit
+            WHERE scope_key=:scope AND action_type='bill_pattern_decision_recorded'
+              AND entity_type='bill_pattern' AND entity_id=:id
+            ORDER BY created_at DESC, id DESC LIMIT 1
+        """), {"scope": SCOPE, "id": object_id}).fetchone()
+        payload = {}
+        if row:
+            payload = row.evidence_json if isinstance(row.evidence_json, dict) else json.loads(row.evidence_json or "{}")
+        return {"id": object_id, "name": "Possible charge", "decision": payload.get("decision", ""),
+                "updated_at": row.updated_at if row else None}
     row = connection.execute(text("""
         SELECT id, name, terms_type, frequency AS cadence, payment_amount_cents AS amount_cents,
                updated_at FROM finance_vendors WHERE scope_key=:scope AND id=:id
@@ -243,6 +265,7 @@ def action_catalog() -> list[dict[str, Any]]:
         {"id": "set_note", "label": "Add review note", "bulk": True, "consequential": False},
         {"id": "mark_internal_transfer", "label": "Mark internal transfer", "bulk": True, "consequential": False},
         {"id": "mark_duplicate", "label": "Mark duplicate", "bulk": True, "consequential": False},
+        {"id": "set_pattern_cadence", "label": "Classify possible charge", "bulk": True, "consequential": False},
     ]
 
 
@@ -351,7 +374,7 @@ def preview_changes(changes: list[Mapping[str, Any]], *, actor: str, draft_revis
             results.append({**change, "status": status, "reason": reason,
                             "current_revision": current["revision"],
                             "object_hash": _payload_hash(_public(comparable)) if item else "",
-                            "amount_cents": int((item or {}).get("amount_cents") or 0)})
+                            "amount_cents": int(change.get("amount_cents") or (item or {}).get("amount_cents") or 0)})
         token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         preview_id = str(uuid4())
@@ -380,6 +403,7 @@ def _decision_after(prior: dict[str, Any], change: Mapping[str, Any]) -> dict[st
         "set_note": "note",
         "mark_internal_transfer": "internal_transfer",
         "mark_duplicate": "duplicate",
+        "set_pattern_cadence": "pattern_cadence",
     }[str(change["action"])]
     result[key] = change["value"]
     return result
@@ -475,6 +499,32 @@ def apply_preview(preview_token: str, *, actor: str, idempotency_key: str, reaso
                     {"state": str(prior_review.state or "unknown"), "reason": str(prior_review.reason or "")}
                     if prior_review else None
                 )
+            if item["object_type"] == "pattern" and item["action"] == "set_pattern_cadence":
+                cadence = str(item["value"])
+                pattern_decision = (
+                    "track" if cadence in {"monthly", "weekly"}
+                    else "snooze" if cadence == "one_time"
+                    else "not_a_bill"
+                )
+                audit_id = hashlib.sha256(
+                    f"workspace-pattern|{batch_id}|{position}|{item['object_id']}".encode()
+                ).hexdigest()
+                evidence = {
+                    "decision": pattern_decision,
+                    "evidence": {"said": cadence, "vendor": item.get("label") or "", "from": "calendar"},
+                    "pattern_key": item["object_id"],
+                    "request_id": f"workspace:{batch_id}:{position}",
+                }
+                connection.execute(text("""
+                    INSERT INTO finance_action_audit
+                        (id, scope_key, action_type, entity_type, entity_id, actor,
+                         idempotency_key, evidence_json, created_at)
+                    VALUES (:id, :scope, 'bill_pattern_decision_recorded', 'bill_pattern',
+                            :pattern_key, :actor, :request_id, :evidence, :now)
+                """), {"id": audit_id, "scope": SCOPE, "pattern_key": item["object_id"],
+                        "actor": operator, "request_id": f"workspace:{batch_id}:{position}",
+                        "evidence": _canonical_json(evidence), "now": now})
+                prior_for_undo["__bill_pattern_audit_id"] = audit_id
             decision_id = hashlib.sha256(f"{SCOPE}|{item['object_type']}|{item['object_id']}".encode()).hexdigest()
             connection.execute(text("""
                 INSERT INTO finance_object_decisions
@@ -565,6 +615,7 @@ def undo_batch(batch_id: str, *, actor: str, engine=None) -> dict[str, Any]:
             prior = item.prior_state_json if isinstance(item.prior_state_json, dict) else json.loads(item.prior_state_json)
             prior_review = prior.pop("__savings_review", "not_applicable")
             prior_cash_event = prior.pop("__cash_event", None)
+            prior_pattern_audit = prior.pop("__bill_pattern_audit_id", None)
             connection.execute(text("""
                 UPDATE finance_object_decisions SET revision=revision+1,
                     decision_json=:prior, updated_by=:actor, updated_at=:now
@@ -589,6 +640,13 @@ def undo_batch(batch_id: str, *, actor: str, engine=None) -> dict[str, Any]:
                     "now": now,
                     "id": item.object_id,
                 })
+            if item.object_type == "pattern" and prior_pattern_audit:
+                connection.execute(text("""
+                    DELETE FROM finance_action_audit
+                    WHERE id=:id AND scope_key=:scope
+                      AND action_type='bill_pattern_decision_recorded'
+                      AND entity_type='bill_pattern' AND entity_id=:pattern_key
+                """), {"id": prior_pattern_audit, "scope": SCOPE, "pattern_key": item.object_id})
         connection.execute(text("""
             UPDATE finance_action_batches SET status='undone', undone_at=:now WHERE id=:id
         """), {"now": now, "id": batch_id})
