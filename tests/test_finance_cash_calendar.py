@@ -178,6 +178,35 @@ def test_history_warning_is_not_counted_as_required_cash():
     assert _events(calendar, TODAY + timedelta(days=2))[0]["state_label"] == "Unconfirmed · likely from history"
 
 
+def test_tracked_history_replaces_the_same_warning_under_a_bank_descriptor():
+    due = TODAY + timedelta(days=7)
+    history = [
+        {"id": "tracked", "date": due, "name": "Fora Financial", "amount_cents": 205_600, "confirmed": True},
+        {"id": "warning", "date": due, "name": "Forafinancial Merchdebit", "amount_cents": 205_600},
+    ]
+
+    calendar = build_cash_calendar([], historical_events=history, as_of=TODAY)
+
+    events = _events(calendar, due)
+    assert [(item["kind"], item["name"]) for item in events] == [
+        ("history_planned", "Fora Financial")
+    ]
+    assert calendar["totals"]["planned_cents"] == 205_600
+    assert calendar["totals"]["warning_cents"] == 0
+
+
+def test_same_day_different_amount_history_is_not_hidden():
+    due = TODAY + timedelta(days=7)
+    history = [
+        {"id": "tracked", "date": due, "name": "Fora Financial", "amount_cents": 205_600, "confirmed": True},
+        {"id": "warning", "date": due, "name": "Forafinancial Merchdebit", "amount_cents": 100_000},
+    ]
+
+    calendar = build_cash_calendar([], historical_events=history, as_of=TODAY)
+
+    assert len(_events(calendar, due)) == 2
+
+
 def test_weekly_rollup_keeps_paid_unpaid_and_possible_money_separate():
     rows = [
         _transaction("paid", days_ago=1, amount=5000),

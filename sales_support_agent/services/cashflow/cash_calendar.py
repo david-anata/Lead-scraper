@@ -61,6 +61,25 @@ def _category(row: Mapping[str, Any]) -> str:
     return str(row.get("commitment_type") or row.get("category") or "other").lower()
 
 
+def _same_historical_charge(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """Whether two projections are the same charge under different descriptors."""
+    from sales_support_agent.services.cashflow.bill_patterns import bill_merchant_key
+
+    left_due = _as_date(left.get("date") or left.get("due_date") or left.get("expected_date"))
+    right_due = _as_date(right.get("date") or right.get("due_date") or right.get("expected_date"))
+    if left_due is None or left_due != right_due:
+        return False
+    if int(left.get("amount_cents") or 0) != int(right.get("amount_cents") or 0):
+        return False
+    left_key = "".join(ch for ch in bill_merchant_key(_name(left)).lower() if ch.isalnum())
+    right_key = "".join(ch for ch in bill_merchant_key(_name(right)).lower() if ch.isalnum())
+    return bool(
+        len(left_key) >= 5
+        and len(right_key) >= 5
+        and (left_key in right_key or right_key in left_key)
+    )
+
+
 def _active_allocation_maps(
     allocations: Sequence[Mapping[str, Any]],
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int]]:
@@ -300,8 +319,9 @@ def build_cash_calendar(
         bucket["events"].append(event)
         bucket["warning_cents" if is_draft_payroll else "planned_cents"] += open_amount
 
-    for source_event in historical_events:
-        row = dict(source_event)
+    historical_rows = [dict(item) for item in historical_events]
+    confirmed_history = [item for item in historical_rows if item.get("confirmed")]
+    for row in historical_rows:
         due = _as_date(row.get("date") or row.get("due_date") or row.get("expected_date"))
         if due is None or due < today or due > end:
             continue
@@ -309,6 +329,10 @@ def build_cash_calendar(
         if amount <= 0:
             continue
         confirmed = bool(row.get("confirmed"))
+        if not confirmed and any(
+            _same_historical_charge(row, tracked) for tracked in confirmed_history
+        ):
+            continue
         kind = "history_planned" if confirmed else "history_warning"
         event = {
             "id": str(row.get("id") or row.get("pattern_key") or ""),
