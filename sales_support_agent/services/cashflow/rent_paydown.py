@@ -267,6 +267,7 @@ def build_paydown_plan(
     spendable_cents: int,
     reserve_cents: int,
     floor_cents: int,
+    cash_goal_cents: int | None = None,
     vendor_key: str = "",
     vendor_label: str = "",
     monthly_cents: int = 0,
@@ -374,6 +375,7 @@ def build_paydown_plan(
         "unconfirmed_reserved_cents": unconfirmed_total,
         "excluded_vendor_cents": excluded_vendor_cents,
         "floor_cents": int(floor_cents),
+        "cash_goal_cents": int(cash_goal_cents if cash_goal_cents is not None else floor_cents),
         "emergency_floor_cents": int(emergency_floor_cents),
         "spendable_cents": int(spendable_cents),
         "savings_available_cents": int(reserve_cents),
@@ -416,7 +418,10 @@ def load_paydown_plan(
         rows=ledger,
         spendable_cents=int(accounts.get("spendable_cents") or 0),
         reserve_cents=int(accounts.get("reserve_cents") or 0),
-        floor_cents=int(configured["cash_goal_cents"]),
+        # The goal is aspirational. Only the emergency floor constrains what
+        # can safely be proposed for rent after committed payments.
+        floor_cents=int(configured["emergency_floor_cents"]),
+        cash_goal_cents=int(configured["cash_goal_cents"]),
         emergency_floor_cents=int(configured["emergency_floor_cents"]),
         vendor_key=str(configured["vendor_key"]),
         vendor_label=str(configured["vendor_label"]),

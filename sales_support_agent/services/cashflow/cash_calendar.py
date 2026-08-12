@@ -848,11 +848,23 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
         "that much more. It is not included in the recommendation.</p>"
         if savings > 0 else ""
     )
+    balance_as_of = _as_date_or_none(plan.get("balance_as_of"))
+    settings_html = f"""
+        <details class="cash-calendar-paydown__settings">
+          <summary>Change rent plan settings</summary>
+          <form method="post" action="/admin/finances/calendar/paydown-settings">
+            <label>Payee<input name="vendor_label" value="{vendor}" required></label>
+            <label>Monthly rent<input name="monthly_amount" inputmode="decimal" value="{monthly / 100:.2f}" required></label>
+            <label>Amount owed now<input name="balance_amount" inputmode="decimal" value="{remaining / 100:.2f}" required></label>
+            <label>Balance confirmed on<input name="balance_as_of" type="date" value="{balance_as_of.isoformat() if balance_as_of else ''}" required></label>
+            <label>Cash goal <span class="metric-note">Target only, not a blocker</span><input name="cash_goal" inputmode="decimal" value="{int(plan.get('cash_goal_cents') or 0) / 100:.2f}" required></label>
+            <button class="btn btn-secondary btn-sm" type="submit">Save rent settings</button>
+          </form>
+        </details>"""
 
     if not plan.get("instalments"):
         planned_reserved = max(0, reserved - unconfirmed)
         excluded_vendor = int(plan.get("excluded_vendor_cents") or 0)
-        balance_as_of = _as_date_or_none(plan.get("balance_as_of"))
         balance_note = (
             f"Balance confirmed by you on {balance_as_of.strftime('%b')} {balance_as_of.day}."
             if balance_as_of else "Balance is based on the saved rent facts."
@@ -868,8 +880,8 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
         <div class="money-section-heading"><div><p class="finance-eyebrow">Paying down</p>
         <h2>{vendor}</h2></div></div>
         <p class="finance-plan-short"><strong>No rent payment is recommended yet.</strong>
-        Nothing spare this month: the expenses below use your cash while protecting your
-        {_money(int(plan.get('floor_cents') or 0))} cash goal.</p>
+        Nothing spare this month after committed and possible expenses. Your
+        {_money(int(plan.get('cash_goal_cents') or 0))} goal is advisory and does not block rent.</p>
         <p class="cash-calendar-paydown__lead">Monthly rent {_money(monthly)}. Plaid confirms
         {_money(paid)} sent this month.</p>
         <p class="cash-calendar-rent-balance"><strong>Rent remaining: {_money(remaining)} · not scheduled.</strong></p>
@@ -880,6 +892,7 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
         {excluded_note}
         <p><a class="btn btn-secondary btn-sm" href="/admin/finances/collections">See who owes you</a></p>
         {savings_line}
+        {settings_html}
       </section>"""
 
     rows = "".join(
@@ -890,7 +903,6 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
     )
     total = int(plan.get("planned_total_cents") or 0)
     shortfall = int(plan.get("shortfall_cents") or 0)
-    balance_as_of = _as_date_or_none(plan.get("balance_as_of"))
     basis = str(plan.get("balance_basis") or "")
     balance_date_label = (
         f"{balance_as_of.strftime('%b')} {balance_as_of.day}, {balance_as_of.year}"
@@ -922,23 +934,14 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
         <p class="cash-calendar-paydown__note">Reserved for the rest of the month:
         {_money(reserved)}, of which {_money(unconfirmed)} is not confirmed. If those
         possible expenses do not occur you can send more, sooner.</p>
-        <p class="cash-calendar-paydown__note">Normal recommendations protect your
-        {_money(int(plan.get('floor_cents') or 0))} cash goal. Your emergency floor is
-        {_money(int(plan.get('emergency_floor_cents') or 0))}. TAX and other reserves are
+        <p class="cash-calendar-paydown__note">Your
+        {_money(int(plan.get('cash_goal_cents') or 0))} cash goal is a target, not a blocker.
+        Recommendations only protect your {_money(int(plan.get('floor_cents') or 0))}
+        minimum after committed payments. TAX and other reserves are
         shown only as a last resort and are never included automatically.</p>
         {shortfall_line}
         {savings_line}
-        <details class="cash-calendar-paydown__settings">
-          <summary>Update the rent balance</summary>
-          <form method="post" action="/admin/finances/calendar/paydown-settings">
-            <label>Payee<input name="vendor_label" value="{vendor}" required></label>
-            <label>Monthly rent<input name="monthly_amount" inputmode="decimal" value="{monthly / 100:.2f}" required></label>
-            <label>Amount owed now<input name="balance_amount" inputmode="decimal" value="{remaining / 100:.2f}" required></label>
-            <label>Balance confirmed on<input name="balance_as_of" type="date" value="{balance_as_of.isoformat() if balance_as_of else ''}" required></label>
-            <label>Cash goal<input name="cash_goal" inputmode="decimal" value="{int(plan.get('floor_cents') or 0) / 100:.2f}" required></label>
-            <button class="btn btn-secondary btn-sm" type="submit">Save payoff facts</button>
-          </form>
-        </details>
+        {settings_html}
       </section>"""
 def _instalment_when(value: Any) -> str:
     when = _as_date_or_none(value) if not isinstance(value, date) else value

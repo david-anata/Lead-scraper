@@ -154,6 +154,8 @@ def test_no_spare_cash_proposes_nothing_and_points_at_collections():
     assert "$18,300 total" in block
     assert "$39,965 Boulder Ranch estimate is not added again" in block
     assert "/admin/finances/collections" in block
+    assert "Change rent plan settings" in block
+    assert "Target only, not a blocker" in block
     assert "Today" not in block, "it must not still show a payment it cannot fund"
 
 

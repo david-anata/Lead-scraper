@@ -101,6 +101,19 @@ def _plan(*, events=(), rows=(), spendable=5_000_000, reserve=0, monthly=3_000_0
     )
 
 
+def test_cash_goal_is_advisory_while_minimum_floor_constrains_rent():
+    plan = build_paydown_plan(
+        calendar=_calendar([]), rows=[], spendable_cents=2_000_000,
+        reserve_cents=0, floor_cents=0, cash_goal_cents=1_000_000,
+        vendor_key="boulder ranch", vendor_label="Boulder Ranch",
+        monthly_cents=3_000_000, as_of=AS_OF,
+    )
+
+    assert plan["planned_total_cents"] == 2_000_000
+    assert plan["floor_cents"] == 0
+    assert plan["cash_goal_cents"] == 1_000_000
+
+
 def _balance_after_each_day(plan, *, events, rows, spendable):
     """Replay the month applying the plan, and report the lowest balance reached."""
     paid = {item["date"]: item["amount_cents"] for item in plan["instalments"]}
