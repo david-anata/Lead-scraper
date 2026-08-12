@@ -110,7 +110,7 @@ def prepare_booking_billing(
         )
 
     notice = (
-        "Billing drafts already match this signed booking; nothing was sent."
+        "Billing drafts already match this approved booking package; nothing was sent."
         if result.get("duplicate")
         else f"Prepared {result['component_count']} billing drafts; nothing was sent to QuickBooks or the customer."
     )

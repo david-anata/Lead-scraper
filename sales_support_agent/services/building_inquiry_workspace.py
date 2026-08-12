@@ -640,13 +640,11 @@ def _journey_sections(data: dict[str, Any], *, csrf_token: str) -> str:
     if not invoice_rows:
         invoice_rows = '<tr><td colspan="5">No QuickBooks invoice created.</td></tr>'
     can_prepare = bool(
-        reservation.get("agreement_status") == "signed"
-        and list(journey.get("quotes") or [])
-        and (journey.get("quotes") or [])[0].get("status") == "accepted"
+        contract.get("preparation_status") == "approved"
         and (contract.get("payment") or {}).get("status") == "approved"
         and not schedules
     )
-    prepare = f'''<form class="lead-primary-form" method="post" action="/admin/building/bookings/{_esc(reservation_id)}/billing/prepare"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input type="hidden" name="return_to" value="{_esc(return_to)}#billing"><button class="lead-button lead-button--primary" type="submit">Prepare exact billing drafts</button><span>Creates no QuickBooks object and sends nothing.</span></form>''' if can_prepare else ''
+    prepare = f'''<form class="lead-primary-form" method="post" action="/admin/building/bookings/{_esc(reservation_id)}/billing/prepare"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input type="hidden" name="return_to" value="{_esc(return_to)}#billing"><button class="lead-button lead-button--primary" type="submit">Prepare exact billing drafts</button><span>Uses the approved contract package. A signature is not required to create an unsent QuickBooks draft.</span></form>''' if can_prepare else ''
     account = dict(billing.get("account") or {})
     billing_section = f'''<section class="lead-panel" id="billing"><div class="lead-panel__head"><div><h2>QuickBooks invoice and payment</h2><p>Prepared, invoiced, and paid remain separate evidence states.</p></div>{_status(str(reservation.get("deposit_status") or "not started"))}</div>
       <dl class="lead-details"><dt>Billing customer</dt><dd>{_esc(account.get("account_name") or "Created with billing drafts")}</dd><dt>QuickBooks customer</dt><dd>{_esc(account.get("qbo_customer_id") or "Not created")}</dd><dt>Payment evidence</dt><dd>{_esc(deposit.get("provider_reference") or "Not verified")} · {_status(str(deposit.get("status") or "not started"))}</dd></dl>{prepare}

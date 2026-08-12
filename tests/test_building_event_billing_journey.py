@@ -74,7 +74,7 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
                 space_id="billing-arena",
                 starts_at=now + timedelta(days=30),
                 ends_at=now + timedelta(days=30, hours=8),
-                agreement_status="signed",
+                agreement_status="sent",
                 deposit_required=True,
             ))
             session.add(BuildingProposal(
@@ -82,7 +82,7 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
                 reservation_id="billing-reservation",
                 version=1,
                 proposal_type="quote",
-                status="accepted",
+                status="draft",
                 amount_cents=112000,
                 currency="USD",
                 line_items_json=[
@@ -96,10 +96,10 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
                 id="billing-agreement",
                 reservation_id="billing-reservation",
                 version=1,
-                status="signed",
+                status="draft",
                 preparation_status="approved",
-                provider="quickbooks_contract_builder",
-                provider_reference="QB-CONTRACT-88",
+                provider="google_docs",
+                provider_reference="",
                 package_checksum="a" * 64,
                 package_snapshot_json={
                     "quote": {"id": "billing-quote", "version": 1, "amount_cents": 112000}
@@ -118,7 +118,7 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
             ))
             session.commit()
 
-    def test_01_signed_booking_prepares_exact_idempotent_components(self) -> None:
+    def test_01_approved_unsigned_booking_prepares_exact_idempotent_components(self) -> None:
         endpoint = "/api/internal/building/billing/reservations/billing-reservation/prepare"
         first = self.client.post(endpoint, headers=self.headers, json={"actor": "operator@example.com"})
         self.assertEqual(first.status_code, 201, first.text)

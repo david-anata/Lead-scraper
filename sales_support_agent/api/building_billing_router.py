@@ -420,7 +420,7 @@ def prepare_event_billing(
     request: Request,
     x_internal_api_key: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    """Prepare the signed booking's exact QuickBooks billing components.
+    """Prepare an approved booking package's exact billing components.
 
     This creates only Agent billing drafts. It neither creates a QuickBooks
     customer nor writes or sends an invoice.
@@ -443,10 +443,10 @@ def prepare_event_billing(
             .where(BuildingAgreement.reservation_id == reservation_id)
             .order_by(BuildingAgreement.version.desc())
         ).scalars().first()
-        if agreement is None or agreement.status != "signed" or not agreement.provider_reference:
+        if agreement is None or agreement.preparation_status != "approved":
             raise HTTPException(
                 status_code=409,
-                detail="Provider-verified signed agreement evidence is required before billing.",
+                detail="An approved current agreement package is required before billing.",
             )
         payment_readiness = session.execute(
             select(BuildingPaymentRequestReadiness)
@@ -459,8 +459,8 @@ def prepare_event_billing(
             (agreement.package_snapshot_json or {}).get("quote", {}).get("id") or ""
         )
         proposal = session.get(BuildingProposal, quote_id) if quote_id else None
-        if proposal is None or proposal.status != "accepted":
-            raise HTTPException(status_code=409, detail="The frozen quote must be accepted first.")
+        if proposal is None:
+            raise HTTPException(status_code=409, detail="The frozen quote is unavailable.")
         frozen_quote = dict((agreement.package_snapshot_json or {}).get("quote") or {})
         if (
             frozen_quote.get("version") != proposal.version
@@ -468,7 +468,7 @@ def prepare_event_billing(
         ):
             raise HTTPException(
                 status_code=409,
-                detail="The accepted quote differs from the signed agreement package.",
+                detail="The current quote differs from the approved agreement package.",
             )
 
         account_id = str(uuid5(NAMESPACE_URL, f"building-billing-contact:{contact.id}"))
@@ -479,7 +479,7 @@ def prepare_event_billing(
                 contact_id=contact.id,
                 account_name=contact.full_name,
                 billing_email=contact.email.strip().lower(),
-                metadata_json={"source": "signed_event_booking"},
+                metadata_json={"source": "approved_event_agreement"},
             )
             session.add(account)
         elif account.contact_id != contact.id:
@@ -776,7 +776,33 @@ def create_invoice_from_schedule(
                         "Re-draft the schedule from the current quote before invoicing."
                     ),
                 )
-            if proposal.status != "accepted":
+            if schedule.reservation_id and schedule.billing_component != "full_amount":
+                agreement = session.execute(
+                    select(BuildingAgreement)
+                    .where(
+                        BuildingAgreement.reservation_id == schedule.reservation_id,
+                        BuildingAgreement.preparation_status == "approved",
+                    )
+                    .order_by(BuildingAgreement.version.desc())
+                ).scalars().first()
+                frozen_quote = dict(
+                    (agreement.package_snapshot_json or {}).get("quote") or {}
+                ) if agreement is not None else {}
+                if (
+                    agreement is None
+                    or str(frozen_quote.get("id") or "") != proposal.id
+                    or int(frozen_quote.get("version") or 0) != proposal.version
+                    or int(frozen_quote.get("amount_cents") or 0)
+                    != proposal.amount_cents
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "The event invoice no longer matches its approved "
+                            "agreement package. Prepare billing again."
+                        ),
+                    )
+            elif proposal.status != "accepted":
                 raise HTTPException(
                     status_code=409,
                     detail="The quote behind this schedule is no longer accepted.",
