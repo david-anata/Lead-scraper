@@ -15,6 +15,7 @@ try:
     from sales_support_agent.services.fulfillment_dashboard import (
         fulfillment_report_entries,
         render_fulfillment_dashboard_page,
+        render_fulfillment_report_detail_page,
     )
 
     FASTAPI_AVAILABLE = True
@@ -82,6 +83,16 @@ class FulfillmentDashboardTests(unittest.TestCase):
         self.assertIn("Fulfillment CS", html)
         self.assertIn("Need PO verification for received boots.", html)
         self.assertIn("Ready to answer", html)
+
+    def test_report_detail_paginates_long_support_thread_lists(self) -> None:
+        report = self._sample_report()
+        report["candidates"] = report["candidates"] * 12
+
+        page = render_fulfillment_report_detail_page(report)
+
+        self.assertIn('data-paginate data-page-size="10"', page)
+        self.assertEqual(page.count("data-page-item"), 12)
+        self.assertIn("Review ten threads at a time", page)
 
     def test_admin_routes_render_fulfillment_pages(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

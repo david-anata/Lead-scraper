@@ -8,6 +8,7 @@ from unittest.mock import patch
 from sales_support_agent.services.cashflow.money_brief import (
     build_finance_brief,
     render_calculation_page,
+    render_accounts_page,
     render_cash_plan_page,
     render_money_brief_page,
 )
@@ -77,6 +78,31 @@ def test_brief_keeps_evidence_classes_separate_and_uses_plain_formulas() -> None
 
 def test_same_evidence_produces_same_calculation_id() -> None:
     assert _brief().calculation_id == _brief().calculation_id
+
+
+def test_month_end_outlook_reserves_calendar_costs_and_authoritative_rent() -> None:
+    state = _state()
+    with (
+        patch("sales_support_agent.services.cashflow.money_brief._build_renderer_state", return_value=({}, {}, False)),
+        patch("sales_support_agent.services.cashflow.money_brief._normalise_renderer_state", return_value=state),
+        patch("sales_support_agent.services.cashflow.bulk_resolve.list_review_items", return_value={"total": 0}),
+    ):
+        brief = build_finance_brief(
+            rows=[], balance_cents=2_661_227, balance_as_of="2026-08-11",
+            balance_source="plaid", as_of=__import__("datetime").date(2026, 8, 11),
+            calendar_snapshot={
+                "calculation_id": "shared-proof",
+                "totals": {"planned_cents": 411_200, "warning_cents": 187_300},
+            },
+            paydown_plan={"remaining_cents": 3_000_000},
+        )
+
+    assert brief.calculation_id == "shared-proof"
+    assert brief.month_end_outlooks[0].cents == -937_273
+    assert "rent remaining" in brief.month_end_outlooks[0].formula
+    page = render_money_brief_page(brief)
+    assert "Through month-end" in page
+    assert "After every known cost and remaining rent" in page
 
 
 def test_live_brief_uses_spendable_plaid_cash_not_reserves() -> None:
@@ -164,6 +190,30 @@ def test_cash_plan_is_explicitly_read_only() -> None:
     assert "Plan without changing your books" in page
     assert "Read-only planning" in page
     assert "These scenarios do not edit Plaid, QuickBooks, schedules, bills, or invoices." in page
+
+
+def test_accounts_page_lets_the_operator_correct_how_each_balance_counts() -> None:
+    accounts = {
+        "spendable_cents": 1_000_00, "reserve_cents": 0,
+        "liability_cents": 268_78, "account_count": 2, "as_of": "2026-08-11",
+        "banks": [{"display_name": "Example bank", "accounts": [
+            {"id": "tax-account", "name": "TAX", "subtype": "checking", "mask": "6297",
+             "cash_role": "spendable", "balance_cents": 1_000_00},
+            {"id": "card-account", "name": "Card", "subtype": "credit card", "mask": "6352",
+             "cash_role": "liability", "balance_cents": 268_78},
+        ]}],
+    }
+    with patch(
+        "sales_support_agent.services.cashflow.money_brief.load_accounts_overview",
+        return_value=accounts,
+    ):
+        page = render_accounts_page(_brief(), object())
+
+    assert "You control what counts as cash" in page
+    assert page.count("Save role") == 2
+    assert 'action="/admin/finances/plaid/accounts/tax-account/cash-role"' in page
+    assert '<option value="spendable" selected>Spendable cash</option>' in page
+    assert '<option value="liability" selected>Money owed</option>' in page
 
 
 def test_review_preview_is_a_full_page_and_explicitly_does_not_save() -> None:

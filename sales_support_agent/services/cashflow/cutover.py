@@ -356,6 +356,7 @@ def render_cutover_readiness(assessment: Optional[dict[str, Any]] = None) -> str
             else "The old list is still running, so nothing has changed yet."
         )
         + " Switching it off is a settings change, not a button on this page.</p>"
+        + _archive_control()
     )
 
     return (
@@ -368,4 +369,87 @@ def render_cutover_readiness(assessment: Optional[dict[str, Any]] = None) -> str
         + uncovered_html
         + state_html
         + "</div>"
+    )
+
+
+def active_clickup_event_ids(*, limit: int = 20_000) -> list[str]:
+    """Every live ClickUp row still counted anywhere in Finance.
+
+    Archived rows are excluded so running this twice is harmless, and posted
+    bank transactions are excluded because they are evidence of money that
+    genuinely moved. Only the estimates go.
+    """
+    from sqlalchemy import text
+
+    from sales_support_agent.models.database import get_engine
+
+    with get_engine().connect() as connection:
+        rows = connection.execute(text("""
+            SELECT id FROM cash_events
+            WHERE LOWER(COALESCE(source, '')) = 'clickup'
+              AND archived_at IS NULL
+              AND COALESCE(record_kind, 'obligation') <> 'transaction'
+            ORDER BY due_date
+            LIMIT :limit
+        """), {"limit": int(limit)}).fetchall()
+    return [str(row._mapping["id"]) for row in rows]
+
+
+def archive_clickup_ledger(
+    *, actor: str = "system", reason: str = "", limit: int = 20_000
+) -> dict[str, Any]:
+    """Take every ClickUp estimate out of the numbers, reversibly.
+
+    ClickUp held estimates, never schedules, and the bank is the source of
+    truth. Turning the sync off only stopped new rows arriving; the rows already
+    written kept driving the calendar, required out and the paydown plan. This
+    is what actually removes them.
+
+    Nothing is deleted. Everything goes through the same reversible bulk action
+    the review queue uses, so one batch id undoes the whole thing.
+    """
+    from sales_support_agent.services.cashflow.bulk_resolve import apply_bulk_action
+
+    event_ids = active_clickup_event_ids(limit=limit)
+    if not event_ids:
+        return {"archived": 0, "batch_id": "", "message": "Nothing left to archive."}
+
+    result = apply_bulk_action(
+        event_ids,
+        "archive_historical",
+        reason=reason or "ClickUp held estimates, not schedules. The bank is the source of truth.",
+        actor=actor,
+    )
+    archived = int(result.get("applied") or result.get("updated") or len(event_ids))
+    return {
+        "archived": archived,
+        "batch_id": str(result.get("batch_id") or ""),
+        "message": f"Archived {archived} ClickUp estimate(s).",
+    }
+
+
+def _archive_control() -> str:
+    """The button that actually removes the estimates from the numbers.
+
+    Turning the sync off only stops new rows arriving. Every ClickUp row already
+    written keeps driving the calendar, required out and the paydown plan, which
+    is why the numbers still carried estimates long after the source was
+    considered dead.
+    """
+    remaining = len(active_clickup_event_ids())
+    if not remaining:
+        return (
+            '<p style="font-size:13px;color:#1f7a34;margin:12px 0 0">'
+            "No estimates are left in your numbers. Everything comes from the bank.</p>"
+        )
+    return (
+        '<form method="post" action="/admin/finances/cutover/archive" '
+        'style="margin:14px 0 0" onsubmit="return confirm('
+        "'Take all " + str(remaining) + " estimates out of your numbers? "
+        "Nothing is deleted and this can be undone.');\">"
+        '<button type="submit" class="btn btn-primary">'
+        "Take these " + str(remaining) + " estimates out of my numbers</button>"
+        '<p style="font-size:13px;color:#6b7a8d;margin:8px 0 0">'
+        "Nothing is deleted. They stop counting toward what you owe, and one "
+        "reference undoes the whole batch.</p></form>"
     )

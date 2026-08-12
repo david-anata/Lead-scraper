@@ -27,8 +27,104 @@ METADATA_ACTION_TYPES = {
     "canonical_update",
 }
 CONTENT_ACTION_TYPES = {"publish_blog_article"}
+OFFICIAL_ARTICLE_SOURCE_DOMAINS = {
+    "amazon.com",
+    "census.gov",
+    "dhl.com",
+    "ebay.com",
+    "fedex.com",
+    "ftc.gov",
+    "google.com",
+    "irs.gov",
+    "sba.gov",
+    "shopify.com",
+    "tiktok.com",
+    "ups.com",
+    "usps.com",
+    "walmart.com",
+}
+
+
+def _official_article_source(hostname: str) -> bool:
+    normalized = hostname.lower().strip(".").removeprefix("www.")
+    return any(
+        normalized == domain or normalized.endswith(f".{domain}")
+        for domain in OFFICIAL_ARTICLE_SOURCE_DOMAINS
+    )
 GENERATED_ARTICLE_REGISTRY = "src/content/generated-articles/index.ts"
 EXCLUDED_PATH_PREFIXES = ("/api/", "/book", "/brand", "/preview", "/x/")
+
+
+def generated_article_identities(source: str) -> dict[str, set[str]]:
+    """Read durable article identity from the generated registry source."""
+
+    marker = "// WEBSITE_OPS_GENERATED_ARTICLES_START"
+    end_marker = "// WEBSITE_OPS_GENERATED_ARTICLES_END"
+    marker_index = source.find(marker)
+    end = source.find(end_marker, marker_index)
+    if marker_index < 0 or end < 0:
+        raise website_ops.ExecutionError("Generated article registry markers are missing.")
+    registry = source[marker_index:end]
+
+    def values(field: str, *, normalize: bool = False) -> set[str]:
+        extracted = {
+            match.group(1).strip()
+            for match in re.finditer(
+                rf'["\']{re.escape(field)}["\']\s*:\s*["\']([^"\']+)["\']',
+                registry,
+            )
+            if match.group(1).strip()
+        }
+        return {value.casefold() for value in extracted} if normalize else extracted
+
+    return {
+        "evidence_ids": values("evidenceId"),
+        "primary_intents": values("primaryIntent", normalize=True),
+        "slugs": values("slug"),
+    }
+
+
+def generated_article_records(source: str) -> list[dict[str, Any]]:
+    """Parse the durable generated-article registry without executing TypeScript."""
+
+    marker = "// WEBSITE_OPS_GENERATED_ARTICLES_START"
+    end_marker = "// WEBSITE_OPS_GENERATED_ARTICLES_END"
+    marker_index = source.find(marker)
+    end = source.find(end_marker, marker_index)
+    if marker_index < 0 or end < 0:
+        raise website_ops.ExecutionError("Generated article registry markers are missing.")
+    block = source[marker_index + len(marker) : end]
+    match = re.search(
+        r"export const GENERATED_ARTICLES: readonly GeneratedArticle\[\] = (?P<data>\[[\s\S]*\]);",
+        block,
+    )
+    if not match:
+        raise website_ops.ExecutionError("Generated article registry could not be parsed.")
+    try:
+        articles = json.loads(match.group("data"))
+    except json.JSONDecodeError as exc:
+        raise website_ops.ExecutionError(
+            "Generated article registry contains invalid JSON."
+        ) from exc
+    if not isinstance(articles, list) or not all(
+        isinstance(item, dict) for item in articles
+    ):
+        raise website_ops.ExecutionError(
+            "Generated article registry must contain article objects."
+        )
+    return articles
+
+
+def load_generated_article_identities() -> dict[str, set[str]]:
+    source, _ = GitHubWebsiteClient().get_file(GENERATED_ARTICLE_REGISTRY)
+    return generated_article_identities(source)
+
+
+def load_generated_article_records() -> tuple[list[dict[str, Any]], str]:
+    """Load article records and the registry revision used for reconciliation."""
+
+    source, sha = GitHubWebsiteClient().get_file(GENERATED_ARTICLE_REGISTRY)
+    return generated_article_records(source), sha
 
 
 def github_metadata_is_configured() -> bool:
@@ -140,14 +236,34 @@ def validate_generated_article(record: Mapping[str, Any]) -> dict[str, Any]:
             raise website_ops.ExecutionError(
                 "External article sources cannot use anatainc.com."
             )
+        if not _official_article_source(hostname):
+            raise website_ops.ExecutionError(
+                "Generated article sources must be first-party platform, carrier, or government documentation."
+            )
         source_domains.add(hostname)
-    if len(source_domains) < 2:
-        raise website_ops.ExecutionError(
-            "Generated article requires two distinct authoritative source domains."
-        )
     content = article.get("content")
     if not isinstance(content, Mapping):
         raise website_ops.ExecutionError("Generated article content is invalid.")
+    content_text = json.dumps(content, ensure_ascii=False).lower()
+    platform_source_requirements = {
+        "amazon": "amazon.com",
+        "tiktok": "tiktok.com",
+        "shopify": "shopify.com",
+        "walmart": "walmart.com",
+        "ebay": "ebay.com",
+        "fedex": "fedex.com",
+        "usps": "usps.com",
+        "dhl": "dhl.com",
+    }
+    for platform, required_domain in platform_source_requirements.items():
+        if re.search(rf"\b{re.escape(platform)}\b", content_text) and not any(
+            hostname == required_domain
+            or hostname.endswith(f".{required_domain}")
+            for hostname in source_domains
+        ):
+            raise website_ops.ExecutionError(
+                f"Generated article discusses {platform.title()} without an official {required_domain} source."
+            )
     expected_route = f"/blog/{slug}"
     if content.get("route") != expected_route or content.get("schemaType") != "article":
         raise website_ops.ExecutionError(
@@ -180,6 +296,10 @@ def validate_generated_article(record: Mapping[str, Any]) -> dict[str, Any]:
         for paragraph in section.get("paragraphs", [])
         if str(paragraph).strip()
     ]
+    if any(re.search(r"\w;\w", paragraph) for paragraph in paragraphs):
+        raise website_ops.ExecutionError(
+            "Generated article contains malformed punctuation joins."
+        )
     normalized_paragraphs = {
         re.sub(r"\s+", " ", paragraph).lower() for paragraph in paragraphs
     }
@@ -249,19 +369,7 @@ def update_generated_article_registry(source: str, article: Mapping[str, Any]) -
     end = source.find(end_marker)
     if start < 0 or end < 0 or end <= start:
         raise website_ops.ExecutionError("Generated article registry markers are missing.")
-    block = source[start + len(start_marker) : end]
-    match = re.search(
-        r"export const GENERATED_ARTICLES: readonly GeneratedArticle\[\] = (?P<data>\[[\s\S]*\]);",
-        block,
-    )
-    if not match:
-        raise website_ops.ExecutionError("Generated article registry could not be parsed.")
-    try:
-        articles = json.loads(match.group("data"))
-    except json.JSONDecodeError as exc:
-        raise website_ops.ExecutionError("Generated article registry contains invalid JSON.") from exc
-    if not isinstance(articles, list):
-        raise website_ops.ExecutionError("Generated article registry must contain a list.")
+    articles = generated_article_records(source)
     slug = str(article.get("slug", ""))
     if any(str(item.get("slug", "")) == slug for item in articles if isinstance(item, Mapping)):
         raise website_ops.ExecutionError("Generated article slug already exists.")
@@ -585,12 +693,60 @@ def execute_github_article_action(
     timestamp: datetime | None = None,
 ) -> dict[str, Any]:
     timestamp = timestamp or datetime.now(timezone.utc)
+    raw_value = str(
+        record.get("action_value") or record.get("suggested_action_value") or ""
+    ).strip()
     try:
-        article = validate_generated_article(record)
+        requested_article = json.loads(raw_value)
+    except json.JSONDecodeError:
+        # Preserve the validator's stable user-facing error for malformed input.
+        validate_generated_article(record)
+        raise website_ops.ExecutionError("Generated article payload must be valid JSON.")
+    if not isinstance(requested_article, Mapping):
+        validate_generated_article(record)
+        raise website_ops.ExecutionError("Generated article payload must be an object.")
+
+    client = GitHubWebsiteClient()
+    before_source, before_sha = client.get_file(GENERATED_ARTICLE_REGISTRY)
+    requested_slug = str(requested_article.get("slug", "")).strip()
+    existing_article = next(
+        (
+            item
+            for item in generated_article_records(before_source)
+            if str(item.get("slug", "")) == requested_slug
+        ),
+        None,
+    )
+    reconciled_existing = existing_article is not None
+    validation_record = dict(record)
+    if existing_article is not None:
+        requested_evidence_id = str(requested_article.get("evidenceId", "")).strip()
+        existing_evidence_id = str(existing_article.get("evidenceId", "")).strip()
+        requested_intent = str(requested_article.get("primaryIntent", "")).strip().casefold()
+        existing_intent = str(existing_article.get("primaryIntent", "")).strip().casefold()
+        if (
+            not requested_evidence_id
+            or requested_evidence_id != existing_evidence_id
+            or not requested_intent
+            or requested_intent != existing_intent
+        ):
+            raise website_ops.ExecutionError(
+                "Generated article slug already exists with a different identity."
+            )
+        # The durable registry is authoritative for a matching identity. This
+        # lets recovery accept a later source-safe editorial repair instead of
+        # repeatedly validating the stale pre-repair draft stored in the queue.
+        validation_record["action_value"] = json.dumps(
+            existing_article, ensure_ascii=False
+        )
+    try:
+        article = validate_generated_article(validation_record)
         deterministic_repairs: list[str] = []
     except website_ops.ExecutionError as original_error:
         try:
-            raw_article = json.loads(str(record.get("action_value", "") or ""))
+            raw_article = json.loads(
+                str(validation_record.get("action_value", "") or "")
+            )
         except json.JSONDecodeError:
             raise original_error
         repaired_article, deterministic_repairs = repair_deterministic_article_defects(
@@ -599,25 +755,32 @@ def execute_github_article_action(
         if not deterministic_repairs:
             raise original_error
         repaired_record = {
-            **dict(record),
+            **validation_record,
             "action_value": json.dumps(repaired_article, ensure_ascii=False),
         }
         article = validate_generated_article(repaired_record)
-    client = GitHubWebsiteClient()
-    before_source, before_sha = client.get_file(GENERATED_ARTICLE_REGISTRY)
-    after_source = update_generated_article_registry(before_source, article)
     feedback_id = str(record.get("feedback_id", "") or "unknown")
-    commit = client.put_file(
-        GENERATED_ARTICLE_REGISTRY,
-        after_source,
-        before_sha,
-        f"SEO: publish {article['slug']} ({feedback_id})",
-    )
-    commit_sha = str((commit.get("commit") or {}).get("sha", ""))
+    if existing_article is not None:
+        commit_sha = ""
+    else:
+        after_source = update_generated_article_registry(before_source, article)
+        commit = client.put_file(
+            GENERATED_ARTICLE_REGISTRY,
+            after_source,
+            before_sha,
+            f"SEO: publish {article['slug']} ({feedback_id})",
+        )
+        commit_sha = str((commit.get("commit") or {}).get("sha", ""))
     page_url = f"https://anatainc.com/blog/{article['slug']}"
+    # Vercel production promotion can legitimately take longer than five minutes,
+    # especially while another website deployment is already building.  A short
+    # timeout previously caused Agent to commit an article, observe it live just
+    # after the deadline, and then delete it again as part of an automatic
+    # rollback.  Publication latency is not evidence that the source change is
+    # unsafe, so keep the durable commit and allow a full deployment window.
     timeout_seconds = max(
-        60,
-        int(os.getenv("WEBSITE_OPS_DEPLOY_VERIFY_TIMEOUT_SECONDS", "300")),
+        900,
+        int(os.getenv("WEBSITE_OPS_DEPLOY_VERIFY_TIMEOUT_SECONDS", "900")),
     )
     poll_seconds = max(
         5,
@@ -627,9 +790,11 @@ def execute_github_article_action(
     while time.monotonic() < deadline:
         try:
             observation = website_ops.collect_page_observation(page_url, config=config)
+            observed_title = str(observation.get("title", "")).strip()
+            expected_title = str(article["title"]).strip()
             if (
                 int(observation.get("status_code", 0) or 0) == 200
-                and str(observation.get("title", "")).strip() == str(article["title"]).strip()
+                and observed_title in {expected_title, f"{expected_title} | Anata"}
                 and str(observation.get("canonical_url", "")).rstrip("/") == page_url
                 and str(article["content"]["h1"]).strip()
                 in [str(value).strip() for value in observation.get("h1", []) or []]
@@ -642,6 +807,7 @@ def execute_github_article_action(
                     "repository": client.repository,
                     "branch": client.branch,
                     "commit_sha": commit_sha,
+                    "production_url": page_url,
                     "executed_at": timestamp.isoformat(),
                     "verification_status": "verified",
                     "summary": {
@@ -651,22 +817,12 @@ def execute_github_article_action(
                         "primary_intent": article["primaryIntent"],
                         "source_count": len(article["sources"]),
                         "deterministic_repairs": deterministic_repairs,
+                        "reconciled_existing": reconciled_existing,
                     },
                 }
         except Exception:  # noqa: BLE001 - deployment can be briefly unavailable
             pass
         time.sleep(poll_seconds)
-    try:
-        current_source, current_sha = client.get_file(GENERATED_ARTICLE_REGISTRY)
-        if current_source == after_source:
-            client.put_file(
-                GENERATED_ARTICLE_REGISTRY,
-                before_source,
-                current_sha,
-                f"Rollback SEO article {article['slug']} ({feedback_id})",
-            )
-    except Exception:  # noqa: BLE001
-        pass
     raise website_ops.ExecutionError(
-        "Production article verification timed out; an automatic rollback was attempted."
+        "Production article verification timed out; the durable publication commit was preserved for reconciliation."
     )

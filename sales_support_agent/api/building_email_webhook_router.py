@@ -21,6 +21,9 @@ from sales_support_agent.models.entities import (
     BuildingCommunicationPreference,
     BuildingContact,
     BuildingEmailEvent,
+    BuildingInquiry,
+    BuildingInquiryReceipt,
+    BuildingTransactionalMessage,
     BuildingSuppression,
 )
 
@@ -157,10 +160,23 @@ async def ingest_resend_webhook(request: Request) -> dict[str, Any]:
             }
 
         recipient = None
+        receipt = None
+        transactional = None
         if provider_message_id:
             recipient = session.execute(
                 select(BuildingCampaignRecipient).where(
                     BuildingCampaignRecipient.provider_message_id
+                    == provider_message_id
+                )
+            ).scalar_one_or_none()
+            receipt = session.execute(
+                select(BuildingInquiryReceipt).where(
+                    BuildingInquiryReceipt.provider_message_id == provider_message_id
+                )
+            ).scalar_one_or_none()
+            transactional = session.execute(
+                select(BuildingTransactionalMessage).where(
+                    BuildingTransactionalMessage.provider_message_id
                     == provider_message_id
                 )
             ).scalar_one_or_none()
@@ -194,6 +210,35 @@ async def ingest_resend_webhook(request: Request) -> dict[str, Any]:
             if suppression_reason:
                 recipient.exclusion_reason = (
                     f"Provider reported {suppression_reason}; future marketing is suppressed."
+                )
+        if receipt is not None and supported:
+            receipt.status = RECIPIENT_STATUSES[event_type]
+            receipt.updated_at = _now()
+            if event_type == "email.delivered":
+                receipt.delivered_at = _now()
+                receipt.last_error = ""
+            elif event_type in {"email.bounced", "email.complained", "email.failed"}:
+                receipt.last_error = f"Provider reported {event_type.removeprefix('email.').replace('_', ' ')}."
+            inquiry = session.get(BuildingInquiry, receipt.inquiry_id)
+            if inquiry is not None:
+                inquiry_payload = dict(inquiry.payload_json or {})
+                inquiry_payload["_customer_receipt"] = {
+                    **dict(inquiry_payload.get("_customer_receipt") or {}),
+                    "status": receipt.status,
+                    "delivered_at": receipt.delivered_at.isoformat() if receipt.delivered_at else "",
+                    "reason": receipt.last_error,
+                }
+                inquiry.payload_json = inquiry_payload
+                inquiry.updated_at = _now()
+        if transactional is not None and supported:
+            transactional.status = RECIPIENT_STATUSES[event_type]
+            transactional.updated_at = _now()
+            if event_type == "email.delivered":
+                transactional.delivered_at = _now()
+                transactional.last_error = ""
+            elif event_type in {"email.bounced", "email.complained", "email.failed"}:
+                transactional.last_error = (
+                    f"Provider reported {event_type.removeprefix('email.').replace('_', ' ')}."
                 )
         if suppression_reason and email:
             suppression = session.get(BuildingSuppression, email)
@@ -235,6 +280,8 @@ async def ingest_resend_webhook(request: Request) -> dict[str, Any]:
                 "event_type": event_type,
                 "email": email,
                 "campaign_recipient_id": recipient.id if recipient else None,
+                "inquiry_id": receipt.inquiry_id if receipt else None,
+                "transactional_message_id": transactional.id if transactional else None,
                 "suppression_reason": suppression_reason or "",
             },
         ))
@@ -243,6 +290,8 @@ async def ingest_resend_webhook(request: Request) -> dict[str, Any]:
             "duplicate": False,
             "event_type": event_type,
             "status": status,
-            "recipient_matched": recipient is not None,
+            "recipient_matched": (
+                recipient is not None or receipt is not None or transactional is not None
+            ),
             "suppressed": bool(suppression_reason and email),
         }

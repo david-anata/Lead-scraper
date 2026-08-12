@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -17,12 +17,12 @@ from sales_support_agent.models.entities import (
 
 DEFAULT_ITEMS = {
     "event_readiness": [
-        "Confirm final schedule, attendance, setup, and teardown window",
-        "Confirm room layout, furniture, and included equipment",
-        "Review signed requirements, insurance, and approved exceptions",
-        "Confirm vendor, guest, and building-access plan",
-        "Assign opening, onsite, and closing responsibilities",
-        "Record post-event inspection and closeout notes",
+        ("Confirm final schedule, attendance, setup, and teardown window", -14),
+        ("Confirm room layout, furniture, and included equipment", -10),
+        ("Review signed requirements, insurance, and approved exceptions", -10),
+        ("Confirm vendor, guest, and building-access plan", -7),
+        ("Publish the run sheet and assign opening, onsite, and closing responsibilities", -2),
+        ("Record incident, damage, security-deposit, and post-event closeout evidence", 1),
     ],
     "move_in": [
         "Confirm signed agreement, deposit, and billing readiness",
@@ -111,13 +111,16 @@ def ensure_operational_checklist(
         updated_at=_now(),
     )
     session.add(row)
-    for position, label in enumerate(DEFAULT_ITEMS[checklist_type], start=1):
+    for position, configured in enumerate(DEFAULT_ITEMS[checklist_type], start=1):
+        label, offset_days = configured if isinstance(configured, tuple) else (configured, 0)
         session.add(
             BuildingOperationalChecklistItem(
                 id=str(uuid4()),
                 checklist_id=row.id,
                 label=label,
                 sort_order=position,
+                assigned_owner=reservation.assigned_owner,
+                due_at=reservation.starts_at + timedelta(days=offset_days),
             )
         )
     session.add(

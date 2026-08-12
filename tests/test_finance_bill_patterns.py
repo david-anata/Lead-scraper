@@ -83,13 +83,14 @@ def _post_history(
     payments: list[tuple[date, int]],
     *,
     category: str = "software",
+    source: str = "csv",
 ) -> None:
     """Insert posted bank outflows, the only evidence bill prediction reads."""
     with Session(engine) as session:
         for index, (day, amount_cents) in enumerate(payments):
             session.add(CashEvent(
-                id=f"csv-{vendor}-{index}".replace(" ", "-").lower(),
-                source="csv",
+                id=f"{source}-{vendor}-{index}".replace(" ", "-").lower(),
+                source=source,
                 source_id=f"{vendor}-{index}",
                 record_kind="transaction",
                 event_type="outflow",
@@ -103,6 +104,58 @@ def _post_history(
                 confidence="confirmed",
             ))
         session.commit()
+
+
+def test_plaid_history_replaces_the_legacy_csv_archive(finance_engine):
+    dates = _monthly_dates(4, day=8)
+    _post_history(
+        finance_engine,
+        "Old CSV Vendor",
+        [(day, 100_00) for day in dates],
+        source="csv",
+    )
+    _post_history(
+        finance_engine,
+        "Current Plaid Vendor",
+        [(day, 250_00) for day in dates],
+        source="plaid",
+    )
+
+    listing = list_bill_patterns(as_of=AS_OF)
+
+    vendors = {row["vendor"] for row in listing["patterns"]}
+    assert vendors == {"Current Plaid Vendor"}
+
+
+def test_plaid_keeps_a_prior_csv_decision_when_payment_evidence_is_the_same(finance_engine):
+    payments = [(day, 2056_00) for day in _monthly_dates(4, day=8)]
+    _post_history(finance_engine, "Forafinancial", payments, source="csv")
+    legacy = _pattern_for("Forafinancial")
+    record_bill_pattern_decision(legacy["pattern_key"], "track", actor=ACTOR)
+
+    # Plaid's descriptor is different, but the dates and amounts prove this is
+    # the same recurring bill the operator already confirmed.
+    _post_history(finance_engine, "Forafinancial Merchdebit", payments, source="plaid")
+    listing = list_bill_patterns(as_of=AS_OF)
+
+    current = listing["patterns"][0]
+    assert current["vendor"] == "Forafinancial Merchdebit"
+    assert current["decision"] == "track"
+    assert current["decision_inherited_from"] == legacy["pattern_key"]
+    assert confirmed_bill_projections(as_of=AS_OF, horizon_days=40)
+
+
+def test_plaid_does_not_inherit_a_csv_decision_from_name_similarity_alone(finance_engine):
+    csv_payments = [(day, 2056_00) for day in _monthly_dates(4, day=8)]
+    _post_history(finance_engine, "Acme Service", csv_payments, source="csv")
+    legacy = _pattern_for("Acme Service")
+    record_bill_pattern_decision(legacy["pattern_key"], "track", actor=ACTOR)
+
+    plaid_payments = [(day, 900_00) for day in _monthly_dates(4, day=12)]
+    _post_history(finance_engine, "Acme Services New", plaid_payments, source="plaid")
+    listing = list_bill_patterns(as_of=AS_OF)
+
+    assert listing["patterns"][0]["decision"] == ""
 
 
 def _schedule_real_bill(

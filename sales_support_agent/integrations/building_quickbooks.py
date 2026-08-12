@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+import hashlib
 from typing import Any
 
 import requests
@@ -11,7 +12,22 @@ from sales_support_agent.api.qbo_auth_router import _load_tokens, get_valid_acce
 
 QBO_BASE_URL = "https://quickbooks.api.intuit.com/v3/company"
 VERIFIED_QBO_REALM_ID = "9130357569555476"
-BUILDING_ITEM_IDS = {"event": "77", "deposit": "79"}
+BUILDING_ITEM_IDS = {
+    "event": "77",
+    "cleaning": "78",
+    "deposit": "79",
+    "tables_chairs": "80",
+    "soda_machine": "81",
+}
+
+
+def building_quickbooks_invoice_url(invoice_id: str) -> str:
+    """Return a company-pinned QBO deep link for one verified invoice."""
+
+    return (
+        "https://qbo.intuit.com/app/login?pagereq="
+        f"invoice%3FtxnId%3D{invoice_id}&deeplinkcompanyid={VERIFIED_QBO_REALM_ID}"
+    )
 
 
 class BuildingQuickBooksError(RuntimeError):
@@ -61,8 +77,18 @@ class BuildingQuickBooksClient:
             timeout=30,
         )
         if response.status_code >= 400:
+            message = ""
+            try:
+                fault = (response.json() or {}).get("Fault") or {}
+                error = next(iter(fault.get("Error") or []), {})
+                message = str(
+                    error.get("Detail") or error.get("Message") or ""
+                ).strip()
+            except (TypeError, ValueError):
+                message = ""
+            safe_message = message[:300] if message else "Review the invoice fields in QuickBooks."
             raise BuildingQuickBooksError(
-                f"QuickBooks rejected the Building draft ({response.status_code})."
+                f"QuickBooks rejected the Building draft ({response.status_code}): {safe_message}"
             )
         return response.json()
 
@@ -109,39 +135,105 @@ class BuildingQuickBooksClient:
         schedule_type: str,
         due_date: date,
         idempotency_key: str,
+        line_items: list[dict[str, Any]] | None = None,
+        tax_rate_name: str = "",
     ) -> dict[str, Any]:
-        if schedule_type not in {"one_time", "deposit", "final_balance"}:
+        if schedule_type not in {
+            "one_time",
+            "deposit",
+            "final_balance",
+            "security_deposit",
+            "event_invoice",
+        }:
             raise BuildingQuickBooksError(
                 "This Building schedule is not an event charge and has no verified QuickBooks item."
             )
         item_id = (
             BUILDING_ITEM_IDS["deposit"]
-            if schedule_type == "deposit"
+            if schedule_type == "security_deposit"
             else BUILDING_ITEM_IDS["event"]
         )
         amount = round(amount_cents / 100, 2)
+        sales_detail: dict[str, Any] = {
+            "ItemRef": {"value": item_id},
+            "Qty": 1,
+            "UnitPrice": amount,
+            # Agent freezes the legally reviewed tax in the approved quote.
+            # Prevent QuickBooks from calculating tax again on that gross amount.
+            "TaxCodeRef": {"value": "NON"},
+        }
+        qbo_lines: list[dict[str, Any]] = []
+        for item in line_items or []:
+            item_amount = round(int(item["amount_cents"]) / 100, 2)
+            item_type = str(item.get("type") or "event")
+            item_id = BUILDING_ITEM_IDS.get(item_type)
+            if not item_id:
+                raise BuildingQuickBooksError(
+                    f"No verified QuickBooks product is mapped for {item_type.replace('_', ' ')}."
+                )
+            detail: dict[str, Any] = {
+                "ItemRef": {"value": item_id},
+                "Qty": 1,
+                "UnitPrice": item_amount,
+                "TaxCodeRef": {"value": "TAX" if item.get("taxable") else "NON"},
+            }
+            quantity = int(item.get("quantity") or 1)
+            detail["Qty"] = quantity
+            detail["UnitPrice"] = round(item_amount / quantity, 2)
+            qbo_lines.append({
+                "Amount": item_amount,
+                "Description": str(item["description"]),
+                "DetailType": "SalesItemLineDetail",
+                "SalesItemLineDetail": detail,
+            })
+        provider_request_id = "building-" + hashlib.sha256(
+            idempotency_key.encode("utf-8")
+        ).hexdigest()[:40]
+        invoice_payload: dict[str, Any] = {
+            "CustomerRef": {"value": customer_id},
+            "DueDate": due_date.isoformat(),
+            "PrivateNote": f"Agent Building schedule {idempotency_key}",
+            "CustomerMemo": {"value": description.strip()},
+            "Line": qbo_lines or [{
+                "Amount": amount,
+                "Description": description.strip(),
+                "DetailType": "SalesItemLineDetail",
+                "SalesItemLineDetail": sales_detail,
+            }],
+        }
+        if tax_rate_name:
+            tax_data = self._request(
+                "GET", "query", params={"query": "SELECT * FROM TaxCode MAXRESULTS 1000", "minorversion": "70"}
+            )
+            matches = [
+                row for row in tax_data.get("QueryResponse", {}).get("TaxCode", [])
+                if str(row.get("Name") or "").strip().lower() == tax_rate_name.strip().lower()
+            ]
+            if len(matches) != 1:
+                raise BuildingQuickBooksError(
+                    f"QuickBooks tax rate '{tax_rate_name}' is unavailable or ambiguous."
+                )
+            invoice_payload["TxnTaxDetail"] = {"TxnTaxCodeRef": {"value": str(matches[0]["Id"])}}
         data = self._request(
             "POST",
             "invoice",
-            params={"minorversion": "70", "requestid": idempotency_key},
-            payload={
-                "CustomerRef": {"value": customer_id},
-                "DueDate": due_date.isoformat(),
-                "PrivateNote": f"Agent Building schedule {idempotency_key}",
-                "CustomerMemo": {"value": description.strip()},
-                "Line": [{
-                    "Amount": amount,
-                    "Description": description.strip(),
-                    "DetailType": "SalesItemLineDetail",
-                    "SalesItemLineDetail": {
-                        "ItemRef": {"value": item_id},
-                        "Qty": 1,
-                        "UnitPrice": amount,
-                    },
-                }],
-            },
+            params={"minorversion": "70", "requestid": provider_request_id},
+            payload=invoice_payload,
         )
         invoice = data.get("Invoice") or {}
         if not invoice.get("Id"):
             raise BuildingQuickBooksError("QuickBooks returned no invoice ID.")
+        return invoice
+
+    def get_invoice(self, invoice_id: str) -> dict[str, Any]:
+        """Read one authoritative QuickBooks invoice for reconciliation."""
+
+        data = self._request(
+            "GET",
+            f"invoice/{self._quoted(invoice_id)}",
+            params={"minorversion": "70"},
+        )
+        invoice = data.get("Invoice") or {}
+        if not invoice.get("Id"):
+            raise BuildingQuickBooksError("QuickBooks returned no invoice evidence.")
         return invoice

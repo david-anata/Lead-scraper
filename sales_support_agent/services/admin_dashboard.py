@@ -6,7 +6,7 @@ import html
 import json
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -62,13 +62,16 @@ class DashboardData:
     owner_queues: list[DashboardOwnerQueue]
     latest_sync_at: datetime | None
     latest_run_summary: dict
-    sync_auto_enabled: bool
-    sync_stale_after_minutes: int
-    lead_builder_ready: bool
-    lead_builder_missing: list[str]
-    deck_generator_ready: bool
-    deck_generator_missing: list[str]
-    recent_deck_runs: list[dict[str, object]]
+    # Capability and readiness flags default to the conservative "off/unknown"
+    # value so adding one never breaks an existing caller. Both real
+    # construction sites pass every field explicitly.
+    sync_auto_enabled: bool = False
+    sync_stale_after_minutes: int = 0
+    lead_builder_ready: bool = False
+    lead_builder_missing: list[str] = field(default_factory=list)
+    deck_generator_ready: bool = False
+    deck_generator_missing: list[str] = field(default_factory=list)
+    recent_deck_runs: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1256,14 +1259,15 @@ def build_executive_data(
             .order_by(CommunicationEvent.occurred_at.desc())
         ).scalars()
     )
+    configured_active_statuses = {
+        normalize_status_key(status)
+        for status in settings.active_statuses
+        if normalize_status_key(status)
+    }
     active_leads = [
         lead
         for lead in leads
-        if is_active_pipeline_status(
-            (lead.status or "").strip(),
-            active_statuses=settings.active_statuses,
-            inactive_statuses=settings.inactive_statuses,
-        )
+        if normalize_status_key((lead.status or "").strip()) in configured_active_statuses
         and not _exclude_from_dashboard(lead.status or "")
     ]
     active_task_ids = [lead.clickup_task_id for lead in active_leads if lead.clickup_task_id]
@@ -1506,6 +1510,11 @@ def build_executive_data(
         ],
     )
 
+    # NOTE: this counts `lead_records`, the attention queue — leads with no
+    # assessment and routine follow_up_due ones are skipped above. So the
+    # headline "N active leads are currently tracked" reports leads needing
+    # attention, not the active pipeline (len(active_leads)). Behaviour is
+    # preserved deliberately; changing the KPI's meaning is a product call.
     total_active_leads = len(lead_records)
     overdue_count = sum(1 for item in lead_records if item.urgency == "overdue")
     review_count = sum(1 for item in lead_records if item.urgency == "needs_immediate_review")
@@ -2249,6 +2258,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       * {{ box-sizing: border-box; }}
       body {{
         margin: 0;
+        overflow-x: hidden;
         background: var(--light-brown);
         color: var(--text);
         font-family: "Inter", "Segoe UI", sans-serif;
@@ -2262,6 +2272,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
         padding: 28px 24px 64px;
       }}
       .workspace {{
+        min-width: 0;
         background: var(--white);
         border: 1px solid rgba(43, 54, 68, 0.10);
         border-radius: 26px;
@@ -7383,6 +7394,8 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
         line-height: 1.4;
       }}
       .section {{
+        min-width: 0;
+        max-width: 100%;
         background: var(--white);
         border: 2px solid var(--border);
         border-radius: 20px;
@@ -7413,8 +7426,11 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
       }}
       .secondary-grid {{
         display: grid;
+        min-width: 0;
         gap: 18px;
       }}
+      .secondary-grid > *, #scorecard-table {{ min-width: 0; max-width: 100%; }}
+      details.secondary-disclosure:not([open]) > .secondary-grid {{ display:none; }}
       .section h2 {{
         margin: 0 0 16px;
         font-family: "Montserrat", sans-serif;
@@ -7547,11 +7563,16 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
           padding: 24px 14px 56px;
         }}
         .workspace {{
-          padding: 18px;
+          padding: 18px 16px;
         }}
         .page-title {{
-          font-size: 42px;
+          font-size: 38px;
         }}
+        .heading-line {{ display:flex; flex-wrap:wrap; }}
+        #scorecard-table {{ overflow-x:auto; -webkit-overflow-scrolling:touch; }}
+        #scorecard-table table {{ min-width:610px; }}
+        .section {{ padding:16px; }}
+        .section h2 {{ font-size:23px; }}
       }}
     </style>
   </head>
@@ -7561,13 +7582,22 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
       <div class="workspace">
         <section class="page-header">
           <div>
-            <div class="eyebrow">Executive summary</div>
-            <h1 class="page-title">Pipeline <span class="highlight">Health</span>.</h1>
+            <div class="eyebrow">Executive · Sales</div>
+            <h1 class="page-title">Sales pipeline <span class="highlight">Health</span>.</h1>
           </div>
           <div class="page-copy">
-            Leadership view for AE performance and pipeline risk. Latest ClickUp sync: {html.escape(latest_sync)}.
+            Leadership view for AE performance and pipeline risk. This page covers Sales—not company-wide finance, operations, advertising, fulfillment, or HR. Latest ClickUp sync: {html.escape(latest_sync)}.
           </div>
         </section>
+
+        <nav class="app-command-bar" aria-label="Other executive operating areas">
+          <span><strong>Open another operating area:</strong></span>
+          <a href="/admin/finances">Finance</a>
+          <a href="/admin/building">Building</a>
+          <a href="/admin/advertising/audit">Advertising</a>
+          <a href="/admin/fulfillment/sales">Fulfillment</a>
+          <a href="/admin/hr">HR</a>
+        </nav>
 
         <section class="confidence-banner {html.escape(sync_state)}">
           <div class="confidence-copy">

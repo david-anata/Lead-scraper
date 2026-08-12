@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sales_support_agent.models.entities import (
     BuildingAvailabilityBlock,
     BuildingCalendarProjection,
+    BuildingContact,
     BuildingReservation,
     BuildingSpace,
 )
@@ -38,11 +39,12 @@ def projection_checksum(payload: dict[str, Any]) -> str:
 def projection_payload(
     reservation: BuildingReservation,
     space: BuildingSpace,
+    contact: BuildingContact | None = None,
 ) -> dict[str, Any]:
     """Build an operator-safe Google Calendar event from an Agent reservation."""
 
     status = reservation.status.replace("_", " ").title()
-    return {
+    payload = {
         "summary": f"Anata Building — {space.name}",
         "description": (
             f"Agent reservation: {reservation.id}\n"
@@ -70,6 +72,17 @@ def projection_payload(
         },
         "transparency": "opaque",
     }
+    if (
+        contact is not None
+        and reservation.status in {"confirmed", "pre_event", "completed"}
+        and contact.status == "active"
+        and contact.email
+    ):
+        payload["attendees"] = [{
+            "email": contact.email,
+            "displayName": contact.full_name,
+        }]
+    return payload
 
 
 def queue_calendar_projection(session, reservation: BuildingReservation) -> None:
@@ -116,7 +129,12 @@ def queue_calendar_projection(session, reservation: BuildingReservation) -> None
         space = session.get(BuildingSpace, reservation.space_id)
         if space is None:
             return
-        row.payload_json = projection_payload(reservation, space)
+        contact = (
+            session.get(BuildingContact, reservation.contact_id)
+            if reservation.contact_id
+            else None
+        )
+        row.payload_json = projection_payload(reservation, space, contact)
     row.target_calendar_id = configured_target_calendar_id()
     row.payload_checksum = projection_checksum(dict(row.payload_json or {}))
     row.operation_key = hashlib.sha256(

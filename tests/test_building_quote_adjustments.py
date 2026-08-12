@@ -116,8 +116,15 @@ class BuildingQuoteAdjustmentTests(unittest.TestCase):
         with self.factory() as session:
             quote = session.query(BuildingProposal).one()
             self.assertEqual(quote.amount_cents, 188_038)
+            pricing_adjustment = dict(
+                quote.rate_plan_snapshot_json["pricing_adjustment"]
+            )
             self.assertEqual(
-                quote.rate_plan_snapshot_json["pricing_adjustment"],
+                pricing_adjustment.pop("transaction_date"),
+                quote.rate_plan_snapshot_json["transaction_date"],
+            )
+            self.assertEqual(
+                pricing_adjustment,
                 {
                     "pricing_subtotal_cents": 200_000,
                     "discount_cents": 25_000,
@@ -153,6 +160,27 @@ class BuildingQuoteAdjustmentTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422, response.text)
         self.assertIn("cannot exceed", response.text)
+
+    def test_terminal_booking_rejects_quote_mutation(self) -> None:
+        with self.factory() as session:
+            reservation = session.get(BuildingReservation, "quote-adjustment-event")
+            reservation.status = "cancelled"
+            session.add(reservation)
+            session.commit()
+        try:
+            response = self.client.post(
+                "/api/internal/building/bookings/quote-adjustment-event/proposals",
+                headers=self.headers,
+                json=self._payload(),
+            )
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertIn("read-only", response.text)
+        finally:
+            with self.factory() as session:
+                reservation = session.get(BuildingReservation, "quote-adjustment-event")
+                reservation.status = "soft_hold"
+                session.add(reservation)
+                session.commit()
 
 
 if __name__ == "__main__":

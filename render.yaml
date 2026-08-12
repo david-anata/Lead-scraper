@@ -2,7 +2,10 @@ services:
   - type: web
     name: sales-support-agent
     runtime: python
-    plan: starter
+    # Agent's combined admin and automation workload exceeded Starter's 512 MB
+    # ceiling repeatedly in production. Standard provides 2 GB so Render does
+    # not kill the only web instance during normal scheduled work.
+    plan: standard
     # Website Ops currently maintains its report, quota, and publishing ledgers on
     # the service filesystem. Keep one writer until every ledger is database-backed.
     numInstances: 1
@@ -19,7 +22,7 @@ services:
       - key: WEBSITE_OPS_DATABASE_MIRROR
         value: "true"
       - key: WEBSITE_OPS_EMBEDDED_SCHEDULER
-        value: "false"
+        value: "true"
       - key: OUTBOUND_EMBEDDED_SCHEDULER
         value: "false"
       - key: CLICKUP_API_TOKEN
@@ -72,6 +75,12 @@ services:
         value: agent
       - key: BUILDING_SITE_INTAKE_KEY
         sync: false
+      - key: BUILDING_CONTRACT_GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: BUILDING_CONTRACT_TEMPLATE_DOC_ID
+        value: 1V3MzpYGOl3-qtst8ugfV03n1L2qKaoteibYgErVQuOk
+      - key: BUILDING_CONTRACT_DRIVE_FOLDER_ID
+        value: 1gA7xJU46VCLAAtEPIDdc0MyU72pE1HhM
       - key: BUILDING_PUBLIC_BASE_URL
         value: https://anatabuilding.com
       - key: BUILDING_CAMPAIGN_TOKEN_SECRET
@@ -103,7 +112,7 @@ services:
       - key: CONTENT_DRIVE_VERIFIED
         value: "false"
       - key: CONTENT_RIVERSIDE_RELAY_ENABLED
-        value: "false"
+        sync: false
       - key: RIVERSIDE_API_KEY
         sync: false
       - key: RIVERSIDE_STUDIO_ID
@@ -113,19 +122,31 @@ services:
       - key: CONTENT_LINKEDIN_CONNECTOR_KEY
         sync: false
       - key: CONTENT_LINKEDIN_CONNECTOR_VERIFIED
-        value: "false"
+        sync: false
       - key: CONTENT_LINKEDIN_COMPANY_ID
         sync: false
       - key: CONTENT_LINKEDIN_PERSON_ID
         sync: false
       - key: CONTENT_LINKEDIN_COMPANY_LIVE_APPROVED
-        value: "false"
+        sync: false
       - key: CONTENT_LINKEDIN_COMPANY_AUTO_PUBLISH_ENABLED
-        value: "false"
+        sync: false
       - key: CONTENT_LINKEDIN_PERSONAL_LIVE_APPROVED
         value: "false"
       - key: CONTENT_LINKEDIN_PERSONAL_AUTO_PUBLISH_ENABLED
         value: "false"
+      - key: CONTENT_GOOGLE_BUSINESS_CONNECTOR_URL
+        sync: false
+      - key: CONTENT_GOOGLE_BUSINESS_CONNECTOR_KEY
+        sync: false
+      - key: CONTENT_GOOGLE_BUSINESS_CONNECTOR_VERIFIED
+        sync: false
+      - key: CONTENT_GOOGLE_BUSINESS_PROFILE_ID
+        sync: false
+      - key: CONTENT_GOOGLE_BUSINESS_LIVE_APPROVED
+        sync: false
+      - key: CONTENT_GOOGLE_BUSINESS_AUTO_PUBLISH_ENABLED
+        sync: false
       - key: CONTENT_YOUTUBE_CONNECTOR_URL
         sync: false
       - key: CONTENT_YOUTUBE_CONNECTOR_KEY
@@ -161,11 +182,13 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       - key: CONTENT_PUBLISHING_MODE
-        value: shadow
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: WEBSITE_OPS_CITATION_TESTING_ENABLED
-        value: "true"
+        value: "false"
+      - key: WEBSITE_OPS_CONTENT_EXECUTION_MODE
+        value: codex
       - key: WEBSITE_OPS_CITATION_PROVIDER
         value: auto
       - key: WEBSITE_OPS_OPENAI_CITATION_MODEL
@@ -291,25 +314,62 @@ services:
     schedule: "5 * * * *"
     buildCommand: pip install -r requirements.txt
     startCommand: |
-      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/sales-operator/run" \
-        -H "Content-Type: application/json" \
-        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
-        -d '{"dry_run":false,"limit":25,"run_hubspot_sync":true,"run_mailbox_sync":false,"trigger":"scheduled"}'
-      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/hr-reminders/run" \
-        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")"
-      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/building-holds/run" \
-        -H "Content-Type: application/json" \
-        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
-        -d '{"dry_run":false}'
-      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/internal/building/crm/scheduled-campaigns/run" \
-        -H "Content-Type: application/json" \
-        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
-        -d '{"dry_run":false,"max_campaigns":10,"actor":"job:building-campaign-scheduler"}'
+      # Independent steps: all of them run even if an earlier one fails,
+      # but the cron exits non-zero if any did, so a failure cannot hide.
+      failed=0
+      run() {
+        if ! curl -sS --fail "$@"; then
+          echo "cron step failed: $*" >&2
+          failed=1
+        fi
+      }
+      run -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/sales-operator/run" \n        -H "Content-Type: application/json" \n        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \n        -d '{"dry_run":false,"limit":25,"run_hubspot_sync":true,"run_mailbox_sync":false,"trigger":"scheduled"}'
+      run -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/hr-reminders/run" \n        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")"
+      exit "$failed"
     envVars:
       - key: SALES_SUPPORT_AGENT_URL
         sync: false
       - key: SALES_AGENT_INTERNAL_API_KEY
         sync: false
+
+  - type: cron
+    # Building runs on its own schedule. It used to be four extra steps
+    # inside the sales cron, so a building failure was reported against a
+    # sales run and the two could not be scheduled or paused separately.
+    # Offset to :20 so it does not contend with the sales run at :05.
+    name: building-operations-hourly
+    runtime: python
+    schedule: "20 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: |
+      # Independent steps: all of them run even if an earlier one fails,
+      # but the cron exits non-zero if any did, so a failure cannot hide.
+      failed=0
+      run() {
+        if ! curl -sS --fail "$@"; then
+          echo "cron step failed: $*" >&2
+          failed=1
+        fi
+      }
+      run -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/building-holds/run" \n        -H "Content-Type: application/json" \n        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \n        -d '{"dry_run":false}'
+      run -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/building-leads/run" \n        -H "Content-Type: application/json" \n        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \n        -d '{"dry_run":false}'
+      run -X POST "$SALES_SUPPORT_AGENT_URL/api/internal/building/crm/scheduled-campaigns/run" \n        -H "Content-Type: application/json" \n        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \n        -d '{"dry_run":false,"max_campaigns":10,"actor":"job:building-campaign-scheduler"}'
+      run -X POST "$SALES_SUPPORT_AGENT_URL/api/internal/building/bookings/communications/run" \n        -H "Content-Type: application/json" \n        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \n        -d '{"execute":true,"actor":"job:building-event-communications"}'
+      exit "$failed"
+    envVars:
+      # Inherited from the web service so this cron needs no manual setup in
+      # the dashboard. A new service with sync:false vars starts unable to
+      # run, and its failures would look like Building being broken.
+      - key: SALES_SUPPORT_AGENT_URL
+        fromService:
+          type: web
+          name: sales-support-agent
+          envVarKey: SALES_SUPPORT_AGENT_URL
+      - key: SALES_AGENT_INTERNAL_API_KEY
+        fromService:
+          type: web
+          name: sales-support-agent
+          envVarKey: SALES_AGENT_INTERNAL_API_KEY
 
   - type: cron
     name: agent-outbound-morning
@@ -327,3 +387,11 @@ services:
         value: https://agent.anatainc.com
       - key: SALES_AGENT_INTERNAL_API_KEY
         sync: false
+
+  - type: cron
+    name: building-synthetic-journey
+    runtime: python
+    # Daily isolated journey. A broken handoff or failed cleanup fails the cron.
+    schedule: "30 13 * * *"
+    buildCommand: pip install -r requirements.txt pytest
+    startCommand: python scripts/run_building_synthetic_journey.py

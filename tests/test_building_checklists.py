@@ -192,6 +192,8 @@ class BuildingChecklistTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["checklist_type"], "event_readiness")
         self.assertEqual(len(rows[0]["items"]), 6)
+        self.assertTrue(all(item["assigned_owner"] for item in rows[0]["items"]))
+        self.assertTrue(all(item["due_at"] for item in rows[0]["items"]))
 
         pre_event = self._transition("checklist-event", "pre_event")
         self.assertEqual(pre_event.status_code, 200, pre_event.text)
@@ -224,6 +226,9 @@ class BuildingChecklistTests(unittest.TestCase):
                     "status": status,
                     "reason": "Not applicable for this approved event"
                     if status == "waived"
+                    else "Completed and reviewed by operations",
+                    "evidence_reference": "ops-log:event-readiness"
+                    if status == "completed"
                     else "",
                     "actor": "operations@example.com",
                 },
@@ -238,6 +243,8 @@ class BuildingChecklistTests(unittest.TestCase):
             json={
                 "label": "Record final customer handoff",
                 "is_required": True,
+                "assigned_owner": "operations@example.com",
+                "due_at": self.start.isoformat(),
                 "actor": "operations@example.com",
             },
         )

@@ -61,6 +61,7 @@ REASON_LABELS = {
     "missing amount": "Missing amount",
     "missing date": "Missing date",
     "stale source evidence": "Source not refreshed recently",
+    "cross-feed transaction review": "Bank feeds may describe the same transaction",
 }
 
 
@@ -94,6 +95,40 @@ def list_review_items(*, as_of: Optional[date] = None) -> dict[str, Any]:
             "workflow_status": str(row.get("workflow_status") or ""),
         })
         total += 1
+
+    # Ambiguous mirrored bank rows are transactions, not obligations, so the
+    # payable classifier intentionally does not see them. They still need one
+    # protected, read-only case in the same Review inbox.
+    try:
+        with get_engine().connect() as connection:
+            candidates = connection.execute(text("""
+                SELECT member.group_id, event.id, event.name,
+                       event.vendor_or_customer, event.amount_cents,
+                       COALESCE(event.effective_date, event.due_date) AS paid_on
+                FROM finance_economic_transaction_members AS member
+                JOIN finance_economic_transaction_groups AS grouped
+                  ON grouped.id=member.group_id AND grouped.status='review'
+                JOIN cash_events AS event ON event.id=member.event_id
+                ORDER BY member.group_id, member.event_id
+            """)).fetchall()
+        seen_groups: set[str] = set()
+        for raw in candidates:
+            row = dict(raw._mapping)
+            group_id = str(row["group_id"])
+            if group_id in seen_groups:
+                continue
+            seen_groups.add(group_id)
+            groups.setdefault("cross-feed transaction review", []).append({
+                "id": str(row["id"]),
+                "name": str(row.get("name") or row.get("vendor_or_customer") or "Bank transaction"),
+                "amount_cents": int(row.get("amount_cents") or 0),
+                "due_date": str(row.get("paid_on") or "")[:10],
+                "protected": True,
+                "workflow_status": "review",
+            })
+            total += 1
+    except Exception:
+        pass
 
     ordered = sorted(groups.items(), key=lambda kv: len(kv[1]), reverse=True)
     return {

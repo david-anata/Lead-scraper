@@ -41,29 +41,44 @@ def _require_internal_key(request: Request, provided: Optional[str]) -> None:
 class ChecklistItemInput(BaseModel):
     label: str = Field(min_length=1, max_length=512)
     is_required: bool = True
+    assigned_owner: str = Field(default="", max_length=255)
+    due_at: datetime | None = None
     actor: str = Field(min_length=1, max_length=255)
 
 
 class ChecklistItemStatusInput(BaseModel):
     status: Literal["pending", "completed", "waived"]
     reason: str = Field(default="", max_length=2000)
+    evidence_reference: str = Field(default="", max_length=2000)
+    assigned_owner: str | None = Field(default=None, max_length=255)
+    due_at: datetime | None = None
     actor: str = Field(min_length=1, max_length=255)
 
     @model_validator(mode="after")
-    def waiver_requires_reason(self) -> "ChecklistItemStatusInput":
-        if self.status == "waived" and not self.reason.strip():
-            raise ValueError("Waiving an operational item requires a reason.")
+    def completion_requires_evidence(self) -> "ChecklistItemStatusInput":
+        if self.status in {"completed", "waived"} and not self.reason.strip():
+            raise ValueError("Completing or waiving an operational item requires evidence notes.")
+        if self.status == "completed" and not self.evidence_reference.strip():
+            raise ValueError("Completing an operational item requires an evidence reference.")
         return self
 
 
 def _item_payload(row: BuildingOperationalChecklistItem) -> dict[str, Any]:
+    now = _now()
+    due_at = row.due_at
+    if due_at is not None and due_at.tzinfo is None:
+        due_at = due_at.replace(tzinfo=timezone.utc)
     return {
         "id": row.id,
         "label": row.label,
         "status": row.status,
         "is_required": row.is_required,
         "sort_order": row.sort_order,
+        "assigned_owner": row.assigned_owner,
+        "due_at": due_at.isoformat() if due_at else None,
+        "overdue": bool(due_at and due_at < now and row.status == "pending"),
         "completion_reason": row.completion_reason,
+        "evidence_reference": row.evidence_reference,
         "completed_by": row.completed_by,
         "completed_at": row.completed_at.isoformat() if row.completed_at else None,
     }
@@ -167,6 +182,8 @@ def add_checklist_item(
             label=payload.label.strip(),
             is_required=payload.is_required,
             sort_order=max_order + 1,
+            assigned_owner=payload.assigned_owner.strip() or checklist.assigned_owner,
+            due_at=payload.due_at or checklist.due_at,
         )
         if payload.is_required:
             checklist.status = "open"
@@ -207,11 +224,18 @@ def update_checklist_item_status(
             raise HTTPException(status_code=409, detail="Checklist record is missing.")
         before = {
             "status": row.status,
+            "assigned_owner": row.assigned_owner,
+            "due_at": row.due_at.isoformat() if row.due_at else None,
             "completion_reason": row.completion_reason,
             "completed_by": row.completed_by,
         }
         row.status = payload.status
         row.completion_reason = payload.reason.strip()
+        row.evidence_reference = payload.evidence_reference.strip()
+        if payload.assigned_owner is not None:
+            row.assigned_owner = payload.assigned_owner.strip()
+        if payload.due_at is not None:
+            row.due_at = payload.due_at
         row.updated_at = _now()
         if payload.status in {"completed", "waived"}:
             row.completed_by = payload.actor
@@ -219,6 +243,7 @@ def update_checklist_item_status(
         else:
             row.completed_by = ""
             row.completed_at = None
+            row.evidence_reference = ""
         items = session.execute(
             select(BuildingOperationalChecklistItem).where(
                 BuildingOperationalChecklistItem.checklist_id == checklist.id
@@ -235,6 +260,9 @@ def update_checklist_item_status(
                 after_json={
                     "status": row.status,
                     "completion_reason": row.completion_reason,
+                    "evidence_reference": row.evidence_reference,
+                    "assigned_owner": row.assigned_owner,
+                    "due_at": row.due_at.isoformat() if row.due_at else None,
                     "checklist_status": checklist.status,
                 },
             )

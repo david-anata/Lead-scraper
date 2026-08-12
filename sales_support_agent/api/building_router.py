@@ -8,8 +8,9 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import delete, select
 
@@ -25,6 +26,16 @@ from sales_support_agent.services.building_launch_readiness import (
     arena_rate_plan_decision_blockers,
     sync_arena_effective_date_decision,
 )
+from sales_support_agent.services.building_lead_intake import (
+    advance_follow_up_sequence,
+    build_follow_up_sequence,
+    event_qualification_missing,
+    notify_new_building_lead,
+    prefill_event_interview,
+)
+from sales_support_agent.services.building_inquiry_receipt import attempt_inquiry_receipt
+from sales_support_agent.services.building_public_availability import candidate_date_availability
+from sales_support_agent.integrations.building_google_calendar import BuildingGoogleCalendarClient
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
@@ -305,6 +316,12 @@ class InquiryInput(BaseModel):
 
 class InquiryRetryInput(BaseModel):
     actor: str = Field(min_length=1, max_length=255)
+
+
+class InquiryConversionReceiptInput(BaseModel):
+    provider: Literal["google_ads"]
+    event_name: Literal["conversion"]
+    destination: str = Field(min_length=1, max_length=128)
 
 
 class InquiryLifecycleInput(BaseModel):
@@ -651,6 +668,44 @@ def list_public_availability(request: Request) -> dict[str, Any]:
         }
 
 
+@public_router.get("/event-date-availability")
+def event_date_availability(
+    request: Request,
+    dates: str = Query(min_length=10, max_length=32),
+    setup_start_time: str = Query(default="", max_length=8),
+    guest_start_time: str = Query(default="", max_length=8),
+    guest_end_time: str = Query(default="", max_length=8),
+    teardown_end_time: str = Query(default="", max_length=8),
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Return a privacy-safe conflict status for one to three candidate dates."""
+
+    _require_building_key(request, x_internal_api_key)
+    raw_dates = list(dict.fromkeys(item.strip() for item in dates.split(",") if item.strip()))
+    if not raw_dates or len(raw_dates) > 3:
+        raise HTTPException(status_code=422, detail="Provide one to three candidate dates.")
+    try:
+        candidates = [date.fromisoformat(item) for item in raw_dates]
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Candidate dates must use YYYY-MM-DD.") from exc
+    today = _now().astimezone(ZoneInfo("America/Denver")).date()
+    if any(item < today or item > today + timedelta(days=730) for item in candidates):
+        raise HTTPException(status_code=422, detail="Candidate dates must be within the next two years.")
+    with session_scope(request.app.state.session_factory) as session:
+        try:
+            return candidate_date_availability(
+                session,
+                calendar=BuildingGoogleCalendarClient(),
+                candidates=candidates,
+                setup_start_time=setup_start_time,
+                guest_start_time=guest_start_time,
+                guest_end_time=guest_end_time,
+                teardown_end_time=teardown_end_time,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @public_router.post("/inquiries", status_code=201)
 def create_inquiry(
     payload: InquiryInput,
@@ -674,7 +729,13 @@ def create_inquiry(
             select(BuildingInquiry).where(BuildingInquiry.idempotency_key == dedupe_key)
         ).scalar_one_or_none()
         if existing is not None:
-            return {"ok": True, "inquiry_id": existing.id, "status": existing.status, "duplicate": True}
+            return {
+                "ok": True,
+                "inquiry_id": existing.id,
+                "status": existing.status,
+                "duplicate": True,
+                "customer_receipt": dict(existing.payload_json or {}).get("_customer_receipt", {}),
+            }
 
         if payload.offering_id and session.get(BuildingOffering, payload.offering_id) is None:
             raise HTTPException(status_code=422, detail="Unknown offering.")
@@ -702,6 +763,21 @@ def create_inquiry(
                 or 4
             ),
         )
+        inquiry_details = dict(payload.details or {})
+        inquiry_details["_follow_up_sequence"] = build_follow_up_sequence(
+            received_at, response_sla_hours
+        )
+        if payload.kind == "event":
+            interview, prefilled_fields = prefill_event_interview(
+                preferred_date=payload.preferred_date,
+                details=inquiry_details,
+            )
+            inquiry_details["_event_interview"] = interview
+            inquiry_details["_event_interview_meta"] = {
+                "source": "website_submission",
+                "reviewed": False,
+                "prefilled_fields": prefilled_fields,
+            }
         inquiry = BuildingInquiry(
             id=str(uuid4()),
             idempotency_key=dedupe_key,
@@ -717,7 +793,7 @@ def create_inquiry(
             consent_to_marketing=payload.consent_to_marketing,
             assigned_owner=assigned_owner,
             response_due_at=received_at + timedelta(hours=response_sla_hours),
-            payload_json=payload.details,
+            payload_json=inquiry_details,
             created_at=received_at,
             updated_at=received_at,
         )
@@ -766,6 +842,9 @@ def create_inquiry(
                 "campaign": payload.details.get("firstUtmCampaign"),
                 "content": payload.details.get("firstUtmContent"),
                 "term": payload.details.get("firstUtmTerm"),
+                "gclid": payload.details.get("firstGclid"),
+                "gbraid": payload.details.get("firstGbraid"),
+                "wbraid": payload.details.get("firstWbraid"),
                 "landing_page": payload.details.get("firstLandingPage"),
                 "offering_id": inquiry.offering_id or "",
             },
@@ -830,7 +909,91 @@ def create_inquiry(
             },
         ))
 
-        return {"ok": True, "inquiry_id": inquiry.id, "status": inquiry.status, "duplicate": False}
+        try:
+            notification = notify_new_building_lead(request.app.state.settings, inquiry)
+        except Exception as exc:  # Lead intake must survive a provider outage.
+            notification = {
+                "status": "failed",
+                "provider": "slack",
+                "reason": str(exc)[:500],
+            }
+        inquiry_payload = dict(inquiry.payload_json or {})
+        inquiry_payload["_lead_notification"] = {
+            **notification,
+            "attempted_at": _now().isoformat(),
+        }
+        inquiry.payload_json = inquiry_payload
+        inquiry.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="inquiry",
+            entity_id=inquiry.id,
+            action=f"lead_notification_{notification['status']}",
+            actor=actor,
+            after_json=notification,
+        ))
+
+        customer_receipt: dict[str, Any] = {}
+        if inquiry.kind == "event":
+            customer_receipt = attempt_inquiry_receipt(
+                session,
+                settings=request.app.state.settings,
+                inquiry=inquiry,
+                actor=actor,
+            )
+
+        return {
+            "ok": True,
+            "inquiry_id": inquiry.id,
+            "status": inquiry.status,
+            "duplicate": False,
+            "customer_receipt": customer_receipt,
+        }
+
+
+@public_router.post("/inquiries/{inquiry_id}/conversion-receipts", status_code=201)
+def record_inquiry_conversion_receipt(
+    inquiry_id: str,
+    payload: InquiryConversionReceiptInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Audit one browser conversion dispatch without claiming provider acceptance."""
+
+    _require_building_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        action = "google_ads_browser_conversion_dispatched"
+        existing = session.execute(
+            select(BuildingAuditEvent).where(
+                BuildingAuditEvent.entity_type == "inquiry",
+                BuildingAuditEvent.entity_id == inquiry.id,
+                BuildingAuditEvent.action == action,
+            )
+        ).scalars().first()
+        if existing is not None:
+            return {"ok": True, "inquiry_id": inquiry.id, "duplicate": True}
+        attribution = dict((inquiry.payload_json or {}).get("_attribution") or {})
+        session.add(
+            BuildingAuditEvent(
+                entity_type="inquiry",
+                entity_id=inquiry.id,
+                action=action,
+                actor="anata-building",
+                after_json={
+                    "provider": payload.provider,
+                    "event_name": payload.event_name,
+                    "destination": payload.destination,
+                    "transaction_id": inquiry.id,
+                    "click_id_present": any(
+                        attribution.get(key) for key in ("gclid", "gbraid", "wbraid")
+                    ),
+                    "provider_acceptance": "not_confirmed",
+                },
+            )
+        )
+        return {"ok": True, "inquiry_id": inquiry.id, "duplicate": False}
 
 
 @internal_router.post("/inquiries/{inquiry_id}/retry-hubspot")
@@ -913,6 +1076,20 @@ def update_inquiry_lifecycle(
                 status_code=409,
                 detail=f"Cannot move inquiry from {current} to {payload.target_stage}.",
             )
+        if inquiry.kind == "event" and payload.target_stage == "qualified":
+            missing = event_qualification_missing(
+                dict(inquiry_payload.get("_event_interview") or {}),
+                inquiry_payload,
+            )
+            if missing:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Complete the event interview before qualifying: "
+                        + ", ".join(missing)
+                        + "."
+                    ),
+                )
         changed_at = _now()
         before = dict(lifecycle)
         lifecycle["stage"] = payload.target_stage
@@ -965,6 +1142,14 @@ def update_inquiry_lifecycle(
                     },
                 ))
         inquiry_payload["_lifecycle"] = lifecycle
+        inquiry_payload["_follow_up_sequence"] = advance_follow_up_sequence(
+            list(inquiry_payload.get("_follow_up_sequence") or []),
+            lifecycle_stage=payload.target_stage,
+            changed_at=changed_at,
+            interview_complete=bool(
+                dict(inquiry_payload.get("_event_interview_meta") or {}).get("reviewed")
+            ),
+        )
         inquiry.payload_json = inquiry_payload
         if payload.assigned_owner.strip():
             inquiry.assigned_owner = payload.assigned_owner.strip()

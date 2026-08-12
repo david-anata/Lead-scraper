@@ -26,11 +26,13 @@ try:
     from sales_support_agent.models.entities import (
         BuildingAgreement,
         BuildingAgreementTemplate,
+        BuildingAuditEvent,
         BuildingAvailabilityBlock,
         BuildingContact,
         BuildingPaymentRequestReadiness,
         BuildingProposal,
         BuildingReservation,
+        BuildingSignatureRequestReadiness,
         BuildingSpace,
     )
     from sales_support_agent.services.admin_auth import create_user_session_token
@@ -182,6 +184,12 @@ class BuildingContractWorkspaceTests(unittest.TestCase):
         )
 
     def _approve_template(self) -> None:
+        # Approved templates are immutable, so a second call is a no-op rather
+        # than a failure. Tests should not have to know who ran before them.
+        with self.factory() as session:
+            existing = session.get(BuildingAgreementTemplate, "contract-template-v1")
+            if existing is not None and existing.status == "approved":
+                return
         headers = {"X-Internal-Api-Key": "contract-workspace-internal-key"}
         created = self.client.put(
             "/api/internal/building/agreement-readiness/templates/contract-template-v1",
@@ -379,6 +387,95 @@ class BuildingContractWorkspaceTests(unittest.TestCase):
         self.assertEqual(control.status_code, 200, control.text)
         self.assertIn("/admin/building/contracts", control.text)
         self.assertNotIn("Record agreement</button>", control.text)
+
+    def test_08a_one_action_approves_the_whole_ladder(self) -> None:
+        """Seven confirmations by the same person say nothing seven times. One
+        action does the lot, and every step is still recorded on its own."""
+        self._approve_template()
+        key_match = re.search(
+            r'name="idempotency_key" value="([^"]+)"',
+            self.client.get(CONTRACTS).text,
+        )
+        import sqlalchemy
+        with self.factory() as session:
+            used = session.execute(
+                sqlalchemy.select(BuildingAgreement.version).where(
+                    BuildingAgreement.reservation_id == "contract-event"
+                )
+            ).scalars().all()
+        version = str((max(used) + 1) if used else 1)
+        prepared = self._post(f"{CONTRACTS}/packages", {
+            "reservation_id": "contract-event",
+            "quote_id": "contract-quote",
+            "template_id": "contract-template-v1",
+            "idempotency_key": key_match.group(1),
+            "agreement_version": version,
+            "payment_version": version,
+        })
+        self.assertEqual(prepared.status_code, 303, prepared.text)
+        self.assertIn("notice=", prepared.headers["location"], prepared.headers["location"])
+        agreement_id = prepared.headers["location"].split("?")[0].rsplit("/", 1)[-1]
+
+        page = self.client.get(f"{CONTRACTS}/{agreement_id}")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("Approve and create the signing copy", page.text)
+
+        moved = self._post(f"{CONTRACTS}/{agreement_id}/ready-to-send", {})
+        self.assertEqual(moved.status_code, 303, moved.text)
+
+        import sqlalchemy
+        with self.factory() as session:
+            agreement = session.get(BuildingAgreement, agreement_id)
+            self.assertEqual(agreement.preparation_status, "approved")
+            payment_status = session.execute(
+                sqlalchemy.select(BuildingPaymentRequestReadiness.status).where(
+                    BuildingPaymentRequestReadiness.agreement_id == agreement_id
+                )
+            ).scalars().one()
+            self.assertEqual(payment_status, "approved")
+            signature = session.execute(
+                sqlalchemy.select(BuildingSignatureRequestReadiness).where(
+                    BuildingSignatureRequestReadiness.agreement_id == agreement_id
+                )
+            ).scalars().one()
+            self.assertEqual(signature.status, "approved")
+            self.assertEqual(signature.delivery_status, "not_sent")
+            # Collapsing the clicking must not collapse the record: each move is
+            # still its own audit entry.
+            actions = session.execute(
+                sqlalchemy.select(BuildingAuditEvent.action).where(
+                    BuildingAuditEvent.entity_id == agreement_id
+                )
+            ).scalars().all()
+        self.assertGreaterEqual(
+            len([item for item in actions if "readiness" in item or "review" in item
+                 or "approv" in item]),
+            2,
+            f"each transition needs its own audit record, saw {actions}",
+        )
+
+    def test_08b_one_action_still_needs_approval_rights(self) -> None:
+        """Collapsing the steps must not collapse who is allowed to take them."""
+        limited_user = {
+            "email": "limited@example.com",
+            "permissions": {"building.agreements.prepare"},
+            "is_superadmin": False,
+            "session_issued_at": "",
+        }
+        index = self.client.get(CONTRACTS)
+        ids = re.findall(rf'href="{CONTRACTS}/([a-z0-9-]+)"', index.text)
+        self.assertTrue(ids)
+        with mock.patch(
+            "sales_support_agent.services.auth_deps.get_current_user",
+            return_value=limited_user,
+        ):
+            forbidden = self.client.post(
+                f"{CONTRACTS}/{ids[0]}/ready-to-send",
+                headers=self.browser_headers,
+                follow_redirects=False,
+                data={"_csrf_token": "irrelevant"},
+            )
+        self.assertEqual(forbidden.status_code, 403, forbidden.text)
 
     def test_09_permission_and_csrf_fail_closed(self) -> None:
         limited_user = {

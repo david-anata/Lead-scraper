@@ -37,6 +37,7 @@ _AMAZON_DOMAIN = "amazon.com"
 _DEFAULT_TIMEOUT = 20
 # Fetch the competitor set in a single parallel wave (see _DEFAULT_COMPETITOR_LIMIT).
 _MAX_CONCURRENT_FETCHES = 12
+_DISTINCT_BRAND_BATCH_SIZE = 6
 _BSR_ESTIMATE_CAP = 50_000
 # The deck surfaces the top ~10 competitors (niche table [:10], gallery [:4]),
 # so discovering 12 keeps full display coverage while cutting generation time
@@ -209,20 +210,30 @@ class RainforestClient:
     ) -> list[str]:
         """Fallback: derive competitors from a keyword search on the product title."""
         title = target_product.get("title", "")
+        brand_words = {
+            word.lower()
+            for word in re.sub(r"[^a-zA-Z0-9 ]", " ", str(target_product.get("brand", ""))).split()
+            if word
+        }
         # Strip size/count/flavor modifiers — keep 3-5 meaningful nouns
-        words = [w for w in re.sub(r"[^a-zA-Z0-9 ]", " ", title).split() if len(w) > 3][:5]
+        words = [
+            word
+            for word in re.sub(r"[^a-zA-Z0-9 ]", " ", title).split()
+            if len(word) > 3 and word.lower() not in brand_words
+        ][:5]
         if not words:
             return []
         search_term = " ".join(words)
         asins: list[str] = []
         try:
-            data = self.search(search_term)
-            for item in data.get("search_results") or []:
-                asin = (item.get("asin") or "").strip()
-                if asin and asin != target_asin and asin not in asins:
-                    asins.append(asin)
-                    if len(asins) >= limit:
-                        break
+            for page in (1, 2):
+                data = self.search(search_term, page=page)
+                for item in data.get("search_results") or []:
+                    asin = (item.get("asin") or "").strip()
+                    if asin and asin != target_asin and asin not in asins:
+                        asins.append(asin)
+                        if len(asins) >= limit:
+                            return asins
         except Exception as exc:
             logger.warning("Rainforest search error for %r: %s", search_term, exc)
         return asins
@@ -310,6 +321,7 @@ class RainforestClient:
         asin_or_url: str,
         *,
         competitor_limit: int = _DEFAULT_COMPETITOR_LIMIT,
+        minimum_distinct_brands: int = 0,
     ) -> tuple[Helium10XrayReport, dict[str, Any]]:
         """
         Core Digital Shelf builder.
@@ -336,13 +348,28 @@ class RainforestClient:
         target_product = target_data.get("product") or {}
 
         # 2. Discover competitor ASINs
-        competitor_asins = self._competitor_asins_from_bestsellers(
-            target_product, target_asin, limit=competitor_limit
+        # A category bestseller list can be dominated by one brand. Always blend it
+        # with title-search candidates so downstream reports have enough distinct
+        # competitors instead of declaring success from one outside brand.
+        candidate_limit = min(max(competitor_limit * 2, 12), 24)
+        bestseller_asins = self._competitor_asins_from_bestsellers(
+            target_product, target_asin, limit=candidate_limit
         )
-        if not competitor_asins:
-            competitor_asins = self._competitor_asins_from_search(
-                target_product, target_asin, limit=competitor_limit
-            )
+        search_asins = self._competitor_asins_from_search(
+            target_product, target_asin, limit=candidate_limit
+        )
+        competitor_asins = []
+        for index in range(max(len(bestseller_asins), len(search_asins))):
+            for source in (bestseller_asins, search_asins):
+                if index >= len(source):
+                    continue
+                asin = source[index]
+                if asin not in competitor_asins:
+                    competitor_asins.append(asin)
+                if len(competitor_asins) >= candidate_limit:
+                    break
+            if len(competitor_asins) >= candidate_limit:
+                break
 
         if not competitor_asins:
             logger.warning("No competitor ASINs found for %s; report will be empty.", target_asin)
@@ -356,17 +383,34 @@ class RainforestClient:
                 return None
 
         competitor_raw: list[dict[str, Any]] = []
-        if competitor_asins:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES) as pool:
-                futures = {pool.submit(_safe_fetch, a): a for a in competitor_asins}
-                for fut in concurrent.futures.as_completed(futures):
-                    result = fut.result()
-                    if result:
-                        competitor_raw.append(result)
+        target_brand = re.sub(r"[^a-z0-9]+", "", str(target_product.get("brand", "")).lower())
+        distinct_brands: set[str] = set()
+        batch_size = (
+            _DISTINCT_BRAND_BATCH_SIZE
+            if minimum_distinct_brands > 0
+            else _MAX_CONCURRENT_FETCHES
+        )
+        for start in range(0, len(competitor_asins), batch_size):
+            batch = competitor_asins[start : start + batch_size]
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(_MAX_CONCURRENT_FETCHES, len(batch))
+            ) as pool:
+                futures = {pool.submit(_safe_fetch, asin): asin for asin in batch}
+                batch_results = [future.result() for future in concurrent.futures.as_completed(futures)]
+            for result in batch_results:
+                if not result:
+                    continue
+                competitor_raw.append(result)
+                product = result.get("product") or {}
+                brand = re.sub(r"[^a-z0-9]+", "", str(product.get("brand", "")).lower())
+                if brand and brand != target_brand:
+                    distinct_brands.add(brand)
+            if minimum_distinct_brands > 0 and len(distinct_brands) >= minimum_distinct_brands:
+                break
 
         # 4. Convert to XrayProduct
         products: list[XrayProduct] = []
-        for i, raw in enumerate(competitor_raw[:competitor_limit]):
+        for i, raw in enumerate(competitor_raw):
             xp = self._product_to_xray(raw, display_order=i + 1)
             if xp:
                 products.append(xp)
@@ -375,7 +419,7 @@ class RainforestClient:
         products.sort(key=lambda p: (p.bsr or 999_999, p.display_order))
         products = [
             dataclasses.replace(p, display_order=i + 1)
-            for i, p in enumerate(products)
+            for i, p in enumerate(products[:competitor_limit])
         ]
 
         # 5. Aggregate report fields
@@ -408,10 +452,7 @@ class RainforestClient:
 
         # Honest sourcing note: how many listings carried Amazon's real
         # "bought in past month" badge vs. fell back to a BSR estimate.
-        real_units_count = sum(
-            1 for raw in competitor_raw
-            if _parse_recent_sales((raw.get("product") or {}).get("recent_sales")) is not None
-        )
+        real_units_count = sum(1 for product in products if product.units_label.endswith("+"))
         if real_units_count and real_units_count == len(products):
             _sales_warning = (
                 "Unit/revenue figures use Amazon's real \"bought in past month\" "

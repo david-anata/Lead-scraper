@@ -182,8 +182,9 @@ class TestRainforestBuildXrayReport(unittest.TestCase):
 
     @patch.object(RainforestClient, "get_product")
     @patch.object(RainforestClient, "get_bestsellers")
+    @patch.object(RainforestClient, "search")
     def test_build_xray_report_returns_report_and_raw(
-        self, mock_bestsellers, mock_get_product
+        self, mock_search, mock_bestsellers, mock_get_product
     ):
         target_asin = "B09AAAAAAA"
         competitor_asins = [f"B09{str(i).zfill(7)}" for i in range(5)]
@@ -203,6 +204,7 @@ class TestRainforestBuildXrayReport(unittest.TestCase):
 
         mock_get_product.side_effect = mock_product_side_effect
         mock_bestsellers.return_value = _mock_bestsellers(competitor_asins)
+        mock_search.return_value = {"search_results": []}
 
         report, raw = self.client.build_xray_report(target_asin, competitor_limit=5)
 
@@ -218,7 +220,8 @@ class TestRainforestBuildXrayReport(unittest.TestCase):
 
     @patch.object(RainforestClient, "get_product")
     @patch.object(RainforestClient, "get_bestsellers")
-    def test_products_sorted_by_bsr(self, mock_bestsellers, mock_get_product):
+    @patch.object(RainforestClient, "search")
+    def test_products_sorted_by_bsr(self, mock_search, mock_bestsellers, mock_get_product):
         target_asin = "B09AAAAAAA"
         competitor_asins = ["B09CC11111", "B09BB22222"]  # order in bestsellers
         category_url = "https://www.amazon.com/Best-Sellers/zgbs/hpc/1/"
@@ -234,6 +237,7 @@ class TestRainforestBuildXrayReport(unittest.TestCase):
             target_raw if asin == target_asin else comp_raws[asin]
         )
         mock_bestsellers.return_value = _mock_bestsellers(competitor_asins)
+        mock_search.return_value = {"search_results": []}
 
         report, _ = self.client.build_xray_report(target_asin, competitor_limit=10)
 
@@ -254,11 +258,13 @@ class TestRainforestBuildXrayReport(unittest.TestCase):
 class TestRainforestWarnings(unittest.TestCase):
     @patch.object(RainforestClient, "get_product")
     @patch.object(RainforestClient, "get_bestsellers")
-    def test_report_includes_bsr_estimate_warning(self, mock_bestsellers, mock_get_product):
+    @patch.object(RainforestClient, "search")
+    def test_report_includes_bsr_estimate_warning(self, mock_search, mock_bestsellers, mock_get_product):
         target_asin = "B09AAAAAAA"
         category_url = "https://www.amazon.com/Best-Sellers/zgbs/hpc/1/"
         mock_get_product.return_value = _mock_product(target_asin, bsr=5000, category_url=category_url)
         mock_bestsellers.return_value = _mock_bestsellers(["B09BB00001"])
+        mock_search.return_value = {"search_results": []}
         mock_get_product.side_effect = lambda a: (
             _mock_product(target_asin, bsr=5000, category_url=category_url)
             if a == target_asin
@@ -269,6 +275,56 @@ class TestRainforestWarnings(unittest.TestCase):
         report, _ = client.build_xray_report(target_asin)
 
         self.assertTrue(any("BSR" in w for w in report.warnings))
+
+
+class TestCompetitorSearchBreadth(unittest.TestCase):
+    @patch.object(RainforestClient, "get_product")
+    @patch.object(RainforestClient, "get_bestsellers")
+    @patch.object(RainforestClient, "search")
+    def test_distinct_brand_mode_fetches_bounded_batches_until_complete(
+        self, mock_search, mock_bestsellers, mock_get_product
+    ):
+        target_asin = "B09TARGT01"
+        candidates = [f"B0000000{i:02d}" for i in range(1, 19)]
+        target = _mock_product(target_asin, brand="Target")
+        brands = ["Brand A"] * 6 + ["Brand B", "Brand C", "Brand D", "Brand E", "Brand F", "Brand G"]
+        products = {
+            asin: _mock_product(asin, brand=brands[index], bsr=100 + index)
+            for index, asin in enumerate(candidates[:12])
+        }
+        mock_get_product.side_effect = lambda asin: target if asin == target_asin else products[asin]
+        mock_bestsellers.return_value = _mock_bestsellers(candidates)
+        mock_search.return_value = {"search_results": []}
+
+        report, _ = RainforestClient(api_key="key").build_xray_report(
+            target_asin,
+            competitor_limit=18,
+            minimum_distinct_brands=5,
+        )
+
+        fetched = [call.args[0] for call in mock_get_product.call_args_list[1:]]
+        self.assertEqual(len(fetched), 12)
+        self.assertEqual(len({product.brand for product in report.products}), 7)
+
+    def test_search_excludes_target_brand_and_uses_second_page(self):
+        client = RainforestClient(api_key="key")
+        client.search = MagicMock(side_effect=[
+            {"search_results": [{"asin": "B000000001"}]},
+            {"search_results": [{"asin": "B000000002"}]},
+        ])
+
+        asins = client._competitor_asins_from_search(
+            {
+                "brand": "Freelivity",
+                "title": "Freelivity In-Wash Scent Booster Beads Fresh Essence",
+            },
+            "B09TARGET01",
+            limit=4,
+        )
+
+        self.assertEqual(asins, ["B000000001", "B000000002"])
+        self.assertEqual(client.search.call_args_list[0].args[0], "Wash Scent Booster Beads Fresh")
+        self.assertEqual(client.search.call_args_list[1].kwargs["page"], 2)
 
 
 if __name__ == "__main__":

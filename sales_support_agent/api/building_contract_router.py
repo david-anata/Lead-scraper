@@ -9,8 +9,11 @@ signature request, invoice, payment object, or booking confirmation.
 
 from __future__ import annotations
 
-from typing import Any, Literal
-from urllib.parse import urlencode
+import logging
+import re
+
+from typing import Any, Literal, Optional
+from urllib.parse import parse_qs, urlencode, urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -30,8 +33,17 @@ from sales_support_agent.api.building_agreement_readiness_router import (
     transition_payment_readiness,
     upsert_agreement_template,
 )
+from sales_support_agent.api.building_signature_readiness_router import (
+    prepare_signature_readiness,
+    transition_signature_readiness,
+)
 from sales_support_agent.models.database import session_scope
+from sales_support_agent.integrations.building_google_docs import (
+    BuildingContractDocsClient,
+    BuildingGoogleDocsError,
+)
 from sales_support_agent.models.entities import (
+    BuildingAgreement,
     BuildingAgreementTemplate,
     BuildingAuditEvent,
 )
@@ -72,8 +84,12 @@ from sales_support_agent.services.building_security import (
 from sales_support_agent.services.ui_shell import render_transition_document
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/building/contracts", tags=["building-contracts"])
 FORM_DEPS = [Depends(require_building_form_security)]
+_INQUIRY_RETURN_RE = re.compile(
+    r"^/admin/building/inquiries/[A-Za-z0-9_-]+(?:#[A-Za-z0-9_-]+)?$"
+)
 
 
 def _actor(user: dict[str, Any]) -> str:
@@ -98,7 +114,11 @@ def _may(user: dict[str, Any], permission: str) -> bool:
 
 def _redirect(target: str, *, notice: str = "", error: str = "") -> RedirectResponse:
     query = urlencode({"notice": notice} if notice else {"error": error})
-    return RedirectResponse(f"{target}?{query}" if query else target, status_code=303)
+    base, marker, fragment = target.partition("#")
+    destination = f"{base}?{query}" if query else base
+    if marker:
+        destination += f"#{fragment}"
+    return RedirectResponse(destination, status_code=303)
 
 
 def _index_redirect(*, notice: str = "", error: str = "") -> RedirectResponse:
@@ -139,11 +159,40 @@ def _template_identity(request: Request, template_id: str) -> tuple[str, int]:
 
 
 def _detail_redirect(
-    agreement_id: str, *, notice: str = "", error: str = ""
+    agreement_id: str,
+    *,
+    notice: str = "",
+    error: str = "",
+    return_to: str = "",
 ) -> RedirectResponse:
-    return _redirect(
-        f"{CONTRACTS_URL}/{agreement_id}", notice=notice, error=error
+    target = (
+        return_to
+        if _INQUIRY_RETURN_RE.fullmatch(str(return_to or "").strip())
+        else f"{CONTRACTS_URL}/{agreement_id}"
     )
+    return _redirect(
+        target, notice=notice, error=error
+    )
+
+
+def _contract_docs_blocker() -> str:
+    """One sentence naming what stops a contract Doc being created, if anything.
+
+    Configuration being set is not the same as access being granted, so this
+    asks Google rather than assuming, and names the account to share with.
+    """
+
+    client = BuildingContractDocsClient()
+    if not client.configured:
+        return client.readiness_error
+    try:
+        report = client.preflight()
+    except BuildingGoogleDocsError as exc:
+        return str(exc)
+    except Exception as exc:  # noqa: BLE001 — a broken check must not break the page
+        logger.exception("Contract Docs preflight failed")
+        return f"Could not reach Google Drive: {exc}"
+    return " ".join(report["problems"])
 
 
 @router.get("", response_class=HTMLResponse)
@@ -424,7 +473,7 @@ async def save_template_draft(
 def transition_template(
     template_id: str,
     request: Request,
-    target_status: Literal["in_review", "approved", "retired"] = Form(...),
+    target_status: Literal["draft", "in_review", "approved", "retired"] = Form(...),
     confirmation: str = Form(...),
     evidence: str = Form(""),
     user: dict = Depends(require_tool("building.agreements.approve")),
@@ -607,6 +656,231 @@ def contract_document(
     ))
 
 
+@router.post("/{agreement_id}/google-doc", dependencies=FORM_DEPS)
+def create_contract_google_doc(
+    agreement_id: str,
+    request: Request,
+    return_to: str = Form(""),
+    user: dict = Depends(require_tool("building.agreements.prepare")),
+) -> RedirectResponse:
+    """Copy the approved template Doc and fill it from the frozen package.
+
+    Creates a draft and stops. Nothing is emailed, no signature is requested,
+    and the template's signature block is untouched because only placeholder
+    text is replaced.
+    """
+
+    with session_scope(request.app.state.session_factory) as session:
+        contract = load_contract_detail(session, agreement_id)
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Contract not found.")
+    if contract["preparation_status"] != "approved":
+        return _detail_redirect(
+            agreement_id,
+            error="Approve the contract package before creating the signing draft.",
+            return_to=return_to,
+        )
+
+    snapshot = dict(contract.get("snapshot") or {})
+    merge_values = dict(snapshot.get("merge_values") or {})
+    values = {
+        field: format_merge_value(field, value)
+        for field, value in merge_values.items()
+    }
+    # Useful in a contract even though they are not merge fields.
+    values.setdefault("customer_name", contract["customer_name"])
+    values.setdefault("event_space", contract["space_name"])
+
+    client = BuildingContractDocsClient()
+    if not client.configured:
+        return _detail_redirect(
+            agreement_id, error=client.readiness_error, return_to=return_to
+        )
+    try:
+        missing = sorted(set(client.template_placeholders()) - set(values))
+        if missing:
+            return _detail_redirect(
+                agreement_id,
+                error=(
+                    "The template uses placeholders this booking cannot fill: "
+                    + ", ".join(missing)
+                    + ". Fix the template or the booking before drafting."
+                ),
+                return_to=return_to,
+            )
+        created = client.create_contract_draft(
+            title=f"{contract['customer_name']} · {contract['space_name']} · contract",
+            values=values,
+        )
+    except BuildingGoogleDocsError as exc:
+        return _detail_redirect(
+            agreement_id, error=str(exc), return_to=return_to
+        )
+
+    with session_scope(request.app.state.session_factory) as session:
+        agreement = session.get(BuildingAgreement, agreement_id)
+        if agreement is not None:
+            agreement.document_url = created["document_url"]
+            session.add(agreement)
+        session.add(BuildingAuditEvent(
+            entity_type="agreement",
+            entity_id=agreement_id,
+            action="contract_google_doc_drafted",
+            actor=_actor(user),
+            after_json={
+                "document_id": created["document_id"],
+                "document_url": created["document_url"],
+                "sent": False,
+                "signature_requested": False,
+            },
+        ))
+    return _detail_redirect(
+        agreement_id,
+        notice="Contract Doc created. Nothing was sent; request the signature from Google Docs.",
+        return_to=return_to,
+    )
+
+
+#: Readiness runs in this order, so a step already past can be skipped rather
+#: than re-run into a refusal.
+_READINESS_ORDER = ("prepared", "in_review", "approved")
+
+
+@router.post("/{agreement_id}/ready-to-send", dependencies=FORM_DEPS)
+def make_contract_ready_to_send(
+    agreement_id: str,
+    request: Request,
+    return_to: str = Form(""),
+    user: dict = Depends(require_tool("building.agreements.approve")),
+) -> RedirectResponse:
+    """Approve the contract and its payment request, then draft the signing copy.
+
+    The review and approval steps existed as separate clicks because one person
+    prepares and another approves. When the same authorised person does both,
+    seven confirmations say nothing seven times. Each transition is still made
+    individually and still writes its own audit record — only the clicking is
+    gone, and the permission needed to do it is unchanged.
+    """
+
+    key = _internal_key(request)
+    actor = _actor(user)
+    with session_scope(request.app.state.session_factory) as session:
+        contract = load_contract_detail(session, agreement_id)
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Contract not found.")
+
+    def advance(current: str, run: Any) -> Optional[str]:
+        """Walk a readiness record up to approved, skipping what is behind us."""
+
+        try:
+            start = _READINESS_ORDER.index(current)
+        except ValueError:
+            return f"This contract is {current.replace('_', ' ')} and cannot be approved."
+        for target in _READINESS_ORDER[start + 1:]:
+            try:
+                run(target)
+            except (HTTPException, ValidationError, ValueError) as exc:
+                return str(getattr(exc, "detail", exc))
+        return None
+
+    problem = advance(
+        str(contract["preparation_status"]),
+        lambda target: transition_agreement_package(
+            agreement_id,
+            ReadinessTransitionInput(
+                target_status=target,
+                confirmation=f"{'REVIEW' if target == 'in_review' else 'APPROVE'} AGREEMENT {agreement_id}",
+                actor=actor,
+            ),
+            request,
+            key,
+        ),
+    )
+    if problem:
+        return _detail_redirect(
+            agreement_id, error=problem, return_to=return_to
+        )
+
+    payment = dict(contract.get("payment") or {})
+    payment_id = str(payment.get("id") or "")
+    if payment_id:
+        problem = advance(
+            str(payment.get("status") or ""),
+            lambda target: transition_payment_readiness(
+                payment_id,
+                ReadinessTransitionInput(
+                    target_status=target,
+                    confirmation=f"{'REVIEW' if target == 'in_review' else 'APPROVE'} PAYMENT {payment_id}",
+                    actor=actor,
+                ),
+                request,
+                key,
+            ),
+        )
+        if problem:
+            return _detail_redirect(
+                agreement_id, error=problem, return_to=return_to
+            )
+
+    # A signing copy without a frozen, approved signer handoff produces two
+    # contradictory states on the same page: "Ready to send" and "Not
+    # prepared". The single action must finish the governed signature ladder
+    # as well as the agreement and payment ladders. It still sends nothing.
+    signature = dict(contract.get("signature") or {})
+    if not signature:
+        prepared = prepare_signature_readiness(
+            agreement_id,
+            request,
+            user=user,
+        )
+        with session_scope(request.app.state.session_factory) as session:
+            refreshed = load_contract_detail(session, agreement_id)
+        signature = dict((refreshed or {}).get("signature") or {})
+        if not signature:
+            location = str(prepared.headers.get("location") or "")
+            error = parse_qs(urlsplit(location).query).get(
+                "error", ["The signature handoff could not be prepared."]
+            )[0]
+            return _detail_redirect(
+                agreement_id,
+                error=error,
+                return_to=return_to,
+            )
+    signature_id = str(signature.get("id") or "")
+    problem = advance(
+        str(signature.get("status") or ""),
+        lambda target: transition_signature_readiness(
+            agreement_id,
+            request,
+            target_status=target,
+            confirmation=(
+                f"{'REVIEW' if target == 'in_review' else 'APPROVE'} "
+                f"SIGNATURE {signature_id}"
+            ),
+            user=user,
+        ),
+    )
+    if problem:
+        return _detail_redirect(
+            agreement_id, error=problem, return_to=return_to
+        )
+
+    if contract.get("document_url"):
+        return _detail_redirect(
+            agreement_id,
+            notice=(
+                "Contract and signature handoff approved. The private signing "
+                "copy already exists; nothing was sent."
+            ),
+            return_to=return_to,
+        )
+    # The signing copy is the point of the exercise, so it is made here rather
+    # than left as one more button to find.
+    return create_contract_google_doc(
+        agreement_id, request, return_to=return_to, user=user
+    )
+
+
 @router.get("/{agreement_id}", response_class=HTMLResponse)
 def contract_detail(
     agreement_id: str,
@@ -638,6 +912,8 @@ def contract_detail(
         can_approve=_may(user, "building.agreements.approve"),
         can_prepare_signature=_may(user, "building.agreements.prepare"),
         can_prepare_payment=_may(user, "building.payments.prepare"),
+        google_doc_url=str(contract.get("document_url") or ""),
+        google_doc_error=_contract_docs_blocker(),
         can_manage=_may(user, "building.manage"),
         csrf_token=csrf_token(user),
         notice=notice,

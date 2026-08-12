@@ -171,6 +171,30 @@ def confirm_writeback(
     return {"event_id": event_id, "account_name": account_name, "evidence": evidence}
 
 
+def record_writeback_failure(event_id: str, *, actor: str, error: str) -> None:
+    """Record a retryable external-sync failure without altering Agent truth."""
+    now = datetime.now(timezone.utc)
+    with get_engine().begin() as connection:
+        connection.execute(text("""
+            INSERT INTO finance_action_audit (
+                id, scope_key, action_type, entity_type, entity_id, actor,
+                idempotency_key, evidence_json, created_at
+            ) VALUES (
+                :id, 'default', 'qbo_expense_sync_failed', 'cash_event', :event_id,
+                :actor, :key, :evidence, :now
+            )
+        """), {
+            "id": str(uuid4()), "event_id": event_id, "actor": actor,
+            "key": f"qbo-expense-failure:{event_id}:{now.isoformat()}",
+            "evidence": json.dumps({
+                "status": "retryable",
+                "error": str(error or "QuickBooks request failed")[:1000],
+                "agent_classification_preserved": True,
+            }),
+            "now": now,
+        })
+
+
 def list_ready_for_qbo(limit: int = 50) -> list[dict[str, Any]]:
     """Possible QBO cleanup candidates, confirmed remotely only at preview."""
     with get_engine().connect() as connection:

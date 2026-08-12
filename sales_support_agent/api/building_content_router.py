@@ -166,7 +166,7 @@ def _save_record(session, kind: str, record_id: str, payload: ContentInput) -> A
     # never accepted into fields intended for public projection.
     hard_errors = [
         item for item in errors
-        if "URL" in item or "private-benefit" in item or "Boom" in item
+        if "URL" in item or "private-benefit" in item
     ]
     if hard_errors:
         raise HTTPException(status_code=422, detail=hard_errors)

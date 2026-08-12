@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 os.environ.setdefault(
     "SALES_AGENT_DB_URL",
@@ -126,13 +127,22 @@ class BuildingHoldJobTests(unittest.TestCase):
                 "soft_hold",
             )
 
-        executed = self.client.post(
-            "/api/jobs/building-holds/run",
-            headers=self.headers,
-            json={"dry_run": False},
-        )
+        slack = mock.Mock()
+        slack.is_configured.return_value = True
+        slack.post_message.return_value = {"ok": True, "ts": "hold-warning.1"}
+        with mock.patch(
+            "sales_support_agent.services.building_holds.SlackClient",
+            return_value=slack,
+        ):
+            executed = self.client.post(
+                "/api/jobs/building-holds/run",
+                headers=self.headers,
+                json={"dry_run": False},
+            )
         self.assertEqual(executed.status_code, 200, executed.text)
         self.assertEqual(executed.json()["details"]["expired_count"], 1)
+        self.assertEqual(executed.json()["details"]["warning_status"], "delivered")
+        slack.post_message.assert_called_once()
         with self.factory() as session:
             expired = session.get(BuildingReservation, "expired-hold")
             current = session.get(BuildingReservation, "current-hold")
@@ -157,3 +167,23 @@ class BuildingHoldJobTests(unittest.TestCase):
                 action="hold_expired_automatically",
             ).one()
             self.assertTrue(audit.after_json["availability_released"])
+            warning = session.query(BuildingAuditEvent).filter_by(
+                entity_type="reservation",
+                entity_id="current-hold",
+                action="hold_expiry_warning_delivered",
+            ).one()
+            self.assertEqual(
+                warning.after_json["provider_reference"], "hold-warning.1"
+            )
+
+        with mock.patch(
+            "sales_support_agent.services.building_holds.SlackClient",
+            side_effect=AssertionError("Delivered warning must not be sent twice."),
+        ):
+            repeated = self.client.post(
+                "/api/jobs/building-holds/run",
+                headers=self.headers,
+                json={"dry_run": False},
+            )
+        self.assertEqual(repeated.status_code, 200, repeated.text)
+        self.assertEqual(repeated.json()["details"]["expiring_count"], 0)

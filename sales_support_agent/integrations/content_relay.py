@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 ALLOWED_ACTIONS = {
     "linkedin_company": "linkedin_create_company_update",
     "linkedin_personal": "linkedin_create_share_update",
+    "google_business": "google_business_create_post",
     "instagram_video": "instagram_for_business_publish_video",
     "instagram_photo": "instagram_for_business_publish_photo_s",
     "youtube_upload": "youtube_upload_video",
@@ -164,12 +165,30 @@ class ContentRelayClient:
         }
         last_status = 0
         last_body: dict[str, Any] = {}
+        parsed_relay = urlsplit(self.base_url)
+        is_zapier_hook = (
+            parsed_relay.hostname == "hooks.zapier.com"
+            and parsed_relay.path.startswith("/hooks/catch/")
+        )
+        endpoint = self.base_url if is_zapier_hook else f"{self.base_url}/v1/content/actions"
+        wire_payload = (
+            {
+                "title": str(payload.get("title") or ""),
+                "copy": str(payload.get("body") or ""),
+                "media_url": str(payload.get("media_url") or ""),
+                "scheduled_for": str(payload.get("scheduled_for") or ""),
+                "destination": destination_identity.strip()[:255],
+                "idempotency_key": idempotency_key.strip()[:160],
+            }
+            if is_zapier_hook
+            else safe_payload
+        )
         for attempt in range(1, self.max_attempts + 1):
             try:
                 last_status, last_body = self.transport.post(
-                    f"{self.base_url}/v1/content/actions",
+                    endpoint,
                     headers=headers,
-                    payload=safe_payload,
+                    payload=wire_payload,
                     timeout_seconds=self.timeout_seconds,
                 )
             except ConnectionError:
@@ -188,9 +207,16 @@ class ContentRelayClient:
             if attempt < self.max_attempts:
                 time.sleep(0.05)
 
-        accepted = 200 <= last_status < 300 and bool(last_body.get("accepted"))
+        accepted = 200 <= last_status < 300 and (
+            is_zapier_hook or bool(last_body.get("accepted"))
+        )
         verified = accepted and bool(last_body.get("verified"))
-        receipt = str(last_body.get("provider_receipt") or "")[:500]
+        receipt = str(
+            last_body.get("provider_receipt")
+            or last_body.get("request_id")
+            or last_body.get("id")
+            or ""
+        )[:500]
         public_url = str(last_body.get("public_url") or "")[:4000]
         if verified and (not receipt or not public_url):
             return RelayResult(

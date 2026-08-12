@@ -56,7 +56,7 @@ LANES: tuple[LaneDefinition, ...] = (
     LaneDefinition("structured_data", "Structured data", "not_automated", 5, 2, "low", "visible content + schema validation"),
     LaneDefinition("images", "Image semantics and delivery", "not_automated", 10, 3, "low", "rendered usage + asset evidence"),
     LaneDefinition("content_refresh", "Content refreshes", "not_automated", 3, 1, "medium", "decay or changed-source evidence"),
-    LaneDefinition("new_article", "Validated new articles", "autonomous", 1, 1, "medium", "two weeks + two sources + owner check"),
+    LaneDefinition("new_article", "Validated new articles", "autonomous", 8, 1, "medium", "two weeks + two sources + owner check"),
     LaneDefinition("indexing", "Indexing reconciliation", "autonomous", 1000, 2, "variable", "desired search state + technical evidence"),
     LaneDefinition("technical_other", "Other technical observations", "not_automated", 10, 2, "variable", "lane-specific verification"),
 )

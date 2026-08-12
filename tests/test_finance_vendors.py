@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, inspect, text
 
 from sales_support_agent.models.database import (
     create_session_factory,
@@ -9,12 +9,16 @@ from sales_support_agent.models.database import (
     insert_cash_event,
 )
 from sales_support_agent.services.cashflow.vendors import (
+    cancellation_deadline,
+    agreement_mismatches,
     create_vendor,
     deactivate_vendor,
     get_vendor,
     list_vendors_with_progress,
+    preview_agreement_obligations,
     update_vendor,
 )
+from sales_support_agent.services.cashflow.overview import render_vendor_agreement_preview
 
 
 def _setup():
@@ -100,3 +104,107 @@ def test_create_rejects_empty_name():
     _setup()
     with pytest.raises(ValueError):
         create_vendor({"name": "  ", "match_terms": "x"})
+
+
+def test_evergreen_agreement_calculates_cancellation_deadline_and_obligations():
+    engine = _setup()
+    vendor_id = create_vendor({
+        "name": "Elementor", "agreement_name": "Annual license",
+        "agreement_status": "active", "term_type": "evergreen",
+        "payment_amount_cents": 999_00, "frequency": "month",
+        "amount_type": "fixed", "start_date": "2026-08-15",
+        "renewal_date": "2027-08-15", "auto_renewal": "yes",
+        "cancellation_notice_days": 30, "owner": "David",
+        "evidence_note": "Vendor order form", "match_terms": "elementor",
+    }, actor="david@anatainc.com")
+    vendor = get_vendor(vendor_id)
+
+    assert cancellation_deadline(vendor) == date(2027, 7, 16)
+    preview = preview_agreement_obligations(
+        vendor, as_of=date(2026, 8, 10), horizon_days=70,
+    )
+    assert [row["due_date"] for row in preview] == [
+        date(2026, 8, 15), date(2026, 9, 15), date(2026, 10, 15),
+    ]
+    assert all(row["record_kind"] == "obligation" for row in preview)
+    with engine.connect() as connection:
+        assert connection.execute(text("""
+            SELECT count(*) FROM cash_events WHERE source='vendor_agreement'
+        """)).scalar_one() == 0
+        assert connection.execute(text("""
+            SELECT count(*) FROM finance_action_audit
+            WHERE action_type='vendor_agreement_created' AND actor='david@anatainc.com'
+        """)).scalar_one() == 1
+
+
+def test_variable_or_ended_agreement_never_manufactures_a_forecast_amount():
+    base = {
+        "id": "vendor", "name": "Variable service", "agreement_status": "active",
+        "amount_type": "variable", "payment_amount_cents": 50_000,
+        "frequency": "month", "start_date": date(2026, 8, 15),
+    }
+    assert preview_agreement_obligations(base, as_of=date(2026, 8, 1)) == []
+    assert preview_agreement_obligations(
+        {**base, "amount_type": "fixed", "agreement_status": "ended"},
+        as_of=date(2026, 8, 1),
+    ) == []
+
+
+def test_ending_agreement_stops_after_explicit_end_and_preserves_prior_dates():
+    preview = preview_agreement_obligations({
+        "id": "vendor", "name": "Service", "agreement_status": "ending",
+        "amount_type": "fixed", "payment_amount_cents": 10_000,
+        "frequency": "month", "start_date": date(2026, 8, 5),
+        "end_date": date(2026, 9, 5),
+    }, as_of=date(2026, 8, 1), horizon_days=120)
+    assert [row["due_date"] for row in preview] == [date(2026, 8, 5), date(2026, 9, 5)]
+
+
+def test_agreement_save_uses_a_full_page_calendar_preview():
+    _setup()
+    page = render_vendor_agreement_preview({
+        "name": "Elementor", "agreement_status": "active",
+        "amount_type": "fixed", "payment_amount_cents": 9_900,
+        "frequency": "month", "start_date": "2026-08-15",
+        "terms_type": "recurring", "term_type": "evergreen",
+        "auto_renewal": "yes", "cancellation_notice_days": 30,
+    })
+    assert "Review the Calendar effect" in page
+    assert "Nothing has been saved" in page
+    assert "Before" in page and "After" in page
+    assert "Save agreement" in page
+    assert 'action="/admin/finances/vendors"' in page
+
+
+def test_agreement_mismatches_route_amount_changes_duplicates_and_late_charges_to_review():
+    vendor = {
+        "match_terms": "elementor", "payment_amount_cents": 10_000,
+        "amount_type": "fixed", "end_date": date(2026, 7, 31),
+    }
+    posted = [
+        {"name": "Elementor", "amount_cents": 12_000, "paid_on": date(2026, 8, 2)},
+        {"name": "Elementor", "amount_cents": 12_000, "paid_on": date(2026, 8, 2)},
+    ]
+    kinds = [item["kind"] for item in agreement_mismatches(vendor, posted)]
+    assert "amount_changed" in kinds
+    assert "duplicate_charge" in kinds
+    assert "charge_after_end" in kinds
+
+
+def test_existing_vendor_table_gets_every_agreement_column_idempotently():
+    from sales_support_agent.models.database import _ensure_vendor_columns
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE finance_vendors (
+                id VARCHAR(64) PRIMARY KEY, name VARCHAR(255), active BOOLEAN
+            )
+        """))
+    _ensure_vendor_columns(engine)
+    _ensure_vendor_columns(engine)
+    columns = {column["name"] for column in inspect(engine).get_columns("finance_vendors")}
+    assert {
+        "agreement_name", "agreement_status", "term_type", "amount_type",
+        "renewal_date", "auto_renewal", "cancellation_notice_days", "owner",
+        "evidence_note", "created_by", "updated_by",
+    } <= columns

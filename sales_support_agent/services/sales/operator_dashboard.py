@@ -27,6 +27,7 @@ from sales_support_agent.services.admin_nav import (
     render_agent_nav,
     render_agent_nav_styles,
 )
+from sales_support_agent.services.sales.security import csrf_token
 
 TARGET_STAGE_LABELS = [
     "New Lead",
@@ -94,7 +95,10 @@ AUTONOMY_POLICY = {
 }
 HIGH_CONFIDENCE_THRESHOLD = 0.85
 MEDIUM_CONFIDENCE_THRESHOLD = 0.65
-SNAPSHOT_TTL_SECONDS = 30
+# The snapshot includes several HubSpot and Gmail reads. Keep normal navigation
+# fast for an operating session; the page shows when it was generated and gives
+# the operator an explicit refresh whenever a current decision needs newer data.
+SNAPSHOT_TTL_SECONDS = 3600
 LIVE_MAILBOX_LOOKBACK_DAYS = 120
 LIVE_MAILBOX_MAX_DEALS = 6
 AUTOMATION_SCHEDULES = [
@@ -1118,14 +1122,19 @@ def _build_operator_queues(recent_deals: list[dict[str, Any]]) -> dict[str, list
     }
 
 
-def build_operator_snapshot(settings: Settings, *, session_factory: Any | None = None) -> dict[str, Any]:
+def build_operator_snapshot(
+    settings: Settings,
+    *,
+    session_factory: Any | None = None,
+    live_enrichment: bool = False,
+) -> dict[str, Any]:
     client = HubSpotClient(settings)
     if not client.is_configured:
         raise RuntimeError("HubSpot token is not configured for this environment.")
     pipeline = _get_primary_pipeline(client, settings)
     owners = client.list_owners()
     all_deals = _list_deals(client)
-    recent_deals = _list_deals(client, limit=12)
+    recent_deals = all_deals[:12]
     owner_map = {str(owner.get("id") or ""): _format_owner(owner) for owner in owners}
     stage_map = {str(stage.get("id") or ""): stage for stage in pipeline.get("stages", []) or []}
     all_deal_ids = [str(deal.get("id") or "") for deal in all_deals if str(deal.get("id") or "").strip()]
@@ -1143,13 +1152,14 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
     live_mailbox_by_deal: dict[str, dict[str, Any]] = {}
     if session_factory is not None:
         with session_scope(session_factory) as session:
+            if live_enrichment and recent_deal_ids:
+                _sync_recent_hubspot_notes(session, client, recent_deal_ids)
             if all_deal_ids:
-                _sync_recent_hubspot_notes(session, client, all_deal_ids)
                 local_context = _load_local_deal_context(session, all_deal_ids)
             schedule_runs = _build_schedule_runs(session)
             website_notes = _build_website_notes(session)
             website_intakes = _build_website_intakes(session)
-        if all_deal_ids:
+        if live_enrichment and recent_deal_ids:
             live_mailbox_by_deal = _fetch_live_mailbox_state(
                 settings,
                 {deal_id: local_context["contactEmailsByDeal"].get(deal_id, []) for deal_id in recent_deal_ids},
@@ -1164,18 +1174,27 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
     contact_ids = set()
     deal_company_ids: dict[str, str] = {}
     deal_contact_ids: dict[str, str] = {}
-    for deal in recent_deals:
-        deal_id = str(deal.get("id") or "")
-        company_list = client.list_associations("deals", deal_id, "companies")
-        contact_list = client.list_associations("deals", deal_id, "contacts")
-        if company_list:
-            deal_company_ids[deal_id] = company_list[0]
-            company_ids.add(company_list[0])
-        if contact_list:
-            deal_contact_ids[deal_id] = contact_list[0]
-            contact_ids.add(contact_list[0])
-    companies = _map_records(client.batch_read("companies", sorted(company_ids), properties=("name", "service_type")))
-    contacts = _map_records(client.batch_read("contacts", sorted(contact_ids), properties=("firstname", "lastname", "email")))
+    if live_enrichment:
+        for deal in recent_deals:
+            deal_id = str(deal.get("id") or "")
+            company_list = client.list_associations("deals", deal_id, "companies")
+            contact_list = client.list_associations("deals", deal_id, "contacts")
+            if company_list:
+                deal_company_ids[deal_id] = company_list[0]
+                company_ids.add(company_list[0])
+            if contact_list:
+                deal_contact_ids[deal_id] = contact_list[0]
+                contact_ids.add(contact_list[0])
+    companies = (
+        _map_records(client.batch_read("companies", sorted(company_ids), properties=("name", "service_type")))
+        if company_ids
+        else {}
+    )
+    contacts = (
+        _map_records(client.batch_read("contacts", sorted(contact_ids), properties=("firstname", "lastname", "email")))
+        if contact_ids
+        else {}
+    )
 
     open_deals = won_deals = lost_deals = nurture_deals = 0
     unclassified = missing_amount = missing_owner = missing_next = multi_offer = 0
@@ -1275,6 +1294,9 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
         amount = _to_float(properties.get("amount"))
         stage_status = get_stage_status(stage) if stage else "open"
         local_contacts = local_context["contactsByDeal"].get(deal_id, [])
+        deal_row = local_context["dealRows"].get(deal_id)
+        company_present = bool(company or (deal_row and deal_row.hubspot_company_id))
+        contact_present = bool(contact or local_contacts)
         intelligence = _build_deal_intelligence(
             deal=deal,
             stage=stage,
@@ -1299,14 +1321,24 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
             missing_fields.append("owner")
         if stage_status in {"open", "nurture"} and not str(properties.get("hs_next_step") or "").strip():
             missing_fields.append("next step")
-        if not company:
+        if not company_present:
             missing_fields.append("company link")
-        if not contact:
+        if not contact_present:
             missing_fields.append("contact link")
         full_name = ""
         if contact:
             cp = contact.get("properties") or {}
             full_name = " ".join(part for part in [str(cp.get("firstname") or "").strip(), str(cp.get("lastname") or "").strip()] if part).strip() or str(cp.get("email") or "")
+        elif local_contacts:
+            local_contact = local_contacts[0]
+            full_name = " ".join(
+                part
+                for part in [
+                    str(local_contact.first_name or "").strip(),
+                    str(local_contact.last_name or "").strip(),
+                ]
+                if part
+            ).strip() or str(local_contact.email or "")
         recent_rows.append(
             {
                 "id": deal_id,
@@ -1332,8 +1364,8 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
                     deal_name=str(properties.get("dealname") or "").strip() or "Unnamed deal",
                     stage_status=stage_status,
                     primary_offer=inference["primary_offer_label"],
-                    company_present=bool(company),
-                    contact_present=bool(contact) or bool(local_contacts),
+                    company_present=company_present,
+                    contact_present=contact_present,
                     contact_count=len(local_contacts),
                     missing_fields=missing_fields,
                     intelligence=intelligence,
@@ -1429,7 +1461,11 @@ def get_operator_snapshot(settings: Settings, *, session_factory: Any | None = N
     global _cached_snapshot, _cached_snapshot_expires_at
     if not force_refresh and _cached_snapshot and _cached_snapshot_expires_at > time.time():
         return _cached_snapshot
-    snapshot = build_operator_snapshot(settings, session_factory=session_factory)
+    snapshot = build_operator_snapshot(
+        settings,
+        session_factory=session_factory,
+        live_enrichment=force_refresh,
+    )
     _cached_snapshot = snapshot
     _cached_snapshot_expires_at = time.time() + SNAPSHOT_TTL_SECONDS
     return snapshot
@@ -1692,7 +1728,12 @@ def _render_queue_panel(title: str, items: list[dict[str, Any]], empty_text: str
     """
 
 
-def _render_next_best_action(summary: dict[str, Any], queues: dict[str, list[dict[str, Any]]]) -> str:
+def _render_next_best_action(
+    summary: dict[str, Any],
+    queues: dict[str, list[dict[str, Any]]],
+    *,
+    _csrf: str = "",
+) -> str:
     queue_specs = [
         ("replyNow", "Reply now", "Respond to the newest prospect message.", "Open deal"),
         ("shareLatestAsset", "Send latest asset", "Share the newest deck, rate sheet, or audit.", "Open deal"),
@@ -1745,6 +1786,7 @@ def _render_next_best_action(summary: dict[str, Any], queues: dict[str, list[dic
       </div>
       <div class="action-command__side">
         <form method="post" action="/admin/sales/deals/sync" style="margin:0">
+          <input type="hidden" name="_csrf_token" value="{_csrf}">
           <button class="btn btn--dark" type="submit">Refresh HubSpot mirror</button>
         </form>
         <a class="btn" href="/admin/sales/deals">Open deals</a>
@@ -1902,13 +1944,14 @@ def _build_proposed_actions(
 
 
 def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, Any]] = None, writeback: Optional[dict[str, Any]] = None, status_message: str = "") -> str:
+    _csrf = csrf_token(user)
     nav_styles = render_agent_nav_styles()
     nav = render_agent_nav("sales", sales_section="sales_operator", user=user)
     favicons = render_agent_favicon_links()
     summary = snapshot.get("summary", {})
     schema = snapshot.get("schema", {})
     queues = snapshot.get("operatorQueues", {}) or {}
-    next_best_action = _render_next_best_action(summary, queues)
+    next_best_action = _render_next_best_action(summary, queues, _csrf=_csrf)
     automation_schedules = list(snapshot.get("automationSchedules") or [])
     website_notes = list(snapshot.get("websiteNotes") or [])
     website_intakes = list(snapshot.get("websiteIntakes") or [])
@@ -1962,7 +2005,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
           <p class="muted">{_esc(note.get("email") or "No email")}{(" · " + _esc(note.get("company"))) if note.get("company") else ""}</p>
           <p>{_esc(note.get("message") or "No message")}</p>
           <p class="muted">HubSpot: {"recorded" if note.get("hubspot") else "needs retry"} · Internal alert: {"sent" if note.get("notified") else "needs retry"} · {_esc(note.get("startedAt") or "")}</p>
-          {f'<form method="post" action="/admin/sales/website-notes/{int(note.get("id") or 0)}/retry"><button class="btn" type="submit">Retry missing handoffs</button></form>' if not note.get("hubspot") or not note.get("notified") else ""}
+          {f'<form method="post" action="/admin/sales/website-notes/{int(note.get("id") or 0)}/retry"><input type="hidden" name="_csrf_token" value="{_csrf}"><button class="btn" type="submit">Retry missing handoffs</button></form>' if not note.get("hubspot") or not note.get("notified") else ""}
         </article>
         """
         for note in website_notes
@@ -1977,7 +2020,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
           <p class="muted">Report: {"ready" if intake.get("reportReady") else "not ready"} · Final email: {_esc(intake.get("emailDelivery") or "pending")} · HubSpot: {_esc(intake.get("hubspot") or "unknown")}</p>
           <p class="muted">Acknowledgement: {_esc(intake.get("acknowledgement") or "unknown")} · Internal alert: {_esc(intake.get("internalNotification") or "unknown")}</p>
           {f'<p class="flash">Blocker: {_esc(intake.get("error"))}</p>' if intake.get("error") else ""}
-          {f'<form method="post" action="/admin/sales/website-intakes/{int(intake.get("id") or 0)}/retry"><button class="btn" type="submit">Retry analysis delivery</button></form>' if intake.get("retryable") else ""}
+          {f'<form method="post" action="/admin/sales/website-intakes/{int(intake.get("id") or 0)}/retry"><input type="hidden" name="_csrf_token" value="{_csrf}"><button class="btn" type="submit">Retry analysis delivery</button></form>' if intake.get("retryable") else ""}
         </article>
         """
         for intake in website_intakes
@@ -2085,6 +2128,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
         <p class="eyebrow">Sales Control Room</p>
         <h1>Work the highest-value sales action first.</h1>
         <p class="muted">The control room ranks replies, follow-ups, asset sends, and cleanup gaps so Sales does not have to inspect raw CRM data before acting.</p>
+        <p class="muted">Snapshot generated {_esc(str(snapshot.get("generatedAt") or "unknown"))}. Use “Refresh HubSpot mirror” when you need a newer view.</p>
         <div class="stats">
           <div class="stat"><div class="n">{int(summary.get("openDeals") or 0)}</div><div class="l">Open deals</div></div>
           <div class="stat"><div class="n">{_fmt_money(summary.get("openAmount"))}</div><div class="l">Open value</div></div>
@@ -2101,6 +2145,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
           <a class="btn" href="/admin/sales/deals">Open deal board</a>
           <a class="btn" href="/admin/sales/deals/cleanup">Open cleanup review</a>
           <form method="post" action="/admin/sales/deals/sync" style="margin:0">
+            <input type="hidden" name="_csrf_token" value="{_csrf}">
             <button class="btn btn--dark" type="submit">Refresh HubSpot mirror</button>
           </form>
         </div>
@@ -2143,6 +2188,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
         <h2>First write-back action layer</h2>
         <p class="muted">Preview candidate actions first. Apply writes only when the service inference or communication-backed next step is high confidence, then support that with internal notes and follow-up tasks.</p>
         <form method="post" action="/admin/sales/writeback" class="inline-form">
+          <input type="hidden" name="_csrf_token" value="{_csrf}">
           <label for="limit">Candidate limit</label>
           <input id="limit" name="limit" type="text" value="10">
           <div class="inline-row">

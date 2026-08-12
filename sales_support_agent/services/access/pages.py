@@ -556,11 +556,38 @@ def render_invite_invalid_page() -> str:
     body = """
       <p class="muted">
         This invite link is invalid, expired, or has already been used.<br><br>
-        Ask your administrator to send a new one.
+        If your personal sign-in was already activated, sign in with that email
+        below. Otherwise, ask David or Val to send a new invitation.
       </p>
-      <a class="btn" href="/admin/login" style="margin-top:22px">Sign in</a>
+      <a class="btn" href="/admin/login" style="margin-top:22px">Sign in with personal email</a>
     """
     return _standalone_page("Invalid invite", "🔗", "Invalid invite link", body)
+
+
+def render_employee_invite_ready_page() -> str:
+    """Render a deliberate confirmation step before consuming an HR invite.
+
+    Email security systems routinely open links to scan them. A GET must
+    therefore remain read-only; only the employee's explicit POST activates the
+    account and spends the single-use invitation.
+    """
+
+    body = """
+      <p class="muted">
+        Your secure employee invitation is ready.<br><br>
+        Continue to activate your personal sign-in and open the Anata employee
+        app. This invitation is used only after you press the button below.
+      </p>
+      <form method="post" action="/admin/access/invite/accept" style="margin-top:22px">
+        <button class="btn" type="submit" style="border:0;cursor:pointer">Continue to Anata</button>
+      </form>
+      <p class="muted" style="margin-top:18px;font-size:12px">
+        If you did not expect this invitation, close this page and contact Anata.
+      </p>
+    """
+    return _standalone_page(
+        "Employee invitation", "✓", "Your invitation is ready", body
+    )
 
 
 def render_email_login_sent_page() -> str:

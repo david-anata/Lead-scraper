@@ -159,6 +159,17 @@ def render_template_index(
       </div>
     </header>
     {_messages(notice, error)}
+    <section class="admin-panel">
+      <h2>Agreement review and change workflow</h2>
+      <ol class="template-workflow">
+        <li><strong>Edit a draft.</strong><span>Adjust reusable contract language and clauses. Saving validates every merge field but sends nothing.</span></li>
+        <li><strong>Preview with a booking.</strong><span>Choose a real booking to verify names, dates, attendance, quote, deposit, tax, and cancellation terms.</span></li>
+        <li><strong>Move to review.</strong><span>The version locks while legal and owner review is underway.</span></li>
+        <li><strong>Approve with evidence.</strong><span>Only the approved immutable version can create a customer agreement package.</span></li>
+        <li><strong>Revise safely.</strong><span>Never alter an approved version. Open it and start the next version, make changes, preview, and approve again.</span></li>
+      </ol>
+      <p class="app-muted">Approving a template or customer package does not send it. Google Docs eSignature remains the staff-controlled delivery and signature step.</p>
+    </section>
     {workspace}
     {create}"""
     return render_operator_document(
@@ -282,30 +293,39 @@ def render_template_editor(
     if can_approve and template["status"] in {"draft", "in_review", "approved"}:
         next_states = {
             "draft": [("in_review", "In review")],
-            "in_review": [("approved", "Approved")],
+            "in_review": [("draft", "Return to draft"), ("approved", "Approved")],
             "approved": [("retired", "Retired")],
         }[template["status"]]
-        target_status, _ = next_states[0]
-        verb = {"draft": "IN_REVIEW", "in_review": "APPROVED", "approved": "RETIRED"}[template["status"]]
-        action_label = {
-            "draft": "Submit for review",
-            "in_review": "Approve template",
-            "approved": "Retire template",
-        }[template["status"]]
-        confirmation_copy = {
-            "draft": "I confirm this draft is complete enough for formal review.",
-            "in_review": "I confirm the complete contract received the required legal and owner approval.",
-            "approved": "I confirm this version must no longer be used for new contracts.",
-        }[template["status"]]
-        lifecycle = f"""<form class="app-form-grid" method="post" action="{TEMPLATES_URL}/{_esc(template['id'])}/transition">
+        action_content = []
+        for target_status, _ in next_states:
+            action_label = {
+                "draft": "Return to draft for changes",
+                "in_review": "Submit for review",
+                "approved": "Approve template",
+                "retired": "Retire template",
+            }[target_status]
+            confirmation_copy = {
+                "draft": "I confirm review requested changes and this version must be editable again.",
+                "in_review": "I confirm this draft is complete enough for formal review.",
+                "approved": "I confirm the complete contract received the required legal and owner approval.",
+                "retired": "I confirm this version must no longer be used for new contracts.",
+            }[target_status]
+            evidence_label = (
+                "Change request or review note"
+                if target_status == "draft"
+                else "Approval evidence"
+            )
+            evidence_required = " required" if target_status in {"draft", "approved"} else ""
+            action_content.append(f"""<form class="app-form-grid" method="post" action="{TEMPLATES_URL}/{_esc(template['id'])}/transition">
         <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
         <input type="hidden" name="target_status" value="{_esc(target_status)}">
-        <input type="hidden" name="confirmation" value="{verb} TEMPLATE {_esc(template['id'])}">
-        <label class="app-field"><span>Approval evidence</span>
-          <input name="evidence" value="{_esc(template['approval_evidence'])}" placeholder="Counsel approval, signed memo, or review reference"></label>
+        <input type="hidden" name="confirmation" value="{_esc(target_status.upper())} TEMPLATE {_esc(template['id'])}">
+        <label class="app-field"><span>{_esc(evidence_label)}</span>
+          <input name="evidence" value="{_esc(template['approval_evidence'])}" placeholder="Counsel approval, signed memo, or review reference"{evidence_required}></label>
         <label class="app-confirmation"><input type="checkbox" required> <span>{_esc(confirmation_copy)}</span></label>
         <div class="app-form-grid__actions"><button class="admin-btn" type="submit">{_esc(action_label)}</button></div>
-      </form>"""
+      </form>""")
+        lifecycle = "".join(action_content)
     new_version = ""
     if can_author and template["status"] in {"approved", "retired"}:
         new_version = f"""<form method="post" action="{TEMPLATES_URL}/{_esc(template['id'])}/new-version">
@@ -430,6 +450,7 @@ _TEMPLATE_STYLES = """<style>
 .building-contracts-page .template-review h2{margin-top:1.6rem;font-size:1.15rem;}
 .building-contracts-page .template-source{margin-top:14px;}
 .building-contracts-page .template-source>summary{cursor:pointer;color:var(--agent-ink-muted);font-weight:700;}
+.building-contracts-page .template-workflow{display:grid;gap:12px;margin:0;padding-left:22px;}.building-contracts-page .template-workflow li{padding-left:4px;}.building-contracts-page .template-workflow span{display:block;margin-top:3px;color:var(--agent-ink-muted);}
 .building-contracts-page .app-confirmation{display:flex;align-items:flex-start;gap:10px;grid-column:1/-1;padding:12px 14px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);background:var(--agent-surface-soft);}
 .building-contracts-page .app-confirmation input{width:18px;height:18px;flex:0 0 auto;}
 .building-contracts-page textarea{font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;}

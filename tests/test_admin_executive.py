@@ -218,53 +218,11 @@ class AdminExecutiveTests(unittest.TestCase):
                     event_type="call_completed",
                     source="manual",
                     summary="Spoke with buyer.",
-                    occurred_at=datetime(2026, 3, 17, 14, 0, tzinfo=timezone.utc),
-                )
-            )
-
-        class ExplodingClickUpClient:
-            def get_task_comments(self, task_id: str) -> list[dict[str, object]]:
-                raise AssertionError("Executive build should not fetch ClickUp comments.")
-
-        settings = _build_settings()
-        with session_scope(session_factory) as session:
-            executive = build_executive_data(
-                settings=settings,
-                session=session,
-                clickup_client=ExplodingClickUpClient(),
-                as_of_date=date(2026, 3, 18),
-            )
-
-        self.assertEqual(executive.kpis["active_leads"], 1)
-        self.assertEqual(executive.risk_leads[0].last_touch_source, "Email event")
-
-    def test_build_executive_data_does_not_fetch_clickup_comments_per_lead(self) -> None:
-        session_factory = create_session_factory("sqlite:///:memory:")
-        init_database(session_factory)
-
-        with session_scope(session_factory) as session:
-            session.add(
-                LeadMirror(
-                    clickup_task_id="task-1",
-                    list_id="list-123",
-                    task_name="Acme Wholesale",
-                    task_url="https://app.clickup.com/t/task-1",
-                    status="working qualified",
-                    assignee_id="owner-1",
-                    assignee_name="Gabe Smedley",
-                    source="Apollo",
-                    value="$12,000",
-                    created_at=datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc),
-                    last_sync_at=datetime(2026, 3, 18, 8, 0, tzinfo=timezone.utc),
-                )
-            )
-            session.add(
-                CommunicationEvent(
-                    clickup_task_id="task-1",
-                    event_type="call_completed",
-                    source="manual",
-                    summary="Spoke with buyer.",
-                    occurred_at=datetime(2026, 3, 17, 14, 0, tzinfo=timezone.utc),
+                    # Three business days before as_of, so the lead is
+                    # genuinely overdue and reaches the risk list. The old
+                    # 03-17 anchor left it not yet due, so every assertion
+                    # below this line was unreachable.
+                    occurred_at=datetime(2026, 3, 13, 14, 0, tzinfo=timezone.utc),
                 )
             )
 
@@ -303,6 +261,9 @@ class AdminExecutiveTests(unittest.TestCase):
         html = render_executive_page(rebuilt)
         self.assertIn("/admin", html)
         self.assertIn("Executive summary", html)
+        self.assertIn("Executive · Sales", html)
+        self.assertIn("This page covers Sales", html)
+        self.assertIn('aria-label="Other executive operating areas"', html)
         self.assertIn("Pipeline value", html)
         self.assertIn("info-dot", html)
         self.assertIn("Top owner at risk", html)
@@ -312,6 +273,31 @@ class AdminExecutiveTests(unittest.TestCase):
         self.assertIn("id=\"owner-filter\"", html)
         self.assertIn("id=\"scorecard-table\"", html)
         self.assertNotIn("Due</th>", html)
+
+    def test_unknown_open_tasks_are_not_counted_as_sales_pipeline(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        with session_scope(session_factory) as session:
+            session.add(
+                LeadMirror(
+                    clickup_task_id="operations-task",
+                    list_id="list-123",
+                    task_name="Vendor bill",
+                    task_url="https://app.clickup.com/t/operations-task",
+                    status="Open",
+                    created_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+                    last_sync_at=datetime(2026, 3, 18, tzinfo=timezone.utc),
+                )
+            )
+
+        with session_scope(session_factory) as session:
+            executive = build_executive_data(
+                settings=_build_settings(),
+                session=session,
+                as_of_date=date(2026, 3, 18),
+            )
+
+        self.assertEqual(executive.kpis["active_leads"], 0)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,10 @@ from sales_support_agent.api.employee_app_router import router as employee_app_r
 from sales_support_agent.api.hr_jobs_router import router as hr_jobs_router
 from sales_support_agent.api.marketing_router import router as marketing_router
 from sales_support_agent.api.leads_router import router as leads_router
-from sales_support_agent.api.website_ops_jobs_router import router as website_ops_jobs_router
+from sales_support_agent.api.website_ops_jobs_router import (
+    install_embedded_website_ops_scheduler,
+    router as website_ops_jobs_router,
+)
 from sales_support_agent.api.content_router import router as content_router
 from sales_support_agent.api.outbound_jobs import router as outbound_jobs_router
 from sales_support_agent.api.sales_jobs_router import router as sales_jobs_router
@@ -48,6 +51,19 @@ from sales_support_agent.models.database import (
 
 
 logger = logging.getLogger("agent.lifecycle")
+
+
+def _log_sales_snapshot_prewarm(future) -> None:
+    """Report background snapshot readiness without delaying app startup."""
+    try:
+        snapshot = future.result()
+    except Exception:  # noqa: BLE001 - prewarming must never block the service
+        logger.exception("lifecycle milestone=sales_snapshot_prewarm_failed")
+        return
+    logger.info(
+        "lifecycle milestone=sales_snapshot_ready generated_at=%s",
+        snapshot.get("generatedAt", "unknown"),
+    )
 
 
 def _startup_database_prep_enabled() -> bool:
@@ -125,12 +141,24 @@ def create_app() -> FastAPI:
                 storage_stats["files"],
                 storage_stats["bytes"],
             )
+        install_embedded_website_ops_scheduler(app)
         app.state.ready = True
         logger.info(
             "lifecycle milestone=app_ready commit=%s elapsed_ms=%.1f",
             commit,
             (perf_counter() - process_started) * 1000,
         )
+        if os.getenv("RENDER", "").strip().lower() in {"1", "true", "yes"}:
+            from sales_support_agent.services.sales.operator_dashboard import (
+                get_operator_snapshot,
+            )
+
+            sales_snapshot_future = app.state.dashboard_sync_executor.submit(
+                get_operator_snapshot,
+                settings,
+                session_factory=session_factory,
+            )
+            sales_snapshot_future.add_done_callback(_log_sales_snapshot_prewarm)
         try:
             yield
         finally:
@@ -153,6 +181,30 @@ def create_app() -> FastAPI:
             logger.info("lifecycle milestone=shutdown_complete commit=%s", commit)
 
     app = FastAPI(title="Sales Support Agent", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def finance_read_performance(request, call_next):
+        """Time Finance pages and invalidate cached reads after every write."""
+        started = perf_counter()
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/admin/finances"):
+            elapsed_ms = (perf_counter() - started) * 1000
+            response.headers["Server-Timing"] = f"finance;dur={elapsed_ms:.1f}"
+            logger.info(
+                "finance_page method=%s path=%s status=%s duration_ms=%.1f",
+                request.method,
+                path,
+                response.status_code,
+                elapsed_ms,
+            )
+            if request.method not in {"GET", "HEAD", "OPTIONS"}:
+                from sales_support_agent.api.cashflow_router import (
+                    clear_finance_brief_cache,
+                )
+
+                clear_finance_brief_cache(request.app)
+        return response
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     brand_static_dir = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),

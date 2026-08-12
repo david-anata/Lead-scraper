@@ -8,16 +8,20 @@ durable store and each web instance's filesystem a disposable local cache.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from sqlalchemy import text
+from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
 _MAX_FILE_BYTES = 25 * 1024 * 1024
+_CACHE_SYNC_LOCK = RLock()
 
 
 def ensure_website_ops_storage_schema(engine: Any) -> None:
@@ -149,6 +153,22 @@ def synchronize_website_ops_cache(settings: Any, engine: Any) -> dict[str, int]:
     return restore_website_ops_root(engine, root)
 
 
+@contextmanager
+def website_ops_cache_transaction(engine: Any, root: Path):
+    """Own a cache write/snapshot cycle without request clobbering.
+
+    Startup performs the one authoritative hydration. Production intentionally
+    runs a single Website Ops writer, so request-time hydration can only replace
+    newer in-process work with an older database snapshot.
+    """
+
+    with _CACHE_SYNC_LOCK:
+        try:
+            yield
+        finally:
+            snapshot_website_ops_root(engine, root)
+
+
 class WebsiteOpsStorageMiddleware(BaseHTTPMiddleware):
     """Keep each web instance's disposable Website Ops cache synchronized."""
 
@@ -169,8 +189,19 @@ class WebsiteOpsStorageMiddleware(BaseHTTPMiddleware):
             request.app.state.settings,
         )
         engine = request.app.state.session_factory.kw["bind"]
-        restore_website_ops_root(engine, Path(settings.website_ops_root))
-        response = await call_next(request)
-        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-            snapshot_website_ops_root(engine, Path(settings.website_ops_root))
-        return response
+        acquired = _CACHE_SYNC_LOCK.acquire(blocking=False)
+        if not acquired:
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                return JSONResponse(
+                    {"detail": "Website Ops is completing a scheduled pulse. Retry shortly."},
+                    status_code=409,
+                    headers={"Retry-After": "30"},
+                )
+            return await call_next(request)
+        try:
+            response = await call_next(request)
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                snapshot_website_ops_root(engine, Path(settings.website_ops_root))
+            return response
+        finally:
+            _CACHE_SYNC_LOCK.release()

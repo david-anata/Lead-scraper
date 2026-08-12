@@ -530,7 +530,23 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         body = render_building_page(
             user={"is_superadmin": True, "permissions": set(), "email": "admin@example.com"},
             spaces=[],
-            offerings=[],
+            offerings=[
+                {
+                    "id": "arena-event",
+                    "name": "The Arena event booking",
+                    "offering_type": "event",
+                },
+                {
+                    "id": "arena-events",
+                    "name": "The Arena",
+                    "offering_type": "event",
+                },
+                {
+                    "id": "private-office",
+                    "name": "Private office",
+                    "offering_type": "private_office",
+                },
+            ],
             contacts=[],
             segments=[],
             campaigns=[],
@@ -578,6 +594,19 @@ class BuildingCrmCampaignTests(unittest.TestCase):
             body,
             r'<input type="hidden" name="reservation_id" value="event-[a-f0-9]{12}">',
         )
+        review_offering = re.search(
+            r'<select id="review-offering"[^>]*>(.*?)</select>',
+            body,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(review_offering)
+        review_options = review_offering.group(1)
+        self.assertIn('value="arena-events">The Arena · canonical</option>', review_options)
+        self.assertIn(
+            'value="arena-event">The Arena event booking · legacy/unreviewed</option>',
+            review_options,
+        )
+        self.assertNotIn('value="private-office"', review_options)
         for view, title in {
             "today": "Today",
             "sales": "Sales",

@@ -102,6 +102,10 @@ class SalesOperatorDashboardTests(unittest.TestCase):
         self.assertIn("Report: not ready", html)
         self.assertIn("HubSpot: recorded", html)
         self.assertIn('/admin/sales/website-intakes/73/retry', html)
+        self.assertIn("Snapshot generated", html)
+
+    def test_sales_snapshot_cache_is_long_enough_for_normal_navigation(self):
+        self.assertGreaterEqual(operator_dashboard.SNAPSHOT_TTL_SECONDS, 300)
 
     def test_operator_page_does_not_offer_retry_for_completed_analysis(self):
         html = operator_dashboard.render_operator_page(

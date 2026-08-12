@@ -1,8 +1,8 @@
-"""Governed QuickBooks Contract Builder signature-request readiness.
+"""Governed provider-neutral signature-request readiness.
 
 This module freezes who would sign which approved agreement. It never calls an
 e-sign provider, sends email, creates a provider request, or records a
-signature. QuickBooks Contract Builder does not expose a supported public API,
+signature. The current Google Docs eSignature step remains staff-controlled,
 so delivery is a deliberate operator handoff and completion is recorded only
 from QuickBooks evidence.
 """
@@ -326,5 +326,83 @@ def transition_signature_readiness(
         notice=(
             f"Signature readiness moved to {target_status.replace('_', ' ')}; "
             "nothing was sent."
+        ),
+    )
+
+
+@router.post(
+    "/{agreement_id}/signature-readiness/recovery",
+    dependencies=FORM_DEPS,
+)
+def record_signature_handoff_recovery(
+    agreement_id: str,
+    request: Request,
+    target_status: Literal["failed", "not_sent"] = Form(...),
+    failure_reason: str = Form(""),
+    user: dict = Depends(require_tool("building.agreements.prepare")),
+) -> RedirectResponse:
+    """Record a failed manual handoff or make it retryable; send nothing."""
+
+    actor = _actor(user)
+    now = _now()
+    with session_scope(request.app.state.session_factory) as session:
+        agreement = session.get(BuildingAgreement, agreement_id)
+        row = session.execute(
+            select(BuildingSignatureRequestReadiness).where(
+                BuildingSignatureRequestReadiness.agreement_id == agreement_id
+            )
+        ).scalar_one_or_none()
+        if agreement is None or row is None or row.status != "approved":
+            return _redirect(
+                agreement_id,
+                error="Approve the frozen QuickBooks handoff first.",
+            )
+        if (
+            row.agreement_checksum != agreement.package_checksum
+            or row.checksum != _checksum(dict(row.snapshot_json or {}))
+        ):
+            return _redirect(
+                agreement_id,
+                error="Signature readiness checksum verification failed.",
+            )
+        reason = failure_reason.strip()
+        if target_status == "failed" and not reason:
+            return _redirect(
+                agreement_id,
+                error="Describe the failed QuickBooks handoff before recording it.",
+            )
+        if row.delivery_status in {"sent", "completed"}:
+            return _redirect(
+                agreement_id,
+                error="Delivered QuickBooks evidence cannot be reset from Agent.",
+            )
+        before = row.delivery_status
+        row.delivery_status = target_status
+        row.updated_at = now
+        session.add(row)
+        session.add(BuildingAuditEvent(
+            entity_type="signature_request_readiness",
+            entity_id=row.id,
+            action=(
+                "signature_handoff_failed"
+                if target_status == "failed"
+                else "signature_handoff_retry_ready"
+            ),
+            actor=actor,
+            before_json={"delivery_status": before},
+            after_json={
+                "delivery_status": target_status,
+                "failure_reason": reason,
+                "provider": QUICKBOOKS_CONTRACT_PROVIDER,
+                "provider_write": False,
+                "message_sent": False,
+            },
+        ))
+    return _redirect(
+        agreement_id,
+        notice=(
+            "QuickBooks handoff failure recorded; nothing was sent."
+            if target_status == "failed"
+            else "QuickBooks handoff is ready to retry; nothing was sent."
         ),
     )

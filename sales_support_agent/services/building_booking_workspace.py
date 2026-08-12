@@ -39,6 +39,10 @@ def _status(value: str) -> str:
     return f'<span class="app-status app-status--{modifier}">{_esc(normalized.title())}</span>'
 
 
+def _money(cents: Any, currency: str = "USD") -> str:
+    return f"{str(currency or 'USD').upper()} {int(cents or 0) / 100:,.2f}"
+
+
 def _phase(
     *,
     number: int,
@@ -163,11 +167,21 @@ def _build_phases(data: dict[str, Any]) -> tuple[list[dict[str, str]], dict[str,
             "label": "Open contracts",
         }
     elif not payment_done:
+        billing = data.get("billing") or {}
+        billing_ready = bool(billing.get("schedules"))
         next_action = {
-            "title": "Record cleared payment evidence.",
-            "body": "A prepared payment request is not a payment. Confirm only provider-cleared or approved manual evidence.",
-            "href": "/admin/building/billing",
-            "label": "Open billing",
+            "title": (
+                "Create and review the QuickBooks invoice."
+                if billing_ready
+                else "Prepare billing from the signed booking."
+            ),
+            "body": (
+                "The exact booking, balance, and refundable security-deposit drafts are ready for review. QuickBooks creation remains a separate confirmed action."
+                if billing_ready
+                else "Create reviewed billing drafts from the signed agreement and accepted quote. This sends nothing."
+            ),
+            "href": "#booking-billing",
+            "label": "Review billing",
         }
     elif not is_confirmed:
         next_action = {
@@ -204,6 +218,7 @@ def render_booking_workspace(
     payment = data.get("payment") or {}
     calendar = data.get("calendar") or {}
     checklist = data.get("checklist") or {}
+    billing = data.get("billing") or {}
     customer_name = (
         contact.get("full_name")
         or inquiry.get("name")
@@ -260,6 +275,142 @@ def render_booking_workspace(
       <div><span>Calendar</span>{_status(calendar.get("status") or "not_started")}<small>{"Projected to the configured calendar" if calendar.get("status") == "synced" else "Agent remains authoritative"}</small></div>
       <div><span>Operations</span>{_status(checklist.get("status") or "not_started")}<small>{_esc(checklist.get("summary") or "No event-day checklist yet")}</small></div>
     """
+    quote_versions = list(data.get("quote_versions") or [])
+    approved_rate_plans = list(data.get("approved_rate_plans") or [])
+    quote_snapshot = dict(proposal.get("rate_plan_snapshot") or {})
+    pricing = dict(quote_snapshot.get("pricing_adjustment") or {})
+    quote_status = str(proposal.get("status") or "draft")
+    quote_editable = quote_status in {"draft", "approved"}
+    quote_version = int(proposal.get("version") or 0) if quote_editable else int(proposal.get("version") or 0) + 1
+    quote_version = max(quote_version, 1)
+    quote_form_status = quote_status if quote_editable else "draft"
+    quote_read_only = str(reservation.get("status") or "") in {
+        "cancelled", "expired", "completed"
+    }
+    pricing_subtotal = int(pricing.get("pricing_subtotal_cents") or proposal.get("amount_cents") or 0)
+    discount_cents = int(pricing.get("discount_cents") or 0)
+    rate_options = "".join(
+        f'<option value="{_esc(plan.get("id"))}"{" selected" if plan.get("id") == proposal.get("rate_plan_id") else ""}>{_esc(plan.get("name"))} · v{_esc(plan.get("version"))}</option>'
+        for plan in approved_rate_plans
+    ) or (
+        f'<option value="{_esc(proposal.get("rate_plan_id"))}">{_esc(quote_snapshot.get("name") or "Saved approved rate plan")}</option>'
+        if proposal.get("rate_plan_id") else '<option value="">No approved effective rate plan</option>'
+    )
+    preview_rows = "".join(
+        f'<li><span>{_esc(item.get("name") or item.get("description") or str(item.get("type") or "Item").replace("_", " ").title())}</span><strong>{_esc(_money(item.get("amount_cents"), proposal.get("currency") or "USD"))}</strong></li>'
+        for item in list(proposal.get("line_items") or [])
+    ) or f'<li><span>Current quote total</span><strong>{_esc(_money(proposal.get("amount_cents"), proposal.get("currency") or "USD"))}</strong></li>'
+    version_rows = "".join(
+        f'<tr><td>v{_esc(item.get("version"))}</td><td>{_status(item.get("status") or "draft")}</td><td>{_esc(_money(item.get("amount_cents"), item.get("currency") or "USD"))}</td><td>{_esc(item.get("valid_until") or "Not set")}</td><td>{"Frozen" if item.get("status") in {"sent", "accepted", "declined", "voided"} else "Editable"}</td></tr>'
+        for item in quote_versions
+    ) or '<tr><td colspan="5">No quote versions yet.</td></tr>'
+    quote_section = (
+        f'''<section class="booking-workspace" id="quote-builder"><div class="booking-workspace__header"><div><h2>Quote builder</h2><p>Revise the customer quote here. Sent versions stay frozen; a revision receives a new version.</p></div>{_status(quote_status)}</div>
+          <div class="booking-quote-layout"><form method="post" action="/admin/building/reservations/{_esc(reservation.get('id'))}/proposals">
+            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input type="hidden" name="proposal_type" value="quote">
+            {'<p class="app-alert app-alert--notice booking-quote-wide">This booking is terminal. Quote history is read-only.</p>' if quote_read_only else ''}<fieldset class="booking-quote-fields"{' disabled' if quote_read_only else ''}>
+            <label>Version<input type="number" name="version" min="1" value="{quote_version}" required></label>
+            <label>Action<select name="status">{''.join(f'<option value="{value}"{" selected" if value == quote_form_status else ""}>{label}</option>' for value, label in (("draft","Save draft"),("approved","Approve"),("sent","Record sent"),("accepted","Record accepted"),("voided","Void")))}</select></label>
+            <label>Approved rate plan<select name="rate_plan_id" required>{rate_options}</select></label>
+            <label>Pre-tax subtotal<input name="pricing_subtotal" inputmode="decimal" value="{pricing_subtotal / 100:.2f}" required></label>
+            <label>Discount<input name="discount" inputmode="decimal" value="{discount_cents / 100:.2f}"></label>
+            <label>Discount reason<input name="discount_reason" value="{_esc(pricing.get('discount_reason') or '')}" placeholder="Required for every discount"></label>
+            <label>Valid until<input type="date" name="valid_until" value="{_esc(proposal.get('valid_until') or '')}"></label>
+            <label>Customer document URL<input type="url" name="document_url" value="{_esc(proposal.get('document_url') or '')}" placeholder="Required before sent"></label>
+            <label class="booking-quote-wide">Customer terms summary<textarea name="terms_summary">{_esc(proposal.get('terms_summary') or '')}</textarea></label>
+            <input type="hidden" name="amount" value="{int(proposal.get('amount_cents') or 0) / 100:.2f}"><input type="hidden" name="line_item" value="">
+            <div class="booking-quote-wide booking-quote-submit"><button class="booking-button booking-button--primary" type="submit">Save quote action</button><small>Discount cannot exceed subtotal. Tax is derived from the approved plan for the transaction date.</small></div></fieldset>
+          </form><aside class="booking-customer-preview"><p class="app-eyebrow">Customer preview</p><h3>Quote v{_esc(proposal.get('version') or 1)}</h3><ul>{preview_rows}</ul><p><strong>Total:</strong> {_esc(_money(proposal.get('amount_cents'), proposal.get('currency') or 'USD'))}</p><p>{_esc(proposal.get('terms_summary') or 'No customer terms summary yet.')}</p><small>Tax: {_esc(f"{int(pricing.get('tax_rate_bps') or quote_snapshot.get('tax_rate_bps') or 0) / 100:.2f}")}% · Transaction date: {_esc(pricing.get('transaction_date') or quote_snapshot.get('transaction_date') or reservation.get('starts_at').date().isoformat())}</small></aside></div>
+          <div class="booking-versions"><h3>Version comparison</h3><div class="booking-version-table"><table><thead><tr><th>Version</th><th>Status</th><th>Total</th><th>Valid until</th><th>Content</th></tr></thead><tbody>{version_rows}</tbody></table></div></div>
+        </section>'''
+        if reservation.get("kind") == "event" else ""
+    )
+    billing_schedule_rows = "".join(
+        f'<tr><td>{_esc(str(item.get("component") or "charge").replace("_", " ").title())}</td>'
+        f'<td>{_esc(_money(item.get("amount_cents"), item.get("currency") or "USD"))}</td>'
+        f'<td>{_esc(item.get("starts_on") or "—")}</td><td>{_status(item.get("status") or "draft")}</td></tr>'
+        for item in billing.get("schedules", [])
+        if item.get("status") != "cancelled"
+    ) or '<tr><td colspan="4">No billing drafts prepared for this booking.</td></tr>'
+    invoice_rows_list = []
+    for item in billing.get("invoices", []):
+        invoice_link = (
+            f'<a href="{_esc(item.get("url"))}" target="_blank" '
+            'rel="noopener">Open QuickBooks</a>'
+            if item.get("url")
+            else "Not created"
+        )
+        invoice_rows_list.append(
+            f'<tr><td>{_esc(item.get("qbo_invoice_id") or "Agent draft")}</td>'
+            f'<td>{_status(item.get("status") or "draft")}</td>'
+            f'<td>{_esc(_money(item.get("amount_due_cents"), item.get("currency") or "USD"))}</td>'
+            f'<td>{_esc(_money(item.get("amount_paid_cents"), item.get("currency") or "USD"))}</td>'
+            f'<td>{invoice_link}</td></tr>'
+        )
+    invoice_rows = "".join(invoice_rows_list) or '<tr><td colspan="5">No QuickBooks invoice has been created.</td></tr>'
+    can_prepare_billing = bool(
+        agreement.get("preparation_status") == "approved"
+        and payment.get("status") == "approved"
+        and not billing.get("invoices")
+    )
+    billing_prepare_form = ""
+    if can_prepare_billing:
+        billing_prepare_label = (
+            "Refresh exact billing drafts"
+            if billing.get("schedules")
+            else "Prepare exact billing drafts"
+        )
+        billing_prepare_form = (
+            f'<form class="booking-billing-prepare" method="post" '
+            f'action="/admin/building/bookings/{_esc(reservation.get("id"))}/billing/prepare">'
+            f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+            '<button class="booking-button booking-button--primary" type="submit">'
+            f'{billing_prepare_label}</button><small>Uses the approved contract package. '
+            'A signature is not required to create an unsent QuickBooks draft, and existing '
+            'matching drafts are not duplicated.</small></form>'
+        )
+    billing_section = f'''<section class="booking-workspace" id="booking-billing">
+        <div class="booking-workspace__header"><div><h2>QuickBooks billing</h2><p>Prepared drafts, provider invoices, and cleared payment remain separate states.</p></div></div>
+        {billing_prepare_form}
+        <div class="booking-version-table"><table><thead><tr><th>Charge</th><th>Amount</th><th>Invoice on</th><th>State</th></tr></thead><tbody>{billing_schedule_rows}</tbody></table></div>
+        <div class="booking-version-table"><table><thead><tr><th>QuickBooks</th><th>State</th><th>Due</th><th>Paid</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div>
+        <p class="booking-billing-link"><a class="booking-button booking-button--secondary" href="/admin/building#billing-and-collections">Approve drafts, create invoices, or refresh payment evidence</a></p>
+      </section>'''
+    communication_rows_list = []
+    for item in data.get("communications", []):
+        recovery = "—"
+        if item.get("status") in {"failed", "not_configured"}:
+            recovery = (
+                f'<form method="post" action="/admin/building/bookings/{_esc(reservation.get("id"))}'
+                f'/communications/{_esc(item.get("milestone"))}/retry">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                '<button class="booking-button booking-button--secondary" type="submit">Retry</button></form>'
+            )
+        communication_rows_list.append(
+            f'<tr><td>{_esc(str(item.get("milestone") or "update").replace("_", " ").title())}'
+            f'<small>Template v{_esc(item.get("template_version"))}</small></td>'
+            f'<td>{_status(item.get("status") or "queued")}</td>'
+            f'<td>{_esc(item.get("delivered_at") or item.get("sent_at") or "Not delivered")}</td>'
+            f'<td>{_esc(item.get("provider_reference") or item.get("last_error") or "No provider evidence")}</td>'
+            f'<td>{recovery}</td></tr>'
+        )
+    communication_rows = "".join(communication_rows_list) or '<tr><td colspan="5">No later-stage customer message has been prepared yet. The inquiry receipt is tracked with the inquiry.</td></tr>'
+    communications_section = f'''<section class="booking-workspace" id="booking-communications">
+        <div class="booking-workspace__header"><div><h2>Customer communications</h2><p>Versioned operational messages use The Anata Team and retain provider delivery evidence.</p></div></div>
+        <div class="booking-version-table"><table><thead><tr><th>Milestone</th><th>State</th><th>Sent or delivered</th><th>Evidence</th><th>Recovery</th></tr></thead><tbody>{communication_rows}</tbody></table></div>
+      </section>'''
+    checklist_rows = "".join(
+        f'<tr><td>{_esc(item.get("label"))}</td><td>{_status(item.get("status") or "pending")}</td>'
+        f'<td>{_esc(item.get("assigned_owner") or "Unassigned")}</td>'
+        f'<td>{_esc(item.get("due_at") or "No due date")}</td>'
+        f'<td>{_esc(item.get("evidence_reference") or "Not recorded")}</td></tr>'
+        for item in checklist.get("items", [])
+    ) or '<tr><td colspan="5">Operations work begins after confirmation.</td></tr>'
+    operations_section = f'''<section class="booking-workspace" id="booking-operations">
+        <div class="booking-workspace__header"><div><h2>Event operations</h2><p>Every required task has an owner, deadline, and completion or waiver evidence.</p></div>{_status(checklist.get("status") or "not_started")}</div>
+        <div class="booking-version-table"><table><thead><tr><th>Work</th><th>State</th><th>Owner</th><th>Due</th><th>Evidence</th></tr></thead><tbody>{checklist_rows}</tbody></table></div>
+        <p class="booking-billing-link"><a class="booking-button booking-button--secondary" href="/admin/building#operations">Update checklist evidence</a></p>
+      </section>'''
     body = f"""
       <header class="app-page-header booking-header">
         <div>
@@ -289,12 +440,16 @@ def render_booking_workspace(
         <div class="booking-workspace__header"><div><h2>Authoritative evidence</h2><p>Prepared, sent, signed, paid, and confirmed are never treated as the same state.</p></div></div>
         <div class="booking-evidence">{evidence_rows}</div>
       </section>
+      {quote_section}
+      {billing_section}
+      {communications_section}
+      {operations_section}
       <section class="booking-actions" aria-labelledby="booking-actions-title">
         <div><h2 id="booking-actions-title">Common staff actions</h2><p>Use the governed workspace for each action; every write keeps its existing permission and audit checks.</p></div>
         <div>
           <a class="booking-button booking-button--secondary" href="/admin/building/bookings#bookings-and-holds">Manage quote or status</a>
           <a class="booking-button booking-button--secondary" href="{contract_href}">Open contract</a>
-          <a class="booking-button booking-button--secondary" href="/admin/building/billing">Open billing</a>
+          <a class="booking-button booking-button--secondary" href="#booking-billing">Open billing</a>
         </div>
         {(
           f'''<form method="post" action="/admin/building/reservations/{_esc(reservation.get("id"))}/customer-status-access">
@@ -323,6 +478,7 @@ def render_booking_workspace(
       .booking-button{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:9px 14px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);font:700 .8rem/1.2 "Montserrat",sans-serif;text-decoration:none;cursor:pointer}.booking-button--primary{border-color:var(--agent-blue-strong);background:var(--agent-blue-strong);color:#fff}.booking-button--secondary{background:var(--agent-surface);color:var(--agent-ink)}
       .booking-layout{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.75fr);gap:20px}
       .booking-workspace{min-width:0;overflow:hidden;border:1px solid var(--agent-border);border-radius:var(--agent-radius-panel);background:var(--agent-surface)}.booking-workspace__header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:18px 20px}.booking-workspace__header h2{margin:0}.booking-workspace__header p{margin:5px 0 0;color:var(--agent-ink-muted)}
+      .booking-billing-prepare{display:flex;align-items:center;gap:12px;padding:0 20px 18px}.booking-billing-prepare small{color:var(--agent-ink-muted)}.booking-billing-link{padding:0 20px 20px}
       .booking-journey ol{margin:0;padding:0;list-style:none}.booking-phase{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:14px;align-items:center;padding:15px 20px;border-top:1px solid var(--agent-border)}
       .booking-phase__number{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--agent-surface-soft);font-weight:800}
       .booking-phase strong,.booking-phase small{display:block}.booking-phase small{margin-top:3px;color:var(--agent-ink-muted);line-height:1.4}.booking-phase__state{font-size:12px;font-weight:800;color:var(--agent-ink-muted)}
@@ -330,10 +486,11 @@ def render_booking_workspace(
       .booking-phase--waiting{opacity:.7}.booking-phase--blocked .booking-phase__number{background:#fff0ed;color:#8b2f23}
       .booking-summary dl{margin:0}.booking-summary dt,.booking-summary dd{margin:0;padding:12px 18px;border-top:1px solid var(--agent-border)}.booking-summary dt{padding-bottom:0;color:var(--agent-ink-muted);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}.booking-summary dd{padding-top:4px}.booking-summary dd span{display:block;margin-top:3px;color:var(--agent-ink-muted);font-size:12px}
       .booking-evidence{display:grid;grid-template-columns:repeat(5,minmax(0,1fr))}.booking-evidence>div{min-width:0;padding:18px;border-top:1px solid var(--agent-border);border-right:1px solid var(--agent-border)}.booking-evidence>div:last-child{border-right:0}.booking-evidence>div>span,.booking-evidence small{display:block}.booking-evidence>div>span{margin-bottom:8px;color:var(--agent-ink-muted);font-size:11px;font-weight:800;text-transform:uppercase}.booking-evidence small{margin-top:8px;color:var(--agent-ink-muted);line-height:1.4}
+      .booking-quote-layout{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(280px,.65fr);gap:20px;padding:0 20px 20px}.booking-quote-layout form{display:grid;gap:12px}.booking-quote-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0;padding:0;border:0}.booking-quote-layout label{display:grid;gap:5px;font-weight:700}.booking-quote-layout textarea{min-height:92px}.booking-quote-wide{grid-column:1/-1}.booking-quote-submit{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.booking-quote-submit small{color:var(--agent-ink-muted)}.booking-customer-preview{padding:18px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);background:var(--agent-surface-soft)}.booking-customer-preview h3{margin:4px 0 14px}.booking-customer-preview ul{display:grid;gap:7px;margin:0;padding:0;list-style:none}.booking-customer-preview li{display:flex;justify-content:space-between;gap:12px}.booking-customer-preview small{color:var(--agent-ink-muted)}.booking-versions{padding:0 20px 20px}.booking-version-table{overflow-x:auto}.booking-version-table table{width:100%;border-collapse:collapse}.booking-version-table th,.booking-version-table td{padding:10px;border-top:1px solid var(--agent-border);text-align:left;white-space:nowrap}
       .booking-actions{display:grid;grid-template-columns:minmax(220px,.7fr) minmax(0,1.3fr);gap:20px;padding:22px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-panel);background:var(--agent-surface)}.booking-actions h2{margin:0}.booking-actions p{margin:6px 0 0;color:var(--agent-ink-muted)}.booking-actions>div:nth-child(2){display:flex;justify-content:flex-end;align-items:start;flex-wrap:wrap;gap:8px}.booking-actions form{grid-column:1/-1;display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding-top:16px;border-top:1px solid var(--agent-border)}.booking-actions input{width:76px}.booking-actions small{color:var(--agent-ink-muted)}
       .booking-technical{padding:14px 18px;border:1px dashed var(--agent-border);border-radius:var(--agent-radius-control)}.booking-technical summary{cursor:pointer;font-weight:700;color:var(--agent-ink-muted)}
-      @media(max-width:900px){.booking-layout{grid-template-columns:1fr}.booking-evidence{grid-template-columns:1fr 1fr}.booking-evidence>div{border-bottom:1px solid var(--app-border)}.booking-actions{grid-template-columns:1fr}.booking-actions>div:nth-child(2){justify-content:flex-start}}
-      @media(max-width:600px){.booking-next{align-items:stretch;flex-direction:column}.booking-phase{grid-template-columns:30px minmax(0,1fr)}.booking-phase__state{grid-column:2}.booking-evidence{grid-template-columns:1fr}.booking-evidence>div{border-right:0}.booking-actions form{align-items:stretch;flex-direction:column}.booking-actions input{width:100%}}
+      @media(max-width:900px){.booking-layout,.booking-quote-layout{grid-template-columns:1fr}.booking-evidence{grid-template-columns:1fr 1fr}.booking-evidence>div{border-bottom:1px solid var(--app-border)}.booking-actions{grid-template-columns:1fr}.booking-actions>div:nth-child(2){justify-content:flex-start}}
+      @media(max-width:600px){.booking-next{align-items:stretch;flex-direction:column}.booking-phase{grid-template-columns:30px minmax(0,1fr)}.booking-phase__state{grid-column:2}.booking-evidence,.booking-quote-fields{grid-template-columns:1fr}.booking-quote-wide{grid-column:auto}.booking-evidence>div{border-right:0}.booking-actions form{align-items:stretch;flex-direction:column}.booking-actions input{width:100%}}
     </style>
     """
     return render_operator_document(

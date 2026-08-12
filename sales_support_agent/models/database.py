@@ -322,6 +322,9 @@ def _ensure_building_columns(engine: Any) -> None:
             "source_proposal_id": "VARCHAR(64) NOT NULL DEFAULT ''",
             "source_proposal_version": "INTEGER NOT NULL DEFAULT 0",
             "source_amount_cents": "INTEGER NOT NULL DEFAULT 0",
+            "source_quote_total_cents": "INTEGER NOT NULL DEFAULT 0",
+            "source_quote_checksum": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "billing_component": "VARCHAR(32) NOT NULL DEFAULT 'full_amount'",
         },
         "building_communication_preferences": {
             "operational_source": "VARCHAR(64) NOT NULL DEFAULT ''",
@@ -402,6 +405,15 @@ def _ensure_building_columns(engine: Any) -> None:
                 if engine.dialect.name == "postgresql"
                 else "DATETIME"
             ),
+        },
+        "building_operational_checklist_items": {
+            "assigned_owner": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "due_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+            "evidence_reference": "TEXT NOT NULL DEFAULT ''",
         },
         "building_agreement_templates": {
             "contract_type": "VARCHAR(32) NOT NULL DEFAULT 'event'",
@@ -547,6 +559,14 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
         "finance_import_rows",
         "finance_settings",
         "finance_action_audit",
+        "finance_economic_transaction_groups",
+        "finance_economic_transaction_members",
+        "finance_workspace_drafts",
+        "finance_object_decisions",
+        "finance_action_batches",
+        "finance_action_batch_items",
+        "finance_batch_previews",
+        "finance_saved_views",
         "finance_reconciliation_reports",
         "finance_savings_reviews",
         "finance_savings_review_events",
@@ -565,36 +585,115 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:
         Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
-
     _ensure_plaid_account_columns(engine)
     _ensure_collection_draft_columns(engine)
     _ensure_vendor_columns(engine)
+    _ensure_savings_review_columns(engine)
+
+
+def _ensure_finance_paydown_columns(target_engine: Any) -> None:
+    """Add operator-owned payoff facts without replacing existing settings."""
+    inspector = inspect(target_engine)
+    if "finance_settings" not in set(inspector.get_table_names()):
+        return
+    existing = {column["name"] for column in inspector.get_columns("finance_settings")}
+    additions = {
+        "emergency_floor_cents": "INTEGER NOT NULL DEFAULT 0",
+        "paydown_vendor_key": "VARCHAR(255) NOT NULL DEFAULT 'boulder ranch'",
+        "paydown_vendor_label": (
+            "VARCHAR(255) NOT NULL DEFAULT 'Boulder Ranch Property Management'"
+        ),
+        "paydown_monthly_cents": "INTEGER NOT NULL DEFAULT 4000000",
+        "paydown_balance_cents": "INTEGER NOT NULL DEFAULT 3000000",
+        "paydown_balance_as_of": "DATE NOT NULL DEFAULT '2026-08-11'",
+    }
+    with target_engine.begin() as connection:
+        for name, ddl in additions.items():
+            if name not in existing:
+                connection.execute(text(
+                    f"ALTER TABLE finance_settings ADD COLUMN {name} {ddl}"
+                ))
+
+def _ensure_savings_review_columns(engine: Any) -> None:
+    """Add cancellation and verification fields without replacing saved reviews."""
+    inspector = inspect(engine)
+    if "finance_savings_reviews" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("finance_savings_reviews")}
+    timestamp = "TIMESTAMPTZ" if engine.dialect.name == "postgresql" else "DATETIME"
+    additions = {
+        "owner": "VARCHAR(255) NOT NULL DEFAULT ''",
+        "action_type": "VARCHAR(32) NOT NULL DEFAULT ''",
+        "cancellation_started_at": timestamp,
+        "cancellation_confirmed_at": timestamp,
+        "effective_date": "DATE",
+        "expected_verification_date": "DATE",
+        "proof_note": "TEXT NOT NULL DEFAULT ''",
+        "realized_monthly_cents": "INTEGER NOT NULL DEFAULT 0",
+    }
+    with engine.begin() as connection:
+        for column, ddl in additions.items():
+            if column not in columns:
+                if engine.dialect.name == "postgresql":
+                    connection.execute(text(
+                        f"ALTER TABLE finance_savings_reviews ADD COLUMN IF NOT EXISTS {column} {ddl}"
+                    ))
+                elif engine.dialect.name == "sqlite":
+                    connection.execute(text(
+                        f"ALTER TABLE finance_savings_reviews ADD COLUMN {column} {ddl}"
+                    ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_finance_savings_expected_verification "
+            "ON finance_savings_reviews(expected_verification_date)"
+        ))
 
 
 def _ensure_vendor_columns(engine: Any) -> None:
-    """Add the additive running-account flag to an existing vendors table."""
+    """Add native agreement fields without replacing saved vendor history."""
     inspector = inspect(engine)
     if "finance_vendors" not in set(inspector.get_table_names()):
         return
     columns = {column["name"] for column in inspector.get_columns("finance_vendors")}
-    if "running_account" in columns and "payment_method" in columns:
-        return
-    if engine.dialect.name == "postgresql":
-        statement = (
-            "ALTER TABLE finance_vendors "
-            "ADD COLUMN IF NOT EXISTS running_account BOOLEAN NOT NULL DEFAULT FALSE"
-        )
-    elif engine.dialect.name == "sqlite":
-        statement = "ALTER TABLE finance_vendors ADD COLUMN running_account BOOLEAN NOT NULL DEFAULT 0"
-    else:
-        return
+    timestamp_columns = {
+        "renewal_date": "DATE",
+    }
+    common = {
+        "agreement_name": "VARCHAR(255) NOT NULL DEFAULT ''",
+        "agreement_reference_url": "TEXT NOT NULL DEFAULT ''",
+        "agreement_status": "VARCHAR(16) NOT NULL DEFAULT 'active'",
+        "term_type": "VARCHAR(24) NOT NULL DEFAULT 'month_to_month'",
+        "amount_type": "VARCHAR(16) NOT NULL DEFAULT 'fixed'",
+        "payment_account_label": "VARCHAR(128) NOT NULL DEFAULT ''",
+        "auto_renewal": "VARCHAR(16) NOT NULL DEFAULT 'unknown'",
+        "cancellation_notice_days": "INTEGER NOT NULL DEFAULT 0",
+        "owner": "VARCHAR(255) NOT NULL DEFAULT ''",
+        "evidence_note": "TEXT NOT NULL DEFAULT ''",
+        "created_by": "VARCHAR(255) NOT NULL DEFAULT 'system'",
+        "updated_by": "VARCHAR(255) NOT NULL DEFAULT 'system'",
+    }
+    additions = {**common, **timestamp_columns}
     with engine.begin() as connection:
         if "running_account" not in columns:
-            connection.execute(text(statement))
+            ddl = "BOOLEAN NOT NULL DEFAULT FALSE" if engine.dialect.name == "postgresql" else "BOOLEAN NOT NULL DEFAULT 0"
+            connection.execute(text(f"ALTER TABLE finance_vendors ADD COLUMN running_account {ddl}"))
         if "payment_method" not in columns:
             connection.execute(text(
                 "ALTER TABLE finance_vendors ADD COLUMN payment_method VARCHAR(16) NOT NULL DEFAULT 'manual'"
             ))
+        for column, ddl in additions.items():
+            if column not in columns:
+                clause = "ADD COLUMN IF NOT EXISTS" if engine.dialect.name == "postgresql" else "ADD COLUMN"
+                connection.execute(text(
+                    f"ALTER TABLE finance_vendors {clause} {column} {ddl}"
+                ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_finance_vendors_agreement_status "
+            "ON finance_vendors(agreement_status)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_finance_vendors_renewal_date "
+            "ON finance_vendors(renewal_date)"
+        ))
 
 
 def _ensure_collection_draft_columns(engine: Any) -> None:
@@ -637,22 +736,30 @@ def _ensure_plaid_account_columns(engine: Any) -> None:
     if "plaid_accounts" not in set(inspector.get_table_names()):
         return
     columns = {column["name"] for column in inspector.get_columns("plaid_accounts")}
-    if "cash_role" in columns:
-        return
-    if engine.dialect.name == "postgresql":
-        add_stmt = (
-            "ALTER TABLE plaid_accounts "
-            "ADD COLUMN IF NOT EXISTS cash_role VARCHAR(16) NOT NULL DEFAULT 'reserve'"
-        )
-    elif engine.dialect.name == "sqlite":
-        add_stmt = "ALTER TABLE plaid_accounts ADD COLUMN cash_role VARCHAR(16) NOT NULL DEFAULT 'reserve'"
-    else:
-        return
+    add_stmt = ""
+    if "cash_role" not in columns:
+        if engine.dialect.name == "postgresql":
+            add_stmt = (
+                "ALTER TABLE plaid_accounts "
+                "ADD COLUMN IF NOT EXISTS cash_role VARCHAR(16) NOT NULL DEFAULT 'reserve'"
+            )
+        elif engine.dialect.name == "sqlite":
+            add_stmt = "ALTER TABLE plaid_accounts ADD COLUMN cash_role VARCHAR(16) NOT NULL DEFAULT 'reserve'"
+        else:
+            return
     with engine.begin() as connection:
-        connection.execute(text(add_stmt))
+        if add_stmt:
+            connection.execute(text(add_stmt))
+            connection.execute(text(
+                "UPDATE plaid_accounts SET cash_role='spendable' "
+                "WHERE LOWER(COALESCE(subtype, ''))='checking'"
+            ))
         connection.execute(text(
-            "UPDATE plaid_accounts SET cash_role='spendable' "
-            "WHERE LOWER(COALESCE(subtype, ''))='checking'"
+            "UPDATE plaid_accounts SET cash_role='liability' "
+            "WHERE cash_role='reserve' AND ("
+            "LOWER(COALESCE(account_type, ''))='credit' OR "
+            "LOWER(COALESCE(subtype, '')) IN ('credit card', 'credit')"
+            ")"
         ))
 
 
@@ -829,6 +936,14 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
         "finance_import_rows",
         "finance_settings",
         "finance_action_audit",
+        "finance_economic_transaction_groups",
+        "finance_economic_transaction_members",
+        "finance_workspace_drafts",
+        "finance_object_decisions",
+        "finance_action_batches",
+        "finance_action_batch_items",
+        "finance_batch_previews",
+        "finance_saved_views",
         "finance_reconciliation_reports",
         "finance_savings_reviews",
         "finance_savings_review_events",
@@ -836,6 +951,8 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:
         Base.metadata.create_all(bind=db_engine, tables=tables, checkfirst=True)
+    _ensure_finance_paydown_columns(db_engine)
+    _ensure_savings_review_columns(db_engine)
 
     inspector = inspect(db_engine)
     if "cash_events" not in set(inspector.get_table_names()):
@@ -999,6 +1116,10 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
         "finance_action_audit": {
             "idempotency_key": "ALTER TABLE finance_action_audit ADD COLUMN idempotency_key VARCHAR(128)",
         },
+        "hr_employment_profiles": {
+            "payroll_eligible": "ALTER TABLE hr_employment_profiles ADD COLUMN payroll_eligible BOOLEAN NOT NULL DEFAULT 1",
+            "standard_workdays": "ALTER TABLE hr_employment_profiles ADD COLUMN standard_workdays VARCHAR(32) NOT NULL DEFAULT '0,1,2,3,4'",
+        },
     }
 
     with engine.begin() as connection:
@@ -1139,6 +1260,21 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
 
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
+    if "hr_employment_profiles" in existing_tables:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE hr_employment_profiles "
+                "ADD COLUMN IF NOT EXISTS payroll_eligible BOOLEAN NOT NULL DEFAULT TRUE"
+            ))
+            connection.execute(text(
+                "ALTER TABLE hr_employment_profiles "
+                "ADD COLUMN IF NOT EXISTS standard_workdays VARCHAR(32) "
+                "NOT NULL DEFAULT '0,1,2,3,4'"
+            ))
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_hr_employment_profiles_payroll_eligible "
+                "ON hr_employment_profiles (payroll_eligible)"
+            ))
     if "lead_mirrors" not in existing_tables:
         return
 

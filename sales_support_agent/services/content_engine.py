@@ -174,7 +174,8 @@ def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dic
             "status": "ready"
             if _configured("RIVERSIDE_API_KEY")
             or _enabled("CONTENT_RIVERSIDE_RELAY_ENABLED")
-            else ("stale" if source_asset_count else "blocked"),
+            or source_asset_count
+            else "blocked",
             "required_for": ["Episode harvest", "Social candidates"],
             "message": (
                 f"{source_asset_count} normalized source asset(s) available."
@@ -204,6 +205,15 @@ def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dic
             else "blocked",
             "required_for": ["David's LinkedIn publishing"],
             "message": channel_publish_readiness("linkedin_personal")["message"],
+        },
+        {
+            "key": "google_business",
+            "label": "Google Business",
+            "status": "ready"
+            if channel_publish_readiness("google_business")["ready"]
+            else "blocked",
+            "required_for": ["Google Business publishing"],
+            "message": channel_publish_readiness("google_business")["message"],
         },
         {
             "key": "youtube",
@@ -638,7 +648,7 @@ def render_content_control_room(
           <td>{html.escape(row.playbook_version)}</td>
           <td>{_format_time(row.created_at)}</td>
           <td>{(
-              f'<button class="admin-btn admin-btn--secondary content-publish" type="button" data-artifact-id="{html.escape(row.id)}" data-channel="{html.escape(row.channel.replace("_", " ").title())}">Approve and publish</button>'
+              f'<button class="admin-btn admin-btn--secondary content-publish" type="button" data-artifact-id="{html.escape(row.id)}" data-channel="{html.escape(row.channel.replace("_", " ").title())}" aria-label="Review and publish {html.escape(row.title)} to {html.escape(row.channel.replace("_", " ").title())}">Review and publish to {html.escape(row.channel.replace("_", " ").title())}</button>'
               if can_operate and row.artifact_type == "native_candidate" and row.status in {"needs_review", "approved", "failed"}
               else (f'<a href="{html.escape(row.external_url)}" rel="noopener">View live post</a>' if row.external_url else "—")
           )}</td>

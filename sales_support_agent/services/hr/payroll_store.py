@@ -83,6 +83,37 @@ def _audit(session: Session, actor: str, action: str, entity_type: str,
     ))
 
 
+def audit_hr_event(*, actor: str, action: str, entity_type: str,
+                   entity_id: object = "", details: dict | None = None) -> None:
+    """Record a non-secret HR operational event from an authorized workflow."""
+    with _session() as session:
+        _audit(
+            session, actor, action, entity_type, entity_id,
+            details or {},
+        )
+
+
+def latest_ooo_calendar_test() -> dict:
+    """Return only the safe result of the latest explicit connection test."""
+    with _session() as session:
+        row = session.query(HRAuditEvent).filter_by(
+            action="ooo_calendar.connection_tested",
+            entity_type="calendar",
+            entity_id="anata_ooo",
+        ).order_by(HRAuditEvent.id.desc()).first()
+        if not row:
+            return {}
+        details = dict(row.details or {})
+        return {
+            "state": details.get("state") or "",
+            "ready": bool(details.get("ready")),
+            "calendar_id": details.get("calendar_id") or "",
+            "service_account_email": details.get("service_account_email") or "",
+            "tested_at": row.created_at,
+            "tested_by": row.actor_email,
+        }
+
+
 def _settings_dict(row: HRPayrollSettings | None) -> dict:
     overrides = dict((row.state_tax_overrides if row else {}) or {})
     return {
@@ -187,6 +218,7 @@ def save_company_profile(
     source_note: str, actor: str,
 ) -> tuple[bool, str]:
     from sales_support_agent.services.access.store import resolve_access
+    from sales_support_agent.config import load_settings
 
     digits = "".join(character for character in (ein_last4 or "") if character.isdigit())
     withholding_last4 = "".join(
@@ -197,12 +229,24 @@ def save_company_profile(
         character for character in (utah_ui_account_last4 or "") if character.isdigit()
     )
     approver_access = resolve_access(final_approver_email)
+    configured_superadmins = {
+        email.strip().lower()
+        for email in load_settings().rbac_superadmin_emails
+        if email.strip()
+    }
+    approver_is_authorized = bool(
+        (
+            approver_access
+            and approver_access.get("status") == "active"
+            and "hr.payroll.approve" in approver_access.get("permissions", set())
+        )
+        or final_approver_email.strip().lower() in configured_superadmins
+    )
     if (
         not legal_name.strip() or len(digits) != 4 or not address_line1.strip()
         or not city.strip() or state.strip().upper() != "UT" or not zip_code.strip()
         or "@" not in payroll_contact_email or "@" not in final_approver_email
-        or not approver_access
-        or "hr.payroll.approve" not in approver_access.get("permissions", set())
+        or not approver_is_authorized
         or federal_deposit_schedule not in {"monthly", "semiweekly"}
         or utah_withholding_payment_frequency not in {"monthly", "quarterly"}
         or not source_note.strip()
@@ -585,16 +629,35 @@ def _partition_pending_corrections(
     return relevant, outside
 
 
+def employee_is_payroll_eligible(employee: dict, *, period_start: date,
+                                 period_end: date) -> bool:
+    """Return period-specific W-2 membership, independent of Agent access."""
+    if employee.get("status") != "active" or employee.get("employee_type") == "contractor":
+        return False
+    employment = employee.get("employment") or {}
+    if employment and not employment.get("payroll_eligible", True):
+        return False
+    hire_date = employment.get("hire_date")
+    termination_date = employment.get("termination_date")
+    if hire_date and hire_date > period_end:
+        return False
+    if termination_date and termination_date < period_start:
+        return False
+    return True
+
+
 def _period_context(containing: date) -> tuple:
     period = semimonthly_period(containing)
     workweek_start = period.start_date - timedelta(
         days=(period.start_date.weekday() + 1) % 7
     )
     settings = get_payroll_settings(period.end_date.year)
-    employees = [
-        employee for employee in list_employees(include_inactive=False)
-        if employee.get("employee_type") != "contractor"
-    ]
+    employees = []
+    for employee in list_employees(include_inactive=False):
+        if employee_is_payroll_eligible(
+            employee, period_start=period.start_date, period_end=period.end_date,
+        ):
+            employees.append(employee)
     inputs = list_payroll_inputs(period.start_date, period.end_date)
     company_profile = get_company_profile()
     with _session() as session:
@@ -700,6 +763,31 @@ def _period_context(containing: date) -> tuple:
                 "message": "Timesheet is not independently approved for this pay period",
             })
     readiness["ready"] = not readiness["blockers"]
+    owner_map = {
+        "w4": ("Employee · Val follows up", "/admin/hr/employees", "Open employee record"),
+        "time_missing": ("Employee", f"/admin/hr/time?period_date={period.start_date}", "Complete time"),
+        "timesheet_approval": ("Employee and reviewer", f"/admin/hr/time?period_date={period.start_date}", "Review timesheet"),
+        "opening_balance": ("Val and independent reviewer", "/admin/hr/settings", "Review opening balance"),
+        "opening_balances": ("Val and independent reviewer", "/admin/hr/settings", "Confirm opening balances"),
+        "final_approver": ("David or Val", "/admin/hr/settings", "Select final approver"),
+        "company_profile": ("David or Val", "/admin/hr/settings", "Complete employer profile"),
+        "deposit_schedule": ("David or qualified reviewer", "/admin/hr/settings", "Confirm deposit schedule"),
+        "utah_payment_frequency": ("David or Val", "/admin/hr/settings", "Confirm Utah frequency"),
+        "employee_setup": ("Val", "/admin/hr/employees", "Review employee setup"),
+        "open_time": ("Employee", f"/admin/hr/time?period_date={period.start_date}", "Clock out"),
+        "time_correction": ("Independent time reviewer", f"/admin/hr/time?period_date={period.start_date}", "Review correction"),
+        "payroll_input": ("Independent payroll reviewer", f"/admin/hr/payroll?period_date={period.start_date}", "Review payroll input"),
+        "tax_engine": ("Qualified payroll reviewer", "/admin/hr/settings", "Record qualified review"),
+        "tax_setup": ("David, Val, or qualified reviewer", "/admin/hr/settings", "Review payroll setup"),
+        "eftps": ("David or Val", "/admin/hr/settings", "Confirm EFTPS access"),
+        "utah_tax": ("David or Val", "/admin/hr/settings", "Confirm Utah access"),
+    }
+    for blocker in readiness["blockers"]:
+        owner, href, action = owner_map.get(
+            blocker.get("kind"),
+            ("David or Val", "/admin/hr/setup", "Review setup"),
+        )
+        blocker.update({"owner": owner, "href": href, "action": action})
     return period, settings, employees, inputs, readiness
 
 

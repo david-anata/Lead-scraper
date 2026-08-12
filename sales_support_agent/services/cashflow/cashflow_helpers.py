@@ -249,6 +249,7 @@ function editName(wrapId, currentVal, fieldName) {
     </style>
     <link rel="stylesheet" href="/static/admin.css?v=2">
     <link rel="stylesheet" href="/static/finance.css?v={_html.escape(finance_css_version, quote=True)}">
+    <script defer src="/static/finance-workspace.js?v={_html.escape(finance_css_version, quote=True)}"></script>
     {inline_edit_js}
   </head>
   <body class="app app--operator app--finance">
@@ -256,8 +257,22 @@ function editName(wrapId, currentVal, fieldName) {
     {subnav_shell}
     <main id="agent-main-content" class="shell app-container app-page">
       {flash_html}
+      <div class="finance-global-command" data-finance-global-command>
+        <label for="finance-global-search">Search Finance</label>
+        <div><input id="finance-global-search" type="search" autocomplete="off" placeholder="Merchant, raw description, category, or reference" data-finance-global-search><span data-finance-search-count></span><button type="button" data-finance-save-view>Save view</button></div>
+        <nav class="finance-saved-views" data-finance-saved-views aria-label="Saved Finance views"></nav>
+        <div class="finance-search-results" data-finance-search-results hidden></div>
+      </div>
       {body}
     </main>
+    <dialog class="finance-object-panel" data-finance-object-panel aria-labelledby="finance-object-title">
+      <div class="finance-object-panel__header">
+        <div><span class="finance-object-panel__eyebrow">Transaction details</span><h2 id="finance-object-title" data-finance-object-title>Loading…</h2></div>
+        <button type="button" class="finance-object-panel__close" data-finance-object-close aria-label="Close transaction details">×</button>
+      </div>
+      <div class="finance-object-panel__body" data-finance-object-body aria-live="polite"></div>
+    </dialog>
+    <div class="finance-draft-status" data-finance-draft-status hidden role="status" aria-live="polite"><span data-finance-draft-message></span><span class="finance-draft-status__actions"><a href="/admin/finances/workspace/review" data-finance-draft-review hidden>Save changes</a><button type="button" data-finance-draft-discard hidden>Discard draft</button></span></div>
   </body>
 </html>"""
 

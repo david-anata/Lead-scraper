@@ -408,6 +408,7 @@ def _run_to_dict(run: AuditRun) -> dict:
         "narrative": run.narrative or "",
         "error": run.error or "",
         "created_at": run.created_at.isoformat() if run.created_at else None,
+        "updated_at": run.updated_at.isoformat() if run.updated_at else None,
     }
 
 

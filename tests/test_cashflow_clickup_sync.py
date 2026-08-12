@@ -308,6 +308,56 @@ class ClickUpFinanceSyncTests(unittest.TestCase):
             ).scalar_one()
         self.assertEqual(allocation_count, 1)
 
+    def test_new_obligation_can_match_an_existing_plaid_payment(self) -> None:
+        factory = create_session_factory("sqlite:///:memory:")
+        init_database(factory)
+        engine = factory.kw["bind"]
+        with engine.begin() as conn:
+            upsert_cash_event(conn, {
+                "id": "plaid-payment", "source": "plaid", "source_id": "plaid-payment",
+                "record_kind": "transaction", "event_type": "outflow",
+                "vendor_or_customer": "Comcast", "amount_cents": 35000,
+                "due_date": date(2026, 7, 7), "category": "utilities", "status": "posted",
+            })
+            upsert_cash_event(conn, {
+                "id": "new-bill", "source": "clickup", "source_id": "new-bill",
+                "record_kind": "obligation", "event_type": "outflow",
+                "vendor_or_customer": "Comcast", "amount_cents": 35000,
+                "due_date": date(2026, 7, 7), "category": "utilities", "status": "planned",
+            })
+        rows = [
+            {"id": "plaid-payment", "source": "plaid", "status": "posted",
+             "event_type": "outflow", "vendor_or_customer": "Comcast",
+             "amount_cents": 35000, "due_date": date(2026, 7, 7), "category": "utilities"},
+            {"id": "new-bill", "source": "clickup", "status": "planned",
+             "event_type": "outflow", "vendor_or_customer": "Comcast",
+             "amount_cents": 35000, "due_date": date(2026, 7, 7), "category": "utilities"},
+        ]
+        with patch(
+            "sales_support_agent.services.cashflow.obligations.list_obligations", return_value=rows,
+        ):
+            matched = _match_existing_posted_transactions(engine)
+
+        self.assertEqual(matched, 1)
+
+    def test_protected_obligation_is_never_silently_matched(self) -> None:
+        factory = create_session_factory("sqlite:///:memory:")
+        init_database(factory)
+        engine = factory.kw["bind"]
+        rows = [
+            {"id": "plaid-payroll", "source": "plaid", "status": "posted",
+             "event_type": "outflow", "vendor_or_customer": "Payroll",
+             "amount_cents": 500000, "due_date": date(2026, 7, 7), "category": "payroll"},
+            {"id": "payroll-bill", "source": "clickup", "status": "planned",
+             "event_type": "outflow", "vendor_or_customer": "Payroll",
+             "amount_cents": 500000, "due_date": date(2026, 7, 7), "category": "payroll",
+             "commitment_type": "payroll"},
+        ]
+        with patch(
+            "sales_support_agent.services.cashflow.obligations.list_obligations", return_value=rows,
+        ):
+            self.assertEqual(_match_existing_posted_transactions(engine), 0)
+
     def test_exact_same_day_clickup_tasks_are_quarantined_as_probable_duplicates(self) -> None:
         factory = create_session_factory("sqlite:///:memory:")
         init_database(factory)

@@ -23,6 +23,10 @@ from sales_support_agent.models.entities import (
     BuildingSignatureRequestReadiness,
     BuildingSpace,
 )
+from sales_support_agent.services.building_contract_templates import (
+    document_checksum,
+    render_document_text,
+)
 
 
 #: Shared operator state vocabulary from DESIGN.md, mapped to ``app-status--*``.
@@ -119,18 +123,10 @@ def compute_event_merge_values(
         "customer_name": contact.full_name,
         "customer_email": contact.email,
         "event_space": space.name,
-        "setup_starts_at": reservation.starts_at.isoformat(),
-        "guest_starts_at": (
-            reservation.guest_starts_at.isoformat()
-            if reservation.guest_starts_at
-            else None
-        ),
-        "guest_ends_at": (
-            reservation.guest_ends_at.isoformat()
-            if reservation.guest_ends_at
-            else None
-        ),
-        "teardown_ends_at": reservation.ends_at.isoformat(),
+        "setup_starts_at": instant_iso(reservation.starts_at),
+        "guest_starts_at": instant_iso(reservation.guest_starts_at),
+        "guest_ends_at": instant_iso(reservation.guest_ends_at),
+        "teardown_ends_at": instant_iso(reservation.ends_at),
         "attendance": reservation.attendance,
         **_discount_terms(quote),
         "quote_total": quote.amount_cents,
@@ -183,6 +179,18 @@ def _aware(value: Optional[datetime]) -> Optional[datetime]:
     if value is None:
         return None
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def instant_iso(value: Optional[datetime]) -> Optional[str]:
+    """Serialise a stored instant with its offset attached.
+
+    SQLite returns these naive. Without the offset the contract renderer reads a
+    UTC instant as local time, which printed a 5 PM event as 9 PM on the page
+    and in the agreement the customer signs.
+    """
+
+    aware = _aware(value)
+    return aware.isoformat() if aware is not None else None
 
 
 def contract_state(agreement: BuildingAgreement) -> tuple[str, str]:
@@ -385,6 +393,38 @@ def load_contract_detail(session: Any, agreement_id: str) -> Optional[dict[str, 
         else None
     )
     snapshot = dict(agreement.package_snapshot_json or {})
+    frozen_template = dict(snapshot.get("template") or {})
+    frozen_document = dict(snapshot.get("document") or {})
+    template_differences: list[str] = []
+    current_document_checksum = ""
+    if template is None:
+        template_differences.append("The frozen template version no longer exists.")
+    else:
+        if template.status != "approved":
+            template_differences.append(
+                f"The template is now {template.status}, not approved."
+            )
+        for key, current in (
+            ("id", template.id),
+            ("version", template.version),
+            ("reference", template.template_reference),
+        ):
+            if frozen_template.get(key) != current:
+                template_differences.append(
+                    f"Template {key.replace('_', ' ')} differs from the frozen package."
+                )
+        if frozen_document.get("text"):
+            current_text = render_document_text(
+                name=template.name,
+                body_markdown=template.body_markdown or "",
+                clauses=template.clauses_json or [],
+                merge_values=dict(snapshot.get("merge_values") or {}),
+            )
+            current_document_checksum = document_checksum(current_text)
+            if current_document_checksum != frozen_document.get("checksum"):
+                template_differences.append(
+                    "Rendered contract text differs from the frozen package."
+                )
     quote_id = str((snapshot.get("quote") or {}).get("id") or "")
     quote = session.get(BuildingProposal, quote_id) if quote_id else None
     audit_ids = (
@@ -434,6 +474,8 @@ def load_contract_detail(session: Any, agreement_id: str) -> Optional[dict[str, 
         "space_name": str(space.name if space else "") or "Unlinked space",
         "reservation_id": str(agreement.reservation_id or ""),
         "reservation_status": str(reservation.status if reservation else ""),
+        # The lead this contract came from, so the two are one click apart.
+        "inquiry_id": str(reservation.inquiry_id if reservation else "") or "",
         "hold_expires_at": hold_expires_at,
         "hold_active": hold_active,
         "owner": str(reservation.assigned_owner if reservation else ""),
@@ -454,6 +496,12 @@ def load_contract_detail(session: Any, agreement_id: str) -> Optional[dict[str, 
             "version": template.version if template else None,
             "status": str(template.status if template else ""),
             "reference": str(template.template_reference if template else ""),
+        },
+        "template_comparison": {
+            "matches": not template_differences,
+            "differences": template_differences,
+            "frozen_document_checksum": str(frozen_document.get("checksum") or ""),
+            "current_document_checksum": current_document_checksum,
         },
         "quote": {
             "id": quote_id,

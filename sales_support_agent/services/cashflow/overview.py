@@ -2287,6 +2287,12 @@ def _render_vendor_fields(vendor: dict | None = None) -> str:
         '<option value="' + f + '"' + (" selected" if f == freq else "") + '>' + f.title() + '</option>'
         for f in ("week", "biweekly", "month", "quarter", "year", "once")
     )
+    def _options(key: str, values: tuple[tuple[str, str], ...], default: str) -> str:
+        selected = str(v.get(key) or default)
+        return "".join(
+            '<option value="' + value + '"' + (" selected" if value == selected else "") + '>' + label + '</option>'
+            for value, label in values
+        )
     return (
         '<div class="finance-vendor-fields">'
         + '<label>Name<input name="name" value="' + _val("name") + '" required></label>'
@@ -2297,6 +2303,17 @@ def _render_vendor_fields(vendor: dict | None = None) -> str:
         + '<label>Start<input name="start_date" type="date" value="' + _val("start_date") + '"></label>'
         + '<label>End / payoff<input name="end_date" type="date" value="' + _val("end_date") + '"></label>'
         + '<label>Match words in bank<input name="match_terms" value="' + _val("match_terms") + '" placeholder="fora, stripe capital"></label>'
+        + '<label>Agreement name<input name="agreement_name" value="' + _val("agreement_name") + '" placeholder="Main service agreement"></label>'
+        + '<label>Agreement status<select name="agreement_status">' + _options("agreement_status", (("draft", "Draft"), ("active", "Active"), ("ending", "Ending"), ("ended", "Ended"), ("disputed", "Disputed")), "active") + '</select></label>'
+        + '<label>Term type<select name="term_type">' + _options("term_type", (("month_to_month", "Month to month"), ("fixed_term", "Fixed term"), ("evergreen", "Evergreen"), ("one_time", "One time")), "month_to_month") + '</select></label>'
+        + '<label>Amount type<select name="amount_type">' + _options("amount_type", (("fixed", "Fixed"), ("variable", "Variable"), ("minimum", "Minimum commitment")), "fixed") + '</select></label>'
+        + '<label>Renewal date<input name="renewal_date" type="date" value="' + _val("renewal_date") + '"></label>'
+        + '<label>Auto-renewal<select name="auto_renewal">' + _options("auto_renewal", (("unknown", "Unknown"), ("yes", "Yes"), ("no", "No")), "unknown") + '</select></label>'
+        + '<label>Cancellation notice days<input name="cancellation_notice_days" type="number" min="0" max="730" value="' + _val("cancellation_notice_days") + '"></label>'
+        + '<label>Payment account label<input name="payment_account_label" value="' + _val("payment_account_label") + '" placeholder="Checking ending 1234"></label>'
+        + '<label>Owner<input name="owner" value="' + _val("owner") + '"></label>'
+        + '<label>Agreement link<input name="agreement_reference_url" type="url" value="' + _val("agreement_reference_url") + '"></label>'
+        + '<label>Evidence and notes<textarea name="evidence_note" rows="3">' + html.escape(str(v.get("evidence_note") or "")) + '</textarea></label>'
         + '<label class="finance-book-always"><input type="checkbox" name="running_account" value="true"'
         + (' checked' if v.get('running_account') else '')
         + '> Pay-as-you-go (we pay into this in pieces)</label>'
@@ -2335,11 +2352,20 @@ def _render_vendors_section() -> str:
             payoff = ('balance ' + _money(int(remaining))) if remaining is not None else 'running account'
         else:
             payoff = html.escape(str(v.get("payoff_date") or "ongoing"))
+        deadline = str(v.get("cancellation_deadline") or "")
+        renewal = str(v.get("renewal_date") or "")
+        timing = (
+            ('Renewal ' + html.escape(renewal) + '<br>Cancel by ' + html.escape(deadline))
+            if renewal and deadline else ('Renewal ' + html.escape(renewal) if renewal else payoff)
+        )
+        review_items = list(v.get("review_items") or [])
+        if review_items:
+            name += '<span class="status-badge status-badge--review">Needs review</span><small>' + html.escape(str(review_items[0].get("message") or "Agreement mismatch")) + '</small>'
         edit = (
             '<details class="finance-vendor-edit"><summary>Edit</summary>'
-            + '<form method="post" action="/admin/finances/vendors/' + vid + '">'
+            + '<form method="post" action="/admin/finances/vendors/' + vid + '/preview">'
             + _render_vendor_fields(v)
-            + '<div class="finance-vendor-actions"><button type="submit" class="btn btn-secondary btn-sm">Save</button></div></form>'
+            + '<div class="finance-vendor-actions"><button type="submit" class="btn btn-secondary btn-sm">Review changes</button></div></form>'
             + '<form method="post" action="/admin/finances/vendors/' + vid + '/delete" '
             + 'onsubmit="return confirm(\'Remove this vendor?\');">'
             + '<button type="submit" class="btn btn-secondary btn-sm">Remove</button></form></details>'
@@ -2348,13 +2374,13 @@ def _render_vendors_section() -> str:
             '<tr><td>' + name + '</td><td>' + terms_txt + '</td>'
             + '<td class="finance-accounts-amount">' + total_txt + '</td>'
             + '<td class="finance-accounts-amount">' + paid_txt + progress + '</td>'
-            + '<td>' + payoff + '</td><td>' + edit + '</td></tr>'
+            + '<td>' + timing + '</td><td>' + edit + '</td></tr>'
         )
 
     if rows:
         table = (
             '<table class="finance-accounts-table finance-vendors-table"><thead><tr>'
-            + '<th>Vendor</th><th>Terms</th><th>Total</th><th>Paid</th><th>Payoff</th><th></th>'
+            + '<th>Vendor</th><th>Terms</th><th>Total</th><th>Paid</th><th>Renewal / payoff</th><th></th>'
             + '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
         )
     else:
@@ -2362,15 +2388,74 @@ def _render_vendors_section() -> str:
 
     add_form = (
         '<details class="finance-vendor-add"><summary>+ Add a vendor</summary>'
-        + '<form method="post" action="/admin/finances/vendors">'
+        + '<form method="post" action="/admin/finances/vendors/preview">'
         + _render_vendor_fields(None)
-        + '<div class="finance-vendor-actions"><button type="submit" class="btn btn-primary btn-sm">Save vendor</button></div></form></details>'
+        + '<div class="finance-vendor-actions"><button type="submit" class="btn btn-primary btn-sm">Review agreement</button></div></form></details>'
     )
     return (
         '<section class="finance-source-row finance-vendors"><div style="width:100%">'
-        + '<strong>Vendors</strong><span>Terms, totals, and payoff dates, tracked from your real payments.</span>'
+        + '<strong>Vendors and agreements</strong><span>Future obligations, renewal dates, cancellation deadlines, and progress from posted payments.</span>'
         + table + add_form + '</div></section>'
     )
+
+
+def render_vendor_agreement_preview(
+    data: dict[str, Any], *, vendor_id: str = "", flash: str = "",
+) -> str:
+    """Full-page old/new Calendar preview before agreement terms are saved."""
+    from sales_support_agent.services.cashflow.vendors import (
+        get_vendor, preview_agreement_obligations,
+    )
+    from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
+    candidate = {**data, "id": vendor_id or "new-vendor"}
+    old = get_vendor(vendor_id) if vendor_id else None
+    old_rows = preview_agreement_obligations(old, horizon_days=120) if old else []
+    new_rows = preview_agreement_obligations(candidate, horizon_days=120)
+
+    def _rows(items: list[dict[str, Any]]) -> str:
+        return "".join(
+            '<li><strong>' + html.escape(str(item["due_date"])) + '</strong><span>'
+            + _money(int(item["amount_cents"])) + '</span></li>' for item in items
+        ) or '<li>No fixed obligations in the next 120 days.</li>'
+
+    form_data = dict(data)
+    form_data["payment_amount"] = (
+        "" if data.get("payment_amount_cents") is None
+        else f"{int(data['payment_amount_cents']) / 100:.2f}"
+    )
+    form_data["total_committed"] = (
+        "" if data.get("total_committed_cents") is None
+        else f"{int(data['total_committed_cents']) / 100:.2f}"
+    )
+    form_data.pop("payment_amount_cents", None)
+    form_data.pop("total_committed_cents", None)
+    hidden = "".join(
+        '<input type="hidden" name="' + html.escape(str(key), quote=True)
+        + '" value="' + html.escape(str(value if value is not None else ""), quote=True) + '">'
+        for key, value in form_data.items()
+    )
+    action = (
+        f"/admin/finances/vendors/{html.escape(vendor_id, quote=True)}"
+        if vendor_id else "/admin/finances/vendors"
+    )
+    body = f"""
+      {render_finance_nav('setup')}
+      <header class="money-page-header"><div><p class="finance-eyebrow">Vendor agreement</p>
+      <h1>Review the Calendar effect</h1><p class="money-page-subtitle">Nothing has been saved and no vendor has been contacted.</p></div></header>
+      <section class="card finance-agreement-preview">
+        <div><h2>Before</h2><ul>{_rows(old_rows)}</ul></div>
+        <div><h2>After</h2><ul>{_rows(new_rows)}</ul></div>
+      </section>
+      <section class="card"><h2>Agreement facts</h2>
+        <p><strong>{html.escape(str(data.get('name') or 'Vendor'))}</strong> · {html.escape(str(data.get('agreement_status') or 'active').replace('_', ' '))}</p>
+        <p>Potential savings stay potential until later Plaid activity verifies a reduction.</p>
+        <form method="post" action="{action}">{hidden}
+          <div class="action-row"><button class="btn btn-primary" type="submit">Save agreement</button>
+          <a class="btn btn-secondary" href="/admin/finances/setup">Go back without saving</a></div>
+        </form>
+      </section>
+    """
+    return _page_shell("Review vendor agreement", "setup", body, flash=flash)
 
 
 def _todays_plan_inner() -> str:
@@ -2833,6 +2918,7 @@ def _render_bookkeeping() -> str:
         group_rows = []
         for group in grouped["groups"]:
             key = html.escape(str(group["key"]), quote=True)
+            event_ids = html.escape(json.dumps(group.get("event_ids") or []), quote=True)
             guess = str(group["guess"] or "")
             options = (
                 '<option value="" ' + ("selected" if not guess else "") + '>&mdash; choose &mdash;</option>'
@@ -2844,14 +2930,15 @@ def _render_bookkeeping() -> str:
             )
             samples = html.escape(" &middot; ".join(group["samples"])[:160])
             group_rows.append(
-                '<tr><td><strong>' + html.escape(str(group["label"])) + '</strong>'
+                '<tr data-bookkeeping-group data-event-ids="' + event_ids + '" data-amount-cents="' + str(int(group["amount_cents"] or 0)) + '"><td><label class="finance-row-select"><input type="checkbox" data-bookkeeping-select-group aria-label="Select all transactions from '
+                + html.escape(str(group["label"]), quote=True) + '"> <strong>' + html.escape(str(group["label"])) + '</strong></label>'
                 + '<br><small>' + samples + '</small></td>'
                 + '<td class="finance-accounts-amount">' + str(group["count"]) + '</td>'
                 + '<td class="finance-accounts-amount">' + _money(group["amount_cents"]) + '</td>'
                 + '<td><form method="post" action="/admin/finances/bookkeeping/file-merchant" class="finance-book-form" '
                 + 'onsubmit="return confirm(\'File all ' + str(group["count"]) + ' of these the same way?\');">'
                 + '<input type="hidden" name="key" value="' + key + '">'
-                + '<select name="category" required>' + options + '</select>'
+                + '<select name="category" required data-bookkeeping-group-category>' + options + '</select>'
                 + '<button type="submit" class="btn btn-secondary btn-sm">File all ' + str(group["count"]) + '</button>'
                 + '</form></td></tr>'
             )
@@ -2862,7 +2949,7 @@ def _render_bookkeeping() -> str:
             + 'than one row at a time. Each group also teaches a rule, so it never asks again. '
             + 'The sample descriptions show what you are filing together.</p>'
             + '<div class="finance-book-table-wrap"><table class="finance-accounts-table finance-book-table"><thead><tr>'
-            + '<th>Merchant</th><th>Count</th><th>Total</th><th>File all as</th>'
+            + '<th>Merchant</th><th>Count</th><th>Total</th><th>Category</th>'
             + '</tr></thead><tbody>' + "".join(group_rows) + '</tbody></table></div>'
         )
 
@@ -2883,11 +2970,12 @@ def _render_bookkeeping() -> str:
                 )
             )
             rows.append(
-                '<tr><td>' + html.escape(str(item["name"]))
+                '<tr data-bookkeeping-row data-object-id="' + event_id + '" data-amount-cents="' + str(int(item["amount_cents"] or 0)) + '"><td><label class="finance-row-select"><input type="checkbox" data-bookkeeping-select aria-label="Select '
+                + html.escape(str(item["name"]), quote=True) + '"> ' + html.escape(str(item["name"])) + '</label>'
                 + '<br><small>' + _money(item["amount_cents"]) + ' on ' + html.escape(item["posted_on"]) + '</small></td>'
                 + '<td><form method="post" action="/admin/finances/bookkeeping/file" class="finance-book-form">'
                 + '<input type="hidden" name="event_id" value="' + event_id + '">'
-                + '<select name="category" required>' + options + '</select>'
+                + '<select name="category" required data-bookkeeping-category>' + options + '</select>'
                 + '<label class="finance-book-always"><input type="checkbox" name="always" value="true"> always</label>'
                 + '<button type="submit" class="btn btn-secondary btn-sm">File</button>'
                 + '</form></td></tr>'
@@ -2952,11 +3040,77 @@ def _render_bookkeeping() -> str:
         )
         + '</div>'
     )
+    batch_controls = (
+        '<div class="finance-batch-bar" data-bookkeeping-batch hidden>'
+        '<div><strong data-bookkeeping-selected-count>0 selected</strong>'
+        '<span data-bookkeeping-selected-value>$0 total</span></div>'
+        '<label>File selected as <select data-bookkeeping-bulk-category><option value="">Choose category</option>'
+        + ''.join('<option value="' + category + '">' + category.title() + '</option>' for category in _BOOKKEEPING_CATEGORIES)
+        + '</select></label><button type="button" class="btn btn-secondary btn-sm" data-bookkeeping-stage>Stage category</button>'
+        '<button type="button" class="btn btn-secondary btn-sm" data-bookkeeping-transfer>Mark transfer</button>'
+        '<button type="button" class="btn btn-secondary btn-sm" data-bookkeeping-clear>Clear</button>'
+        '<button type="button" class="btn btn-primary btn-sm" data-bookkeeping-review>Review and save</button></div>'
+    )
+    script = """
+    <script>
+    (() => {
+      const rows = [...document.querySelectorAll('[data-bookkeeping-row]')];
+      const groups = [...document.querySelectorAll('[data-bookkeeping-group]')];
+      const bar = document.querySelector('[data-bookkeeping-batch]');
+      const money = cents => new Intl.NumberFormat('en-US', {style:'currency', currency:'USD'}).format(cents / 100);
+      const selected = () => rows.filter(row => row.querySelector('[data-bookkeeping-select]')?.checked);
+      const selectedGroups = () => groups.filter(group => group.querySelector('[data-bookkeeping-select-group]')?.checked);
+      const selectedItems = () => {
+        const items = new Map();
+        selected().forEach(row => items.set(row.dataset.objectId, {id: row.dataset.objectId, amount: Number(row.dataset.amountCents || 0)}));
+        selectedGroups().forEach(group => {
+          const ids = JSON.parse(group.dataset.eventIds || '[]');
+          const share = ids.length ? Math.round(Number(group.dataset.amountCents || 0) / ids.length) : 0;
+          ids.forEach(id => { if (!items.has(id)) items.set(id, {id, amount: share}); });
+        });
+        return [...items.values()];
+      };
+      const update = () => {
+        const chosen = selectedItems();
+        if (bar) bar.hidden = chosen.length === 0;
+        const count = document.querySelector('[data-bookkeeping-selected-count]');
+        const value = document.querySelector('[data-bookkeeping-selected-value]');
+        if (count) count.textContent = `${chosen.length} selected`;
+        if (value) value.textContent = `${money(chosen.reduce((sum, item) => sum + item.amount, 0))} total`;
+      };
+      rows.forEach(row => row.querySelector('[data-bookkeeping-select]')?.addEventListener('change', update));
+      groups.forEach(group => group.querySelector('[data-bookkeeping-select-group]')?.addEventListener('change', event => {
+        const ids = JSON.parse(group.dataset.eventIds || '[]');
+        rows.filter(row => ids.includes(row.dataset.objectId)).forEach(row => { row.querySelector('[data-bookkeeping-select]').checked = event.target.checked; });
+        update();
+      }));
+      document.querySelector('[data-bookkeeping-stage]')?.addEventListener('click', () => {
+        const category = document.querySelector('[data-bookkeeping-bulk-category]')?.value || '';
+        if (!category) return;
+        selectedItems().forEach(item => {
+          const row = rows.find(candidate => candidate.dataset.objectId === item.id);
+          const select = row?.querySelector('[data-bookkeeping-category]');
+          if (select) select.value = category;
+          window.FinanceWorkspace?.stage({object_type:'cash_event', object_id:item.id, action:'set_category', value:category});
+        });
+      });
+      document.querySelector('[data-bookkeeping-transfer]')?.addEventListener('click', () => selectedItems().forEach(item =>
+        window.FinanceWorkspace?.stage({object_type:'cash_event', object_id:item.id, action:'mark_internal_transfer', value:true})
+      ));
+      document.querySelector('[data-bookkeeping-clear]')?.addEventListener('click', () => { rows.forEach(row => { const input = row.querySelector('[data-bookkeeping-select]'); if (input) input.checked = false; }); groups.forEach(group => { const input = group.querySelector('[data-bookkeeping-select-group]'); if (input) input.checked = false; }); update(); });
+      document.querySelector('[data-bookkeeping-review]')?.addEventListener('click', () => window.FinanceWorkspace?.reviewAndSave());
+      rows.forEach(row => row.querySelector('[data-bookkeeping-category]')?.addEventListener('change', event => {
+        if (!event.target.value) return;
+        window.FinanceWorkspace?.stage({object_type:'cash_event', object_id:row.dataset.objectId, action:'set_category', value:event.target.value});
+      }));
+    })();
+    </script>
+    """
     return (
         '<section class="finance-source-row finance-bookkeeping"><div style="width:100%">'
         + '<strong>Bookkeeping</strong><span>Only money going out is sorted here. '
         + 'QuickBooks decides the category; this page only chases what it has not booked yet.</span>'
-        + head + writeback + queue + rules_html + money_in_note + '</div></section>'
+        + head + batch_controls + writeback + queue + rules_html + money_in_note + '</div></section>' + script
     )
 
 
@@ -3310,10 +3464,10 @@ async def render_cashflow_overview_page(
     try:
         accounts_overview = load_accounts_overview()
     except Exception:
-        accounts_overview = {"spendable_cents": 0, "reserve_cents": 0, "as_of": "", "account_count": 0, "banks": []}
+        accounts_overview = {"spendable_cents": 0, "reserve_cents": 0, "liability_cents": 0, "as_of": "", "account_count": 0, "banks": []}
     plaid_accounts_html = ""
     if accounts_overview["account_count"]:
-        _role_labels = {"spendable": "Spendable", "reserve": "Reserve", "excluded": "Not counted"}
+        _role_labels = {"spendable": "Spendable", "reserve": "Reserve", "liability": "Amount owed", "excluded": "Not counted"}
         _acct_rows = []
         for _bank in accounts_overview["banks"]:
             _acct_rows.append(
@@ -3326,7 +3480,7 @@ async def render_cashflow_overview_page(
                 _role = str(_acct["cash_role"])
                 _options = "".join(
                     '<option value="' + _r + '"' + (" selected" if _r == _role else "") + '>' + _role_labels[_r] + '</option>'
-                    for _r in ("spendable", "reserve", "excluded")
+                    for _r in ("spendable", "reserve", "liability", "excluded")
                 )
                 _acct_id = html.escape(str(_acct["id"]), quote=True)
                 _acct_rows.append(
@@ -3346,6 +3500,7 @@ async def render_cashflow_overview_page(
             + '<div class="finance-accounts-totals">'
             + '<div><span>Spendable cash (checking)</span><strong>' + _money(accounts_overview["spendable_cents"]) + '</strong></div>'
             + '<div><span>Savings &amp; reserves</span><strong>' + _money(accounts_overview["reserve_cents"]) + '</strong></div>'
+            + '<div><span>Credit cards owed</span><strong>' + _money(accounts_overview["liability_cents"]) + '</strong></div>'
             + '</div>'
             + '<table class="finance-accounts-table"><thead><tr>'
             + '<th>Bank / Account</th><th>Type</th><th>Balance</th><th>Counts as</th>'

@@ -40,6 +40,9 @@ def test_budget_uses_one_canonical_source_and_does_not_double_count() -> None:
     view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 20))
     assert view["source"] == "plaid"
     assert view["transaction_count"] == 7
+    assert view["earliest_date"]
+    assert view["latest_date"]
+    assert view["coverage_days"] >= 1
     assert view["comparison_months"] == [
         "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"
     ]
@@ -124,6 +127,25 @@ def test_budget_excludes_credit_card_payments_and_named_internal_withdrawals() -
     view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
 
     assert [item["key"] for item in view["categories"]] == ["software"]
+
+
+def test_budget_protects_generic_checks_from_the_vendor_trim_list() -> None:
+    rows = [
+        _row(
+            "payroll-check-1", "plaid", "2026-07-11", 125_000,
+            category="uncategorized", merchant="Check #1842",
+        ),
+        _row(
+            "software-1", "plaid", "2026-06-12", 2_000,
+            category="software", merchant="Anthropic",
+        ),
+    ]
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    by_key = {item["key"]: item for item in view["categories"]}
+
+    assert by_key["manual_check"]["protected"] is True
+    assert [item["display_name"] for item in view["trim_items"]] == ["Anthropic"]
 
 
 def test_budget_recategorizes_existing_uncategorized_plaid_rows() -> None:
@@ -235,7 +257,7 @@ def test_six_month_review_detects_a_rising_category_trend() -> None:
     assert software["recent_average_cents"] == 20_000
     assert software["trend_direction"] == "up"
     assert software["trend_bps"] == 10_000
-    assert software["recurring_saving_cents"] == 2_250
+    assert software["recurring_saving_cents"] == 3_000
 
 
 def test_deep_review_finds_a_rising_vendor() -> None:
@@ -268,16 +290,46 @@ def test_deep_review_finds_new_recurring_and_duplicate_looking_spend() -> None:
 
 def test_trim_list_includes_every_controllable_vendor_ranked_by_spend() -> None:
     rows = [
-        _row("elementor-1", "plaid", "2026-01-10", 9_900, merchant="Elementor"),
-        _row("elementor-2", "plaid", "2026-02-10", 9_900, merchant="Elementor"),
+        _row("elementor-1", "plaid", "2026-05-10", 9_900, merchant="Elementor"),
+        _row("elementor-2", "plaid", "2026-06-10", 9_900, merchant="Elementor"),
         _row("small-1", "plaid", "2026-03-10", 2_000, merchant="Small Tool"),
         _row("rent-1", "plaid", "2026-03-01", 200_000, merchant="Building", category="rent"),
     ]
     view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
 
     assert [item["display_name"] for item in view["trim_items"]] == ["Elementor", "Small Tool"]
+    assert view["trim_items"][0]["cadence"] == "irregular"
+    assert view["trim_items"][0]["monthly_potential_cents"] == 0
+    assert view["trim_items"][1]["cadence"] == "one_time"
+    assert view["trim_items"][1]["monthly_potential_cents"] == 0
     assert len(view["trim_items"][0]["opportunity_key"]) == 64
     assert view["trim_items"][0]["review_state"] == "unknown"
+
+
+def test_one_time_purchase_does_not_create_recurring_savings() -> None:
+    rows = [
+        _row("one-time-1", "plaid", "2026-06-10", 600_000, merchant="One Time Build"),
+    ]
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+
+    assert view["trim_items"][0]["cadence"] == "one_time"
+    assert view["categories"][0]["recurring_average_cents"] == 0
+    assert view["categories"][0]["recurring_saving_cents"] == 0
+
+
+def test_stopped_vendor_moves_to_inactive_history_and_not_recurring_savings() -> None:
+    rows = [
+        _row("old-1", "plaid", "2026-01-10", 9_900, merchant="Cancelled Tool"),
+        _row("old-2", "plaid", "2026-02-10", 9_900, merchant="Cancelled Tool"),
+    ]
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+
+    assert view["trim_items"][0]["cadence"] == "inactive"
+    assert view["trim_items"][0]["monthly_potential_cents"] == 0
+    assert view["categories"][0]["recurring_average_cents"] == 0
+    assert view["categories"][0]["recurring_saving_cents"] == 0
 
 
 def test_recurring_savings_exclude_reductions_already_reflected_this_month() -> None:
@@ -362,13 +414,159 @@ def test_budget_page_is_explicitly_advisory_and_explainable() -> None:
     )
     assert "Stop the monthly cash leak" in page
     assert "Six-month monthly average" in page
-    assert "Recurring savings still to capture" in page
+    assert "Potential monthly savings" in page
+    assert "Cancellation in progress" in page
+    assert "Bank-verified monthly savings" in page
     assert "Possible EOM improvement" in page
     assert "What operating spending is doing" in page
     assert "What should we cut or renegotiate?" in page
     assert "Where the deeper savings may be hiding" in page
+    assert "Monthly trim brief" in page
+    assert "What may improve month-end cash" in page
+    assert "Potential and in-progress cuts remain scenarios" in page
     assert "Decide what stays and what goes" in page
     assert "Needed" in page and "Unknown" in page and "Investigate" in page and "Waste" in page
+    assert "Save all changes" in page
+    assert "Discard draft" in page
+    assert "finance-workspace.js" in page
+    assert "localStorage" not in page
+    # Deliberately reversed on 2026-08-08. The leave-page warning blocked
+    # navigation to protect staged changes that already survive in the draft,
+    # and it fired on stale drafts where nothing unsaved was visible. The
+    # recovery notice below is what makes the warning unnecessary.
+    assert "beforeunload" not in page
+    assert "Recovered ${restored} unsaved change" in page
+    assert "has-unsaved-changes" in page
+    assert 'data-trim-batch-form' in page
+    assert "save immediately" not in page
     assert "Run high spending review" in page
     assert "planning targets, not changes to your bank or books" in page
     assert "Mirrored sources and internal transfers are excluded" in page
+
+
+def test_authoritative_rent_replaces_the_prorated_current_month_guess() -> None:
+    rows = [
+        _row(f"rent-{month}", "plaid", f"2026-{month}-05", 4_000_000,
+             category="rent", merchant="Boulder Ranch")
+        for month in ("02", "03", "04", "05", "06", "07")
+    ]
+    rows.append(_row(
+        "rent-aug", "plaid", "2026-08-05", 1_007_500,
+        category="rent", merchant="Boulder Ranch",
+    ))
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 8, 11))
+
+    budgeting._apply_authoritative_rent(view, {
+        "vendor_key": "boulder ranch",
+        "vendor_label": "Boulder Ranch Property Management",
+        "monthly_cents": 4_000_000,
+        "balance_cents": 3_000_000,
+        "balance_as_of": "2026-08-11",
+    })
+
+    rent = next(item for item in view["categories"] if item["key"] == "rent")
+    assert rent["projected_cents"] == 4_007_500
+    assert rent["target_cents"] == 4_000_000
+    assert rent["remaining_cents"] == 3_000_000
+    page = budgeting.render_budget_page(view, {"status": "empty", "recommendations": []})
+    assert "$10,075.00 posted plus $30,000.00 remaining" in page
+
+
+def test_owner_draw_investigation_never_calls_a_person_a_service() -> None:
+    rows = [
+        _row("draw-apr", "plaid", "2026-04-10", 50_000,
+             category="owner_draw", merchant="David Narayan"),
+        _row("draw-may", "plaid", "2026-05-10", 50_000,
+             category="owner_draw", merchant="David Narayan"),
+    ]
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    finding = next(item for item in view["investigations"] if item["merchant"] == "David Narayan")
+
+    assert "monthly limit" in finding["action"]
+    assert "service" not in finding["action"].lower()
+
+
+def test_budget_page_defaults_to_five_highest_impact_unresolved_vendors() -> None:
+    rows = []
+    for vendor_number in range(20):
+        for month in ("04", "05", "06"):
+            rows.append(_row(
+                f"vendor-{vendor_number}-{month}", "plaid", f"2026-{month}-10",
+                (vendor_number + 1) * 1_000, merchant=f"Vendor {vendor_number}",
+            ))
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    view["trim_items"][0]["review_state"] = "needed"
+
+    page = budgeting.render_budget_page(
+        view, {"status": "empty", "recommendations": []}
+    )
+
+    assert 'data-trim-filter="needs_decision" class="is-active"' in page
+    assert "Needs decision <strong>5</strong>" in page
+    assert "Saved keep decisions leave this queue" in page
+
+
+def test_recurring_classifier_quarantines_probable_duplicates() -> None:
+    rows = [
+        _row("tool-04", "plaid", "2026-04-10", 9_900, merchant="Tool Co"),
+        _row("tool-05", "plaid", "2026-05-10", 9_900, merchant="Tool Co"),
+        _row("tool-06-a", "plaid", "2026-06-10", 9_900, merchant="Tool Co"),
+        _row("tool-06-b", "plaid", "2026-06-10", 9_900, merchant="Tool Co"),
+    ]
+
+    item = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))["trim_items"][0]
+
+    assert item["cadence"] == "uncertain"
+    assert item["probable_duplicate_cents"] == 9_900
+    assert item["monthly_potential_cents"] == 0
+
+
+def test_annual_cost_requires_an_annual_comparison_window() -> None:
+    rows = [
+        _row("annual-2025", "plaid", "2025-06-15", 120_000, merchant="Annual Tool"),
+        _row("annual-2026", "plaid", "2026-06-15", 120_000, merchant="Annual Tool"),
+    ]
+
+    item = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))["trim_items"][0]
+
+    assert item["cadence"] == "annual"
+    assert item["monthly_potential_cents"] == 10_000
+    assert item["evidence_dates"] == ["2025-06-15", "2026-06-15"]
+
+
+def test_vendor_review_is_full_page_with_posted_evidence() -> None:
+    rows = [
+        _row(f"tool-{month}", "plaid", f"2026-{month}-10", 9_900, merchant="Tool Co")
+        for month in ("04", "05", "06")
+    ]
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    item = view["trim_items"][0]
+    item["transactions"][0]["account"] = "plaid-account-token-that-must-not-render"
+
+    page = budgeting.render_budget_vendor_page(view, item["opportunity_key"])
+
+    assert "See the bank evidence, then take one clear next step" in page
+    assert "Bank description" in page
+    assert "Connected bank account" in page
+    assert "plaid-account-token-that-must-not-render" not in page
+    assert '<option value="unknown" selected>Unknown</option>' in page
+    assert "Save this decision" in page
+    assert "side drawer" not in page
+
+
+def test_monthly_brief_omits_zero_value_nonrecurring_waste() -> None:
+    rows = [
+        _row("one-off", "plaid", "2026-06-10", 9_900, merchant="Past One Off")
+    ]
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    item = view["trim_items"][0]
+    item["review_state"] = "waste"
+
+    page = budgeting.render_budget_page(
+        view, {"status": "empty", "recommendations": []}
+    )
+
+    assert "$0.00 per month awaits cancellation work" not in page
+    assert 'data-trim-current="false"' in page
+    assert "wanted === 'waste' && row.dataset.trimState === 'waste' && row.dataset.trimCurrent === 'true'" in page

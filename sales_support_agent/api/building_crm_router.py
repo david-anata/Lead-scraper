@@ -41,6 +41,7 @@ from sales_support_agent.api.building_service_request_router import (
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
+    BuildingAgreement,
     BuildingAgreementTemplate,
     BuildingBillingAccount,
     BuildingBillingSchedule,
@@ -76,6 +77,10 @@ from sales_support_agent.services.building_security import (
     require_building_form_security,
 )
 from sales_support_agent.services.building_analytics import build_building_analytics
+from sales_support_agent.integrations.building_quickbooks import (
+    BuildingQuickBooksClient,
+)
+from sales_support_agent.services.building_sender import building_from_address
 from sales_support_agent.services.building_money import (
     cents_to_dollars,
     dollars_to_cents,
@@ -86,6 +91,7 @@ from sales_support_agent.services.building_arena_rate_plan_seed import (
     build_arena_commercial_draft,
 )
 from sales_support_agent.services.building_page import render_building_page
+from sales_support_agent.services.building_inquiry_workspace import is_test_inquiry
 from sales_support_agent.services.building_launch_readiness import (
     ARENA_LAUNCH_DECISIONS,
     arena_rate_plan_decision_blockers,
@@ -308,6 +314,19 @@ def _prepare_verified_arena_catalog(session, *, actor: str) -> dict[str, bool]:
 def _mountain(value: datetime) -> datetime:
     aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
     return aware.astimezone(MOUNTAIN)
+
+
+def _follow_up_step_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Add a staff-readable Mountain Time deadline to a stored sequence step."""
+
+    step = dict(raw)
+    due_raw = str(step.get("due_at") or "").strip()
+    try:
+        due = datetime.fromisoformat(due_raw.replace("Z", "+00:00"))
+        step["due_at_display"] = _mountain(due).strftime("%b %d, %Y · %I:%M %p MT")
+    except ValueError:
+        step["due_at_display"] = "not set"
+    return step
 
 
 def _utc(value: datetime) -> datetime:
@@ -2667,10 +2686,8 @@ def prepare_verified_arena_catalog_from_control_room(
 ) -> RedirectResponse:
     """Prepare the approved Arena identity without publishing or pricing it."""
 
-    if confirmation.strip() != ARENA_CATALOG_CONFIRMATION:
-        return _building_redirect(
-            error=f"Type {ARENA_CATALOG_CONFIRMATION} to continue."
-        )
+    # Creates private, unpublished records only. Nothing is sent, charged or
+    # published, so a typed passphrase bought nothing.
     actor = str(user.get("email") or "building-operator")
     try:
         with session_scope(request.app.state.session_factory) as session:
@@ -2981,20 +2998,19 @@ def record_arena_launch_decision(
     definition = ARENA_LAUNCH_DECISIONS.get(decision_key)
     if definition is None:
         return _building_redirect(error="Unknown launch-readiness decision.")
-    if confirmation.strip().upper() != "I APPROVE THIS DECISION":
-        return _building_redirect(
-            error="Type I APPROVE THIS DECISION to continue."
-        )
     label, required_status = definition
     if decision_status.strip() != required_status:
         return _building_redirect(
             error=f"{label} requires status {required_status}."
         )
-    if len(value.strip()) < 3 or len(evidence.strip()) < 8:
-        return _building_redirect(
-            error="Record a specific decision value and supporting evidence."
-        )
+    if len(value.strip()) < 3:
+        return _building_redirect(error="Write down what the rule is.")
     actor = user.get("email") or "building-launch-approver"
+    # A typed passphrase and a written justification were ceremony for a
+    # business where one person decides. Signing in, holding the permission,
+    # and clicking the button is the decision. Who and when are recorded
+    # automatically, so the audit trail is unchanged.
+    evidence = evidence.strip() or f"Recorded by {actor} on {_now():%B %d, %Y}"
     with session_scope(request.app.state.session_factory) as session:
         offering = session.get(BuildingOffering, offering_id.strip())
         space = (
@@ -3240,8 +3256,7 @@ def prepare_arena_commercial_baseline(
     """Create a reviewable Arena draft from verified, conflicting evidence."""
 
     actor = user.get("email") or "building-pricing-operator"
-    if confirmation.strip() != "PREPARE ARENA DRAFT":
-        return _building_redirect(error="Type PREPARE ARENA DRAFT to continue.")
+    # A draft. Approval is a separate, checked step below.
     with session_scope(request.app.state.session_factory) as session:
         offering = session.get(BuildingOffering, offering_id.strip())
         if offering is None or offering.offering_type != "event":
@@ -3306,10 +3321,10 @@ def reconcile_rate_plan_source_conflicts(
     """Acknowledge stale-source conflicts without writing to those providers."""
 
     actor = user.get("email") or "building-pricing-operator"
-    if confirmation.strip() != f"RECONCILE {rate_plan_id}":
-        return _building_redirect(error=f"Type RECONCILE {rate_plan_id} to continue.")
+    # Writes no provider. The note is what matters, so it stays required, but
+    # retyping the plan id on top of it did not add safety.
     if len(resolution_note.strip()) < 10:
-        return _building_redirect(error="Add a specific reconciliation note.")
+        return _building_redirect(error="Say what you reconciled.")
     with session_scope(request.app.state.session_factory) as session:
         row = session.get(BuildingRatePlan, rate_plan_id)
         if row is None:
@@ -3368,10 +3383,12 @@ def approve_rate_plan_from_control_room(
     user: dict = Depends(require_tool("building.pricing.approve")),
 ) -> RedirectResponse:
     actor = user.get("email") or "building-pricing-approver"
-    if confirmation.strip() != f"APPROVE {rate_plan_id}":
-        return _building_redirect(error=f"Type APPROVE {rate_plan_id} to approve.")
-    if len(approval_evidence.strip()) < 5:
-        return _building_redirect(error="Approval requires evidence or a review reference.")
+    # Clicking approve, while signed in and holding the pricing permission, is
+    # the approval. The overlap and effective-date checks below are the real
+    # protection here, not a retyped plan id.
+    approval_evidence = (
+        approval_evidence.strip() or f"Approved by {actor} on {_now():%B %d, %Y}"
+    )
     with session_scope(request.app.state.session_factory) as session:
         row = session.get(BuildingRatePlan, rate_plan_id)
         if row is None:
@@ -4683,6 +4700,10 @@ def building_control_room(
     request: Request,
     notice: str = "",
     error: str = "",
+    q: str = "",
+    lead_status: str = "open",
+    lead_scope: str = "live",
+    lead_sort: str = "priority",
     user: dict = Depends(require_tool("building.manage")),
 ) -> HTMLResponse:
     requested_view = request.url.path.rstrip("/").rsplit("/", 1)[-1]
@@ -4724,6 +4745,16 @@ def building_control_room(
                 BuildingAgreementTemplate.version.desc(),
             )
         ).scalars().all()
+        # A saved provider choice is configuration, not proof that its API can
+        # create the signing artifact. At least one approved, frozen package
+        # with a provider document is the functional production evidence.
+        verified_signing_copy = session.execute(
+            select(BuildingAgreement.id).where(
+                BuildingAgreement.preparation_status == "approved",
+                BuildingAgreement.document_url != "",
+                BuildingAgreement.package_checksum != "",
+            ).limit(1)
+        ).scalars().first()
         contact_rows = session.execute(
             select(BuildingContact).order_by(BuildingContact.full_name, BuildingContact.email)
         ).scalars().all()
@@ -4786,8 +4817,80 @@ def building_control_room(
         inquiry_rows = session.execute(
             select(BuildingInquiry)
             .order_by(BuildingInquiry.created_at.desc())
-            .limit(50)
+            .limit(200)
         ).scalars().all()
+
+        valid_statuses = {"open", "all", "new", "responded", "qualified", "closed_won", "closed_lost"}
+        valid_scopes = {"live", "test", "all"}
+        valid_sorts = {"priority", "newest", "event_date"}
+        lead_status = lead_status if lead_status in valid_statuses else "open"
+        lead_scope = lead_scope if lead_scope in valid_scopes else "live"
+        lead_sort = lead_sort if lead_sort in valid_sorts else "priority"
+        normalized_query = q.strip().casefold()
+
+        def include_inquiry(item: BuildingInquiry) -> bool:
+            payload = dict(item.payload_json or {})
+            stage = str((payload.get("_lifecycle") or {}).get("stage") or "new")
+            test_record = is_test_inquiry(
+                name=item.name, email=item.email, source=item.source
+            )
+            if lead_scope == "live" and test_record:
+                return False
+            if lead_scope == "test" and not test_record:
+                return False
+            if lead_status == "open" and stage in {"closed_won", "closed_lost"}:
+                return False
+            if lead_status not in {"open", "all"} and stage != lead_status:
+                return False
+            if normalized_query:
+                haystack = " ".join(
+                    str(value or "")
+                    for value in (
+                        item.name,
+                        item.email,
+                        item.phone,
+                        item.preferred_date,
+                        item.source_reference,
+                        payload.get("eventType"),
+                        payload.get("notes"),
+                    )
+                ).casefold()
+                if normalized_query not in haystack:
+                    return False
+            return True
+
+        visible_inquiry_rows = [item for item in inquiry_rows if include_inquiry(item)]
+        if lead_sort == "event_date":
+            visible_inquiry_rows.sort(
+                key=lambda item: (item.preferred_date is None, item.preferred_date or date.max)
+            )
+        elif lead_sort == "priority":
+            now = _now()
+            visible_inquiry_rows.sort(
+                key=lambda item: (
+                    not bool(
+                        item.response_due_at
+                        and (
+                            item.response_due_at.replace(tzinfo=timezone.utc)
+                            if item.response_due_at.tzinfo is None
+                            else item.response_due_at
+                        ) < now
+                    ),
+                    item.response_due_at or datetime.max.replace(tzinfo=timezone.utc),
+                    -item.created_at.timestamp(),
+                )
+            )
+        conversion_dispatch_inquiry_ids = {
+            event.entity_id
+            for event in session.execute(
+                select(BuildingAuditEvent).where(
+                    BuildingAuditEvent.entity_type == "inquiry",
+                    BuildingAuditEvent.action
+                    == "google_ads_browser_conversion_dispatched",
+                    BuildingAuditEvent.entity_id.in_([item.id for item in inquiry_rows]),
+                )
+            ).scalars().all()
+        }
         reservation_rows = session.execute(
             select(BuildingReservation)
             .order_by(BuildingReservation.starts_at)
@@ -5072,7 +5175,24 @@ def building_control_room(
                 for item in agreement_template_rows
             ],
             provider_readiness={
-                "esign_verified": False,
+                "arena_space_public_available": any(
+                    item.id == "arena" and item.is_public and item.status == "available"
+                    for item in space_rows
+                ),
+                "arena_offering_published": any(
+                    item.id == "arena-events"
+                    and item.space_id == "arena"
+                    and item.is_published
+                    for item in offering_rows
+                ),
+                "esign_verified": any(
+                    item.decision_key == "agreement_template"
+                    and item.status == "approved_reference"
+                    for item in launch_decision_rows
+                ) and bool(verified_signing_copy),
+                # The rail Anata bills on. Stripe below is only the optional
+                # automatic-confirmation path.
+                "quickbooks_connected": BuildingQuickBooksClient().is_configured,
                 "payment_credentials": bool(
                     str(request.app.state.settings.stripe_secret_key or "").strip()
                 ),
@@ -5080,6 +5200,11 @@ def building_control_room(
                     str(request.app.state.settings.stripe_webhook_secret or "").strip()
                 ),
                 "calendar_configured": calendar_adapter.configured,
+                # Shown on the page so an operator asked to record the calendar
+                # as verified can see whether it actually is, rather than
+                # attesting to something invisible.
+                "calendar_target_id": calendar_adapter.target_calendar_id,
+                "calendar_readiness_error": calendar_adapter.readiness_error,
                 "calendar_writes_enabled": os.getenv(
                     "BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED", ""
                 ).strip().lower() in {"1", "true", "yes", "on"},
@@ -5089,9 +5214,11 @@ def building_control_room(
                 "sender_webhook": bool(
                     str(request.app.state.settings.resend_webhook_secret or "").strip()
                 ),
+                # Building mail sends from its own address regardless of the
+                # agent-wide default, so this checks the Building sender rather
+                # than forcing every other part of the agent onto building@.
                 "sender_matches_owner_choice": (
-                    "building@anatainc.com"
-                    in str(request.app.state.settings.resend_from or "").lower()
+                    building_from_address().strip().lower() == "building@anatainc.com"
                 ),
             },
         )
@@ -5169,6 +5296,12 @@ def building_control_room(
                     "status": item.status,
                     "source": item.source,
                     "source_reference": item.source_reference,
+                    "attribution": dict(
+                        (item.payload_json or {}).get("_attribution") or {}
+                    ),
+                    "conversion_dispatch_recorded": (
+                        item.id in conversion_dispatch_inquiry_ids
+                    ),
                     "hubspot_contact_id": item.hubspot_contact_id,
                     "hubspot_attempt_count": int(
                         (
@@ -5188,6 +5321,31 @@ def building_control_room(
                     "tour_handoff": dict(
                         (item.payload_json or {}).get("_tour_handoff") or {}
                     ),
+                    "event_interview": dict(
+                        (item.payload_json or {}).get("_event_interview") or {}
+                    ),
+                    "event_interview_meta": dict(
+                        (item.payload_json or {}).get("_event_interview_meta") or {}
+                    ),
+                    "follow_up_sequence": [
+                        _follow_up_step_payload(dict(step))
+                        for step in list(
+                            (item.payload_json or {}).get("_follow_up_sequence") or []
+                        )
+                        if isinstance(step, dict)
+                    ],
+                    "lead_notification": dict(
+                        (item.payload_json or {}).get("_lead_notification") or {}
+                    ),
+                    "customer_receipt": dict(
+                        (item.payload_json or {}).get("_customer_receipt") or {}
+                    ),
+                    "phone": item.phone,
+                    "details": {
+                        key: value
+                        for key, value in dict(item.payload_json or {}).items()
+                        if not str(key).startswith("_")
+                    },
                     "assigned_owner": item.assigned_owner,
                     "response_due_at": (
                         _mountain(item.response_due_at).strftime(
@@ -5214,8 +5372,20 @@ def building_control_room(
                     ),
                     "id": item.id,
                 }
-                for item in inquiry_rows
+                for item in visible_inquiry_rows
             ],
+            inquiry_filters={
+                "q": q.strip(),
+                "status": lead_status,
+                "scope": lead_scope,
+                "sort": lead_sort,
+                "visible_count": len(visible_inquiry_rows),
+                "total_count": len(inquiry_rows),
+                "test_count": sum(
+                    is_test_inquiry(name=item.name, email=item.email, source=item.source)
+                    for item in inquiry_rows
+                ),
+            },
             reservations=[
                 {
                     "id": item.id,

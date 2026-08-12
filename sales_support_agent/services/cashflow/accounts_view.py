@@ -2,8 +2,8 @@
 
 Spendable cash is deliberately narrow: only accounts the operator marks as
 ``spendable`` (checking by default) count toward the money available to pay
-bills. Everything else is a reserve that is shown but never treated as
-day-to-day cash. This module only reads balances; it never moves money.
+bills. Reserves remain owned cash. Liabilities are money owed and never inflate
+cash. This module only reads balances; it never moves money.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from sqlalchemy import text
 
 from sales_support_agent.models.database import get_engine
 
-VALID_CASH_ROLES = ("spendable", "reserve", "excluded")
+VALID_CASH_ROLES = ("spendable", "reserve", "liability", "excluded")
 
 
 def _account_balance_cents(row: dict[str, Any]) -> int:
@@ -37,6 +37,7 @@ def load_accounts_overview() -> dict[str, Any]:
         {
           "spendable_cents": int,   # money available to pay bills today
           "reserve_cents": int,     # savings and other non-spendable balances
+          "liability_cents": int,   # debt owed, never included in cash
           "as_of": str,             # ISO date of the freshest balance, or ""
           "account_count": int,
           "banks": [
@@ -59,6 +60,7 @@ def load_accounts_overview() -> dict[str, Any]:
 
     spendable_cents = 0
     reserve_cents = 0
+    liability_cents = 0
     as_of_values: list[str] = []
     banks: dict[str, dict[str, Any]] = {}
 
@@ -66,11 +68,19 @@ def load_accounts_overview() -> dict[str, Any]:
         row = dict(raw._mapping)
         balance = _account_balance_cents(row)
         role = str(row.get("cash_role") or "reserve")
+        account_name = str(row.get("name") or row.get("official_name") or "Account")
+        # Tax cash is a last-resort reserve, never ordinary bill-paying money.
+        # Protect it even when an old/default Plaid classification says checking.
+        tax_protected = "tax" in account_name.strip().lower()
+        if tax_protected and role == "spendable":
+            role = "reserve"
         if role == "spendable":
             spendable_cents += balance
         elif role == "reserve":
             reserve_cents += balance
-        # 'excluded' contributes to neither total.
+        elif role == "liability":
+            liability_cents += abs(balance)
+        # 'liability' and 'excluded' contribute no cash.
 
         as_of = str(row.get("balance_as_of") or "")[:10]
         if as_of:
@@ -84,11 +94,12 @@ def load_accounts_overview() -> dict[str, Any]:
         })
         bank["accounts"].append({
             "id": str(row.get("id")),
-            "name": str(row.get("name") or row.get("official_name") or "Account"),
+            "name": account_name,
             "mask": str(row.get("mask") or ""),
             "subtype": str(row.get("subtype") or ""),
             "account_type": str(row.get("account_type") or ""),
             "cash_role": role,
+            "tax_protected": tax_protected,
             "balance_cents": balance,
             "current_balance_cents": row.get("current_balance_cents"),
             "available_balance_cents": row.get("available_balance_cents"),
@@ -98,6 +109,7 @@ def load_accounts_overview() -> dict[str, Any]:
     return {
         "spendable_cents": spendable_cents,
         "reserve_cents": reserve_cents,
+        "liability_cents": liability_cents,
         "as_of": max(as_of_values) if as_of_values else "",
         "account_count": len(rows),
         "banks": list(banks.values()),

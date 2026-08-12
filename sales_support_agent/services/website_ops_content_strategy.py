@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -15,6 +16,19 @@ DAILY_ARTICLE_TARGET = 8
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def normalize_human_intent(value: Any) -> str:
+    """Convert search syntax and synthetic fragments into a readable topic."""
+
+    text = _clean(value)
+    text = re.sub(r'(?i)(?:^|\s)[+-]?(?:site|inurl|intitle|filetype):(?:"[^"]+"|\S+)', " ", text)
+    text = re.sub(r'(?i)https?://\S+|www\.\S+', " ", text)
+    text = re.sub(r'["“”`]+', "", text)
+    text = re.sub(r"\s+", " ", text).strip(" -–—|,;:.?")
+    if text.lower().startswith(("query ", "question ", "search ")):
+        text = text.split(" ", 1)[1].strip()
+    return text
 
 
 def _pillar(cluster: Mapping[str, Any]) -> str:
@@ -69,7 +83,9 @@ def build_content_strategy(
         alignment = float(dict(cluster.get("alignment") or {}).get("composite", 1) or 1)
         source_count = _source_count(cluster)
         owner_url = _clean(cluster.get("owner_url"))
-        label = _clean(cluster.get("label") or cluster.get("normalized_query"))
+        label = normalize_human_intent(
+            cluster.get("label") or cluster.get("normalized_query")
+        )
         if not label:
             continue
 

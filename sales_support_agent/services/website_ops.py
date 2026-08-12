@@ -15,11 +15,13 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo
 
 from sales_support_agent.config import Settings
 from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.services.admin_nav import render_agent_favicon_links, render_agent_nav, render_agent_nav_styles
 from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
+from sales_support_agent.services.website_ops_article_engine import release_daily_article_slot
 from sales_support_agent.services.website_ops_candidates import (
     build_candidates,
     candidate_summary,
@@ -57,6 +59,8 @@ from sales_support_agent.services.website_ops_github import (
     execute_github_article_action,
     execute_github_metadata_action,
     github_metadata_is_configured,
+    load_generated_article_records,
+    load_generated_article_identities,
 )
 from sales_support_agent.services.website_ops_outcomes import FAILED_OUTCOME, classify_run_outcome
 from sales_support_agent.services import website_ops_vendor as website_ops
@@ -72,6 +76,7 @@ class WebsiteOpsActionResult:
 
 RUN_MODES = ("daily", "weekly", "monthly")
 RUN_STATUSES = {"idle", "queued", "running", "succeeded", "failed", "failed_outcome"}
+_LIVE_SITEMAP_CACHE: tuple[float, tuple[str, ...]] = (0.0, ())
 MVP_MODE_ACTIVE = True
 MVP_ALLOWED_ACTION_TYPES = {
     "inject_faq_block",
@@ -252,7 +257,7 @@ def write_website_ops_run_state(settings: Settings, mode: str, updates: Mapping[
 
 def website_ops_run_is_due(settings: Settings, mode: str = "daily", *, today: date | None = None) -> bool:
     normalized_mode = mode if mode in RUN_MODES else "daily"
-    current_date = today or date.today()
+    current_date = today or datetime.now(ZoneInfo("America/Denver")).date()
     current_day = current_date.isoformat()
     state = get_website_ops_run_state(settings, normalized_mode)
     if state.get("status") in {"queued", "running"} and state.get("run_date") == current_day:
@@ -363,6 +368,143 @@ def discover_website_ops_urls(settings: Settings) -> tuple[str, ...]:
 
     unique = sorted(set(discovered), key=lambda value: (urlparse(value).path != "/", urlparse(value).path))
     return tuple(unique)
+
+
+def _live_sitemap_urls(settings: Settings) -> tuple[str, ...]:
+    """Return a short-lived production sitemap view, falling back safely to retained evidence."""
+
+    global _LIVE_SITEMAP_CACHE
+    configured = tuple(getattr(settings, "website_ops_site_urls", ()) or ())
+    host = (urlparse(str(configured[0])).hostname or "").lower() if configured else ""
+    if host.removeprefix("www.") != "anatainc.com":
+        return ()
+    now = datetime.now(timezone.utc).timestamp()
+    cached_at, cached_urls = _LIVE_SITEMAP_CACHE
+    if cached_urls and now - cached_at < 300:
+        return cached_urls
+    sitemap_url = str(getattr(settings, "website_ops_sitemap_url", "") or "https://anatainc.com/sitemap.xml")
+    try:
+        request = urllib.request.Request(sitemap_url, headers={"User-Agent": "anata-website-ops/2.0"})
+        with urllib.request.urlopen(request, timeout=3) as response:
+            root = ET.fromstring(response.read())
+        urls = tuple(sorted({
+            str(node.text).strip()
+            for node in root.iter()
+            if node.tag.rsplit("}", 1)[-1] == "loc"
+            and node.text
+            and (urlparse(str(node.text).strip()).hostname or "").lower().removeprefix("www.") == "anatainc.com"
+        }))
+        if urls:
+            _LIVE_SITEMAP_CACHE = (now, urls)
+            return urls
+    except (OSError, ValueError, ET.ParseError):
+        pass
+    return cached_urls
+
+
+def reconcile_codex_publications(
+    settings: Settings,
+    *,
+    business_date: date | None = None,
+) -> list[dict[str, Any]]:
+    """Verify Codex-owned publications and project them into Website Ops truth."""
+
+    target_date = business_date or datetime.now(ZoneInfo("America/Denver")).date()
+    try:
+        articles, registry_sha = load_generated_article_records()
+    except Exception:  # noqa: BLE001 - retained Agent evidence remains the safe fallback
+        return []
+    candidates: list[dict[str, Any]] = []
+    for article in articles:
+        try:
+            published = datetime.fromisoformat(
+                str(article.get("publishedAt", "")).replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError):
+            continue
+        if published.astimezone(ZoneInfo("America/Denver")).date() == target_date:
+            candidates.append(article)
+    if not candidates:
+        return []
+    sitemap_urls = set(_live_sitemap_urls(settings))
+    try:
+        blog_request = urllib.request.Request(
+            "https://anatainc.com/blog",
+            headers={"User-Agent": "anata-website-ops/2.0"},
+        )
+        with urllib.request.urlopen(blog_request, timeout=5) as response:
+            blog_html = response.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return []
+    verified_at = datetime.now(timezone.utc).isoformat()
+    verified: list[dict[str, Any]] = []
+    for article in sorted(candidates, key=lambda item: str(item.get("publishedAt", "")))[:8]:
+        slug = str(article.get("slug", "")).strip()
+        if not slug:
+            continue
+        production_url = f"https://anatainc.com/blog/{slug}"
+        if production_url not in sitemap_urls or f'/blog/{slug}' not in blog_html:
+            continue
+        try:
+            page_request = urllib.request.Request(
+                production_url,
+                headers={"User-Agent": "anata-website-ops/2.0"},
+            )
+            with urllib.request.urlopen(page_request, timeout=5) as response:
+                status_code = int(getattr(response, "status", 200) or 200)
+                page_html = response.read().decode("utf-8", errors="ignore")
+        except OSError:
+            continue
+        sources = [dict(item) for item in article.get("sources", []) or [] if isinstance(item, Mapping)]
+        source_visible = bool(sources) and any(
+            str(source.get("url", "")) in page_html or str(source.get("title", "")) in page_html
+            for source in sources
+        )
+        canonical_present = bool(
+            re.search(
+                rf'<link[^>]+(?:rel="canonical"[^>]+href="{re.escape(production_url)}"|href="{re.escape(production_url)}"[^>]+rel="canonical")',
+                page_html,
+                re.IGNORECASE,
+            )
+        )
+        structured_data_present = (
+            'application/ld+json' in page_html
+            and ('"Article"' in page_html or '\\"Article\\"' in page_html)
+        )
+        visible_title = str(article.get("title", "")).strip()
+        if not (
+            status_code == 200
+            and visible_title
+            and visible_title in page_html
+            and source_visible
+            and canonical_present
+            and structured_data_present
+        ):
+            continue
+        content = dict(article.get("content") or {})
+        verified.append(
+            {
+                "action_type": "publish_blog_article",
+                "status": "published",
+                "verification_status": "verified",
+                "page_url": production_url,
+                "production_url": production_url,
+                "title": visible_title,
+                "service_pillar": str(content.get("eyebrow", "") or "Content"),
+                "primary_intent": str(article.get("primaryIntent", "")),
+                "published_at": str(article.get("publishedAt", "")),
+                "verified_at": verified_at,
+                "sources_present": True,
+                "blog_link_check": "passed",
+                "sitemap_check": "passed",
+                "canonical_check": "passed",
+                "structured_data_check": "passed",
+                "commit_sha": registry_sha,
+                "deployment_reference": registry_sha,
+                "owner": "codex_routine",
+            }
+        )
+    return verified
 
 
 def _report_change_fingerprint(report: Mapping[str, Any]) -> str:
@@ -509,7 +651,10 @@ def _build_operations_summary(report: Mapping[str, Any]) -> dict[str, Any]:
         "queued_actions": int(states.get("queued", len(queue)) or 0),
         "auto_ready_actions": int(ledger_summary.get("ready_candidates", auto_ready) or 0),
         "review_required_actions": review_required,
-        "executed_actions": int(states.get("completed", len(executed)) or 0),
+        "executed_actions": max(
+            int(states.get("completed", 0) or 0),
+            len(executed),
+        ),
         "content_tasks": len(content),
         "article_pipeline_status": str(article.get("status", "unavailable") or "unavailable"),
         "article_pipeline_message": str(article.get("message", "") or ""),
@@ -566,11 +711,174 @@ def _load_notification_state(settings: Settings) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _save_notification_state(settings: Settings, state: Mapping[str, Any]) -> None:
+    path = _notification_state_path(settings)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(state), indent=2, sort_keys=True))
+
+
+def _notification_business_day() -> tuple[str, bool]:
+    local_now = _utc_now().astimezone(ZoneInfo("America/Denver"))
+    return local_now.date().isoformat(), local_now.weekday() < 5
+
+
 def _write_email_delivery(settings: Settings, payload: Mapping[str, Any]) -> None:
     _ensure_storage(settings)
     path = settings.website_ops_root / "emails" / "deliveries.jsonl"
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(dict(payload), sort_keys=True, default=str) + "\n")
+
+
+def _build_website_ops_email(
+    report: Mapping[str, Any],
+    *,
+    mode: str,
+) -> tuple[str, str]:
+    """Build the owner brief around outcomes, not implementation telemetry."""
+
+    outcome = dict(report.get("run_outcome") or {})
+    outcome_status = str(outcome.get("status", "") or "").strip().lower()
+    outcome_labels = {
+        "production_verified": "Completed",
+        "work_in_progress": "In progress",
+        "evidenced_wait": "Waiting for evidence",
+        "no_qualified_opportunity": "No safe change found",
+        "failed_outcome": "Needs attention",
+    }
+    outcome_label = outcome_labels.get(
+        outcome_status,
+        str(report.get("status", "Unknown")).replace("_", " ").title(),
+    )
+    executed = [
+        dict(item)
+        for item in report.get("executed_actions", []) or []
+        if isinstance(item, Mapping)
+    ]
+    verified = [
+        item
+        for item in executed
+        if str(item.get("verification_status", "")).strip().lower()
+        in {"verified", "passed", "production-verified"}
+    ]
+    production_count = int(
+        outcome.get("production_delta_count", len(verified)) or len(verified)
+    )
+    support_requests = list(
+        dict.fromkeys(
+            str(value).strip()
+            for value in report.get("support_requests", []) or []
+            if str(value).strip()
+        )
+    )
+    if support_requests:
+        action_phrase = (
+            f"{len(support_requests)} item{'s' if len(support_requests) != 1 else ''} need you"
+        )
+    elif outcome_status == "failed_outcome":
+        action_phrase = "system follow-up underway"
+    else:
+        action_phrase = "no action needed"
+    if outcome_status == "production_verified":
+        subject_state = (
+            f"{production_count} change{'s' if production_count != 1 else ''} verified"
+        )
+    else:
+        subject_state = outcome_label.lower()
+    subject = f"Website Ops {mode}: {subject_state} - {action_phrase}"
+
+    report_date = str(report.get("date", "") or "").strip()
+    summary = str(outcome.get("summary", "") or "").strip()
+    if not summary:
+        summary = (
+            f"{production_count} production change(s) were verified."
+            if production_count
+            else "No production change was verified in this cycle."
+        )
+
+    change_lines: list[str] = []
+    for item in verified:
+        title = str(item.get("title", "") or "").strip()
+        if not title:
+            title = str(item.get("action_type", "Website update")).replace("_", " ").title()
+        url = str(item.get("production_url", "") or item.get("page_url", "")).strip()
+        change_lines.append(f"- {title}")
+        if url:
+            change_lines.append(f"  {url}")
+    if not change_lines:
+        change_lines = ["- No production change was verified in this cycle."]
+
+    pages_reviewed = int(report.get("pages_reviewed", 0) or 0)
+    pages_healthy = int(report.get("pages_healthy", 0) or 0)
+    confirmed_issues = len(report.get("issues") or [])
+    analytics = dict(report.get("analytics_status") or {})
+    search_console = "Connected" if analytics.get("search_console") is True else "Unavailable"
+    ga4 = "Connected" if analytics.get("ga4") is True else "Unavailable"
+    health_lines = [
+        (
+            f"- {pages_healthy} of {pages_reviewed} reviewed pages passed current checks."
+            if pages_reviewed
+            else "- No page-health count was available for this cycle."
+        ),
+        f"- Confirmed website problems: {confirmed_issues}",
+        f"- Search Console: {search_console}",
+        f"- GA4: {ga4}",
+    ]
+
+    operations = dict(report.get("operations_summary") or {})
+    deferred = [
+        dict(item)
+        for item in operations.get("deferred_reasons", []) or []
+        if isinstance(item, Mapping) and int(item.get("count", 0) or 0)
+    ]
+    deferred_lines = [
+        f"- {int(item.get('count', 0) or 0)}: {str(item.get('reason', '')).strip()}"
+        for item in deferred[:3]
+    ]
+    if not deferred_lines:
+        deferred_lines = ["- No additional work was deferred."]
+
+    next_operation = str(outcome.get("next_operation", "") or "").strip()
+    if not next_operation:
+        current = dict((report.get("program_plan") or {}).get("current") or {})
+        next_operation = str(current.get("next_operation", "") or "").strip()
+    if not next_operation:
+        next_operation = "Run the next scheduled evidence and production check."
+
+    todo_lines = [f"- {item}" for item in support_requests]
+    if not todo_lines:
+        todo_lines = ["- Nothing today. Website Ops and Codex own the next steps."]
+
+    text = "\n".join(
+        [
+            f"Anata Website Ops - {mode.title()} update",
+            *([report_date] if report_date else []),
+            "",
+            "BOTTOM LINE",
+            f"{outcome_label}: {summary}",
+            "",
+            "VERIFIED WEBSITE CHANGES",
+            *change_lines,
+            "",
+            "WEBSITE HEALTH",
+            *health_lines,
+            "",
+            "WHY OTHER WORK WAS LEFT ALONE",
+            *deferred_lines,
+            "",
+            "WHAT HAPPENS NEXT",
+            f"- {next_operation}",
+            "",
+            "NEEDS YOU",
+            *todo_lines,
+            "",
+            "OPEN WEBSITE OPS",
+            "https://agent.anatainc.com/admin/website-ops",
+            "",
+            "READ THE FULL REPORT",
+            "https://agent.anatainc.com/admin/website-ops/reports/latest",
+        ]
+    )
+    return subject, text
 
 
 def send_website_ops_report_email(
@@ -593,7 +901,11 @@ def send_website_ops_report_email(
     state = _load_notification_state(settings)
     previous = str(state.get(f"{mode}_fingerprint", "") or "")
     changed = fingerprint != previous
-    should_send = bool(force or changed)
+    business_date, is_workday = _notification_business_day()
+    already_sent_today = state.get("last_email_business_date") == business_date
+    should_send = bool(
+        force or (changed and is_workday and not already_sent_today)
+    )
     result = {
         "attempted": False,
         "sent": False,
@@ -608,141 +920,15 @@ def send_website_ops_report_email(
         result["reason"] = "email_not_configured"
         return result
     if not should_send:
-        result["reason"] = "unchanged"
+        if not changed:
+            result["reason"] = "unchanged"
+        elif not is_workday:
+            result["reason"] = "outside_workday"
+        else:
+            result["reason"] = "daily_cadence"
         return result
 
-    issues = list(report.get("issues") or [])
-    executed = list(report.get("executed_actions") or [])
-    support_requests = list(
-        dict.fromkeys(
-            str(value).strip()
-            for value in report.get("support_requests", []) or []
-            if str(value).strip()
-        )
-    )
-    priority_counts = dict(report.get("issue_counts_by_priority") or {})
-    change_lines = [
-        "- "
-        + " | ".join(
-            value
-            for value in (
-                str(item.get("action_type", "")).replace("_", " ").title(),
-                str(item.get("page_url", "")).strip(),
-                str(item.get("verification_status", "")).replace("_", " ").title(),
-            )
-            if value
-        )
-        for item in executed
-    ]
-    if not change_lines:
-        change_lines = ["- No production SEO changes were applied in this cycle."]
-    todo_lines = [f"- {item}" for item in support_requests]
-    if not todo_lines:
-        todo_lines = ["- Nothing requires your attention today."]
-    program_plan = dict(report.get("program_plan") or {})
-    current_work = dict(program_plan.get("current") or {})
-    next_work = [dict(item) for item in list(program_plan.get("next") or []) if isinstance(item, Mapping)]
-    work_lines = []
-    if current_work:
-        work_lines.append(
-            "- NOW | "
-            + " | ".join(
-                value
-                for value in (
-                    str(current_work.get("title", "")).strip(),
-                    str(current_work.get("state", "")).strip(),
-                    str(current_work.get("next_operation", "")).strip(),
-                )
-                if value
-            )
-        )
-    work_lines.extend(
-        "- NEXT | "
-        + " | ".join(
-            value
-            for value in (
-                str(item.get("title", "")).strip(),
-                str(item.get("state", "")).strip(),
-            )
-            if value
-        )
-        for item in next_work[:4]
-    )
-    if not work_lines:
-        work_lines = ["- Run the daily sweep to generate the next source-backed work plan."]
-    operations = dict(report.get("operations_summary") or {})
-    content_strategy = dict(operations.get("content_strategy") or {})
-    if content_strategy.get("next_topic"):
-        work_lines.append(
-            "- CONTENT | "
-            + " | ".join(
-                value
-                for value in (
-                    str(content_strategy.get("next_topic", "")).strip(),
-                    str(content_strategy.get("next_operation", "")).strip(),
-                    (
-                        "Earliest publish "
-                        + str(content_strategy.get("earliest_publish_date", "")).strip()
-                        if content_strategy.get("earliest_publish_date")
-                        else ""
-                    ),
-                )
-                if value
-            )
-        )
-    deferred_lines = [
-        f"- {int(item.get('count', 0) or 0)} | {str(item.get('reason', '')).strip()}"
-        for item in operations.get("deferred_reasons", []) or []
-        if int(item.get("count", 0) or 0)
-    ]
-    if not deferred_lines:
-        deferred_lines = ["- No candidates were deferred in this cycle."]
-    subject = (
-        f"Website Ops {mode}: {len(executed)} changed, "
-        f"{int(operations.get('auto_ready_actions', 0) or 0)} ready, "
-        f"{len(support_requests)} for you"
-    )
-    text = "\n".join(
-        [
-            f"Anata Website Ops {mode.title()} Report",
-            "",
-            f"Status: {report.get('status', 'unknown')}",
-            f"Pages reviewed: {report.get('pages_reviewed', 0)}",
-            f"Open findings: {len(issues)}",
-            f"Automated corrections: {len(executed)}",
-            f"Candidates observed: {int(operations.get('observed_candidates', 0) or 0)}",
-            f"Candidates validated: {int(operations.get('validated_candidates', 0) or 0)}",
-            f"Actions ready to run: {int(operations.get('auto_ready_actions', 0) or 0)}",
-            f"Actions requiring review: {int(operations.get('review_required_actions', 0) or 0)}",
-            f"Content briefs: {int(content_strategy.get('total_briefs', 0) or 0)}",
-            f"Articles ready: {int(content_strategy.get('ready_to_publish', 0) or 0)}",
-            f"Article daily minimum: {int(content_strategy.get('daily_article_minimum', 8) or 8)}",
-            f"Article daily target: {int(content_strategy.get('daily_article_target', 8) or 8)}",
-            (
-                "Priority: "
-                + ", ".join(
-                    f"{key} {value}" for key, value in sorted(priority_counts.items())
-                )
-            ),
-            "",
-            "Changes completed:",
-            *change_lines,
-            "",
-            "Why other work did not run:",
-            *deferred_lines,
-            "",
-            "Your to-do list:",
-            *todo_lines,
-            "",
-            "What Agent is working on next:",
-            *work_lines,
-            "",
-            "Review the evidence and full report:",
-            "https://agent.anatainc.com/admin/website-ops/reports/latest",
-            "Content strategy:",
-            "https://agent.anatainc.com/admin/website-ops/strategy",
-        ]
-    )
+    subject, text = _build_website_ops_email(report, mode=mode)
     result["attempted"] = True
     try:
         message_id = resend.send_message(
@@ -757,9 +943,8 @@ def send_website_ops_report_email(
         result.update({"sent": True, "provider_message_id": message_id})
         state[f"{mode}_fingerprint"] = fingerprint
         state[f"{mode}_sent_at"] = _utc_now().isoformat()
-        path = _notification_state_path(settings)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state, indent=2, sort_keys=True))
+        state["last_email_business_date"] = business_date
+        _save_notification_state(settings, state)
     except Exception as exc:  # noqa: BLE001 - delivery failure belongs in the run record
         result["reason"] = str(exc)
     _write_email_delivery(
@@ -785,6 +970,14 @@ def send_website_ops_failure_email(settings: Settings, *, mode: str, error: str)
         )
     resend = ResendClient(settings)
     result = {"attempted": False, "sent": False, "provider_message_id": "", "reason": ""}
+    state = _load_notification_state(settings)
+    business_date, is_workday = _notification_business_day()
+    if not is_workday:
+        result["reason"] = "outside_workday"
+        return result
+    if state.get("last_email_business_date") == business_date:
+        result["reason"] = "daily_cadence"
+        return result
     if not recipients or not resend.is_configured(
         from_address=str(getattr(settings, "website_ops_email_from", "") or "")
     ):
@@ -807,6 +1000,9 @@ def send_website_ops_failure_email(settings: Settings, *, mode: str, error: str)
             from_address=str(getattr(settings, "website_ops_email_from", "") or ""),
         )
         result.update({"sent": True, "provider_message_id": message_id})
+        state["last_email_business_date"] = business_date
+        state["failure_sent_at"] = _utc_now().isoformat()
+        _save_notification_state(settings, state)
     except Exception as exc:  # noqa: BLE001
         result["reason"] = str(exc)
     _write_email_delivery(
@@ -1235,6 +1431,81 @@ def _execute_feedback_action(
     return website_ops.execute_feedback_action(record, config=config)
 
 
+def _release_failed_article_claim(settings: Settings, record: Mapping[str, Any]) -> None:
+    action_type = str(
+        record.get("action_type", "") or record.get("suggested_action_type", "")
+    ).strip()
+    if action_type != "publish_blog_article":
+        return
+    try:
+        article = json.loads(
+            str(record.get("action_value", "") or record.get("suggested_action_value", ""))
+        )
+    except (TypeError, json.JSONDecodeError):
+        return
+    if isinstance(article, Mapping):
+        release_daily_article_slot(settings, str(article.get("evidenceId", "")))
+
+
+def reconcile_missing_generated_articles(settings: Settings) -> list[dict[str, Any]]:
+    """Reopen verified article records whose durable registry entry disappeared.
+
+    A later website deployment can replace a direct-to-main registry commit when
+    it was prepared from an older branch.  Production verification at publish
+    time cannot prevent that later regression.  Each pulse therefore compares
+    completed publication records with the current repository registry and
+    automatically requeues any missing article from its already validated
+    payload.
+    """
+
+    if not github_metadata_is_configured():
+        return []
+    try:
+        published = load_generated_article_identities()
+    except website_ops.ExecutionError:
+        return []
+    reopened: list[dict[str, Any]] = []
+    for record in load_feedback_records(settings):
+        action_type = str(
+            record.get("action_type", "")
+            or record.get("suggested_action_type", "")
+        ).strip()
+        if action_type != "publish_blog_article" or str(
+            record.get("status", "")
+        ).strip().lower() != "done":
+            continue
+        action_value = str(
+            record.get("action_value", "")
+            or record.get("suggested_action_value", "")
+        ).strip()
+        try:
+            article = json.loads(action_value)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(article, Mapping):
+            continue
+        slug = str(article.get("slug", "")).strip()
+        if not slug or slug in set(published.get("slugs") or set()):
+            continue
+        updated = website_ops.update_feedback_entry(
+            record,
+            {
+                "status": "approved",
+                "action_type": "publish_blog_article",
+                "action_value": action_value,
+                "execution_error": "",
+                "execution_result": {},
+                "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                "review_notes": (
+                    "Automatically requeued because the previously verified "
+                    "article is missing from the durable production registry."
+                ),
+            },
+        )
+        reopened.append(updated)
+    return reopened
+
+
 def _autofill_review_updates(existing: Mapping[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     updates = dict(payload)
     status = _feedback_status(str(updates.get("status", "")))
@@ -1293,6 +1564,7 @@ def review_feedback_record(
             record,
             {
                 "status": "done",
+                "execution_error": "",
                 "last_execution_at": result["executed_at"],
                 "execution_result": result,
             },
@@ -1307,6 +1579,7 @@ def _execute_record(
     record: Mapping[str, Any],
     *,
     require_auto_executable: bool = True,
+    raise_on_error: bool = False,
 ) -> dict[str, Any] | None:
     if record.get("status") != "approved" or not record.get("action_type"):
         return None
@@ -1317,6 +1590,7 @@ def _execute_record(
     try:
         result = _execute_feedback_action(settings, record, config=config)
     except website_ops.ExecutionError as exc:
+        _release_failed_article_claim(settings, record)
         website_ops.update_feedback_entry(
             record,
             {
@@ -1325,11 +1599,14 @@ def _execute_record(
                 "last_execution_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+        if raise_on_error:
+            raise
         return None
     website_ops.update_feedback_entry(
         record,
         {
             "status": "done",
+            "execution_error": "",
             "last_execution_at": result["executed_at"],
             "execution_result": result,
         },
@@ -1374,14 +1651,34 @@ def execute_approved_website_ops_actions(settings: Settings) -> WebsiteOpsAction
     )
 
 
+def _checkpoint_website_ops_cache(settings: Settings) -> bool:
+    """Mirror approved work before an external write can restart the service."""
+
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services.website_ops_storage import (
+        database_mirror_enabled,
+        snapshot_website_ops_root,
+    )
+
+    if not database_mirror_enabled():
+        return False
+    try:
+        engine = get_engine()
+    except RuntimeError:
+        return False
+    snapshot_website_ops_root(engine, settings.website_ops_root)
+    return True
+
+
 def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsActionResult:
     config = _config(settings)
     has_baseline = bool(_report_entries(settings))
+    reconcile_missing_generated_articles(settings)
     feedback_entries = load_feedback_records(settings)
     visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
     executed_actions: list[dict[str, Any]] = []
     if settings.website_ops_execute_approved and has_baseline:
-        approved_candidates = [
+        resumable_candidates = [
             {
                 **dict(record),
                 "action_type": str(
@@ -1390,11 +1687,55 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
                 ),
             }
             for record in visible_feedback_entries
-            if str(record.get("status", "")).strip().lower() == "approved"
+            if str(record.get("status", "")).strip().lower()
+            in {"new", "approved", "error"}
+            and _record_is_auto_executable(record)
         ]
-        bounded_approved, _ = select_bounded_actions(approved_candidates)
-        for record in bounded_approved:
-            result = _execute_record(settings, config, record)
+        bounded_resumable, _ = select_bounded_actions(resumable_candidates)
+        current_records = {
+            str(record.get("feedback_id", "")): record
+            for record in visible_feedback_entries
+        }
+        approval_checkpoint_needed = False
+        for candidate in bounded_resumable:
+            feedback_id = str(candidate.get("feedback_id", "")).strip()
+            record = current_records.get(feedback_id)
+            if not record:
+                continue
+            if str(record.get("status", "")).strip().lower() in {"new", "error"}:
+                record = website_ops.update_feedback_entry(
+                    record,
+                    {
+                        "status": "approved",
+                        "action_type": str(
+                            record.get("suggested_action_type", "")
+                        ).strip(),
+                        "action_value": str(
+                            record.get("suggested_action_value", "")
+                        ).strip(),
+                        "execution_error": "",
+                        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                        "review_notes": (
+                            "Auto-approved by Website Ops recovery: durable "
+                            "high-confidence action resumed before fresh analysis."
+                        ),
+                    },
+                )
+                current_records[feedback_id] = record
+                approval_checkpoint_needed = True
+        if approval_checkpoint_needed:
+            _checkpoint_website_ops_cache(settings)
+        for candidate in bounded_resumable:
+            feedback_id = str(candidate.get("feedback_id", "")).strip()
+            record = current_records.get(feedback_id)
+            if not record:
+                continue
+            result = _execute_record(
+                settings,
+                config,
+                record,
+                raise_on_error=False,
+            )
             if result:
                 executed_actions.append(result)
         feedback_entries = load_feedback_records(settings)
@@ -1422,7 +1763,7 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
             f"Feedback loaded: {len(feedback_entries)}.",
             f"Changes applied: {len(executed_actions)}.",
         ],
-        report_date=datetime.now(timezone.utc).date().isoformat(),
+        report_date=datetime.now(ZoneInfo("America/Denver")).date().isoformat(),
         executed_actions=executed_actions,
     )
     enriched_report = dict(pipeline["report"])
@@ -1477,6 +1818,11 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
     }
     if settings.website_ops_execute_approved and has_baseline:
         current_records = {str(item.get("feedback_id", "")): item for item in _mvp_filter_feedback_records(load_feedback_records(settings))}
+        approval_checkpoint_needed = False
+        # Persist approval for the entire bounded batch before the first
+        # external write. A deploy can restart Agent while Vercel is
+        # validating an earlier article; later articles must remain durable
+        # approved work that the recovery pulse can resume immediately.
         for item in enriched_report["action_queue"]:
             feedback_id = str(item.get("feedback_id", "")).strip()
             record = current_records.get(feedback_id)
@@ -1484,7 +1830,7 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
                 continue
             if feedback_id not in bounded_feedback_ids:
                 continue
-            if record.get("status") == "new" and _record_is_auto_executable(record):
+            if record.get("status") in {"new", "error"} and _record_is_auto_executable(record):
                 record = website_ops.update_feedback_entry(
                     record,
                     {
@@ -1495,7 +1841,24 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
                         "review_notes": "Auto-approved by Website Ops: high-confidence deterministic action.",
                     },
                 )
-                result = _execute_record(settings, config, record)
+                current_records[feedback_id] = record
+                approval_checkpoint_needed = True
+        if approval_checkpoint_needed:
+            _checkpoint_website_ops_cache(settings)
+        for item in enriched_report["action_queue"]:
+            feedback_id = str(item.get("feedback_id", "")).strip()
+            if feedback_id not in bounded_feedback_ids:
+                continue
+            record = current_records.get(feedback_id)
+            if not record:
+                continue
+            if record.get("status") == "approved" and _record_is_auto_executable(record):
+                result = _execute_record(
+                    settings,
+                    config,
+                    record,
+                    raise_on_error=True,
+                )
                 if result:
                     executed_actions.append(result)
         if executed_actions:
@@ -1557,8 +1920,28 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         action_queue=list(enriched_report.get("action_queue") or []),
         candidate_ledger=dict(enriched_report.get("candidate_ledger") or {}),
     )
+    codex_publications = reconcile_codex_publications(settings)
+    if codex_publications:
+        existing_urls = {
+            str(item.get("production_url") or item.get("page_url") or "").strip()
+            for item in enriched_report.get("executed_actions", []) or []
+            if isinstance(item, Mapping)
+        }
+        new_publications = [
+            item
+            for item in codex_publications
+            if str(item.get("production_url", "")).strip() not in existing_urls
+        ]
+        enriched_report["executed_actions"] = list(
+            enriched_report.get("executed_actions") or []
+        ) + new_publications
+        enriched_report["changes_applied"] = len(
+            enriched_report["executed_actions"]
+        )
+        enriched_report["codex_publications"] = codex_publications
     enriched_report["operations_summary"] = _build_operations_summary(enriched_report)
     enriched_report["run_outcome"] = classify_run_outcome(enriched_report)
+    enriched_report["program_status"] = enriched_report["run_outcome"]["status"]
     artifacts = website_ops.write_daily_report_artifacts(enriched_report, output_dir=output_dir, config=config)
     enriched_report["email_delivery"] = send_website_ops_report_email(
         settings,
@@ -1690,7 +2073,21 @@ def _connection_summary_chips(analytics_status: dict[str, Any]) -> str:
 
 def _team_help_cards(support_requests: list[str], analytics_status: dict[str, Any]) -> str:
     analytics_notes = {str(item).strip() for item in analytics_status.get("notes", []) if str(item).strip()}
-    team_items = [str(item).strip() for item in support_requests if str(item).strip() and str(item).strip() not in analytics_notes]
+    system_phrases = (
+        "codex owns",
+        "website ops owns",
+        "owned by the once-per-workday codex routine",
+        "agent queue",
+        "citation testing",
+        "api-based",
+    )
+    team_items = [
+        str(item).strip()
+        for item in support_requests
+        if str(item).strip()
+        and str(item).strip() not in analytics_notes
+        and not any(phrase in str(item).casefold() for phrase in system_phrases)
+    ]
     if not team_items:
         return """
         <article class="task-card">
@@ -1816,7 +2213,7 @@ def _run_state_notice(state: Mapping[str, Any]) -> tuple[str, str]:
     run_date = str(state.get("run_date", "") or "").strip()
     last_successful_date = str(state.get("last_successful_date", "") or "").strip()
     last_error = str(state.get("last_error", "") or "").strip()
-    today = date.today().isoformat()
+    today = datetime.now(ZoneInfo("America/Denver")).date().isoformat()
     if status in {"queued", "running"} and run_date == today:
         return ("neutral", "Daily sweep running")
     if status in {"failed", "failed-outcome"} and run_date == today:
@@ -2172,6 +2569,7 @@ def _page_shell(title: str, body: str) -> str:
       .stat strong {{ display: block; font-size: 28px; line-height: 1.05; margin-top: 8px; }}
       .stat-link {{ margin-top: 10px; font-size: 13px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }}
       .grid-2 {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 20px; }}
+      .grid-2 > *, .hero > * {{ min-width: 0; }}
       .stack {{ display: grid; gap: 12px; }}
       .list-card {{ display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 22px; background: #fff; }}
       .card-muted {{ opacity: 0.96; }}
@@ -2260,6 +2658,7 @@ def _page_shell(title: str, body: str) -> str:
       .query-label {{ display:grid; gap:5px; min-width:220px; }}
       .query-label strong {{ font-family:"Montserrat",sans-serif; font-size:14px; }}
       .query-owner {{ max-width:240px; overflow-wrap:anywhere; }}
+      .mobile-output {{ display:none; }}
       @media (max-width: 900px) {{
         .hero, .grid-2, .detail-layout, .stats, .form-grid, .setup-grid, .diff-grid, .mini-grid, .ops-state, .loop-grid {{ grid-template-columns: 1fr; }}
         .ops-state__action {{ justify-items:start; }}
@@ -2274,6 +2673,17 @@ def _page_shell(title: str, body: str) -> str:
         .row-actions > * {{ min-width: 0; }}
         input[type="file"] {{ max-width: 100%; }}
         .help-copy {{ right: auto; left: 0; width: min(300px, 70vw); }}
+        .command-header {{ padding:18px; gap:9px; }}
+        .command-header h1 {{ font-size:32px; }}
+        .command-header .lead {{ font-size:15px; }}
+        .command-header .muted {{ font-size:13px; line-height:1.35; }}
+        .today-state {{ padding:18px; gap:10px; }}
+        .today-state h2 {{ font-size:26px; }}
+        .today-state p {{ font-size:14px; line-height:1.35; }}
+        .mobile-output {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin-top:10px; }}
+        .mobile-output .summary-chip {{ padding:8px; border-radius:12px; }}
+        .mobile-output .summary-chip span {{ font-size:9px; }}
+        .mobile-output .summary-chip strong {{ font-size:18px; }}
       }}
     </style>
   </head>
@@ -2284,7 +2694,12 @@ def _page_shell(title: str, body: str) -> str:
 
 
 def _nav(active: str = "website_ops", *, website_ops_section: str = "", user: dict | None = None) -> str:
-    return render_agent_nav(active, website_ops_section=website_ops_section, user=user)
+    return render_agent_nav(
+        active,
+        website_ops_section=website_ops_section,
+        user=user,
+        include_content_target=False,
+    )
 
 
 def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "reports", user: dict | None = None) -> str:
@@ -2326,7 +2741,7 @@ def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "repor
     if "<body" in injected:
         injected = re.sub(
             r"(<body[^>]*>)",
-            r"\1" + render_agent_nav(active, user=user) + '<main id="agent-main-content" class="admin-report-shell app-container app-page">',
+            r"\1" + render_agent_nav(active, user=user, include_content_target=False) + '<main id="agent-main-content" class="admin-report-shell app-container app-page">',
             injected,
             count=1,
             flags=re.IGNORECASE,
@@ -2442,7 +2857,7 @@ def _feedback_empty_state(status_filter: str = "", *, decision_data_ready: bool 
             else "No new evidence-backed actions were generated in the latest completed run."
         )
     run_control = """
-        <form class="inline" action="/admin/api/website-ops/run" method="post">
+        <form class="inline" action="/admin/website-ops/run-now" method="post">
           <input type="hidden" name="mode" value="daily">
           <button type="submit">Run Daily Sweep</button>
         </form>
@@ -2645,178 +3060,153 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         "<p class='muted'>Scheduled hourly pulses from 8:00 AM through 3:00 PM America/Denver. "
         "Email is sent when completed work or the action state changes.</p>"
     )
+    run_status = _feedback_status(str(run_state.get("status", "") or "idle"))
+    report_status = str(latest_payload.get("status", "") or "").lower().replace("_", "-")
+    executed_actions = [dict(item) for item in latest_payload.get("executed_actions", []) or [] if isinstance(item, Mapping)]
+    live_codex_publications = reconcile_codex_publications(settings)
+    known_action_urls = {
+        str(item.get("production_url") or item.get("page_url") or "").strip()
+        for item in executed_actions
+    }
+    executed_actions.extend(
+        item
+        for item in live_codex_publications
+        if str(item.get("production_url", "")).strip() not in known_action_urls
+    )
+    published_actions = [
+        item for item in executed_actions
+        if str(item.get("verification_status", "")).lower() in {"verified", "passed", "production-verified"}
+        or str(item.get("status", "")).lower() in {"published", "completed", "done"}
+    ]
+    live_sitemap_urls = _live_sitemap_urls(settings)
+    retained_article_count = sum(1 for item in production_inventory.get("records", []) or [] if "/blog/" in str(item.get("url", "")))
+    live_article_count = sum(1 for url in live_sitemap_urls if "/blog/" in url)
+    live_articles = live_article_count or retained_article_count
+    published_today = len(published_actions)
+    operations_summary = dict(latest_payload.get("operations_summary") or {})
+    active_candidate_states = dict(operations_summary.get("candidate_states") or {})
+    active_qualified_count = sum(
+        int(active_candidate_states.get(name, 0) or 0)
+        for name in ("validated", "queued", "executing", "verifying")
+    )
+    if run_status in {"queued", "running"}:
+        state_label, state_tone = "Working", "neutral"
+        state_copy = "Today’s plan is running. The page will refresh when the next verified result is available."
+    elif run_status in {"failed", "failed-outcome"} or report_status in {"failed", "failed-outcome", "needs-attention"}:
+        state_label, state_tone = "Needs attention", "bad"
+        state_copy = "The latest required check did not finish successfully. Production remains unchanged unless a verified change is listed below."
+    elif published_today:
+        state_label, state_tone = "On track", "ok"
+        state_copy = f"{published_today} verified production change{'s' if published_today != 1 else ''} completed in the latest plan."
+    elif active_qualified_count:
+        state_label, state_tone = "Needs attention", "bad"
+        state_copy = f"{active_qualified_count} qualified item{'s are' if active_qualified_count != 1 else ' is'} waiting for execution or verification."
+    else:
+        state_label, state_tone = "Quiet day", "neutral"
+        state_copy = "No safe production change is verified in the latest plan. Duplicate or unsupported work is skipped."
+    actionable_requests = [
+        str(item).strip() for item in support_requests
+        if str(item).strip()
+        and str(item).strip() not in {str(note).strip() for note in analytics_status.get("notes", []) or []}
+        and not any(
+            phrase in str(item).casefold()
+            for phrase in (
+                "codex owns",
+                "website ops owns",
+                "owned by the once-per-workday codex routine",
+                "agent queue",
+                "citation testing",
+                "api-based",
+            )
+        )
+    ]
+    needs_inline = actionable_requests[0] if actionable_requests else "Nothing needs you."
+    verified_rows = "".join(
+        f'''<article class="task-card"><div class="row-actions"><h3>{html.escape(str(item.get("title") or item.get("page_title") or item.get("action_type") or "Published change"))}</h3><span class="status-pill status-ok">Published</span></div><a class="text-link" href="{html.escape(str(item.get("page_url") or item.get("url") or "#"), quote=True)}">Open production page</a><p class="muted">Verified {html.escape(str(item.get("verified_at") or item.get("verification_time") or latest_payload.get("generated_at") or "time unavailable"))}</p></article>'''
+        for item in published_actions[:8]
+    ) or '<p class="muted">No production changes have been verified in the latest plan.</p>'
+    next_items = ([dict(program_plan.get("current") or {})] + [dict(item) for item in program_plan.get("next", []) or [] if isinstance(item, Mapping)])[:3]
+    next_rows = "".join(
+        f'''<article class="task-card"><p class="eyebrow">{("Now", "Next", "Later")[index]}</p><h3>{html.escape(str(item.get("title") or "Website check"))}</h3><p>{html.escape(str(item.get("next_operation") or item.get("evidence") or "Waiting for the next scheduled check."))}</p></article>'''
+        for index, item in enumerate(next_items)
+    ) or '<article class="task-card"><p class="eyebrow">Next</p><h3>Review the next safe opportunity</h3><p>The next scheduled plan will qualify content and site work.</p></article>'
     body = f"""
       {_nav("website_ops", website_ops_section="seo_dashboard", user=user)}
       <main id="agent-main-content" class="shell app-container app-page">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
-        <section class="card stack">
+        <section class="card stack command-header">
             <p class="eyebrow">Website Ops</p>
-            <h1>Continuous website <span style="color:var(--accent)">optimization</span>.</h1>
-            <p class="lead">Agent continuously observes, improves, verifies, and learns across the anatainc.com marketing site.</p>
+            <h1>Website growth</h1>
+            <p class="lead">Codex publishes. Website Ops verifies and measures.</p>
             <div class="button-row">
-              <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit">Run Daily Sweep</button></form>
-              {('<a class="btn btn--ghost" href="#data-sources">Repair Google connections</a>' if not decision_ready else '')}
-              {('<button class="ghost" type="button" disabled aria-disabled="true">Weekly sweep unavailable</button>' if not decision_ready else '<form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run Weekly Sweep</button></form>')}
-              <a class="btn btn--ghost" href="/admin/website-ops/reports/latest">Open Latest Report</a>
+              <form action="/admin/website-ops/run-now" method="post"><input type="hidden" name="mode" value="daily"><button type="submit" {'disabled aria-disabled="true"' if run_status in {'queued','running'} else ''}>{'Running' if run_status in {'queued','running'} else "Run today’s plan"}</button></form>
+              <a class="btn btn--ghost" href="/admin/website-ops/reports/latest">View latest report</a>
+              <details><summary class="btn btn--ghost">More</summary><form action="/admin/website-ops/run-now" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run weekly maintenance</button></form></details>
             </div>
-            {schedule_note}
+            <p class="muted">One report is emailed after the workday cycle. Last result: {html.escape(str(run_state.get('last_completed_at') or run_state.get('finished_at') or run_state.get('updated_at') or 'time unavailable'))}.</p>
         </section>
-        {_operator_blocker_panel(analytics_status)}
-        {_program_plan_panel(program_plan)}
-        {render_daily_portfolio_panel(daily_action_portfolio)}
-        {render_production_inventory_panel(production_inventory)}
-        <section class="hero">
-          <div id="submit-issue" class="card stack">
-            <p class="eyebrow">Current scope</p>
-            <div class="summary-grid">
-              {_summary_chip("Marketing pages", monitored_count, tone="neutral")}
-              {_summary_chip("Approved action runner", "Enabled" if settings.website_ops_execute_approved else "Disabled", tone="good" if settings.website_ops_execute_approved else "warn")}
-              {_summary_chip("Metadata autopush", "Configured" if github_metadata_is_configured() else "Needs GitHub token", tone="good" if github_metadata_is_configured() else "warn")}
-              {_run_state_summary(run_state)}
-              {_connection_summary_chips(analytics_status)}
-            </div>
-            <p class="muted">Scope is restricted to anatainc.com and discovered from the production sitemap. High-confidence metadata changes require a documented reason and evidence, then commit to the marketing repository and verify on production.</p>
-          </div>
-          <div class="card stack">
-            <p class="eyebrow">Automation policy</p>
-            <h2>Validated autopush</h2>
-            <p class="lead-sm">Eligible marketing updates publish without routine approval only after evidence, scope, intent, build, deployment, production, and rollback checks pass.</p>
-            <div class="summary-grid">
-              {_summary_chip("Writable host", "anatainc.com", tone="good")}
-              {_summary_chip("Daily email", "Changes and your to-do list", tone="neutral")}
-              {_summary_chip("Schedule", "Hourly · 8 AM–3 PM", tone="neutral")}
-              {_summary_chip("Query validation", f"{query_summary.get('validated_clusters', 0)} validated", tone="good" if query_summary.get('validated_clusters') else "neutral")}
-            </div>
-            <a class="text-link" href="/admin/website-ops/queries">Inspect query ownership and citations</a>
-          </div>
+        <section class="ops-state ops-state--{'blocked' if state_tone == 'bad' else 'ready'} today-state" aria-labelledby="today-status"><div><p class="eyebrow">Today</p><h2 id="today-status">{state_label}</h2><p>{html.escape(state_copy)}</p><div class="mobile-output" aria-label="Today’s production output">{_summary_chip("Published", published_today, tone="good" if published_today else "neutral")}{_summary_chip("To goal", max(0, 8-published_today), tone="neutral")}{_summary_chip("Live", live_articles, tone="neutral")}</div><p class="muted"><strong>Needs you:</strong> {html.escape(needs_inline)}</p></div><span class="status-pill status-{state_tone}">{state_label}</span></section>
+        <section class="grid-2 today-grid">
+          <div class="card stack"><p class="eyebrow">Today’s publishing</p><div class="summary-grid">{_summary_chip("Published", published_today, tone="good" if published_today else "neutral")}{_summary_chip("Remaining toward goal", max(0, 8-published_today), tone="neutral")}{_summary_chip("Live articles", live_articles, tone="neutral")}</div><p>The goal is up to eight qualified articles. Unsafe or duplicate topics are skipped, not forced.</p><div class="widget-scroll compact-scroll">{verified_rows}</div></div>
+          <div class="card stack"><p class="eyebrow">Needs you</p>{_team_help_cards(support_requests[:1], analytics_status)}</div>
         </section>
-        {_continuous_loop_panel()}
-        <section class="card stack">
-          <div class="section-heading">
-            <div class="stack">
-              <p class="eyebrow">Next autonomous work</p>
-              <h2>Content program: brief, source, publish, measure.</h2>
-              <p class="lead-sm">{html.escape(str(article_pipeline.get("message", "The next sweep will calculate article eligibility.")))}</p>
-            </div>
-            <span class="status-pill {'status-ok' if article_pipeline.get('status') == 'eligible' else 'status-warn'}">{html.escape(str(article_pipeline.get("status", "not calculated")).replace("_", " ").title())}</span>
-          </div>
-          <div class="summary-grid">
-            {_summary_chip("Daily article minimum", "8", tone="good")}
-            {_summary_chip("Daily article target", "8", tone="neutral")}
-            {_summary_chip("Validated content gaps", article_pipeline.get("validated_informational_gaps", 0), tone="neutral")}
-            {_summary_chip("Source-qualified candidates", article_pipeline.get("source_qualified_candidates", 0), tone="good" if article_pipeline.get("source_qualified_candidates") else "neutral")}
-            {_summary_chip("Publishing policy", "Validated autopush", tone="good")}
-          </div>
-          <p class="muted">Each scheduled pulse audits the site, researches promising questions, advances briefs, completes eligible fixes, and verifies production. Agent targets eight qualified daily SEO actions, including two source-qualified educational articles for each service pillar when eight publishable intents pass every quality gate.</p>
-          <div class="button-row">
-            <a class="text-link" href="/admin/website-ops/strategy">Open content strategy and briefs</a>
-            <a class="text-link" href="/admin/website-ops/queries">Inspect query evidence</a>
-          </div>
-        </section>
-        <section class="grid-2">
-          <div class="card stack">
-            <p class="eyebrow">Authority growth</p>
-            <h2>Earn citations. Never manufacture links.</h2>
-            <p class="lead-sm">Agent monitors answer-engine citations and promotes only original, source-backed assets. Automated link creation, paid ranking links, excessive exchanges, and scaled guest-post outreach remain prohibited.</p>
-            <div class="summary-grid">
-              {_summary_chip("Cited clusters", query_summary.get("cited_clusters", 0), tone="good" if query_summary.get("cited_clusters") else "neutral")}
-              {_summary_chip("Citation gains", query_summary.get("citation_gains", 0), tone="good" if query_summary.get("citation_gains") else "neutral")}
-              {_summary_chip("Citation losses", query_summary.get("citation_losses", 0), tone="warn" if query_summary.get("citation_losses") else "neutral")}
-              {_summary_chip("Outreach policy", "Relevant and evidence-led", tone="good")}
-            </div>
-          </div>
-          <div class="card stack">
-            <p class="eyebrow">Outcome learning</p>
-            <h2>Measure movement without claiming causation.</h2>
-            <p class="lead-sm">Agent records comparable Search Console and GA4 observations after changes. Movement is labeled as an association until the evidence supports a stronger conclusion.</p>
-            <div class="summary-grid">
-              {_summary_chip("Observed pages", query_summary.get("observed_outcome_pages", 0), tone="neutral")}
-              {_summary_chip("Associated lead growth", query_summary.get("pages_with_associated_lead_growth", 0), tone="good" if query_summary.get("pages_with_associated_lead_growth") else "neutral")}
-              {_summary_chip("Lead-event trust", str(analytics_status.get("ga4_trust_status", "unavailable")).title(), tone="good" if analytics_status.get("ga4_trust_status") == "trusted" else "warn")}
-            </div>
-          </div>
-        </section>
-        <section class="stats">
-          {_dashboard_stat_card("Reports", len(reports), "Daily, weekly, monthly", "/admin/website-ops/reports")}
-          {_dashboard_stat_card("Validated Queries", query_summary.get('validated_clusters', 0), "One page, one intent", "/admin/website-ops/queries?status=validated")}
-          {_dashboard_stat_card("Needs Review", status_counts.get('new', 0), "Needs a decision", "/admin/website-ops/queue?status=new")}
-          {_dashboard_stat_card("Approved to Run", status_counts.get('approved', 0) + status_counts.get('in-progress', 0), "Approved or running", "/admin/website-ops/queue?status=approved")}
-          {_dashboard_stat_card("Completed", status_counts.get('done', 0), "Completed safely", "/admin/website-ops/queue?status=done")}
-          {_dashboard_stat_card("Failed", error_count, "Needs intervention", "/admin/website-ops/queue?status=error") if error_count else ""}
-        </section>
-        <section class="grid-2">
-          <div class="card stack">
-            <p class="eyebrow">Primary goal</p>
-            <h2>{html.escape(str((latest_payload.get('goal') or {}).get('primary', 'Increase qualified organic leads with less manual website work.')))}</h2>
-            <p class="lead">This is the system objective the dashboard should optimize against, not just a list of page checks.</p>
-          </div>
-          <div class="card stack">
-            <p class="eyebrow">Your to-do list</p>
-            <p class="lead">Only work the system cannot complete safely appears here.</p>
-            {_team_help_cards(support_requests, analytics_status)}
-          </div>
-        </section>
-        <section class="grid-2">
-          {_latest_report_panel(latest, latest_payload)}
-          <div class="card stack">
-            <div class="row-actions"><h2>Submit a new issue</h2>{_issue_help_block()}</div>
-            <form action="/admin/api/website-ops/feedback" method="post" class="form-grid">
-              <div><label>Category</label><select name="category"><option>SEO</option><option>Content</option><option>UX</option><option>Conversion</option><option>Technical</option><option>Strategy</option></select></div>
-              <div><label>Priority</label><select name="priority"><option>Low</option><option selected>Medium</option><option>High</option><option>Urgent</option></select></div>
-              <div class="span-2"><label>Page URL</label><input type="text" name="page_url" placeholder="https://anatainc.com/services/..."></div>
-              <div class="span-2"><label>Summary</label><input type="text" name="summary" placeholder="Short description of the issue"></div>
-              <div class="span-2"><label>Details</label><textarea name="details" placeholder="What is wrong, why it matters, and what outcome is needed."></textarea></div>
-              <div class="span-2"><button type="submit">Save Feedback</button></div>
-            </form>
-          </div>
-        </section>
-        <section class="grid-2">
-          <div class="card stack">
-            <h2>Priority action queue</h2>
-            <p class="lead">Agent records why each change qualified, how it was validated, and what happened in production.</p>
-            <div class="button-row">
-              <a href="/admin/website-ops/queue" class="text-link">Inspect action ledger</a>
-              <span class="muted">Blocked, validating, published, failed, and rolled-back work remains auditable.</span>
-            </div>
-            <div class="widget-scroll">{_action_queue_cards(action_queue)}</div>
-          </div>
-          <div class="card stack">
-            <h2>Insight snapshots</h2>
-            <p class="lead">Compact page snapshots for quick triage across search demand, traffic, and conversion performance.</p>
-            <div class="widget-scroll">{_insight_snapshot_cards(page_insights)}</div>
-          </div>
-        </section>
-        <section class="grid-2">
-          <div class="card stack">
-            <h2>Customer-language evidence</h2>
-            <p class="lead">{'Gmail-derived questions are quarantined until relevance and privacy validation is complete.' if analytics_status.get('customer_language_status') == 'quarantined' else 'Sanitized, relevant customer questions available for content decisions.'}</p>
-            <div class="widget-scroll compact-scroll">{_customer_question_cards(customer_questions)}</div>
-          </div>
-          <div class="card stack">
-            <h2>Search patterns from ranking pages</h2>
-            <p class="lead">Repeated heading and FAQ patterns from ranking pages for the highest-signal service queries.</p>
-            <div class="widget-scroll compact-scroll">{_serp_blueprint_cards(serp_blueprints)}</div>
-          </div>
-        </section>
-        <section class="grid-2">
-          <div class="card stack">
-            <h2>Recommended content updates</h2>
-            <p class="lead">Structured content updates generated from search demand and buyer language.</p>
-            <div class="widget-scroll compact-scroll">{_content_task_cards(content_tasks)}</div>
-          </div>
-          <div class="card stack"><h2>Open issues</h2><div class="widget-scroll compact-scroll">{_feedback_cards(active_feedback[:8], with_actions=True, decision_data_ready=decision_ready)}</div></div>
-        </section>
-        <section class="grid-2">
-          <div class="card stack"><h2>Recent reports</h2><div class="widget-scroll compact-scroll">{_report_cards(reports[:8])}</div></div>
-          <div id="data-sources" class="card stack"><h2>Data sources</h2><p class="lead">Both sources must pass before ranking-led recommendations resume.</p><div class="setup-grid">{_analytics_connection_cards(analytics_status)}</div></div>
-        </section>
-        <section class="grid-2">
-          {_system_details_panel(settings, analytics_status)}
-        </section>
+        <section class="card stack"><p class="eyebrow">Next</p><div class="grid-2">{next_rows}</div></section>
+        <details class="card stack app-disclosure"><summary>Evidence and system details</summary>{render_daily_portfolio_panel(daily_action_portfolio)}{render_production_inventory_panel(production_inventory)}{_latest_report_panel(latest, latest_payload)}<p>API-based citation research is intentionally off. Answer-engine evidence is unavailable when no observation exists.</p><div class="button-row"><a class="text-link" href="/admin/website-ops/content">Open content</a><a class="text-link" href="/admin/website-ops/site-health">Open site health</a><a class="text-link" href="/admin/website-ops/queue">Open action ledger</a></div></details>
       </main>
       {_dashboard_auto_run_script(run_state)}
     """
     return _page_shell("agent | Website Ops", body)
+
+
+def render_content_page(settings: Settings, *, user: dict | None = None) -> str:
+    reports = _report_entries(settings)
+    payload = _mvp_filter_report_payload(_report_payload(reports[0]) if reports else {})
+    inventory = dict(payload.get("production_inventory") or {})
+    query_data = dict(payload.get("query_intelligence") or load_query_intelligence(settings))
+    query_summary = dict(query_data.get("summary") or {})
+    strategy = load_content_strategy(settings.website_ops_root)
+    strategy_summary = dict(strategy.get("summary") or {})
+    records = [dict(item) for item in inventory.get("records", []) or [] if isinstance(item, Mapping)]
+    articles_by_url = {str(item.get("url", "")): item for item in records if "/blog/" in str(item.get("url", ""))}
+    for url in _live_sitemap_urls(settings):
+        if "/blog/" in url:
+            articles_by_url.setdefault(url, {"url": url})
+    articles = [articles_by_url[url] for url in sorted(articles_by_url)]
+    candidates = list(strategy.get("candidates") or strategy.get("records") or [])
+    status_counts: dict[str, int] = {}
+    for item in candidates:
+        if isinstance(item, Mapping):
+            status = str(item.get("status") or item.get("stage") or "researching").lower()
+            status_counts[status] = status_counts.get(status, 0) + 1
+    article_rows = "".join(
+        f'<article class="task-card"><h3>{html.escape(str(item.get("title") or urlparse(str(item.get("url", ""))).path.rsplit("/", 1)[-1].replace("-", " ").title()))}</h3><a class="text-link" href="{html.escape(str(item.get("url", "")), quote=True)}">Open production page</a></article>'
+        for item in articles[-12:]
+    ) or '<p class="muted">No live articles are present in the latest reconciled inventory.</p>'
+    body = f'''{_nav("website_ops", website_ops_section="content", user=user)}<main id="agent-main-content" class="shell app-container app-page">
+      <section class="card stack"><p class="eyebrow">Website Ops</p><h1>Content</h1><p class="lead">Published pages, topic ownership, and the next safe content opportunities.</p></section>
+      <section class="card stack"><div class="summary-grid">{_summary_chip("Live articles", len(articles), tone="good" if articles else "neutral")}{_summary_chip("Qualified", status_counts.get("qualified", 0), tone="good")}{_summary_chip("Being researched", status_counts.get("researching", 0) + status_counts.get("validating", 0), tone="neutral")}{_summary_chip("Rejected", status_counts.get("rejected", 0), tone="neutral")}{_summary_chip("Topic conflicts", query_summary.get("ownership_conflicts", 0), tone="warn" if query_summary.get("ownership_conflicts") else "good")}</div><p>The goal is up to eight qualified articles per workday, balanced across four service pillars. Unsupported or competing topics are not forced.</p></section>
+      <section class="grid-2"><div class="card stack"><h2>Live content</h2><div class="widget-scroll">{article_rows}</div></div><div class="card stack"><h2>Possible improvements</h2><p>{html.escape(str(strategy_summary.get("truthful_summary") or "Candidates stay in research until sources, intent ownership, and production safety are verified."))}</p><div class="button-row"><a class="text-link" href="/admin/website-ops/strategy">Open content briefs</a><a class="text-link" href="/admin/website-ops/queries">Open page topics</a><a class="text-link" href="/admin/website-ops/candidates">Open detailed evidence</a></div></div></section>
+    </main>'''
+    return _page_shell("agent | Website Ops Content", body)
+
+
+def render_site_health_page(settings: Settings, *, user: dict | None = None) -> str:
+    reports = _report_entries(settings)
+    payload = _mvp_filter_report_payload(_report_payload(reports[0]) if reports else {})
+    inventory = dict(payload.get("production_inventory") or {})
+    summary = dict(inventory.get("summary") or {})
+    crawl = dict(payload.get("crawl_verification") or load_crawl_verification(settings.website_ops_root))
+    crawl_summary = dict(crawl.get("summary") or {})
+    confirmed = int(summary.get("broken_candidates", 0) or 0)
+    being_checked = int(crawl_summary.get("pending", 0) or crawl_summary.get("unverified", 0) or 0)
+    live_sitemap_count = len(_live_sitemap_urls(settings))
+    body = f'''{_nav("website_ops", website_ops_section="site_health", user=user)}<main id="agent-main-content" class="shell app-container app-page">
+      <section class="card stack"><p class="eyebrow">Website Ops</p><h1>Site health</h1><p class="lead">Confirmed website problems are separated from crawler warnings that still need verification.</p></section>
+      <section class="card stack"><div class="summary-grid">{_summary_chip("Confirmed problems", confirmed, tone="bad" if confirmed else "good")}{_summary_chip("Being checked", being_checked, tone="warn" if being_checked else "neutral")}{_summary_chip("Known pages", max(int(summary.get("known_production_urls", 0) or 0), live_sitemap_count), tone="neutral")}{_summary_chip("Sitemap pages", live_sitemap_count or summary.get("sitemap_urls", 0), tone="neutral")}</div><p>Crawler warnings never become work automatically. Repository and rendered-production evidence must agree first.</p></section>
+      <section class="grid-2"><div class="card stack"><h2>Confirmed problems</h2><p>{"Review the confirmed affected pages before any change runs." if confirmed else "No confirmed problem is recorded in the latest evidence."}</p><a class="text-link" href="/admin/website-ops/candidates">View affected-page evidence</a></div><div class="card stack"><h2>Being checked</h2><p>{being_checked} possible issue{'s are' if being_checked != 1 else ' is'} awaiting verification.</p><a class="text-link" href="/admin/website-ops/indexing">Open crawl and indexing details</a></div></section>
+      <details class="card stack app-disclosure"><summary>Detailed inventory and rollback evidence</summary>{render_production_inventory_panel(inventory)}<div class="button-row"><a class="text-link" href="/admin/website-ops/queue">Open action and rollback ledger</a></div></details>
+    </main>'''
+    return _page_shell("agent | Website Ops Site Health", body)
 
 
 def render_indexing_page(
@@ -2893,7 +3283,7 @@ def render_indexing_page(
           <h1>Every known URL gets a desired search state.</h1>
           <p class="lead">Search Console exclusions are reconciled against production evidence before Agent improves, consolidates, redirects, or intentionally excludes a URL.</p>
           <div class="button-row">
-            <form action="/admin/api/website-ops/run" method="post">
+            <form action="/admin/website-ops/run-now" method="post">
               <input type="hidden" name="mode" value="weekly">
               <button type="submit">Run Weekly Inspection</button>
             </form>
@@ -3426,7 +3816,7 @@ def render_content_strategy_page(
         </section>
         <section class="card stack">
           <div class="row-actions">
-            <div class="stack"><h2>Today’s operating plan</h2><p class="lead-sm">Agent runs at 8 AM, 1 PM, and 6 PM Mountain. Each pulse audits, advances briefs, completes eligible fixes, and verifies production.</p></div>
+            <div class="stack"><h2>Today’s operating plan</h2><p class="lead-sm">Agent runs hourly from 8 AM through 3 PM Mountain. Each pulse audits, advances briefs, completes eligible fixes, and verifies production.</p></div>
             <span class="status-pill status-neutral">{int(strategy.get('daily_article_minimum', 8) or 8)} articles / day minimum · target {int(strategy.get('daily_article_target', 8) or 8)}</span>
           </div>
           <div class="summary-grid">

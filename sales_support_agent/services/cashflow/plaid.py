@@ -19,6 +19,7 @@ import jwt
 from sqlalchemy import text
 
 from sales_support_agent.models.database import get_engine, insert_cash_event
+from sales_support_agent.services.cashflow.categorizer import categorize
 from sales_support_agent.services.token_seal import seal_token, unseal_token
 
 
@@ -88,7 +89,12 @@ class PlaidClient:
             payload["access_token"] = access_token
         else:
             payload["products"] = ["transactions"]
-            payload["transactions"] = {"days_requested": 365}
+            # Plaid allows at most 24 months. Request the full window when the
+            # Item is created because this value cannot be increased later
+            # without removing the Item and sending the operator through Link
+            # again. The longer history gives Finance enough evidence for
+            # seasonal and annual vendor reviews while remaining read-only.
+            payload["transactions"] = {"days_requested": 730}
         data = self.post("/link/token/create", payload)
         return str(data["link_token"])
 
@@ -488,7 +494,8 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
     access_token = unseal_token(settings.plaid_token_secret, str(item["sealed_access_token"]))
     api = client or PlaidClient(settings)
     now = datetime.now(timezone.utc)
-    counts = {"accounts": 0, "added": 0, "modified": 0, "removed": 0, "matched": 0}
+    counts = {"accounts": 0, "added": 0, "modified": 0, "removed": 0, "matched": 0,
+              "payroll_matched": 0, "payroll_review": 0, "cross_feed_groups": 0}
     try:
         accounts_payload = api.accounts_get(access_token)
         with get_engine().begin() as connection:
@@ -500,10 +507,15 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
                 active_ids.add(external_id)
                 balances = account.get("balances") or {}
                 subtype = str(account.get("subtype") or "")
+                account_type = str(account.get("type") or "")
                 # Default cash role from subtype on first insert only; the
                 # ON CONFLICT UPDATE deliberately omits cash_role so a manual
                 # reclassification survives every future sync.
-                default_cash_role = "spendable" if subtype.lower() == "checking" else "reserve"
+                default_cash_role = (
+                    "spendable" if subtype.lower() == "checking"
+                    else "liability" if account_type.lower() == "credit"
+                    else "reserve"
+                )
                 connection.execute(text("""
                     INSERT INTO plaid_accounts (
                         id, plaid_item_id, external_account_id, name, official_name, mask,
@@ -524,7 +536,7 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
                     "name": str(account.get("name") or ""),
                     "official_name": str(account.get("official_name") or ""),
                     "mask": str(account.get("mask") or "")[-4:],
-                    "account_type": str(account.get("type") or ""),
+                    "account_type": account_type,
                     "subtype": subtype, "cash_role": default_cash_role,
                     "currency": str(balances.get("iso_currency_code") or "USD"),
                     "current": _cents(balances.get("current")),
@@ -559,13 +571,30 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
         # Without this an imported payment never becomes settlement evidence,
         # which is what leaves obligations stuck in "no matching bank payment".
         # Only high-confidence, non-protected matches are automatic.
-        if counts["added"] or counts["modified"]:
-            try:
-                from sales_support_agent.services.cashflow.plaid_match import auto_match_on_sync
-                match_result = auto_match_on_sync(actor="plaid-sync")
-                counts["matched"] = int(match_result.get("confirmed") or 0)
-            except Exception as exc:
-                logger.warning("Plaid auto-match after sync failed item_id=%s: %s", local_item_id, exc)
+        # Run on every refresh, even when Plaid itself has no new rows. A bill
+        # or schedule may have been added after its payment was imported; the
+        # next refresh should still connect that existing payment automatically.
+        try:
+            from sales_support_agent.services.cashflow.plaid_match import auto_match_on_sync
+            match_result = auto_match_on_sync(actor="plaid-sync")
+            counts["matched"] = int(match_result.get("confirmed") or 0)
+        except Exception as exc:
+            logger.warning("Plaid auto-match after sync failed item_id=%s: %s", local_item_id, exc)
+        try:
+            from sales_support_agent.services.cashflow.payroll_commitments import reconcile_hr_payroll
+            payroll_result = reconcile_hr_payroll(actor="plaid-sync")
+            counts["payroll_matched"] = int(payroll_result.get("confirmed_allocations") or 0)
+            counts["payroll_review"] = int(payroll_result.get("review_count") or 0)
+        except Exception as exc:
+            logger.warning("Plaid payroll reconciliation failed item_id=%s: %s", local_item_id, exc)
+        try:
+            from sales_support_agent.services.cashflow.economic_transactions import (
+                reconcile_cross_feed_transactions,
+            )
+            grouped = reconcile_cross_feed_transactions(dry_run=False, actor="plaid-sync")
+            counts["cross_feed_groups"] = int(grouped.get("groups_written") or 0)
+        except Exception as exc:
+            logger.warning("Cross-feed reconciliation failed item_id=%s: %s", local_item_id, exc)
     except Exception as exc:
         code = exc.code if isinstance(exc, PlaidError) else "sync_error"
         with get_engine().begin() as connection:
@@ -587,25 +616,44 @@ def _upsert_transaction(connection: Any, transaction: Mapping[str, Any], *, now:
     event = connection.execute(text("SELECT id FROM cash_events WHERE source='plaid' AND source_id=:source_id"), {"source_id": external_id}).fetchone()
     posted_date = str(transaction.get("date") or transaction.get("authorized_date") or "")[:10] or None
     description = str(transaction.get("merchant_name") or transaction.get("name") or "")[:255]
+    transaction_code = str(transaction.get("transaction_code") or "")[:32]
+    pfc = transaction.get("personal_finance_category") or {}
+    pfc_primary = str(pfc.get("primary") or "") if isinstance(pfc, Mapping) else ""
+    pfc_detailed = str(pfc.get("detailed") or "") if isinstance(pfc, Mapping) else ""
+    category = "manual_check" if transaction_code.lower() == "check" else categorize(
+        description, pfc_primary.replace("_", " ")
+    )
+    metadata_note = json.dumps({
+        "source": "plaid",
+        "account_id": str(transaction.get("account_id") or ""),
+        "pending_transaction_id": str(transaction.get("pending_transaction_id") or ""),
+    }, sort_keys=True, separators=(",", ":"))
     if event:
         connection.execute(text("""
             UPDATE cash_events SET event_type=:event_type, amount_cents=:amount,
                 due_date=:posted_date, effective_date=:posted_date, status=:status,
                 name=:name, description=:description, vendor_or_customer=:name,
+                category=:category, subcategory=:subcategory,
+                bank_transaction_type=:transaction_code, notes=:notes,
                 confidence=:confidence, updated_at=:now
             WHERE id=:id
         """), {"event_type": event_type, "amount": cents, "posted_date": posted_date,
                 "status": "pending" if pending else "posted", "name": description,
-                "description": description, "confidence": "estimated" if pending else "confirmed",
+                "description": description, "category": category,
+                "subcategory": pfc_detailed[:64], "transaction_code": transaction_code,
+                "notes": metadata_note,
+                "confidence": "estimated" if pending else "confirmed",
                 "now": now, "id": event_id})
     else:
         insert_cash_event(
             connection, id=event_id, source="plaid", source_id=external_id,
-            record_kind="transaction", event_type=event_type, category="uncategorized",
-            name=description, description=description, vendor_or_customer=description,
+            record_kind="transaction", event_type=event_type, category=category,
+            subcategory=pfc_detailed[:64], name=description, description=description,
+            vendor_or_customer=description,
             amount_cents=cents, due_date=posted_date, status="pending" if pending else "posted",
-            confidence="estimated" if pending else "confirmed", bank_reference=external_id,
-            notes="Imported from Plaid; pending transactions are not settlement evidence.",
+            confidence="estimated" if pending else "confirmed",
+            bank_transaction_type=transaction_code, bank_reference=external_id,
+            notes=metadata_note,
             created_at=now, updated_at=now,
         )
     payload_hash = hashlib.sha256(json.dumps(dict(transaction), sort_keys=True, default=str).encode()).hexdigest()

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timezone
 
 from tests.test_advertising_audit import (
     _bootstrap_db,
@@ -110,6 +111,23 @@ class ClientPageRenderTest(_Base):
         self.assertIn("No client (ad-hoc)", html)
         self.assertIn("__advClientGoals", html)
         self.assertIn("1000.00", html)  # display-ready prefill embedded
+
+    def test_stale_running_audit_stops_refreshing_and_preserves_downloads(self):
+        from sales_support_agent.services.advertising.audit_page import render_audit_page
+
+        stale_run = {
+            "id": "run-stale",
+            "status": "running",
+            "created_at": "2026-07-02T12:00:00+00:00",
+            "updated_at": "2026-07-02T12:01:00+00:00",
+            "has_plan": True,
+            "summary": {"brand": "Example Brand"},
+        }
+        html = render_audit_page(goals=None, runs=[], active_run=stale_run, user=None)
+
+        self.assertIn("stopped reporting progress", html)
+        self.assertIn("Download growth plan", html)
+        self.assertNotIn("window.location.reload", html)
 
     def test_profit_calculator_host_page_embeds_isolated_runtime(self):
         from sales_support_agent.services.advertising.profit_calculator_page import render_profit_calculator_host_page

@@ -138,6 +138,16 @@ def test_drive_requires_verified_access(monkeypatch) -> None:
     assert states["drive"] == "ready"
 
 
+def test_ingested_assets_prove_riverside_relay_readiness(monkeypatch) -> None:
+    monkeypatch.delenv("RIVERSIDE_API_KEY", raising=False)
+    monkeypatch.setenv("CONTENT_RIVERSIDE_RELAY_ENABLED", "false")
+    states = {
+        item["key"]: item["status"]
+        for item in dependency_health(_settings(), source_asset_count=19)
+    }
+    assert states["riverside"] == "ready"
+
+
 def test_control_room_uses_canonical_structure_and_truthful_empty_state() -> None:
     factory = _factory()
     user = {
@@ -236,6 +246,6 @@ def test_content_routes_require_trusted_key_and_render_for_authorized_user() -> 
         json={"mode": "social_distribution", "force": True},
     )
     assert run.status_code == 200
-    assert run.json()["status"] == "blocked"
+    assert run.json()["status"] == "ready"
     run_id = run.json()["details"]["social_distribution"]["run_id"]
     assert client.get(f"/admin/content/runs/{run_id}").status_code == 200

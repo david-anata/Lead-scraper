@@ -109,7 +109,7 @@ def build_arena_launch_status(
                 else "Record only the missing owner-approved business rules."
             ),
             owner="Anata",
-            href="#arena-launch-readiness",
+            href="/admin/building/settings#arena-launch-readiness",
             action_label="Review saved rules",
         )
     ]
@@ -133,7 +133,7 @@ def build_arena_launch_status(
         summary=pricing_summary,
         next_action=pricing_next,
         owner="Anata",
-        href="#commercial-rate-plans",
+        href="/admin/building/settings#commercial-rate-plans",
         action_label="Open pricing",
     ))
 
@@ -160,7 +160,7 @@ def build_arena_launch_status(
             else "Ask the accountant which Arena charges are taxable and the rate to apply."
         ),
         owner="Accountant",
-        href="#commercial-rate-plans",
+        href="/admin/building/settings#commercial-rate-plans",
         action_label="Review tax field",
     ))
 
@@ -199,7 +199,7 @@ def build_arena_launch_status(
             )
         ),
         owner="Booking-page administrator",
-        href="#commercial-rate-plans",
+        href="/admin/building/settings#commercial-rate-plans",
         action_label="Review conflicts",
     ))
 
@@ -232,37 +232,49 @@ def build_arena_launch_status(
         label="Electronic signatures",
         state="complete" if esign_ready else "external",
         summary=(
-            "The approved e-sign connection is verified."
+            "The approved signing workflow created a frozen provider document successfully."
             if esign_ready
-            else "Agent can prepare agreements, but no approved e-sign provider is connected."
+            else "The signing workflow is selected, but it has not created a verified provider document."
         ),
         next_action=(
             "Monitor provider delivery and signed-document evidence."
             if esign_ready
-            else "Select the e-sign provider and authorize its production credentials and callback workflow."
+            else "Create one controlled signing copy and resolve any provider API error before launch."
         ),
         owner="Owner and platform administrator",
         href="/admin/building/contracts",
         action_label="Open contracts",
     ))
 
-    payment_ready = bool(
+    # QuickBooks is the rail Anata actually bills on: it issues the Arena
+    # invoice and holds the payment of record. Stripe exists only as a webhook
+    # that hears about a payment automatically. Requiring Stripe made this row
+    # ask for a provider the business does not use, so either rail satisfies it
+    # and the wording says which one is connected.
+    quickbooks_billing = bool(provider_readiness.get("quickbooks_connected"))
+    stripe_confirmation = bool(
         provider_readiness.get("payment_credentials")
         and provider_readiness.get("payment_webhook")
     )
+    payment_ready = quickbooks_billing or stripe_confirmation
     items.append(_item(
         key="payment",
         label="Customer payments",
         state="complete" if payment_ready else "external",
         summary=(
-            "The payment credentials and confirmation webhook are configured."
+            "QuickBooks issues the invoice and holds the payment of record. "
+            "A cleared payment is recorded on the booking by hand."
+            if quickbooks_billing and not stripe_confirmation
+            else "The payment account and confirmation webhook are configured."
             if payment_ready
-            else "Payment requests can be prepared, but live payment confirmation is not fully configured."
+            else "Payment requests can be prepared, but no billing account is connected."
         ),
         next_action=(
-            "Complete a controlled provider verification before accepting a live booking."
+            "Nothing to connect. Record each cleared payment on its booking."
+            if quickbooks_billing and not stripe_confirmation
+            else "Complete a controlled provider verification before accepting a live booking."
             if payment_ready
-            else "Authorize the production payment account, restricted credentials, and confirmation webhook."
+            else "Connect QuickBooks, or authorize a payment account and its confirmation webhook."
         ),
         owner="Finance and platform administrator",
         href="/admin/building/billing",
@@ -275,23 +287,52 @@ def build_arena_launch_status(
         decisions.get("event_calendar", {}).get("status") == "provider_verified"
     )
     calendar_ready = calendar_configured and calendar_writes and calendar_verified
+    # "Outside setup" told an operator nothing about which of the three is
+    # missing, so somebody asked to finish it had no way to see what to do.
+    calendar_error = str(provider_readiness.get("calendar_readiness_error") or "")
+    calendar_target = str(provider_readiness.get("calendar_target_id") or "")
+    if calendar_ready:
+        calendar_summary = (
+            "The dedicated calendar is verified and production projection is enabled."
+        )
+        calendar_next = "Monitor projection errors and reconciliation."
+    elif calendar_error:
+        calendar_summary = f"Agent cannot reach a calendar: {calendar_error}"
+        calendar_next = "Fix the connection above before recording it as verified."
+    elif not calendar_writes:
+        calendar_summary = (
+            f"Connected to {calendar_target}, but writes are switched off."
+            if calendar_target
+            else "Connected, but writes are switched off."
+        )
+        calendar_next = "Set BUILDING_GOOGLE_CALENDAR_WRITES_ENABLED=true, then record the calendar as verified."
+    elif not calendar_verified:
+        calendar_summary = (
+            f"Connected to {calendar_target} and writes are on. Not yet recorded as verified."
+            if calendar_target
+            else "Connected and writes are on. Not yet recorded as verified."
+        )
+        calendar_next = "Record the dedicated event calendar decision to finish this."
+    else:
+        calendar_summary = (
+            "Calendar projection remains dry-run only; no verified dedicated "
+            "Arena destination is active."
+        )
+        calendar_next = (
+            "Provide an Anata-owned calendar, grant service-account access, "
+            "verify it, then deliberately enable writes."
+        )
     items.append(_item(
         key="calendar",
         label="Dedicated Arena calendar",
         state="complete" if calendar_ready else "external",
-        summary=(
-            "The dedicated calendar is verified and production projection is enabled."
-            if calendar_ready
-            else "Calendar projection remains dry-run only; no verified dedicated Arena destination is active."
-        ),
-        next_action=(
-            "Monitor projection errors and reconciliation."
-            if calendar_ready
-            else "Provide an Anata-owned calendar, grant service-account access, verify it, then deliberately enable writes."
-        ),
+        summary=calendar_summary,
+        next_action=calendar_next,
         owner="Google Workspace and platform administrator",
-        href="#calendar-projection",
-        action_label="Review calendar",
+        # This pointed at a section that lives on the Operations tab, so the
+        # link did nothing from Settings. Send it to the card that records it.
+        href="/admin/building/settings#decision-event_calendar",
+        action_label="Record the calendar",
     ))
 
     sender_ready = bool(
@@ -318,6 +359,34 @@ def build_arena_launch_status(
         action_label="Open customer communication",
     ))
 
+    catalog_evidence_present = any(
+        key in provider_readiness
+        for key in ("arena_space_public_available", "arena_offering_published")
+    )
+    catalog_ready = bool(
+        provider_readiness.get("arena_space_public_available")
+        and provider_readiness.get("arena_offering_published")
+    ) if catalog_evidence_present else True
+    if catalog_evidence_present:
+        items.append(_item(
+            key="public_catalog",
+            label="Public Arena catalog",
+            state="complete" if catalog_ready else "blocked",
+            summary=(
+                "The canonical Arena space is public and available, and its offering is published."
+                if catalog_ready
+                else "The verified Arena records remain private, unavailable, or unpublished. The website therefore uses its safe marketing fallback."
+            ),
+            next_action=(
+                "Keep Agent inventory and the dedicated calendar authoritative."
+                if catalog_ready
+                else "After the final rehearsal, deliberately mark The Arena public and available and publish only the canonical arena-events offering."
+            ),
+            owner="Building administrator",
+            href="/admin/building/catalog",
+            action_label="Review catalog publication",
+        ))
+
     customer_launch_ready = bool(
         approved_plan
         and tax_ready
@@ -326,6 +395,7 @@ def build_arena_launch_status(
         and payment_ready
         and calendar_ready
         and sender_ready
+        and catalog_ready
         and not provider_conflicts
     )
     items.append(_item(

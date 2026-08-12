@@ -259,6 +259,7 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
   {nav}
   <main id="agent-main-content" class="hr-main app-container app-page">{body}</main>
   <nav class="hr-mobile-nav" aria-label="Employee HR shortcuts">{mobile_nav}</nav>
+  <script src="/static/admin-interactions.js?v=1" defer></script>
   <script>
     if ('serviceWorker' in navigator) {{
       window.addEventListener('load', function() {{
@@ -403,11 +404,11 @@ def render_hr_setup(control: dict, company_profile: dict, calendar: dict,
             "title": "Connect the shared OOO calendar",
             "description": (
                 "Approved PTO is synchronized to the dedicated Anata OOO calendar."
-                if calendar.get("configured") else
+                if calendar.get("verified") else
                 "Connect the dedicated Anata OOO Google Calendar so approved leave "
                 "is visible to the team. PTO approval remains valid if sync is down."
             ),
-            "ready": bool(calendar.get("configured")), "owner": "David or Val",
+            "ready": bool(calendar.get("verified")), "owner": "David or Val",
             "href": "/admin/hr/settings#ooo-calendar",
             "action": "Review calendar connection",
         },
@@ -625,6 +626,14 @@ def _flash(flash: Optional[str]) -> str:
         "settings_saved": "Payroll setup saved.",
         "company_profile_saved": "Employer legal profile saved.",
         "company_profile_invalid": "Complete the employer profile and evidence note.",
+        "calendar_ready": "OOO calendar connection and event-write permission confirmed.",
+        "calendar_calendar_id_missing": "Add the Anata OOO Calendar ID in Render, deploy, and test again.",
+        "calendar_calendar_id_invalid": "Use the dedicated Anata OOO Calendar ID, not the primary-calendar alias.",
+        "calendar_credential_missing": "Add the protected OOO service-account credential in Render, deploy, and test again.",
+        "calendar_credential_invalid": "The protected OOO credential is invalid or incomplete. Replace it in Render.",
+        "calendar_permission_missing": "Val must share the Anata OOO calendar with the service account using “Make changes to events.”",
+        "calendar_calendar_not_found": "The calendar was not found. Check its Calendar ID and sharing permission.",
+        "calendar_api_unavailable": "Google Calendar could not be verified. Nothing changed; try again.",
         "opening_balance_saved": "Reviewed opening balance saved.",
         "opening_source_required": "Add the source used to verify the opening balance.",
         "opening_amount_invalid": "Use valid nonnegative dollar amounts. The opening balance was not changed.",
@@ -841,6 +850,11 @@ def render_hr_employees(employees: list, *, user, flash=None) -> str:
             if employment.get("pay_basis") == "fixed_semimonthly"
             else f"${e.get('hourly_rate', '0.00')}/hr"
             )
+        payroll_state = (
+            "Contractor workflow" if e.get("employee_type") == "contractor" else
+            "Included in W-2 payroll" if employment.get("payroll_eligible", True) else
+            "Not on Anata payroll"
+        )
         name = (
             f'<a href="/admin/hr/employees/{e["id"]}" style="color:#2456b8;text-decoration:none;font-weight:600">{_esc(e["full_name"])}</a>'
             if can_manage_people else f'<strong>{_esc(e["full_name"])}</strong>'
@@ -855,11 +869,12 @@ def render_hr_employees(employees: list, *, user, flash=None) -> str:
           <td class="hr-sub" style="margin:0">{_esc(e['email'])}</td><td>{access_state}</td>
           <td>{_role_badge(e['hr_role'])}</td>
           <td>{_esc(e['employee_type'])}</td>
+          <td>{_esc(payroll_state)}</td>
           <td>{_esc(pay)}</td>
           <td>{status_dot} {_esc(e['status'])}</td>
         </tr>"""
     if not rows:
-        rows = '<tr><td colspan="7" class="hr-empty">No employees yet. Add your first one.</td></tr>'
+        rows = '<tr><td colspan="8" class="hr-empty">No employees yet. Add your first one.</td></tr>'
     body = f"""
     {_flash(flash)}
     <div class="hr-row-head">
@@ -870,7 +885,7 @@ def render_hr_employees(employees: list, *, user, flash=None) -> str:
       </div>
     </div>
     <table class="hr-tbl">
-      <thead><tr><th>Name</th><th>Record email</th><th>Employee app access</th><th>Role</th><th>Type</th><th>Pay</th><th>Status</th></tr></thead>
+      <thead><tr><th>Name</th><th>Record email</th><th>Employee app access</th><th>Role</th><th>Type</th><th>Payroll relationship</th><th>Pay</th><th>Status</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>
     """
@@ -908,6 +923,22 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         f'<option value="{value}"{" selected" if value == worker_category else ""}>{label}</option>'
         for value, label in worker_options
     ) + "</select>"
+    payroll_relationship = (
+        "w2" if employment.get("payroll_eligible", True) else "not_on_payroll"
+    )
+    payroll_select = (
+        '<select name="payroll_relationship" aria-describedby="payroll-relationship-help">'
+        f'<option value="w2"{" selected" if payroll_relationship == "w2" else ""}>Included in Anata W-2 payroll</option>'
+        f'<option value="not_on_payroll"{" selected" if payroll_relationship == "not_on_payroll" else ""}>Not on Anata payroll</option>'
+        '</select>'
+    )
+    selected_workdays = set(employment.get("standard_workdays") or [0, 1, 2, 3, 4])
+    workday_options = "".join(
+        f'<label style="display:inline-flex;align-items:center;gap:6px;margin:6px 14px 6px 0">'
+        f'<input type="checkbox" name="standard_workdays" value="{day}" '
+        f'{"checked" if day in selected_workdays else ""} style="width:auto">{label}</label>'
+        for day, label in enumerate(("Monday", "Tuesday", "Wednesday", "Thursday", "Friday"))
+    )
     personal_contact_status = (
         f'<strong>Personal contact email on file:</strong> {_esc(e.get("personal_email"))}'
         if e.get("personal_email")
@@ -936,6 +967,8 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         <div><label>Worker record</label>{worker_select}</div>
       </div>
       <p class="hr-help">Choose W-2 employee here, then choose hourly or fixed semimonthly pay below. Contractor records stay outside W-2 payroll and use the separate Wise contractor workflow.</p>
+      <label>Payroll relationship</label>{payroll_select}
+      <p class="hr-help" id="payroll-relationship-help">Use “Not on Anata payroll” for an owner or administrator who needs Agent access but is not paid as an Anata W-2 employee. This removes W-4, time, pay, and opening-balance blockers without removing their access or approval permissions. Changing this selection requires the pay-change effective date and business reason below.</p>
       <div class="hr-grid2">
         <div><label>Team</label><select name="team_id">{team_opts}</select></div>
         <div><label>Status</label>{_sel("status", ("active","inactive"), e.get("status","active"))}</div>
@@ -957,6 +990,13 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         <div><label>Pay basis</label>{_sel("pay_basis", ("hourly","fixed_semimonthly"), employment.get("pay_basis","hourly"))}</div>
         <div><label>Standard weekly hours</label><input type="number" min="0" step="0.01" name="standard_weekly_hours" value="{_esc(employment.get('standard_weekly_hours','40'))}"></div>
       </div>
+      <p class="hr-help"><strong>Employment category:</strong> {_esc('Full-time' if float(employment.get('standard_weekly_hours') or 40) >= 30 else 'Part-time')}. Anata treats 30 or more standard hours per week as full-time. PTO accrues from actual paid hours, so part-time employees earn proportionally.</p>
+      <fieldset style="border:1px solid rgba(43,54,68,.16);border-radius:10px;padding:10px 12px;margin:14px 0">
+        <legend style="font-weight:700;padding:0 5px">Normally scheduled workdays</legend>
+        <input type="hidden" name="workday_schedule_present" value="true">
+        {workday_options}
+        <p class="hr-help">PTO can be requested only on these days. Part-time holiday pay is proposed only when an observed holiday falls on one of these days.</p>
+      </fieldset>
       <div class="hr-callout warn">
         <div class="hr-kicker">Required when pay changes</div>
         <div class="hr-grid2"><div><label>Pay change effective date</label><input type="date" name="compensation_effective_date"></div>
@@ -1411,10 +1451,13 @@ def render_hr_onboarding(
 def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     period = control["period"]
     readiness = control["readiness"]
-    blockers = "".join(
-        f"<li><strong>{_esc(item.get('employee_email') or 'Company setup')}:</strong> "
-        f"{_esc(item.get('message'))}</li>" for item in readiness["blockers"]
-    ) or "<li>No blocking issues. Payroll can be prepared for approval.</li>"
+    blocker_rows = "".join(
+        f"""<tr><td>{_esc(item.get('owner') or 'David or Val')}</td>
+        <td>{_esc(item.get('employee_email') or 'Company setup')}</td>
+        <td>{_esc(item.get('message'))}</td>
+        <td><a class="hr-btn hr-btn-light" href="{_esc(item.get('href') or '/admin/hr/setup')}">{_esc(item.get('action') or 'Review setup')}</a></td></tr>"""
+        for item in readiness["blockers"]
+    ) or '<tr><td colspan="4" class="hr-empty">No blockers remain. This period can be prepared.</td></tr>'
     outside_corrections = readiness.get("outside_period_corrections") or []
     outside_correction_notice = ""
     if outside_corrections:
@@ -1499,7 +1542,9 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <button class="hr-btn hr-btn-light" type="submit">Open period</button>
     </form>
     <div class="hr-callout {'ok' if readiness['ready'] else 'warn'}"><div class="hr-kicker">Payroll readiness</div>
-      <h2 style="margin:6px 0">{status_label}</h2><ul>{blockers}</ul>
+      <h2 style="margin:6px 0">{status_label}</h2>
+      <p>Each blocker names who owns the next step. Opening this list never changes payroll.</p>
+      <div style="overflow-x:auto"><table class="hr-tbl"><thead><tr><th>Owner</th><th>Person or company</th><th>Requirement</th><th>Next action</th></tr></thead><tbody>{blocker_rows}</tbody></table></div>
       <p>No bank transfer, check, tax payment, or filing occurs from preparation.</p>
       <p><strong>Calculation authority:</strong> gross, withholding, net pay, and employer cost shown here are Anata planning estimates. No payroll provider is connected. The first live run remains blocked until a qualified professional reviews the rule package and the exact run is independently compared.</p></div>
     {outside_correction_notice}
@@ -2048,14 +2093,20 @@ def render_hr_policies(policy: dict, *, user, flash=None) -> str:
         if str(policy.get("file_url") or "").startswith("https://") else ""
     )
     body = f"""{_flash(flash)}<h1 class="hr-h1">{_esc(policy['title'])}</h1>
-    <p class="hr-sub">Version {_esc(policy['version'])} · {ack}</p>
+    <p class="hr-sub">Version {_esc(policy['version'])} · effective August 1, 2026 · {ack}</p>
     {handbook_link}
     <div class="hr-stack">
-      <section class="hr-callout"><h2>Timekeeping and overtime</h2><p>Hourly employees clock in and out for the day using exact time. The workweek is Sunday through Saturday. Overtime should be approved in advance, but all time actually worked must be reported and will be paid.</p></section>
-      <section class="hr-callout"><h2>PTO</h2><p>W-2 employees accrue one PTO hour for each 52 paid hours, up to 40 hours. Accrual starts on the hire date; use begins after 90 days. Balances cannot go negative. PTO is paid at the base rate and does not count as hours worked for overtime.</p></section>
-      <section class="hr-callout"><h2>Paid holidays</h2><p>New Year's Day, Memorial Day, Independence Day, Labor Day, Thanksgiving, and Christmas are paid after 90 days of W-2 employment. Saturday holidays are observed Friday and Sunday holidays Monday. Holiday pay remains separate from worked time.</p></section>
-      <section class="hr-callout"><h2>Payroll and corrections</h2><p>Pay periods are the 1st–15th, paid the 20th, and the 16th–month end, paid the following 5th. Employees should review statements and request corrections promptly. A second authorized person reviews time and payroll changes.</p></section>
-      <section class="hr-callout"><h2>Privacy and records</h2><p>Use the secure HR forms for personal and tax information. Do not email Social Security numbers or identity documents. Anata records access and material approvals.</p></section>
+      <section class="hr-callout"><h2>1. Employment relationship</h2><p>Employment with Anata is at will unless a signed written agreement says otherwise. Either the employee or Anata may end employment at any time for a lawful reason. This handbook explains current practices; it is not an employment contract. Anata may revise policies prospectively and will publish a new version when employees must acknowledge a material change.</p></section>
+      <section class="hr-callout"><h2>2. Equal opportunity and respectful workplace</h2><p>Anata provides equal employment opportunity and does not tolerate unlawful discrimination, harassment, violence, intimidation, or retaliation. Raise a concern promptly with David or Val. If the concern involves one of them, report it to the other. Good-faith reports and participation in an investigation will not result in retaliation.</p></section>
+      <section class="hr-callout"><h2>3. Code of conduct</h2><p>Employees must communicate respectfully, protect confidential company and customer information, avoid undisclosed conflicts of interest, use company property responsibly, and maintain a safe workplace free from threats, impairment, or unlawful conduct. Gifts or outside interests that could influence a business decision must be disclosed to David or Val.</p></section>
+      <section class="hr-callout"><h2>4. Attendance, timekeeping, and overtime</h2><p>Employees should be ready to work at the agreed schedule and notify their manager as soon as possible about an absence or delay. Hourly employees clock in and out using exact time and must report every hour worked. Off-the-clock work is prohibited. The workweek is Sunday through Saturday. Overtime should be approved in advance, but all time actually worked must still be reported and paid. Missed punches require a correction request; the original record remains in history.</p></section>
+      <section class="hr-callout"><h2>5. PTO</h2><p>The PTO policy starts August 1, 2026. Regular full-time employees are scheduled for 30 or more hours per week; regular part-time employees are scheduled for fewer than 30. Both groups accrue one PTO hour for each 52 paid hours beginning on the later of August 1, 2026 or their hire date. This naturally prorates part-time accrual. Use begins after 90 days of employment. The balance carries forward but cannot exceed 40 hours; accrual pauses at the cap. PTO cannot be borrowed, is paid at the base rate, and does not count as hours worked for overtime. Unused PTO is not paid at separation unless a signed written agreement requires it.</p></section>
+      <section class="hr-callout"><h2>6. Paid holidays and other leave</h2><p>New Year's Day, Memorial Day, Independence Day, Labor Day, Thanksgiving, and Christmas are paid after 90 days of W-2 employment and only for holidays on or after August 1, 2026. Saturday holidays are observed Friday and Sunday holidays Monday. Full-time employees receive normally scheduled hours up to eight. Part-time employees receive their normal scheduled hours only when the holiday falls on a day they normally work. Holiday pay remains separate from worked time. Employees should contact David or Val about jury duty, military service, voting time, bereavement, disability or pregnancy accommodations, or other legally protected leave.</p></section>
+      <section class="hr-callout"><h2>7. PTO requests and attendance decisions</h2><p>Submit PTO in Agent as early as practical. Requests may be limited by available balance, normal workdays, paid holidays, overlapping requests, staffing, and business needs. Pending PTO is not approved until an authorized manager decides it. When illness or an emergency prevents advance notice, contact the manager as soon as reasonably possible. Repeated no-call/no-show behavior may lead to discipline, but protected leave and lawful absences are handled separately.</p></section>
+      <section class="hr-callout"><h2>8. Payroll, expenses, and corrections</h2><p>Pay periods are the 1st–15th, paid the 20th, and the 16th–month end, paid the following 5th. Employees should review pay statements and report a suspected error promptly. Bonuses and commissions require approval. Business reimbursements require a receipt and business purpose. Deductions occur only when authorized or legally required. A second authorized person reviews material time and payroll changes.</p></section>
+      <section class="hr-callout"><h2>9. Safety, concerns, and investigations</h2><p>Report injuries, unsafe conditions, threats, harassment, payroll concerns, or suspected policy violations promptly to David or Val. Call emergency services first when immediate danger exists. Anata will review concerns fairly and share information only with people who need it to respond; complete confidentiality cannot be promised. Discipline may include coaching, warnings, suspension, or separation, and serious conduct may skip earlier steps.</p></section>
+      <section class="hr-callout"><h2>10. Privacy, security, and technology</h2><p>Use secure HR forms for personal and tax information. Never email Social Security numbers or identity documents. Protect passwords and one-time sign-in links, do not share accounts, and report a lost device or suspected account compromise immediately. Access company and customer information only for authorized work. Anata records sensitive access and material approvals and removes business access when it is no longer required.</p></section>
+      <section class="hr-callout"><h2>11. Separation and company property</h2><p>Employees should return company property and information at separation. Anata disables access while preserving required employment, payroll, tax, acknowledgement, and audit records. Final wages are handled under applicable law and written agreements. Employees should provide a personal contact email so required records remain reachable after business access ends.</p></section>
     </div>
     {'' if policy.get('acknowledged') else f'''<form class="hr-form" method="post" action="/admin/hr/policies/acknowledge">
       <label><input type="checkbox" name="attested" value="true" required style="width:auto"> I received, read, and acknowledge policy version {_esc(policy["version"])}.</label>
@@ -2091,7 +2142,11 @@ def render_hr_settings(
         for item in handbooks
     ) or '<tr><td colspan="6" class="hr-empty">The built-in operating policy will be used until a handbook is published.</td></tr>'
     for employee in employees:
-        if employee.get("employee_type") == "contractor":
+        employment = employee.get("employment") or {}
+        if (
+            employee.get("employee_type") == "contractor"
+            or (employment and not employment.get("payroll_eligible", True))
+        ):
             continue
         balance = balance_by_email.get(employee["email"], {})
         approval_form = (
@@ -2156,7 +2211,7 @@ def render_hr_settings(
       <div class="hr-kicker">Time-off calendar</div>
       <h2>Anata OOO Google Calendar · {_esc(calendar.get('status'))}</h2>
       <p class="hr-sub">Only approved PTO is added. Pending and denied requests never appear. Revoking approved PTO releases the reserved hours and removes its event.</p>
-      {f'<div class="hr-callout"><strong>Ready.</strong> Calendar: {_esc(calendar.get("calendar_id"))}<br>Service account: {_esc(calendar.get("service_account_email"))}</div>' if calendar.get('configured') else f'<div class="hr-callout warn"><strong>Setup needed.</strong> {_esc(calendar.get("reason"))}</div>'}
+      {f'<div class="hr-callout"><strong>Ready.</strong> Calendar: {_esc(calendar.get("calendar_id"))}<br>Service account: {_esc(calendar.get("service_account_email"))}<p>Google confirmed event-write permission for this exact configuration.</p></div>' if calendar.get('verified') else f'<div class="hr-callout warn"><strong>{"Protected credential detected" if calendar.get("configured") else "Setup needed"}.</strong> {_esc(calendar.get("reason") or "Run the connection test to confirm event-write permission.")}</div>'}
       {calendar_identity}
       <ol class="hr-sub">
         <li>Create or open the dedicated Google Calendar named <strong>Anata OOO</strong>.</li>
@@ -2164,6 +2219,10 @@ def render_hr_settings(
         <li>In Render, set <code>HR_OOO_GOOGLE_CALENDAR_ID</code> and <code>HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON</code>, then deploy.</li>
         <li>Return to Time &amp; PTO and retry any item marked as needing calendar attention.</li>
       </ol>
+      <form method="post" action="/admin/hr/settings/ooo-calendar/test">
+        <button class="hr-btn hr-btn-light" type="submit"{' disabled' if not calendar.get('configured') else ''}>Test calendar connection</button>
+      </form>
+      <p class="hr-help">The test checks calendar visibility and event-write permission without creating an employee event.</p>
       <p class="hr-help">Never paste the service-account JSON into an HR form, email, or employee record. It belongs only in Render’s secret environment settings.</p>
     </section>
     <section class="hr-card">

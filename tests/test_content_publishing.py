@@ -10,10 +10,20 @@ from sales_support_agent.integrations.content_relay import RelayResult
 from sales_support_agent.models.content import ContentArtifact, ContentPublication
 from sales_support_agent.models.database import Base
 from sales_support_agent.services.content_publishing import (
+    DAILY_PORTFOLIO,
+    WEEKLY_CAPS,
     channel_publish_readiness,
     publish_daily_portfolio,
     publish_artifact,
 )
+
+
+def test_company_destinations_run_seven_days_per_week() -> None:
+    assert WEEKLY_CAPS["linkedin_company"] == 7
+    assert WEEKLY_CAPS["google_business"] == 7
+    for channels in DAILY_PORTFOLIO.values():
+        assert "linkedin_company" in channels
+        assert "google_business" in channels
 
 
 def _session() -> Session:
@@ -55,6 +65,16 @@ def test_channel_readiness_requires_identity_and_live_mode(monkeypatch) -> None:
     assert channel_publish_readiness("linkedin_company")["state"] == "shadow"
     monkeypatch.setenv("CONTENT_PUBLISHING_MODE", "live")
     assert channel_publish_readiness("linkedin_company")["ready"] is True
+
+
+def test_google_business_readiness_is_independent(monkeypatch) -> None:
+    monkeypatch.setenv("CONTENT_GOOGLE_BUSINESS_CONNECTOR_URL", "https://relay.example.com")
+    monkeypatch.setenv("CONTENT_GOOGLE_BUSINESS_CONNECTOR_KEY", "secret")
+    monkeypatch.setenv("CONTENT_GOOGLE_BUSINESS_CONNECTOR_VERIFIED", "true")
+    monkeypatch.setenv("CONTENT_GOOGLE_BUSINESS_PROFILE_ID", "anata-profile")
+    monkeypatch.setenv("CONTENT_GOOGLE_BUSINESS_LIVE_APPROVED", "true")
+    monkeypatch.setenv("CONTENT_PUBLISHING_MODE", "live")
+    assert channel_publish_readiness("google_business")["ready"] is True
 
 
 def test_publish_requires_explicit_confirmation() -> None:

@@ -11,3 +11,9 @@ runtime/
 
 # Local Claude Code worktrees
 .claude/worktrees/
+
+# Duplicate files a syncing folder leaves beside the original ("thing 2.py").
+# Twenty six of these were committed by accident and left two stale tests
+# failing on main, which made every test run red and meaningless.
+* 2.py
+* 2.zip

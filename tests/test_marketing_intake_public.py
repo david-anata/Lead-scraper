@@ -40,6 +40,7 @@ class MarketingShelfPayloadTests(unittest.TestCase):
         units: float | None,
         floor: bool = False,
         price: float = 20.0,
+        brand: str = "TestBrand",
     ):
         from sales_support_agent.services.helium10 import XrayProduct
 
@@ -50,7 +51,7 @@ class MarketingShelfPayloadTests(unittest.TestCase):
             asin=asin,
             url=f"https://www.amazon.com/dp/{asin}",
             image_url=f"https://images.example/{asin}.jpg",
-            brand="TestBrand",
+            brand=brand,
             price=price,
             price_label=f"${price:.2f}",
             revenue=revenue,
@@ -85,6 +86,7 @@ class MarketingShelfPayloadTests(unittest.TestCase):
                 f"B09ABCDEF{i}",
                 revenue=float(value),
                 units=float(value / 20),
+                brand=f"Brand {i}",
             )
             for i, value in enumerate((1000, 2000, 3000, 4000, 5000, 9000))
         ]
@@ -98,8 +100,41 @@ class MarketingShelfPayloadTests(unittest.TestCase):
         self.assertEqual(payload["visible_revenue"], 15_000.0)
         self.assertEqual(payload["median_revenue"], 3_000.0)
         self.assertEqual(payload["target"]["units_source"], "recent_sales")
-        self.assertEqual(payload["revenue_warning"], "Mixed evidence.")
+        self.assertEqual(
+            payload["revenue_warning"],
+            "Unit/revenue figures are BSR-based estimates because Amazon did not expose "
+            "a recent-sales floor for the visible comparison listings.",
+        )
         self.assertTrue(payload["captured_at"])
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["required_comparison_count"], 5)
+
+    def test_assembled_payload_rejects_thin_or_same_brand_comparisons(self) -> None:
+        target = self._product("B09TARGET01", revenue=2500, units=125, floor=True, brand="Example Brand")
+        same_brand = self._product("B09SAME001", revenue=3000, units=150, brand="Example Brand")
+        outside = self._product("B09OTHER01", revenue=4000, units=200, brand="Outside Brand")
+
+        payload = M._assemble_shelf_payload(target, [same_brand, outside], [])
+
+        self.assertEqual(payload["status"], "incomplete")
+        self.assertEqual(payload["comparison_count"], 1)
+        self.assertEqual(payload["competitors"][0]["brand"], "Outside Brand")
+
+    def test_stored_legacy_ready_payload_requires_five_distinct_outside_brands(self) -> None:
+        legacy = {
+            "status": "ready",
+            "target": {"brand": "Freelivity", "asin": "B09TARGET01"},
+            "competitors": [
+                {"brand": "Downy", "asin": f"B09DOWNY0{i}"}
+                for i in range(5)
+            ],
+        }
+        self.assertFalse(M._shelf_has_complete_comparison(legacy))
+        legacy["competitors"] = [
+            {"brand": f"Brand {i}", "asin": f"B09OTHER0{i}"}
+            for i in range(5)
+        ]
+        self.assertTrue(M._shelf_has_complete_comparison(legacy))
 
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
@@ -370,7 +405,7 @@ class MarketingIntakeTests(unittest.TestCase):
         with mock.patch.object(M, "_build_shelf") as build:
             resp = self.client.post(
                 f"/api/public/marketing/intake/{data['intake_id']}/needs",
-                json={"token": data["token"], "needs": ["analytics"]},
+                json={"token": data["token"], "needs": ["strategy"]},
                 headers=HEADERS,
             )
         self.assertEqual(resp.status_code, 200, resp.text)
@@ -381,6 +416,18 @@ class MarketingIntakeTests(unittest.TestCase):
             headers=HEADERS,
         ).json()
         self.assertEqual(status["shelf"], {"status": "pending"})
+
+    def test_needs_without_market_intent_does_not_schedule_shelf(self) -> None:
+        data = self._create()
+        with mock.patch.object(M, "_build_shelf") as build:
+            resp = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/needs",
+                json={"token": data["token"], "needs": ["analytics", "advertising"]},
+                headers=HEADERS,
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertFalse(resp.json()["market_scheduled"])
+        build.assert_not_called()
 
     def test_needs_on_store_intake_has_no_shelf(self) -> None:
         data = self._create(kind="store", identifier="testbrand.com")

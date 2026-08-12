@@ -210,13 +210,13 @@ def test_the_new_card_is_the_one_the_page_renders():
     assert _money(83_793_00) in card, "the total must be the two added together"
 
 
-def test_the_nav_keeps_predicted_bills_out_of_the_daily_four_destinations():
+def test_the_nav_keeps_predicted_bills_out_of_the_daily_destinations():
     strip = render_finance_nav("today", counts={})
 
     assert "/admin/finances/whats-coming" not in strip
     assert "Cash plan" in strip
     assert "Review" in strip
-    assert len(NAV_ITEMS) == 5
+    assert len(NAV_ITEMS) == 6
 
 
 def test_the_nav_badges_only_the_predicted_bills_still_waiting_on_him():

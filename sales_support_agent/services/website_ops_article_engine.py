@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from datetime import datetime, timezone
@@ -14,10 +15,12 @@ from zoneinfo import ZoneInfo
 import requests
 
 from sales_support_agent.services.website_ops_query_intelligence import citation_config
+from sales_support_agent.services.website_ops_vendor.core import load_feedback_entries
 
 
 DAILY_ARTICLE_MINIMUM = 8
 DAILY_ARTICLE_TARGET = 8
+DAILY_PUBLISH_HOURS = (8, 9, 10, 11, 12, 13, 14, 15)
 PILLAR_DAILY_MINIMUM = 2
 SERVICE_PILLARS = (
     "Ecommerce Marketing Management",
@@ -25,6 +28,22 @@ SERVICE_PILLARS = (
     "Shipping OS",
     "Anata Intelligence",
 )
+OFFICIAL_RESEARCH_DOMAINS = [
+    "amazon.com",
+    "census.gov",
+    "dhl.com",
+    "ebay.com",
+    "fedex.com",
+    "ftc.gov",
+    "google.com",
+    "irs.gov",
+    "sba.gov",
+    "shopify.com",
+    "tiktok.com",
+    "ups.com",
+    "usps.com",
+    "walmart.com",
+]
 
 EDITORIAL_TOPIC_SEEDS: tuple[dict[str, Any], ...] = (
     {
@@ -245,7 +264,12 @@ def _request_article(*, settings: Any, prompt: str) -> dict[str, Any]:
                 # output tokens. Truncation produces terminally malformed JSON.
                 "max_tokens": 8000,
                 "messages": [{"role": "user", "content": prompt}],
-                "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 8}],
+                "tools": [{
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": 8,
+                    "allowed_domains": OFFICIAL_RESEARCH_DOMAINS,
+                }],
             },
             timeout=150,
         )
@@ -259,7 +283,10 @@ def _request_article(*, settings: Any, prompt: str) -> dict[str, Any]:
             json={
                 "model": config.model,
                 "input": prompt,
-                "tools": [{"type": "web_search"}],
+                "tools": [{
+                    "type": "web_search",
+                    "filters": {"allowed_domains": OFFICIAL_RESEARCH_DOMAINS},
+                }],
                 "tool_choice": "required",
                 "store": False,
             },
@@ -274,11 +301,15 @@ def _eligible_cluster(
     query_intelligence: Mapping[str, Any],
     *,
     excluded_cluster_ids: set[str] | None = None,
+    excluded_primary_intents: set[str] | None = None,
 ) -> Mapping[str, Any] | None:
     excluded_cluster_ids = excluded_cluster_ids or set()
+    excluded_primary_intents = excluded_primary_intents or set()
     for cluster in query_intelligence.get("clusters", []) or []:
         label = _clean(cluster.get("label"))
         if _clean(cluster.get("cluster_id")) in excluded_cluster_ids:
+            continue
+        if _clean(cluster.get("normalized_query")).casefold() in excluded_primary_intents:
             continue
         if (
             len(label) > 140
@@ -361,6 +392,37 @@ def _historical_cluster_ids(settings: Any) -> set[str]:
         legacy = _clean(payload.get("cluster_id"))
         if legacy:
             history.add(legacy)
+    feedback_dir = Path(getattr(settings, "website_ops_root", "")) / "feedback"
+    for record in load_feedback_entries(feedback_dir=feedback_dir):
+        action_type = _clean(
+            record.get("action_type") or record.get("suggested_action_type")
+        )
+        if action_type != "publish_blog_article":
+            continue
+        status = _clean(record.get("status")).lower()
+        execution_error = _clean(record.get("execution_error")).lower()
+        already_owned = any(
+            marker in execution_error
+            for marker in (
+                "slug already exists",
+                "primary intent already has an owner",
+            )
+        )
+        if status != "done" and not already_owned:
+            continue
+        try:
+            article = json.loads(
+                _clean(
+                    record.get("action_value")
+                    or record.get("suggested_action_value")
+                )
+            )
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(article, Mapping):
+            evidence_id = _clean(article.get("evidenceId"))
+            if evidence_id:
+                history.add(evidence_id)
     return history
 
 
@@ -413,6 +475,24 @@ def article_generation_progress(settings: Any) -> dict[str, Any]:
     }
 
 
+def article_batch_size(
+    settings: Any,
+    *,
+    local_now: datetime | None = None,
+) -> int:
+    """Return the work needed now to stay on pace for eight daily articles."""
+
+    progress = article_generation_progress(settings)
+    remaining = int(progress["remaining_to_target"])
+    if remaining <= 0:
+        return 0
+    local_now = local_now or datetime.now(ZoneInfo("America/Denver"))
+    remaining_pulses = sum(hour >= local_now.hour for hour in DAILY_PUBLISH_HOURS)
+    if remaining_pulses <= 0:
+        remaining_pulses = 1
+    return min(remaining, max(1, math.ceil(remaining / remaining_pulses)))
+
+
 def _claim_daily_article_slot(settings: Any, cluster_id: str, pillar: str = "") -> bool:
     """Reserve one of today's production slots without duplicating a topic."""
 
@@ -427,6 +507,40 @@ def _claim_daily_article_slot(settings: Any, cluster_id: str, pillar: str = "") 
     claimed.append(cluster_id)
     claims = list(progress.get("claims") or [])
     claims.append({"cluster_id": cluster_id, "pillar": pillar})
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "cluster_ids": claimed,
+                "claims": claims,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "daily_minimum": DAILY_ARTICLE_MINIMUM,
+                "daily_target": DAILY_ARTICLE_TARGET,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    temporary.replace(target)
+    return True
+
+
+def release_daily_article_slot(settings: Any, cluster_id: str) -> bool:
+    """Release a generated slot when publication does not reach production."""
+
+    target = _daily_generation_path(settings)
+    cluster_id = _clean(cluster_id)
+    if target is None or not target.exists() or not cluster_id:
+        return False
+    progress = article_generation_progress(settings)
+    claimed = [value for value in progress["cluster_ids"] if value != cluster_id]
+    if len(claimed) == len(progress["cluster_ids"]):
+        return False
+    claims = [
+        item
+        for item in progress.get("claims") or []
+        if _clean(item.get("cluster_id")) != cluster_id
+    ]
     temporary = target.with_suffix(".tmp")
     temporary.write_text(
         json.dumps(
@@ -463,16 +577,39 @@ def build_article_action(
     progress = article_generation_progress(settings)
     if int(progress["remaining_to_target"]) <= 0:
         return None
-    excluded_cluster_ids = _historical_cluster_ids(settings) | set(progress["cluster_ids"])
+    from sales_support_agent.services.website_ops_github import (
+        github_metadata_is_configured,
+        load_generated_article_identities,
+    )
+
+    published = (
+        load_generated_article_identities()
+        if github_metadata_is_configured()
+        else {"evidence_ids": set(), "primary_intents": set(), "slugs": set()}
+    )
+    excluded_cluster_ids = (
+        _historical_cluster_ids(settings)
+        | set(progress["cluster_ids"])
+        | set(published["evidence_ids"])
+    )
+    excluded_primary_intents = set(published["primary_intents"])
     pillar_counts = dict(progress.get("pillar_counts") or {})
     selected_pillar = min(
         SERVICE_PILLARS,
         key=lambda pillar: (int(pillar_counts.get(pillar, 0)), SERVICE_PILLARS.index(pillar)),
     )
-    cluster = _eligible_cluster(
-        query_intelligence,
-        excluded_cluster_ids=excluded_cluster_ids,
-    )
+    cluster = None
+    if int(pillar_counts.get(selected_pillar, 0)) < PILLAR_DAILY_MINIMUM:
+        cluster = _eligible_editorial_seed(
+            excluded_cluster_ids,
+            pillar=selected_pillar,
+        )
+    if not cluster:
+        cluster = _eligible_cluster(
+            query_intelligence,
+            excluded_cluster_ids=excluded_cluster_ids,
+            excluded_primary_intents=excluded_primary_intents,
+        )
     if not cluster:
         cluster = _eligible_editorial_seed(
             excluded_cluster_ids,
@@ -517,8 +654,13 @@ Create a source-backed Anata blog article for the informational query:
 Service pillar: {pillar}
 
 This is a high-utility SEO/AEO publishing task. Search and verify the web. Use only
-factual claims supported by authoritative HTTPS sources. Do not invent Anata results,
-clients, metrics, prices, capabilities, testimonials, or proprietary data. Do not use
+official first-party platform, carrier, or government HTTPS documentation as external
+sources. Never cite agencies, competitors, software vendors, affiliate sites, or generic
+SEO blogs. Factual claims must be supported by the visible official sources.
+Do not discuss a named marketplace, carrier, or platform unless that organization has
+an official source in the top-level sources list and in the relevant section citations.
+Do not invent Anata results, clients, metrics, prices, capabilities, testimonials, or
+proprietary data. Do not use
 em dashes. Do not mention Basic Research, "reveal the gap", or any demo URL.
 Write for an operator who needs a useful answer, not for a content quota. Ban filler,
 generic scene-setting, fake urgency, repetition, vague superlatives, and phrases such
@@ -603,20 +745,59 @@ block. Do not pad the article to reach the word count.
     if article is None:
         assert last_json_error is not None
         raise last_json_error
+    def normalize_generated_article(candidate: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = dict(candidate)
+        slug_value = _clean(normalized.get("slug"))
+        content_value = dict(normalized.get("content") or {})
+        normalized["primaryIntent"] = _clean(cluster.get("normalized_query"))
+        normalized["evidenceId"] = _clean(cluster.get("cluster_id"))
+        normalized["generatedAt"] = publication_timestamp
+        normalized["publishedAt"] = publication_timestamp
+        normalized["modifiedAt"] = publication_timestamp
+        normalized["author"] = {
+            "type": "Organization",
+            "name": "Anata Inc.",
+            "url": "https://anatainc.com",
+        }
+        content_value["route"] = f"/blog/{slug_value}"
+        normalized["content"] = content_value
+        return normalized
+
+    article = normalize_generated_article(article)
+    if requester is None:
+        from sales_support_agent.services.website_ops_github import (
+            validate_generated_article,
+        )
+        from sales_support_agent.services.website_ops_vendor import ExecutionError
+
+        for validation_attempt in range(3):
+            try:
+                validate_generated_article(
+                    {
+                        "action_value": json.dumps(article, ensure_ascii=False),
+                        "confidence": "high",
+                        "reason": "Validated service-aligned informational content opportunity.",
+                        "evidence": [
+                            f"Approved or validated cluster: {_clean(cluster.get('cluster_id'))}.",
+                            f"Selected service pillar: {pillar}.",
+                        ],
+                    }
+                )
+                break
+            except ExecutionError as exc:
+                if validation_attempt >= 2:
+                    raise
+                repair_prompt = (
+                    prompt
+                    + "\nThe previous draft failed the publication contract for this exact reason: "
+                    + str(exc)
+                    + " Regenerate the complete article from scratch, correct that failure, "
+                    "and return one valid JSON object only."
+                )
+                article = normalize_generated_article(
+                    dict(article_requester(settings=settings, prompt=repair_prompt))
+                )
     slug = _clean(article.get("slug"))
-    content = dict(article.get("content") or {})
-    article["primaryIntent"] = _clean(cluster.get("normalized_query"))
-    article["evidenceId"] = _clean(cluster.get("cluster_id"))
-    article["generatedAt"] = publication_timestamp
-    article["publishedAt"] = publication_timestamp
-    article["modifiedAt"] = publication_timestamp
-    article["author"] = {
-        "type": "Organization",
-        "name": "Anata Inc.",
-        "url": "https://anatainc.com",
-    }
-    content["route"] = f"/blog/{slug}"
-    article["content"] = content
     if not _claim_daily_article_slot(
         settings,
         _clean(cluster.get("cluster_id")),

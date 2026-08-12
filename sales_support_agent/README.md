@@ -200,6 +200,7 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `GET /api/public/building/offerings`
 - `GET /api/public/building/availability`
 - `POST /api/public/building/inquiries`
+- `POST /api/public/building/inquiries/{inquiry_id}/conversion-receipts`
 - `POST /api/public/building/event-estimates`
 - `POST /api/internal/building/inquiries/{inquiry_id}/retry-hubspot`
 - `GET /admin/building`
@@ -320,9 +321,10 @@ history.
 
 `GET /api/public/building/content` exposes only approved, unexpired allow-listed
 fields. It never returns evidence references, consent records, internal notes,
-reviewer identity, or draft/rejected content. Public fields containing Boom or
-private-benefit language are rejected and are also filtered defensively at
-projection time.
+reviewer identity, or draft/rejected content. Public fields containing private
+tenant-benefit language are rejected and are also filtered defensively at
+projection time. Truthful public references to Boom Fitness Culture remain
+allowed; claims about complimentary or tenant-only membership do not.
 
 Publishing an offering now runs deterministic readiness checks. A publish is
 blocked unless it has public description and conversion wording, a linked
@@ -420,6 +422,13 @@ Retry HubSpot action in Building Control. Retry looks up the contact by exact
 email before creating one and reuses any stored HubSpot contact ID, preventing
 an ordinary retry from creating an uncontrolled duplicate. Success returns the
 inquiry to the new-lead queue and preserves the sync audit history.
+
+Building website attribution preserves first- and latest-touch UTMs plus
+Google click identifiers (`gclid`, `gbraid`, and `wbraid`) on the inquiry and
+contact. After the browser queues the Google Ads conversion, the website sends
+an authenticated receipt to Agent. Agent records that dispatch exactly once by
+inquiry ID and labels provider acceptance as unconfirmed; the receipt proves
+our code attempted the conversion, not that Google accepted or attributed it.
 
 Building Control also provides assisted intake for Facebook Marketplace,
 Eventective, referrals, phone calls, walk-ins, and direct inquiries. External
@@ -730,3 +739,35 @@ separate payment-request readiness outbox. Approved template versions use a
 fixed merge-field allow-list; package and payment evidence carry independent
 checksums and prepare/review/approve states. No provider object or success state
 is created. See `../docs/building-agreement-payment-readiness.md`.
+
+## Event customer communications
+
+Evidence-backed event milestones create an idempotent, versioned transactional
+message record. The message is sent through the configured Building sender only
+when the matching quote, signed agreement, QuickBooks invoice/payment, booking,
+or completion evidence exists. Provider delivery webhooks update the exact
+message record; delivery failures remain visible and retryable without changing
+booking state. Confirmed customers are added to the dedicated Building calendar
+projection, while holds never invite customers.
+
+Signed customer status links expose only safe current documents and accept
+questions, reschedule requests, and cancellation requests. These requests create
+staff work and never mutate the booking or availability directly. The hourly
+operator cron invokes
+`POST /api/internal/building/bookings/communications/run` for the idempotent
+seven-day event reminder.
+
+## Event operations and synthetic monitoring
+
+Confirmed event checklists assign every required item an owner and due date.
+Completion requires evidence notes and a reference; waivers require an explicit
+reason. Overdue and unowned required work is surfaced in Building performance.
+The checklist includes vendor/access planning, a run sheet, onsite ownership,
+and incident, damage, security-deposit, and closeout evidence.
+
+The daily `building-synthetic-journey` Render cron runs the real isolated
+event-billing and customer-communication lifecycle tests. It never points at the
+production database or providers, reports that provider mode as a dry run, and
+fails unless every created test database is removed and cleanup is verified.
+Render therefore alerts on the first failed handoff without leaving a live hold,
+invoice, message, calendar event, or customer artifact.

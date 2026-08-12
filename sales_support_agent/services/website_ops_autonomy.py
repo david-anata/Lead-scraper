@@ -23,6 +23,7 @@ from sales_support_agent.services.website_ops_customer_language import collect_c
 from sales_support_agent.services.website_ops_serp import build_blueprint
 from sales_support_agent.services.website_ops_aeo import build_aeo_assessment
 from sales_support_agent.services.website_ops_article_engine import (
+    article_batch_size,
     article_generation_progress,
     build_article_action,
 )
@@ -69,6 +70,18 @@ MVP_FAQ_CTR_THRESHOLD = 0.03
 MVP_FAQ_FORCE_IMPRESSIONS_THRESHOLD = 100.0
 MVP_FAQ_FORCE_CTR_THRESHOLD = 0.015
 MVP_THIN_TEXT_THRESHOLD = 5000
+
+
+def website_ops_content_execution_mode() -> str:
+    """Return the single owner for generative Website Ops content work.
+
+    Codex is the production default. The API implementation remains available
+    only as an explicit rollback path; Website Ops must never infer API usage
+    merely because a provider key exists on the shared Agent service.
+    """
+
+    configured = os.getenv("WEBSITE_OPS_CONTENT_EXECUTION_MODE", "codex").strip().lower()
+    return "api" if configured == "api" else "codex"
 
 
 @dataclass(frozen=True)
@@ -1708,7 +1721,7 @@ def build_autonomy_overlay(
         support_requests.extend(ga4_notes)
     if ga4_trust_status != "trusted":
         support_requests.append(
-            f"Define or verify the GA4 primary lead event ({config.primary_lead_event}) on real service-page submits so Website Ops can trust conversion-driven prioritization."
+            f"Codex owns verification of the GA4 primary lead event ({config.primary_lead_event}) against service-page submits and matching CRM evidence."
         )
     if any(action.get("action_type") == "resolve_canonical_route" for action in action_queue):
         support_requests.append("Standardize all active commercial services under /services/, then redirect legacy /ecommerce-services/ routes so Website Ops can consolidate authority on one canonical page family.")
@@ -1720,20 +1733,31 @@ def build_autonomy_overlay(
         run_mode=run_mode,
     )
     content_strategy = build_content_strategy(query_intelligence)
-    if run_mode in {"daily", "weekly", "monthly"}:
-        try:
-            article_action = build_article_action(
-                settings=settings,
-                query_intelligence=query_intelligence,
-            )
-            if article_action:
+    content_execution_mode = website_ops_content_execution_mode()
+    if run_mode in {"daily", "weekly", "monthly"} and content_execution_mode == "api":
+        for _ in range(article_batch_size(settings)):
+            try:
+                article_action = build_article_action(
+                    settings=settings,
+                    query_intelligence=query_intelligence,
+                )
+                if not article_action:
+                    break
                 action_queue.append(article_action)
                 content_tasks.append(article_action)
-        except Exception as exc:  # noqa: BLE001 - surface provider failure without blocking crawl
-            support_requests.append(
-                "Autonomous article generation could not complete: "
-                f"{type(exc).__name__}: {exc}"
-            )
+            except Exception as exc:  # noqa: BLE001 - report provider failure with completed crawl
+                support_requests.append(
+                    "Autonomous article generation could not complete: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                break
+    elif run_mode in {"daily", "weekly", "monthly"}:
+        support_requests.append(
+            "Article research, authoring, publication, deployment, and production "
+            "verification are owned by the once-per-workday Codex routine; Agent "
+            "model API generation is disabled."
+        )
+    content_strategy["content_execution_mode"] = content_execution_mode
     content_strategy["production_quota"] = article_generation_progress(settings)
     content_strategy["summary"]["generated_today"] = int(
         content_strategy["production_quota"].get("generated_today", 0) or 0

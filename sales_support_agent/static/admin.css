@@ -240,6 +240,77 @@
   grid-column: 1 / -1;
 }
 
+.app-live-region {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 100;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 12px 16px;
+  border-radius: var(--agent-radius-control);
+  background: var(--agent-ink);
+  color: var(--agent-surface);
+  box-shadow: 0 18px 40px var(--agent-shadow);
+}
+
+.app-live-region:empty { display: none; }
+
+.app-is-submitting {
+  cursor: wait;
+  opacity: .72;
+}
+
+.app-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.app-pagination__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-pagination button {
+  min-height: var(--agent-control-height);
+  padding: 0 14px;
+  border: 1px solid var(--agent-border);
+  border-radius: 999px;
+  background: var(--agent-surface);
+  color: var(--agent-ink);
+  font: 700 .78rem/1 "Montserrat", sans-serif;
+}
+
+.app-pagination button:disabled { opacity: .45; cursor: not-allowed; }
+
+.app-muted { color: var(--agent-ink-muted); }
+
+.app-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 52px;
+  cursor: pointer;
+  color: var(--agent-ink);
+  font: 800 .9rem/1.35 "Montserrat", sans-serif;
+  list-style: none;
+}
+
+.app-disclosure > summary::-webkit-details-marker { display: none; }
+.app-disclosure > summary::after { content: "Open"; color: var(--agent-blue-strong); font-size: .75rem; }
+.app-disclosure[open] > summary::after { content: "Close"; }
+.app-disclosure[open] > summary { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--agent-border); }
+
+:where(button, a, input, select, textarea, summary):focus-visible {
+  outline: 3px solid var(--agent-blue-strong);
+  outline-offset: 3px;
+}
+
 /* Content Operations uses the shared operator primitives above. */
 .content-page {
   padding-block: 30px 72px;
@@ -583,6 +654,10 @@
   .admin-action-panel {
     grid-template-columns: 1fr;
   }
+
+  .app-pagination { align-items: stretch; }
+  .app-pagination__controls { width: 100%; }
+  .app-pagination__controls button { flex: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

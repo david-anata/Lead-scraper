@@ -13,6 +13,7 @@ from sales_support_agent.services.cashflow.savings_reviews import (
     load_savings_reviews,
     merge_savings_reviews,
     record_savings_review,
+    record_savings_reviews,
 )
 
 
@@ -76,6 +77,29 @@ def test_trim_labels_are_saved_as_audited_review_states(finance_engine):
         assert result["state"] == action
 
 
+def test_trim_changes_save_as_one_validated_batch(finance_engine):
+    second_key = "2" * 64
+    results = record_savings_reviews([
+        {"opportunity": _opportunity(), "action": "needed", "reason": "Core tool"},
+        {"opportunity": _opportunity(opportunity_key=second_key), "action": "waste", "reason": "Cancel"},
+    ], "qa@example.com", request_id="batch-001")
+
+    assert [item["state"] for item in results] == ["needed", "waste"]
+    reviews = load_savings_reviews()
+    assert reviews[KEY]["reason"] == "Core tool"
+    assert reviews[second_key]["reason"] == "Cancel"
+
+
+def test_invalid_trim_batch_writes_nothing(finance_engine):
+    with pytest.raises(ValueError):
+        record_savings_reviews([
+            {"opportunity": _opportunity(), "action": "needed"},
+            {"opportunity": _opportunity(opportunity_key="bad"), "action": "waste"},
+        ], "qa@example.com", request_id="batch-invalid")
+
+    assert load_savings_reviews() == {}
+
+
 def test_follow_up_persists_task_reference_without_changing_cash_events(finance_engine):
     result = record_savings_review(
         _opportunity(), "follow_up", "qa@example.com", request_id="followup-001",
@@ -96,6 +120,50 @@ def test_invalid_or_unverified_realization_fails_closed(finance_engine):
         record_savings_review(_opportunity(), "confirm_realized", "qa@example.com")
     with pytest.raises(ValueError, match="Savings opportunity is invalid"):
         record_savings_review(_opportunity(opportunity_key="bad"), "keep", "qa@example.com")
+
+
+def test_cancellation_workflow_keeps_potential_separate_until_bank_verification(finance_engine):
+    record_savings_review(_opportunity(), "waste", "qa@example.com", request_id="cut-001")
+    started = record_savings_review(
+        _opportunity(), "start_cancellation", "qa@example.com",
+        owner="David Narayan", action_type="cancel", proof_note="Opened vendor account",
+        request_id="cut-002",
+    )
+    assert started["state"] == "cancellation_started"
+    confirmed = record_savings_review(
+        _opportunity(), "confirm_cancellation", "qa@example.com",
+        effective_date="2026-08-03", proof_note="Confirmation ABC-123",
+        request_id="cut-003",
+    )
+    assert confirmed["state"] == "verifying"
+    review = load_savings_reviews()[KEY]
+    assert review["owner"] == "David Narayan"
+    assert review["action_type"] == "cancel"
+    assert str(review["effective_date"]) == "2026-08-03"
+    assert str(review["expected_verification_date"]) == "2026-09-10"
+    assert review["realized_monthly_cents"] == 0
+
+    realized = record_savings_review(
+        _opportunity(realization_ready=True), "confirm_realized", "qa@example.com",
+        request_id="cut-004",
+    )
+    assert realized["state"] == "realized"
+    assert load_savings_reviews()[KEY]["realized_monthly_cents"] == 24_900
+
+
+def test_cancellation_steps_cannot_be_skipped(finance_engine):
+    with pytest.raises(ValueError, match="no longer available"):
+        record_savings_review(
+            _opportunity(), "start_cancellation", "qa@example.com",
+            action_type="cancel", request_id="skip-001",
+        )
+
+    record_savings_review(_opportunity(), "waste", "qa@example.com", request_id="skip-002")
+    with pytest.raises(ValueError, match="no longer available"):
+        record_savings_review(
+            _opportunity(realization_ready=True), "confirm_realized", "qa@example.com",
+            request_id="skip-003",
+        )
 
 
 def test_monitoring_requires_later_reduced_posted_bank_charge(finance_engine):
@@ -134,6 +202,10 @@ def test_review_route_records_confirmed_operator_action(monkeypatch):
     monkeypatch.setattr("sales_support_agent.services.auth_deps.get_current_user", lambda request: user)
     monkeypatch.setattr("sales_support_agent.api.cashflow_router.get_current_user", lambda request: user)
     monkeypatch.setattr(
+        "sales_support_agent.api.cashflow_router.load_budget_view",
+        lambda: {"trim_items": [opportunity]},
+    )
+    monkeypatch.setattr(
         "sales_support_agent.services.cashflow.savings_reviews.record_savings_review",
         lambda *args, **kwargs: calls.append((args, kwargs)) or {"created": True},
     )
@@ -144,4 +216,36 @@ def test_review_route_records_confirmed_operator_action(monkeypatch):
     )
     assert response.status_code == 303
     assert "Savings%20opportunity%20kept" in response.headers["location"]
-    assert calls[0][0][:3] == (opportunity, "keep", "finance@example.com")
+    assert calls[0][0][0] == {**opportunity, "realization_ready": False}
+    assert calls[0][0][1:] == ("keep", "finance@example.com")
+
+
+def test_batch_route_saves_all_staged_changes_together(monkeypatch):
+    app = FastAPI()
+    app.state.settings = type("Settings", (), {"admin_session_secret": "test", "admin_cookie_name": "admin", "admin_session_ttl_hours": 1})()
+    app.include_router(cashflow_router)
+    user = {"email": "finance@example.com", "is_superadmin": False, "permissions": {"finance"}}
+    client = TestClient(app, follow_redirects=False)
+    calls = []
+    changes = [{"opportunity": _opportunity(), "action": "waste", "reason": "Not used"}]
+
+    monkeypatch.setattr("sales_support_agent.services.auth_deps.get_session_user_from_request", lambda request: {"email": user["email"]})
+    monkeypatch.setattr("sales_support_agent.services.auth_deps.get_current_user", lambda request: user)
+    monkeypatch.setattr("sales_support_agent.api.cashflow_router.get_current_user", lambda request: user)
+    monkeypatch.setattr(
+        "sales_support_agent.api.cashflow_router.load_budget_view",
+        lambda: {"trim_items": [_opportunity()]},
+    )
+    monkeypatch.setattr(
+        "sales_support_agent.services.cashflow.savings_reviews.record_savings_reviews",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or [{"created": True}],
+    )
+    response = client.post(
+        "/admin/finances/savings/reviews/batch",
+        data={"changes_json": __import__("json").dumps(changes)},
+        headers={"Idempotency-Key": "savings-batch-route-001"},
+    )
+
+    assert response.status_code == 303
+    assert "Saved%201%20savings%20change" in response.headers["location"]
+    assert calls[0][0][:2] == (changes, "finance@example.com")

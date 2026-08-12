@@ -6,8 +6,15 @@ from sales_support_agent.services.website_ops import render_content_strategy_pag
 from sales_support_agent.services.website_ops_content_strategy import (
     build_content_strategy,
     load_content_strategy,
+    normalize_human_intent,
     persist_content_strategy,
 )
+
+
+def test_normalize_human_intent_removes_search_operators() -> None:
+    assert normalize_human_intent(
+        '"tiktok shop" -site:reddit.com -site:youtube.com intitle:guide'
+    ) == "tiktok shop"
 
 
 def _intelligence(*, cycles: int = 1, sources: int = 2) -> dict:

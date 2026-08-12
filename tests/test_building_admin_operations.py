@@ -132,11 +132,10 @@ class BuildingAdminOperationsTests(unittest.TestCase):
     def test_00a_prepare_verified_arena_catalog_is_gated_audited_and_idempotent(
         self,
     ) -> None:
-        rejected = self._post(
-            "/admin/building/catalog/arena/prepare",
-            {"confirmation": "prepare it"},
-        )
-        self.assertIn("error=", rejected.headers["location"])
+        # The typed passphrase was dropped for a business where one person
+        # decides. Gating is the building.manage permission, and the real
+        # safety is below: the prepared records stay private and unpublished,
+        # and preparing twice changes nothing.
         with self.factory() as session:
             self.assertIsNone(session.get(BuildingSpace, "arena"))
             self.assertIsNone(session.get(BuildingOffering, "arena-events"))
@@ -382,7 +381,59 @@ class BuildingAdminOperationsTests(unittest.TestCase):
                 inquiry.payload_json["_lifecycle"]["stage"],
                 "responded",
             )
+            sequence = {
+                step["key"]: step
+                for step in inquiry.payload_json["_follow_up_sequence"]
+            }
+            self.assertEqual(sequence["review"]["status"], "completed")
+            self.assertEqual(sequence["first_response"]["status"], "completed")
+            self.assertEqual(sequence["interview"]["status"], "queued")
             self.assertEqual(inquiry.assigned_owner, "events@example.com")
+
+    def test_00b_operator_saves_complete_event_interview_without_promising_booking(self) -> None:
+        with self.factory() as session:
+            inquiry = session.query(BuildingInquiry).filter(
+                BuildingInquiry.email == "assisted-event@example.com"
+            ).one()
+            inquiry_id = inquiry.id
+        response = self._post(
+            f"/admin/building/inquiries/{inquiry_id}/event-interview",
+            {
+                "event_purpose": "Customer education and partner gathering",
+                "event_format": "Presentation, reception, and networking",
+                "candidate_dates": "October 16; backup October 23",
+                "guest_schedule": "3:00 PM to 9:00 PM",
+                "access_schedule": "Setup 1:00 PM; teardown complete 11:00 PM",
+                "attendance": "80 expected; 100 maximum",
+                "decision_maker": "Avery Customer",
+                "authorized_signer": "Avery Customer",
+                "billing_contact": "billing@example.com",
+                "agreed_next_step": "Confirm Calendar availability, then review quote",
+                "known_risks": "Caterer and alcohol service not selected",
+            },
+        )
+        self._assert_notice(response)
+        with self.factory() as session:
+            inquiry = session.get(BuildingInquiry, inquiry_id)
+            interview = inquiry.payload_json["_event_interview"]
+            self.assertEqual(interview["attendance"], "80 expected; 100 maximum")
+            self.assertEqual(interview["updated_by"], "david@anatainc.com")
+            sequence = {
+                step["key"]: step
+                for step in inquiry.payload_json["_follow_up_sequence"]
+            }
+            self.assertEqual(sequence["interview"]["status"], "completed")
+            audit = session.query(BuildingAuditEvent).filter_by(
+                entity_type="inquiry",
+                entity_id=inquiry_id,
+                action="event_interview_saved",
+            ).one()
+            self.assertFalse(audit.after_json["provider_write"])
+        sales = self.client.get("/admin/building/sales")
+        self.assertEqual(sales.status_code, 200, sales.text)
+        self.assertIn("Event interview", sales.text)
+        self.assertIn("Authorized agreement signer", sales.text)
+        self.assertIn("Notifications and follow-up plan", sales.text)
 
     def test_01_operator_completes_guarded_event_booking_evidence(self) -> None:
         starts = datetime.now() + timedelta(days=14)

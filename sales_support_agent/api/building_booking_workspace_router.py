@@ -2,22 +2,33 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+import re
+from urllib.parse import urlencode
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 
 from sales_support_agent.models.database import session_scope
+from sales_support_agent.api.building_billing_router import (
+    EventBillingPreparationInput,
+    prepare_event_billing,
+)
 from sales_support_agent.models.entities import (
     BuildingAgreement,
+    BuildingBillingSchedule,
     BuildingCalendarProjection,
     BuildingContact,
     BuildingInquiry,
     BuildingOperationalChecklist,
     BuildingOperationalChecklistItem,
     BuildingPaymentRequestReadiness,
+    BuildingInvoice,
     BuildingProposal,
+    BuildingRatePlan,
     BuildingReservation,
     BuildingSpace,
+    BuildingTransactionalMessage,
 )
 from sales_support_agent.services.admin_nav import render_agent_nav
 from sales_support_agent.services.auth_deps import require_tool
@@ -25,12 +36,127 @@ from sales_support_agent.services.building_booking_workspace import (
     render_booking_workspace,
 )
 from sales_support_agent.services.building_security import csrf_token
+from sales_support_agent.services.building_security import require_building_form_security
+from sales_support_agent.services.building_transactional_messages import (
+    TEMPLATES,
+    attempt_booking_message,
+)
 
 
 router = APIRouter(
     prefix="/admin/building/bookings",
     tags=["building-booking-workspace"],
 )
+FORM_DEPS = [Depends(require_building_form_security)]
+_INQUIRY_RETURN_RE = re.compile(
+    r"^/admin/building/inquiries/[A-Za-z0-9_-]+(?:#[A-Za-z0-9_-]+)?$"
+)
+
+
+def _actor(user: dict) -> str:
+    return str(user.get("email") or "building-operator")
+
+
+def _workspace_redirect(
+    reservation_id: str,
+    *,
+    return_to: str = "",
+    notice: str = "",
+    error: str = "",
+) -> RedirectResponse:
+    target = (
+        return_to
+        if _INQUIRY_RETURN_RE.fullmatch(str(return_to or "").strip())
+        else f"/admin/building/bookings/{reservation_id}"
+    )
+    base, marker, fragment = target.partition("#")
+    query = urlencode({"notice": notice} if notice else {"error": error})
+    destination = f"{base}?{query}"
+    if marker:
+        destination += f"#{fragment}"
+    return RedirectResponse(destination, status_code=303)
+
+
+@router.post("/{reservation_id}/billing/prepare", dependencies=FORM_DEPS)
+def prepare_booking_billing(
+    reservation_id: str,
+    request: Request,
+    return_to: str = Form(""),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Prepare exact booking billing drafts; create no provider objects."""
+
+    internal_key = str(
+        getattr(request.app.state.settings, "internal_api_key", "") or ""
+    ).strip()
+    if not internal_key:
+        return _workspace_redirect(
+            reservation_id,
+            return_to=return_to,
+            error="Internal billing API is not configured.",
+        )
+    try:
+        result = prepare_event_billing(
+            reservation_id,
+            EventBillingPreparationInput(actor=_actor(user)),
+            request,
+            internal_key,
+        )
+    except HTTPException as exc:
+        return _workspace_redirect(
+            reservation_id,
+            return_to=return_to,
+            error=str(exc.detail),
+        )
+
+    notice = (
+        "Billing drafts already match this approved booking package; nothing was sent."
+        if result.get("duplicate")
+        else f"Prepared {result['component_count']} billing drafts; nothing was sent to QuickBooks or the customer."
+    )
+    return _workspace_redirect(
+        reservation_id, return_to=return_to, notice=notice
+    )
+
+
+@router.post(
+    "/{reservation_id}/communications/{milestone}/retry",
+    dependencies=FORM_DEPS,
+)
+def retry_booking_communication(
+    reservation_id: str,
+    milestone: str,
+    request: Request,
+    return_to: str = Form(""),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Retry one versioned milestone message without duplicating delivery."""
+
+    if milestone not in TEMPLATES:
+        raise HTTPException(status_code=404, detail="Message milestone not found.")
+    with session_scope(request.app.state.session_factory) as session:
+        reservation = session.get(BuildingReservation, reservation_id)
+        if reservation is None or reservation.kind != "event":
+            raise HTTPException(status_code=404, detail="Event booking not found.")
+        result = attempt_booking_message(
+            session,
+            request=request,
+            reservation=reservation,
+            milestone=milestone,
+            actor=_actor(user),
+        )
+    status = str(result.get("status") or "blocked")
+    query = (
+        {"notice": f"Customer message is {status}."}
+        if status in {"sent", "delivered", "delivery_delayed"}
+        else {"error": str(result.get("reason") or f"Message is {status}.")}
+    )
+    return _workspace_redirect(
+        reservation_id,
+        return_to=return_to,
+        notice=query.get("notice", ""),
+        error=query.get("error", ""),
+    )
 
 
 @router.get("/{reservation_id}", response_class=HTMLResponse)
@@ -58,11 +184,24 @@ def booking_workspace(
             else None
         )
         space = session.get(BuildingSpace, reservation.space_id)
-        proposal = session.execute(
+        proposals = session.execute(
             select(BuildingProposal)
             .where(BuildingProposal.reservation_id == reservation.id)
             .order_by(BuildingProposal.version.desc())
-        ).scalars().first()
+        ).scalars().all()
+        proposal = proposals[0] if proposals else None
+        transaction_date = reservation.starts_at.date()
+        rate_plans = session.execute(
+            select(BuildingRatePlan).where(
+                BuildingRatePlan.offering_id == reservation.offering_id,
+                BuildingRatePlan.status == "approved",
+                BuildingRatePlan.effective_from <= transaction_date,
+                (
+                    BuildingRatePlan.effective_until.is_(None)
+                    | (BuildingRatePlan.effective_until >= transaction_date)
+                ),
+            )
+        ).scalars().all() if reservation.offering_id else []
         agreement = session.execute(
             select(BuildingAgreement)
             .where(BuildingAgreement.reservation_id == reservation.id)
@@ -73,6 +212,21 @@ def booking_workspace(
             .where(BuildingPaymentRequestReadiness.reservation_id == reservation.id)
             .order_by(BuildingPaymentRequestReadiness.version.desc())
         ).scalars().first()
+        billing_schedules = session.execute(
+            select(BuildingBillingSchedule)
+            .where(BuildingBillingSchedule.reservation_id == reservation.id)
+            .order_by(BuildingBillingSchedule.starts_on, BuildingBillingSchedule.id)
+        ).scalars().all()
+        invoices = session.execute(
+            select(BuildingInvoice)
+            .where(BuildingInvoice.reservation_id == reservation.id)
+            .order_by(BuildingInvoice.created_at.desc())
+        ).scalars().all()
+        communications = session.execute(
+            select(BuildingTransactionalMessage)
+            .where(BuildingTransactionalMessage.reservation_id == reservation.id)
+            .order_by(BuildingTransactionalMessage.created_at.desc())
+        ).scalars().all()
         calendar = session.execute(
             select(BuildingCalendarProjection).where(
                 BuildingCalendarProjection.reservation_id == reservation.id
@@ -111,6 +265,7 @@ def booking_workspace(
                 "status": reservation.status,
                 "inquiry_id": reservation.inquiry_id,
                 "contact_id": reservation.contact_id,
+                "offering_id": reservation.offering_id,
                 "starts_at": reservation.starts_at,
                 "ends_at": reservation.ends_at,
                 "guest_starts_at": reservation.guest_starts_at,
@@ -145,10 +300,41 @@ def booking_workspace(
                     "status": proposal.status,
                     "currency": proposal.currency,
                     "amount_cents": proposal.amount_cents,
+                    "line_items": list(proposal.line_items_json or []),
+                    "rate_plan_id": proposal.rate_plan_id,
+                    "rate_plan_snapshot": dict(proposal.rate_plan_snapshot_json or {}),
+                    "terms_summary": proposal.terms_summary,
+                    "valid_until": proposal.valid_until.isoformat() if proposal.valid_until else "",
+                    "document_url": proposal.document_url,
                 }
                 if proposal
                 else None
             ),
+            "quote_versions": [
+                {
+                    "id": row.id,
+                    "version": row.version,
+                    "status": row.status,
+                    "currency": row.currency,
+                    "amount_cents": row.amount_cents,
+                    "line_items": list(row.line_items_json or []),
+                    "rate_plan_snapshot": dict(row.rate_plan_snapshot_json or {}),
+                    "terms_summary": row.terms_summary,
+                    "valid_until": row.valid_until.isoformat() if row.valid_until else "",
+                    "document_url": row.document_url,
+                }
+                for row in proposals
+            ],
+            "approved_rate_plans": [
+                {
+                    "id": row.id,
+                    "name": row.name,
+                    "version": row.version,
+                    "tax_status": row.tax_status,
+                    "tax_rate_bps": row.tax_rate_bps,
+                }
+                for row in rate_plans
+            ],
             "agreement": (
                 {
                     "id": agreement.id,
@@ -163,6 +349,46 @@ def booking_workspace(
                 if payment
                 else None
             ),
+            "billing": {
+                "schedules": [
+                    {
+                        "id": row.id,
+                        "component": row.billing_component or row.schedule_type,
+                        "status": row.status,
+                        "amount_cents": row.amount_cents,
+                        "currency": row.currency,
+                        "starts_on": row.starts_on.isoformat(),
+                    }
+                    for row in billing_schedules
+                ],
+                "invoices": [
+                    {
+                        "id": row.id,
+                        "status": row.status,
+                        "amount_due_cents": row.amount_due_cents,
+                        "amount_paid_cents": row.amount_paid_cents,
+                        "currency": row.currency,
+                        "qbo_invoice_id": row.qbo_invoice_id,
+                        "url": row.hosted_invoice_url,
+                    }
+                    for row in invoices
+                ],
+            },
+            "communications": [
+                {
+                    "id": row.id,
+                    "milestone": row.milestone,
+                    "template_version": row.template_version,
+                    "status": row.status,
+                    "provider_reference": row.provider_message_id,
+                    "last_error": row.last_error,
+                    "sent_at": row.sent_at.isoformat() if row.sent_at else "",
+                    "delivered_at": (
+                        row.delivered_at.isoformat() if row.delivered_at else ""
+                    ),
+                }
+                for row in communications
+            ],
             "calendar": (
                 {"status": calendar.status}
                 if calendar
@@ -175,6 +401,16 @@ def booking_workspace(
                     if required
                     else "No event-day checklist yet"
                 ),
+                "items": [
+                    {
+                        "label": row.label,
+                        "status": row.status,
+                        "assigned_owner": row.assigned_owner,
+                        "due_at": row.due_at.isoformat() if row.due_at else "",
+                        "evidence_reference": row.evidence_reference,
+                    }
+                    for row in sorted(checklist_items, key=lambda item: item.sort_order)
+                ],
             },
         }
     return HTMLResponse(

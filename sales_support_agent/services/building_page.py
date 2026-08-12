@@ -238,6 +238,7 @@ def render_building_page(
     calendar_projections: list[dict[str, Any]],
     checklists: list[dict[str, Any]],
     service_requests: list[dict[str, Any]],
+    inquiry_filters: dict[str, Any] | None = None,
     rate_plans: list[dict[str, Any]] | None = None,
     launch_decisions: list[dict[str, Any]] | None = None,
     launch_status: dict[str, Any] | None = None,
@@ -270,6 +271,7 @@ def render_building_page(
     launch_decisions = list(launch_decisions or [])
     launch_status = dict(launch_status or {})
     collections = list(collections or [])
+    inquiry_filters = dict(inquiry_filters or {})
     nav = render_agent_nav(
         "building",
         user=user,
@@ -606,6 +608,109 @@ def render_building_page(
             '<button class="secondary secondary--small" type="submit">Save progress</button></form></details>'
         )
 
+    interview_fields = (
+        ("event_purpose", "Purpose and desired outcome"),
+        ("event_format", "Event format and agenda"),
+        ("candidate_dates", "Candidate dates and flexibility"),
+        ("guest_schedule", "Guest start and end"),
+        ("access_schedule", "Setup, vendor access, and teardown"),
+        ("attendance", "Expected and maximum attendance"),
+        ("decision_maker", "Decision maker"),
+        ("authorized_signer", "Authorized agreement signer"),
+        ("billing_contact", "Billing contact and invoice details"),
+        ("decision_timeline", "Decision timeline"),
+        ("room_layout", "Room layout and guest flow"),
+        ("furniture", "Tables, chairs, staging, and furniture"),
+        ("av_and_sound", "A/V, microphones, screens, and sound"),
+        ("internet_and_power", "Internet, streaming, and power"),
+        ("catering", "Food, catering, kitchen, and service plan"),
+        ("alcohol", "Alcohol service and licensing"),
+        ("vendors_and_load_in", "Vendors, deliveries, and load-in"),
+        ("parking_and_transportation", "Parking and transportation"),
+        ("accessibility", "Accessibility accommodations"),
+        ("security_and_staffing", "Security and event staffing"),
+        ("insurance", "Insurance or certificate requirements"),
+        ("decor_and_signage", "Decor, signage, mounting, and restrictions"),
+        ("cleanup_and_waste", "Cleanup, waste, and teardown ownership"),
+        ("marketing_and_media", "Photography, recording, and media permissions"),
+        ("special_requests", "Special requests and add-ons"),
+        ("known_risks", "Known risks, conflicts, or open questions"),
+        ("agreed_next_step", "Agreed next step and date"),
+        ("operator_notes", "Private operator notes"),
+    )
+
+    def inquiry_interview_action(item: dict[str, Any]) -> str:
+        if item.get("kind") != "event":
+            return ""
+        interview = dict(item.get("event_interview") or {})
+        answered = sum(bool(str(interview.get(key) or "").strip()) for key, _ in interview_fields)
+        interview_meta = dict(item.get("event_interview_meta") or {})
+        summary_suffix = " · staff review needed" if interview_meta.get("reviewed") is False else " answered"
+        fields = "".join(
+            f'<label>{_esc(label)}<textarea name="{_esc(key)}" rows="2">{_esc(interview.get(key) or "")}</textarea></label>'
+            for key, label in interview_fields
+        )
+        return (
+            '<details class="row-actions interview-workspace"><summary>'
+            f'Event interview · {answered}/{len(interview_fields)}{summary_suffix}</summary>'
+            '<p class="sub">Capture facts before promising a date, price, layout, service, or exception. Partial saves are allowed.</p>'
+            f'<form class="interview-grid" method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/event-interview">'
+            f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+            f'{fields}<button class="primary" type="submit">Save event interview</button>'
+            '<span class="sub">This records discovery only. It does not hold a date or contact the prospect.</span></form></details>'
+        )
+
+    def inquiry_sequence(item: dict[str, Any]) -> str:
+        sequence = list(item.get("follow_up_sequence") or [])
+        notification = dict(item.get("lead_notification") or {})
+        receipt = dict(item.get("customer_receipt") or {})
+        if not sequence and not notification and not receipt:
+            return ""
+        notification_status = str(notification.get("status") or "not recorded")
+        receipt_status = str(receipt.get("status") or "not recorded")
+        retry = (
+            f'<form method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/notify">'
+            f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+            '<button class="secondary secondary--small" type="submit">Retry staff alert</button></form>'
+            if notification_status != "delivered"
+            else ""
+        )
+        receipt_retry = (
+            f'<form method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/receipt">'
+            f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+            '<button class="secondary secondary--small" type="submit">Retry customer acknowledgement</button></form>'
+            if receipt_status in {"not_configured", "failed", "bounced", "complained", "not recorded"}
+            else ""
+        )
+        steps = "".join(
+            f'<li><strong>{_esc(step.get("label"))}</strong><span class="sub">{_esc(str(step.get("status") or "queued").replace("_", " ").title())} · by {_esc(step.get("due_at_display") or "not set")}</span></li>'
+            for step in sequence
+        )
+        return (
+            '<details class="row-actions"><summary>Notifications and follow-up plan</summary>'
+            f'<p class="sub">New-lead Slack alert: {_esc(notification_status.replace("_", " "))}. Customer acknowledgement: {_esc(receipt_status.replace("_", " "))}.</p>'
+            f'{retry}{receipt_retry}<ol class="sequence-list">{steps}</ol></details>'
+        )
+
+    def original_submission(item: dict[str, Any]) -> str:
+        labels = {
+            "eventType": "Event type", "alternateDate": "Backup date",
+            "backupDate2": "Second backup date", "guestStartTime": "Guest start",
+            "guestEndTime": "Guest end", "groupSize": "Estimated attendance",
+            "dateFlexibility": "Date flexibility", "accessStartTime": "Setup or vendor access begins",
+            "accessEndTime": "Teardown and final access ends", "organization": "Organization",
+            "avNeeds": "AV and sound", "accessibilityNeeds": "Accessibility needs",
+            "vendorPlan": "Food and outside vendors", "tourInterest": "Tour interest",
+            "alcoholPlan": "Alcohol service being considered", "notes": "Notes",
+            "landingPage": "Landing page", "utmCampaign": "Campaign",
+        }
+        values = [("Phone", item.get("phone"))]
+        values.extend((labels.get(str(key), str(key)), value) for key, value in dict(item.get("details") or {}).items() if key != "eventHandoff")
+        rows = "".join(f'<dt>{_esc(label)}</dt><dd>{_esc(value)}</dd>' for label, value in values if str(value or "").strip())
+        if not rows:
+            return ""
+        return f'<details class="row-actions"><summary>Original website submission</summary><dl class="detail-list">{rows}</dl></details>'
+
     workspace_offerings = [
         item
         for item in offerings
@@ -655,11 +760,11 @@ def render_building_page(
     inquiry_rows = "".join(
         f"""
         <tr>
-          <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("email"))}</span></td>
+          <td><a href="/admin/building/inquiries/{_esc(item.get('id'))}"><strong>{_esc(item.get("name"))}</strong></a><span class="sub">{_esc(item.get("email"))}</span>{original_submission(item)}</td>
           <td>{_esc(item.get("kind"))}</td>
-          <td>{_esc(item.get("preferred_date") or "—")}{tour_handoff_action(item)}</td>
-          <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")} · respond by {_esc(item.get("response_due_at") or "not set")}</span>{inquiry_lifecycle_action(item)}</td>
-          <td>{_esc(item.get("source"))}<span class="sub">{_esc(item.get("source_reference"))}</span></td>
+          <td>{_esc(item.get("preferred_date") or "—")}{tour_handoff_action(item)}{inquiry_interview_action(item)}</td>
+          <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")} · respond by {_esc(item.get("response_due_at") or "not set")}</span>{inquiry_sequence(item)}{inquiry_lifecycle_action(item)}</td>
+          <td>{_esc(item.get("source"))}<span class="sub">{_esc((item.get("attribution") or {}).get("medium") or "direct / unknown medium")} · {_esc((item.get("attribution") or {}).get("campaign") or "no campaign")}</span><span class="sub">{_esc((item.get("attribution") or {}).get("term") or item.get("source_reference"))}</span>{_badge("Google click ID captured") if any((item.get("attribution") or {}).get(key) for key in ("gclid", "gbraid", "wbraid")) else ""}{_badge("Conversion dispatch audited") if item.get("conversion_dispatch_recorded") else ""}</td>
         </tr>
         """
         for item in inquiries
@@ -829,10 +934,11 @@ def render_building_page(
           <td>{_badge(str(item.get("status") or "draft"))}</td>
           <td>{_badge(str(item.get("accounting_status") or "pending qbo"))}</td>
           <td>{f'<a href="{_esc(item.get("hosted_invoice_url"))}" target="_blank" rel="noreferrer">Open ↗</a>' if item.get("hosted_invoice_url") else "—"}</td>
+          <td>{f'<form class="inline-send" method="post" action="/admin/building/billing/invoices/{_esc(item.get("id"))}/sync-qbo"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><button class="secondary secondary--small" type="submit">Refresh from QuickBooks</button></form>' if item.get("provider") == "quickbooks" and item.get("qbo_invoice_id") else '<span class="sub">No provider link</span>'}</td>
         </tr>
         """
         for item in invoices
-    ) or '<tr><td colspan="6"><div class="empty"><strong>No native invoices yet.</strong><br>Approved event billing schedules can create an unsent QuickBooks invoice for staff review.</div></td></tr>'
+    ) or '<tr><td colspan="7"><div class="empty"><strong>No native invoices yet.</strong><br>Approved event billing schedules can create an unsent QuickBooks invoice for staff review.</div></td></tr>'
 
     collection_rows = "".join(
         f"""<tr>
@@ -916,7 +1022,7 @@ def render_building_page(
         ("teardown_price", "Teardown add-on price", "accepted_policy", "Approved price or explicitly included", "Two self-service teardown hours are included. Purchased setup/reset service includes returning tables and chairs to the staged section.", "Change this only if the included access or reset policy changes."),
         ("overtime_rate", "Overtime hourly rate", "accepted_policy", "Approved numeric premium rate", "Owner approved $175 per full overtime hour, subject to Anata approval.", "Change this only if the approved overtime rate or billing unit changes."),
         ("payment_workflow", "Venue payment workflow", "accepted_policy", "Approved methods, clearing rule, and hold gate", "Cards are accepted. ACH or check may be approved when received seven additional days early. No date is held until required funds clear; overpayments and third-party vendor payments are not accepted.", "Change this only if accepted methods or clearing rules change."),
-        ("agreement_template", "Reusable agreement template", "approved_reference", "Approved provider-neutral template ID/version", "David chose QuickBooks Contract Builder as the e-sign provider (2026-07-31); Agent records its evidence but does not yet send through it. The 2025 Vivint agreement is customer-specific and is not reusable.", "Approve a reusable legal template and a legal approver; the e-sign provider is decided."),
+        ("agreement_template", "Reusable agreement template", "approved_reference", "Approved provider-neutral template ID/version", "Google Docs eSignature is the approved signing workspace; Agent creates the signing copy and records provider evidence but does not claim delivery or signature without that evidence. The 2025 Vivint agreement is customer-specific and is not reusable.", "Approve a reusable legal template and a legal approver; the e-sign provider is decided."),
         ("event_calendar", "Dedicated event calendar", "provider_verified", "Calendar ID, owner, and service-account access", "Search found one past tour on David’s primary calendar and no evidence of a dedicated Arena calendar.", "Create or identify the dedicated calendar and verify service-account access."),
         ("transactional_sender", "Transactional sender and owner", "owner_confirmed", "Verified sender identity and accountable owner", "Owner designated building@anatainc.com as the Building address. Provider/domain verification remains a separate delivery prerequisite.", "Change the sender only if the monitored customer inbox changes."),
         ("effective_date", "Launch effective date", "accepted_policy", "Approved effective date", "Agent derives this from the effective date on the approved Arena rate plan.", "Approve the reviewed Arena rate plan; Agent records this decision automatically."),
@@ -1049,12 +1155,11 @@ def render_building_page(
               <input type="hidden" name="offering_id" value="{_esc(decision_offering_id)}">
               <div class="field field--wide"><label>Your approved answer</label><textarea name="value" required placeholder="Write the exact rule the sales team should follow.">{answer_value}</textarea></div>
               <div class="field field--wide"><label>Who approved this, or where is it documented?</label><input name="evidence" required minlength="8" value="{evidence_value}" placeholder="Example: Approved by David on July 28, 2026"></div>
-              <div class="field field--wide"><label>To prevent accidental changes, type: I APPROVE THIS DECISION</label><input name="confirmation" required autocomplete="off" placeholder="I APPROVE THIS DECISION"></div>
               <details class="technical-details field--wide"><summary>Technical details</summary><p><strong>Stored status:</strong> {_esc(required_status.replace("_", " "))}</p><p><strong>Existing evidence:</strong> {_esc(decision.get("evidence") or known_evidence)}</p></details>
               <div class="form-actions"><span class="form-note">Saving records the approved rule and audit history. It does not email anyone, charge a card, publish the venue, or change a calendar.</span><button class="primary" type="submit">Save my answer</button></div>
             </form>
           </details>"""
-        return f"""<article class="decision-card{' decision-card--answered' if is_answered else ''}">
+        return f"""<article id="decision-{_esc(key)}" class="decision-card{' decision-card--answered' if is_answered else ''}">
           <div class="decision-card__summary">
             <div class="decision-card__number" aria-hidden="true">{index:02d}</div>
             <div class="decision-card__title">
@@ -1098,11 +1203,6 @@ def render_building_page(
         (launch_ready_count / len(launch_definitions)) * 100
     )
     launch_status_items = list(launch_status.get("items") or [])
-    launch_external_count = int(launch_status.get("external_count") or 0)
-    launch_blocked_count = int(launch_status.get("blocked_count") or 0)
-    launch_owner_complete = int(launch_status.get("owner_complete") or 0)
-    launch_owner_total = int(launch_status.get("owner_total") or 0)
-    launch_customer_ready = bool(launch_status.get("customer_launch_ready"))
     launch_state_labels = {
         "complete": ("Ready", "badge--ok"),
         "needs_review": ("Needs review", "badge--warn"),
@@ -1136,14 +1236,43 @@ def render_building_page(
           </details>
         </li>"""
 
+    # A building with one bookable room does not need ten rows of finished work
+    # on screen. Only what is still outstanding is shown; the rest is one line
+    # you can open if you want to check it.
+    launch_open_items = [
+        item
+        for item in launch_status_items
+        if str(item.get("state") or "") in {"external", "needs_review", "blocked"}
+    ]
+    launch_settled_items = [
+        item for item in launch_status_items if item not in launch_open_items
+    ]
     launch_checklist_html = "".join(
-        render_launch_checklist_item(item) for item in launch_status_items
+        render_launch_checklist_item(item) for item in launch_open_items
+    )
+    launch_settled_html = "".join(
+        render_launch_checklist_item(item) for item in launch_settled_items
     )
     arena_plan_ready = any(
         item.get("offering_id") == "arena-events"
         and item.get("status") == "approved"
         for item in rate_plans
     )
+    # This reconciliation notice named conflicts that are now resolved, so once
+    # the Arena plan is approved it was telling the owner something untrue.
+    arena_rate_reconciliation_html = "" if arena_plan_ready else f"""
+        <div class="alert alert--warning">
+          <strong>Arena commercial evidence needs reconciliation.</strong>
+          <p>Owner-reconciled draft: 6,000 sq ft, capacity 200, $175/hour, six-hour minimum ($1,050), $250 routine cleaning, 50% booking deposit, $500 refundable security deposit, and balance due seven days before the event. Two self-service setup hours and two teardown hours are included; approved overtime is $175 per full hour.</p>
+          <p>Correct any conflicting booking-page copy before approval.</p>
+          <form class="form-grid" method="post" action="/admin/building/rate-plans/arena-commercial-baseline">
+            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+            <div class="field"><label for="arena-draft-offering">Arena event offering</label><select id="arena-draft-offering" name="offering_id" required><option value="">Choose event offering</option>{event_offering_options}</select></div>
+            <div class="field"><label for="arena-draft-effective">Proposed effective date</label><input id="arena-draft-effective" name="effective_from" type="date" required></div>
+            <input type="hidden" name="confirmation" value="prepare">
+            <div class="form-actions"><span class="form-note">Creates a draft only. It does not approve, publish, send, charge, or write Calendar.</span><button class="secondary" type="submit">Prepare reviewable draft</button></div>
+          </form>
+        </div>"""
     qualified_event_inquiry_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))} · {_esc(item.get("preferred_date") or "date not set")}</option>'
         for item in inquiries
@@ -1200,7 +1329,6 @@ def render_building_page(
           <strong>{_esc(conflict.get("summary"))}</strong>
           <select name="resolution_status" required><option value="">Choose disposition</option>{options}</select>
           <input name="resolution_note" required minlength="10" placeholder="Decision or remediation evidence">
-          <input name="confirmation" required placeholder="RECONCILE {_esc(item.get("id"))}">
           <button class="secondary secondary--small" type="submit">Record this disposition</button>
           <span class="sub">Agent records the selected conflict only. “Reconciled in Agent” remains blocking; provider remediation must have occurred outside this action.</span>
         </form>''')
@@ -1231,7 +1359,7 @@ def render_building_page(
           <td>{_badge(str(item.get("status") or "draft"))}<span class="sub">{_esc(item.get("approved_by"))}</span></td>
           <td>{rate_plan_evidence(item)}</td>
           <td>{rate_plan_reconciliation_action(item)}{(
-            f'<form class="inline-send" method="post" action="/admin/building/rate-plans/{_esc(item.get("id"))}/approve"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="approval_evidence" required placeholder="Review ticket or evidence"><input name="confirmation" required placeholder="APPROVE {_esc(item.get("id"))}"><button class="primary secondary--small" type="submit">Approve and lock</button></form>'
+            f'<form class="inline-send" method="post" action="/admin/building/rate-plans/{_esc(item.get("id"))}/approve"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="approval_evidence" placeholder="Note (optional)"><button class="primary secondary--small" type="submit">Approve and lock</button></form>'
             if item.get("status") == "in_review"
             and not rate_plan_has_blocking_conflicts(item)
             else (
@@ -1398,7 +1526,7 @@ def render_building_page(
                 f" · respond by {item.get('response_due_at') or 'not set'}"
             ),
             "next": "Respond and qualify",
-            "href": "/admin/building/sales",
+            "href": f"/admin/building/inquiries/{item.get('id')}",
         })
     for item in calendar_projections:
         if item.get("status") != "error":
@@ -1511,15 +1639,6 @@ def render_building_page(
     body:not(.view-today) .today-only{{display:none;}}
     body.view-sales #incoming-inquiries{{order:1;}} body.view-sales #add-assisted-lead{{order:2;}} body.view-sales #start-booking-workflow{{order:3;}} body.view-sales #building-tours{{order:4;}}
     body.view-bookings #bookings-and-holds{{order:1;}} body.view-bookings #review-event-date{{order:2;}}
-    .launch-command{{margin-top:20px;border:1px solid rgba(57,122,157,.28);border-radius:16px;background:linear-gradient(135deg,#fff 0,#f3f9fc 100%);overflow:hidden;}}
-    .launch-command__head{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:24px;align-items:center;padding:25px 26px;border-bottom:1px solid var(--border);}}
-    .launch-command h2{{font-size:25px;}} .launch-command p{{max-width:760px;margin:7px 0 0;color:rgba(43,54,68,.67);line-height:1.55;}}
-    .launch-score{{display:grid;place-items:center;width:92px;height:92px;border:8px solid #dcebf2;border-top-color:#397a9d;border-radius:50%;background:#fff;text-align:center;}}
-    .launch-score strong{{display:block;font:800 24px "Montserrat",sans-serif;line-height:1;}} .launch-score span{{display:block;margin-top:4px;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:rgba(43,54,68,.56);}}
-    .launch-steps{{display:grid;grid-template-columns:repeat(4,1fr);}}
-    .launch-step{{padding:17px 20px;border-right:1px solid var(--border);}} .launch-step:last-child{{border-right:0;}}
-    .launch-step span{{display:block;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:rgba(43,54,68,.55);}}
-    .launch-step strong{{display:block;margin-top:6px;font-size:14px;}} .launch-step p{{margin:4px 0 0;font-size:12px;line-height:1.4;}}
     .flash{{margin:0 0 18px;padding:14px 16px;border-radius:10px;font-weight:700;}} .flash--ok{{background:#e4f4f1;color:#11665f;border:1px solid #acd8d2;}} .flash--error{{background:#fff0ed;color:#8b2f23;border:1px solid #e4b3aa;}}
     .grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px;}}
     .panel{{background:#fff;border:1px solid var(--border);border-radius:14px;overflow:hidden;}}
@@ -1550,7 +1669,9 @@ def render_building_page(
     .field[hidden]{{display:none;}}
     label{{font-size:12px;font-weight:700;color:rgba(43,54,68,.72);}} input,select,textarea{{box-sizing:border-box;width:100%;min-height:42px;border:1px solid rgba(43,54,68,.22);border-radius:8px;background:#fff;padding:10px 11px;color:var(--ink);font:inherit;}} textarea{{min-height:92px;resize:vertical;}} input:focus,select:focus,textarea:focus{{outline:3px solid rgba(133,187,218,.34);border-color:#397a9d;}}
     .check{{display:flex;align-items:center;gap:9px;font-size:13px;}} .check input{{width:18px;min-height:18px;}} .check-stack{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;padding:11px;border:1px solid rgba(43,54,68,.14);border-radius:8px;}} .form-actions{{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid var(--border);padding-top:16px;}} .form-note{{font-size:12px;color:rgba(43,54,68,.62);line-height:1.45;}} .primary,.secondary{{min-height:42px;border:0;border-radius:8px;background:var(--ink);color:#fff;padding:0 17px;font-weight:700;cursor:pointer;}} .primary:hover{{background:#17222d;}} .secondary{{border:1px solid var(--border);background:#fff;color:var(--ink);}} .secondary--small{{min-height:34px;padding:0 11px;font-size:12px;white-space:nowrap;}} .action-stack{{display:grid;gap:7px;min-width:210px;}} .inline-send{{display:flex;gap:6px;align-items:center;}} .inline-send input{{min-height:34px;padding:7px 8px;font-size:12px;}}
-    .row-actions{{min-width:220px;}} .row-actions summary{{cursor:pointer;font-weight:700;color:#397a9d;}} .row-actions form{{display:grid;gap:7px;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:9px;background:#f8f8f6;}} .row-actions label{{display:grid;gap:4px;}} .row-actions input,.row-actions select{{min-height:34px;padding:7px 8px;font-size:12px;}}
+    .lead-filters{{display:grid;grid-template-columns:minmax(220px,1.5fr) repeat(3,minmax(130px,.7fr)) auto auto;gap:10px;align-items:end;padding:14px 18px;border-top:1px solid var(--border);background:rgba(240,247,250,.55);}} .lead-filters label{{display:grid;gap:5px;font-size:12px;font-weight:700;}} .lead-filters .sub{{grid-column:1/-1;}}
+    .row-actions{{min-width:220px;}} .row-actions summary{{cursor:pointer;font-weight:700;color:#397a9d;}} .row-actions form{{display:grid;gap:7px;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:9px;background:#f8f8f6;}} .row-actions label{{display:grid;gap:4px;}} .row-actions input,.row-actions select,.row-actions textarea{{min-height:34px;padding:7px 8px;font-size:12px;}}
+    .interview-workspace{{min-width:min(640px,80vw);}} .interview-grid{{grid-template-columns:repeat(2,minmax(0,1fr))!important;max-height:70vh;overflow:auto;}} .interview-grid>p,.interview-grid>button,.interview-grid>.sub{{grid-column:1/-1;}} .sequence-list{{display:grid;gap:8px;margin:10px 0 0;padding-left:20px;}} .sequence-list .sub{{display:block;}}
     .decision-list{{display:grid;gap:12px;padding:18px 20px;background:#f8fafb;}}
     .decision-card{{border:1px solid var(--border);border-radius:12px;background:#fff;overflow:hidden;}}
     .decision-card--answered{{border-color:rgba(24,119,111,.28);}} .decision-card--answered .decision-card__number{{background:#e4f4f1;color:#11665f;}}
@@ -1601,9 +1722,9 @@ def render_building_page(
     .checklist-list{{display:grid;gap:14px;padding:18px 22px;}} .checklist-group{{border:1px solid var(--border);border-radius:10px;overflow:hidden;}} .checklist-head{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 16px;background:#f8f8f6;}} .checklist-add{{display:grid;grid-template-columns:minmax(220px,1fr) auto auto;align-items:end;gap:10px;padding:12px 16px;border-top:1px solid var(--border);}} .checklist-add label:first-of-type{{display:grid;gap:5px;}}
     .media-space{{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#fff;}} .media-space>summary{{cursor:pointer;list-style:none;}} .media-space>summary::-webkit-details-marker{{display:none;}} .media-space__action{{color:#397a9d;font-size:12px;font-weight:800;}} .media-space[open] .media-space__action{{color:rgba(43,54,68,.58);}} .media-space[open]>summary{{border-bottom:1px solid var(--border);}}
     .adjustment-evidence{{display:grid;grid-template-columns:repeat(2,minmax(130px,1fr));gap:6px;min-width:360px;}} .adjustment-evidence button{{justify-self:start;}}
-    @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.daily-guide{{grid-template-columns:1fr}}.daily-guide__item{{border-right:0;border-bottom:1px solid var(--border)}}.daily-guide__item:last-child{{border-bottom:0}}.grid,.setup-workspace__content{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}.launch-steps{{grid-template-columns:1fr 1fr}}.launch-step:nth-child(2){{border-right:0}}.launch-step:nth-child(-n+2){{border-bottom:1px solid var(--border)}}}}
+    @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.daily-guide{{grid-template-columns:1fr}}.daily-guide__item{{border-right:0;border-bottom:1px solid var(--border)}}.daily-guide__item:last-child{{border-bottom:0}}.grid,.setup-workspace__content{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}}}
     @media(max-width:700px){{.decision-card__summary{{grid-template-columns:42px minmax(0,1fr)}}.decision-card__state{{grid-column:2;justify-self:start;text-align:left;max-width:none}}.decision-card__evidence{{grid-template-columns:1fr}}.decision-card__evidence>div+div{{border-left:0;border-top:1px solid var(--border)}}}}
-    @media(max-width:600px){{.page-head,.panel-head{{align-items:start;flex-direction:column}}.panel-head{{gap:9px;padding:18px}}.metric{{padding:14px 15px}}.metric strong{{font-size:22px}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.launch-command__head{{grid-template-columns:1fr;padding:21px}}.launch-score{{width:78px;height:78px}}.launch-steps{{grid-template-columns:1fr}}.launch-step{{border-right:0;border-bottom:1px solid var(--border)!important}}.launch-step:last-child{{border-bottom:0!important}}.form-grid,.decision-form{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
+    @media(max-width:600px){{.page-head,.panel-head{{align-items:start;flex-direction:column}}.panel-head{{gap:9px;padding:18px}}.metric{{padding:14px 15px}}.metric strong{{font-size:22px}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.form-grid,.decision-form,.interview-grid{{grid-template-columns:1fr!important}}.interview-workspace{{min-width:min(300px,80vw)}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}.lead-filters{{grid-template-columns:1fr}}.lead-filters .secondary{{width:100%}}}}
   </style>
 </head>
 <body class="app app--operator view-{_esc(view)}">
@@ -1639,6 +1760,8 @@ def render_building_page(
           <div class="metric"><span>30-day scheduled utilization</span><strong>{_pct(operation_metrics.get("scheduled_utilization_30d"))}</strong></div>
           <div class="metric"><span>Posted collected cash</span><strong>${int(finance_metrics.get("posted_collected_cents") or 0) / 100:,.0f}</strong></div>
           <div class="metric"><span>Overdue receivables</span><strong>${int(finance_metrics.get("overdue_cents") or 0) / 100:,.0f}</strong></div>
+          <div class="metric"><span>Overdue event work</span><strong>{int(operation_metrics.get("overdue_required_item_count") or 0)}</strong></div>
+          <div class="metric"><span>Unowned event work</span><strong>{int(operation_metrics.get("unowned_required_item_count") or 0)}</strong></div>
         </div>
         <details class="advanced-disclosure">
           <summary>View funnel and source detail</summary>
@@ -1651,99 +1774,24 @@ def render_building_page(
         </details>
       </section>
       <details class="setup-workspace building-view view-settings" id="building-setup">
-        <summary><span><strong>Arena setup and administration</strong><span>{launch_ready_count} of 10 launch requirements are complete. Open this only to change business rules or finish provider setup.</span></span></summary>
+        <summary><span><strong>Arena setup and administration</strong><span>{launch_ready_count} of {len(launch_status_items)} launch requirements are complete. Open this only to change business rules or finish provider setup.</span></span></summary>
         <div class="setup-workspace__content">
-    <section class="launch-command panel--wide" aria-labelledby="arena-command-title">
-      <div class="launch-command__head">
-        <div>
-          <div class="eyebrow">Arena launch command center</div>
-          <h2 id="arena-command-title">Private, protected, and not ready to publish</h2>
-          <p>{_esc(launch_status.get("headline") or "Arena launch readiness is being verified.")}. The checklist below comes from the actual pricing, agreement, payment, sender, and calendar evidence.</p>
-        </div>
-        <div class="launch-score" aria-label="{launch_owner_complete} of {launch_owner_total} owner decisions saved"><div><strong>{launch_owner_complete}/{launch_owner_total}</strong><span>rules saved</span></div></div>
-      </div>
-      <div class="launch-steps" aria-label="Arena launch stages">
-        <div class="launch-step"><span>1 · Catalog</span><strong>{"Prepared" if arena_catalog_ready else "Action required"}</strong><p>{"Canonical Arena records are private." if arena_catalog_ready else "Prepare the verified Arena catalog."}</p></div>
-        <div class="launch-step"><span>2 · Business rules</span><strong>{launch_owner_complete} of {launch_owner_total} saved</strong><p>{"No more owner questions." if launch_owner_complete == launch_owner_total else "Only missing owner-approved rules remain."}</p></div>
-        <div class="launch-step"><span>3 · Outside setup</span><strong>{launch_external_count} item{"s" if launch_external_count != 1 else ""}</strong><p>Legal, accountant, or provider evidence—not another owner questionnaire.</p></div>
-        <div class="launch-step"><span>4 · Customer launch</span><strong>{"Ready for rehearsal" if launch_customer_ready else "Safely locked"}</strong><p>{"Run the controlled booking rehearsal." if launch_customer_ready else "No binding estimate, payment, or booking claim is made."}</p></div>
-      </div>
-    </section>
-      <section class="panel panel--wide" id="arena-catalog-readiness">
-        <div class="panel-head"><div><h2>Arena catalog foundation</h2><p>Create the verified venue identity required by availability, pricing, inquiry, and launch-readiness workflows.</p></div>{arena_catalog_state}</div>
-        <div class="alert alert--warning"><strong>This does not launch the venue.</strong><p>The action creates or reconciles only The Arena and the canonical <code>arena-events</code> offering as private, unavailable, and unpublished. A compatible legacy Canva placeholder may be retained as an unpublished record. It does not approve a rate plan, claim a date is available, send a message, charge a customer, or write a calendar.</p></div>
-        <details class="advanced-disclosure">
-          <summary>{"Review or rerun catalog preparation" if arena_catalog_ready else "Prepare the verified Arena catalog"}</summary>
-        <form class="form-grid" method="post" action="/admin/building/catalog/arena/prepare">
-          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <div class="field"><label for="arena-catalog-confirmation">Typed confirmation</label><input id="arena-catalog-confirmation" name="confirmation" required placeholder="PREPARE ARENA CATALOG"></div>
-          <div class="form-actions"><span class="form-note">Idempotent: rerunning a compatible preparation changes nothing. Conflicting existing records fail closed for manual review.</span><button class="secondary" type="submit">Prepare verified Arena catalog</button></div>
-        </form>
-        </details>
-      </section>
-      <section class="panel advanced-tools">
-        <div class="panel-head"><div><h2>Add or update a space <span class="advanced-label">Advanced</span></h2><p>Save reviewed physical inventory. Publishing remains a separate choice.</p></div></div>
-        <details class="advanced-disclosure">
-          <summary>Open space editor</summary>
-        <form class="form-grid" method="post" action="/admin/building/spaces">
-          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <div class="field"><label for="space-id">Stable ID</label><input id="space-id" name="space_id" required placeholder="office-201"></div>
-          <div class="field"><label for="space-slug">Public URL slug</label><input id="space-slug" name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="office-201"></div>
-          <div class="field"><label for="space-name">Name</label><input id="space-name" name="name" required placeholder="Office 201"></div>
-          <div class="field"><label for="space-type">Type</label><select id="space-type" name="space_type"><option value="private_office">Private office</option><option value="coworking">Coworking</option><option value="conference">Conference room</option><option value="event">Event space</option><option value="warehouse">Warehouse</option><option value="amenity">Amenity</option></select></div>
-          <div class="field"><label for="space-floor">Floor or area</label><input id="space-floor" name="floor" placeholder="Second floor"></div>
-          <div class="field"><label for="space-capacity">Capacity</label><input id="space-capacity" name="capacity" type="number" min="0" value="0"></div>
-          <div class="field"><label for="space-status">Availability state</label><select id="space-status" name="status"><option value="unavailable">Unavailable</option><option value="available">Available</option><option value="soft_hold">Soft hold</option><option value="occupied">Occupied</option><option value="maintenance">Maintenance</option></select></div>
-          <div class="field"><label for="space-features">Features</label><input id="space-features" name="features" placeholder="Natural light, furnished, whiteboard"></div>
-          <div class="field field--wide"><label for="space-description">Public description</label><textarea id="space-description" name="public_description" placeholder="What a prospective tenant may safely see."></textarea></div>
-          <div class="field field--wide"><label for="space-notes">Internal notes</label><textarea id="space-notes" name="internal_notes" placeholder="Occupancy, repairs, or operator context. Never shown publicly."></textarea></div>
-          <div class="form-actions"><label class="check"><input type="checkbox" name="is_public" value="true"> Allow this space to appear publicly</label><button class="primary" type="submit">Save space</button></div>
-        </form>
-        </details>
-      </section>
-      <section class="panel advanced-tools">
-        <div class="panel-head"><div><h2>Add or update an offering <span class="advanced-label">Advanced</span></h2><p>Define what customers can inquire about and how pricing is described.</p></div></div>
-        <details class="advanced-disclosure">
-          <summary>Open offering editor</summary>
-        <form class="form-grid" method="post" action="/admin/building/offerings">
-          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <div class="field"><label for="offering-id">Stable ID</label><input id="offering-id" name="offering_id" required placeholder="private-office-201"></div>
-          <div class="field"><label for="offering-slug">Public URL slug</label><input id="offering-slug" name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="private-office-201"></div>
-          <div class="field"><label for="offering-name">Name</label><input id="offering-name" name="name" required placeholder="Private Office 201"></div>
-          <div class="field"><label for="offering-type">Offering type</label><select id="offering-type" name="offering_type"><option value="private_office">Private office</option><option value="coworking">Coworking</option><option value="meeting_room">Meeting room</option><option value="event">Event</option><option value="warehouse">Warehouse</option><option value="membership">Membership</option></select></div>
-          <div class="field"><label for="offering-space">Linked space</label><select id="offering-space" name="space_id"><option value="">No specific space</option>{linked_space_options}</select></div>
-          <div class="field"><label for="offering-price">Public price wording</label><input id="offering-price" name="price_display" placeholder="From $1,250/month"></div>
-          <div class="field"><label for="offering-unit">Booking unit</label><select id="offering-unit" name="booking_unit"><option value="custom">Custom</option><option value="month">Monthly</option><option value="day">Daily</option><option value="hour">Hourly</option><option value="event">Per event</option></select></div>
-          <div class="field"><label for="offering-cta">Call to action</label><select id="offering-cta" name="call_to_action"><option value="inquire">Inquire</option><option value="tour">Schedule a tour</option><option value="request_date">Request a date</option><option value="join_waitlist">Join waitlist</option></select></div>
-          <div class="field field--wide"><label for="offering-features">Included features</label><input id="offering-features" name="features" placeholder="Conference access, mail service, Boom Standard"></div>
-          <div class="field field--wide"><label for="offering-description">Public description</label><textarea id="offering-description" name="public_description" placeholder="Warm, specific copy for the public offering."></textarea></div>
-          <div class="form-actions"><span class="form-note">Publish only after the linked space, price wording, and copy have been reviewed.</span><label class="check"><input type="checkbox" name="is_published" value="true"> Publish offering</label><button class="primary" type="submit">Save offering</button></div>
-        </form>
-        </details>
-      </section>
       <section class="panel panel--wide" id="arena-launch-readiness">
-        <div class="panel-head"><div><h2>What is ready—and what still needs outside approval</h2><p>Your answers are already saved. This list updates from the real system evidence; it does not ask you to repeat decisions.</p></div><span class="count">{launch_external_count} outside item{"s" if launch_external_count != 1 else ""}</span></div>
-        <div class="alert {"alert--success" if launch_customer_ready else "alert--warning"}"><strong>{"Ready for a controlled launch rehearsal." if launch_customer_ready else "Customer launch remains safely locked."}</strong><p>{"Complete one governed rehearsal before opening the full booking path." if launch_customer_ready else f"{launch_external_count} outside approval or provider item{'s' if launch_external_count != 1 else ''} and {launch_blocked_count} internal blocker{'s' if launch_blocked_count != 1 else ''} remain. No customer message, payment, publication, or calendar write happens from this checklist."}</p></div>
+        <div class="panel-head"><div><h2>{"Nothing left to finish" if not launch_open_items else "What still needs finishing"}</h2><p>{"Everything Agent can check is done." if not launch_open_items else "Everything else is done. These are the only items left, and each one waits on someone outside Agent."}</p></div><span class="count">{len(launch_open_items)} left</span></div>
         <ol class="launch-checklist">{launch_checklist_html}</ol>
         <details class="saved-policy-disclosure">
-          <summary>Review or change saved business rules ({launch_ready_count} of 10 governed records complete)</summary>
+          <summary>Already done ({len(launch_settled_items)} of {len(launch_status_items)})</summary>
+          <ol class="launch-checklist">{launch_settled_html}</ol>
+        </details>
+        <details class="saved-policy-disclosure">
+          <summary>Change a saved business rule</summary>
+          <p class="form-note">Open a card only when the approved policy itself changes.</p>
           <div class="decision-list">{launch_readiness_cards}</div>
         </details>
       </section>
       <section class="panel panel--wide" id="commercial-rate-plans">
         <div class="panel-head"><div><h2>Commercial rate plans</h2><p>Version pricing, deposits, included items, and cancellation terms. Approved versions are locked.</p></div><span class="count">{len(rate_plans)} versions</span></div>
-        <div class="alert alert--warning">
-          <strong>Arena commercial evidence needs reconciliation.</strong>
-          <p>Owner-reconciled draft: 6,000 sq ft, capacity 200, $175/hour, six-hour minimum ($1,050), $250 routine cleaning, 50% booking deposit, $500 refundable security deposit, and balance due seven days before the event. Two self-service setup hours and two teardown hours are included; approved overtime is $175 per full hour.</p>
-          <p>TidyCal still conflicts with a 70% deposit, balance due 48 hours before, and a placeholder payment link. Those provider-copy items must be corrected before approval. Tax remains quote-review-required, and the reusable agreement remains under legal review.</p>
-          <form class="form-grid" method="post" action="/admin/building/rate-plans/arena-commercial-baseline">
-            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-            <div class="field"><label for="arena-draft-offering">Arena event offering</label><select id="arena-draft-offering" name="offering_id" required><option value="">Choose event offering</option>{event_offering_options}</select></div>
-            <div class="field"><label for="arena-draft-effective">Proposed effective date</label><input id="arena-draft-effective" name="effective_from" type="date" required></div>
-            <div class="field"><label for="arena-draft-confirmation">Typed confirmation</label><input id="arena-draft-confirmation" name="confirmation" required placeholder="PREPARE ARENA DRAFT"></div>
-            <div class="form-actions"><span class="form-note">Creates a draft only. It does not approve, publish, send, charge, change TidyCal, or write Calendar.</span><button class="secondary" type="submit">Prepare reviewable draft</button></div>
-          </form>
-        </div>
+        {arena_rate_reconciliation_html}
         <div class="table-wrap"><table><thead><tr><th>Plan</th><th>Price</th><th>Deposit</th><th>Effective</th><th>State</th><th>Evidence</th><th>Review action</th></tr></thead><tbody>{rate_plan_rows}</tbody></table></div>
         <details class="advanced-disclosure">
           <summary>Open manual rate-plan editor</summary>
@@ -1801,6 +1849,64 @@ def render_building_page(
         </form>
         </details>
       </section>
+      <section class="panel panel--wide advanced-tools">
+        <div class="panel-head"><div><h2>Spaces, offerings, and catalog <span class="advanced-label">Advanced</span></h2><p>Rarely needed. The Arena is already set up here.</p></div></div>
+        <details class="advanced-disclosure">
+          <summary>Open the advanced editors</summary>
+      <section class="panel panel--wide" id="arena-catalog-readiness">
+        <div class="panel-head"><div><h2>Arena catalog foundation</h2><p>Create the verified venue identity required by availability, pricing, inquiry, and launch-readiness workflows.</p></div>{arena_catalog_state}</div>
+        <div class="alert alert--warning"><strong>This does not launch the venue.</strong><p>The action creates or reconciles only The Arena and the canonical <code>arena-events</code> offering as private, unavailable, and unpublished. A compatible legacy Canva placeholder may be retained as an unpublished record. It does not approve a rate plan, claim a date is available, send a message, charge a customer, or write a calendar.</p></div>
+        <details class="advanced-disclosure">
+          <summary>{"Review or rerun catalog preparation" if arena_catalog_ready else "Prepare the verified Arena catalog"}</summary>
+        <form class="form-grid" method="post" action="/admin/building/catalog/arena/prepare">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <input type="hidden" name="confirmation" value="prepare">
+          <div class="form-actions"><span class="form-note">Idempotent: rerunning a compatible preparation changes nothing. Conflicting existing records fail closed for manual review.</span><button class="secondary" type="submit">Prepare verified Arena catalog</button></div>
+        </form>
+        </details>
+      </section>
+      <section class="panel advanced-tools">
+        <div class="panel-head"><div><h2>Add or update a space <span class="advanced-label">Advanced</span></h2><p>Save reviewed physical inventory. Publishing remains a separate choice.</p></div></div>
+        <details class="advanced-disclosure">
+          <summary>Open space editor</summary>
+        <form class="form-grid" method="post" action="/admin/building/spaces">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="space-id">Stable ID</label><input id="space-id" name="space_id" required placeholder="office-201"></div>
+          <div class="field"><label for="space-slug">Public URL slug</label><input id="space-slug" name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="office-201"></div>
+          <div class="field"><label for="space-name">Name</label><input id="space-name" name="name" required placeholder="Office 201"></div>
+          <div class="field"><label for="space-type">Type</label><select id="space-type" name="space_type"><option value="private_office">Private office</option><option value="coworking">Coworking</option><option value="conference">Conference room</option><option value="event">Event space</option><option value="warehouse">Warehouse</option><option value="amenity">Amenity</option></select></div>
+          <div class="field"><label for="space-floor">Floor or area</label><input id="space-floor" name="floor" placeholder="Second floor"></div>
+          <div class="field"><label for="space-capacity">Capacity</label><input id="space-capacity" name="capacity" type="number" min="0" value="0"></div>
+          <div class="field"><label for="space-status">Availability state</label><select id="space-status" name="status"><option value="unavailable">Unavailable</option><option value="available">Available</option><option value="soft_hold">Soft hold</option><option value="occupied">Occupied</option><option value="maintenance">Maintenance</option></select></div>
+          <div class="field"><label for="space-features">Features</label><input id="space-features" name="features" placeholder="Natural light, furnished, whiteboard"></div>
+          <div class="field field--wide"><label for="space-description">Public description</label><textarea id="space-description" name="public_description" placeholder="What a prospective tenant may safely see."></textarea></div>
+          <div class="field field--wide"><label for="space-notes">Internal notes</label><textarea id="space-notes" name="internal_notes" placeholder="Occupancy, repairs, or operator context. Never shown publicly."></textarea></div>
+          <div class="form-actions"><label class="check"><input type="checkbox" name="is_public" value="true"> Allow this space to appear publicly</label><button class="primary" type="submit">Save space</button></div>
+        </form>
+        </details>
+      </section>
+      <section class="panel advanced-tools">
+        <div class="panel-head"><div><h2>Add or update an offering <span class="advanced-label">Advanced</span></h2><p>Define what customers can inquire about and how pricing is described.</p></div></div>
+        <details class="advanced-disclosure">
+          <summary>Open offering editor</summary>
+        <form class="form-grid" method="post" action="/admin/building/offerings">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="offering-id">Stable ID</label><input id="offering-id" name="offering_id" required placeholder="private-office-201"></div>
+          <div class="field"><label for="offering-slug">Public URL slug</label><input id="offering-slug" name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="private-office-201"></div>
+          <div class="field"><label for="offering-name">Name</label><input id="offering-name" name="name" required placeholder="Private Office 201"></div>
+          <div class="field"><label for="offering-type">Offering type</label><select id="offering-type" name="offering_type"><option value="private_office">Private office</option><option value="coworking">Coworking</option><option value="meeting_room">Meeting room</option><option value="event">Event</option><option value="warehouse">Warehouse</option><option value="membership">Membership</option></select></div>
+          <div class="field"><label for="offering-space">Linked space</label><select id="offering-space" name="space_id"><option value="">No specific space</option>{linked_space_options}</select></div>
+          <div class="field"><label for="offering-price">Public price wording</label><input id="offering-price" name="price_display" placeholder="From $1,250/month"></div>
+          <div class="field"><label for="offering-unit">Booking unit</label><select id="offering-unit" name="booking_unit"><option value="custom">Custom</option><option value="month">Monthly</option><option value="day">Daily</option><option value="hour">Hourly</option><option value="event">Per event</option></select></div>
+          <div class="field"><label for="offering-cta">Call to action</label><select id="offering-cta" name="call_to_action"><option value="inquire">Inquire</option><option value="tour">Schedule a tour</option><option value="request_date">Request a date</option><option value="join_waitlist">Join waitlist</option></select></div>
+          <div class="field field--wide"><label for="offering-features">Included features</label><input id="offering-features" name="features" placeholder="Conference access, mail service, Boom Standard"></div>
+          <div class="field field--wide"><label for="offering-description">Public description</label><textarea id="offering-description" name="public_description" placeholder="Warm, specific copy for the public offering."></textarea></div>
+          <div class="form-actions"><span class="form-note">Publish only after the linked space, price wording, and copy have been reviewed.</span><label class="check"><input type="checkbox" name="is_published" value="true"> Publish offering</label><button class="primary" type="submit">Save offering</button></div>
+        </form>
+        </details>
+      </section>
+        </details>
+      </section>
         </div>
       </details>
       <section class="panel building-view view-contacts">
@@ -1822,7 +1928,7 @@ def render_building_page(
         </form>
         </details>
       </section>
-      <section class="panel building-view view-settings">
+      <section class="panel building-view view-contacts">
         <div class="panel-head"><div><h2>Preview a roster import</h2><p>Stage up to 500 tenant or community contacts before anything changes.</p></div></div>
         <details class="task-creator"><summary>Import a contact roster</summary>
         <form class="form-grid" method="post" action="/admin/building/roster-imports/preview">
@@ -1871,22 +1977,21 @@ def render_building_page(
         </details>
       </section>
       <section class="panel panel--wide building-view view-sales" id="add-assisted-lead">
-        <div class="panel-head"><div><h2>Add an assisted lead</h2><p>Bring Facebook Marketplace, Eventective, referral, phone, and walk-in leads into the same Agent inquiry queue.</p></div></div>
-        <details class="task-creator"><summary>Add a lead manually</summary>
+        <div class="panel-head"><div><h2>Quick staff inquiry</h2><p>Add a prospect with only the information you have. You can complete event details later in the customer workspace.</p></div></div>
+        <details class="task-creator" open><summary>Create an inquiry</summary>
         <form class="form-grid" method="post" action="/admin/building/inquiries">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <div class="field"><label for="lead-kind">Journey</label><select id="lead-kind" name="kind"><option value="workspace">Workspace</option><option value="tour">Tour</option><option value="event">Event</option></select></div>
-          <div class="field"><label for="lead-source">Lead source</label><select id="lead-source" name="source"><option value="facebook_marketplace">Facebook Marketplace</option><option value="eventective">Eventective</option><option value="referral">Referral</option><option value="phone">Phone</option><option value="walk_in">Walk-in</option><option value="direct">Direct</option></select></div>
+          <input type="hidden" name="kind" value="event">
+          <input type="hidden" name="source" value="staff">
+          <input type="hidden" name="consent_to_contact" value="true">
           <div class="field"><label for="lead-name">Name</label><input id="lead-name" name="name" required></div>
           <div class="field"><label for="lead-email">Email</label><input id="lead-email" name="email" type="email" required></div>
           <div class="field"><label for="lead-phone">Phone</label><input id="lead-phone" name="phone" type="tel"></div>
           <div class="field"><label for="lead-date">Preferred date</label><input id="lead-date" name="preferred_date" type="date"></div>
-          <div class="field"><label for="lead-offering">Offering</label><select id="lead-offering" name="offering_id"><option value="">Not decided</option>{offering_options}</select></div>
-          <div class="field"><label for="lead-reference">Original source reference</label><input id="lead-reference" name="source_reference" placeholder="Required for Marketplace or Eventective"></div>
-          <div class="field field--wide"><label for="lead-details">Original request and operator notes</label><textarea id="lead-details" name="details" placeholder="Preserve the requested dates, capacity, budget, and original message."></textarea></div>
+          <div class="field field--wide"><label for="lead-details">What do you know?</label><textarea id="lead-details" name="details" placeholder="Other possible dates, guest count, event type, budget, or anything discussed."></textarea></div>
           <div class="form-actions">
-            <div><label class="check"><input type="checkbox" name="consent_to_contact" value="true" required> The person asked to be contacted about this request</label><label class="check"><input type="checkbox" name="consent_to_marketing" value="true"> Separate promotional-email consent is documented</label></div>
-            <button class="primary" type="submit">Add lead to response queue</button>
+            <span class="form-note">Creates an inquiry only. It does not hold a date, send an email, or subscribe the person to marketing.</span>
+            <button class="primary" type="submit">Create staff inquiry</button>
           </div>
         </form>
         </details>
@@ -1919,7 +2024,7 @@ def render_building_page(
           <div class="field"><label for="review-inquiry">Qualified event inquiry</label><select id="review-inquiry" name="inquiry_id" required><option value="">Choose accepted inquiry</option>{qualified_event_inquiry_options}</select></div>
           <input type="hidden" name="reservation_id" value="{_esc(generated_reservation_id)}">
           <div class="field"><label for="review-space">Event space</label><select id="review-space" name="space_id" required><option value="">Choose space</option>{linked_space_options}</select></div>
-          <div class="field"><label for="review-offering">Event offering</label><select id="review-offering" name="offering_id" required><option value="">Choose offering</option>{offering_options}</select></div>
+          <div class="field"><label for="review-offering">Event offering</label><select id="review-offering" name="offering_id" required><option value="">Choose offering</option>{event_offering_options}</select></div>
           <div class="field"><label for="review-contact">Responsible contact</label><select id="review-contact" name="contact_id"><option value="">Link later</option>{contact_options}</select></div>
           <div class="field"><label for="review-attendance">Attendance</label><input id="review-attendance" name="attendance" type="number" min="1" required></div>
           <div class="field"><label for="review-setup">Setup starts (Mountain time)</label><input id="review-setup" name="setup_starts_at" type="datetime-local" required></div>
@@ -1990,7 +2095,16 @@ def render_building_page(
         </form>
         </details>
       </section>
-      <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>Agent owns each lead through response and qualification. Date blocking moves to Google Calendar; contracts and invoices move to QuickBooks; customer follow-up moves through email.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status and action</th><th>Source</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>Agent owns each lead through response and qualification. Open a customer to see the complete original submission and one next action.</p></div><span class="count">{len(inquiries)} shown</span></div>
+        <form class="lead-filters" method="get" action="/admin/building/sales">
+          <label>Search<input type="search" name="q" value="{_esc(inquiry_filters.get('q'))}" placeholder="Name, email, phone, date, or event"></label>
+          <label>Lifecycle<select name="lead_status"><option value="open"{' selected' if inquiry_filters.get('status') == 'open' else ''}>Open leads</option><option value="new"{' selected' if inquiry_filters.get('status') == 'new' else ''}>New</option><option value="responded"{' selected' if inquiry_filters.get('status') == 'responded' else ''}>Responded</option><option value="qualified"{' selected' if inquiry_filters.get('status') == 'qualified' else ''}>Qualified</option><option value="closed_won"{' selected' if inquiry_filters.get('status') == 'closed_won' else ''}>Closed won</option><option value="closed_lost"{' selected' if inquiry_filters.get('status') == 'closed_lost' else ''}>Closed lost</option><option value="all"{' selected' if inquiry_filters.get('status') == 'all' else ''}>All stages</option></select></label>
+          <label>Records<select name="lead_scope"><option value="live"{' selected' if inquiry_filters.get('scope') == 'live' else ''}>Prospects</option><option value="test"{' selected' if inquiry_filters.get('scope') == 'test' else ''}>Test records</option><option value="all"{' selected' if inquiry_filters.get('scope') == 'all' else ''}>All records</option></select></label>
+          <label>Sort<select name="lead_sort"><option value="priority"{' selected' if inquiry_filters.get('sort') == 'priority' else ''}>Needs attention</option><option value="newest"{' selected' if inquiry_filters.get('sort') == 'newest' else ''}>Newest first</option><option value="event_date"{' selected' if inquiry_filters.get('sort') == 'event_date' else ''}>Event date</option></select></label>
+          <button class="secondary" type="submit">Apply</button><a href="/admin/building/sales">Reset</a>
+          <span class="sub">{_esc(inquiry_filters.get('test_count', 0))} recognized test records are hidden from the default prospect queue.</span>
+        </form>
+        <div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status and action</th><th>Source</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-bookings" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/contracts">Open contracts →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-sales view-operations" id="building-tours"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-operations">
@@ -2009,7 +2123,7 @@ def render_building_page(
         <div class="checklist-list">{checklist_blocks}</div>
       </section>
       <section class="panel panel--wide building-view view-billing"><div class="panel-head"><div><h2>Billing schedules</h2><p>Drafts are editable; approved schedules are locked and provider writes require typed confirmation.</p></div><span class="count">{len(billing_schedules)} schedules</span></div><div class="table-wrap"><table><thead><tr><th>Schedule</th><th>Amount</th><th>Next invoice</th><th>Status</th><th>Action</th></tr></thead><tbody>{billing_schedule_rows}</tbody></table></div></section>
-      <section class="panel panel--wide building-view view-billing" id="billing-and-collections"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-billing" id="billing-and-collections"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th><th>Evidence</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>
       {(
         f'''<section class="panel panel--wide building-view view-billing"><div class="panel-head"><div><h2>Collection work</h2><p>Overdue balances become owned follow-up cases. Reminders require typed confirmation and retain delivery evidence.</p></div><span class="count">{len(collections)} cases</span></div>
         <form class="inline-send" method="post" action="/admin/building/billing/collections/refresh"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="default_owner" placeholder="Default collection owner"><button class="secondary secondary--small" type="submit">Refresh invoice aging</button></form>
@@ -2034,7 +2148,7 @@ def render_building_page(
       )}
       <section class="panel panel--wide building-view view-catalog" id="inventory"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-catalog"><div class="panel-head"><div><h2>Media assignments</h2><p>Choose one space at a time. Draft media never reaches the public site, and approval requires descriptive alt text.</p></div></div><div class="checklist-list">{media_blocks}</div></section>
-      <section class="panel panel--wide building-view view-settings"><div class="panel-head"><div><h2>Roster import reviews</h2><p>Previewed lists remain inert until an operator confirms the exact snapshot.</p></div><span class="count">{len(roster_imports)} imports</span></div><div class="table-wrap"><table><thead><tr><th>Roster</th><th>Contacts</th><th>Status</th><th>Action</th></tr></thead><tbody>{roster_import_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-contacts"><div class="panel-head"><div><h2>Roster import reviews</h2><p>Previewed lists remain inert until an operator confirms the exact snapshot.</p></div><span class="count">{len(roster_imports)} imports</span></div><div class="table-wrap"><table><thead><tr><th>Roster</th><th>Contacts</th><th>Status</th><th>Action</th></tr></thead><tbody>{roster_import_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-contacts" id="customer-email-list"><div class="panel-head"><div><h2>Customer contacts and email permissions</h2><p>Relationships, contact permission, suppression, and customer communication controls. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th><th>Data controls</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-contacts">
         <div class="panel-head"><div><h2>Duplicate contact review</h2><p>Preview every move before merging. The survivor keeps the most restrictive communication permission; campaign and inquiry history remains unchanged.</p></div><span class="count">{len(contact_merges)} completed</span></div>
@@ -2049,7 +2163,9 @@ def render_building_page(
         <div class="table-wrap"><table><thead><tr><th>Merge</th><th>Reason</th><th>Permission result</th><th>Evidence</th></tr></thead><tbody>{merge_rows}</tbody></table></div>
       </section>
       <section class="panel panel--wide building-view view-settings">
-        <div class="panel-head"><div><h2>Data governance</h2><p>Track access, correction, suppression, deletion review, and retention review with a 30-day deadline. Deletion is never automatic.</p></div><span class="count">{len(privacy_requests)} requests</span></div>
+        <details class="advanced-disclosure">
+          <summary>Data and privacy requests ({len(privacy_requests)})</summary>
+          <p class="form-note">Access, correction, suppression, deletion review, and retention review. Each one gets a 30-day deadline. Deletion is never automatic.</p>
         <details class="task-creator"><summary>Add a privacy request</summary>
         <form class="form-grid" method="post" action="/admin/building/privacy/requests">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
@@ -2062,11 +2178,32 @@ def render_building_page(
         </form>
         </details>
         <div class="table-wrap"><table><thead><tr><th>Request</th><th>Status</th><th>Owner</th><th>Review action</th></tr></thead><tbody>{privacy_rows}</tbody></table></div>
+        </details>
       </section>
       <section class="panel building-view view-contacts"><div class="panel-head"><div><h2>Audiences</h2><p>Explainable tenant and community segments.</p></div><span class="count">{len(segments)} segments</span></div><div class="table-wrap"><table><thead><tr><th>Audience</th><th>Relationships</th><th>Eligible</th><th>Status</th></tr></thead><tbody>{segment_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-contacts"><div class="panel-head"><div><h2>Campaigns</h2><p>Draft, preview, approval, and delivery state.</p></div><span class="count">{len(campaigns)} campaigns</span></div><div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Audience</th><th>Recipients</th><th>Status</th><th>Action</th></tr></thead><tbody>{campaign_rows}</tbody></table></div></section>
     </div>
   </main>
+  <script>
+    (() => {{
+      // Deep links from the launch checklist point inside collapsed
+      // <details>. Open every ancestor first or the link does nothing.
+      const reveal = () => {{
+        const id = decodeURIComponent(window.location.hash.slice(1));
+        if (!id) return;
+        const target = document.getElementById(id);
+        if (!target) return;
+        let node = target.parentElement;
+        while (node) {{
+          if (node.tagName === "DETAILS") node.open = true;
+          node = node.parentElement;
+        }}
+        target.scrollIntoView({{block: "center"}});
+      }};
+      window.addEventListener("hashchange", reveal);
+      reveal();
+    }})();
+  </script>
 </body>
 </html>"""
     return _with_accessible_control_names(document)

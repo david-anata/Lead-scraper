@@ -14,8 +14,8 @@ from sales_support_agent.models.database import (
     init_database,
 )
 from sales_support_agent.services.cashflow.plaid import (
-    PlaidClient, PlaidError, _WEBHOOK_KEY_CACHE, _cents, disconnect_item, store_item,
-    verify_webhook,
+    PlaidClient, PlaidError, _WEBHOOK_KEY_CACHE, _cents, _upsert_transaction,
+    disconnect_item, store_item, verify_webhook,
 )
 
 
@@ -36,6 +36,38 @@ def test_money_conversion_uses_decimal_rounding():
     assert _cents(None) is None
 
 
+def test_plaid_check_keeps_account_context_and_is_protected_from_trimming():
+    factory = create_session_factory("sqlite:///:memory:")
+    init_database(factory)
+    finance_engine = factory.kw["bind"]
+    now = datetime.now(timezone.utc)
+
+    with finance_engine.begin() as connection:
+        _upsert_transaction(connection, {
+            "transaction_id": "transaction-check-1",
+            "account_id": "account-payroll-1",
+            "amount": 1250,
+            "date": "2026-07-11",
+            "name": "Check #1842",
+            "transaction_code": "check",
+            "pending": False,
+            "personal_finance_category": {
+                "primary": "GENERAL_MERCHANDISE",
+                "detailed": "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
+            },
+        }, now=now)
+
+    with finance_engine.connect() as connection:
+        row = connection.execute(text("""
+            SELECT category, subcategory, bank_transaction_type, notes
+            FROM cash_events WHERE source_id='transaction-check-1'
+        """)).one()
+    assert row.category == "manual_check"
+    assert row.bank_transaction_type == "check"
+    assert row.subcategory.startswith("GENERAL_MERCHANDISE")
+    assert json.loads(row.notes)["account_id"] == "account-payroll-1"
+
+
 def test_invalid_environment_is_rejected():
     with pytest.raises(ValueError, match="PLAID_ENV"):
         PlaidClient(_settings(plaid_environment="unknown"))
@@ -54,6 +86,7 @@ def test_link_token_is_transactions_only():
     assert client.create_link_token(client_user_id="finance-user") == "link-sandbox"
     assert captured["path"] == "/link/token/create"
     assert captured["payload"]["products"] == ["transactions"]
+    assert captured["payload"]["transactions"]["days_requested"] == 730
     assert "auth" not in captured["payload"]["products"]
     assert "transfer" not in captured["payload"]["products"]
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import html
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from sales_support_agent.services.admin_nav import (
@@ -56,11 +56,11 @@ def _page(
         --line: rgba(43, 54, 68, 0.12);
       }}
       * {{ box-sizing: border-box; }}
-      body {{ margin: 0; background: var(--light-brown); color: var(--dark-blue); font-family: "Inter","Segoe UI",sans-serif; }}
+      body {{ margin: 0; overflow-x: hidden; background: var(--light-brown); color: var(--dark-blue); font-family: "Inter","Segoe UI",sans-serif; }}
       a {{ color: var(--dark-blue); }}
       {render_agent_nav_styles()}
       .shell {{ max-width: 1320px; margin: 0 auto; padding: 28px 24px 64px; }}
-      .workspace {{ background: var(--white); border: 1px solid var(--line); border-radius: 26px; box-shadow: 0 18px 40px var(--shadow); padding: 26px; }}
+      .workspace {{ min-width:0; max-width:100%; background: var(--white); border: 1px solid var(--line); border-radius: 26px; box-shadow: 0 18px 40px var(--shadow); padding: 26px; }}
       .page-header {{ padding-bottom: 18px; border-bottom: 1px solid var(--line); margin-bottom: 22px; }}
       .eyebrow {{ display: inline-block; padding: 10px 15px; border-radius: 6px; background: var(--dark-blue); color: var(--white);
         font-family: "Montserrat",sans-serif; font-weight: 700; font-size: 14px; line-height: 1; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 14px; }}
@@ -104,6 +104,8 @@ def _page(
       .metric small {{ font-size: 12px; color: rgba(43,54,68,0.65); }}
       .narrative {{ background: #f4f8fb; border-left: 4px solid var(--light-blue); border-radius: 0 12px 12px 0; padding: 16px 18px; font-size: 15px; line-height: 1.55; white-space: pre-wrap; }}
       table.burn {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
+      .table-scroll {{ width:100%; max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; }}
+      .table-scroll table.burn {{ min-width:560px; }}
       table.burn th {{ text-align: left; font-family: "Montserrat",sans-serif; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: rgba(43,54,68,0.6); padding: 8px 10px; border-bottom: 2px solid var(--line); }}
       table.burn td {{ padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; }}
       table.burn tr:hover td {{ background: #fafbfc; }}
@@ -152,11 +154,11 @@ def _goals_fields(goals: Optional[Goals]) -> str:
     )
     return f"""
       <div class="row">
-        <div class="field"><label>Revenue target ($)</label><input type="number" step="0.01" name="revenue_target" value="{_esc(rev)}" placeholder="100000"></div>
-        <div class="field"><label>ACoS target (%)</label><input type="number" step="0.1" name="acos_target" value="{_esc(acos)}" placeholder="30"></div>
-        <div class="field"><label>TACoS target (%)</label><input type="number" step="0.1" name="tacos_target" value="{_esc(tacos)}" placeholder="25"></div>
-        <div class="field"><label>Units target</label><input type="number" name="units_target" value="{_esc(units)}" placeholder="500"></div>
-        <div class="field"><label>Period</label><select name="period">{periods}</select></div>
+        <div class="field"><label>Revenue target ($)</label><input aria-label="Revenue target in dollars" type="number" step="0.01" name="revenue_target" value="{_esc(rev)}" placeholder="100000"></div>
+        <div class="field"><label>ACoS target (%)</label><input aria-label="ACoS target percent" type="number" step="0.1" name="acos_target" value="{_esc(acos)}" placeholder="30"></div>
+        <div class="field"><label>TACoS target (%)</label><input aria-label="TACoS target percent" type="number" step="0.1" name="tacos_target" value="{_esc(tacos)}" placeholder="25"></div>
+        <div class="field"><label>Units target</label><input aria-label="Units target" type="number" name="units_target" value="{_esc(units)}" placeholder="500"></div>
+        <div class="field"><label>Period</label><select aria-label="Goal period" name="period">{periods}</select></div>
       </div>"""
 
 
@@ -258,7 +260,7 @@ def _client_select(clients: list[dict]) -> str:
     return (
         '<div class="field" style="max-width:480px;">'
         '<label>Client</label>'
-        '<select id="adv-client" name="client_id" onchange="advClientChange()">'
+        '<select id="adv-client" aria-label="Advertising client" name="client_id" onchange="advClientChange()">'
         + "".join(opts) +
         '</select>'
         '<span class="hint">Pick the client to run this audit for — its goals pre-fill below and the run is '
@@ -290,9 +292,9 @@ def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None,
         <h2 style="font-size:15px;">Off-Amazon marketing spend <small>- added to blended TACoS</small></h2>
         <div id="ext-rows">
           <div class="row ext-row">
-            <div class="field"><label>Channel</label><select name="ext_channel"><option value=""></option>{ext_channels}</select></div>
-            <div class="field"><label>Label (optional)</label><input type="text" name="ext_label" placeholder="e.g. Meta prospecting / influencer Jane"></div>
-            <div class="field"><label>Amount ($)</label><input type="number" step="0.01" name="ext_amount" placeholder="0.00"></div>
+            <div class="field"><label>Channel</label><select aria-label="Off-Amazon spend channel" name="ext_channel"><option value=""></option>{ext_channels}</select></div>
+            <div class="field"><label>Label (optional)</label><input aria-label="Off-Amazon spend label" type="text" name="ext_label" placeholder="e.g. Meta prospecting / influencer Jane"></div>
+            <div class="field"><label>Amount ($)</label><input aria-label="Off-Amazon spend amount in dollars" type="number" step="0.01" name="ext_amount" placeholder="0.00"></div>
           </div>
         </div>
         <div style="margin-top:10px;"><button type="button" class="btn secondary" id="adv-add-ext">+ Add channel</button></div>
@@ -300,21 +302,21 @@ def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None,
       <details class="guide">
         <summary>Assign files individually instead (advanced)</summary>
         <div class="row" style="margin-top:12px;">
-          <div class="field"><label>Amazon bulk operations file (XLSX)</label><input type="file" name="bulk_xlsx" accept=".xlsx"></div>
-          <div class="field"><label>Search Term (CSV)</label><input type="file" name="search_term_csv" accept=".csv"></div>
-          <div class="field"><label>Business Report (CSV)</label><input type="file" name="business_report_csv" accept=".csv"></div>
-          <div class="field"><label>Search Query Performance (SQP) report (CSV)</label><input type="file" name="sqp_csv" accept=".csv"></div>
-          <div class="field"><label>DSP (CSV)</label><input type="file" name="dsp_csv" accept=".csv"></div>
-          <div class="field"><label>External costs (CSV)</label><input type="file" name="external_costs_csv" accept=".csv"></div>
-          <div class="field"><label>Unit costs by ASIN (COGS CSV)</label><input type="file" name="cogs_csv" accept=".csv"></div>
+          <div class="field"><label>Amazon bulk operations file (XLSX)</label><input aria-label="Amazon bulk operations file" type="file" name="bulk_xlsx" accept=".xlsx"></div>
+          <div class="field"><label>Search Term (CSV)</label><input aria-label="Search Term CSV" type="file" name="search_term_csv" accept=".csv"></div>
+          <div class="field"><label>Business Report (CSV)</label><input aria-label="Business Report CSV" type="file" name="business_report_csv" accept=".csv"></div>
+          <div class="field"><label>Search Query Performance (SQP) report (CSV)</label><input aria-label="Search Query Performance report CSV" type="file" name="sqp_csv" accept=".csv"></div>
+          <div class="field"><label>DSP (CSV)</label><input aria-label="DSP CSV" type="file" name="dsp_csv" accept=".csv"></div>
+          <div class="field"><label>External costs (CSV)</label><input aria-label="External costs CSV" type="file" name="external_costs_csv" accept=".csv"></div>
+          <div class="field"><label>Unit costs by ASIN (COGS CSV)</label><input aria-label="Unit costs by ASIN CSV" type="file" name="cogs_csv" accept=".csv"></div>
         </div>
       </details>
       <div class="field" style="max-width:420px;">
         <label>Brand focus (optional)</label>
-        <input id="adv-brand" type="text" name="brand" placeholder="e.g. Zantrex — leave blank for full account">
+        <input id="adv-brand" aria-label="Brand focus" type="text" name="brand" placeholder="e.g. Zantrex — leave blank for full account">
         <span class="hint">Type the client brand to scope the whole audit + plan to its campaigns &amp; ASINs.</span>
       </div>
-      <div class="field" style="max-width:320px;"><label>Run label (optional)</label><input type="text" name="label" placeholder="{_week_label()}"></div>
+      <div class="field" style="max-width:320px;"><label>Run label (optional)</label><input aria-label="Run label" type="text" name="label" placeholder="{_week_label()}"></div>
       <div class="card" style="margin:6px 0 0;background:#fafbfc;">
         <h2 style="font-size:15px;">Goals <small>— targets the plan measures against (saved &amp; applied on run)</small></h2>
         {_goals_fields(goals)}
@@ -416,6 +418,37 @@ def _last_run_strip(latest: dict) -> str:
     )
 
 
+def _run_is_stale(run: dict, *, now: Optional[datetime] = None) -> bool:
+    """Return true when a running audit has stopped reporting progress."""
+    if str(run.get("status") or "").strip().lower() != "running":
+        return False
+    raw = str(run.get("updated_at") or run.get("created_at") or "").strip()
+    if not raw:
+        return True
+    try:
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    return current.astimezone(timezone.utc) - stamp.astimezone(timezone.utc) > timedelta(minutes=10)
+
+
+def _run_download_actions(run: dict) -> str:
+    rid = _esc(run.get("id"))
+    actions = []
+    if run.get("has_plan"):
+        actions.append(f'<a class="btn" href="/admin/advertising/audit/{rid}/plan.xlsx">Download growth plan</a>')
+    if run.get("has_bids"):
+        actions.append(f'<a class="btn secondary" href="/admin/advertising/audit/{rid}/bulk/bids.xlsx">Download bid changes</a>')
+    if run.get("has_additions"):
+        actions.append(f'<a class="btn secondary" href="/admin/advertising/audit/{rid}/bulk/additions.xlsx">Download additions</a>')
+    if run.get("has_apply"):
+        actions.append(f'<a class="btn secondary" href="/admin/advertising/audit/{rid}/bulk/combined.xlsx">Download apply sheet</a>')
+    return " ".join(actions)
+
+
 def _active_run_card(active_run: dict) -> str:
     status = str(active_run.get("status") or "").strip().lower()
     summary = active_run.get("summary", {}) or {}
@@ -423,7 +456,15 @@ def _active_run_card(active_run: dict) -> str:
     when = (active_run.get("created_at") or "")[:16].replace("T", " ")
     label = (active_run.get("label") or "").strip()
     label_html = f'<div class="flash-detail">Run label: {_esc(label)}</div>' if label else ""
-    if status == "running":
+    stale = _run_is_stale(active_run)
+    downloads = _run_download_actions(active_run)
+    if status == "running" and stale:
+        body = (
+            "This audit stopped reporting progress. It is no longer shown as actively running. "
+            + ("The generated files are preserved below; review them before deciding whether to rerun." if downloads else "No generated files were found. Check the inputs and start a new audit.")
+        )
+        card_style = 'border:2px solid #d9a441;background:#fdf6e9;'
+    elif status == "running":
         body = (
             "Audit is still running. This page refreshes automatically and the run will move into "
             "History once the downloads are ready."
@@ -432,12 +473,14 @@ def _active_run_card(active_run: dict) -> str:
     else:
         body = _esc(active_run.get("error") or "Audit failed before downloads were generated. Re-run with the same files.")
         card_style = 'border:2px solid #d9a441;background:#fdf6e9;'
+    download_actions = f'<div class="strip-actions">{downloads}</div>' if downloads else ""
     return (
         f'<div class="card" style="{card_style}">'
         f'<h2 style="margin-bottom:8px;">{_esc(brand)}</h2>'
         f'<div style="font-size:14px;line-height:1.6;">{body}</div>'
         f'<div class="flash-detail">Started: {_esc(when or "just now")}</div>'
         f'{label_html}'
+        f'{download_actions}'
         '</div>'
     )
 
@@ -468,9 +511,9 @@ def _history_table(runs: list[dict]) -> str:
             f"<td>{_esc(recs) if recs else '—'}</td><td>{downloads}</td></tr>"
         )
     return (
-        '<table class="burn"><thead><tr>'
+        '<div class="table-scroll" role="region" aria-label="Advertising audit history" tabindex="0"><table class="burn"><thead><tr>'
         "<th>Brand</th><th>Run</th><th>Sales</th><th>Blended TACoS</th><th>Actions</th><th>Downloads</th>"
-        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>"
     )
 
 
@@ -495,7 +538,7 @@ def render_audit_page(
     active_html = _active_run_card(active_run) if active_run else ""
     auto_refresh_html = (
         "<script>setTimeout(function(){ window.location.reload(); }, 8000);</script>"
-        if active_run and str(active_run.get("status") or "").strip().lower() == "running"
+        if active_run and str(active_run.get("status") or "").strip().lower() == "running" and not _run_is_stale(active_run)
         else ""
     )
 

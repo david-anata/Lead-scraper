@@ -5,11 +5,12 @@ import io
 import os
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import sys
 from types import SimpleNamespace
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -31,6 +32,7 @@ from sales_support_agent.services.website_ops_autonomy import (
 from sales_support_agent.services.website_ops_content import clean_generated_content
 from sales_support_agent.services.website_ops_article_engine import build_article_action
 from sales_support_agent.services.website_ops import (
+    _execute_record,
     discover_website_ops_urls,
     execute_approved_website_ops_actions,
     get_website_ops_run_state,
@@ -38,14 +40,19 @@ from sales_support_agent.services.website_ops import (
     load_feedback_records,
     load_website_ops_run_state,
     render_dashboard_page,
+    render_content_page,
     render_feedback_detail_page,
     render_indexing_page,
     render_query_map_page,
+    reconcile_codex_publications,
     render_queue_page,
     render_report_page,
+    render_site_health_page,
+    reconcile_missing_generated_articles,
     review_feedback_record,
     run_website_ops,
     save_feedback_record,
+    send_website_ops_failure_email,
     send_website_ops_report_email,
     website_ops_operating_state,
     website_ops_run_is_due,
@@ -60,11 +67,18 @@ from sales_support_agent.services.website_ops_vendor.executor import (
     resolve_insertion_point,
 )
 from sales_support_agent.api.website_ops_jobs_router import (
+    _daily_run_has_verified_outcome,
+    _daily_run_is_fresh,
+    _latest_autonomous_execution_error,
+    _run_due_modes,
+    _run_embedded_pulse,
     _scheduled_modes,
     router as website_ops_jobs_router,
 )
 from sales_support_agent.services.website_ops_github import (
+    execute_github_article_action,
     execute_github_metadata_action,
+    generated_article_identities,
     route_source_path,
     update_generated_article_registry,
     update_static_metadata_source,
@@ -78,6 +92,220 @@ from sales_support_agent.services.website_ops_program import (
 
 
 class AdminWebsiteOpsTests(unittest.TestCase):
+    def test_missing_verified_article_is_requeued_from_validated_payload(self) -> None:
+        article = json.loads(str(self._generated_article_record()["action_value"]))
+        record = {
+            "feedback_id": "published-article",
+            "status": "done",
+            "action_type": "publish_blog_article",
+            "action_value": json.dumps(article),
+            "execution_result": {"verification_status": "verified"},
+        }
+        updated = {**record, "status": "approved"}
+        with mock.patch(
+            "sales_support_agent.services.website_ops.github_metadata_is_configured",
+            return_value=True,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops.load_generated_article_identities",
+            return_value={"slugs": set(), "evidence_ids": set(), "primary_intents": set()},
+        ), mock.patch(
+            "sales_support_agent.services.website_ops.load_feedback_records",
+            return_value=[record],
+        ), mock.patch.object(
+            website_ops,
+            "update_feedback_entry",
+            return_value=updated,
+        ) as update:
+            reopened = reconcile_missing_generated_articles(SimpleNamespace())
+
+        self.assertEqual(reopened, [updated])
+        self.assertEqual(update.call_args.args[1]["status"], "approved")
+        self.assertIn("missing from the durable production registry", update.call_args.args[1]["review_notes"])
+
+    def test_durable_article_registry_entry_is_not_requeued(self) -> None:
+        article = json.loads(str(self._generated_article_record()["action_value"]))
+        record = {
+            "feedback_id": "published-article",
+            "status": "done",
+            "action_type": "publish_blog_article",
+            "action_value": json.dumps(article),
+        }
+        with mock.patch(
+            "sales_support_agent.services.website_ops.github_metadata_is_configured",
+            return_value=True,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops.load_generated_article_identities",
+            return_value={"slugs": {article["slug"]}},
+        ), mock.patch(
+            "sales_support_agent.services.website_ops.load_feedback_records",
+            return_value=[record],
+        ), mock.patch.object(website_ops, "update_feedback_entry") as update:
+            reopened = reconcile_missing_generated_articles(SimpleNamespace())
+
+        self.assertEqual(reopened, [])
+        update.assert_not_called()
+
+    def test_daily_pulse_retries_zero_delta_until_production_is_verified(self) -> None:
+        settings = SimpleNamespace()
+        active = SimpleNamespace(
+            ok=True,
+            message="work remains",
+            report={
+                "run_outcome": {
+                    "status": "work_in_progress",
+                    "production_delta_count": 0,
+                }
+            },
+        )
+        verified = SimpleNamespace(
+            ok=True,
+            message="published",
+            report={
+                "run_outcome": {
+                    "status": "production_verified",
+                    "production_delta_count": 1,
+                }
+            },
+        )
+        with (
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                return_value={},
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.write_website_ops_run_state"
+            ) as write_state,
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
+                side_effect=[active, verified],
+            ) as run,
+        ):
+            result = _run_due_modes(
+                settings,
+                ["daily"],
+                trigger="test",
+                force=True,
+                business_date=date(2026, 8, 1),
+            )
+
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(result["daily"]["status"], "succeeded")
+        self.assertEqual(result["daily"]["attempts"], 2)
+        persisted_updates = [call.args[2] for call in write_state.call_args_list]
+        self.assertEqual(persisted_updates[0]["run_date"], "2026-08-01")
+        self.assertEqual(persisted_updates[-1]["last_successful_date"], "2026-08-01")
+
+    def test_daily_pulse_fails_truthfully_after_zero_delta_retries_exhaust(self) -> None:
+        settings = SimpleNamespace()
+        active = SimpleNamespace(
+            ok=True,
+            message="work remains",
+            report={
+                "run_outcome": {
+                    "status": "work_in_progress",
+                    "production_delta_count": 0,
+                }
+            },
+        )
+        with (
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                return_value={},
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.write_website_ops_run_state"
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.send_website_ops_failure_email"
+            ) as failure_email,
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
+                return_value=active,
+            ) as run,
+        ):
+            result = _run_due_modes(
+                settings,
+                ["daily"],
+                trigger="test",
+                force=True,
+            )
+
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(result["daily"]["status"], "failed_outcome")
+        self.assertEqual(result["daily"]["attempts"], 3)
+        failure_email.assert_called_once()
+
+    def test_generated_article_identity_parser_reads_registry_contract(self) -> None:
+        source = '''
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES = [
+  {"slug":"existing","primaryIntent":"Existing Intent","evidenceId":"evidence-1"},
+] as const;
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+'''
+        identities = generated_article_identities(source)
+        self.assertEqual(identities["slugs"], {"existing"})
+        self.assertEqual(identities["evidence_ids"], {"evidence-1"})
+        self.assertEqual(identities["primary_intents"], {"existing intent"})
+
+    def test_health_selects_latest_autonomous_execution_error(self) -> None:
+        with mock.patch(
+            "sales_support_agent.api.website_ops_jobs_router.load_feedback_records",
+            return_value=[
+                {
+                    "auto_generated": True,
+                    "status": "error",
+                    "action_type": "publish_blog_article",
+                    "page_url": "https://anatainc.com/blog/older",
+                    "execution_error": "older failure",
+                    "last_execution_at": "2026-08-01T17:00:00+00:00",
+                },
+                {
+                    "auto_generated": True,
+                    "status": "error",
+                    "action_type": "publish_blog_article",
+                    "page_url": "https://anatainc.com/blog/newer",
+                    "execution_error": "production title did not match",
+                    "last_execution_at": "2026-08-01T18:00:00+00:00",
+                },
+            ],
+        ):
+            latest = _latest_autonomous_execution_error(SimpleNamespace())
+
+        self.assertEqual(latest["page_url"], "https://anatainc.com/blog/newer")
+        self.assertEqual(latest["error"], "production title did not match")
+
+    def test_autonomous_execution_error_is_recorded_and_rethrown_for_retry(self) -> None:
+        settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))
+        record = {
+            "feedback_id": "article-retry",
+            "status": "approved",
+            "action_type": "publish_blog_article",
+            "suggested_action_type": "publish_blog_article",
+            "execution_eligibility": "auto_execute",
+            "action_value": json.dumps({"evidenceId": "retry-topic"}),
+        }
+        with (
+            mock.patch(
+                "sales_support_agent.services.website_ops._execute_feedback_action",
+                side_effect=website_ops.ExecutionError("production verification failed"),
+            ),
+            mock.patch(
+                "sales_support_agent.services.website_ops._release_failed_article_claim",
+            ) as release,
+            mock.patch.object(website_ops, "update_feedback_entry") as update,
+            self.assertRaises(website_ops.ExecutionError),
+        ):
+            _execute_record(
+                settings,
+                SimpleNamespace(),
+                record,
+                raise_on_error=True,
+            )
+
+        release.assert_called_once_with(settings, record)
+        self.assertEqual(update.call_args.args[1]["status"], "error")
+
     def test_google_credential_loader_accepts_render_multiline_object_format(self) -> None:
         payload = _load_service_account_info(
             """{
@@ -418,14 +646,79 @@ example
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir))
             html = render_dashboard_page(settings)
-            self.assertIn("Continuous website", html)
-            self.assertIn("Continuous optimization loop", html)
-            self.assertIn("Repair Google connections", html)
-            self.assertIn('action="/admin/api/website-ops/run"', html)
-            self.assertIn("Run Daily Sweep", html)
-            self.assertIn("Weekly sweep unavailable", html)
-            self.assertIn("/admin/api/website-ops/feedback", html)
-            self.assertIn("hourly pulses from 8:00 AM through 3:00 PM America/Denver", html)
+            self.assertIn("Website growth", html)
+            self.assertIn("Codex publishes. Website Ops verifies and measures.", html)
+            self.assertIn("Today’s publishing", html)
+            self.assertIn("Needs you", html)
+            self.assertIn('action="/admin/website-ops/run-now"', html)
+            self.assertIn("Run today’s plan", html)
+            self.assertIn("Run weekly maintenance", html)
+            self.assertIn("One report is emailed after the workday cycle", html)
+            self.assertIn("Today", html)
+            self.assertIn("Site health", html)
+
+    def test_simple_command_center_detail_pages_render(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            content = render_content_page(settings)
+            health = render_site_health_page(settings)
+            self.assertIn("<h1>Content</h1>", content)
+            self.assertIn("Live articles", content)
+            self.assertIn("Possible improvements", content)
+            self.assertIn("<h1>Site health</h1>", health)
+            self.assertIn("Confirmed problems", health)
+            self.assertIn("Crawler warnings never become work automatically", health)
+
+    def test_command_center_reconciles_live_sitemap_articles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            settings.website_ops_site_urls = ("https://anatainc.com/",)
+            settings.website_ops_sitemap_url = "https://anatainc.com/sitemap.xml"
+            sitemap = b"""<?xml version='1.0'?><urlset><url><loc>https://anatainc.com/</loc></url><url><loc>https://anatainc.com/blog/one</loc></url><url><loc>https://anatainc.com/blog/two</loc></url></urlset>"""
+            with mock.patch(
+                "sales_support_agent.services.website_ops.urllib.request.urlopen",
+                return_value=io.BytesIO(sitemap),
+            ), mock.patch(
+                "sales_support_agent.services.website_ops._LIVE_SITEMAP_CACHE",
+                (0.0, ()),
+            ):
+                dashboard = render_dashboard_page(settings)
+                content = render_content_page(settings)
+                health = render_site_health_page(settings)
+            self.assertIn("<strong>2</strong>", dashboard)
+            self.assertIn("https://anatainc.com/blog/one", content)
+            self.assertIn("https://anatainc.com/blog/two", content)
+            self.assertIn("Sitemap pages</span><strong>3</strong>", health)
+
+    def test_codex_publications_require_complete_production_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            settings.website_ops_site_urls = ("https://anatainc.com/",)
+            article = {
+                "slug": "verified-guide",
+                "title": "Verified Guide",
+                "primaryIntent": "how to verify a guide",
+                "publishedAt": datetime.now(timezone.utc).isoformat(),
+                "content": {"eyebrow": "Shipping OS"},
+                "sources": [{"title": "Official source", "url": "https://example.org/source"}],
+            }
+            sitemap = b"<urlset><url><loc>https://anatainc.com/blog/verified-guide</loc></url></urlset>"
+            blog = b'<a href="/blog/verified-guide">Verified Guide</a>'
+            page = b'<link rel="canonical" href="https://anatainc.com/blog/verified-guide"><script type="application/ld+json">{"@type":"Article"}</script><h1>Verified Guide</h1><a href="https://example.org/source">Official source</a>'
+            with mock.patch(
+                "sales_support_agent.services.website_ops.load_generated_article_records",
+                return_value=([article], "registry-sha"),
+            ), mock.patch(
+                "sales_support_agent.services.website_ops._LIVE_SITEMAP_CACHE",
+                (0.0, ()),
+            ), mock.patch(
+                "sales_support_agent.services.website_ops.urllib.request.urlopen",
+                side_effect=[io.BytesIO(sitemap), io.BytesIO(blog), io.BytesIO(page)],
+            ):
+                records = reconcile_codex_publications(settings)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["verification_status"], "verified")
+            self.assertEqual(records[0]["commit_sha"], "registry-sha")
 
     def test_query_map_renders_evidence_ownership_and_shadow_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -537,10 +830,84 @@ example
             self.assertEqual(second["reason"], "unchanged")
             self.assertEqual(send.call_count, 1)
             sent_text = send.call_args_list[0].kwargs["text"]
-            self.assertIn("Changes completed:", sent_text)
-            self.assertIn("Your to-do list:", sent_text)
-            self.assertIn("What Agent is working on next:", sent_text)
-            self.assertIn("Nothing requires your attention today.", sent_text)
+            self.assertIn("BOTTOM LINE", sent_text)
+            self.assertIn("VERIFIED WEBSITE CHANGES", sent_text)
+            self.assertIn("WEBSITE HEALTH", sent_text)
+            self.assertIn("WHAT HAPPENS NEXT", sent_text)
+            self.assertIn("NEEDS YOU", sent_text)
+            self.assertIn("Nothing today. Website Ops and Codex own the next steps.", sent_text)
+            self.assertIn("https://agent.anatainc.com/admin/website-ops", sent_text)
+            self.assertIn(
+                "https://agent.anatainc.com/admin/website-ops/reports/latest",
+                sent_text,
+            )
+            self.assertNotIn("/admin/website-ops/strategy", sent_text)
+
+    def test_daily_email_leads_with_verified_outcome_and_plain_language(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                website_ops_root=Path(tmpdir),
+                website_ops_report_email_to=("david@anatainc.com",),
+                website_ops_email_from="Anata Agent <noreply@anatainc.com>",
+                resend_api_key="test-key",
+                resend_from="Anata Agent <noreply@anatainc.com>",
+            )
+            report = self._fake_report()
+            report.update(
+                {
+                    "date": "2026-08-12",
+                    "pages_reviewed": 122,
+                    "pages_healthy": 122,
+                    "analytics_status": {"search_console": True, "ga4": True},
+                    "run_outcome": {
+                        "status": "production_verified",
+                        "summary": "1 production change was independently verified.",
+                        "production_delta_count": 1,
+                        "next_operation": "Measure indexing and qualified-lead evidence.",
+                    },
+                    "executed_actions": [
+                        {
+                            "action_type": "publish_blog_article",
+                            "title": "How to Validate GA4 Ecommerce Events",
+                            "production_url": "https://anatainc.com/blog/validate-ga4-ecommerce-events",
+                            "verification_status": "verified",
+                        }
+                    ],
+                    "operations_summary": {
+                        "deferred_reasons": [
+                            {
+                                "count": 19,
+                                "reason": "URL inspections timed out and will retry.",
+                            }
+                        ]
+                    },
+                }
+            )
+            with mock.patch(
+                "sales_support_agent.services.website_ops.ResendClient.send_message",
+                return_value="email-1",
+            ) as send:
+                result = send_website_ops_report_email(
+                    settings, mode="daily", report=report
+                )
+
+            self.assertTrue(result["sent"])
+            sent = send.call_args.kwargs
+            self.assertEqual(
+                sent["subject"],
+                "Website Ops daily: 1 change verified - no action needed",
+            )
+            self.assertIn(
+                "Completed: 1 production change was independently verified.",
+                sent["text"],
+            )
+            self.assertIn("122 of 122 reviewed pages passed", sent["text"])
+            self.assertIn("Search Console: Connected", sent["text"])
+            self.assertIn("GA4: Connected", sent["text"])
+            self.assertIn("How to Validate GA4 Ecommerce Events", sent["text"])
+            self.assertIn("19: URL inspections timed out and will retry.", sent["text"])
+            self.assertNotIn("Candidates observed", sent["text"])
+            self.assertNotIn("Content briefs", sent["text"])
 
     def test_daily_email_ignores_volatile_report_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -565,6 +932,76 @@ example
             self.assertFalse(second["changed"])
             self.assertEqual(second["reason"], "unchanged")
             self.assertEqual(send.call_count, 1)
+
+    def test_seo_email_cadence_allows_only_one_changed_email_per_workday(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                website_ops_root=Path(tmpdir),
+                website_ops_report_email_to=("david@anatainc.com",),
+                website_ops_email_from="Anata Agent <noreply@anatainc.com>",
+                resend_api_key="test-key",
+                resend_from="Anata Agent <noreply@anatainc.com>",
+            )
+            first_report = self._fake_report()
+            second_report = dict(first_report)
+            second_report["issues"] = [{"summary": "new finding"}]
+            monday = datetime(2026, 8, 3, 15, tzinfo=timezone.utc)
+            with (
+                mock.patch(
+                    "sales_support_agent.services.website_ops._utc_now",
+                    return_value=monday,
+                ),
+                mock.patch(
+                    "sales_support_agent.services.website_ops.ResendClient.send_message",
+                    return_value="email-1",
+                ) as send,
+            ):
+                first = send_website_ops_report_email(
+                    settings, mode="daily", report=first_report
+                )
+                second = send_website_ops_report_email(
+                    settings, mode="daily", report=second_report
+                )
+                failure = send_website_ops_failure_email(
+                    settings, mode="daily", error="later pulse failed"
+                )
+
+            self.assertTrue(first["sent"])
+            self.assertFalse(second["sent"])
+            self.assertEqual(second["reason"], "daily_cadence")
+            self.assertFalse(failure["sent"])
+            self.assertEqual(failure["reason"], "daily_cadence")
+            self.assertEqual(send.call_count, 1)
+
+    def test_seo_email_cadence_suppresses_weekend_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                website_ops_root=Path(tmpdir),
+                website_ops_report_email_to=("david@anatainc.com",),
+                website_ops_email_from="Anata Agent <noreply@anatainc.com>",
+                resend_api_key="test-key",
+                resend_from="Anata Agent <noreply@anatainc.com>",
+            )
+            saturday = datetime(2026, 8, 1, 15, tzinfo=timezone.utc)
+            with (
+                mock.patch(
+                    "sales_support_agent.services.website_ops._utc_now",
+                    return_value=saturday,
+                ),
+                mock.patch(
+                    "sales_support_agent.services.website_ops.ResendClient.send_message"
+                ) as send,
+            ):
+                report = send_website_ops_report_email(
+                    settings, mode="daily", report=self._fake_report()
+                )
+                failure = send_website_ops_failure_email(
+                    settings, mode="daily", error="weekend pulse failed"
+                )
+
+            self.assertEqual(report["reason"], "outside_workday")
+            self.assertEqual(failure["reason"], "outside_workday")
+            send.assert_not_called()
 
     def test_run_due_respects_daily_weekly_and_monthly_periods(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -604,7 +1041,16 @@ example
             self.assertEqual(unauthorized.status_code, 401)
             with mock.patch(
                 "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
-                return_value=SimpleNamespace(message="Daily website ops run completed."),
+                return_value=SimpleNamespace(
+                    ok=True,
+                    message="Daily website ops run completed.",
+                    report={
+                        "run_outcome": {
+                            "status": "production_verified",
+                            "production_delta_count": 1,
+                        }
+                    },
+                ),
             ) as run:
                 response = client.post(
                     "/api/jobs/website-ops/run",
@@ -614,6 +1060,65 @@ example
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["details"]["daily"]["status"], "succeeded")
             run.assert_called_once_with(app.state.settings, mode="daily")
+
+    def test_forced_daily_run_recovers_a_stale_manual_lease(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            settings.internal_api_key = "test-internal-key"
+            local_now = datetime.now(ZoneInfo("America/Denver"))
+            write_website_ops_run_state(
+                settings,
+                "daily",
+                {
+                    "status": "running",
+                    "run_date": local_now.date().isoformat(),
+                    "last_started_at": (
+                        datetime.now(timezone.utc) - timedelta(hours=2)
+                    ).isoformat(),
+                },
+            )
+            app = FastAPI()
+            app.state.settings = settings
+            app.include_router(website_ops_jobs_router)
+            client = TestClient(app)
+            lease = SimpleNamespace(
+                job_key="website_ops",
+                run_key="recovery",
+                owner_token="owner",
+            )
+            with mock.patch(
+                "sales_support_agent.models.database.get_engine",
+                return_value=object(),
+            ), mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.claim_scheduled_job",
+                side_effect=[None, lease],
+            ) as claim, mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.finish_scheduled_job",
+            ), mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
+                return_value=SimpleNamespace(
+                    ok=True,
+                    message="Recovered.",
+                    report={
+                        "run_outcome": {
+                            "status": "production_verified",
+                            "production_delta_count": 1,
+                        }
+                    },
+                ),
+            ):
+                response = client.post(
+                    "/api/jobs/website-ops/run",
+                    headers={"X-Internal-Api-Key": "test-internal-key"},
+                    json={"mode": "daily", "force": True},
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(claim.call_count, 2)
+            self.assertIn(
+                ":force-recovery:",
+                claim.call_args_list[1].kwargs["run_key"],
+            )
 
     def test_scheduled_modes_add_weekly_and_monthly_on_first_monday(self) -> None:
         first_monday = datetime(2026, 8, 3, 8, 0, tzinfo=timezone.utc)
@@ -638,7 +1143,10 @@ example
                 {
                     "status": "succeeded",
                     "trigger": "render_cron",
-                    "last_successful_date": "2026-07-27",
+                    "run_date": datetime.now(ZoneInfo("America/Denver")).date().isoformat(),
+                    "last_successful_date": datetime.now(ZoneInfo("America/Denver")).date().isoformat(),
+                    "outcome_status": "production_verified",
+                    "production_delta_count": "1",
                 },
             )
             report_dir = Path(tmpdir) / "reports" / "daily"
@@ -664,6 +1172,7 @@ example
             )
             app = FastAPI()
             app.state.settings = settings
+            app.state.website_ops_scheduler_thread = SimpleNamespace(is_alive=lambda: True)
             app.include_router(website_ops_jobs_router)
             with mock.patch.dict(
                 os.environ,
@@ -690,10 +1199,279 @@ example
             self.assertEqual(payload["status"], "ready")
             self.assertTrue(all(payload["checks"].values()))
             self.assertEqual(payload["schedule"]["hour"], 8)
+            self.assertEqual(payload["schedule"]["source"], "embedded_scheduler")
             self.assertEqual(payload["runs"]["daily"]["status"], "succeeded")
             self.assertNotIn("last_error", payload["runs"]["daily"])
             self.assertEqual(payload["states"]["decision_data"], "ready")
             self.assertEqual(payload["user_todo"], [])
+
+    def test_daily_run_freshness_blocks_stale_state_after_first_pulse(self) -> None:
+        stale = {
+            "runs": {
+                "daily": {
+                    "run_date": "2026-07-31",
+                    "status": "succeeded",
+                }
+            }
+        }
+        self.assertFalse(
+            _daily_run_is_fresh(
+                stale,
+                datetime(2026, 8, 1, 11, 0, tzinfo=timezone.utc),
+            )
+        )
+        self.assertTrue(
+            _daily_run_is_fresh(
+                stale,
+                datetime(2026, 8, 1, 7, 59, tzinfo=timezone.utc),
+            )
+        )
+
+    def test_daily_run_freshness_blocks_stalled_running_state(self) -> None:
+        running = {
+            "runs": {
+                "daily": {
+                    "run_date": "2026-08-01",
+                    "status": "running",
+                    "last_started_at": "2026-08-01T16:00:00+00:00",
+                }
+            }
+        }
+
+        self.assertTrue(
+            _daily_run_is_fresh(
+                running,
+                datetime(2026, 8, 1, 16, 44, tzinfo=timezone.utc),
+            )
+        )
+        self.assertFalse(
+            _daily_run_is_fresh(
+                running,
+                datetime(2026, 8, 1, 16, 46, tzinfo=timezone.utc),
+            )
+        )
+
+    def test_daily_run_freshness_rejects_running_state_without_timestamp(self) -> None:
+        running = {
+            "runs": {
+                "daily": {
+                    "run_date": "2026-08-01",
+                    "status": "running",
+                }
+            }
+        }
+
+        self.assertFalse(
+            _daily_run_is_fresh(
+                running,
+                datetime(2026, 8, 1, 16, 1, tzinfo=timezone.utc),
+            )
+        )
+
+    def test_daily_outcome_requires_a_verified_production_delta(self) -> None:
+        local_now = datetime(2026, 8, 1, 18, 20, tzinfo=timezone.utc)
+        no_delta = {
+            "runs": {
+                "daily": {
+                    "run_date": "2026-08-01",
+                    "status": "succeeded",
+                    "outcome_status": "work_in_progress",
+                    "production_delta_count": "0",
+                }
+            }
+        }
+        verified = {
+            "runs": {
+                "daily": {
+                    "run_date": "2026-08-01",
+                    "status": "succeeded",
+                    "outcome_status": "production_verified",
+                    "production_delta_count": "1",
+                }
+            }
+        }
+
+        self.assertFalse(_daily_run_has_verified_outcome(no_delta, local_now))
+        self.assertTrue(_daily_run_has_verified_outcome(verified, local_now))
+
+    def test_embedded_scheduler_catches_up_current_hour_once(self) -> None:
+        settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))
+        local_now = datetime(2026, 8, 1, 11, 37, tzinfo=timezone.utc)
+        with (
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                return_value={"last_pulse_slot": "2026-08-01:10"},
+            ),
+            mock.patch(
+                "sales_support_agent.models.database.get_engine",
+                side_effect=RuntimeError("isolated test"),
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router._run_due_modes",
+                return_value={"daily": {"status": "succeeded"}},
+            ) as run,
+        ):
+            result = _run_embedded_pulse(settings, local_now)
+        self.assertEqual(result["status"], "succeeded")
+        run.assert_called_once_with(
+            settings,
+            ["daily"],
+            trigger="embedded_scheduler",
+            pulse_slot="2026-08-01:11",
+            business_date=date(2026, 8, 1),
+        )
+
+    def test_embedded_scheduler_does_not_repeat_completed_slot(self) -> None:
+        settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))
+        local_now = datetime(2026, 8, 1, 11, 52, tzinfo=timezone.utc)
+        with (
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                return_value={"last_pulse_slot": "2026-08-01:11"},
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router._run_due_modes",
+            ) as run,
+        ):
+            result = _run_embedded_pulse(settings, local_now)
+        self.assertEqual(result["status"], "skipped")
+        run.assert_not_called()
+
+    def test_embedded_scheduler_retries_claimed_slot_when_durable_state_is_stale(self) -> None:
+        settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))
+        local_now = datetime(2026, 8, 1, 12, 12, tzinfo=timezone.utc)
+        lease = object()
+        with (
+            mock.patch(
+                "sales_support_agent.models.database.get_engine",
+                return_value=object(),
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.database_mirror_enabled",
+                return_value=False,
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                return_value={"run_date": "2026-07-31"},
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.claim_scheduled_job",
+                side_effect=[None, lease],
+            ) as claim,
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.finish_scheduled_job",
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router._run_due_modes",
+                return_value={"daily": {"status": "succeeded"}},
+            ) as run,
+        ):
+            result = _run_embedded_pulse(settings, local_now)
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(claim.call_count, 2)
+        self.assertIn(
+            "stale-or-failed-recovery:",
+            claim.call_args_list[1].kwargs["run_key"],
+        )
+        run.assert_called_once()
+
+    def test_embedded_scheduler_recovers_stalled_same_slot_after_restart(self) -> None:
+        settings = SimpleNamespace(website_ops_root=Path("runtime/test-website-ops"))
+        local_now = datetime(2026, 8, 1, 11, 5, tzinfo=timezone.utc)
+        lease = object()
+        stalled = {
+            "run_date": "2026-08-01",
+            "status": "running",
+            "last_pulse_slot": "2026-08-01:11",
+            "last_started_at": "2026-08-01T10:00:00+00:00",
+        }
+        with (
+            mock.patch(
+                "sales_support_agent.models.database.get_engine",
+                return_value=object(),
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.database_mirror_enabled",
+                return_value=False,
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                return_value=stalled,
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.claim_scheduled_job",
+                side_effect=[None, lease],
+            ) as claim,
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.finish_scheduled_job",
+            ),
+            mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router._run_due_modes",
+                return_value={"daily": {"status": "succeeded"}},
+            ) as run,
+        ):
+            result = _run_embedded_pulse(settings, local_now)
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(claim.call_count, 2)
+        self.assertIn(
+            "stale-or-failed-recovery:",
+            claim.call_args_list[1].kwargs["run_key"],
+        )
+        run.assert_called_once()
+
+    def test_embedded_scheduler_restores_then_persists_database_mirror(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            settings = SimpleNamespace(website_ops_root=root)
+            local_now = datetime(2026, 8, 1, 12, 7, tzinfo=timezone.utc)
+            engine = object()
+            transaction = mock.MagicMock()
+
+            def run_due_modes(*args, **kwargs):
+                (root / "state.json").write_text(
+                    '{"last_pulse_slot":"2026-08-01:12"}',
+                    encoding="utf-8",
+                )
+                return {"daily": {"status": "succeeded"}}
+
+            with (
+                mock.patch(
+                    "sales_support_agent.models.database.get_engine",
+                    return_value=engine,
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.database_mirror_enabled",
+                    return_value=True,
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.website_ops_cache_transaction",
+                    return_value=transaction,
+                ) as cache_transaction,
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
+                    return_value={"last_pulse_slot": "2026-08-01:11"},
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.claim_scheduled_job",
+                    return_value=object(),
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.finish_scheduled_job",
+                ),
+                mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router._run_due_modes",
+                    side_effect=run_due_modes,
+                ),
+            ):
+                result = _run_embedded_pulse(settings, local_now)
+
+            self.assertEqual(result["status"], "succeeded")
+            cache_transaction.assert_called_once_with(engine, root)
+            transaction.__enter__.assert_called_once()
+            transaction.__exit__.assert_called_once()
+            self.assertTrue((root / "state.json").exists())
 
     def test_operating_state_uses_latest_live_evidence_not_secret_presence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -824,17 +1602,13 @@ example
                 )
             )
             html = render_dashboard_page(settings)
-            self.assertIn("Primary goal", html)
-            self.assertIn("Increase qualified leads.", html)
+            self.assertIn("Needs attention", html)
             self.assertIn("Pages reviewed", html)
             self.assertIn("needs attention", html)
             self.assertIn("Insert structured shipping FAQ", html)
             self.assertIn("Provide proof assets for shipping.", html)
-            self.assertIn("GA4 unavailable", html)
             self.assertIn("Autonomous publishing guardrails active", html)
-            self.assertIn("Needs setup", html)
-            self.assertIn("sdr-support-agent", html)
-            self.assertIn("codex-website-ops@sdr-support-agent.iam.gserviceaccount.com", html)
+            self.assertIn("Answer-engine evidence is unavailable", html)
 
     def test_dashboard_fails_closed_for_legacy_unavailable_analytics(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -874,12 +1648,12 @@ example
                 )
             )
             html = render_dashboard_page(settings)
-            self.assertIn("Score Unavailable", html)
+            self.assertIn("Quiet day", html)
             self.assertIn("Ranking operations", html)
             self.assertIn("blocked", html)
-            self.assertIn("Gmail-derived questions are quarantined", html)
+            self.assertIn("Answer-engine evidence is unavailable", html)
             self.assertNotIn("private unrelated question", html)
-            self.assertNotIn("<a href=\"/admin/website-ops/reports/latest\"", html)
+            self.assertIn("View latest report", html)
 
     def test_legacy_report_suppresses_false_performance_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1025,6 +1799,38 @@ example
             self.assertEqual(updated["status"], "approved")
             self.assertEqual(updated.get("execution_error", ""), "")
 
+    def test_review_execution_success_clears_stale_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir), execute_approved=True)
+            record = save_feedback_record(
+                settings,
+                {
+                    "summary": "Publish reconciled article",
+                    "status": "error",
+                    "execution_error": "stale publication failure",
+                    "auto_generated": True,
+                    "execution_eligibility": "auto_execute",
+                    "suggested_action_type": "publish_blog_article",
+                    "suggested_action_value": json.dumps({"slug": "reconciled-article"}),
+                },
+            )
+            with mock.patch(
+                "sales_support_agent.services.website_ops._execute_feedback_action",
+                return_value={
+                    "executed_at": "2026-08-01T23:30:00Z",
+                    "verification_status": "verified",
+                },
+            ):
+                result = review_feedback_record(
+                    settings,
+                    record["feedback_id"],
+                    {"status": "approved"},
+                )
+            self.assertTrue(result.ok)
+            updated = load_feedback_records(settings)[0]
+            self.assertEqual(updated["status"], "done")
+            self.assertEqual(updated["execution_error"], "")
+
     def test_execute_approved_website_ops_actions_runs_approved_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir), execute_approved=True)
@@ -1033,6 +1839,7 @@ example
                 {
                     "summary": "Add fulfillment FAQ",
                     "status": "approved",
+                    "execution_error": "stale failure from an earlier attempt",
                     "action_type": "inject_faq_block",
                     "action_value": json.dumps({"heading": "Fulfillment FAQ", "questions": []}),
                     "page_url": "https://anatainc.com/services/fulfillment/",
@@ -1053,6 +1860,7 @@ example
             self.assertEqual(result.report["executed"], 1)
             updated = next(item for item in load_feedback_records(settings) if item["feedback_id"] == record["feedback_id"])
             self.assertEqual(updated["status"], "done")
+            self.assertEqual(updated["execution_error"], "")
             self.assertEqual(updated["execution_result"]["verification_status"], "verified")
 
     def test_run_website_ops_enriches_report_with_autonomy_overlay(self) -> None:
@@ -1548,6 +2356,44 @@ example
                 {**record, "action_value": json.dumps(invalid_dates)}
             )
 
+    def test_generated_article_rejects_competitor_and_low_authority_sources(self) -> None:
+        record = self._generated_article_record()
+        article = json.loads(str(record["action_value"]))
+        article["sources"][1] = {
+            "title": "Competing agency guide",
+            "url": "https://competitor.example/blog/amazon-ppc",
+        }
+        with self.assertRaisesRegex(
+            ExecutionError,
+            "first-party platform, carrier, or government documentation",
+        ):
+            validate_generated_article(
+                {**record, "action_value": json.dumps(article)}
+            )
+
+    def test_generated_article_requires_official_source_for_each_named_platform(self) -> None:
+        record = self._generated_article_record()
+        article = json.loads(str(record["action_value"]))
+        article["content"]["sections"][0]["paragraphs"][0] += (
+            " Walmart marketplace fees require separate planning."
+        )
+        with self.assertRaisesRegex(
+            ExecutionError,
+            "Walmart without an official walmart.com source",
+        ):
+            validate_generated_article(
+                {**record, "action_value": json.dumps(article)}
+            )
+
+    def test_generated_article_rejects_malformed_semicolon_joins(self) -> None:
+        record = self._generated_article_record()
+        article = json.loads(str(record["action_value"]))
+        article["content"]["sections"][0]["paragraphs"][0] += " costs;platform"
+        with self.assertRaisesRegex(ExecutionError, "malformed punctuation joins"):
+            validate_generated_article(
+                {**record, "action_value": json.dumps(article)}
+            )
+
     def test_generated_article_registry_enforces_one_page_one_intent(self) -> None:
         source = """import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
 export type GeneratedArticle = { content: ArticlePageContent };
@@ -1630,6 +2476,35 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
         self.assertEqual(
             fallback_action["insight_source"],
             "Approved editorial backlog and one-page-one-intent map",
+        )
+
+    def test_article_engine_regenerates_contract_failure_before_queueing(self) -> None:
+        valid = json.loads(str(self._generated_article_record()["action_value"]))
+        invalid = json.loads(json.dumps(valid))
+        invalid["content"]["sections"][0]["paragraphs"][0] += (
+            " Walmart marketplace fees require separate planning."
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch(
+            "sales_support_agent.services.website_ops_github.github_metadata_is_configured",
+            return_value=False,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_article_engine._request_article",
+            side_effect=[invalid, valid],
+        ) as request:
+            action = build_article_action(
+                settings=SimpleNamespace(website_ops_root=Path(tmpdir)),
+                query_intelligence={"clusters": []},
+            )
+
+        self.assertIsNotNone(action)
+        self.assertEqual(request.call_count, 2)
+        self.assertIn(
+            "failed the publication contract",
+            request.call_args_list[1].kwargs["prompt"],
+        )
+        self.assertIn(
+            "Walmart without an official walmart.com source",
+            request.call_args_list[1].kwargs["prompt"],
         )
 
     def test_github_metadata_validation_requires_reason_evidence_and_safe_lengths(self) -> None:
@@ -1735,6 +2610,182 @@ export default function Page() {
         self.assertEqual(result["commit_sha"], "commit-sha")
         self.assertEqual(result["source_path"], "src/app/services/amazon-advertising/page.tsx")
         client.put_file.assert_called_once()
+
+    def test_article_timeout_preserves_durable_commit_for_reconciliation(self) -> None:
+        record = self._generated_article_record()
+        source = '''import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
+export type GeneratedArticle = { content: ArticlePageContent };
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+'''
+        client = mock.Mock()
+        client.repository = "david-anata/anata-website"
+        client.branch = "main"
+        client.get_file.return_value = (source, "source-sha")
+        client.put_file.return_value = {"commit": {"sha": "commit-sha"}}
+        with mock.patch(
+            "sales_support_agent.services.website_ops_github.GitHubWebsiteClient",
+            return_value=client,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.website_ops.collect_page_observation",
+            return_value={"status_code": 404},
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.time.monotonic",
+            side_effect=[0, 0, 901],
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.time.sleep"
+        ), mock.patch.dict(
+            os.environ,
+            {"WEBSITE_OPS_DEPLOY_VERIFY_TIMEOUT_SECONDS": "1"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(
+                ExecutionError,
+                "durable publication commit was preserved",
+            ):
+                execute_github_article_action(
+                    record,
+                    config=SimpleNamespace(),
+                    timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                )
+
+        client.put_file.assert_called_once()
+
+    def test_article_verification_accepts_the_site_title_suffix(self) -> None:
+        record = self._generated_article_record()
+        article = json.loads(str(record["action_value"]))
+        source = '''import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
+export type GeneratedArticle = { content: ArticlePageContent };
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+'''
+        client = mock.Mock()
+        client.repository = "david-anata/anata-website"
+        client.branch = "main"
+        client.get_file.return_value = (source, "source-sha")
+        client.put_file.return_value = {"commit": {"sha": "commit-sha"}}
+        page_url = f"https://anatainc.com/blog/{article['slug']}"
+        with mock.patch(
+            "sales_support_agent.services.website_ops_github.GitHubWebsiteClient",
+            return_value=client,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.website_ops.collect_page_observation",
+            return_value={
+                "status_code": 200,
+                "title": f"{article['title']} | Anata",
+                "canonical_url": page_url,
+                "h1": [article["content"]["h1"]],
+            },
+        ):
+            result = execute_github_article_action(
+                record,
+                config=SimpleNamespace(),
+                timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(result["verification_status"], "verified")
+        self.assertEqual(result["production_url"], page_url)
+
+    def test_article_execution_reconciles_an_exact_existing_registry_entry(self) -> None:
+        record = self._generated_article_record()
+        article = json.loads(str(record["action_value"]))
+        source = '''import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
+export type GeneratedArticle = { content: ArticlePageContent };
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES: readonly GeneratedArticle[] = ''' + json.dumps([article]) + ''';
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+'''
+        client = mock.Mock()
+        client.repository = "david-anata/anata-website"
+        client.branch = "main"
+        client.get_file.return_value = (source, "source-sha")
+        page_url = f"https://anatainc.com/blog/{article['slug']}"
+        with mock.patch(
+            "sales_support_agent.services.website_ops_github.GitHubWebsiteClient",
+            return_value=client,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.website_ops.collect_page_observation",
+            return_value={
+                "status_code": 200,
+                "title": f"{article['title']} | Anata",
+                "canonical_url": page_url,
+                "h1": [article["content"]["h1"]],
+            },
+        ):
+            result = execute_github_article_action(
+                record,
+                config=SimpleNamespace(),
+                timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(result["verification_status"], "verified")
+        self.assertTrue(result["summary"]["reconciled_existing"])
+        self.assertEqual(result["commit_sha"], "")
+        client.put_file.assert_not_called()
+
+    def test_article_execution_rejects_existing_slug_with_different_payload(self) -> None:
+        record = self._generated_article_record()
+        article = json.loads(str(record["action_value"]))
+        conflicting = {**article, "evidenceId": "different-evidence-id"}
+        source = '''import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
+export type GeneratedArticle = { content: ArticlePageContent };
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES: readonly GeneratedArticle[] = ''' + json.dumps([conflicting]) + ''';
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+'''
+        client = mock.Mock()
+        client.get_file.return_value = (source, "source-sha")
+        with mock.patch(
+            "sales_support_agent.services.website_ops_github.GitHubWebsiteClient",
+            return_value=client,
+        ):
+            with self.assertRaisesRegex(
+                ExecutionError,
+                "different identity",
+            ):
+                execute_github_article_action(record, config=SimpleNamespace())
+
+        client.put_file.assert_not_called()
+
+    def test_article_execution_reconciles_source_safe_registry_repair(self) -> None:
+        record = self._generated_article_record()
+        stale_article = json.loads(str(record["action_value"]))
+        stale_article["sources"] = [
+            {"title": "Old third-party source", "url": "https://example.com/old"},
+            stale_article["sources"][0],
+        ]
+        record["action_value"] = json.dumps(stale_article)
+        repaired_article = json.loads(str(self._generated_article_record()["action_value"]))
+        source = '''import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
+export type GeneratedArticle = { content: ArticlePageContent };
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES: readonly GeneratedArticle[] = ''' + json.dumps([repaired_article]) + ''';
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+'''
+        client = mock.Mock()
+        client.repository = "david-anata/anata-website"
+        client.branch = "main"
+        client.get_file.return_value = (source, "source-sha")
+        page_url = f"https://anatainc.com/blog/{repaired_article['slug']}"
+        with mock.patch(
+            "sales_support_agent.services.website_ops_github.GitHubWebsiteClient",
+            return_value=client,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.website_ops.collect_page_observation",
+            return_value={
+                "status_code": 200,
+                "title": f"{repaired_article['title']} | Anata",
+                "canonical_url": page_url,
+                "h1": [repaired_article["content"]["h1"]],
+            },
+        ):
+            result = execute_github_article_action(record, config=SimpleNamespace())
+
+        self.assertTrue(result["summary"]["reconciled_existing"])
+        self.assertEqual(result["summary"]["source_count"], 2)
+        client.put_file.assert_not_called()
 
     def test_missing_canonical_creates_high_confidence_github_action(self) -> None:
         page = {
@@ -1951,21 +3002,21 @@ export default function Page() {
                 )
             )
             html = render_dashboard_page(settings)
-            self.assertIn("Questions", html)
-            self.assertIn("Blueprint", html)
-            self.assertIn("FAQ Demand", html)
-            self.assertIn("Task block reason", html)
-            self.assertIn("The page is not thin enough for MVP section expansion.", html)
+            self.assertIn("Website growth", html)
+            self.assertNotIn("The page is not thin enough for MVP section expansion.", html)
+            self.assertIn("Evidence and system details", html)
 
     def test_dashboard_render_shows_current_and_next_work(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir))
             html = render_dashboard_page(settings)
-            self.assertIn("What Agent is working on next", html)
+            self.assertIn("Next", html)
             self.assertIn("Import and classify Search Console indexing exclusions", html)
-            self.assertIn("Validate qualified-lead attribution", html)
-            self.assertIn("Earn citations. Never manufacture links.", html)
-            self.assertIn("Measure movement without claiming causation.", html)
+            self.assertIn("Verify qualified-lead attribution", html)
+            self.assertIn("Nothing needs you.", html)
+            self.assertNotIn("<strong>Needs you:</strong> Article research", html)
+            self.assertNotIn("Earn citations. Never manufacture links.", html)
+            self.assertNotIn("Measure movement without claiming causation.", html)
 
     def test_indexing_page_renders_classified_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2068,6 +3119,139 @@ export default function Page() {
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["status"], "new")
             self.assertEqual(records[0]["action_type"], "")
+
+    def test_run_website_ops_resumes_durable_new_action_before_fresh_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir), execute_approved=True)
+            report_dir = settings.website_ops_root / "reports" / "daily"
+            report_dir.mkdir(parents=True)
+            (report_dir / "prior-report.md").write_text(
+                "# Prior report\n", encoding="utf-8"
+            )
+            record = save_feedback_record(
+                settings,
+                {
+                    "feedback_id": "durable-new-action",
+                    "status": "new",
+                    "auto_generated": True,
+                    "page_url": "https://anatainc.com/blog/durable-recovery-test",
+                    "confidence": "high",
+                    "suggested_action_type": "publish_blog_article",
+                    "suggested_action_value": json.dumps({"slug": "durable-recovery-test"}),
+                    "execution_eligibility": "auto_execute",
+                    "evidence": ["Validated intent gap", "Official sources"],
+                },
+            )
+            fake_pipeline = {
+                "report": self._fake_report(),
+                "observations": [],
+                "artifacts": {},
+            }
+            fake_overlay = {
+                "goal": {"primary": "Increase qualified leads."},
+                "action_queue": [],
+                "analytics_status": {},
+                "support_requests": [],
+                "page_insights": [],
+            }
+            execution_result = {
+                "feedback_id": record["feedback_id"],
+                "executed_at": "2026-08-01T00:00:00+00:00",
+                "verification_status": "verified",
+            }
+            with mock.patch(
+                "sales_support_agent.services.website_ops.website_ops.run_daily_report_pipeline",
+                return_value=fake_pipeline,
+            ), mock.patch(
+                "sales_support_agent.services.website_ops.build_autonomy_overlay",
+                return_value=fake_overlay,
+            ), mock.patch(
+                "sales_support_agent.services.website_ops._checkpoint_website_ops_cache",
+                return_value=True,
+            ) as checkpoint, mock.patch(
+                "sales_support_agent.services.website_ops._execute_record",
+                return_value=execution_result,
+            ) as execute:
+                result = run_website_ops(settings, mode="daily")
+
+            self.assertIsNotNone(result.report)
+            checkpoint.assert_called_once_with(settings)
+            execute.assert_called_once()
+            resumed = execute.call_args.args[2]
+            self.assertEqual(resumed["status"], "approved")
+            self.assertEqual(resumed["action_type"], "publish_blog_article")
+
+    def test_run_website_ops_approves_entire_bounded_batch_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir), execute_approved=True)
+            report_dir = settings.website_ops_root / "reports" / "daily"
+            report_dir.mkdir(parents=True)
+            (report_dir / "prior-report.md").write_text("# Prior report\n", encoding="utf-8")
+            actions = [
+                {
+                    "page_url": f"https://anatainc.com/services/service-{index}/",
+                    "page_title": f"Service {index}",
+                    "action_type": "meta_title_update",
+                    "section_name": "Title",
+                    "before_state": f"Old title {index}",
+                    "after_state": f"New title {index}",
+                    "reason": "The canonical intent owner needs a specific title.",
+                    "insight_source": "Validated intent map",
+                    "expected_impact": "Clearer intent ownership.",
+                    "confidence": "high",
+                    "evidence": ["Rendered title", "Repository owner map"],
+                    "execution_eligibility": "auto_execute",
+                    "action_value": f"New title {index}",
+                }
+                for index in range(2)
+            ]
+            fake_pipeline = {
+                "report": self._fake_report(),
+                "observations": [],
+                "artifacts": {},
+            }
+            fake_overlay = {
+                "goal": {"primary": "Increase qualified leads."},
+                "action_queue": actions,
+                "analytics_status": {
+                    "search_console": True,
+                    "ga4": True,
+                    "notes": [],
+                    "ga4_trust_status": "trusted",
+                    "primary_lead_event": "generate_lead",
+                },
+                "support_requests": [],
+                "page_insights": [],
+            }
+            events: list[str] = []
+
+            def interrupted_execution(*args: object, **kwargs: object) -> None:
+                self.assertEqual(events, ["checkpoint"])
+                raise website_ops.ExecutionError("deploy interrupted")
+
+            with mock.patch(
+                "sales_support_agent.services.website_ops.website_ops.run_daily_report_pipeline",
+                return_value=fake_pipeline,
+            ), mock.patch(
+                "sales_support_agent.services.website_ops.build_autonomy_overlay",
+                return_value=fake_overlay,
+            ), mock.patch(
+                "sales_support_agent.services.website_ops._checkpoint_website_ops_cache",
+                side_effect=lambda _settings: events.append("checkpoint") or True,
+            ), mock.patch(
+                "sales_support_agent.services.website_ops._execute_record",
+                side_effect=interrupted_execution,
+            ):
+                with self.assertRaises(website_ops.ExecutionError):
+                    run_website_ops(settings, mode="daily")
+
+            records = load_feedback_records(settings)
+            self.assertEqual(len(records), 2)
+            self.assertEqual({record["status"] for record in records}, {"approved"})
+            self.assertEqual(
+                {record["action_type"] for record in records},
+                {"meta_title_update"},
+            )
 
     def test_latest_report_entry_reads_generated_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -203,6 +203,10 @@ def test_company_profile_accepts_only_authorized_payroll_approver():
     with (
         mock.patch.object(payroll_store, "get_engine", return_value=engine),
         mock.patch(
+            "sales_support_agent.config.load_settings",
+            return_value=SimpleNamespace(rbac_superadmin_emails=()),
+        ),
+        mock.patch(
             "sales_support_agent.services.access.store.resolve_access",
             return_value={
                 "email": "david@anatainc.com",
@@ -217,6 +221,10 @@ def test_company_profile_accepts_only_authorized_payroll_approver():
 
     with (
         mock.patch.object(payroll_store, "get_engine", return_value=engine),
+        mock.patch(
+            "sales_support_agent.config.load_settings",
+            return_value=SimpleNamespace(rbac_superadmin_emails=()),
+        ),
         mock.patch(
             "sales_support_agent.services.access.store.resolve_access",
             return_value={
@@ -233,6 +241,64 @@ def test_company_profile_accepts_only_authorized_payroll_approver():
     with Session(engine) as session:
         company = session.query(HRCompanyProfile).one()
         assert company.final_approver_email == "david@anatainc.com"
+
+
+def test_configured_superadmin_can_be_final_approver_without_w2_record():
+    engine = _engine()
+    profile = {
+        "legal_name": "Anata LLC", "trade_name": "Anata", "ein_last4": "1234",
+        "address_line1": "1 Main Street", "address_line2": "", "city": "Eagle Mountain",
+        "state": "UT", "zip_code": "84005", "payroll_contact_email": "val@anatainc.com",
+        "final_approver_email": "david@anatainc.com",
+        "utah_withholding_account_last4": "1234", "utah_ui_account_last4": "5678",
+        "federal_deposit_schedule": "semiweekly",
+        "utah_withholding_payment_frequency": "monthly",
+        "source_note": "Reviewed against company records.", "actor": "val@anatainc.com",
+    }
+    with (
+        mock.patch.object(payroll_store, "get_engine", return_value=engine),
+        mock.patch(
+            "sales_support_agent.services.access.store.resolve_access",
+            return_value=None,
+        ),
+        mock.patch(
+            "sales_support_agent.config.load_settings",
+            return_value=SimpleNamespace(
+                rbac_superadmin_emails=("david@anatainc.com",)
+            ),
+        ),
+    ):
+        assert payroll_store.save_company_profile(
+            **profile
+        ) == (True, "company_profile_saved")
+
+
+def test_payroll_roster_is_separate_from_admin_access_and_effective_by_period():
+    period_start = date(2026, 8, 1)
+    period_end = date(2026, 8, 15)
+    base = {
+        "email": "owner@anatainc.com", "status": "active",
+        "employee_type": "salaried",
+        "employment": {
+            "hire_date": date(2026, 1, 1), "termination_date": None,
+            "payroll_eligible": False,
+        },
+    }
+    assert not payroll_store.employee_is_payroll_eligible(
+        base, period_start=period_start, period_end=period_end,
+    )
+    included = {**base, "employment": {**base["employment"], "payroll_eligible": True}}
+    assert payroll_store.employee_is_payroll_eligible(
+        included, period_start=period_start, period_end=period_end,
+    )
+    future = {**included, "employment": {**included["employment"], "hire_date": date(2026, 8, 16)}}
+    assert not payroll_store.employee_is_payroll_eligible(
+        future, period_start=period_start, period_end=period_end,
+    )
+    ended = {**included, "employment": {**included["employment"], "termination_date": date(2026, 7, 31)}}
+    assert not payroll_store.employee_is_payroll_eligible(
+        ended, period_start=period_start, period_end=period_end,
+    )
 
 
 def test_provider_handoff_detects_exact_match_and_variance():

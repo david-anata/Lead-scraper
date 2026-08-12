@@ -18,6 +18,7 @@ from sales_support_agent.models.entities import (
     BuildingEmailEvent,
     BuildingInquiry,
     BuildingInvoice,
+    BuildingOperationalChecklistItem,
     BuildingPayment,
     BuildingReservation,
     BuildingSpace,
@@ -63,6 +64,9 @@ def build_attribution(
         "campaign": _detail(details, "campaign", "utm_campaign", "utmCampaign"),
         "content": _detail(details, "content", "utm_content", "utmContent"),
         "term": _detail(details, "term", "utm_term", "utmTerm"),
+        "gclid": _detail(details, "gclid"),
+        "gbraid": _detail(details, "gbraid"),
+        "wbraid": _detail(details, "wbraid"),
         "source_reference": (source_reference or "").strip()[:255],
         "landing_page": _detail(details, "landing_page", "landingPage"),
         "offering_id": _detail(details, "offering_id", "offeringId")[:64],
@@ -153,6 +157,9 @@ def build_building_analytics(session, *, now: datetime | None = None) -> dict[st
     recipients = session.execute(select(BuildingCampaignRecipient)).scalars().all()
     email_events = session.execute(select(BuildingEmailEvent)).scalars().all()
     spaces = session.execute(select(BuildingSpace)).scalars().all()
+    checklist_items = session.execute(
+        select(BuildingOperationalChecklistItem)
+    ).scalars().all()
 
     reached, reached_at = _stage_history(audits)
     reservations_by_inquiry: dict[str, list[BuildingReservation]] = defaultdict(list)
@@ -314,6 +321,13 @@ def build_building_analytics(session, *, now: datetime | None = None) -> dict[st
 
     recipient_counts = Counter(item.status for item in recipients)
     provider_event_counts = Counter(item.event_type for item in email_events)
+    overdue_operations = [
+        item
+        for item in checklist_items
+        if item.status == "pending"
+        and _aware(item.due_at)
+        and _aware(item.due_at) < generated_at
+    ]
     return {
         "generated_at": generated_at.isoformat(),
         "inquiries": {
@@ -338,6 +352,17 @@ def build_building_analytics(session, *, now: datetime | None = None) -> dict[st
             "rentable_space_count": len(rentable_spaces),
             "renewals_started": ever(workspace_reservations, {"renewal"}),
             "move_outs_started": ever(workspace_reservations, {"move_out", "completed"}),
+            "open_required_item_count": sum(
+                1 for item in checklist_items if item.is_required and item.status == "pending"
+            ),
+            "overdue_required_item_count": sum(
+                1 for item in overdue_operations if item.is_required
+            ),
+            "unowned_required_item_count": sum(
+                1
+                for item in checklist_items
+                if item.is_required and item.status == "pending" and not item.assigned_owner.strip()
+            ),
         },
         "finance": {
             "invoiced_cents": invoiced_cents,

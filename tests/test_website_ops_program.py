@@ -175,8 +175,9 @@ class WebsiteOpsProgramTests(unittest.TestCase):
             plan["current"]["title"],
             "Import and classify Search Console indexing exclusions",
         )
-        self.assertEqual(plan["next"][0]["title"], "Validate qualified-lead attribution")
-        self.assertTrue(plan["next"][0]["needs_david"])
+        self.assertEqual(plan["next"][0]["title"], "Verify qualified-lead attribution")
+        self.assertEqual(plan["next"][0]["state"], "Scheduled")
+        self.assertFalse(plan["next"][0]["needs_david"])
 
     def test_screaming_frog_import_separates_hosts_and_preserves_warnings(self) -> None:
         payload = self._crawl_zip(

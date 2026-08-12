@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable
@@ -11,7 +12,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import ValidationError
 
 from sales_support_agent.api.building_billing_router import (
@@ -20,12 +21,14 @@ from sales_support_agent.api.building_billing_router import (
     CollectionRefreshInput,
     CollectionReminderInput,
     CollectionTransitionInput,
+    EventBillingPreparationInput,
     InvoiceRunInput,
     ScheduleApprovalInput,
     approve_billing_schedule,
     create_invoice_from_schedule,
     refresh_collection_cases,
     send_collection_reminder,
+    sync_quickbooks_invoice,
     transition_collection_case,
     upsert_billing_account,
     upsert_billing_schedule,
@@ -84,7 +87,11 @@ from sales_support_agent.api.building_service_request_router import (
     transition_service_request,
 )
 from sales_support_agent.models.database import session_scope
-from sales_support_agent.models.entities import BuildingBillingSchedule
+from sales_support_agent.models.entities import (
+    BuildingAuditEvent,
+    BuildingBillingSchedule,
+    BuildingInquiry,
+)
 from sales_support_agent.services.auth_deps import (
     require_all_tools,
     require_recent_tool,
@@ -93,6 +100,12 @@ from sales_support_agent.services.auth_deps import (
 from sales_support_agent.services.building_security import (
     require_building_form_security,
 )
+from sales_support_agent.services.building_lead_intake import (
+    advance_follow_up_sequence,
+    event_qualification_missing,
+    notify_new_building_lead,
+)
+from sales_support_agent.services.building_inquiry_receipt import attempt_inquiry_receipt
 from sales_support_agent.services.building_page import (
     render_customer_status_link_result,
 )
@@ -101,6 +114,9 @@ from sales_support_agent.services.building_page import (
 router = APIRouter(prefix="/admin/building", tags=["building-admin-operations"])
 FORM_DEPS = [Depends(require_building_form_security)]
 MOUNTAIN = ZoneInfo("America/Denver")
+_INQUIRY_RETURN_RE = re.compile(
+    r"^/admin/building/inquiries/[A-Za-z0-9_-]+(?:#[A-Za-z0-9_-]+)?$"
+)
 
 
 def _redirect(
@@ -110,8 +126,19 @@ def _redirect(
     target: str = "/admin/building",
 ) -> RedirectResponse:
     query = urlencode({"notice": notice} if notice else {"error": error})
-    separator = "&" if "?" in target else "?"
-    return RedirectResponse(f"{target}{separator}{query}", status_code=303)
+    base, marker, fragment = target.partition("#")
+    separator = "&" if "?" in base else "?"
+    destination = f"{base}{separator}{query}"
+    if marker:
+        destination += f"#{fragment}"
+    return RedirectResponse(destination, status_code=303)
+
+
+def _form_target(return_to: str, fallback: str = "/admin/building") -> str:
+    """Allow forms to return to one inquiry section without open redirects."""
+
+    candidate = str(return_to or "").strip()
+    return candidate if _INQUIRY_RETURN_RE.fullmatch(candidate) else fallback
 
 
 def _internal_key(request: Request) -> str:
@@ -167,9 +194,9 @@ def _run_form_action(
             message = exc.errors()[0].get("msg", "Review the form values.")
         else:
             message = str(exc)
-        return _redirect(error=message)
+        return _redirect(error=message, target=success_target)
     except HTTPException as exc:
-        return _redirect(error=str(exc.detail))
+        return _redirect(error=str(exc.detail), target=success_target)
     return _redirect(notice=success, target=success_target)
 
 
@@ -262,7 +289,207 @@ def update_inquiry_lifecycle_from_control_room(
     return _run_form_action(
         action,
         f"Inquiry moved to {target_stage.replace('_', ' ')}.",
+        success_target=f"/admin/building/inquiries/{inquiry_id}",
     )
+
+
+@router.post("/inquiries/{inquiry_id}/event-interview", dependencies=FORM_DEPS)
+async def save_event_interview_from_control_room(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> Response:
+    """Save the operational discovery record without promising a date or price."""
+
+    form = await request.form()
+    field_names = (
+        "event_purpose",
+        "event_format",
+        "candidate_dates",
+        "guest_schedule",
+        "access_schedule",
+        "attendance",
+        "decision_maker",
+        "authorized_signer",
+        "billing_contact",
+        "decision_timeline",
+        "room_layout",
+        "furniture",
+        "av_and_sound",
+        "internet_and_power",
+        "catering",
+        "alcohol",
+        "vendors_and_load_in",
+        "parking_and_transportation",
+        "accessibility",
+        "security_and_staffing",
+        "insurance",
+        "decor_and_signage",
+        "cleanup_and_waste",
+        "marketing_and_media",
+        "special_requests",
+        "known_risks",
+        "agreed_next_step",
+        "operator_notes",
+    )
+    answers = {name: str(form.get(name) or "").strip() for name in field_names}
+    reviewed = str(form.get("save_mode") or "").strip() == "reviewed"
+    # Whether this was a background keystroke autosave is a property of the
+    # request, not of the review checkbox. The audit action keyed off `reviewed`
+    # before, so a deliberate operator save was recorded as an autosave.
+    is_autosave = (
+        request.headers.get("X-Requested-With") == "building-interview-autosave"
+    )
+    if not any(answers.values()):
+        return _redirect(
+            error="Record at least one interview answer before saving.",
+            target=f"/admin/building/inquiries/{inquiry_id}",
+        )
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None or inquiry.kind != "event":
+            return _redirect(
+                error="Event inquiry not found.", target=f"/admin/building/inquiries/{inquiry_id}"
+            )
+        payload = dict(inquiry.payload_json or {})
+        before = dict(payload.get("_event_interview") or {})
+        payload["_event_interview"] = {
+            **answers,
+            "updated_by": _actor(user),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        interview_meta = dict(payload.get("_event_interview_meta") or {})
+        payload["_event_interview_meta"] = {
+            **interview_meta,
+            "reviewed": bool(interview_meta.get("reviewed")) or reviewed,
+            **(
+                {
+                    "reviewed_by": _actor(user),
+                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if reviewed
+                else {}
+            ),
+        }
+        lifecycle_stage = str(
+            (payload.get("_lifecycle") or {}).get("stage") or "new"
+        )
+        # "Complete" means one thing across the app. event_qualification_missing
+        # is the same check that gates moving an event to qualified, so an
+        # interview that satisfies it completes the checklist step too, whether
+        # or not the operator also ticked the explicit review box. Previously the
+        # step stayed queued unless save_mode=reviewed was posted, so a fully
+        # answered interview and the qualification gate disagreed.
+        qualification_missing = event_qualification_missing(answers, payload)
+        payload["_follow_up_sequence"] = advance_follow_up_sequence(
+            list(payload.get("_follow_up_sequence") or []),
+            lifecycle_stage=lifecycle_stage,
+            changed_at=datetime.now(timezone.utc),
+            interview_complete=(
+                bool(interview_meta.get("reviewed"))
+                or reviewed
+                or not qualification_missing
+            ),
+        )
+        inquiry.payload_json = payload
+        inquiry.updated_at = datetime.now(timezone.utc)
+        session.add(BuildingAuditEvent(
+            entity_type="inquiry",
+            entity_id=inquiry.id,
+            action=("event_interview_autosaved" if is_autosave else "event_interview_saved"),
+            actor=_actor(user),
+            before_json=before,
+            after_json={
+                "answered_fields": sorted(
+                    name for name, value in answers.items() if value
+                ),
+                "provider_write": False,
+            },
+        ))
+    if is_autosave:
+        return JSONResponse({"ok": True, "saved": True, "reviewed": reviewed})
+    return _redirect(
+        notice="Event interview saved. No date, price, or booking was promised.",
+        target=f"/admin/building/inquiries/{inquiry_id}",
+    )
+
+
+@router.post("/inquiries/{inquiry_id}/notify", dependencies=FORM_DEPS)
+def retry_new_lead_notification_from_control_room(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Retry the staff Slack alert; this never contacts the prospect."""
+
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            return _redirect(error="Inquiry not found.", target=f"/admin/building/inquiries/{inquiry_id}")
+        existing = dict((inquiry.payload_json or {}).get("_lead_notification") or {})
+        if existing.get("status") == "delivered":
+            return _redirect(
+                notice="The staff Slack notification was already delivered; no duplicate was sent.",
+                target=f"/admin/building/inquiries/{inquiry_id}",
+            )
+        try:
+            result = notify_new_building_lead(request.app.state.settings, inquiry)
+        except Exception as exc:
+            result = {
+                "status": "failed",
+                "provider": "slack",
+                "reason": str(exc)[:500],
+            }
+        payload = dict(inquiry.payload_json or {})
+        payload["_lead_notification"] = {
+            **result,
+            "attempted_at": datetime.now(timezone.utc).isoformat(),
+            "attempted_by": _actor(user),
+        }
+        inquiry.payload_json = payload
+        inquiry.updated_at = datetime.now(timezone.utc)
+        session.add(BuildingAuditEvent(
+            entity_type="inquiry",
+            entity_id=inquiry.id,
+            action=f"lead_notification_{result['status']}",
+            actor=_actor(user),
+            after_json=result,
+        ))
+    if result["status"] != "delivered":
+        return _redirect(
+            error="Staff notification was not delivered; the lead remains safely in Agent.",
+            target=f"/admin/building/inquiries/{inquiry_id}",
+        )
+    return _redirect(
+        notice="Staff Slack notification delivered.",
+        target=f"/admin/building/inquiries/{inquiry_id}",
+    )
+
+
+@router.post("/inquiries/{inquiry_id}/receipt", dependencies=FORM_DEPS)
+def retry_inquiry_receipt_from_control_room(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Retry the idempotent customer acknowledgement without duplicating a sent email."""
+
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None or inquiry.kind != "event":
+            return _redirect(error="Event inquiry not found.", target=f"/admin/building/inquiries/{inquiry_id}")
+        result = attempt_inquiry_receipt(
+            session,
+            settings=request.app.state.settings,
+            inquiry=inquiry,
+            actor=_actor(user),
+        )
+    if result.get("status") not in {"sent", "delivered", "delivery_delayed"}:
+        return _redirect(
+            error="Customer acknowledgement was not sent; the inquiry remains safely in Agent.",
+            target=f"/admin/building/inquiries/{inquiry_id}",
+        )
+    return _redirect(notice="Customer acknowledgement is sent.", target=f"/admin/building/inquiries/{inquiry_id}")
 
 
 @router.post("/reservations", dependencies=FORM_DEPS)
@@ -420,6 +647,7 @@ def transition_reservation_from_control_room(
     target_status: str = Form(...),
     hold_expires_at: str = Form(""),
     reason: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -435,7 +663,11 @@ def transition_reservation_from_control_room(
             reservation_id, payload, request, _internal_key(request)
         )
 
-    return _run_form_action(action, f"Booking moved to {target_status.replace('_', ' ')}.")
+    return _run_form_action(
+        action,
+        f"Booking moved to {target_status.replace('_', ' ')}.",
+        success_target=_form_target(return_to),
+    )
 
 
 @router.post(
@@ -496,6 +728,7 @@ def record_agreement_from_control_room(
     document_url: str = Form(""),
     esign_certificate_reference: str = Form(""),
     signed_document_checksum: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -515,7 +748,11 @@ def record_agreement_from_control_room(
         )
         record_agreement(reservation_id, payload, request, _internal_key(request))
 
-    return _run_form_action(action, f"Agreement evidence recorded as {status}.")
+    return _run_form_action(
+        action,
+        f"Agreement evidence recorded as {status}.",
+        success_target=_form_target(return_to),
+    )
 
 
 @router.post("/reservations/{reservation_id}/proposals", dependencies=FORM_DEPS)
@@ -568,6 +805,7 @@ def record_proposal_from_control_room(
     return _run_form_action(
         action,
         f"{proposal_type.title()} version {version} recorded as {status}.",
+        success_target=f"/admin/building/bookings/{reservation_id}",
     )
 
 
@@ -662,6 +900,7 @@ def save_billing_account_from_control_room(
     account_name: str = Form(...),
     billing_email: str = Form(...),
     qbo_customer_id: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -678,7 +917,9 @@ def save_billing_account_from_control_room(
             payload.id, payload, request, _internal_key(request)
         )
 
-    return _run_form_action(action, "Billing account saved.")
+    return _run_form_action(
+        action, "Billing account saved.", success_target=_form_target(return_to)
+    )
 
 
 @router.post("/billing/schedules", dependencies=FORM_DEPS)
@@ -694,6 +935,7 @@ def save_billing_schedule_from_control_room(
     days_until_due: int = Form(7),
     starts_on: str = Form(...),
     ends_on: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -714,13 +956,18 @@ def save_billing_schedule_from_control_room(
             payload.id, payload, request, _internal_key(request)
         )
 
-    return _run_form_action(action, "Billing schedule saved as a draft.")
+    return _run_form_action(
+        action,
+        "Billing schedule saved as a draft.",
+        success_target=_form_target(return_to),
+    )
 
 
 @router.post("/billing/schedules/{schedule_id}/approve", dependencies=FORM_DEPS)
 def approve_billing_schedule_from_control_room(
     schedule_id: str,
     request: Request,
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -731,7 +978,11 @@ def approve_billing_schedule_from_control_room(
             _internal_key(request),
         )
 
-    return _run_form_action(action, "Billing schedule approved and locked.")
+    return _run_form_action(
+        action,
+        "Billing schedule approved and locked.",
+        success_target=_form_target(return_to),
+    )
 
 
 @router.post("/billing/schedules/{schedule_id}/invoice", dependencies=FORM_DEPS)
@@ -739,15 +990,21 @@ def create_invoice_from_control_room(
     schedule_id: str,
     request: Request,
     confirmation: str = Form(...),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     expected = f"INVOICE {schedule_id}"
     if confirmation.strip() != expected:
-        return _redirect(error=f"Type {expected} to create the provider invoice.")
+        return _redirect(
+            error=f"Type {expected} to create the provider invoice.",
+            target=_form_target(return_to),
+        )
     with session_scope(request.app.state.session_factory) as session:
         schedule = session.get(BuildingBillingSchedule, schedule_id)
         if schedule is None:
-            return _redirect(error="Billing schedule not found.")
+            return _redirect(
+                error="Billing schedule not found.", target=_form_target(return_to)
+            )
         invoice_for = schedule.next_invoice_on or date.today()
     idempotency_key = f"building:{schedule_id}:{invoice_for.isoformat()}"
 
@@ -767,12 +1024,46 @@ def create_invoice_from_control_room(
             message = exc.errors()[0].get("msg", "Review the form values.")
         else:
             message = str(exc)
-        return _redirect(error=message)
+        return _redirect(error=message, target=_form_target(return_to))
     except HTTPException as exc:
-        return _redirect(error=str(exc.detail))
+        return _redirect(error=str(exc.detail), target=_form_target(return_to))
     if result.get("duplicate"):
-        return _redirect(notice="That scheduled invoice already exists; no duplicate was created.")
-    return _redirect(notice="QuickBooks draft invoice created. Nothing was sent to the customer.")
+        return _redirect(
+            notice="That scheduled invoice already exists; no duplicate was created.",
+            target=_form_target(return_to),
+        )
+    return _redirect(
+        notice="QuickBooks draft invoice created. Nothing was sent to the customer.",
+        target=_form_target(return_to),
+    )
+
+
+@router.post("/billing/invoices/{invoice_id}/sync-qbo", dependencies=FORM_DEPS)
+def sync_quickbooks_invoice_from_control_room(
+    invoice_id: str,
+    request: Request,
+    return_to: str = Form(""),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    try:
+        result = sync_quickbooks_invoice(
+            invoice_id,
+            EventBillingPreparationInput(actor=_actor(user)),
+            request,
+            _internal_key(request),
+        )
+    except HTTPException as exc:
+        return _redirect(error=str(exc.detail), target=_form_target(return_to))
+    if not result.get("ok"):
+        return _redirect(
+            error="QuickBooks total differs from Agent. Review the draft in QuickBooks before sending.",
+            target=_form_target(return_to),
+        )
+    status = str((result.get("invoice") or {}).get("status") or "draft")
+    return _redirect(
+        notice=f"QuickBooks invoice evidence refreshed as {status}; no message was sent.",
+        target=_form_target(return_to),
+    )
 
 
 @router.post("/billing/collections/refresh", dependencies=FORM_DEPS)
@@ -900,6 +1191,9 @@ def add_checklist_item_from_control_room(
     request: Request,
     label: str = Form(...),
     is_required: bool = Form(False),
+    assigned_owner: str = Form(""),
+    due_at: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -908,13 +1202,19 @@ def add_checklist_item_from_control_room(
             ChecklistItemInput(
                 label=label.strip(),
                 is_required=is_required,
+                assigned_owner=assigned_owner.strip(),
+                due_at=_local_datetime(due_at) if due_at.strip() else None,
                 actor=_actor(user),
             ),
             request,
             _internal_key(request),
         )
 
-    return _run_form_action(action, "Operational checklist item added.")
+    return _run_form_action(
+        action,
+        "Operational checklist item added.",
+        success_target=_form_target(return_to),
+    )
 
 
 @router.post("/checklists/items/{item_id}/status", dependencies=FORM_DEPS)
@@ -923,6 +1223,10 @@ def update_checklist_item_from_control_room(
     request: Request,
     status: str = Form(...),
     reason: str = Form(""),
+    evidence_reference: str = Form(""),
+    assigned_owner: str = Form(""),
+    due_at: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -931,6 +1235,9 @@ def update_checklist_item_from_control_room(
             ChecklistItemStatusInput(
                 status=status,
                 reason=reason.strip(),
+                evidence_reference=evidence_reference.strip(),
+                assigned_owner=assigned_owner.strip(),
+                due_at=_local_datetime(due_at) if due_at.strip() else None,
                 actor=_actor(user),
             ),
             request,
@@ -940,6 +1247,7 @@ def update_checklist_item_from_control_room(
     return _run_form_action(
         action,
         f"Operational item marked {status.replace('_', ' ')}.",
+        success_target=_form_target(return_to),
     )
 
 
@@ -1080,6 +1388,7 @@ def create_service_request_from_control_room(
     source_reference: str = Form(""),
     assigned_owner: str = Form(""),
     due_at: str = Form(""),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -1103,7 +1412,11 @@ def create_service_request_from_control_room(
             _internal_key(request),
         )
 
-    return _run_form_action(action, "Service request added to the operator queue.")
+    return _run_form_action(
+        action,
+        "Service request added to the operator queue.",
+        success_target=_form_target(return_to),
+    )
 
 
 @router.post(
@@ -1118,6 +1431,7 @@ def transition_service_request_from_control_room(
     due_at: str = Form(""),
     resolution: str = Form(""),
     reason: str = Form(...),
+    return_to: str = Form(""),
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     def action() -> None:
@@ -1138,4 +1452,5 @@ def transition_service_request_from_control_room(
     return _run_form_action(
         action,
         f"Service request moved to {target_status.replace('_', ' ')}.",
+        success_target=_form_target(return_to),
     )

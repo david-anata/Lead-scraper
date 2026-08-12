@@ -1192,6 +1192,12 @@ def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window
                 expected_in += open_amount * _probability_bps(row) // 10_000
         else:
             if due is not None and due <= end:
+                if (
+                    str(row.get("source") or "").lower() == "hr_payroll"
+                    and str(row.get("source_status") or "").lower() == "draft"
+                ):
+                    expected_out += open_amount
+                    continue
                 if row.get("trend_inferred"):
                     # A predicted bill counts against forward cash, but nobody
                     # has sent it yet. It is weighted by how likely it is and

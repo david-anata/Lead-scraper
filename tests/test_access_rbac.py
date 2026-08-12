@@ -197,6 +197,21 @@ class EnforcementTests(unittest.TestCase):
         self.assertEqual(r.status_code, 302)
         self.assertEqual(r.headers.get("location"), "/admin/website-ops?run_status=failed")
 
+    def test_website_ops_operator_run_route_is_authorized(self) -> None:
+        from unittest import mock
+
+        uid = store.upsert_user("website_operator@anatainc.com", "Website Operator")
+        store.set_user_permissions(uid, ["website_ops.seo"])
+        name, token = _cookie_for("website_operator@anatainc.com", "Website Operator")
+        self.client.cookies.set(name, token)
+        try:
+            with mock.patch("sales_support_agent.api.router.run_website_ops", side_effect=RuntimeError("setup blocked")):
+                r = self.client.post("/admin/website-ops/run-now", data={"mode": "daily"}, follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(r.headers.get("location"), "/admin/website-ops?run_status=failed")
+
     def test_website_ops_execute_approved_api_requires_queue_permission(self) -> None:
         name, token = _cookie_for("enf_fin@anatainc.com")
         self.client.cookies.set(name, token)
@@ -449,6 +464,15 @@ class InviteRequestTests(unittest.TestCase):
         r = self._get("/admin/access/invite/totally-bogus-token-xyz")
         self.assertEqual(r.status_code, 410)
         self.assertIn("Invalid invite", r.text)
+        self.assertIn("Sign in with personal email", r.text)
+
+    def test_employee_invite_accept_without_preview_cookie_fails_closed(self) -> None:
+        r = self.client.post(
+            "https://testserver/admin/access/invite/accept",
+            follow_redirects=False,
+        )
+        self.assertEqual(r.status_code, 410)
+        self.assertNotIn("admin_session", r.cookies)
 
     def test_invite_landing_valid_token_redirects(self) -> None:
         import secrets as _sec
@@ -1245,7 +1269,7 @@ class NavAccessSafetyTests(unittest.TestCase):
         )
 
         self.assertIn('class="agent-skip-link" href="#agent-main-content"', nav)
-        self.assertIn('id="agent-main-content" tabindex="-1"', nav)
+        self.assertNotIn('id="agent-main-content"', nav)
         self.assertIn('<details class="user-chip">', nav)
         self.assertIn('aria-label="Account menu for Admin User"', nav)
         self.assertNotIn('onclick="this.toggleAttribute', nav)

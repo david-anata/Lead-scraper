@@ -9,7 +9,7 @@ import base64
 import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, Optional
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
@@ -26,6 +26,8 @@ from sales_support_agent.models.entities import (
     BuildingInvoice,
     BuildingInquiry,
     BuildingOffering,
+    BuildingOperationalChecklist,
+    BuildingOperationalChecklistItem,
     BuildingProposal,
     BuildingPaymentRequestReadiness,
     BuildingRatePlan,
@@ -33,6 +35,7 @@ from sales_support_agent.models.entities import (
     BuildingReservation,
     BuildingCalendarProjection,
     BuildingSignatureRequestReadiness,
+    BuildingServiceRequest,
     BuildingSpace,
     BuildingTour,
 )
@@ -45,6 +48,12 @@ from sales_support_agent.services.building_checklists import (
 )
 from sales_support_agent.services.building_agreement_readiness import (
     propagate_event_readiness_terminal_state,
+)
+from sales_support_agent.services.building_lead_intake import (
+    event_qualification_missing,
+)
+from sales_support_agent.services.building_transactional_messages import (
+    attempt_booking_message,
 )
 
 
@@ -135,6 +144,30 @@ class CustomerStatusAccessInput(BaseModel):
     actor: str = Field(min_length=1, max_length=255)
 
 
+class CustomerBookingRequestInput(BaseModel):
+    request_type: Literal["reschedule", "cancellation", "question"]
+    details: str = Field(min_length=10, max_length=4000)
+    requested_starts_at: datetime | None = None
+    requested_ends_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def valid_requested_window(self) -> "CustomerBookingRequestInput":
+        if bool(self.requested_starts_at) != bool(self.requested_ends_at):
+            raise ValueError("Provide both requested start and end times.")
+        if (
+            self.requested_starts_at
+            and self.requested_ends_at
+            and self.requested_ends_at <= self.requested_starts_at
+        ):
+            raise ValueError("Requested end must be after requested start.")
+        return self
+
+
+class CommunicationRunInput(BaseModel):
+    execute: bool = False
+    actor: str = Field(min_length=1, max_length=255)
+
+
 class TransitionInput(BaseModel):
     target_status: str = Field(min_length=1, max_length=32)
     hold_expires_at: datetime | None = None
@@ -162,6 +195,10 @@ class EventReviewInput(BaseModel):
     operator_notes: str = Field(default="", max_length=4000)
     assigned_owner: str = Field(min_length=1, max_length=255)
     actor: str = Field(min_length=1, max_length=255)
+    #: Take the date even though something else already occupies it. A double
+    #: booking is the owner's call to make, never the system's to make quietly,
+    #: so the clash it overrode is written into the audit trail and the booking.
+    override_conflicts: bool = False
 
     @model_validator(mode="after")
     def valid_windows(self) -> "EventReviewInput":
@@ -451,6 +488,27 @@ def _customer_status_projection(
                 if calendar
                 else "not_started"
             ),
+        },
+        "documents": {
+            "quote_url": (
+                proposal.document_url
+                if proposal and proposal.status in {"sent", "accepted"}
+                else ""
+            ),
+            "agreement_url": (
+                agreement.document_url
+                if agreement and agreement.status == "signed"
+                else ""
+            ),
+            "invoice_url": (
+                invoice.hosted_invoice_url
+                if invoice and invoice.status in {"open", "paid"}
+                else ""
+            ),
+        },
+        "requests": {
+            "accepted_types": ["reschedule", "cancellation", "question"],
+            "changes_booking_directly": False,
         },
         "communications": {
             "delivery_claimed": False,
@@ -784,12 +842,22 @@ def _calendar_is_authoritative() -> bool:
 
 
 def _require_calendar_availability(
-    *, starts_at: datetime, ends_at: datetime, reservation_id: str = ""
-) -> BuildingGoogleCalendarClient | None:
-    """Fail closed against the Anata Events calendar when authority is enabled."""
+    *,
+    starts_at: datetime,
+    ends_at: datetime,
+    reservation_id: str = "",
+    override: bool = False,
+) -> tuple[BuildingGoogleCalendarClient | None, list[dict[str, Any]]]:
+    """Fail closed against the Anata Events calendar when authority is enabled.
+
+    ``override`` lets a named operator take a date the calendar says is busy,
+    and returns what they overrode so it can be recorded. It never applies to a
+    calendar that could not be read: overriding a clash you were shown is a
+    decision, and booking blind is not the same thing.
+    """
 
     if not _calendar_is_authoritative():
-        return None
+        return None, []
     client = BuildingGoogleCalendarClient()
     if not client.configured:
         raise HTTPException(status_code=503, detail=client.readiness_error)
@@ -804,12 +872,15 @@ def _require_calendar_availability(
             status_code=503,
             detail="Anata Events calendar availability could not be verified; no hold was created.",
         ) from exc
-    if conflicts:
+    if conflicts and not override:
         raise HTTPException(
             status_code=409,
             detail="The full setup-through-teardown window is occupied on the Anata Events calendar.",
         )
-    return client
+    return client, [
+        {"source": "anata_events_calendar", "summary": str(item.get("summary") or "Busy")}
+        for item in conflicts
+    ]
 
 
 def _availability_block(
@@ -863,12 +934,30 @@ def create_event_review(
         inquiry = session.get(BuildingInquiry, payload.inquiry_id)
         if inquiry is None or inquiry.kind != "event":
             raise HTTPException(status_code=404, detail="Accepted event inquiry not found.")
-        lifecycle = dict((inquiry.payload_json or {}).get("_lifecycle") or {})
-        if str(lifecycle.get("stage") or "new") not in {"qualified", "closed_won"}:
+        inquiry_payload = dict(inquiry.payload_json or {})
+        lifecycle = dict(inquiry_payload.get("_lifecycle") or {})
+        entry_stage = str(lifecycle.get("stage") or "new")
+        if entry_stage == "closed_lost":
             raise HTTPException(
                 status_code=409,
-                detail="The inquiry must be qualified before authoritative date review.",
+                detail="This inquiry is closed lost; reopen it before holding a date.",
             )
+        # An already-qualified lead keeps the decision it recorded. Anything
+        # earlier is qualified by this hold instead of by a separate step on
+        # another screen, so it must meet the same evidence bar here.
+        if entry_stage not in {"qualified", "closed_won"}:
+            unanswered = event_qualification_missing(
+                dict(inquiry_payload.get("_event_interview") or {}), inquiry_payload
+            )
+            if unanswered:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Answer these before holding a date: "
+                        + ", ".join(unanswered)
+                        + "."
+                    ),
+                )
         if session.get(BuildingReservation, payload.reservation_id) is not None:
             raise HTTPException(
                 status_code=409,
@@ -894,16 +983,23 @@ def create_event_review(
             ends_at=payload.teardown_ends_at,
             reservation_id=payload.reservation_id,
         )
-        if conflicts:
+        if conflicts and not payload.override_conflicts:
             raise HTTPException(
                 status_code=409,
                 detail="The full setup-through-teardown window conflicts with Agent availability.",
             )
-        calendar_client = _require_calendar_availability(
+        calendar_client, calendar_conflicts = _require_calendar_availability(
             starts_at=payload.setup_starts_at,
             ends_at=payload.teardown_ends_at,
             reservation_id=payload.reservation_id,
+            override=payload.override_conflicts,
         )
+        # What was overridden is part of the record. A double booking nobody can
+        # trace back to a decision is indistinguishable from a bug.
+        overridden = [
+            {"source": "agent_hold", "reservation_id": str(row.source_reference or "")}
+            for row in conflicts
+        ] + calendar_conflicts
 
         event_date = payload.guest_starts_at.date()
         plans = session.execute(
@@ -996,6 +1092,11 @@ def create_event_review(
                 "access_window_reviewed": True,
                 "units": payload.units,
                 "addons": payload.addons,
+                **({
+                    "double_booked": True,
+                    "double_booked_by": payload.actor,
+                    "double_booked_over": overridden,
+                } if overridden else {}),
             },
             source="agent_event_review",
             source_reference=f"inquiry:{inquiry.id}",
@@ -1039,6 +1140,7 @@ def create_event_review(
             "tax_status": plan.tax_status,
             "tax_rate_bps": plan.tax_rate_bps,
             "tax_note": plan.tax_note,
+            "transaction_date": event_date.isoformat(),
             "approval_evidence": plan.approval_evidence,
             "approved_by": plan.approved_by,
             "approved_at": plan.approved_at.isoformat() if plan.approved_at else None,
@@ -1086,8 +1188,21 @@ def create_event_review(
                 "quote_id": proposal.id,
                 "rate_plan_id": plan.id,
                 "operator_notes": payload.operator_notes,
+                **({"double_booked_over": overridden} if overridden else {}),
             },
         ))
+        if overridden:
+            session.add(BuildingAuditEvent(
+                entity_type="reservation",
+                entity_id=row.id,
+                action="double_booking_authorised",
+                actor=payload.actor,
+                after_json={
+                    "inquiry_id": inquiry.id,
+                    "access_window": snapshot["access_window"],
+                    "over": overridden,
+                },
+            ))
         command = BuildingEventLifecycleCommand(
             id=str(uuid4()),
             idempotency_key=idempotency_key,
@@ -1099,6 +1214,29 @@ def create_event_review(
             actor=payload.actor,
         )
         session.add(command)
+        if entry_stage not in {"qualified", "closed_won"}:
+            # Taking a date is the qualifying act, and the evidence for it was
+            # already checked above. Recording it here keeps the lead honest
+            # without sending the operator to another screen to say so.
+            held_at = _now()
+            before_lifecycle = dict(lifecycle)
+            lifecycle["stage"] = "qualified"
+            lifecycle.setdefault("qualified_at", held_at.isoformat())
+            lifecycle["last_changed_at"] = held_at.isoformat()
+            lifecycle["last_changed_by"] = payload.actor
+            lifecycle["qualified_by"] = "event_review_hold"
+            inquiry_payload["_lifecycle"] = lifecycle
+            inquiry.payload_json = inquiry_payload
+            inquiry.updated_at = held_at
+            session.add(inquiry)
+            session.add(BuildingAuditEvent(
+                entity_type="inquiry",
+                entity_id=inquiry.id,
+                action="lifecycle_changed",
+                actor=payload.actor,
+                before_json=before_lifecycle,
+                after_json={**lifecycle, "reservation_id": row.id},
+            ))
         session.flush()
         if calendar_client is not None:
             if os.getenv(
@@ -1215,6 +1353,129 @@ def public_customer_status(token: str, request: Request) -> dict[str, Any]:
                 int(claims["exp"]), tz=timezone.utc
             ).isoformat(),
             "booking": _customer_status_projection(session, reservation),
+        }
+
+
+@public_router.post("/status/requests", status_code=202)
+def submit_customer_booking_request(
+    token: str,
+    payload: CustomerBookingRequestInput,
+    request: Request,
+    idempotency_key: str = Header(
+        alias="Idempotency-Key", min_length=8, max_length=128
+    ),
+) -> dict[str, Any]:
+    """Create staff work from a customer request; never mutate the booking."""
+
+    claims = _decode_customer_status_token(request, token)
+    with session_scope(request.app.state.session_factory) as session:
+        reservation = session.get(BuildingReservation, str(claims["reservation_id"]))
+        if (
+            reservation is None
+            or reservation.kind != "event"
+            or reservation.contact_id != str(claims["contact_id"])
+        ):
+            raise HTTPException(status_code=404, detail="Status link is invalid.")
+        request_id = str(uuid5(
+            NAMESPACE_URL,
+            f"building-customer-request:{reservation.id}:{idempotency_key}",
+        ))
+        existing = session.get(BuildingServiceRequest, request_id)
+        if existing is not None:
+            return {
+                "ok": True,
+                "duplicate": True,
+                "request_id": existing.id,
+                "booking_changed": False,
+            }
+        requested_window = ""
+        if payload.requested_starts_at and payload.requested_ends_at:
+            requested_window = (
+                f"\nRequested window: {payload.requested_starts_at.isoformat()} "
+                f"to {payload.requested_ends_at.isoformat()}"
+            )
+        row = BuildingServiceRequest(
+            id=request_id,
+            category="event_support",
+            priority="high" if payload.request_type == "cancellation" else "normal",
+            status="new",
+            title=f"Customer {payload.request_type} request",
+            description=f"{payload.details.strip()}{requested_window}",
+            space_id=reservation.space_id,
+            contact_id=reservation.contact_id,
+            reservation_id=reservation.id,
+            source="customer_status",
+            source_reference=idempotency_key,
+            assigned_owner=reservation.assigned_owner,
+            reported_by="customer-status-link",
+        )
+        session.add(row)
+        session.add(BuildingAuditEvent(
+            entity_type="reservation",
+            entity_id=reservation.id,
+            action="customer_booking_change_requested",
+            actor="customer-status-link",
+            after_json={
+                "request_id": row.id,
+                "request_type": payload.request_type,
+                "booking_changed": False,
+                "inventory_changed": False,
+            },
+        ))
+        return {
+            "ok": True,
+            "duplicate": False,
+            "request_id": row.id,
+            "booking_changed": False,
+        }
+
+
+@router.post("/communications/run")
+def run_booking_communications(
+    payload: CommunicationRunInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Preview or deliver due event reminders through the idempotent outbox."""
+
+    _require_internal_key(request, x_internal_api_key)
+    now = _now()
+    window_start = now + timedelta(days=6)
+    window_end = now + timedelta(days=8)
+    with session_scope(request.app.state.session_factory) as session:
+        rows = session.execute(
+            select(BuildingReservation).where(
+                BuildingReservation.kind == "event",
+                BuildingReservation.status.in_(("confirmed", "pre_event")),
+                BuildingReservation.starts_at >= window_start,
+                BuildingReservation.starts_at <= window_end,
+            )
+        ).scalars().all()
+        if not payload.execute:
+            return {
+                "ok": True,
+                "execute": False,
+                "due_count": len(rows),
+                "reservation_ids": [row.id for row in rows],
+            }
+        results = [
+            {
+                "reservation_id": row.id,
+                **attempt_booking_message(
+                    session,
+                    request=request,
+                    reservation=row,
+                    milestone="event_reminder",
+                    actor=payload.actor,
+                ),
+            }
+            for row in rows
+        ]
+        return {
+            "ok": all(item["status"] in {"sent", "delivered"} for item in results),
+            "execute": True,
+            "due_count": len(rows),
+            "results": results,
         }
 
 
@@ -1494,6 +1755,45 @@ def transition_reservation(
             block.updated_at = _now()
             session.add(block)
             row.hold_expires_at = None
+        if row.kind == "event" and payload.target_status == "completed":
+            checklists = session.execute(
+                select(BuildingOperationalChecklist).where(
+                    BuildingOperationalChecklist.reservation_id == row.id
+                )
+            ).scalars().all()
+            if not checklists:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The event operations checklist is required before closeout.",
+                )
+            required = session.execute(
+                select(BuildingOperationalChecklistItem).where(
+                    BuildingOperationalChecklistItem.checklist_id.in_(
+                        [item.id for item in checklists]
+                    ),
+                    BuildingOperationalChecklistItem.is_required.is_(True),
+                )
+            ).scalars().all()
+            incomplete = [
+                item.label
+                for item in required
+                if (
+                    item.status not in {"completed", "waived"}
+                    or not str(item.completion_reason or "").strip()
+                    or not str(item.evidence_reference or "").strip()
+                    or not str(item.assigned_owner or "").strip()
+                    or item.due_at is None
+                )
+            ]
+            if incomplete:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Complete or waive these required operations with an owner, due date, reason, and evidence before closeout: "
+                        + ", ".join(incomplete)
+                        + "."
+                    ),
+                )
         if payload.target_status == "occupied":
             block = _availability_block(session, row)
             if block:
@@ -1549,6 +1849,20 @@ def transition_reservation(
             before_json={"status": before},
             after_json={"status": row.status, "reason": payload.reason},
         ))
+        if row.kind == "event":
+            milestone = {
+                "confirmed": "booking_confirmed",
+                "cancelled": "booking_cancelled",
+                "completed": "post_event",
+            }.get(payload.target_status)
+            if milestone:
+                attempt_booking_message(
+                    session,
+                    request=request,
+                    reservation=row,
+                    milestone=milestone,
+                    actor=payload.actor,
+                )
         return {"ok": True, "reservation": _reservation_payload(row)}
 
 
@@ -2099,6 +2413,11 @@ def record_proposal(
         reservation = session.get(BuildingReservation, reservation_id)
         if reservation is None:
             raise HTTPException(status_code=404, detail="Reservation not found.")
+        if reservation.status in {"cancelled", "expired", "completed"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"This booking is {reservation.status}; quote history is read-only.",
+            )
         expected_type = "quote" if reservation.kind == "event" else "proposal"
         if payload.proposal_type != expected_type:
             raise HTTPException(
@@ -2252,6 +2571,7 @@ def record_proposal(
                 "tax_rate_bps": selected_rate_plan.tax_rate_bps,
                 "tax_cents": tax_cents,
                 "final_amount_cents": calculated_amount_cents,
+                "transaction_date": reservation.starts_at.date().isoformat(),
             }
         if (
             payload.status in {"approved", "sent", "accepted"}
@@ -2296,6 +2616,7 @@ def record_proposal(
                         else None
                     ),
                     "pricing_adjustment": pricing_adjustment,
+                    "transaction_date": reservation.starts_at.date().isoformat(),
                     "snapshotted_at": _now().isoformat(),
                 }
             row.terms_summary = payload.terms_summary.strip()
@@ -2338,6 +2659,14 @@ def record_proposal(
                 "pricing_adjustment": pricing_adjustment,
             },
         ))
+        if reservation.kind == "event" and payload.status == "sent":
+            attempt_booking_message(
+                session,
+                request=request,
+                reservation=reservation,
+                milestone="quote_sent",
+                actor=payload.actor,
+            )
         return {
             "ok": True,
             "proposal_id": row.id,
@@ -2458,6 +2787,14 @@ def record_agreement(
                 "evidence": dict(row.evidence_json or {}),
             },
         ))
+        if reservation.kind == "event" and payload.status == "signed":
+            attempt_booking_message(
+                session,
+                request=request,
+                reservation=reservation,
+                milestone="agreement_signed",
+                actor=payload.actor,
+            )
         return {"ok": True, "agreement_id": row.id, "status": row.status}
 
 
@@ -2502,4 +2839,12 @@ def record_deposit(
                 "provider_reference": row.provider_reference,
             },
         ))
+        if reservation.kind == "event" and payload.status == "paid":
+            attempt_booking_message(
+                session,
+                request=request,
+                reservation=reservation,
+                milestone="payment_received",
+                actor=payload.actor,
+            )
         return {"ok": True, "deposit_id": row.id, "status": row.status}

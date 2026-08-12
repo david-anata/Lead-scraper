@@ -44,6 +44,7 @@ def test_deterministic_article_repair_fixes_description_and_em_dash() -> None:
 
     assert 50 <= len(article["description"]) <= 155
     assert "\u2014" not in str(article)
+    assert article["content"]["sections"][0]["paragraphs"][0] == "One; two"
     assert len(repairs) == 2
 
 

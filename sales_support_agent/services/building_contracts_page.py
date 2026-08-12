@@ -17,6 +17,9 @@ from sales_support_agent.services.building_contracts import (
     CONTRACT_STATE_FILTERS,
     CONTRACT_TYPE_LABELS,
 )
+from sales_support_agent.services.building_contract_templates import (
+    format_merge_value,
+)
 from sales_support_agent.services.ui_shell import render_operator_document
 
 
@@ -119,7 +122,9 @@ def _terms(snapshot: dict[str, Any], payment: Optional[dict[str, Any]] = None) -
         ("teardown_ends_at", "Teardown ends"),
     ):
         if window.get(key):
-            rows.append((label, _esc(str(window.get(key)).replace("T", " ")[:16])))
+            # Rendered exactly as the contract renders it. Showing the stored
+            # UTC instant here told an operator the party started at 23:00.
+            rows.append((label, _esc(format_merge_value(key, window.get(key)))))
     if payment:
         rows.append((
             "Required payment",
@@ -143,17 +148,10 @@ def _terms(snapshot: dict[str, Any], payment: Optional[dict[str, Any]] = None) -
     for key, value in merge_values.items():
         if key in _rendered_above:
             continue
-        if isinstance(value, dict):
-            rendered = ", ".join(
-                f"{item_key.replace('_', ' ')}: {item_value}"
-                for item_key, item_value in value.items()
-                if item_value not in (None, "", 0)
-            )
-            rendered = _esc(rendered or json.dumps(value, sort_keys=True))
-        elif isinstance(value, list):
-            rendered = _esc(", ".join(str(item) for item in value)) if value else "None"
-        else:
-            rendered = _esc(value)
+        # The same renderer the contract uses, so this page is a true preview:
+        # money reads as dollars, not the stored cents, and tax reads as the
+        # sentence the customer will sign.
+        rendered = _esc(format_merge_value(key, value))
         rows.append((key.replace("_", " ").capitalize(), rendered or "—"))
     body = "".join(
         f"<div class=\"app-detail-list__row\"><dt>{_esc(label)}</dt><dd>{value}</dd></div>"
@@ -363,6 +361,8 @@ def render_contract_detail(
     can_approve: bool,
     can_prepare_signature: bool,
     can_prepare_payment: bool,
+    google_doc_url: str = "",
+    google_doc_error: str = "",
     can_manage: bool,
     csrf_token: str,
     notice: str = "",
@@ -373,6 +373,26 @@ def render_contract_detail(
     payment = contract.get("payment") or {}
     signature = contract.get("signature") or {}
     document = dict((contract.get("snapshot") or {}).get("document") or {})
+    comparison = dict(contract.get("template_comparison") or {})
+    handoff_manifest = json.dumps(
+        {
+            "provider": "QuickBooks Contract Builder",
+            "agreement_id": contract["id"],
+            "agreement_version": contract["version"],
+            "agreement_checksum": contract["checksum"],
+            "document_checksum": str(document.get("checksum") or ""),
+            "customer_name": contract["customer_name"],
+            "signer_email": str(signature.get("signer_email") or contract["customer_email"]),
+            "event_space": contract["space_name"],
+            "event_starts_at": (
+                contract["starts_at"].isoformat() if contract.get("starts_at") else ""
+            ),
+            "contract_total_cents": contract["amount_cents"],
+            "currency": contract["currency"],
+        },
+        indent=2,
+        sort_keys=True,
+    )
     # The document link only appears once the package is approved, matching the
     # route's own precondition.
     has_document = bool(
@@ -415,6 +435,22 @@ def render_contract_detail(
             "no verifiable terms and offers no governed action.</p>",
         )
 
+    if comparison.get("matches"):
+        template_comparison = _alert(
+            "notice",
+            "<p><strong>Template and package match.</strong> The approved template "
+            "identity and rendered document checksum match this frozen package.</p>",
+        )
+    else:
+        difference_items = "".join(
+            f"<li>{_esc(item)}</li>" for item in comparison.get("differences", [])
+        ) or "<li>No comparison evidence is available.</li>"
+        template_comparison = _alert(
+            "blocked",
+            "<p><strong>Template/package differences require a new package.</strong></p>"
+            f"<ul>{difference_items}</ul>",
+        )
+
     audit_rows = "".join(
         f"<tr><td>{_esc(_when(item['created_at']))}</td>"
         f"<td>{_esc(item['action'].replace('_', ' '))}</td>"
@@ -422,6 +458,35 @@ def render_contract_detail(
         f"<td>{_esc(item['entity_type'])}</td></tr>"
         for item in contract["audit"]
     ) or '<tr><td colspan="4">No audit history for this contract yet.</td></tr>'
+
+    # One action, at the top, for the person who both prepares and approves.
+    # The step-by-step forms stay below for a split-duty review.
+    ready = (
+        str(contract["preparation_status"]) == "approved"
+        and str(signature.get("status") or "") == "approved"
+        and bool(google_doc_url)
+    )
+    one_step = ""
+    if contract["verified"] and can_approve and not ready:
+        one_step = f"""<section class="app-panel app-panel--lead">
+      <h2>Ready this contract</h2>
+      <p class="app-muted">Approves the contract and its payment request, then
+      creates the Google Doc you send for signature. Every step is recorded
+      separately. Nothing is emailed and no signature is requested.</p>
+      <form method="post" action="{CONTRACTS_URL}/{_esc(contract['id'])}/ready-to-send">
+        <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+        <button class="admin-btn" type="submit">Approve and create the signing copy</button>
+      </form>
+    </section>"""
+    elif ready:
+        one_step = f"""<section class="app-panel app-panel--lead">
+      <h2>Ready to send</h2>
+      <p class="app-muted">Open the Doc, read it through, then use
+      <strong>Tools &rarr; eSignature</strong> in Google Docs to send it to
+      {_esc(str(signature.get("signer_email") or contract["customer_email"]))}.
+      Agent does not send it for you.</p>
+      <p><a class="admin-btn" href="{_esc(google_doc_url)}" target="_blank" rel="noopener">Open the contract Doc</a></p>
+    </section>"""
 
     actions: list[str] = []
     agreement_next = {
@@ -438,7 +503,16 @@ def render_contract_detail(
             "I confirm this frozen contract package has completed the required review.",
         ),
     }.get(contract["preparation_status"])
-    if contract["verified"] and can_approve and agreement_next:
+    agreement_comparison_allows_action = bool(
+        comparison.get("matches")
+        or (agreement_next and agreement_next[0] == "in_review")
+    )
+    if (
+        contract["verified"]
+        and can_approve
+        and agreement_next
+        and agreement_comparison_allows_action
+    ):
         target, confirmation, action_label, confirmation_copy = agreement_next
         actions.append(f"""<form class="app-form-grid" method="post" action="{CONTRACTS_URL}/{_esc(contract['id'])}/transition">
         <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
@@ -457,7 +531,7 @@ def render_contract_detail(
         actions.append(f"""<form class="app-form-grid" method="post" action="{CONTRACTS_URL}/{_esc(contract['id'])}/signature-readiness">
         <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
         <h3>Customer signature</h3>
-        <p class="app-muted">Freeze the customer and approved agreement for the QuickBooks Contract Builder handoff. This creates no QuickBooks contract and sends no message.</p>
+        <p class="app-muted">Freeze the customer and approved agreement for the Google Docs signing handoff. This creates no signing request and sends no message.</p>
         <label class="app-confirmation"><input type="checkbox" required> <span>I confirm the customer name, email, and approved agreement are ready to freeze.</span></label>
         <div class="app-form-grid__actions"><button class="admin-btn" type="submit">Prepare signature request</button></div>
       </form>""")
@@ -471,8 +545,8 @@ def render_contract_detail(
         "in_review": (
             "approved",
             f"APPROVE SIGNATURE {signature.get('id')}",
-            "Approve QuickBooks handoff",
-            "I confirm this QuickBooks Contract Builder handoff has completed review. Approval still sends nothing.",
+            "Approve signing handoff",
+            "I confirm this Google Docs signing handoff has completed review. Approval still sends nothing.",
         ),
     }.get(str(signature.get("status") or ""))
     if contract["verified"] and signature and can_approve and signature_next:
@@ -487,21 +561,61 @@ def render_contract_detail(
       </form>""")
     if (
         contract["verified"]
-        and signature.get("status") == "approved"
+        and contract["preparation_status"] == "approved"
         and has_document
     ):
-        actions.append(f"""<section class="app-form-grid" aria-label="QuickBooks contract handoff">
-        <h3>Create in QuickBooks</h3>
-        <ol class="app-muted">
-          <li>Open <strong>Read contract</strong>, print it to PDF, and keep the displayed checksum with the file.</li>
-          <li>In QuickBooks, open <strong>All apps → Customer Hub → Contracts</strong>, upload that PDF, place the signature and date fields, and send it to {_esc(signature.get("signer_email"))}.</li>
-          <li>After QuickBooks completes the contract, download the signed PDF and e-sign certificate, calculate the PDF SHA-256, then record that evidence here.</li>
-        </ol>
-        <div class="app-form-grid__actions">
-          <a class="admin-btn" href="{CONTRACTS_URL}/{_esc(contract['id'])}/document" target="_blank" rel="noopener">Open frozen contract</a>
-          <a class="admin-btn admin-btn--secondary" href="https://qbo.intuit.com/" target="_blank" rel="noopener">Open QuickBooks</a>
-        </div>
-      </section>""")
+        # Drafting the Doc only ever needed an approved agreement. Gating it on
+        # the QuickBooks handoff being approved too hid it behind three steps
+        # that have nothing to do with Google.
+        # It never sends and never signs — the signature block comes from the
+        # template untouched, and requesting the signature stays a Docs action.
+        if google_doc_url:
+            google_block = (
+                f'<p class="app-muted">Draft created. Open it, check it reads '
+                f'correctly, then use <strong>Tools &rarr; eSignature</strong> in '
+                f'Google Docs to send it to '
+                f'{_esc(signature.get("signer_email"))}.</p>'
+                f'<div class="app-form-grid__actions">'
+                f'<a class="admin-btn" href="{_esc(google_doc_url)}" target="_blank" rel="noopener">Open the contract Doc</a>'
+                f'</div>'
+            )
+        elif google_doc_error:
+            google_block = (
+                f'<div class="app-alert app-alert--blocked"><p>{_esc(google_doc_error)}</p></div>'
+            )
+        else:
+            google_block = (
+                f'<p class="app-muted">Copies the approved template Doc and fills '
+                f'in this booking. Nothing is sent and the signature block is left '
+                f'exactly as the template has it.</p>'
+                f'<form method="post" action="{CONTRACTS_URL}/{_esc(contract["id"])}/google-doc">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                f'<div class="app-form-grid__actions">'
+                f'<button class="admin-btn" type="submit">Create the contract Doc</button>'
+                f'</div></form>'
+            )
+        actions.append(
+            '<section class="app-form-grid" aria-label="Google Docs contract draft">'
+            '<h3>Signing copy in Google Docs</h3>' + google_block + '</section>'
+        )
+        if signature.get("delivery_status") in {"not_sent", "failed"}:
+            if signature.get("delivery_status") == "failed":
+                actions.append(f"""<form class="app-form-grid" method="post" action="{CONTRACTS_URL}/{_esc(contract['id'])}/signature-readiness/recovery">
+        <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+        <input type="hidden" name="target_status" value="not_sent">
+        <h3>Retry signing handoff</h3>
+        <p class="app-muted">Reset only Agent's manual handoff state. This does not create or resend a customer document.</p>
+        <div class="app-form-grid__actions"><button class="admin-btn" type="submit">Mark ready to retry</button></div>
+      </form>""")
+            else:
+                actions.append(f"""<form class="app-form-grid" method="post" action="{CONTRACTS_URL}/{_esc(contract['id'])}/signature-readiness/recovery">
+        <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+        <input type="hidden" name="target_status" value="failed">
+        <h3>Record a failed signing handoff</h3>
+        <label class="app-field"><span>What failed</span>
+          <textarea name="failure_reason" rows="3" required placeholder="Google Docs error or recovery detail"></textarea></label>
+        <div class="app-form-grid__actions"><button class="admin-btn admin-btn--secondary" type="submit">Record failure</button><span class="app-muted">No customer message is sent.</span></div>
+      </form>""")
     payment_next = {
         "prepared": (
             "in_review",
@@ -529,16 +643,16 @@ def render_contract_detail(
     if can_manage and contract["reservation_id"]:
         actions.append(f"""<form class="app-form-grid" method="post" action="/admin/building/reservations/{_esc(contract['reservation_id'])}/agreements">
         <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-        <h3>Record QuickBooks Contract Builder evidence</h3>
+        <h3>Record Google Docs signing evidence</h3>
         <label class="app-field"><span>Signature state</span>
           <select name="status"><option value="draft">Draft</option><option value="sent">Sent</option><option value="signed">Signed</option><option value="voided">Voided</option></select></label>
         <label class="app-field"><span>Version</span>
           <input type="number" name="version" min="1" value="{_esc(contract['version'])}"></label>
         <label class="app-field"><span>Provider</span>
-          <input name="provider" value="quickbooks_contract_builder" readonly></label>
+          <input name="provider" value="google_docs" readonly></label>
         <label class="app-field"><span>Evidence reference</span>
-          <input name="provider_reference" value="{_esc(contract['provider_reference'])}" placeholder="QuickBooks contract ID or reference"></label>
-        <label class="app-field"><span>QuickBooks contract URL</span>
+          <input name="provider_reference" value="{_esc(contract['provider_reference'])}" placeholder="Google eSignature request or certificate reference"></label>
+        <label class="app-field"><span>Signed Google Doc or PDF URL</span>
           <input type="url" name="document_url" value="{_esc(contract['document_url'])}" placeholder="Required once sent"></label>
         <label class="app-field"><span>E-sign certificate reference</span>
           <input name="esign_certificate_reference" placeholder="Required when signed"></label>
@@ -546,30 +660,47 @@ def render_contract_detail(
           <input name="signed_document_checksum" minlength="64" maxlength="64" placeholder="Required when signed"></label>
         <div class="app-form-grid__actions">
           <button class="admin-btn" type="submit">Record evidence</button>
-          <span class="app-muted">Records what QuickBooks already did. Agent sends nothing and does not infer a signature.</span>
+          <span class="app-muted">Records what Google Docs already did. Agent sends nothing and does not infer a signature.</span>
         </div>
       </form>""")
+    # The individual steps stay available for a split-duty review, folded away
+    # so the page leads with the one thing most people came here to do.
     actions_section = (
-        f'<section class="admin-panel"><h2>Actions</h2><div class="app-action-grid">{"".join(actions)}</div></section>'
+        '<section class="admin-panel"><h2>Actions</h2>'
+        '<details class="app-step-by-step"><summary>Work the steps individually'
+        '</summary><div class="app-action-grid">' + "".join(actions)
+        + "</div></details></section>"
         if actions
         else '<section class="admin-panel"><h2>Actions</h2><div class="app-state-panel">'
         "<h3>No action available</h3><p>Either this record is unverified or your "
         "role does not grant contract approval.</p></div></section>"
     )
 
-    body = f"""<p class="app-backlink"><a href="{CONTRACTS_URL}">← All contracts</a></p>
+    # A contract is an output of a lead, so the way back to that lead belongs
+    # at the top rather than in a list of record identifiers.
+    lead_id = str(contract.get("inquiry_id") or "")
+    backlink = (
+        f'<p class="app-backlink"><a href="/admin/building/inquiries/{_esc(lead_id)}">'
+        f'← Back to {_esc(contract["customer_name"])}’s lead</a>'
+        f' · <a href="{CONTRACTS_URL}">All contracts</a></p>'
+        if lead_id
+        else f'<p class="app-backlink"><a href="{CONTRACTS_URL}">← All contracts</a></p>'
+    )
+    body = f"""{backlink}
     <header class="app-page-header">
       <div>
         <p class="app-eyebrow">Contract · v{_esc(contract['version'])}</p>
         <h1>{_esc(contract['customer_name'])}</h1>
-        <p>{_esc(contract['contract_type_label'])} contract for {_esc(contract['space_name'])}, {_esc(_when(contract['starts_at'], with_time=False))}. Agent freezes the terms; QuickBooks Contract Builder is the signature and contract workspace.</p>
+        <p>{_esc(contract['contract_type_label'])} contract for {_esc(contract['space_name'])}, {_esc(_when(contract['starts_at'], with_time=False))}. Agent freezes the terms; the signature is requested from Google Docs.</p>
       </div>
       <div class="app-page-actions">
         {_status(contract['state_label'], contract['state_modifier'])}
         {f'<a class="admin-btn" href="{CONTRACTS_URL}/{_esc(contract["id"])}/document">Read contract</a>' if has_document else ''}
+        {f'<a class="admin-btn" href="{_esc(google_doc_url)}" target="_blank" rel="noopener">Open Google Doc</a>' if google_doc_url else ''}
       </div>
     </header>
     {_messages(notice, error)}
+    {one_step}
     <div class="app-metric-strip">
       {_metric(_money(contract['amount_cents'], contract['currency']), "Contract value")}
       {_metric(_money(int(payment.get('amount_cents') or 0), str(payment.get('currency') or contract['currency'])), "Required payment")}
@@ -592,17 +723,18 @@ def render_contract_detail(
       )}
     </div>
     <section class="admin-panel"><h2>Frozen terms</h2>{_terms(contract['snapshot'], payment)}</section>
+    <section class="admin-panel"><h2>Template/package comparison</h2>{template_comparison}</section>
     <section class="admin-panel"><h2>Signature handoff</h2>{
       (
         '<dl class="app-detail-list">'
         f'<div class="app-detail-list__row"><dt>Signer</dt><dd>{_esc(signature.get("signer_name"))}<span class="app-table__sub">{_esc(signature.get("signer_email"))}</span></dd></div>'
         f'<div class="app-detail-list__row"><dt>Review state</dt><dd>{_esc(str(signature.get("status") or "").replace("_", " ").title())}</dd></div>'
-        f'<div class="app-detail-list__row"><dt>Provider</dt><dd>QuickBooks Contract Builder</dd></div>'
-        f'<div class="app-detail-list__row"><dt>Delivery</dt><dd>{_esc(str(signature.get("delivery_status") or "not_sent").replace("_", " ").title())} — Agent does not claim a QuickBooks request exists without recorded evidence.</dd></div>'
+        f'<div class="app-detail-list__row"><dt>Provider</dt><dd>Google Docs eSignature</dd></div>'
+        f'<div class="app-detail-list__row"><dt>Delivery</dt><dd>{_esc(str(signature.get("delivery_status") or "not_sent").replace("_", " ").title())} — Agent does not claim a signature request exists without recorded evidence.</dd></div>'
         f'<div class="app-detail-list__row"><dt>Frozen checksum</dt><dd><code>{_esc(signature.get("checksum"))}</code></dd></div>'
         '</dl>'
         if signature
-        else '<div class="app-state-panel"><h3>Not prepared</h3><p>Approve the agreement package, then freeze the customer signer for QuickBooks Contract Builder. Agent cannot create or send that QuickBooks contract through an API.</p></div>'
+        else '<div class="app-state-panel"><h3>Not prepared</h3><p>Approve the agreement package, then freeze the customer signer for Google Docs eSignature. Agent creates the signing copy but does not claim it was sent.</p></div>'
       )
     }</section>
     <section class="admin-panel"><h2>Evidence</h2>{evidence}</section>

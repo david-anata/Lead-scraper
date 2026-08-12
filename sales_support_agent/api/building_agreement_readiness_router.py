@@ -46,11 +46,12 @@ from sales_support_agent.services.building_contract_templates import (
     merge_fields_for,
     normalize_clauses,
     render_document_text,
-    unresolved_fields,
+    missing_merge_fields,
     validate_template_content,
 )
 from sales_support_agent.services.building_contracts import (
     compute_event_merge_values,
+    instant_iso,
 )
 from sales_support_agent.services.building_launch_readiness import (
     sync_arena_agreement_template_decision,
@@ -72,6 +73,16 @@ admin_router = APIRouter(
 FORM_DEPS = [Depends(require_building_form_security)]
 CONTRACTS_URL = "/admin/building/contracts"
 
+#: A contract belongs to a booking that is being committed, not only to one in
+#: its first minutes. Preparation used to require soft_hold, so moving a booking
+#: forward — including into the state named contract_pending — made a contract
+#: permanently impossible.
+CONTRACTABLE_RESERVATION_STATUSES = frozenset({
+    "soft_hold", "quote_sent", "contract_pending", "deposit_due",
+})
+#: The quote must be a real frozen version. Sending it does not make it less so.
+CONTRACTABLE_QUOTE_STATUSES = frozenset({"draft", "approved", "sent", "accepted"})
+
 PREPARATION_TRANSITIONS = {
     "prepared": {"in_review"},
     "in_review": {"approved"},
@@ -81,15 +92,15 @@ PREPARATION_TRANSITIONS = {
 }
 TEMPLATE_TRANSITIONS = {
     "draft": {"in_review"},
-    "in_review": {"approved"},
+    "in_review": {"draft", "approved"},
     "approved": {"retired"},
     "retired": set(),
 }
 #: Event merge fields, kept as one source of truth with the template editor.
 ALLOWED_MERGE_FIELDS = set(EVENT_MERGE_FIELDS)
-ARENA_REVIEW_TEMPLATE_ID = "arena-event-agreement-business-terms-v2"
+ARENA_REVIEW_TEMPLATE_ID = "arena-event-agreement-business-terms-v3"
 ARENA_REVIEW_TEMPLATE_KEY = "arena-event-agreement"
-ARENA_REVIEW_TEMPLATE_VERSION = 2
+ARENA_REVIEW_TEMPLATE_VERSION = 3
 ARENA_REVIEW_TEMPLATE_NAME = "Arena event agreement business terms"
 ARENA_REVIEW_DOCUMENT = (
     Path(__file__).resolve().parents[2]
@@ -220,7 +231,7 @@ class AgreementTemplateInput(BaseModel):
 
 
 class ReviewActionInput(BaseModel):
-    target_status: Literal["in_review", "approved", "retired"]
+    target_status: Literal["draft", "in_review", "approved", "retired"]
     confirmation: str = Field(min_length=1, max_length=255)
     evidence: str = Field(default="", max_length=2000)
     actor: str = Field(min_length=1, max_length=255)
@@ -384,9 +395,17 @@ def transition_agreement_template(
                 status_code=409,
                 detail=f"Cannot move template from {row.status} to {payload.target_status}.",
             )
-        if payload.target_status == "approved" and not payload.evidence.strip():
+        if (
+            payload.target_status in {"draft", "approved"}
+            and not payload.evidence.strip()
+        ):
             raise HTTPException(
-                status_code=422, detail="Template approval evidence is required."
+                status_code=422,
+                detail=(
+                    "A review change note is required."
+                    if payload.target_status == "draft"
+                    else "Template approval evidence is required."
+                ),
             )
         before = row.status
         row.status = payload.target_status
@@ -405,6 +424,7 @@ def transition_agreement_template(
                 "status": row.status,
                 "version": row.version,
                 "approval_evidence": row.approval_evidence,
+                "transition_evidence": payload.evidence.strip(),
             },
         ))
         sync_arena_agreement_template_decision(
@@ -456,26 +476,36 @@ def prepare_agreement_package(
         reservation = session.get(BuildingReservation, payload.reservation_id)
         if reservation is None or reservation.kind != "event":
             raise HTTPException(status_code=404, detail="Event hold not found.")
-        if (
-            reservation.status != "soft_hold"
-            or reservation.hold_expires_at is None
+        if reservation.status not in CONTRACTABLE_RESERVATION_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A contract cannot be prepared for a {reservation.status} "
+                    "booking. Move it to a reviewing or committing state first."
+                ),
+            )
+        # The hold is what reserves the date while nothing else does. Once the
+        # booking has moved on, the reservation itself holds it, so an expiry is
+        # no longer the thing that makes the contract valid.
+        if reservation.status == "soft_hold" and (
+            reservation.hold_expires_at is None
             or _aware(reservation.hold_expires_at) <= _now()
         ):
             raise HTTPException(
                 status_code=409,
-                detail="An active, unexpired Agent temporary hold is required.",
+                detail="The Agent temporary hold on this date has expired.",
             )
         quote = session.get(BuildingProposal, payload.quote_id)
         if (
             quote is None
             or quote.reservation_id != reservation.id
             or quote.proposal_type != "quote"
-            or quote.status != "draft"
+            or quote.status not in CONTRACTABLE_QUOTE_STATUSES
             or not quote.rate_plan_snapshot_json
         ):
             raise HTTPException(
                 status_code=409,
-                detail="A frozen internal quote draft is required.",
+                detail="A frozen versioned quote for this booking is required.",
             )
         template = session.get(BuildingAgreementTemplate, payload.template_id)
         if template is None or template.status != "approved":
@@ -539,18 +569,13 @@ def prepare_agreement_package(
                 "merge_fields": list(template.merge_fields_json or []),
             },
             "event_window": {
-                "setup_starts_at": reservation.starts_at.isoformat(),
-                "guest_starts_at": (
-                    reservation.guest_starts_at.isoformat()
-                    if reservation.guest_starts_at
-                    else None
-                ),
-                "guest_ends_at": (
-                    reservation.guest_ends_at.isoformat()
-                    if reservation.guest_ends_at
-                    else None
-                ),
-                "teardown_ends_at": reservation.ends_at.isoformat(),
+                # Offset-bearing, like the merge values. A naive instant here
+                # was read back as local time and displayed the window four
+                # hours late on the contract review page.
+                "setup_starts_at": instant_iso(reservation.starts_at),
+                "guest_starts_at": instant_iso(reservation.guest_starts_at),
+                "guest_ends_at": instant_iso(reservation.guest_ends_at),
+                "teardown_ends_at": instant_iso(reservation.ends_at),
             },
             "quote": {
                 "id": quote.id,
@@ -576,12 +601,17 @@ def prepare_agreement_package(
                 clauses=template.clauses_json or [],
                 merge_values=selected_merge_values,
             )
-            if unresolved_fields(document_text):
+            gaps = missing_merge_fields(
+                body_markdown=template.body_markdown or "",
+                clauses=template.clauses_json or [],
+                merge_values=selected_merge_values,
+            )
+            if gaps:
                 raise HTTPException(
                     status_code=409,
                     detail=(
                         "The template uses merge fields this booking cannot "
-                        "supply. Resolve the missing values or approve a "
+                        f"supply: {', '.join(gaps)}. Resolve them or approve a "
                         "template version that does not require them."
                     ),
                 )
@@ -693,6 +723,31 @@ def prepare_agreement_package(
         return {**_readiness_payload(agreement, payment), "replayed": False}
 
 
+def _require_contractable(reservation: Optional[BuildingReservation]) -> None:
+    """The booking must still be one a contract can belong to.
+
+    Reviewing and approving used to demand soft_hold with a live expiry, so a
+    package prepared correctly became unreviewable the moment the booking moved
+    forward — including into contract_pending.
+    """
+
+    if reservation is None:
+        raise HTTPException(status_code=409, detail="Readiness evidence is incomplete.")
+    if reservation.status not in CONTRACTABLE_RESERVATION_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This booking is {reservation.status}; its contract cannot move.",
+        )
+    if reservation.status == "soft_hold" and (
+        reservation.hold_expires_at is None
+        or _aware(reservation.hold_expires_at) <= _now()
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="The Agent temporary hold on this date has expired.",
+        )
+
+
 def _transition_readiness(
     session,
     *,
@@ -764,18 +819,43 @@ def transition_agreement_package(
             )
         ).scalar_one()
         reservation = session.get(BuildingReservation, agreement.reservation_id)
-        if (
-            reservation is None
-            or reservation.status != "soft_hold"
-            or reservation.hold_expires_at is None
-            or _aware(reservation.hold_expires_at) <= _now()
-        ):
-            raise HTTPException(status_code=409, detail="The Agent hold is no longer active.")
+        _require_contractable(reservation)
         if _checksum(dict(agreement.package_snapshot_json or {})) != agreement.package_checksum:
             raise HTTPException(
                 status_code=409,
                 detail="Agreement package checksum mismatch; prepare a new version.",
             )
+        if payload.target_status == "approved":
+            snapshot = dict(agreement.package_snapshot_json or {})
+            frozen_template = dict(snapshot.get("template") or {})
+            template = session.get(BuildingAgreementTemplate, agreement.template_id)
+            if template is None or template.status != "approved":
+                raise HTTPException(
+                    status_code=409,
+                    detail="The frozen agreement template is no longer approved.",
+                )
+            if (
+                frozen_template.get("id") != template.id
+                or frozen_template.get("version") != template.version
+                or frozen_template.get("reference") != template.template_reference
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="The template evidence differs from the frozen package; prepare a new version.",
+                )
+            frozen_document = dict(snapshot.get("document") or {})
+            if frozen_document.get("text"):
+                current_text = render_document_text(
+                    name=template.name,
+                    body_markdown=template.body_markdown or "",
+                    clauses=template.clauses_json or [],
+                    merge_values=dict(snapshot.get("merge_values") or {}),
+                )
+                if document_checksum(current_text) != frozen_document.get("checksum"):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="The rendered template differs from the frozen package; prepare a new version.",
+                    )
         _transition_readiness(
             session,
             row=agreement,
@@ -799,14 +879,9 @@ def transition_payment_readiness(
             raise HTTPException(status_code=404, detail="Payment readiness not found.")
         agreement = session.get(BuildingAgreement, payment.agreement_id)
         reservation = session.get(BuildingReservation, payment.reservation_id)
-        if agreement is None or reservation is None:
+        if agreement is None:
             raise HTTPException(status_code=409, detail="Readiness evidence is incomplete.")
-        if (
-            reservation.status != "soft_hold"
-            or reservation.hold_expires_at is None
-            or _aware(reservation.hold_expires_at) <= _now()
-        ):
-            raise HTTPException(status_code=409, detail="The Agent hold is no longer active.")
+        _require_contractable(reservation)
         payment_snapshot = {
             "request_type": payment.request_type,
             "amount_cents": payment.amount_cents,
@@ -899,7 +974,7 @@ def download_arena_review_package(
         media_type="text/markdown; charset=utf-8",
         headers={
             "Content-Disposition": (
-                'attachment; filename="anata-arena-agreement-business-terms-v2.md"'
+                'attachment; filename="anata-arena-agreement-business-terms-v3.md"'
             ),
             "X-Content-SHA256": checksum,
             "Cache-Control": "private, no-store",

@@ -4,7 +4,7 @@ import dataclasses
 import os
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 os.environ.setdefault("SALES_AGENT_DB_URL", "sqlite:///" + tempfile.gettempdir() + "/building_ops_boot.db")
@@ -499,6 +499,8 @@ class BuildingOperationsTests(unittest.TestCase):
                 "firstLandingPage": "/",
                 "firstUtmSource": "direct",
                 "firstCapturedAt": "2026-08-01T12:00:00Z",
+                "gclid": "latest-click-123",
+                "firstGclid": "first-click-456",
             },
         }
         self.assertEqual(
@@ -530,8 +532,15 @@ class BuildingOperationsTests(unittest.TestCase):
                 inquiry.payload_json["_attribution"]["campaign"], "summer"
             )
             self.assertEqual(
+                inquiry.payload_json["_attribution"]["gclid"], "latest-click-123"
+            )
+            self.assertEqual(
                 contact.metadata_json["_building_attribution"]["first_touch"]["source"],
                 "direct",
+            )
+            self.assertEqual(
+                contact.metadata_json["_building_attribution"]["first_touch"]["gclid"],
+                "first-click-456",
             )
             self.assertEqual(
                 contact.metadata_json["_building_attribution"]["latest_touch"]["source"],
@@ -579,6 +588,51 @@ class BuildingOperationsTests(unittest.TestCase):
                 delta=1,
             )
 
+    def test_zz_google_ads_browser_conversion_receipt_is_audited_once(self) -> None:
+        created = self.client.post(
+            "/api/public/building/inquiries",
+            headers={
+                "X-Internal-Api-Key": "building-test-key",
+                "Idempotency-Key": "google-ads-receipt-test",
+            },
+            json={
+                "kind": "event",
+                "name": "Conversion Test",
+                "email": "conversion-test@example.com",
+                "consent_to_contact": True,
+                "source": "google",
+                "details": {"gclid": "click-123"},
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        inquiry_id = created.json()["inquiry_id"]
+        payload = {
+            "provider": "google_ads",
+            "event_name": "conversion",
+            "destination": "AW-740931224/JY4TCOv43c4BEJjtpuEC",
+        }
+        first = self.client.post(
+            f"/api/public/building/inquiries/{inquiry_id}/conversion-receipts",
+            headers={"X-Internal-Api-Key": "building-test-key"},
+            json=payload,
+        )
+        duplicate = self.client.post(
+            f"/api/public/building/inquiries/{inquiry_id}/conversion-receipts",
+            headers={"X-Internal-Api-Key": "building-test-key"},
+            json=payload,
+        )
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertFalse(first.json()["duplicate"])
+        self.assertTrue(duplicate.json()["duplicate"])
+        with self.factory() as session:
+            rows = session.query(BuildingAuditEvent).filter_by(
+                entity_type="inquiry",
+                entity_id=inquiry_id,
+                action="google_ads_browser_conversion_dispatched",
+            ).all()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].after_json["provider_acceptance"], "not_confirmed")
+
     def test_inquiry_response_and_qualification_are_audited_in_agent(self) -> None:
         with self.factory() as session:
             inquiry = session.query(BuildingInquiry).one()
@@ -598,6 +652,20 @@ class BuildingOperationsTests(unittest.TestCase):
         self.assertEqual(responded.status_code, 200, responded.text)
         self.assertEqual(responded.json()["crm_sync_status"], sync_status)
         self.assertTrue(responded.json()["lifecycle"]["first_responded_at"])
+        with self.factory() as session:
+            inquiry = session.get(BuildingInquiry, inquiry_id)
+            payload = dict(inquiry.payload_json or {})
+            payload["_event_interview"] = {
+                "event_purpose": "Customer celebration",
+                "event_format": "Reception",
+                "candidate_dates": "2026-09-19; 2026-09-26",
+                "guest_schedule": "18:00-22:00",
+                "attendance": "85",
+                "agreed_next_step": "Review dates with the customer tomorrow",
+            }
+            inquiry.payload_json = payload
+            session.add(inquiry)
+            session.commit()
         qualified = self.client.post(
             f"/api/internal/building/inquiries/{inquiry_id}/lifecycle",
             headers=self.internal_headers,
@@ -723,3 +791,133 @@ class BuildingOperationsTests(unittest.TestCase):
             inquiry = session.get(BuildingInquiry, created.json()["inquiry_id"])
             self.assertEqual(inquiry.hubspot_contact_id, "")
             self.assertNotIn("_hubspot_sync", inquiry.payload_json)
+            self.assertEqual(
+                [step["key"] for step in inquiry.payload_json["_follow_up_sequence"]],
+                ["review", "first_response", "interview", "follow_up", "close_loop"],
+            )
+            self.assertEqual(
+                inquiry.payload_json["_lead_notification"]["status"],
+                "not_configured",
+            )
+
+    def test_new_inquiry_sends_one_nonblocking_slack_alert(self) -> None:
+        original = app.state.settings
+        app.state.settings = dataclasses.replace(
+            original,
+            slack_bot_token="xoxb-building-test",
+            slack_channel_id="C-BUILDING",
+        )
+        headers = {
+            "X-Internal-Api-Key": "building-test-key",
+            "Idempotency-Key": "inquiry-slack-alert-once",
+        }
+        payload = {
+            "kind": "event",
+            "name": "Alerted Prospect",
+            "email": "alerted-building@example.com",
+            "preferred_date": "2026-11-10",
+            "consent_to_contact": True,
+        }
+        try:
+            with mock.patch(
+                "sales_support_agent.services.building_lead_intake.SlackClient.post_message",
+                return_value={"ok": True, "ts": "123.456"},
+            ) as sender:
+                created = self.client.post(
+                    "/api/public/building/inquiries", headers=headers, json=payload
+                )
+                duplicate = self.client.post(
+                    "/api/public/building/inquiries", headers=headers, json=payload
+                )
+            self.assertEqual(created.status_code, 201, created.text)
+            self.assertTrue(duplicate.json()["duplicate"])
+            sender.assert_called_once()
+            with self.factory() as session:
+                inquiry = session.get(BuildingInquiry, created.json()["inquiry_id"])
+                self.assertEqual(
+                    inquiry.payload_json["_lead_notification"]["status"],
+                    "delivered",
+                )
+                self.assertEqual(
+                    inquiry.payload_json["_lead_notification"]["provider_reference"],
+                    "123.456",
+                )
+        finally:
+            app.state.settings = original
+
+    def test_public_event_date_check_fails_open_without_calendar_details(self) -> None:
+        calendar = mock.Mock(configured=False)
+        first = (date.today() + timedelta(days=40)).isoformat()
+        second = (date.today() + timedelta(days=41)).isoformat()
+        with mock.patch(
+            "sales_support_agent.api.building_router.BuildingGoogleCalendarClient",
+            return_value=calendar,
+        ):
+            response = self.client.get(
+                "/api/public/building/event-date-availability",
+                headers={"X-Internal-Api-Key": "building-test-key"},
+                params={"dates": f"{first},{second}"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            [item["status"] for item in response.json()["dates"]],
+            ["unknown", "unknown"],
+        )
+        self.assertNotIn("summary", response.text.lower())
+
+    def test_public_date_check_uses_full_access_window_and_safe_alternatives(self) -> None:
+        first_date = date.today() + timedelta(days=60)
+        calendar = mock.Mock(configured=True)
+
+        def conflicts(**kwargs):
+            if kwargs["starts_at"].date() == first_date:
+                return [{"id": "private", "summary": "Private customer event"}]
+            return []
+
+        calendar.find_conflicts.side_effect = conflicts
+        with mock.patch(
+            "sales_support_agent.api.building_router.BuildingGoogleCalendarClient",
+            return_value=calendar,
+        ):
+            response = self.client.get(
+                "/api/public/building/event-date-availability",
+                headers={"X-Internal-Api-Key": "building-test-key"},
+                params={
+                    "dates": first_date.isoformat(),
+                    "setup_start_time": "10:00",
+                    "guest_start_time": "12:00",
+                    "guest_end_time": "18:00",
+                    "teardown_end_time": "20:00",
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["dates"][0]["status"], "unavailable")
+        self.assertIn("T10:00:00", body["dates"][0]["window_start"])
+        self.assertIn("T20:00:00", body["dates"][0]["window_end"])
+        self.assertEqual(len(body["nearby_alternatives"]), 3)
+        self.assertEqual(body["checked_by"], "Anata Events calendar and Agent holds")
+        self.assertNotIn("Private customer event", response.text)
+
+    def test_public_date_check_rejects_reversed_access_window(self) -> None:
+        candidate = (date.today() + timedelta(days=60)).isoformat()
+        calendar = mock.Mock(configured=True)
+        response = None
+        with mock.patch(
+            "sales_support_agent.api.building_router.BuildingGoogleCalendarClient",
+            return_value=calendar,
+        ):
+            response = self.client.get(
+                "/api/public/building/event-date-availability",
+                headers={"X-Internal-Api-Key": "building-test-key"},
+                params={
+                    "dates": candidate,
+                    "setup_start_time": "14:00",
+                    "guest_start_time": "12:00",
+                    "guest_end_time": "18:00",
+                    "teardown_end_time": "20:00",
+                },
+            )
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("Setup must begin", response.text)
+        calendar.find_conflicts.assert_not_called()

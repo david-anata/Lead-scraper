@@ -28,6 +28,7 @@ from sales_support_agent.services.sales.actions import (
     SalesAction,
     compute_pending_actions,
 )
+from sales_support_agent.services.sales.security import csrf_token
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +208,7 @@ def render_batch_cleanup_page(
     failed: int = 0,
     error: str = "",
 ) -> str:
+    _csrf = csrf_token(user)
     from sales_support_agent.services.admin_nav import (
         render_agent_favicon_links,
         render_agent_nav,
@@ -440,7 +442,7 @@ def render_batch_cleanup_page(
 </div>"""
 
         body_html = f"""
-<form method="post" action="/admin/sales/deals/cleanup" id="cleanup-form">
+<form method="post" action="/admin/sales/deals/cleanup" id="cleanup-form"><input type="hidden" name="_csrf_token" value="{_csrf}">
   {toolbar_html}
   {deals_html}
   <div class="toolbar" style="margin-top:16px">

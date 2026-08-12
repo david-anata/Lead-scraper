@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import calendar as calendar_module
 import hashlib
 import json
 import logging
-from datetime import datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import lru_cache
+from time import monotonic
 from typing import Any
 from contextvars import ContextVar
 from urllib.parse import quote, urlparse
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 import requests
@@ -44,11 +47,16 @@ from sales_support_agent.services.cashflow.money_brief import (
     render_cash_plan_page,
     render_money_brief_page,
 )
+from sales_support_agent.services.cashflow.cash_calendar import (
+    load_cash_calendar,
+    render_cash_calendar_page,
+)
 from sales_support_agent.services.cashflow.budgeting import (
     BudgetReviewProviderError,
     load_budget_review,
     load_budget_view,
     render_budget_page,
+    render_budget_vendor_page,
     run_budget_review,
 )
 from sales_support_agent.services.cashflow.recurring import (
@@ -60,6 +68,11 @@ from sales_support_agent.services.cashflow.upload import run_csv_upload
 from sales_support_agent.services.cashflow.upload_page import render_upload_result
 from sales_support_agent.services.auth_deps import get_current_user, require_tool
 from sales_support_agent.services.cashflow.cashflow_helpers import _finance_nav_user
+from sales_support_agent.services.cashflow.business_time import operator_today
+from sales_support_agent.services.cashflow.finance_security import (
+    csrf_token as finance_csrf_token,
+    require_finance_write_security,
+)
 
 
 async def _set_finance_nav_user(request: Request) -> None:
@@ -70,6 +83,36 @@ from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
 
 
 logger = logging.getLogger(__name__)
+
+_FINANCE_BRIEF_CACHE_SECONDS = 30.0
+
+
+async def _load_request_finance_brief(request: Request) -> tuple[Any, bool]:
+    """Reuse the deterministic brief briefly between read-only page loads.
+
+    Finance's main pages all need the same large evidence packet.  Rebuilding
+    that packet for every navigation made each tab pay for the same database
+    reads again.  The cache is process-local, expires quickly, and every
+    Finance write invalidates it through the application middleware.  It never
+    caches or changes source records.
+    """
+    now = monotonic()
+    today = operator_today().isoformat()
+    cached = getattr(request.app.state, "finance_brief_cache", None)
+    if cached and cached[0] > now and cached[1] == today:
+        return cached[2], True
+    brief = await asyncio.to_thread(load_finance_brief, _finance_settings(request))
+    request.app.state.finance_brief_cache = (
+        now + _FINANCE_BRIEF_CACHE_SECONDS,
+        today,
+        brief,
+    )
+    return brief, False
+
+
+def clear_finance_brief_cache(app: Any) -> None:
+    """Make the next read rebuild from source evidence."""
+    app.state.finance_brief_cache = None
 
 
 def _finance_settings(request: Request) -> Any:
@@ -329,6 +372,7 @@ async def cashflow_health(request: Request):
         finance_v2_tables = {
             "payment_installments", "settlement_allocations", "finance_source_records",
             "finance_import_batches", "finance_import_rows",
+            "finance_economic_transaction_groups", "finance_economic_transaction_members",
         }
         checks["finance_v2_tables_present"] = finance_v2_tables.issubset(tables)
         savings_review_tables = {"finance_savings_reviews", "finance_savings_review_events"}
@@ -441,18 +485,249 @@ async def finance_overview(request: Request, flash: str = ""):
                     sync_connected_items,
                     settings=finance_settings, item_ids=item_ids,
                 )
+                clear_finance_brief_cache(request.app)
         except Exception as exc:
             _forecast_logger.warning("[overview] background Plaid refresh failed: %s", exc)
     asyncio.create_task(_refresh_stale_plaid())
-    settings = _finance_settings(request)
-    brief = await asyncio.to_thread(load_finance_brief, settings)
-    return HTMLResponse(render_money_brief_page(brief, flash=flash))
+    brief, cache_hit = await _load_request_finance_brief(request)
+    response = HTMLResponse(render_money_brief_page(brief, flash=flash))
+    response.headers["X-Finance-Brief-Cache"] = "hit" if cache_hit else "miss"
+    return response
 
 
 @router.get("/plan", response_class=HTMLResponse)
 async def finance_cash_plan(request: Request):
-    brief = await asyncio.to_thread(load_finance_brief, _finance_settings(request))
-    return HTMLResponse(render_cash_plan_page(brief))
+    brief, cache_hit = await _load_request_finance_brief(request)
+    response = HTMLResponse(render_cash_plan_page(brief))
+    response.headers["X-Finance-Brief-Cache"] = "hit" if cache_hit else "miss"
+    return response
+
+
+@router.post("/cutover/archive")
+async def finance_cutover_archive(request: Request):
+    """Take every ClickUp estimate out of the numbers, reversibly."""
+    from sales_support_agent.services.cashflow.cutover import archive_clickup_ledger
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        result = await asyncio.to_thread(archive_clickup_ledger, actor=actor)
+    except Exception:
+        logger.exception("Archiving the ClickUp estimates failed")
+        return _redirect_finance_error(
+            "Those could not be archived, so nothing was changed."
+        )
+    if not result["archived"]:
+        return _redirect_finance_home("Nothing left to archive. The old list is already out.")
+    return _redirect_finance_home(
+        f"{result['message']} Your numbers now come from the bank. "
+        f"Undo reference {result['batch_id'][:8]}."
+    )
+
+
+CHARGE_ANSWER_PATH = "/admin/finances/calendar/charges/answer"
+
+
+@router.get("/calendar/charges", response_class=HTMLResponse)
+async def finance_calendar_charges(
+    request: Request, week: str = "", state: str = "unpaid", flash: str = ""
+):
+    """The individual charges behind one figure in the weekly roll-up."""
+    from datetime import date as _date
+
+    from sales_support_agent.services.cashflow.charge_drilldown import (
+        build_charge_drilldown,
+        render_charge_panel,
+    )
+    from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
+    from sales_support_agent.services.cashflow.overview import _page_shell
+
+    try:
+        week_start = _date.fromisoformat(str(week)[:10])
+    except ValueError:
+        return _redirect_finance_error("That week could not be read, so nothing was opened.")
+
+    def _build() -> str:
+        from sales_support_agent.services.cashflow.bill_patterns import list_bill_patterns
+        from sales_support_agent.services.cashflow.cash_calendar import overlay_paydown_proposals
+        from sales_support_agent.services.cashflow.obligations import list_obligations
+        from sales_support_agent.services.cashflow.rent_paydown import load_paydown_plan
+
+        today = datetime.now(ZoneInfo("America/Denver")).date()
+        month_end = today.replace(day=calendar_module.monthrange(today.year, today.month)[1])
+        horizon_days = max(0, (month_end - today).days)
+        ledger = list_obligations(limit=10_000)
+        calendar = load_cash_calendar(
+            rows=ledger, as_of=today, future_days=horizon_days,
+        )
+        paydown = load_paydown_plan(rows=ledger, calendar=calendar, as_of=today)
+        calendar = overlay_paydown_proposals(calendar, paydown)
+        try:
+            listing = list_bill_patterns()
+            patterns = [*listing.get("patterns", []), *listing.get("tracked", [])]
+        except Exception:
+            logger.exception("Bill patterns unavailable for the charge panel")
+            patterns = []
+        view = build_charge_drilldown(
+            calendar, week_start=week_start, state=state, patterns=patterns
+        )
+        return render_charge_panel(view, action=CHARGE_ANSWER_PATH)
+
+    try:
+        body = await asyncio.to_thread(_build)
+    except ValueError:
+        return _redirect_finance_error("Choose paid, still due, or possible.")
+    except Exception:
+        logger.exception("The charges behind that figure could not be listed")
+        return _redirect_finance_error("Those charges could not be listed. Nothing was changed.")
+    shell = (
+        '<div class="money-brief">'
+        + render_finance_nav("calendar", counts={})
+        + '<p><a class="btn btn-secondary btn-sm" href="/admin/finances/calendar">'
+        "Back to the calendar</a></p>" + body + "</div>"
+    )
+    return HTMLResponse(_page_shell("Charges", "calendar", shell, flash=flash))
+
+
+@router.post("/calendar/charges/answer")
+async def finance_calendar_charge_answer(
+    request: Request,
+    pattern_key: str = Form(""),
+    cadence: str = Form(""),
+    vendor: str = Form(""),
+    return_to: str = Form(""),
+):
+    """Record what a charge is. The same act as tracking it under What is coming,
+    written to the same place so one charge cannot have two answers."""
+    from sales_support_agent.services.cashflow.charge_drilldown import cadence_to_decision
+    from sales_support_agent.services.cashflow.bill_patterns import (
+        record_bill_pattern_decision,
+    )
+
+    request.state.finance_return_to = return_to or "/admin/finances/calendar"
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        decision = cadence_to_decision(str(cadence or "").strip())
+        await asyncio.to_thread(
+            record_bill_pattern_decision,
+            str(pattern_key or "").strip(),
+            decision,
+            actor=actor,
+            evidence={"said": cadence, "vendor": vendor, "from": "calendar"},
+        )
+    except ValueError as exc:
+        return _redirect_finance_error(f"That could not be saved: {exc}")
+    except Exception:
+        logger.exception("A charge answer could not be saved pattern_key=%s", pattern_key)
+        return _redirect_finance_error("That could not be saved. Nothing was changed.")
+    words = {
+        "monthly": "Noted as monthly. It now counts from its next date.",
+        "weekly": "Noted as weekly. It now counts from its next date.",
+        "one_time": "Noted as a one-off. We will keep watching this supplier.",
+        "not_a_bill": "Noted. We will stop suggesting this supplier.",
+    }
+    return _redirect_finance_home(words.get(cadence, "Saved."))
+
+
+@router.get("/calendar", response_class=HTMLResponse)
+async def finance_cash_calendar(request: Request, flash: str = ""):
+    """Show posted, planned, and historically likely expenses by day."""
+    from sales_support_agent.services.cashflow.obligations import list_obligations
+
+    # Read the ledger once and share it. The calendar and the paydown plan both
+    # need every row, and reading it twice doubles the slowest part of the page.
+    try:
+        ledger = await asyncio.to_thread(list_obligations, limit=10_000)
+    except Exception:
+        logger.exception("The Finance ledger could not be read")
+        ledger = None
+    today = datetime.now(ZoneInfo("America/Denver")).date()
+    month_end = today.replace(day=calendar_module.monthrange(today.year, today.month)[1])
+    horizon_days = max(0, (month_end - today).days)
+    try:
+        calendar = await asyncio.to_thread(
+            load_cash_calendar, rows=ledger, as_of=today, future_days=horizon_days,
+        )
+    except Exception:
+        logger.exception("The Finance cash calendar could not load")
+        calendar = {"status": "error", "days": [], "totals": {}}
+    # A failure working out what can go toward a bill must never take the
+    # calendar itself down: the calendar is the record, the plan is advice.
+    paydown = None
+    try:
+        from sales_support_agent.services.cashflow.rent_paydown import load_paydown_plan
+
+        paydown = await asyncio.to_thread(
+            load_paydown_plan, rows=ledger, calendar=calendar, as_of=today,
+        )
+    except Exception as exc:
+        logger.exception("The Finance paydown plan could not be worked out")
+        # The operator can read this back in one glance, which beats guessing
+        # from here. Deliberately the failure's name only, never its detail.
+        paydown = {"status": "failed", "reason": type(exc).__name__}
+    from sales_support_agent.services.cashflow.cash_calendar import overlay_paydown_proposals
+    calendar = overlay_paydown_proposals(calendar, paydown)
+    return HTMLResponse(
+        render_cash_calendar_page(calendar, flash=flash, paydown=paydown)
+    )
+
+
+@router.post("/calendar/paydown-settings", response_class=HTMLResponse)
+async def update_paydown_settings(
+    request: Request,
+    vendor_label: str = Form(...),
+    monthly_amount: str = Form(...),
+    balance_amount: str = Form(...),
+    balance_as_of: str = Form(...),
+    cash_goal: str = Form(...),
+):
+    """Save operator-confirmed rent facts; this never initiates a payment."""
+    from sales_support_agent.services.cashflow.settings import set_paydown_settings
+
+    def nonnegative_cents(raw: str) -> int:
+        try:
+            amount = Decimal(str(raw).replace("$", "").replace(",", "").strip())
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError("Enter valid dollar amounts") from exc
+        cents = int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        if cents < 0:
+            raise ValueError("Amounts cannot be negative")
+        return cents
+
+    try:
+        confirmed_on = date.fromisoformat(str(balance_as_of)[:10])
+        label = str(vendor_label or "").strip()
+        if not label:
+            raise ValueError("Payee is required")
+        actor = "finance-operator"
+        current_user = get_current_user(request)
+        if isinstance(current_user, dict):
+            actor = str(current_user.get("email") or current_user.get("name") or actor)
+        await asyncio.to_thread(
+            set_paydown_settings,
+            balance_cents=nonnegative_cents(balance_amount),
+            balance_as_of=confirmed_on,
+            monthly_cents=nonnegative_cents(monthly_amount),
+            cash_goal_cents=nonnegative_cents(cash_goal),
+            emergency_floor_cents=0,
+            vendor_key="boulder ranch",
+            vendor_label=label,
+            actor=actor,
+        )
+    except (ValueError, TypeError) as exc:
+        return RedirectResponse(
+            f"/admin/finances/calendar?flash={quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        logger.exception("Rent payoff settings could not be saved")
+        return RedirectResponse(
+            "/admin/finances/calendar?flash=Payoff%20facts%20could%20not%20be%20saved",
+            status_code=303,
+        )
+    return RedirectResponse(
+        "/admin/finances/calendar?flash=Rent%20payoff%20facts%20updated", status_code=303
+    )
 
 
 @router.get("/budget", response_class=HTMLResponse)
@@ -462,6 +737,15 @@ async def finance_budget(request: Request, flash: str = ""):
         asyncio.to_thread(load_budget_review),
     )
     return HTMLResponse(render_budget_page(view, review, flash=flash))
+
+
+@router.get("/budget/vendor/{opportunity_key}", response_class=HTMLResponse)
+async def finance_budget_vendor(
+    request: Request, opportunity_key: str, flash: str = "",
+):
+    """Show one cost with its posted evidence and explicit next action."""
+    view = await asyncio.to_thread(load_budget_view)
+    return HTMLResponse(render_budget_vendor_page(view, opportunity_key, flash=flash))
 
 
 @router.post("/budget/review")
@@ -490,8 +774,10 @@ async def finance_budget_review(request: Request):
 @router.get("/accounts", response_class=HTMLResponse)
 async def finance_accounts(request: Request):
     settings = _finance_settings(request)
-    brief = await asyncio.to_thread(load_finance_brief, settings)
-    return HTMLResponse(render_accounts_page(brief, settings))
+    brief, cache_hit = await _load_request_finance_brief(request)
+    response = HTMLResponse(render_accounts_page(brief, settings))
+    response.headers["X-Finance-Brief-Cache"] = "hit" if cache_hit else "miss"
+    return response
 
 
 @router.post("/accounts/refresh")
@@ -509,24 +795,71 @@ async def finance_accounts_refresh(request: Request):
     return RedirectResponse(f"/admin/finances/accounts?flash={message}", status_code=303)
 
 
+@router.get("/api/economic-transactions/preview")
+async def finance_economic_transactions_preview(request: Request):
+    """Preview cross-feed cleanup without changing any transaction."""
+    from sales_support_agent.services.cashflow.economic_transactions import (
+        reconcile_cross_feed_transactions,
+    )
+
+    return JSONResponse(await asyncio.to_thread(
+        reconcile_cross_feed_transactions, dry_run=True,
+        actor=str((get_current_user(request) or {}).get("email") or "finance-operator"),
+    ))
+
+
+@router.post(
+    "/api/economic-transactions/apply",
+    dependencies=[Depends(require_finance_write_security)],
+)
+async def finance_economic_transactions_apply(request: Request):
+    """Apply exact-only grouping; uncertain pairs remain protected Review cases."""
+    from sales_support_agent.services.cashflow.economic_transactions import (
+        reconcile_cross_feed_transactions,
+    )
+
+    return JSONResponse(await asyncio.to_thread(
+        reconcile_cross_feed_transactions, dry_run=False,
+        actor=str((get_current_user(request) or {}).get("email") or "finance-operator"),
+    ))
+
+
+@router.post(
+    "/api/economic-transactions/{group_id}/undo",
+    dependencies=[Depends(require_finance_write_security)],
+)
+async def finance_economic_transactions_undo(request: Request, group_id: str):
+    """Undo one exact cross-feed classification without deleting history."""
+    from sales_support_agent.services.cashflow.economic_transactions import undo_cross_feed_group
+
+    return JSONResponse(await asyncio.to_thread(
+        undo_cross_feed_group, group_id,
+        actor=str((get_current_user(request) or {}).get("email") or "finance-operator"),
+    ))
+
+
 @router.get("/calculations/{calculation_id}", response_class=HTMLResponse)
 async def finance_calculation(request: Request, calculation_id: str):
-    brief = await asyncio.to_thread(load_finance_brief, _finance_settings(request))
+    brief, cache_hit = await _load_request_finance_brief(request)
     flash = ""
     if calculation_id != brief.calculation_id:
         flash = (
             "warn:The source data changed after that calculation. "
             "This page shows the newest calculation and its new ID."
         )
-    return HTMLResponse(render_calculation_page(brief, flash=flash))
+    response = HTMLResponse(render_calculation_page(brief, flash=flash))
+    response.headers["X-Finance-Brief-Cache"] = "hit" if cache_hit else "miss"
+    return response
 
 
 @router.get("/plaid/oauth-return", response_class=HTMLResponse)
 async def plaid_oauth_return(request: Request):
     """Render Finance at Plaid's exact OAuth return URL so Link can resume."""
     settings = _finance_settings(request)
-    brief = await asyncio.to_thread(load_finance_brief, settings)
-    return HTMLResponse(render_accounts_page(brief, settings))
+    brief, cache_hit = await _load_request_finance_brief(request)
+    response = HTMLResponse(render_accounts_page(brief, settings))
+    response.headers["X-Finance-Brief-Cache"] = "hit" if cache_hit else "miss"
+    return response
 
 
 @router.post("/plaid/link-token")
@@ -672,7 +1005,7 @@ async def plaid_set_account_cash_role(
         applied = await asyncio.to_thread(set_cash_role, account_id, role, actor=actor)
     except ValueError as exc:
         return _redirect_finance_error(f"That account could not be updated: {exc}")
-    label = {"spendable": "spendable cash", "reserve": "savings/reserve", "excluded": "not counted"}.get(applied, applied)
+    label = {"spendable": "spendable cash", "reserve": "savings/reserve", "liability": "money owed", "excluded": "not counted"}.get(applied, applied)
     return _redirect_finance_home(f"Account updated. It now counts as {label}.")
 
 
@@ -688,15 +1021,50 @@ def _vendor_form_data(form: Any) -> dict:
         "match_terms": form.get("match_terms", ""),
         "running_account": str(form.get("running_account", "")).lower() in {"true", "on", "1", "yes"},
         "notes": form.get("notes", ""),
+        "agreement_name": form.get("agreement_name", ""),
+        "agreement_reference_url": form.get("agreement_reference_url", ""),
+        "agreement_status": form.get("agreement_status", "active"),
+        "term_type": form.get("term_type", "month_to_month"),
+        "amount_type": form.get("amount_type", "fixed"),
+        "payment_account_label": form.get("payment_account_label", ""),
+        "renewal_date": form.get("renewal_date", ""),
+        "auto_renewal": form.get("auto_renewal", "unknown"),
+        "cancellation_notice_days": form.get("cancellation_notice_days", "0"),
+        "owner": form.get("owner", ""),
+        "evidence_note": form.get("evidence_note", ""),
     }
+
+
+@router.post("/vendors/preview", response_class=HTMLResponse)
+async def preview_vendor_endpoint(request: Request):
+    from sales_support_agent.services.cashflow.overview import render_vendor_agreement_preview
+    form = await request.form()
+    data = _vendor_form_data(form)
+    try:
+        return HTMLResponse(render_vendor_agreement_preview(data))
+    except ValueError as exc:
+        return _redirect_finance_error(f"Vendor agreement needs attention: {exc}")
+
+
+@router.post("/vendors/{vendor_id}/preview", response_class=HTMLResponse)
+async def preview_vendor_update_endpoint(request: Request, vendor_id: str):
+    from sales_support_agent.services.cashflow.overview import render_vendor_agreement_preview
+    form = await request.form()
+    data = _vendor_form_data(form)
+    try:
+        return HTMLResponse(render_vendor_agreement_preview(data, vendor_id=vendor_id))
+    except ValueError as exc:
+        return _redirect_finance_error(f"Vendor agreement needs attention: {exc}")
 
 
 @router.post("/vendors")
 async def create_vendor_endpoint(request: Request):
     from sales_support_agent.services.cashflow.vendors import create_vendor
     form = await request.form()
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
     try:
-        await asyncio.to_thread(create_vendor, _vendor_form_data(form))
+        await asyncio.to_thread(create_vendor, _vendor_form_data(form), actor=actor)
     except ValueError as exc:
         return _redirect_finance_error(f"Vendor could not be saved: {exc}")
     return _redirect_finance_home("Vendor added.")
@@ -706,8 +1074,10 @@ async def create_vendor_endpoint(request: Request):
 async def update_vendor_endpoint(request: Request, vendor_id: str):
     from sales_support_agent.services.cashflow.vendors import update_vendor
     form = await request.form()
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
     try:
-        await asyncio.to_thread(update_vendor, vendor_id, _vendor_form_data(form))
+        await asyncio.to_thread(update_vendor, vendor_id, _vendor_form_data(form), actor=actor)
     except ValueError as exc:
         return _redirect_finance_error(f"Vendor could not be updated: {exc}")
     return _redirect_finance_home("Vendor updated.")
@@ -716,7 +1086,9 @@ async def update_vendor_endpoint(request: Request, vendor_id: str):
 @router.post("/vendors/{vendor_id}/delete")
 async def delete_vendor_endpoint(request: Request, vendor_id: str):
     from sales_support_agent.services.cashflow.vendors import deactivate_vendor
-    await asyncio.to_thread(deactivate_vendor, vendor_id)
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    await asyncio.to_thread(deactivate_vendor, vendor_id, actor=actor)
     return _redirect_finance_home("Vendor removed.")
 
 
@@ -884,7 +1256,7 @@ async def finance_qbo_bookkeeping_confirm(
     request: Request, event_id: str,
     account_id: str = Form(...),
 ):
-    from sales_support_agent.services.cashflow.qbo_bookkeeping import confirm_writeback
+    from sales_support_agent.services.cashflow.qbo_bookkeeping import confirm_writeback, record_writeback_failure
     user = get_current_user(request) or {}
     actor = str(user.get("email") or user.get("id") or "finance-operator")
     try:
@@ -893,7 +1265,12 @@ async def finance_qbo_bookkeeping_confirm(
             settings=_finance_settings(request), actor=actor,
         )
     except Exception as exc:
-        return _redirect_finance_error(f"QuickBooks was not changed: {exc}")
+        await asyncio.to_thread(record_writeback_failure, event_id, actor=actor, error=str(exc))
+        return RedirectResponse(
+            f"/admin/finances/bookkeeping/qbo/{quote(event_id)}/review?flash="
+            f"{quote(f'err:QuickBooks was not changed. Your Agent category is safe. Retry when ready: {exc}')}",
+            status_code=303,
+        )
     return _redirect_finance_home(
         f"QuickBooks updated. This purchase is now filed under {result['account_name']}."
     )
@@ -1209,6 +1586,264 @@ async def finance_assistant_preview(request: Request):
     return JSONResponse(preview)
 
 
+def _finance_actor(request: Request) -> str:
+    user = get_current_user(request) or {}
+    return str(user.get("email") or user.get("id") or "finance-operator")
+
+
+@router.get("/api/workspace/bootstrap")
+async def finance_workspace_bootstrap(request: Request):
+    """Return the shared action contract and this operator's recoverable draft."""
+    from sales_support_agent.services.cashflow.transaction_workspace import action_catalog, list_saved_views, load_draft
+
+    actor = _finance_actor(request)
+    try:
+        draft = await asyncio.to_thread(load_draft, actor=actor)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return JSONResponse({
+        "actions": action_catalog(),
+        "draft": draft,
+        "saved_views": await asyncio.to_thread(list_saved_views, actor=actor),
+        "csrf_token": finance_csrf_token(get_current_user(request)),
+        "save_vocabulary": ["Draft", "Saved", "Synced", "Failed", "Partially synced"],
+    })
+
+
+@router.get("/api/objects/{object_type}/{object_id}")
+async def finance_workspace_object(object_type: str, object_id: str):
+    """Load one canonical object for the shared detail panel."""
+    from sales_support_agent.services.cashflow.transaction_workspace import get_finance_object
+
+    try:
+        item = await asyncio.to_thread(get_finance_object, object_type, object_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return JSONResponse(item)
+
+
+@router.put("/api/workspace/draft", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_save_draft(request: Request):
+    from sales_support_agent.services.cashflow.transaction_workspace import save_draft
+
+    body = await request.json()
+    try:
+        result = await asyncio.to_thread(
+            save_draft,
+            body.get("changes") or [],
+            actor=_finance_actor(request),
+            dataset_revision=str(body.get("dataset_revision") or ""),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return JSONResponse(result)
+
+
+@router.delete("/api/workspace/draft", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_discard_draft(request: Request):
+    from sales_support_agent.services.cashflow.transaction_workspace import discard_draft
+
+    discarded = await asyncio.to_thread(discard_draft, actor=_finance_actor(request))
+    return JSONResponse({"discarded": discarded, "state": "Saved"})
+
+
+@router.post("/api/workspace/preview", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_preview(request: Request):
+    from sales_support_agent.services.cashflow.transaction_workspace import preview_changes
+
+    body = await request.json()
+    try:
+        result = await asyncio.to_thread(
+            preview_changes,
+            body.get("changes") or [],
+            actor=_finance_actor(request),
+            draft_revision=int(body.get("draft_revision") or 0),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(result)
+
+
+@router.post("/api/workspace/apply", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_apply(request: Request):
+    from sales_support_agent.services.cashflow.transaction_workspace import apply_preview
+
+    body = await request.json()
+    try:
+        result = await asyncio.to_thread(
+            apply_preview,
+            str(body.get("preview_token") or ""),
+            actor=_finance_actor(request),
+            idempotency_key=str(body.get("idempotency_key") or ""),
+            reason=str(body.get("reason") or ""),
+            source_page=str(body.get("source_page") or ""),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(result)
+
+
+@router.post("/api/workspace/commit", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_commit(request: Request):
+    """Apply the current reversible Finance draft with one operator action."""
+    from sales_support_agent.services.cashflow.transaction_workspace import apply_draft
+
+    body = await request.json()
+    try:
+        result = await asyncio.to_thread(
+            apply_draft,
+            actor=_finance_actor(request),
+            idempotency_key=str(body.get("idempotency_key") or ""),
+            reason=str(body.get("reason") or ""),
+            source_page=str(body.get("source_page") or "finance_single_save"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(result)
+
+
+@router.post("/api/workspace/batches/{batch_id}/undo", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_undo(request: Request, batch_id: str):
+    from sales_support_agent.services.cashflow.transaction_workspace import undo_batch
+
+    try:
+        result = await asyncio.to_thread(undo_batch, batch_id, actor=_finance_actor(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(result)
+
+
+@router.get("/api/workspace/batches/{batch_id}")
+async def finance_workspace_receipt(batch_id: str):
+    from sales_support_agent.services.cashflow.transaction_workspace import get_batch_receipt
+
+    try:
+        result = await asyncio.to_thread(get_batch_receipt, batch_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return JSONResponse(result)
+
+
+@router.get("/api/workspace/activity")
+async def finance_workspace_activity(limit: int = 50):
+    from sales_support_agent.services.cashflow.transaction_workspace import list_activity
+
+    return JSONResponse({"items": await asyncio.to_thread(list_activity, limit=limit)})
+
+
+@router.get("/api/workspace/search")
+async def finance_workspace_search(q: str = "", limit: int = 30):
+    from sales_support_agent.services.cashflow.transaction_workspace import search_finance
+
+    return JSONResponse({"items": await asyncio.to_thread(search_finance, q, limit=limit), "query": q})
+
+
+@router.post("/api/workspace/views", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_save_view(request: Request):
+    from sales_support_agent.services.cashflow.transaction_workspace import save_view
+
+    body = await request.json()
+    try:
+        item = await asyncio.to_thread(
+            save_view, str(body.get("name") or ""), body.get("definition") or {},
+            actor=_finance_actor(request),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(item)
+
+
+@router.delete("/api/workspace/views/{view_id}", dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_delete_view(request: Request, view_id: str):
+    from sales_support_agent.services.cashflow.transaction_workspace import delete_saved_view
+
+    deleted = await asyncio.to_thread(delete_saved_view, view_id, actor=_finance_actor(request))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Saved view was not found.")
+    return JSONResponse({"deleted": True})
+
+
+@router.get("/workspace/review", response_class=HTMLResponse)
+async def finance_workspace_review_page(request: Request):
+    """Render the mandatory full-page preview for the current safe draft."""
+    from sales_support_agent.services.cashflow.transaction_workspace import load_draft, preview_changes
+    from sales_support_agent.services.cashflow.transaction_workspace_page import render_workspace_preview
+
+    actor = _finance_actor(request)
+    try:
+        draft = await asyncio.to_thread(load_draft, actor=actor)
+        if not draft or not draft.get("changes"):
+            request.state.finance_return_to = "/admin/finances/budget"
+            return _redirect_finance_error("There are no draft changes to review.")
+        preview = await asyncio.to_thread(
+            preview_changes,
+            draft["changes"],
+            actor=actor,
+            draft_revision=int(draft.get("draft_revision") or 0),
+        )
+    except (RuntimeError, ValueError) as exc:
+        request.state.finance_return_to = "/admin/finances/budget"
+        return _redirect_finance_error(str(exc))
+    return HTMLResponse(render_workspace_preview(
+        preview,
+        csrf_token=finance_csrf_token(get_current_user(request)),
+        idempotency_key=uuid4().hex,
+    ))
+
+
+@router.post("/workspace/apply", response_class=HTMLResponse, dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_apply_page(
+    request: Request,
+    preview_token: str = Form(...),
+    idempotency_key: str = Form(...),
+    reason: str = Form(""),
+):
+    from sales_support_agent.services.cashflow.transaction_workspace import apply_preview
+
+    try:
+        result = await asyncio.to_thread(
+            apply_preview,
+            preview_token,
+            actor=_finance_actor(request),
+            idempotency_key=idempotency_key,
+            reason=reason,
+            source_page="workspace_review",
+        )
+    except ValueError as exc:
+        request.state.finance_return_to = "/admin/finances/workspace/review"
+        return _redirect_finance_error(str(exc))
+    return RedirectResponse(f"/admin/finances/workspace/receipt/{quote(str(result['batch_id']))}", status_code=303)
+
+
+@router.get("/workspace/receipt/{batch_id}", response_class=HTMLResponse)
+async def finance_workspace_receipt_page(request: Request, batch_id: str):
+    from sales_support_agent.services.cashflow.transaction_workspace import get_batch_receipt
+    from sales_support_agent.services.cashflow.transaction_workspace_page import render_workspace_receipt
+
+    try:
+        receipt = await asyncio.to_thread(get_batch_receipt, batch_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return HTMLResponse(render_workspace_receipt(
+        receipt, csrf_token=finance_csrf_token(get_current_user(request)),
+    ))
+
+
+@router.post("/workspace/batches/{batch_id}/undo", response_class=HTMLResponse, dependencies=[Depends(require_finance_write_security)])
+async def finance_workspace_undo_page(request: Request, batch_id: str):
+    from sales_support_agent.services.cashflow.transaction_workspace import undo_batch
+
+    try:
+        await asyncio.to_thread(undo_batch, batch_id, actor=_finance_actor(request))
+    except ValueError as exc:
+        return _redirect_finance_error(str(exc))
+    return RedirectResponse(f"/admin/finances/workspace/receipt/{quote(batch_id)}", status_code=303)
+
+
 @router.post("/assistant/confirm")
 async def finance_assistant_confirm(request: Request):
     """Confirm one unexpired assistant draft after explicit user review."""
@@ -1426,12 +2061,18 @@ async def record_savings_review_action(
     evidence_hash: str = Form(...),
     opportunity_json: str = Form(...),
     reason: str = Form(""),
+    owner: str = Form(""),
+    action_type: str = Form(""),
+    effective_date: str = Form(""),
+    proof_note: str = Form(""),
+    return_to: str = Form(""),
 ):
     """Store a confirmed savings disposition without mutating cash facts."""
     import json
     from sales_support_agent.services.cashflow.savings_reviews import record_savings_review
 
     current_user = get_current_user(request)
+    request.state.finance_return_to = return_to or "/admin/finances/budget"
     actor = "finance-operator"
     if isinstance(current_user, dict):
         actor = str(current_user.get("email") or current_user.get("name") or actor)
@@ -1441,6 +2082,17 @@ async def record_savings_review_action(
             raise ValueError("Savings evidence is invalid; refresh Finance and try again")
         if opportunity.get("opportunity_key") != opportunity_key or opportunity.get("evidence_hash") != evidence_hash:
             raise ValueError("Savings evidence is stale; refresh Finance and try again")
+        current_view = await asyncio.to_thread(load_budget_view)
+        current = next((
+            item for item in current_view.get("trim_items") or []
+            if str(item.get("opportunity_key") or "") == opportunity_key
+        ), None)
+        if current is None or str(current.get("evidence_hash") or "") != evidence_hash:
+            raise ValueError("Savings evidence changed; refresh before saving this decision")
+        opportunity = dict(current)
+        opportunity.pop("review", None)
+        opportunity.pop("verification_matches", None)
+        opportunity["realization_ready"] = bool(current.get("verification_ready"))
         result = await asyncio.to_thread(
             record_savings_review,
             opportunity,
@@ -1449,6 +2101,10 @@ async def record_savings_review_action(
             reason=reason,
             request_id=request.headers.get("Idempotency-Key") or uuid4().hex,
             clickup_task=None,
+            owner=owner,
+            action_type=action_type,
+            effective_date=effective_date,
+            proof_note=proof_note,
         )
     except ValueError as exc:
         return _redirect_finance_error(str(exc))
@@ -1463,8 +2119,71 @@ async def record_savings_review_action(
         "unknown": "Marked unknown.",
         "investigate": "Marked for investigation.",
         "waste": "Marked as waste to remove.",
+        "start_cancellation": "Cancellation work started. No vendor was contacted.",
+        "confirm_cancellation": "Cancellation details saved. Finance is waiting for Plaid verification.",
+        "cannot_cancel": "Marked as unable to cancel.",
+        "reopen": "Cost reopened for review.",
     }
     return _redirect_finance_home(messages.get(action, "Savings review recorded."))
+
+
+@router.post("/savings/reviews/batch", response_class=HTMLResponse)
+async def record_savings_review_batch(
+    request: Request,
+    changes_json: str = Form(...),
+):
+    """Save the operator's staged vendor decisions in one transaction."""
+    import json
+    from sales_support_agent.services.cashflow.savings_reviews import record_savings_reviews
+
+    current_user = get_current_user(request)
+    actor = "finance-operator"
+    if isinstance(current_user, dict):
+        actor = str(current_user.get("email") or current_user.get("name") or actor)
+    try:
+        changes = json.loads(changes_json)
+        if not isinstance(changes, list):
+            raise ValueError("Savings changes are invalid; refresh and try again")
+        current_view = await asyncio.to_thread(load_budget_view)
+        current_items = {
+            str(item.get("opportunity_key") or ""): dict(item)
+            for item in current_view.get("trim_items") or []
+        }
+        verified_changes = []
+        for change in changes:
+            if not isinstance(change, dict) or not isinstance(change.get("opportunity"), dict):
+                raise ValueError("One savings change is invalid; refresh and try again")
+            supplied = change["opportunity"]
+            key = str(supplied.get("opportunity_key") or "")
+            current = current_items.get(key)
+            if current is None or str(current.get("evidence_hash") or "") != str(supplied.get("evidence_hash") or ""):
+                raise ValueError("Savings evidence changed; refresh before saving these decisions")
+            current.pop("review", None)
+            current.pop("verification_matches", None)
+            verified_changes.append({
+                "opportunity": current,
+                "action": change.get("action"),
+                "reason": change.get("reason"),
+            })
+        results = await asyncio.to_thread(
+            record_savings_reviews,
+            verified_changes,
+            actor,
+            request_id=request.headers.get("Idempotency-Key") or uuid4().hex,
+        )
+    except ValueError as exc:
+        return _redirect_finance_error(str(exc))
+    except Exception:
+        logger.exception("Savings batch could not be recorded")
+        return _redirect_finance_error("Savings changes could not be saved. Nothing was changed; please try again")
+    try:
+        from sales_support_agent.services.cashflow.transaction_workspace import discard_draft
+        await asyncio.to_thread(discard_draft, actor=actor)
+    except Exception:
+        # The authoritative savings batch succeeded. A stale recovery draft is
+        # safe to leave behind and can be discarded on the next workspace load.
+        logger.warning("Saved savings batch, but its recovery draft could not be cleared", exc_info=True)
+    return _redirect_finance_home(f"Saved {len(results)} savings change(s).")
 
 
 @router.post("/actions/{event_id}/partial", response_class=HTMLResponse)
@@ -2231,15 +2950,6 @@ async def ledger_export(request: Request):
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="ledger-{from_date}-to-{to_date}.csv"'}
     )
-
-
-# ---------------------------------------------------------------------------
-# Calendar
-# ---------------------------------------------------------------------------
-
-@router.get("/calendar", response_class=HTMLResponse)
-async def calendar_page(request: Request):
-    return _redirect_finance_home()
 
 
 # ---------------------------------------------------------------------------

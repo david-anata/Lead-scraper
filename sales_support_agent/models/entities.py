@@ -631,6 +631,23 @@ class FinanceSetting(Base):
 
     scope_key: Mapped[str] = mapped_column(String(255), primary_key=True)
     cash_floor_cents: Mapped[int] = mapped_column(Integer, default=1_000_000)
+    emergency_floor_cents: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    paydown_vendor_key: Mapped[str] = mapped_column(
+        String(255), default="boulder ranch", server_default="boulder ranch"
+    )
+    paydown_vendor_label: Mapped[str] = mapped_column(
+        String(255), default="Boulder Ranch Property Management",
+        server_default="Boulder Ranch Property Management",
+    )
+    paydown_monthly_cents: Mapped[int] = mapped_column(
+        Integer, default=4_000_000, server_default="4000000"
+    )
+    paydown_balance_cents: Mapped[int] = mapped_column(
+        Integer, default=3_000_000, server_default="3000000"
+    )
+    paydown_balance_as_of: Mapped[date] = mapped_column(
+        Date, default=date.today, server_default="2026-08-11"
+    )
     active_actual_source: Mapped[str] = mapped_column(String(32), default="csv")
     updated_by: Mapped[str] = mapped_column(String(255), default="system")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
@@ -675,9 +692,9 @@ class PlaidAccount(Base):
     account_type: Mapped[str] = mapped_column(String(32), default="")
     subtype: Mapped[str] = mapped_column(String(64), default="")
     # Whether this account's balance counts as spendable cash. Defaults from
-    # the Plaid subtype (checking => spendable, everything else => reserve) and
+    # the Plaid type (checking => spendable, credit => liability, else reserve) and
     # can be overridden by the operator without being reset on the next sync.
-    cash_role: Mapped[str] = mapped_column(String(16), default="reserve")  # spendable | reserve | excluded
+    cash_role: Mapped[str] = mapped_column(String(16), default="reserve")  # spendable | reserve | liability | excluded
     currency: Mapped[str] = mapped_column(String(16), default="USD")
     current_balance_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     available_balance_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -713,6 +730,19 @@ class Vendor(Base):
     # Defaults to manual: being wrong that way costs a minute, whereas a wrong
     # "auto" means we silently reserve cash and never tell the operator to pay.
     payment_method: Mapped[str] = mapped_column(String(16), default="manual", server_default="manual")
+    agreement_name: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    agreement_reference_url: Mapped[str] = mapped_column(Text, default="", server_default="")
+    agreement_status: Mapped[str] = mapped_column(String(16), default="active", server_default="active", index=True)
+    term_type: Mapped[str] = mapped_column(String(24), default="month_to_month", server_default="month_to_month")
+    amount_type: Mapped[str] = mapped_column(String(16), default="fixed", server_default="fixed")
+    payment_account_label: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    renewal_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
+    auto_renewal: Mapped[str] = mapped_column(String(16), default="unknown", server_default="unknown")
+    cancellation_notice_days: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    owner: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    evidence_note: Mapped[str] = mapped_column(Text, default="", server_default="")
+    created_by: Mapped[str] = mapped_column(String(255), default="system", server_default="system")
+    updated_by: Mapped[str] = mapped_column(String(255), default="system", server_default="system")
     notes: Mapped[str] = mapped_column(Text, default="")
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
@@ -862,6 +892,159 @@ class FinanceActionAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class FinanceEconomicTransactionGroup(Base):
+    """Auditable cross-feed identity for one real-world bank transaction."""
+
+    __tablename__ = "finance_economic_transaction_groups"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="review", index=True)
+    canonical_event_id: Mapped[str] = mapped_column(String(255), default="", index=True)
+    evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    undone_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FinanceEconomicTransactionMember(Base):
+    """One source row and its reversible classification within a group."""
+
+    __tablename__ = "finance_economic_transaction_members"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    group_id: Mapped[str] = mapped_column(
+        ForeignKey("finance_economic_transaction_groups.id"), index=True,
+    )
+    event_id: Mapped[str] = mapped_column(String(255), index=True)
+    source: Mapped[str] = mapped_column(String(32), default="")
+    role: Mapped[str] = mapped_column(String(16), default="candidate")
+    prior_match_status: Mapped[str] = mapped_column(String(16), default="")
+    prior_source_status: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("uq_finance_economic_group_event", "group_id", "event_id", unique=True),
+    )
+
+
+class FinanceWorkspaceDraft(Base):
+    """Encrypted, actor-scoped Finance edits that have not been applied yet."""
+
+    __tablename__ = "finance_workspace_drafts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    actor: Mapped[str] = mapped_column(String(255), index=True)
+    dataset_revision: Mapped[str] = mapped_column(String(128), default="")
+    draft_revision: Mapped[int] = mapped_column(Integer, default=1)
+    sealed_payload: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    __table_args__ = (
+        Index("uq_finance_workspace_draft_scope_actor", "scope_key", "actor", unique=True),
+    )
+
+
+class FinanceObjectDecision(Base):
+    """Current operator-owned classification for a shared Finance object."""
+
+    __tablename__ = "finance_object_decisions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    object_type: Mapped[str] = mapped_column(String(32), index=True)
+    object_id: Mapped[str] = mapped_column(String(255), index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    decision_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_by: Mapped[str] = mapped_column(String(255), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index(
+            "uq_finance_object_decision_scope_object",
+            "scope_key", "object_type", "object_id", unique=True,
+        ),
+    )
+
+
+class FinanceActionBatch(Base):
+    """One atomic multi-object Finance change with a durable receipt."""
+
+    __tablename__ = "finance_action_batches"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    actor: Mapped[str] = mapped_column(String(255), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="applied", index=True)
+    source_page: Mapped[str] = mapped_column(String(64), default="")
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    committed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    undone_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FinanceActionBatchItem(Base):
+    """Exact before/after state and eligibility evidence for one batch item."""
+
+    __tablename__ = "finance_action_batch_items"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(ForeignKey("finance_action_batches.id"), index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    object_type: Mapped[str] = mapped_column(String(32), index=True)
+    object_id: Mapped[str] = mapped_column(String(255), index=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    prior_state_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    new_state_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    eligibility_result: Mapped[str] = mapped_column(String(32), default="eligible")
+    skip_reason: Mapped[str] = mapped_column(Text, default="")
+    external_sync_status: Mapped[str] = mapped_column(String(32), default="not_required")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class FinanceBatchPreview(Base):
+    """Short-lived server preview that must be consumed before a batch applies."""
+
+    __tablename__ = "finance_batch_previews"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    actor: Mapped[str] = mapped_column(String(255), index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    draft_revision: Mapped[int] = mapped_column(Integer, default=1)
+    payload_hash: Mapped[str] = mapped_column(String(128), default="")
+    preview_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FinanceSavedView(Base):
+    """An actor-owned named Finance search/filter/sort definition."""
+
+    __tablename__ = "finance_saved_views"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    actor: Mapped[str] = mapped_column(String(255), index=True)
+    name: Mapped[str] = mapped_column(String(96))
+    definition_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("uq_finance_saved_view_scope_actor_name", "scope_key", "actor", "name", unique=True),
+    )
+
+
 class FinanceReconciliationReport(Base):
     """Immutable shadow-reconciliation result used before forecast promotion."""
 
@@ -904,6 +1087,14 @@ class FinanceSavingsReview(Base):
     clickup_task_id: Mapped[str] = mapped_column(String(64), default="")
     clickup_task_url: Mapped[str] = mapped_column(String(1024), default="")
     reason: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(255), default="")
+    action_type: Mapped[str] = mapped_column(String(32), default="")
+    cancellation_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancellation_confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    effective_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    expected_verification_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
+    proof_note: Mapped[str] = mapped_column(Text, default="")
+    realized_monthly_cents: Mapped[int] = mapped_column(Integer, default=0)
     evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_by: Mapped[str] = mapped_column(String(255), default="system")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
@@ -1672,6 +1863,89 @@ class BuildingInquiry(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class BuildingInquiryReceipt(Base):
+    """One idempotent transactional receipt for a Building inquiry."""
+
+    __tablename__ = "building_inquiry_receipts"
+
+    inquiry_id: Mapped[str] = mapped_column(
+        ForeignKey("building_inquiries.id"), primary_key=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    to_email: Mapped[str] = mapped_column(String(255), index=True)
+    subject: Mapped[str] = mapped_column(String(255), default="")
+    content_checksum: Mapped[str] = mapped_column(String(64), default="")
+    provider: Mapped[str] = mapped_column(String(32), default="resend")
+    provider_message_id: Mapped[str] = mapped_column(
+        String(255), default="", index=True
+    )
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    attempted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
+class BuildingTransactionalMessage(Base):
+    """One immutable, idempotent customer message for a booking milestone."""
+
+    __tablename__ = "building_transactional_messages"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reservation_id: Mapped[str] = mapped_column(
+        ForeignKey("building_reservations.id"), index=True
+    )
+    contact_id: Mapped[str] = mapped_column(
+        ForeignKey("building_contacts.id"), index=True
+    )
+    milestone: Mapped[str] = mapped_column(String(64), index=True)
+    template_version: Mapped[int] = mapped_column(Integer, default=1)
+    template_reference: Mapped[str] = mapped_column(String(255))
+    to_email: Mapped[str] = mapped_column(String(255), index=True)
+    subject: Mapped[str] = mapped_column(String(255))
+    body_text: Mapped[str] = mapped_column(Text)
+    content_checksum: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="resend")
+    provider_message_id: Mapped[str] = mapped_column(
+        String(255), default="", index=True
+    )
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    attempted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_building_transactional_message_unique",
+            "reservation_id",
+            "milestone",
+            "template_version",
+            unique=True,
+        ),
+    )
+
+
 class BuildingAuditEvent(Base):
     __tablename__ = "building_audit_events"
 
@@ -2167,7 +2441,12 @@ class BuildingOperationalChecklistItem(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     is_required: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    assigned_owner: Mapped[str] = mapped_column(String(255), default="", index=True)
+    due_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     completion_reason: Mapped[str] = mapped_column(Text, default="")
+    evidence_reference: Mapped[str] = mapped_column(Text, default="")
     completed_by: Mapped[str] = mapped_column(String(255), default="")
     completed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -2521,6 +2800,9 @@ class BuildingBillingSchedule(Base):
     source_proposal_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     source_proposal_version: Mapped[int] = mapped_column(Integer, default=0)
     source_amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    source_quote_total_cents: Mapped[int] = mapped_column(Integer, default=0)
+    source_quote_checksum: Mapped[str] = mapped_column(String(64), default="", index=True)
+    billing_component: Mapped[str] = mapped_column(String(32), default="full_amount")
     currency: Mapped[str] = mapped_column(String(8), default="usd")
     collection_method: Mapped[str] = mapped_column(String(32), default="send_invoice")
     days_until_due: Mapped[int] = mapped_column(Integer, default=7)
