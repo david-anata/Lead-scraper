@@ -1,6 +1,6 @@
 # Website Ops: Simple Command Center
 
-Status: Proposed redesign  
+Status: Active remediation — incomplete until production publishing succeeds
 Date: 2026-08-11  
 Primary user: David Narayan  
 Scope: `agent.anatainc.com/admin/website-ops`
@@ -17,6 +17,70 @@ Website Ops should answer four questions in under ten seconds:
 The refreshed system keeps the existing evidence, safety checks, history, and
 rollback controls. It removes operational jargon and moves detailed ledgers
 behind simple summaries.
+
+This outcome is not achieved by rendering the new command center. Website Ops
+is complete only when the weekday publishing routine can select qualified work,
+publish it, deploy it, verify it in production, reconcile it into Website Ops,
+and report the same truthful outcome everywhere.
+
+## Production evidence added August 11
+
+The redesigned page is live, responsive, and correctly shows 22 sitemap-backed
+articles. The underlying operating loop is not working yet:
+
+- The page URL says `run_status=completed` and the blue notice says the daily
+  sweep completed, while the authoritative run record says `failed_outcome`.
+- The run record reports `work_in_progress`, 329 active qualified items, three
+  attempts, zero production changes, and no successful daily run since August
+  2.
+- Today's publishing result is 0 of 8, with no verified production URL.
+- The report labels the site crawl healthy even though the required daily
+  publishing outcome failed. Crawl health and program outcome are being
+  conflated.
+- The report contains 602 briefs, 450 article candidates, zero ready articles,
+  and one research item whose displayed topic is a malformed search expression
+  rather than a human intent.
+- The next-operation cards describe verification and indexing work, but no
+  publication operation is active and no retry time is shown.
+- The page says the last result time is unavailable even though the run record
+  has start and completion timestamps.
+- The GA4 lead-event request is real measurement work, but it is not the cause
+  of the publishing failure and must not obscure the publishing blocker.
+
+The authoritative evidence order is:
+
+1. Production-verification record for each changed URL.
+2. Final daily outcome record.
+3. Run state and retry state.
+4. Report summaries and UI notices, which must be projections of 1–3.
+
+A process ending, a report being written, an email being sent, or a route
+returning 200 does not make the daily plan successful.
+
+## Revised completion definition
+
+Do not close this objective until all of the following are true in production:
+
+1. A weekday run starts without an Agent model API key and reaches a terminal
+   truthful outcome.
+2. When at least one safe, non-duplicate, source-qualified intent exists, the
+   system publishes at least one article end to end. The operating target
+   remains up to eight qualified articles across four service pillars.
+3. Every counted publication is committed, deployed, HTTP 200, linked from
+   `/blog`, present in `sitemap.xml`, self-canonical, visibly source-backed, and
+   production-verified.
+4. Website Ops reconciles each verified publication with title, URL, pillar,
+   intent, publication time, verification time, source status, blog-link check,
+   sitemap check, and deployment reference.
+5. The Today page, run-status API, latest report, History, and workday email all
+   agree on the outcome and counts.
+6. A failed outcome cannot produce a `completed` success notice. It shows the
+   stopped stage, unchanged production state, retry time, attempt count, and
+   next executable operation.
+7. A quiet day is allowed only after the entire bounded candidate review proves
+   that no safe work exists. Active qualified work cannot be labeled quiet.
+8. The live page passes desktop and 390-by-844 phone acceptance after the final
+   production cycle.
 
 ## Current-experience audit
 
@@ -265,6 +329,11 @@ State where work stopped in plain language, what remained unchanged, whether
 rollback was needed, and when the system will retry. A failed run overrides any
 generic readiness message.
 
+The redirect and notice after a manual run must use the final outcome, not the
+fact that the runner returned. `completed` is reserved for a verified successful
+or fully qualified quiet outcome. `failed_outcome`, `failed`, and incomplete
+work must never be rewritten as completed.
+
 ### Stale evidence
 
 Label the affected section "Last checked [time]." Stale Search Console, GA4,
@@ -308,6 +377,43 @@ check, sitemap check, and deployment reference.
 Website Ops must not depend on an Agent model API key. Disabled API-based
 research is an intentional configuration, not a blocker.
 
+### Publication execution contract
+
+The once-per-workday Codex routine is the publication executor. Website Ops is
+the evidence and outcome system. Their handoff must be explicit rather than
+inferred from an empty Agent queue.
+
+For each daily run:
+
+1. Read the current production sitemap, blog registry, page-topic ownership,
+   candidate evidence, and prior publication records.
+2. Normalize raw query strings, operators, crawler fragments, and synthetic
+   questions into one clean human intent before qualification.
+3. Reject duplicates and one-page-one-intent conflicts before authoring.
+4. Select a balanced bounded portfolio across the four service pillars.
+5. Research sources, author, deterministically repair validation failures, and
+   retry within a bounded attempt policy.
+6. Commit and deploy qualified articles without an Agent model API call.
+7. Verify production URL, blog index link, sitemap entry, canonical, visible
+   content, source presentation, and structured data.
+8. Write the shared publication record only after all production checks pass.
+9. Reconcile Website Ops immediately, then generate the single workday report
+   and email.
+
+Generated, researching, ready, queued, committed, and deploying items never
+increase the published count.
+
+### Retry and pause behavior
+
+- Deterministic validation failures are repaired automatically and retried.
+- A topic is not terminal merely because a description length, punctuation, or
+  formatting rule failed on the first draft.
+- Two consecutive production-verification failures for the same lane pause that
+  lane, preserve evidence, and expose one precise blocker and rollback state.
+- Other independent low-risk lanes continue when safe.
+- Every failed or paused state records the next retry time or the exact external
+  action required.
+
 ## Acceptance criteria
 
 1. David can identify today's state, production output, next operation, and any
@@ -330,7 +436,54 @@ research is an intentional configuration, not a blocker.
 13. Existing audit history, rollback records, production inventory, candidate
     evidence, and report records remain available after migration.
 14. Desktop and phone views have no horizontal overflow, clipped controls, or
-    essential information available only on hover.
+   essential information available only on hover.
+15. The manual-run redirect, banner, Today status, run-status API, latest report,
+    History, and workday email use the same authoritative final outcome.
+16. `failed_outcome` never renders a completed or successful notice.
+17. Start and completion timestamps render when present; "time unavailable" is
+    used only when the authoritative record genuinely lacks a timestamp.
+18. Crawl health is labeled separately from the daily program outcome.
+19. An active-qualified count greater than zero cannot coexist with Quiet day or
+    with copy claiming that no safe work exists.
+20. Raw search operators such as `-site:`, quoted fragments, and malformed
+    synthetic questions never appear as the next content topic.
+21. A deterministic draft validation failure triggers a bounded automatic repair
+    and retry, with each attempt retained in evidence.
+22. At least one production canary article completes the entire publication
+    execution contract in the final live validation.
+23. After that canary, the Today page displays the correct published-today count,
+    22 plus the new live-article total, a working production link, and the real
+    verification time.
+24. The same canary appears on `/blog`, returns HTTP 200, appears in the sitemap,
+    and passes canonical, visible-source, visible-content, and structured-data
+    checks.
+25. A full target run can safely publish up to eight qualified articles balanced
+    across the four pillars; unfilled slots contain evidence-backed rejection or
+    shortage reasons rather than invented work.
+26. The latest report and email are created after reconciliation and match the
+    live page exactly.
+27. No Agent model API key or model API request is required by the publishing
+    path.
+
+## Production validation plan
+
+1. Exercise unit scenarios for successful, working, failed, failed-outcome,
+   quiet, stale, and paused states.
+2. Exercise the malformed-query normalizer and deterministic draft repair loop.
+3. Verify manual-run redirects and notices for every terminal outcome.
+4. Run focused Website Ops and publication tests, then the broad repository
+   suite within the established CI environment.
+5. Deploy the Agent outcome and orchestration changes before any dependent
+   Website publication changes.
+6. Run one low-risk production canary and verify its complete contract.
+7. Continue the same production run through the remaining qualified portfolio,
+   up to eight, without forcing unsafe work.
+8. Compare the run-status API, Today, Content, History, latest report, email,
+   `/blog`, article URLs, and sitemap.
+9. Complete desktop and 390-by-844 phone visual acceptance with no console
+   errors or horizontal overflow.
+10. Leave the objective active if any counted article or displayed outcome fails
+    a production check.
 
 ## Rollout
 
@@ -344,17 +497,17 @@ research is an intentional configuration, not a blocker.
    deployment, one stale-data day, and one user-decision blocker.
 7. Release to production and complete desktop and phone acceptance testing.
 
-## Recommended defaults and open decisions
+## Confirmed operating decisions
 
-- **Recommended:** David is the primary audience; specialist evidence remains
+- David is the primary audience; specialist evidence remains
   available but is not the default view.
-- **Recommended:** keep the target of up to eight qualified articles, while
+- Keep the target of up to eight qualified articles, while
   presenting production truth rather than treating eight as a guaranteed
   quota.
-- **Recommended:** one workday email after the publishing and reconciliation
+- Send one workday email after the publishing and reconciliation
   cycle finishes.
-- **Decision to confirm:** should "Run today's plan" be available only to David,
-  or to every Website Ops administrator?
-- **Decision to confirm:** should the default History view emphasize published
-  work or organic-lead measurement? Recommended default: published work until
-  lead attribution becomes trusted.
+- Keep the default History emphasis on published work until lead attribution is
+  trusted.
+- Preserve the current Website Ops administrator permission for "Run today's
+  plan" during remediation; narrowing it to David is a separate access-control
+  decision and is not allowed to block publication recovery.

@@ -120,6 +120,13 @@ def load_generated_article_identities() -> dict[str, set[str]]:
     return generated_article_identities(source)
 
 
+def load_generated_article_records() -> tuple[list[dict[str, Any]], str]:
+    """Load article records and the registry revision used for reconciliation."""
+
+    source, sha = GitHubWebsiteClient().get_file(GENERATED_ARTICLE_REGISTRY)
+    return generated_article_records(source), sha
+
+
 def github_metadata_is_configured() -> bool:
     return bool(
         os.getenv("WEBSITE_OPS_GITHUB_TOKEN", "").strip()

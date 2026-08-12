@@ -89,6 +89,8 @@ def classify_run_outcome(report: Mapping[str, Any]) -> dict[str, Any]:
             "next_operation": article_message or "Recheck when the evidence window closes.",
         }
     deferred_count = sum(int(item.get("count", 0) or 0) for item in deferred)
+    reviewed_count = int(operations.get("observed_candidates", 0) or 0)
+    full_candidate_review = reviewed_count >= 24 and not ready and not queue and not active_states
     return {
         "status": NO_OPPORTUNITY_OUTCOME,
         "summary": (
@@ -102,4 +104,6 @@ def classify_run_outcome(report: Mapping[str, Any]) -> dict[str, Any]:
         "last_stage": "decision",
         "failure_stage": "",
         "next_operation": "Collect fresh crawl, query, conversion, and customer-language evidence.",
+        "candidate_review_count": reviewed_count,
+        "full_candidate_review": full_candidate_review,
     }

@@ -1221,10 +1221,17 @@ def admin_website_ops(request: Request, run_status: str = "") -> Response:
     if not _is_admin_authenticated(request):
         return RedirectResponse(url="/admin/login", status_code=302)
     flash_message = ""
-    if run_status == "completed":
-        flash_message = "Daily sweep completed. Review the queue for any decisions Website Ops needs."
-    elif run_status == "failed":
-        flash_message = "Daily sweep is blocked by setup. Check Data sources for the connection that needs attention."
+    authoritative_state = get_website_ops_run_state(request.app.state.settings, "daily")
+    authoritative_status = str(authoritative_state.get("status", "") or "").replace("_", "-")
+    if run_status:
+        if authoritative_status == "succeeded":
+            flash_message = str(authoritative_state.get("outcome_message", "") or "Today’s plan produced a verified outcome.")
+        elif authoritative_status in {"failed", "failed-outcome"}:
+            stage = str(authoritative_state.get("failure_stage") or authoritative_state.get("last_stage") or "the final outcome check")
+            retry = str(authoritative_state.get("next_retry_at") or "the next scheduled workday run")
+            flash_message = f"Today’s plan needs attention after {stage}. Production truth is unchanged unless a verified URL appears below. Next retry: {retry}."
+        elif authoritative_status in {"queued", "running"}:
+            flash_message = "Today’s plan is running. This page will refresh after the next outcome check."
     return HTMLResponse(render_website_ops_dashboard_page(request.app.state.settings, flash_message=flash_message))
 
 
@@ -1440,7 +1447,7 @@ def admin_website_ops_run(request: Request, mode: str = Form(default="daily")) -
         },
     )
     try:
-        run_website_ops(request.app.state.settings, mode=normalized_mode)
+        result = run_website_ops(request.app.state.settings, mode=normalized_mode)
     except Exception as exc:  # noqa: BLE001 - show an operator setup state, not a redirect loop
         logger.exception("Website Ops %s sweep failed", normalized_mode)
         finished_at = datetime.now(timezone.utc)
@@ -1456,18 +1463,33 @@ def admin_website_ops_run(request: Request, mode: str = Form(default="daily")) -
         )
         return RedirectResponse(url="/admin/website-ops?run_status=failed", status_code=302)
     finished_at = datetime.now(timezone.utc)
+    outcome = dict((getattr(result, "report", None) or {}).get("run_outcome") or {})
+    outcome_status = str(outcome.get("status", "") or "")
+    production_delta_count = int(outcome.get("production_delta_count", 0) or 0)
+    succeeded = bool(getattr(result, "ok", False)) and (
+        normalized_mode != "daily"
+        or (outcome_status == "production_verified" and production_delta_count > 0)
+        or outcome_status == "no_qualified_opportunity"
+    )
     write_website_ops_run_state(
         request.app.state.settings,
         normalized_mode,
         {
-            "status": "succeeded",
+            "status": "succeeded" if succeeded else "failed_outcome",
             "run_date": finished_at.date().isoformat(),
             "last_completed_at": finished_at.isoformat(),
-            "last_successful_date": finished_at.date().isoformat(),
-            "last_error": "",
+            "last_successful_date": finished_at.date().isoformat() if succeeded else "",
+            "last_error": "" if succeeded else str(outcome.get("summary") or result.message),
+            "outcome_status": outcome_status,
+            "outcome_message": str(outcome.get("summary", "") or ""),
+            "production_delta_count": str(production_delta_count),
+            "last_stage": str(outcome.get("last_stage", "") or ""),
+            "failure_stage": str(outcome.get("failure_stage", "") or ""),
+            "next_operation": str(outcome.get("next_operation", "") or ""),
         },
     )
-    return RedirectResponse(url="/admin/website-ops?run_status=completed", status_code=302)
+    redirect_status = "completed" if succeeded else "failed_outcome"
+    return RedirectResponse(url=f"/admin/website-ops?run_status={redirect_status}", status_code=302)
 
 
 @router.get("/admin/api/website-ops/status")

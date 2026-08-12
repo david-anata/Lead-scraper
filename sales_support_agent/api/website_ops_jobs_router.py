@@ -371,8 +371,13 @@ def _run_due_modes(
             "next_operation": str(outcome.get("next_operation", "") or ""),
             "failure_stage": str(outcome.get("failure_stage", "") or ""),
         }
+        qualified_quiet_day = (
+            outcome_status == "no_qualified_opportunity"
+            and bool(outcome.get("full_candidate_review"))
+        )
         daily_target_missed = mode == "daily" and not (
-            outcome_status == "production_verified" and production_delta_count > 0
+            (outcome_status == "production_verified" and production_delta_count > 0)
+            or qualified_quiet_day
         )
         if (
             not bool(getattr(result, "ok", True))
