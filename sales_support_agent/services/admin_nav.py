@@ -358,6 +358,17 @@ def render_agent_nav_css() -> str:
         scrollbar-width: none;
       }
       .topbar-section-row::-webkit-scrollbar { display:none; }
+      @media (min-width: 769px) and (max-width: 1320px) {
+        .topbar-section-row--hr {
+          gap: 8px;
+          padding-inline: 18px;
+        }
+        .topbar-section-row--hr .top-actions--secondary { gap: 1px; }
+        .topbar-section-row--hr .top-link--secondary {
+          padding-inline: 7px;
+          font-size: 11px;
+        }
+      }
       .topbar-section-label {
         font-family: "Montserrat", sans-serif;
         font-size: 10px;
@@ -730,7 +741,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         active_section_row = f"""
         <div class="topbar-divider"></div>
         <div class="topbar-section-band">
-          <div class="topbar-section-row" aria-label="{html.escape(active_section_label)} pages">
+          <div class="topbar-section-row topbar-section-row--{html.escape(primary_active)}" aria-label="{html.escape(active_section_label)} pages">
             <span class="topbar-section-label">{html.escape(active_section_label)} pages</span>
             <nav class="top-actions top-actions--secondary">
               {secondary_pills}

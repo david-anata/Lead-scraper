@@ -23,6 +23,7 @@ def test_section_navigation_uses_full_width_band_and_constrained_row() -> None:
 
     assert ".topbar-section-band" in styles
     assert ".topbar-section-row" in styles
+    assert ".topbar-section-row--hr" in styles
     assert "max-width: 1320px" in styles
     assert '<div class="topbar-section-band">' in nav
     assert 'href="/admin/sales/fix-queue"' in nav
