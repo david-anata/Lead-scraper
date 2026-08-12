@@ -15,6 +15,15 @@ VERIFIED_QBO_REALM_ID = "9130357569555476"
 BUILDING_ITEM_IDS = {"event": "77", "deposit": "79"}
 
 
+def building_quickbooks_invoice_url(invoice_id: str) -> str:
+    """Return a company-pinned QBO deep link for one verified invoice."""
+
+    return (
+        "https://qbo.intuit.com/app/login?pagereq="
+        f"invoice%3FtxnId%3D{invoice_id}&deeplinkcompanyid={VERIFIED_QBO_REALM_ID}"
+    )
+
+
 class BuildingQuickBooksError(RuntimeError):
     """QuickBooks rejected or could not verify a Building operation."""
 
