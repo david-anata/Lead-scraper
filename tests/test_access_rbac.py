@@ -1324,7 +1324,8 @@ class NavAccessSafetyTests(unittest.TestCase):
         self.assertIn("topbar-section-row", nav)
         self.assertIn("topbar-section-band", nav)
         self.assertIn('href="/admin/website-ops"', nav)
-        self.assertIn('href="/admin/website-ops/queue"', nav)
+        self.assertIn('href="/admin/website-ops/content"', nav)
+        self.assertIn('href="/admin/website-ops/site-health"', nav)
         # reports tool not held -> its pill must not appear.
         self.assertNotIn('href="/admin/website-ops/reports"', nav)
 

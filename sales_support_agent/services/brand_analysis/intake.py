@@ -466,6 +466,13 @@ def _years_of_file(filename: str, tables: list) -> set[int]:
     return years
 
 
+def _year_of_file(filename: str, tables: list) -> int | None:
+    """Backward-compatible single-year view for older intake callers."""
+
+    years = _years_of_file(filename, tables)
+    return max(years) if years else None
+
+
 def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
                use_llm: bool = True, context_notes: str = "") -> IntakeResult:
     """Parse a batch of uploaded financial files into current/prior periods.
