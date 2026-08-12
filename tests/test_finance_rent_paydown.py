@@ -13,13 +13,49 @@ from datetime import date, timedelta
 import pytest
 
 from sales_support_agent.services.cashflow.rent_paydown import (
+    _cash_balance_is_fresh,
     build_paydown_plan,
     largest_recurring_outflow,
+    load_paydown_plan,
 )
 
 AS_OF = date(2026, 7, 6)
 MONTH_END = date(2026, 7, 31)
 FLOOR = 1_000_000  # $10,000
+
+
+def test_cash_balance_freshness_gate_accepts_today_and_yesterday_only():
+    assert _cash_balance_is_fresh(AS_OF, today=AS_OF)
+    assert _cash_balance_is_fresh(AS_OF - timedelta(days=1), today=AS_OF)
+    assert not _cash_balance_is_fresh(AS_OF - timedelta(days=2), today=AS_OF)
+    assert not _cash_balance_is_fresh("", today=AS_OF)
+    assert not _cash_balance_is_fresh(AS_OF + timedelta(days=1), today=AS_OF)
+
+
+def test_loader_pauses_before_recommending_rent_when_bank_balance_is_stale(monkeypatch):
+    monkeypatch.setattr(
+        "sales_support_agent.services.cashflow.accounts_view.load_accounts_overview",
+        lambda: {"as_of": AS_OF - timedelta(days=2), "spendable_cents": 9_999_999},
+    )
+    monkeypatch.setattr(
+        "sales_support_agent.services.cashflow.settings.get_paydown_settings",
+        lambda: {
+            "cash_goal_cents": FLOOR,
+            "emergency_floor_cents": 0,
+            "vendor_key": "rent",
+            "vendor_label": "Rent",
+            "monthly_cents": 4_000_000,
+            "balance_cents": 3_000_000,
+            "balance_as_of": AS_OF.isoformat(),
+        },
+    )
+
+    result = load_paydown_plan(rows=[], calendar={"calculation_id": "calc-123"}, as_of=AS_OF)
+
+    assert result["status"] == "paused"
+    assert result["instalments"] == []
+    assert result["calculation_id"] == "calc-123"
+    assert "stale" in result["message"].lower()
 
 
 def _event(when: date, cents: int, *, kind: str = "planned", vendor: str = "Someone") -> dict:
