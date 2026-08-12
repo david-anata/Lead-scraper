@@ -847,24 +847,43 @@ def create_invoice_from_schedule(
         if account is None or account.status != "active":
             raise HTTPException(status_code=409, detail="Billing account is unavailable.")
         invoice_line_items: list[dict[str, Any]] | None = None
+        invoice_tax_rate_name = ""
         if schedule.billing_component == "event_invoice" and schedule.source_proposal_id:
             event_proposal = session.get(BuildingProposal, schedule.source_proposal_id)
-            readiness = session.execute(
-                select(BuildingPaymentRequestReadiness)
-                .where(BuildingPaymentRequestReadiness.reservation_id == schedule.reservation_id)
-                .order_by(BuildingPaymentRequestReadiness.version.desc())
-            ).scalars().first()
-            deposit_cents = int(readiness.amount_cents or 0) if readiness else 0
             event_total_cents = int(event_proposal.amount_cents or 0) if event_proposal else 0
-            balance_cents = max(0, event_total_cents - deposit_cents)
             security_cents = max(0, schedule.amount_cents - event_total_cents)
             invoice_line_items = []
-            if deposit_cents:
-                invoice_line_items.append({"type": "deposit", "description": "Booking deposit", "amount_cents": deposit_cents})
-            if balance_cents:
-                invoice_line_items.append({"type": "final_balance", "description": "Remaining event balance", "amount_cents": balance_cents})
+            for item in list(event_proposal.line_items_json or []):
+                item_type = str(item.get("type") or "")
+                if item_type == "tax":
+                    continue
+                item_name = str(item.get("name") or "").strip()
+                qbo_type = "event"
+                if item_type == "fee" and "clean" in item_name.lower():
+                    qbo_type = "cleaning"
+                elif item_type == "addon":
+                    normalized = item_name.lower()
+                    if "soda" in normalized:
+                        qbo_type = "soda_machine"
+                    elif "table" in normalized or "chair" in normalized:
+                        qbo_type = "tables_chairs"
+                    else:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"Map the approved add-on '{item_name}' to a QuickBooks product first.",
+                        )
+                invoice_line_items.append({
+                    "type": qbo_type,
+                    "description": str(item.get("description") or item_name),
+                    "quantity": int(item.get("quantity") or 1),
+                    "amount_cents": int(item.get("amount_cents") or 0),
+                    "taxable": True,
+                })
             if security_cents:
-                invoice_line_items.append({"type": "security_deposit", "description": "Refundable security deposit — non-taxable unless retained or applied", "amount_cents": security_cents})
+                invoice_line_items.append({"type": "deposit", "description": "Refundable security deposit — non-taxable unless retained or applied", "quantity": 1, "amount_cents": security_cents, "taxable": False})
+            tax_rate_bps = int((event_proposal.rate_plan_snapshot_json or {}).get("tax_rate_bps") or 0)
+            if tax_rate_bps:
+                invoice_tax_rate_name = f"Arena approved contract {tax_rate_bps / 100:.2f}%"
         proposal = {
             "schedule_id": schedule.id,
             "account_id": account.id,
@@ -909,6 +928,7 @@ def create_invoice_from_schedule(
                 due_date=_now().date() + timedelta(days=schedule.days_until_due),
                 idempotency_key=payload.idempotency_key,
                 line_items=invoice_line_items,
+                tax_rate_name=invoice_tax_rate_name,
             )
         except BuildingQuickBooksError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
