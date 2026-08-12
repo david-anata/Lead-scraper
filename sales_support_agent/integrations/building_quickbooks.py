@@ -109,12 +109,14 @@ class BuildingQuickBooksClient:
         schedule_type: str,
         due_date: date,
         idempotency_key: str,
+        line_items: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if schedule_type not in {
             "one_time",
             "deposit",
             "final_balance",
             "security_deposit",
+            "event_invoice",
         }:
             raise BuildingQuickBooksError(
                 "This Building schedule is not an event charge and has no verified QuickBooks item."
@@ -135,6 +137,22 @@ class BuildingQuickBooksClient:
             # taxable revenue, unless it is later retained/applied. Any such
             # later application must be a separate accounting adjustment.
             sales_detail["TaxCodeRef"] = {"value": "NON"}
+        qbo_lines: list[dict[str, Any]] = []
+        for item in line_items or []:
+            item_amount = round(int(item["amount_cents"]) / 100, 2)
+            detail: dict[str, Any] = {
+                "ItemRef": {"value": BUILDING_ITEM_IDS["deposit"] if item.get("type") == "security_deposit" else BUILDING_ITEM_IDS["event"]},
+                "Qty": 1,
+                "UnitPrice": item_amount,
+            }
+            if item.get("type") == "security_deposit":
+                detail["TaxCodeRef"] = {"value": "NON"}
+            qbo_lines.append({
+                "Amount": item_amount,
+                "Description": str(item["description"]),
+                "DetailType": "SalesItemLineDetail",
+                "SalesItemLineDetail": detail,
+            })
         data = self._request(
             "POST",
             "invoice",
@@ -144,7 +162,7 @@ class BuildingQuickBooksClient:
                 "DueDate": due_date.isoformat(),
                 "PrivateNote": f"Agent Building schedule {idempotency_key}",
                 "CustomerMemo": {"value": description.strip()},
-                "Line": [{
+                "Line": qbo_lines or [{
                     "Amount": amount,
                     "Description": description.strip(),
                     "DetailType": "SalesItemLineDetail",
