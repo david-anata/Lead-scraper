@@ -145,7 +145,11 @@ def test_the_block_says_what_it_reserved_and_how_much_is_a_guess():
 def test_no_spare_cash_proposes_nothing_and_points_at_collections():
     block = _paydown_block(_plan(instalments=[], planned_total_cents=0))
 
+    assert "No rent payment is recommended yet" in block
     assert "Nothing spare this month" in block
+    assert "$15,200 planned" in block
+    assert "$3,100 possible" in block
+    assert "$18,300 total" in block
     assert "/admin/finances/collections" in block
     assert "Today" not in block, "it must not still show a payment it cannot fund"
 

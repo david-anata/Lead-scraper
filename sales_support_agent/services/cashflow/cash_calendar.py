@@ -779,13 +779,25 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
     )
 
     if not plan.get("instalments"):
+        planned_reserved = max(0, reserved - unconfirmed)
+        balance_as_of = _as_date_or_none(plan.get("balance_as_of"))
+        balance_note = (
+            f"Balance confirmed by you on {balance_as_of.strftime('%b')} {balance_as_of.day}."
+            if balance_as_of else "Balance is based on the saved rent facts."
+        )
         return f"""
       <section class="cash-calendar-paydown">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Paying down</p>
         <h2>{vendor}</h2></div></div>
-        <p class="finance-plan-short">Nothing spare this month. {_money(remaining)} still to
-        pay, but everything already dated uses your cash and your
-        {_money(int(plan.get('floor_cents') or 0))} cushion.</p>
+        <p class="finance-plan-short"><strong>No rent payment is recommended yet.</strong>
+        Nothing spare this month: the expenses below use your cash while protecting your
+        {_money(int(plan.get('floor_cents') or 0))} cash goal.</p>
+        <p class="cash-calendar-paydown__lead">Monthly rent {_money(monthly)}. Plaid confirms
+        {_money(paid)} sent this month. Remaining {_money(remaining)}.</p>
+        <p class="metric-note">{html.escape(balance_note)}</p>
+        <p class="cash-calendar-paydown__note"><strong>Reserved before rent:</strong>
+        {_money(planned_reserved)} planned and {_money(unconfirmed)} possible,
+        {_money(reserved)} total.</p>
         <p><a class="btn btn-secondary btn-sm" href="/admin/finances/collections">See who owes you</a></p>
         {savings_line}
       </section>"""
