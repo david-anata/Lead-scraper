@@ -44,6 +44,11 @@ def _migration_lock(engine) -> Iterator[None]:
             text("SELECT pg_advisory_lock(:key)"),
             {"key": _LOCK_KEY},
         )
+        # PostgreSQL starts an implicit transaction for the SELECT above. End
+        # that transaction while retaining the session-level advisory lock so
+        # migration work can borrow another pooled connection without waiting
+        # on this lock holder.
+        connection.commit()
         yield
     finally:
         try:
@@ -51,6 +56,7 @@ def _migration_lock(engine) -> Iterator[None]:
                 text("SELECT pg_advisory_unlock(:key)"),
                 {"key": _LOCK_KEY},
             )
+            connection.commit()
         finally:
             connection.close()
 
