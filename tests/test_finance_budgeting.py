@@ -444,6 +444,49 @@ def test_budget_page_is_explicitly_advisory_and_explainable() -> None:
     assert "Mirrored sources and internal transfers are excluded" in page
 
 
+def test_authoritative_rent_replaces_the_prorated_current_month_guess() -> None:
+    rows = [
+        _row(f"rent-{month}", "plaid", f"2026-{month}-05", 4_000_000,
+             category="rent", merchant="Boulder Ranch")
+        for month in ("02", "03", "04", "05", "06", "07")
+    ]
+    rows.append(_row(
+        "rent-aug", "plaid", "2026-08-05", 1_007_500,
+        category="rent", merchant="Boulder Ranch",
+    ))
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 8, 11))
+
+    budgeting._apply_authoritative_rent(view, {
+        "vendor_key": "boulder ranch",
+        "vendor_label": "Boulder Ranch Property Management",
+        "monthly_cents": 4_000_000,
+        "balance_cents": 3_000_000,
+        "balance_as_of": "2026-08-11",
+    })
+
+    rent = next(item for item in view["categories"] if item["key"] == "rent")
+    assert rent["projected_cents"] == 4_007_500
+    assert rent["target_cents"] == 4_000_000
+    assert rent["remaining_cents"] == 3_000_000
+    page = budgeting.render_budget_page(view, {"status": "empty", "recommendations": []})
+    assert "$10,075.00 posted plus $30,000.00 remaining" in page
+
+
+def test_owner_draw_investigation_never_calls_a_person_a_service() -> None:
+    rows = [
+        _row("draw-apr", "plaid", "2026-04-10", 50_000,
+             category="owner_draw", merchant="David Narayan"),
+        _row("draw-may", "plaid", "2026-05-10", 50_000,
+             category="owner_draw", merchant="David Narayan"),
+    ]
+
+    view = budgeting.build_budget_view(rows, as_of=date(2026, 7, 31))
+    finding = next(item for item in view["investigations"] if item["merchant"] == "David Narayan")
+
+    assert "monthly limit" in finding["action"]
+    assert "service" not in finding["action"].lower()
+
+
 def test_budget_page_defaults_to_five_highest_impact_unresolved_vendors() -> None:
     rows = []
     for vendor_number in range(20):

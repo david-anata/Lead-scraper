@@ -6,7 +6,7 @@ from sales_support_agent.services.cashflow.cash_calendar import (
     overlay_paydown_proposals,
     render_cash_calendar_page,
 )
-from sales_support_agent.services.cashflow import cash_calendar as cash_calendar_module
+from sales_support_agent.services.cashflow import business_time as business_time_module
 from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
 
 
@@ -20,7 +20,7 @@ def test_calendar_business_day_uses_denver_time(monkeypatch):
             assert str(timezone) == "America/Denver"
             return __import__("datetime").datetime(2026, 8, 11, 18, 0)
 
-    monkeypatch.setattr(cash_calendar_module, "datetime", FrozenDateTime)
+    monkeypatch.setattr(business_time_module, "datetime", FrozenDateTime)
 
     assert _operator_today() == date(2026, 8, 11)
 
@@ -193,6 +193,33 @@ def test_tracked_history_replaces_the_same_warning_under_a_bank_descriptor():
     ]
     assert calendar["totals"]["planned_cents"] == 205_600
     assert calendar["totals"]["warning_cents"] == 0
+
+
+def test_confirmed_rent_balance_replaces_legacy_planned_and_history_rows():
+    due = TODAY + timedelta(days=12)
+    calendar = build_cash_calendar(
+        [_obligation(
+            "legacy-rent", days_ahead=12, amount=3_996_500,
+            name="Boulder Ranch Property Management", category="rent",
+        )],
+        historical_events=[{
+            "id": "legacy-rent-pattern", "date": due,
+            "name": "Boulder Ranch L.", "amount_cents": 3_996_500,
+            "category": "rent", "confirmed": True,
+        }],
+        authoritative_paydown={
+            "vendor_key": "boulder ranch", "vendor_label": "Boulder Ranch Property Management",
+            "monthly_cents": 4_000_000, "balance_cents": 3_000_000,
+            "balance_as_of": TODAY.isoformat(),
+        },
+        as_of=TODAY,
+        future_days=20,
+    )
+
+    assert _events(calendar, due) == []
+    assert calendar["totals"]["planned_cents"] == 0
+    assert calendar["suppressed_rent_cents"] == 3_996_500
+    assert calendar["authoritative_paydown"]["balance_cents"] == 3_000_000
 
 
 def test_same_day_different_amount_history_is_not_hidden():

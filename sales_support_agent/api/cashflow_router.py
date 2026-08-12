@@ -68,6 +68,7 @@ from sales_support_agent.services.cashflow.upload import run_csv_upload
 from sales_support_agent.services.cashflow.upload_page import render_upload_result
 from sales_support_agent.services.auth_deps import get_current_user, require_tool
 from sales_support_agent.services.cashflow.cashflow_helpers import _finance_nav_user
+from sales_support_agent.services.cashflow.business_time import operator_today
 from sales_support_agent.services.cashflow.finance_security import (
     csrf_token as finance_csrf_token,
     require_finance_write_security,
@@ -96,7 +97,7 @@ async def _load_request_finance_brief(request: Request) -> tuple[Any, bool]:
     caches or changes source records.
     """
     now = monotonic()
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = operator_today().isoformat()
     cached = getattr(request.app.state, "finance_brief_cache", None)
     if cached and cached[0] > now and cached[1] == today:
         return cached[2], True

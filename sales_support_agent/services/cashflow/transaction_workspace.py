@@ -24,7 +24,10 @@ DRAFT_TTL = timedelta(days=30)
 PREVIEW_TTL = timedelta(minutes=15)
 OBJECT_TYPES = frozenset({"cash_event", "pattern", "savings_opportunity"})
 SAVINGS_STATES = frozenset({"needed", "waste", "unknown", "investigate"})
-LOW_RISK_ACTIONS = frozenset({"set_savings_state", "set_category", "set_note", "mark_internal_transfer"})
+LOW_RISK_ACTIONS = frozenset({
+    "set_savings_state", "set_category", "set_note", "mark_internal_transfer",
+    "mark_duplicate",
+})
 PROTECTED_TERMS = frozenset({"payroll", "salary", "wages", "tax", "irs", "debt", "loan", "mortgage"})
 
 
@@ -95,7 +98,7 @@ def _normalize_change(raw: Mapping[str, Any]) -> dict[str, Any]:
         limit = 64 if action == "set_category" else 2000
         if not value or len(value) > limit:
             raise ValueError("The staged value is missing or too long.")
-    if action == "mark_internal_transfer":
+    if action in {"mark_internal_transfer", "mark_duplicate"}:
         value = bool(value)
     return {
         "object_type": object_type,
@@ -111,7 +114,7 @@ def _load_object(connection, object_type: str, object_id: str) -> dict[str, Any]
         row = connection.execute(text("""
             SELECT id, record_kind, event_type, name, vendor_or_customer, description,
                    amount_cents, category, status, confidence, workflow_status,
-                   source, source_id, due_date, effective_date, notes, updated_at
+                   source, source_id, due_date, effective_date, notes, match_status, updated_at
             FROM cash_events WHERE id=:id
         """), {"id": object_id}).fetchone()
         return dict(row._mapping) if row else None
@@ -239,6 +242,7 @@ def action_catalog() -> list[dict[str, Any]]:
         {"id": "set_category", "label": "Change category", "bulk": True, "consequential": False},
         {"id": "set_note", "label": "Add review note", "bulk": True, "consequential": False},
         {"id": "mark_internal_transfer", "label": "Mark internal transfer", "bulk": True, "consequential": False},
+        {"id": "mark_duplicate", "label": "Mark duplicate", "bulk": True, "consequential": False},
     ]
 
 
@@ -341,7 +345,7 @@ def preview_changes(changes: list[Mapping[str, Any]], *, actor: str, draft_revis
                 status, reason = "invalid", "Item no longer exists."
             elif change["expected_revision"] and change["expected_revision"] != current["revision"]:
                 status, reason = "conflict", "Item changed after this draft was created."
-            elif _protected(item) and change["action"] in {"set_savings_state", "set_category", "mark_internal_transfer"}:
+            elif _protected(item) and change["action"] in {"set_savings_state", "set_category", "mark_internal_transfer", "mark_duplicate"}:
                 status, reason = "protected", "Payroll, tax, and debt items require individual review."
             comparable = {key: value for key, value in (item or {}).items() if key != "_evidence"}
             results.append({**change, "status": status, "reason": reason,
@@ -375,6 +379,7 @@ def _decision_after(prior: dict[str, Any], change: Mapping[str, Any]) -> dict[st
         "set_category": "category",
         "set_note": "note",
         "mark_internal_transfer": "internal_transfer",
+        "mark_duplicate": "duplicate",
     }[str(change["action"])]
     result[key] = change["value"]
     return result
@@ -453,12 +458,13 @@ def apply_preview(preview_token: str, *, actor: str, idempotency_key: str, reaso
             revision = current["revision"] + 1
             prior_for_undo = dict(current["decision"])
             if item["object_type"] == "cash_event" and item["action"] in {
-                "set_category", "mark_internal_transfer",
+                "set_category", "mark_internal_transfer", "mark_duplicate",
             }:
                 if str(authoritative.get("record_kind") or "") != "transaction":
                     raise ValueError("Only posted transactions can be categorized.")
                 prior_for_undo["__cash_event"] = {
                     "category": str(authoritative.get("category") or "uncategorized"),
+                    "match_status": str(authoritative.get("match_status") or ""),
                 }
             if item["object_type"] == "savings_opportunity" and item["action"] == "set_savings_state":
                 prior_review = connection.execute(text("""
@@ -491,17 +497,20 @@ def apply_preview(preview_token: str, *, actor: str, idempotency_key: str, reaso
                     "prior": _canonical_json(prior_for_undo),
                     "new": _canonical_json(next_decision), "now": now})
             if item["object_type"] == "cash_event" and item["action"] in {
-                "set_category", "mark_internal_transfer",
+                "set_category", "mark_internal_transfer", "mark_duplicate",
             }:
-                category = (
-                    str(item["value"])
-                    if item["action"] == "set_category"
-                    else "transfer"
-                )
+                category = str(authoritative.get("category") or "uncategorized")
+                match_status = str(authoritative.get("match_status") or "")
+                if item["action"] == "set_category":
+                    category = str(item["value"])
+                elif item["action"] == "mark_internal_transfer":
+                    category = "transfer"
+                elif item["action"] == "mark_duplicate":
+                    match_status = "duplicate" if item["value"] else ""
                 connection.execute(text("""
-                    UPDATE cash_events SET category=:category, updated_at=:now
+                    UPDATE cash_events SET category=:category, match_status=:match_status, updated_at=:now
                     WHERE id=:id AND record_kind='transaction'
-                """), {"category": category, "now": now, "id": item["object_id"]})
+                """), {"category": category, "match_status": match_status, "now": now, "id": item["object_id"]})
             if item["object_type"] == "savings_opportunity" and item["action"] == "set_savings_state":
                 from sales_support_agent.services.cashflow.savings_reviews import _prepare_review, _record_prepared_review
                 evidence = dict(authoritative.get("_evidence") or {})
@@ -572,10 +581,11 @@ def undo_batch(batch_id: str, *, actor: str, engine=None) -> dict[str, Any]:
                         "scope": SCOPE, "key": item.object_id})
             if item.object_type == "cash_event" and prior_cash_event is not None:
                 connection.execute(text("""
-                    UPDATE cash_events SET category=:category, updated_at=:now
+                    UPDATE cash_events SET category=:category, match_status=:match_status, updated_at=:now
                     WHERE id=:id AND record_kind='transaction'
                 """), {
                     "category": str(prior_cash_event.get("category") or "uncategorized"),
+                    "match_status": str(prior_cash_event.get("match_status") or ""),
                     "now": now,
                     "id": item.object_id,
                 })

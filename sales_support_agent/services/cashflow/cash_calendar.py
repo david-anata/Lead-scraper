@@ -18,9 +18,9 @@ import json
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
-from zoneinfo import ZoneInfo
 
 from sales_support_agent.services.cashflow.budgeting import _canonical_transactions
+from sales_support_agent.services.cashflow.business_time import operator_today
 from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
 from sales_support_agent.services.cashflow.overview import _money, _page_shell
 
@@ -33,8 +33,8 @@ _PROTECTED_CATEGORIES = {
 
 
 def _operator_today() -> date:
-    """Finance operates on the owner's Denver business day, not server UTC."""
-    return datetime.now(ZoneInfo("America/Denver")).date()
+    """Backward-compatible alias for the shared Finance business date."""
+    return operator_today()
 
 
 def _as_date(value: Any) -> date | None:
@@ -59,6 +59,28 @@ def _name(row: Mapping[str, Any], fallback: str = "Expense") -> str:
 
 def _category(row: Mapping[str, Any]) -> str:
     return str(row.get("commitment_type") or row.get("category") or "other").lower()
+
+
+def _merchant_token(value: Any) -> str:
+    return "".join(character for character in str(value or "").casefold() if character.isalnum())
+
+
+def _authoritative_rent_match(
+    row: Mapping[str, Any], authoritative_paydown: Mapping[str, Any] | None,
+) -> bool:
+    """Whether a legacy row is replaced by the operator-confirmed rent balance."""
+    if not authoritative_paydown:
+        return False
+    vendor = _merchant_token(
+        authoritative_paydown.get("vendor_key") or authoritative_paydown.get("vendor_label")
+    )
+    candidate = _merchant_token(_name(row))
+    return bool(
+        vendor
+        and candidate
+        and len(vendor) >= 5
+        and (vendor in candidate or candidate in vendor)
+    )
 
 
 def _same_historical_charge(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
@@ -182,6 +204,7 @@ def build_cash_calendar(
     past_days: int = PAST_DAYS,
     future_days: int = FUTURE_DAYS,
     history_status: str = "ready",
+    authoritative_paydown: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one daily view while preserving each item's evidence class."""
     today = as_of or _operator_today()
@@ -191,6 +214,7 @@ def build_cash_calendar(
     end = today + timedelta(days=future_days)
     source_rows = [dict(row) for row in rows]
     by_transaction, settled_by_obligation = _active_allocation_maps(allocations)
+    suppressed_rent_cents = 0
 
     days: dict[str, dict[str, Any]] = {}
     for offset in range(-past_days, future_days + 1):
@@ -286,6 +310,9 @@ def build_cash_calendar(
         open_amount = max(0, face - paid_amount)
         if open_amount <= 0:
             continue
+        if _authoritative_rent_match(row, authoritative_paydown):
+            suppressed_rent_cents = max(suppressed_rent_cents, open_amount)
+            continue
         category = _category(row)
         is_draft_payroll = (
             str(row.get("source") or "").lower() == "hr_payroll"
@@ -327,6 +354,9 @@ def build_cash_calendar(
             continue
         amount = max(0, int(row.get("amount_cents") or 0))
         if amount <= 0:
+            continue
+        if _authoritative_rent_match(row, authoritative_paydown):
+            suppressed_rent_cents = max(suppressed_rent_cents, amount)
             continue
         confirmed = bool(row.get("confirmed"))
         if not confirmed and any(
@@ -408,6 +438,8 @@ def build_cash_calendar(
         "start": start.isoformat(),
         "end": end.isoformat(),
         "actual_source": source,
+        "authoritative_paydown": dict(authoritative_paydown or {}),
+        "suppressed_rent_cents": suppressed_rent_cents,
         "days": ordered_days,
     }
     calculation_id = hashlib.sha256(
@@ -421,6 +453,8 @@ def build_cash_calendar(
         "past_days": past_days,
         "future_days": future_days,
         "actual_source": source,
+        "authoritative_paydown": dict(authoritative_paydown or {}),
+        "suppressed_rent_cents": suppressed_rent_cents,
         "history_status": history_status,
         "calculation_id": calculation_id,
         "days": ordered_days,
@@ -563,6 +597,18 @@ def load_cash_calendar(
     except Exception:
         history, patterns = [], []
         history_status = "unavailable"
+    try:
+        from sales_support_agent.services.cashflow.settings import get_paydown_settings
+
+        configured = get_paydown_settings()
+        authoritative_paydown = (
+            configured
+            if str(configured.get("vendor_key") or "").strip()
+            and int(configured.get("balance_cents") or 0) >= 0
+            else None
+        )
+    except Exception:
+        authoritative_paydown = None
     return build_cash_calendar(
         rows,
         allocations=allocations,
@@ -571,6 +617,7 @@ def load_cash_calendar(
         as_of=today,
         future_days=future_days,
         history_status=history_status,
+        authoritative_paydown=authoritative_paydown,
     )
 
 
@@ -824,7 +871,8 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
         Nothing spare this month: the expenses below use your cash while protecting your
         {_money(int(plan.get('floor_cents') or 0))} cash goal.</p>
         <p class="cash-calendar-paydown__lead">Monthly rent {_money(monthly)}. Plaid confirms
-        {_money(paid)} sent this month. Remaining {_money(remaining)}.</p>
+        {_money(paid)} sent this month.</p>
+        <p class="cash-calendar-rent-balance"><strong>Rent remaining: {_money(remaining)} · not scheduled.</strong></p>
         <p class="metric-note">{html.escape(balance_note)}</p>
         <p class="cash-calendar-paydown__note"><strong>Other expenses reserved before rent:</strong>
         {_money(planned_reserved)} planned and {_money(unconfirmed)} possible,
