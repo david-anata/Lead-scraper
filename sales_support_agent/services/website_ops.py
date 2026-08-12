@@ -2829,7 +2829,7 @@ def _feedback_empty_state(status_filter: str = "", *, decision_data_ready: bool 
             else "No new evidence-backed actions were generated in the latest completed run."
         )
     run_control = """
-        <form class="inline" action="/admin/api/website-ops/run" method="post">
+        <form class="inline" action="/admin/website-ops/run-now" method="post">
           <input type="hidden" name="mode" value="daily">
           <button type="submit">Run Daily Sweep</button>
         </form>
@@ -3101,9 +3101,9 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <h1>Website growth</h1>
             <p class="lead">Codex publishes. Website Ops verifies and measures.</p>
             <div class="button-row">
-              <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit" {'disabled aria-disabled="true"' if run_status in {'queued','running'} else ''}>{'Running' if run_status in {'queued','running'} else "Run today’s plan"}</button></form>
+              <form action="/admin/website-ops/run-now" method="post"><input type="hidden" name="mode" value="daily"><button type="submit" {'disabled aria-disabled="true"' if run_status in {'queued','running'} else ''}>{'Running' if run_status in {'queued','running'} else "Run today’s plan"}</button></form>
               <a class="btn btn--ghost" href="/admin/website-ops/reports/latest">View latest report</a>
-              <details><summary class="btn btn--ghost">More</summary><form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run weekly maintenance</button></form></details>
+              <details><summary class="btn btn--ghost">More</summary><form action="/admin/website-ops/run-now" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run weekly maintenance</button></form></details>
             </div>
             <p class="muted">One report is emailed after the workday cycle. Last result: {html.escape(str(run_state.get('last_completed_at') or run_state.get('finished_at') or run_state.get('updated_at') or 'time unavailable'))}.</p>
         </section>
@@ -3245,7 +3245,7 @@ def render_indexing_page(
           <h1>Every known URL gets a desired search state.</h1>
           <p class="lead">Search Console exclusions are reconciled against production evidence before Agent improves, consolidates, redirects, or intentionally excludes a URL.</p>
           <div class="button-row">
-            <form action="/admin/api/website-ops/run" method="post">
+            <form action="/admin/website-ops/run-now" method="post">
               <input type="hidden" name="mode" value="weekly">
               <button type="submit">Run Weekly Inspection</button>
             </form>
