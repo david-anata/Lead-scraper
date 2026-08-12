@@ -61,8 +61,18 @@ class BuildingQuickBooksClient:
             timeout=30,
         )
         if response.status_code >= 400:
+            message = ""
+            try:
+                fault = (response.json() or {}).get("Fault") or {}
+                error = next(iter(fault.get("Error") or []), {})
+                message = str(
+                    error.get("Detail") or error.get("Message") or ""
+                ).strip()
+            except (TypeError, ValueError):
+                message = ""
+            safe_message = message[:300] if message else "Review the invoice fields in QuickBooks."
             raise BuildingQuickBooksError(
-                f"QuickBooks rejected the Building draft ({response.status_code})."
+                f"QuickBooks rejected the Building draft ({response.status_code}): {safe_message}"
             )
         return response.json()
 
@@ -131,12 +141,10 @@ class BuildingQuickBooksClient:
             "ItemRef": {"value": item_id},
             "Qty": 1,
             "UnitPrice": amount,
+            # Agent freezes the legally reviewed tax in the approved quote.
+            # Prevent QuickBooks from calculating tax again on that gross amount.
+            "TaxCodeRef": {"value": "NON"},
         }
-        if schedule_type == "security_deposit":
-            # The approved Arena terms treat this as refundable property, not
-            # taxable revenue, unless it is later retained/applied. Any such
-            # later application must be a separate accounting adjustment.
-            sales_detail["TaxCodeRef"] = {"value": "NON"}
         qbo_lines: list[dict[str, Any]] = []
         for item in line_items or []:
             item_amount = round(int(item["amount_cents"]) / 100, 2)
@@ -144,9 +152,10 @@ class BuildingQuickBooksClient:
                 "ItemRef": {"value": BUILDING_ITEM_IDS["deposit"] if item.get("type") == "security_deposit" else BUILDING_ITEM_IDS["event"]},
                 "Qty": 1,
                 "UnitPrice": item_amount,
+                # Event line amounts are gross of Agent-calculated sales tax;
+                # the refundable deposit is independently non-taxable.
+                "TaxCodeRef": {"value": "NON"},
             }
-            if item.get("type") == "security_deposit":
-                detail["TaxCodeRef"] = {"value": "NON"}
             qbo_lines.append({
                 "Amount": item_amount,
                 "Description": str(item["description"]),

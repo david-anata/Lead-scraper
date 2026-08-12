@@ -217,6 +217,34 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
         self.assertEqual(detail["ItemRef"]["value"], "79")
         self.assertEqual(detail["TaxCodeRef"]["value"], "NON")
 
+    def test_04_consolidated_invoice_does_not_recalculate_frozen_tax(self) -> None:
+        client = BuildingQuickBooksClient()
+        captured: dict = {}
+
+        def fake_request(method, path, *, params=None, payload=None):
+            captured.update(payload or {})
+            return {"Invoice": {"Id": "QB-EVENT-1"}}
+
+        with patch.object(client, "_request", side_effect=fake_request):
+            client.create_draft_invoice(
+                customer_id="QB-CUSTOMER-88",
+                description="Deposit due now; balance due before the event.",
+                amount_cents=162000,
+                schedule_type="event_invoice",
+                due_date=datetime.now().date(),
+                idempotency_key="event-invoice-88",
+                line_items=[
+                    {"type": "deposit", "description": "Booking deposit", "amount_cents": 56000},
+                    {"type": "final_balance", "description": "Remaining event balance", "amount_cents": 56000},
+                    {"type": "security_deposit", "description": "Refundable security deposit", "amount_cents": 50000},
+                ],
+            )
+        self.assertEqual(len(captured["Line"]), 3)
+        self.assertTrue(all(
+            line["SalesItemLineDetail"]["TaxCodeRef"]["value"] == "NON"
+            for line in captured["Line"]
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()
