@@ -651,7 +651,10 @@ def _build_operations_summary(report: Mapping[str, Any]) -> dict[str, Any]:
         "queued_actions": int(states.get("queued", len(queue)) or 0),
         "auto_ready_actions": int(ledger_summary.get("ready_candidates", auto_ready) or 0),
         "review_required_actions": review_required,
-        "executed_actions": int(states.get("completed", len(executed)) or 0),
+        "executed_actions": max(
+            int(states.get("completed", 0) or 0),
+            len(executed),
+        ),
         "content_tasks": len(content),
         "article_pipeline_status": str(article.get("status", "unavailable") or "unavailable"),
         "article_pipeline_message": str(article.get("message", "") or ""),
@@ -1739,7 +1742,7 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
             f"Feedback loaded: {len(feedback_entries)}.",
             f"Changes applied: {len(executed_actions)}.",
         ],
-        report_date=datetime.now(timezone.utc).date().isoformat(),
+        report_date=datetime.now(ZoneInfo("America/Denver")).date().isoformat(),
         executed_actions=executed_actions,
     )
     enriched_report = dict(pipeline["report"])
