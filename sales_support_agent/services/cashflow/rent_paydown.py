@@ -29,6 +29,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 # Below this a separate instalment is noise rather than a plan.
 MATERIAL_INSTALMENT_CENTS = 50_000
+MAX_CASH_BALANCE_AGE_DAYS = 1
 # Future calendar entries the operator has no firm bill for.
 UNCONFIRMED_KINDS = frozenset({"history_warning"})
 # Future calendar entries that represent a real dated obligation.
@@ -62,6 +63,16 @@ def _cents(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _cash_balance_is_fresh(balance_as_of: Any, *, today: date) -> bool:
+    """Accept today or yesterday; older or undated cash cannot support advice."""
+    balance_day = _as_date(balance_as_of)
+    return bool(
+        balance_day is not None
+        and balance_day <= today
+        and (today - balance_day).days <= MAX_CASH_BALANCE_AGE_DAYS
+    )
 
 
 def _vendor_of(row: Mapping[str, Any]) -> str:
@@ -392,6 +403,14 @@ def load_paydown_plan(
         calendar = load_cash_calendar(as_of=today, rows=ledger, future_days=horizon)
     accounts = load_accounts_overview()
     configured = get_paydown_settings()
+    if not _cash_balance_is_fresh(accounts.get("as_of"), today=today):
+        return {
+            "status": "paused",
+            "message": "Rent recommendation paused because the bank balance is stale.",
+            "reason": "Refresh Plaid accounts before deciding what to pay.",
+            "calculation_id": str(calendar.get("calculation_id") or ""),
+            "instalments": [],
+        }
     return build_paydown_plan(
         calendar=calendar,
         rows=ledger,
