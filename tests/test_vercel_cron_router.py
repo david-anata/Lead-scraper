@@ -25,6 +25,7 @@ def test_all_vercel_crons_require_bearer_secret(monkeypatch) -> None:
         "daily-digest",
         "sales-operator",
         "hr-reminders",
+        "building-operations",
     ):
         assert _client().get(f"/api/vercel-cron/{path}").status_code == 401
 
@@ -41,6 +42,7 @@ def test_all_vercel_crons_are_inert_before_cutover(monkeypatch) -> None:
         "daily-digest",
         "sales-operator",
         "hr-reminders",
+        "building-operations",
     ):
         response = _client().get(f"/api/vercel-cron/{path}", headers=headers)
         assert response.status_code == 200

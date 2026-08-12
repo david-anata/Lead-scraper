@@ -56,6 +56,10 @@
       "schedule": "5 * * * *"
     },
     {
+      "path": "/api/vercel-cron/building-operations",
+      "schedule": "20 * * * *"
+    },
+    {
       "path": "/api/jobs/outbound-morning/run",
       "schedule": "0 13,14 * * *"
     }

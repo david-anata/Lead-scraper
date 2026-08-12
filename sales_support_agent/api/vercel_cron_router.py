@@ -16,6 +16,14 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from sales_support_agent.api.content_router import ContentRunInput, content_run
+from sales_support_agent.api.building_booking_router import (
+    CommunicationRunInput,
+    run_booking_communications,
+)
+from sales_support_agent.api.building_crm_router import (
+    ScheduledRunInput,
+    run_scheduled_campaigns,
+)
 from sales_support_agent.api.hr_jobs_router import hr_reminders_run
 from sales_support_agent.api.router import (
     run_daily_digest_job,
@@ -23,11 +31,19 @@ from sales_support_agent.api.router import (
     run_stale_lead_job,
 )
 from sales_support_agent.api.sales_jobs_router import sales_operator_run_job
+from sales_support_agent.api.sales_jobs_router import (
+    building_hold_expiration_job,
+    building_lead_follow_up_job,
+)
 from sales_support_agent.api.website_ops_jobs_router import _run_embedded_pulse
 from sales_support_agent.models.schemas import (
     DailyDigestRunRequest,
     GmailSyncRequest,
     StaleLeadRunRequest,
+)
+from sales_support_agent.services.job_lease import (
+    claim_scheduled_job,
+    finish_scheduled_job,
 )
 
 
@@ -152,3 +168,65 @@ async def hr_reminders_cron(
         x_internal_api_key=_internal_key(request),
     )
 
+
+@router.get("/building-operations")
+async def building_operations_cron(
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Run the four Render Building steps from one Vercel invocation.
+
+    Each underlying service retains its own transaction and audit contract.
+    The global cutover switch prevents this adapter from running while Render
+    remains authoritative.
+    """
+
+    if response := _authorize(authorization):
+        return response
+    internal_key = _internal_key(request)
+    engine = request.app.state.session_factory.kw.get("bind")
+    local_now = datetime.now(_DENVER)
+    lease = claim_scheduled_job(
+        engine,
+        job_key="vercel-building-operations",
+        run_key=local_now.strftime("%Y-%m-%dT%H"),
+        lease_minutes=55,
+    )
+    if lease is None:
+        return {"status": "skipped", "message": "Building operations already ran this hour."}
+    try:
+        holds = await building_hold_expiration_job(request, internal_key)
+        leads = await building_lead_follow_up_job(request, internal_key)
+        campaigns = run_scheduled_campaigns(
+            ScheduledRunInput(
+                dry_run=False,
+                max_campaigns=10,
+                actor="job:building-campaign-scheduler",
+            ),
+            request,
+            internal_key,
+        )
+        communications = run_booking_communications(
+            CommunicationRunInput(
+                execute=True,
+                actor="job:building-event-communications",
+            ),
+            request,
+            internal_key,
+        )
+        steps = {
+            "holds": holds.body.decode("utf-8") if hasattr(holds, "body") else holds,
+            "leads": leads.body.decode("utf-8") if hasattr(leads, "body") else leads,
+            "campaigns": campaigns,
+            "communications": communications,
+        }
+        finish_scheduled_job(engine, lease, status="succeeded", details=steps)
+        return {"status": "succeeded", "steps": steps}
+    except Exception as exc:
+        finish_scheduled_job(
+            engine,
+            lease,
+            status="failed",
+            details={"error": str(exc)[:500]},
+        )
+        raise
