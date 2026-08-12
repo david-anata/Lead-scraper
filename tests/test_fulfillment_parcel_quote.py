@@ -31,6 +31,7 @@ from fastapi.testclient import TestClient
 
 from sales_support_agent.api import fulfillment_public_router as P
 from sales_support_agent.main import app
+from sales_support_agent.config import load_settings
 from sales_support_agent.models.database import create_session_factory, init_database
 from sales_support_agent.services.fulfillment_deck.schema import RATE_SOURCE_WMS, RateQuote
 from sales_support_agent.services.fulfillment_deck import intake
@@ -43,10 +44,14 @@ class ParcelQuoteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls._original_factory = app.state.session_factory
+        cls._original_settings = app.state.settings
+        cls._original_agent_settings = app.state.agent_settings
         cls._factory = create_session_factory(os.environ["SALES_AGENT_DB_URL"])
         init_database(cls._factory)
         app.state.session_factory = cls._factory
-        cls._settings = app.state.agent_settings
+        cls._settings = load_settings()
+        app.state.settings = cls._settings
+        app.state.agent_settings = cls._settings
         cls._original_intake_key = cls._settings.marketing_site_intake_key
         object.__setattr__(cls._settings, "marketing_site_intake_key", "test-intake-key")
         cls.client = TestClient(app)
@@ -55,6 +60,8 @@ class ParcelQuoteTests(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.client.close()
         app.state.session_factory = cls._original_factory
+        app.state.settings = cls._original_settings
+        app.state.agent_settings = cls._original_agent_settings
         object.__setattr__(cls._settings, "marketing_site_intake_key", cls._original_intake_key)
         cls._factory.kw["bind"].dispose()
 
