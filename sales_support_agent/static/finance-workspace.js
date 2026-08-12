@@ -36,6 +36,7 @@
   const announce = (message, tone = "neutral") => {
     if (!status) return;
     status.hidden = !message;
+    document.body.classList.toggle("has-finance-draft", Boolean(message));
     if (statusMessage) statusMessage.textContent = message;
     else status.textContent = message;
     status.dataset.tone = tone;

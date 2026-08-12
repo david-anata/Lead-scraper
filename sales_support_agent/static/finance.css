@@ -550,6 +550,7 @@ input:focus, select:focus, textarea:focus {
 }
 
 @media (max-width: 700px) {
+  body.has-finance-draft .shell { padding-bottom: 150px; }
   .form-row, .form-row.triple { grid-template-columns: 1fr; }
   .card-grid,
   .finance-stat-grid { grid-template-columns: 1fr 1fr; }
