@@ -191,6 +191,7 @@ def test_the_bill_being_paid_is_not_also_reserved_against():
     paying_other = _plan(events=someone_else, spendable=5_000_000)
 
     assert paying_own["reserved_cents"] == 0, "its own bill must not be reserved against"
+    assert paying_own["excluded_vendor_cents"] == 1_500_000
     assert paying_own["planned_total_cents"] > paying_other["planned_total_cents"]
 
 
