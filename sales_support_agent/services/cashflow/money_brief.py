@@ -10,11 +10,13 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+from calendar import monthrange
 from dataclasses import asdict, dataclass
 from datetime import date
 from typing import Any, Mapping, Sequence
 
 from sales_support_agent.services.cashflow.accounts_view import load_accounts_overview
+from sales_support_agent.services.cashflow.business_time import operator_today
 from sales_support_agent.services.cashflow.cashflow_helpers import _page_shell
 from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
 from sales_support_agent.services.cashflow.obligations import list_obligations
@@ -74,6 +76,7 @@ class FinanceBrief:
     review_count: int
     amounts: tuple[EvidenceAmount, ...]
     outlooks: tuple[Outlook, ...]
+    month_end_outlooks: tuple[Outlook, ...]
     attention: tuple[AttentionCase, ...]
     excluded_summary: str
 
@@ -149,10 +152,12 @@ def build_finance_brief(
     settlement_annotations: Sequence[Mapping[str, Any]] | None = None,
     income_decisions: Any = None,
     source_connections: Any = None,
+    calendar_snapshot: Mapping[str, Any] | None = None,
+    paydown_plan: Mapping[str, Any] | None = None,
     as_of: date | None = None,
 ) -> FinanceBrief:
     """Build the small UI contract from the canonical deterministic state."""
-    today = as_of or date.today()
+    today = as_of or operator_today()
     control, fallback, _ = _build_renderer_state(
         list(rows),
         int(balance_cents),
@@ -248,6 +253,45 @@ def build_finance_brief(
             "Also includes expected income that has not been confirmed.",
         ),
     )
+    calendar_totals = dict((calendar_snapshot or {}).get("totals") or {})
+    month_end_planned = int(calendar_totals.get("planned_cents") or 0)
+    month_end_possible = int(calendar_totals.get("warning_cents") or 0)
+    rent_remaining = max(0, int((paydown_plan or {}).get("remaining_cents") or 0))
+    month_end_confirmed_in = 0
+    month_end_day = today.replace(day=monthrange(today.year, today.month)[1])
+    for row in rows:
+        if str(row.get("event_type") or "").lower() != "inflow":
+            continue
+        if str(row.get("confidence") or "").lower() != "confirmed":
+            continue
+        if str(row.get("status") or "").lower() in {"paid", "matched", "posted", "cancelled"}:
+            continue
+        try:
+            due = date.fromisoformat(str(row.get("due_date") or "")[:10])
+        except (TypeError, ValueError):
+            continue
+        if today < due <= month_end_day:
+            month_end_confirmed_in += max(0, int(row.get("open_amount_cents") or row.get("amount_cents") or 0))
+    month_end_conservative = actual - month_end_planned - month_end_possible - rent_remaining
+    month_end_likely = month_end_conservative + month_end_confirmed_in
+    month_end_optimistic = month_end_likely + expected_in
+    month_end_outlooks = (
+        Outlook(
+            "conservative", "Conservative", month_end_conservative,
+            "Verified cash − month-end planned − possible reserve − rent remaining",
+            f"Reserves {_money(month_end_planned)} planned, {_money(month_end_possible)} possible, and {_money(rent_remaining)} remaining rent.",
+        ),
+        Outlook(
+            "likely", "Likely", month_end_likely,
+            "Month-end conservative + confirmed dated incoming",
+            f"Adds {_money(month_end_confirmed_in)} confirmed to arrive before month-end.",
+        ),
+        Outlook(
+            "optimistic", "Optimistic", month_end_optimistic,
+            "Month-end likely + expected incoming",
+            "Also includes expected income that has not been confirmed.",
+        ),
+    )
     proof = {
         "as_of": today.isoformat(),
         "balance_as_of": balance_as_of,
@@ -255,7 +299,7 @@ def build_finance_brief(
         "amounts": [asdict(item) for item in amounts],
         "outlooks": [asdict(item) for item in outlooks],
     }
-    calculation_id = hashlib.sha256(
+    calculation_id = str((calendar_snapshot or {}).get("calculation_id") or "") or hashlib.sha256(
         json.dumps(proof, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]
     try:
@@ -273,6 +317,7 @@ def build_finance_brief(
         review_count=review_count,
         amounts=amounts,
         outlooks=outlooks,
+        month_end_outlooks=month_end_outlooks,
         attention=_attention_cases(
             state,
             balance_available=bool(cash["balance_available"]),
@@ -300,6 +345,23 @@ def load_finance_brief(settings: Any) -> FinanceBrief:
                 balance_cents = int(accounts.get("spendable_cents") or 0)
                 balance_as_of = str(accounts.get("as_of") or balance_as_of)
         income_decisions, source_connections = _load_finance_control_inputs(settings)
+        today = operator_today()
+        calendar_snapshot = None
+        paydown_plan = None
+        try:
+            from sales_support_agent.services.cashflow.cash_calendar import load_cash_calendar
+            from sales_support_agent.services.cashflow.rent_paydown import load_paydown_plan
+
+            month_end = today.replace(day=monthrange(today.year, today.month)[1])
+            calendar_snapshot = load_cash_calendar(
+                rows=rows, as_of=today, future_days=max(0, (month_end - today).days),
+            )
+            paydown_plan = load_paydown_plan(
+                rows=rows, calendar=calendar_snapshot, as_of=today,
+            )
+        except Exception:
+            calendar_snapshot = None
+            paydown_plan = None
         return build_finance_brief(
             rows=rows,
             balance_cents=balance_cents,
@@ -308,12 +370,15 @@ def load_finance_brief(settings: Any) -> FinanceBrief:
             settlement_annotations=settlement_annotations,
             income_decisions=income_decisions,
             source_connections=source_connections,
+            calendar_snapshot=calendar_snapshot,
+            paydown_plan=paydown_plan,
+            as_of=today,
         )
     except Exception:
         # Authentication and transition states must still render a safe Finance
         # shell when the database is unavailable. Zero is never presented as a
         # verified balance: the unavailable state explicitly blocks decisions.
-        today = date.today().isoformat()
+        today = operator_today().isoformat()
         amounts = (
             EvidenceAmount("cash", "Verified cash now", 0, "unavailable", "Bank source unavailable", today, "No current bank evidence is available."),
             EvidenceAmount("confirmed_in", "Confirmed money in", 0, "unavailable", "Accounting source unavailable", today, "No confirmed receivables are available."),
@@ -335,6 +400,7 @@ def load_finance_brief(settings: Any) -> FinanceBrief:
             review_count=0,
             amounts=amounts,
             outlooks=outlooks,
+            month_end_outlooks=outlooks,
             attention=(
                 AttentionCase(
                     "source-unavailable",
@@ -388,6 +454,15 @@ def render_money_brief_page(
         </article>"""
         for item in brief.outlooks
     )
+    month_end_html = "".join(
+        f"""
+        <article class="money-outlook money-outlook--{html.escape(item.key)}">
+          <span>{html.escape(item.label)}</span>
+          <strong>{_money(item.cents, exact=True)}</strong>
+          <p>{html.escape(item.explanation)}</p>
+        </article>"""
+        for item in brief.month_end_outlooks
+    )
     status = (
         '<span class="money-status money-status--ready">Sources ready</span>'
         if brief.trust_ready is True
@@ -439,6 +514,14 @@ def render_money_brief_page(
         <div class="money-outlooks">{outlook_html}</div>
       </section>
 
+      <section class="money-outlook-section" aria-labelledby="money-month-end-title">
+        <div class="money-section-heading">
+          <div><p class="finance-eyebrow">Through month-end</p><h2 id="money-month-end-title">After every known cost and remaining rent</h2></div>
+          <a href="/admin/finances/calendar">See the calendar</a>
+        </div>
+        <div class="money-outlooks">{month_end_html}</div>
+      </section>
+
       <section class="money-attention-section" aria-labelledby="money-attention-title">
         <div class="money-section-heading">
           <div><p class="finance-eyebrow">Needs attention</p><h2 id="money-attention-title">Handle these next</h2></div>
@@ -468,6 +551,12 @@ def render_calculation_page(brief: FinanceBrief, *, flash: str = "") -> str:
         f"<code>{html.escape(item.formula)}</code><p>{html.escape(item.explanation)}</p></article>"
         for item in brief.outlooks
     )
+    month_end_rows = "".join(
+        f"<article class='money-formula'><div><span>{html.escape(item.label)}</span>"
+        f"<strong>{_money(item.cents, exact=True)}</strong></div>"
+        f"<code>{html.escape(item.formula)}</code><p>{html.escape(item.explanation)}</p></article>"
+        for item in brief.month_end_outlooks
+    )
     body = f"""
     <div class="money-brief">
       {_brief_nav("plan")}
@@ -483,7 +572,10 @@ def render_calculation_page(brief: FinanceBrief, *, flash: str = "") -> str:
         <th>Number</th><th>Amount</th><th>Source</th><th>Rule</th></tr></thead>
         <tbody>{amount_rows}</tbody></table></div>
       </section>
-      <section class="money-formulas" aria-label="Outlook formulas">{outlook_rows}</section>
+      <div class="money-section-heading"><div><p class="finance-eyebrow">Next 14 days</p><h2>Short-term formulas</h2></div></div>
+      <section class="money-formulas" aria-label="14-day outlook formulas">{outlook_rows}</section>
+      <div class="money-section-heading"><div><p class="finance-eyebrow">Through month-end</p><h2>Month-end formulas</h2></div></div>
+      <section class="money-formulas" aria-label="Month-end outlook formulas">{month_end_rows}</section>
     </div>"""
     return _page_shell("Calculation proof", "plan", body, flash=flash)
 
@@ -495,19 +587,28 @@ def render_cash_plan_page(brief: FinanceBrief) -> str:
         f"<p>{html.escape(item.explanation)}</p><code>{html.escape(item.formula)}</code></article>"
         for item in brief.outlooks
     )
+    month_end_html = "".join(
+        f"<article class='money-plan-scenario money-plan-scenario--{html.escape(item.key)}'>"
+        f"<span>{html.escape(item.label)}</span><strong>{_money(item.cents, exact=True)}</strong>"
+        f"<p>{html.escape(item.explanation)}</p><code>{html.escape(item.formula)}</code></article>"
+        for item in brief.month_end_outlooks
+    )
     body = f"""
     <div class="money-brief">
       {_brief_nav("plan")}
       <header class="money-page-header">
         <div><p class="finance-eyebrow">Cash plan</p><h1>Plan without changing your books</h1>
-        <p class="money-page-subtitle">Compare the next 14 days using the same source numbers shown on Today.</p></div>
+        <p class="money-page-subtitle">Compare the next 14 days and the full month using the same source numbers shown on Today.</p></div>
         <a class="btn btn-secondary" href="/admin/finances/calculations/{html.escape(brief.calculation_id)}">See the math</a>
       </header>
       <section class="money-plan-lead">
         <p>Starting verified cash</p><strong>{_money(brief.amount("cash").cents, exact=True)}</strong>
         <span>{html.escape(brief.source_label)} · {html.escape(brief.amount("cash").as_of or "Update unavailable")}</span>
       </section>
+      <div class="money-section-heading"><div><p class="finance-eyebrow">Next 14 days</p><h2>Short-term outlook</h2></div></div>
       <section class="money-plan-grid">{outlook_html}</section>
+      <div class="money-section-heading"><div><p class="finance-eyebrow">Through month-end</p><h2>All known costs and remaining rent</h2></div></div>
+      <section class="money-plan-grid">{month_end_html}</section>
       <div class="money-state-note"><strong>Read-only planning</strong>
       <p>These scenarios do not edit Plaid, QuickBooks, schedules, bills, or invoices.</p></div>
     </div>"""

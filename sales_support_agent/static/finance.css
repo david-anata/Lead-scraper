@@ -2563,6 +2563,16 @@ input:focus, select:focus, textarea:focus {
   .money-outlooks,
   .money-plan-grid { grid-template-columns: 1fr; }
   .budget-summary { grid-template-columns: 1fr 1fr; }
+  .trim-table-wrap { overflow: visible; }
+  .trim-table { display: block; min-width: 0; }
+  .trim-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .trim-table tbody { display: grid; gap: 12px; }
+  .trim-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 14px; padding: 16px; border: 1px solid var(--anata-line); border-radius: 14px; }
+  .trim-table td { display: block; width: auto; padding: 0; border: 0; }
+  .trim-table td:nth-child(2), .trim-table td:nth-child(3), .trim-table td:nth-child(4) { text-align: right; }
+  .trim-table td:nth-child(3)::before { content: "Six months "; color: var(--anata-muted); font-size: 10px; font-weight: 700; }
+  .trim-table td:nth-child(4) { justify-self: end; }
+  .trim-table td:nth-child(5) { grid-column: 1 / -1; padding-top: 6px; }
 }
 
 @media (max-width: 620px) {
@@ -2701,6 +2711,10 @@ input:focus, select:focus, textarea:focus {
 .finance-object-list li { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid rgba(43,54,68,.08); font-size: 12px; }
 .finance-object-list li span { color: #667386; }
 .finance-object-state--error { color: #b42318; }
+.finance-object-cleanup > p { margin: -4px 0 14px; color: #667386; font-size: 13px; line-height: 1.5; }
+.finance-object-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.finance-object-actions button { min-height: 40px; padding: 0 12px; border: 1px solid rgba(43,54,68,.16); border-radius: 9px; background: #fff; color: #2b3644; font: 700 11px/1 "Montserrat", sans-serif; cursor: pointer; }
+.finance-object-actions button.is-selected { border-color: #5e9fc4; background: rgba(133,187,218,.2); color: #224e69; }
 .finance-draft-status { position: fixed; right: 20px; bottom: 20px; z-index: 70; max-width: min(420px, calc(100vw - 40px)); padding: 11px 15px; border: 1px solid rgba(43,54,68,.14); border-radius: 10px; background: #fff; box-shadow: 0 10px 28px rgba(43,54,68,.16); font-weight: 700; }
 .finance-draft-status__actions { display: inline-flex; gap: 10px; margin-left: 12px; }
 .finance-draft-status a,
@@ -2773,5 +2787,7 @@ input:focus, select:focus, textarea:focus {
   .finance-bookkeeping button,
   .finance-bookkeeping select { min-height: 44px; }
   .finance-global-command [data-finance-save-view] { min-height: 44px; }
+  .finance-object-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .finance-object-actions button { min-height: 44px; }
   .trim-review-link { display: inline-flex; align-items: center; }
 }

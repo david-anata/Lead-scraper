@@ -168,7 +168,7 @@ def _outgoings_by_day(
     """
     outgoing: dict[date, int] = {}
     unconfirmed: dict[date, int] = {}
-    excluded_vendor_cents = 0
+    excluded_vendor_cents = max(0, int(calendar.get("suppressed_rent_cents") or 0))
     for bucket in calendar.get("days") or []:
         when = _as_date(bucket.get("date"))
         if when is None or when < as_of or when > horizon_end:

@@ -19,6 +19,7 @@ from statistics import median
 from typing import Any, Iterable, Mapping
 
 from sales_support_agent.models.database import kv_get_json, kv_set_json
+from sales_support_agent.services.cashflow.business_time import operator_today
 from sales_support_agent.services.cashflow.cashflow_helpers import _page_shell
 from sales_support_agent.services.cashflow.categorizer import categorize
 from sales_support_agent.services.cashflow.finance_nav import render_finance_nav
@@ -337,7 +338,7 @@ def build_budget_view(
     rows: Iterable[Mapping[str, Any]], *, as_of: date | None = None
 ) -> dict[str, Any]:
     """Build the monthly budget from one canonical posted-transaction source."""
-    today = as_of or date.today()
+    today = as_of or operator_today()
     source, transactions = _canonical_transactions(rows, as_of=today)
     comparison_months = _previous_months(today, count=6)
     current_month = _month_key(today)
@@ -497,7 +498,11 @@ def build_budget_view(
                 "category": meta["category"], "headline": "New recurring cost",
                 "monthly_review_cents": recent_average, "one_time_review_cents": 0,
                 "evidence": f"Appeared in {active_recent_months} of the last 3 complete months after no spend in the earlier 3.",
-                "action": "Confirm the service is still needed, then cancel, downgrade, or set an owner.",
+                "action": (
+                    "Review owner withdrawals and set a monthly limit before the next draw."
+                    if meta["category"] == "owner_draw"
+                    else "Confirm the purchase is still recurring and needed, then cancel, downgrade, or set an owner."
+                ),
             })
         elif earlier_average >= 2_500 and recent_average - earlier_average >= 5_000 and recent_average * 100 >= earlier_average * 125:
             investigations.append({
@@ -633,14 +638,20 @@ def build_budget_view(
 def load_budget_view() -> dict[str, Any]:
     try:
         source_rows = list_obligations(limit=10_000)
-        view = build_budget_view(source_rows)
+        view = build_budget_view(source_rows, as_of=operator_today())
+        try:
+            from sales_support_agent.services.cashflow.settings import get_paydown_settings
+
+            _apply_authoritative_rent(view, get_paydown_settings())
+        except Exception:
+            logger.exception("Authoritative rent facts were unavailable to Budget")
         from sales_support_agent.services.cashflow.savings_reviews import load_savings_reviews
         reviews = load_savings_reviews()
         try:
             aliases = alias_map()
         except RuntimeError:
             aliases = {}
-        current_day = date.today()
+        current_day = operator_today()
         for item in view.get("trim_items") or []:
             review = reviews.get(str(item.get("opportunity_key") or ""))
             if review:
@@ -714,7 +725,65 @@ def load_budget_view() -> dict[str, Any]:
         }
         return view
     except Exception:
-        return build_budget_view([])
+        return build_budget_view([], as_of=operator_today())
+
+
+def _apply_authoritative_rent(
+    view: dict[str, Any], settings: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Replace a prorated rent guess with the operator-confirmed obligation.
+
+    Posted rent remains actual spending. The outstanding balance is added once
+    to obtain the honest month-end total; historical averages remain evidence,
+    not a substitute for the current agreement.
+    """
+    monthly = max(0, int(settings.get("monthly_cents") or 0))
+    remaining = max(0, int(settings.get("balance_cents") or 0))
+    vendor = str(settings.get("vendor_label") or settings.get("vendor_key") or "Rent").strip()
+    if not vendor or monthly <= 0:
+        return view
+    categories = list(view.get("categories") or [])
+    rent = next((item for item in categories if str(item.get("key") or "") == "rent"), None)
+    if rent is None:
+        rent = {
+            "key": "rent", "label": "Rent", "protected": True,
+            "historical_months": {}, "average_cents": 0, "current_cents": 0,
+            "potential_saving_cents": 0, "historical_reduction_cents": 0,
+            "recurring_average_cents": 0, "recurring_saving_cents": 0,
+            "earlier_average_cents": 0, "recent_average_cents": 0,
+            "trend_cents": 0, "trend_bps": 0, "trend_direction": "flat",
+            "top_merchants": [],
+        }
+        categories.append(rent)
+        view["categories"] = categories
+    old_projected = int(rent.get("projected_cents") or 0)
+    old_target = int(rent.get("target_cents") or 0)
+    posted = max(0, int(rent.get("current_cents") or 0))
+    rent.update({
+        "projected_cents": posted + remaining,
+        "target_cents": monthly,
+        "variance_cents": posted + remaining - monthly,
+        "protected": True,
+        "authoritative": True,
+        "remaining_cents": remaining,
+        "monthly_cents": monthly,
+        "top_merchants": [{"name": vendor, "amount_cents": posted + remaining}],
+    })
+    totals = view.setdefault("totals", {})
+    totals["projected_cents"] = int(totals.get("projected_cents") or 0) - old_projected + posted + remaining
+    totals["target_cents"] = int(totals.get("target_cents") or 0) - old_target + monthly
+    view["rent_authority"] = {
+        "vendor": vendor,
+        "monthly_cents": monthly,
+        "posted_cents": posted,
+        "remaining_cents": remaining,
+        "balance_as_of": str(settings.get("balance_as_of") or ""),
+    }
+    proof = {key: value for key, value in view.items() if key != "calculation_id"}
+    view["calculation_id"] = hashlib.sha256(
+        json.dumps(proof, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()[:16]
+    return view
 
 
 def _review_packet(view: Mapping[str, Any]) -> dict[str, Any]:
@@ -1233,6 +1302,14 @@ def render_budget_page(
           <form method="post" action="/admin/finances/budget/review">
           <button class="btn btn-primary" type="submit">Run high spending review</button></form></div>"""
 
+    rent_authority = view.get("rent_authority") or {}
+    rent_note = (
+        '<p class="budget-proof budget-proof--authoritative"><strong>Rent uses the confirmed plan:</strong> '
+        f'{_money(int(rent_authority.get("posted_cents") or 0), exact=True)} posted plus '
+        f'{_money(int(rent_authority.get("remaining_cents") or 0), exact=True)} remaining, '
+        f'{_money(int(rent_authority.get("posted_cents") or 0) + int(rent_authority.get("remaining_cents") or 0), exact=True)} projected this month.</p>'
+        if rent_authority else ""
+    )
     body = f"""
     <div class="money-brief">
       {render_finance_nav("budget", counts={})}
@@ -1252,6 +1329,7 @@ def render_budget_page(
         <article class="budget-summary__saving"><span>Bank-verified monthly savings</span><strong>{_money(int((view.get('savings_summary') or {}).get('realized_monthly_cents') or 0), exact=True)}</strong></article>
       </section>
       <p class="budget-proof">Source: {html.escape(str(view['source']).replace('_', ' ').title())} posted transactions · {int(view.get('transaction_count') or 0)} transactions available from {html.escape(str(view.get('earliest_date') or 'unavailable'))} through {html.escape(str(view.get('latest_date') or 'unavailable'))} · Six complete months reviewed: {html.escape(', '.join(view['comparison_months']))}. Mirrored sources and internal transfers are excluded.</p>
+      {rent_note}
 
       <section class="monthly-trim-brief" aria-labelledby="monthly-trim-title">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Monthly trim brief</p>

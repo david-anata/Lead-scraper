@@ -80,6 +80,31 @@ def test_same_evidence_produces_same_calculation_id() -> None:
     assert _brief().calculation_id == _brief().calculation_id
 
 
+def test_month_end_outlook_reserves_calendar_costs_and_authoritative_rent() -> None:
+    state = _state()
+    with (
+        patch("sales_support_agent.services.cashflow.money_brief._build_renderer_state", return_value=({}, {}, False)),
+        patch("sales_support_agent.services.cashflow.money_brief._normalise_renderer_state", return_value=state),
+        patch("sales_support_agent.services.cashflow.bulk_resolve.list_review_items", return_value={"total": 0}),
+    ):
+        brief = build_finance_brief(
+            rows=[], balance_cents=2_661_227, balance_as_of="2026-08-11",
+            balance_source="plaid", as_of=__import__("datetime").date(2026, 8, 11),
+            calendar_snapshot={
+                "calculation_id": "shared-proof",
+                "totals": {"planned_cents": 411_200, "warning_cents": 187_300},
+            },
+            paydown_plan={"remaining_cents": 3_000_000},
+        )
+
+    assert brief.calculation_id == "shared-proof"
+    assert brief.month_end_outlooks[0].cents == -937_273
+    assert "rent remaining" in brief.month_end_outlooks[0].formula
+    page = render_money_brief_page(brief)
+    assert "Through month-end" in page
+    assert "After every known cost and remaining rent" in page
+
+
 def test_live_brief_uses_spendable_plaid_cash_not_reserves() -> None:
     from sales_support_agent.services.cashflow.money_brief import load_finance_brief
 

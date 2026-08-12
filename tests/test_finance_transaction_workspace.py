@@ -164,6 +164,23 @@ def test_mark_transfer_updates_authoritative_category(finance_engine):
     undo_batch(result["batch_id"], actor="owner@example.com", engine=finance_engine)
 
 
+def test_mark_duplicate_removes_transaction_from_finance_views_and_is_undoable(finance_engine):
+    _cash_event(finance_engine, "tx-duplicate", category="software")
+    preview = preview_changes([
+        {"object_type": "cash_event", "object_id": "tx-duplicate", "action": "mark_duplicate", "value": True},
+    ], actor="owner@example.com", engine=finance_engine)
+    result = apply_preview(
+        preview["preview_token"], actor="owner@example.com",
+        idempotency_key="duplicate-001", source_page="calendar",
+        engine=finance_engine,
+    )
+    with finance_engine.connect() as connection:
+        assert connection.execute(text("SELECT match_status FROM cash_events WHERE id='tx-duplicate'" )).scalar_one() == "duplicate"
+    undo_batch(result["batch_id"], actor="owner@example.com", engine=finance_engine)
+    with finance_engine.connect() as connection:
+        assert connection.execute(text("SELECT match_status FROM cash_events WHERE id='tx-duplicate'" )).scalar_one() == ""
+
+
 def test_stale_revision_is_reported_before_apply(finance_engine):
     _cash_event(finance_engine, "tx-1")
     first = preview_changes([

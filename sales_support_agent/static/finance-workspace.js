@@ -24,11 +24,12 @@
   const searchCount = document.querySelector("[data-finance-search-count]");
   const savedViews = document.querySelector("[data-finance-saved-views]");
   const saveViewButton = document.querySelector("[data-finance-save-view]");
+  const hasBudgetEditor = Boolean(document.querySelector("[data-trim-batch-form]"));
   const esc = value => String(value ?? "").replace(/[&<>'"]/g, character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"})[character]);
 
   const announce = (message, tone = "neutral") => {
     if (!status) return;
-    status.hidden = !message;
+    status.hidden = !message || (hasBudgetEditor && tone !== "error");
     if (statusMessage) statusMessage.textContent = message;
     else status.textContent = message;
     status.dataset.tone = tone;
@@ -140,6 +141,8 @@
 
   const openObject = async (type, id) => {
     if (!panel || !panelTitle || !panelBody) return;
+    panel.dataset.objectType = type;
+    panel.dataset.objectId = id;
     panelTitle.textContent = "Loading…";
     panelBody.innerHTML = '<div class="finance-object-state">Loading current evidence…</div>';
     panel.showModal();
@@ -151,16 +154,31 @@
       const identifiers = (item.source_identifiers || []).map(source => `<li>${esc(source.source_system)} · ${esc(source.masked_external_id)}</li>`).join("");
       const related = (item.related_items || []).map(relatedItem => `<li>${esc(relatedItem.name || relatedItem.vendor_or_customer || relatedItem.id)} · ${esc(relatedItem.status)}</li>`).join("");
       const activity = (item.activity || []).map(event => `<li><strong>${esc(String(event.action_type || "").replaceAll("_", " "))}</strong><span>${esc(event.actor)} · ${esc(event.created_at)}</span></li>`).join("");
+      const isPostedTransaction = item.record_kind === "transaction";
+      const dateFacts = isPostedTransaction
+        ? `<div><dt>Posted date</dt><dd>${esc(item.effective_date || item.due_date || "Unavailable")}</dd></div>`
+        : `<div><dt>Due date</dt><dd>${esc(item.due_date || item.effective_date || "Not scheduled")}</dd></div>`;
+      const cleanup = isPostedTransaction && !item.protected ? `<section class="finance-object-cleanup"><h3>Clean up this transaction</h3>
+        <p>Choose any answers you know. They stay in one protected draft until you review and save everything together.</p>
+        <div class="finance-object-actions" role="group" aria-label="Transaction cleanup actions">
+          <button type="button" data-finance-stage-action="set_savings_state" data-finance-stage-value="needed">Needed</button>
+          <button type="button" data-finance-stage-action="set_savings_state" data-finance-stage-value="waste">Waste</button>
+          <button type="button" data-finance-stage-action="set_savings_state" data-finance-stage-value="investigate">Investigate</button>
+          <button type="button" data-finance-stage-action="mark_duplicate" data-finance-stage-value="true">Duplicate</button>
+          <button type="button" data-finance-stage-action="mark_internal_transfer" data-finance-stage-value="true">Internal transfer</button>
+        </div><button type="button" class="btn btn-primary btn-sm" data-finance-review-draft>Review and save all changes</button></section>` : "";
+      const paymentEvidence = isPostedTransaction && !Number(item.payment_evidence?.allocated_cents || 0)
+        ? "Not matched to a planned bill. The bank withdrawal itself is still verified."
+        : `${new Intl.NumberFormat("en-US", {style: "currency", currency: "USD"}).format(Number(item.payment_evidence?.allocated_cents || 0) / 100)} matched to payment evidence.`;
       panelBody.innerHTML = `${protectedCopy}<section><h3>What happened</h3><dl class="finance-object-facts">
         <div><dt>Amount</dt><dd>${amount}</dd></div>
         <div><dt>Evidence</dt><dd>${esc(item.confidence || "Unconfirmed")}</dd></div>
         <div><dt>Payment status</dt><dd>${esc(item.status || item.state || "Needs review")}</dd></div>
         <div><dt>Category</dt><dd>${esc(item.category || "Uncategorized")}</dd></div>
-        <div><dt>Posted date</dt><dd>${esc(item.effective_date || "Unavailable")}</dd></div>
-        <div><dt>Planned date</dt><dd>${esc(item.due_date || "Not planned")}</dd></div>
+        ${dateFacts}
       </dl><p class="finance-object-description">${esc(item.description || "No raw bank description is available.")}</p></section>
       <section><h3>How it is treated</h3><dl class="finance-object-facts"><div><dt>Source</dt><dd>${esc(item.source || "Operator review")}</dd></div><div><dt>Saved decision</dt><dd>${item.revision ? `Revision ${Number(item.revision)}` : "None"}</dd></div></dl></section>
-      <section><h3>Payment evidence</h3><p>${new Intl.NumberFormat("en-US", {style: "currency", currency: "USD"}).format(Number(item.payment_evidence?.allocated_cents || 0) / 100)} allocated from posted evidence.</p>${related ? `<ul class="finance-object-list">${related}</ul>` : "<p>No related obligation or transaction is linked.</p>"}</section>
+      ${cleanup}<section><h3>Payment evidence</h3><p>${paymentEvidence}</p>${related ? `<ul class="finance-object-list">${related}</ul>` : "<p>No related obligation or transaction is linked.</p>"}</section>
       <section><h3>Source identifiers</h3>${identifiers ? `<ul class="finance-object-list">${identifiers}</ul>` : "<p>No diagnostic identifiers are available.</p>"}</section>
       <section><h3>Similar transactions</h3><p>${Number(item.similar_transactions?.length || 0)} similar posted item(s) found.</p></section>
       <section><h3>Activity</h3>${activity ? `<ul class="finance-object-list">${activity}</ul>` : "<p>No prior operator changes.</p>"}</section>
@@ -178,6 +196,13 @@
       openObject(opener.dataset.financeObjectType, opener.dataset.financeObjectId);
     }
     if (event.target.closest("[data-finance-object-close]")) panel?.close();
+    const stageButton = event.target.closest("[data-finance-stage-action]");
+    if (stageButton && panel) {
+      const value = stageButton.dataset.financeStageValue === "true" ? true : stageButton.dataset.financeStageValue;
+      stage({object_type: panel.dataset.objectType, object_id: panel.dataset.objectId, action: stageButton.dataset.financeStageAction, value});
+      stageButton.classList.add("is-selected");
+    }
+    if (event.target.closest("[data-finance-review-draft]")) reviewAndSave();
   });
 
   let searchTimer = null;
@@ -236,7 +261,7 @@
   });
 
   window.addEventListener("beforeunload", event => {
-    if (state.allowNavigation || (!state.unprotected && !state.saving && !state.saveFailed)) return;
+    if (state.allowNavigation || (!state.changes.length && !state.unprotected && !state.saving && !state.saveFailed)) return;
     event.preventDefault();
     event.returnValue = "";
   });
