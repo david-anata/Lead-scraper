@@ -350,17 +350,23 @@ def render_booking_workspace(
     can_prepare_billing = bool(
         agreement.get("preparation_status") == "approved"
         and payment.get("status") == "approved"
-        and not billing.get("schedules")
+        and not billing.get("invoices")
     )
     billing_prepare_form = ""
     if can_prepare_billing:
+        billing_prepare_label = (
+            "Refresh exact billing drafts"
+            if billing.get("schedules")
+            else "Prepare exact billing drafts"
+        )
         billing_prepare_form = (
             f'<form class="booking-billing-prepare" method="post" '
             f'action="/admin/building/bookings/{_esc(reservation.get("id"))}/billing/prepare">'
             f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
             '<button class="booking-button booking-button--primary" type="submit">'
-            'Prepare exact billing drafts</button><small>Uses the approved contract package. '
-            'A signature is not required to create an unsent QuickBooks draft.</small></form>'
+            f'{billing_prepare_label}</button><small>Uses the approved contract package. '
+            'A signature is not required to create an unsent QuickBooks draft, and existing '
+            'matching drafts are not duplicated.</small></form>'
         )
     billing_section = f'''<section class="booking-workspace" id="booking-billing">
         <div class="booking-workspace__header"><div><h2>QuickBooks billing</h2><p>Prepared drafts, provider invoices, and cleared payment remain separate states.</p></div></div>
