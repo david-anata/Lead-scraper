@@ -886,7 +886,7 @@ def startup() -> None:
         # Fall back to the same SQLite default that sales_support_agent/main.py uses
         # so the session factory is always available on app.state.
         from pathlib import Path as _Path
-        _runtime = _Path("runtime")
+        _runtime = _Path("/tmp/anata-agent") if os.getenv("VERCEL") else _Path("runtime")
         _runtime.mkdir(parents=True, exist_ok=True)
         _cf_db_url = f"sqlite:///{_runtime / 'sales_support_agent.sqlite3'}"
     _sf = create_session_factory(_cf_db_url)

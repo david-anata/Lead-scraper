@@ -12,6 +12,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,16 @@ def create_session_factory(database_url: str) -> sessionmaker[Session]:
     global engine
     database_url = _normalize_db_url(database_url)
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-    engine = create_engine(database_url, future=True, connect_args=connect_args)
+    engine_options: dict[str, Any] = {
+        "future": True,
+        "connect_args": connect_args,
+        "pool_pre_ping": True,
+    }
+    if os.getenv("VERCEL") and not database_url.startswith("sqlite"):
+        # Serverless instances must not each hold a private persistent pool.
+        # Use the provider's pooled Postgres URL and release connections after use.
+        engine_options["poolclass"] = NullPool
+    engine = create_engine(database_url, **engine_options)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, expire_on_commit=False)
 
 

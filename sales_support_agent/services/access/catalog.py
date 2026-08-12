@@ -130,7 +130,7 @@ TOOL_CATALOG: tuple[Tool, ...] = (
     Tool("executive.summary", "Executive Summary", "Executive", ("/admin/executive",), exact=True),
     Tool("executive.brand_analysis", "Brand Analysis", "Executive", ("/admin/executive/brand-analysis",)),
     Tool("fulfillment.rate_sheets", "Sales Pipeline", "Fulfillment", ("/admin/fulfillment/sales",)),
-    Tool("fulfillment.dashboard", "CS Action Queue", "Fulfillment", ("/admin/fulfillment/cs",), exact=True),
+    Tool("fulfillment.dashboard", "CS Action Queue", "Fulfillment", ("/admin/fulfillment/cs",)),
     Tool("fulfillment.reports", "CS Reports", "Fulfillment", ("/admin/fulfillment/cs/reports",)),
     # HR — employees/time/reports under hr.access; the sensitive money + config
     # (payroll runs, pay schedules, tax settings) gated separately by hr.payroll.

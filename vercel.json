@@ -1,0 +1,32 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "sales-support-agent": {
+      "root": ".",
+      "entrypoint": "app.py",
+      "framework": "fastapi",
+      "functions": {
+        "app.py": {
+          "maxDuration": 800,
+          "memory": 2048
+        }
+      }
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/:path*/",
+      "destination": {
+        "service": "sales-support-agent",
+        "path": "/:path*/"
+      }
+    },
+    {
+      "source": "/:path*",
+      "destination": {
+        "service": "sales-support-agent",
+        "path": "/:path*"
+      }
+    }
+  ]
+}

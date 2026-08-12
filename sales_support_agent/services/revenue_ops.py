@@ -27,7 +27,7 @@ from sales_support_agent.models.entities import (
 
 
 def _default_db_url() -> str:
-    runtime_dir = Path("runtime")
+    runtime_dir = Path("/tmp/anata-agent") if os.getenv("VERCEL") else Path("runtime")
     runtime_dir.mkdir(parents=True, exist_ok=True)
     return f"sqlite:///{runtime_dir / 'sales_support_agent.sqlite3'}"
 

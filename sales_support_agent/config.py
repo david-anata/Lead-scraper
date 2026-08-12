@@ -411,9 +411,19 @@ def status_policy_for(status: str, status_policies: dict[str, StatusPolicy]) -> 
 
 
 def _default_db_url() -> str:
-    runtime_dir = Path("runtime")
+    runtime_dir = Path("/tmp/anata-agent") if os.getenv("VERCEL") else Path("runtime")
     runtime_dir.mkdir(parents=True, exist_ok=True)
     return f"sqlite:///{runtime_dir / 'sales_support_agent.sqlite3'}"
+
+
+def _runtime_path(default_relative_path: str, environment_variable: str) -> Path:
+    """Resolve a writable compatibility-cache path for the active runtime."""
+
+    configured = os.getenv(environment_variable, "").strip()
+    if configured:
+        return Path(configured)
+    relative = Path(default_relative_path)
+    return Path("/tmp/anata-agent") / relative if os.getenv("VERCEL") else relative
 
 
 def load_settings() -> Settings:
@@ -547,18 +557,15 @@ def load_settings() -> Settings:
             or "https://api.stripe.com"
         ),
         marketing_booking_url=os.getenv("MARKETING_BOOKING_URL", "").strip(),
-        discovery_snapshot_path=Path(
-            os.getenv("CLICKUP_DISCOVERY_SNAPSHOT_PATH", "runtime/clickup_schema_snapshot.json").strip()
-            or "runtime/clickup_schema_snapshot.json"
+        discovery_snapshot_path=_runtime_path(
+            "runtime/clickup_schema_snapshot.json",
+            "CLICKUP_DISCOVERY_SNAPSHOT_PATH",
         ),
-        fulfillment_cs_reports_dir=Path(
-            os.getenv("FULFILLMENT_CS_REPORTS_DIR", "runtime/fulfillment_cs_reports").strip()
-            or "runtime/fulfillment_cs_reports"
+        fulfillment_cs_reports_dir=_runtime_path(
+            "runtime/fulfillment_cs_reports",
+            "FULFILLMENT_CS_REPORTS_DIR",
         ),
-        website_ops_root=Path(
-            os.getenv("WEBSITE_OPS_ROOT", "runtime/website_ops").strip()
-            or "runtime/website_ops"
-        ),
+        website_ops_root=_runtime_path("runtime/website_ops", "WEBSITE_OPS_ROOT"),
         website_ops_site_urls=_parse_csv_tuple(
             os.getenv(
                 "WEBSITE_OPS_URLS",
