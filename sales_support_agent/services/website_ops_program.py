@@ -457,18 +457,18 @@ def build_program_plan(
     if ga4_trust != "trusted":
         items.append(
             ProgramWorkItem(
-                title="Validate qualified-lead attribution",
-                state="Needs David",
+                title="Verify qualified-lead attribution",
+                state="Scheduled",
                 work_type="Measurement",
                 target=str(analytics_status.get("primary_lead_event", "generate_lead")),
                 evidence=f"GA4 lead-event trust is {ga4_trust or 'missing'}.",
                 business_impact="Agent cannot prioritize safely against qualified business outcomes until a real submit is reconciled.",
                 confidence="High",
                 risk="Low",
-                next_operation="Submit one real service-page lead and reconcile the event with the CRM record.",
-                start_condition="David completes one real service-page submission.",
+                next_operation="Codex checks recent real service-page submits against GA4 and matching CRM evidence; it uses a clearly tagged safe test only when production evidence is insufficient.",
+                start_condition="The next scheduled Codex SEO verification cycle.",
                 validation="One successful submit produces one GA4 event with correct landing-page attribution and one matching CRM record.",
-                needs_david=True,
+                needs_david=False,
             )
         )
 
