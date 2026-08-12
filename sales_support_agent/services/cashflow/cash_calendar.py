@@ -786,6 +786,12 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
             f"Balance confirmed by you on {balance_as_of.strftime('%b')} {balance_as_of.day}."
             if balance_as_of else "Balance is based on the saved rent facts."
         )
+        excluded_note = (
+            '<p class="metric-note">The Calendar&#39;s '
+            f"{_money(excluded_vendor)} {vendor} estimate is not added again because your "
+            f"confirmed {_money(remaining)} balance replaces it.</p>"
+            if excluded_vendor else ""
+        )
         return f"""
       <section class="cash-calendar-paydown">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Paying down</p>
@@ -799,7 +805,7 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
         <p class="cash-calendar-paydown__note"><strong>Other expenses reserved before rent:</strong>
         {_money(planned_reserved)} planned and {_money(unconfirmed)} possible,
         {_money(reserved)} total.</p>
-        {f'<p class="metric-note">The Calendar\'s {_money(excluded_vendor)} {vendor} estimate is not added again because your confirmed {_money(remaining)} balance replaces it.</p>' if excluded_vendor else ''}
+        {excluded_note}
         <p><a class="btn btn-secondary btn-sm" href="/admin/finances/collections">See who owes you</a></p>
         {savings_line}
       </section>"""
