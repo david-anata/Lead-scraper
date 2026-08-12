@@ -21,6 +21,7 @@ from sales_support_agent.integrations.stripe_billing import (
 from sales_support_agent.integrations.building_quickbooks import (
     BuildingQuickBooksClient,
     BuildingQuickBooksError,
+    building_quickbooks_invoice_url,
 )
 from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.models.database import session_scope
@@ -235,7 +236,10 @@ def _invoice_payload(row: BuildingInvoice) -> dict[str, Any]:
         "amount_paid_cents": row.amount_paid_cents,
         "currency": row.currency,
         "due_at": row.due_at.isoformat() if row.due_at else None,
-        "hosted_invoice_url": row.hosted_invoice_url,
+        "hosted_invoice_url": (
+            building_quickbooks_invoice_url(row.qbo_invoice_id)
+            if row.qbo_invoice_id else row.hosted_invoice_url
+        ),
         "qbo_invoice_id": row.qbo_invoice_id,
     }
 
@@ -935,7 +939,7 @@ def create_invoice_from_schedule(
             amount_paid_cents=0,
             currency=schedule.currency,
             due_at=due_at,
-            hosted_invoice_url=f"https://qbo.intuit.com/app/invoice?txnId={provider_id}",
+            hosted_invoice_url=building_quickbooks_invoice_url(provider_id),
             provider_payload_json={
                 **provider_invoice,
                 "agent_expected_total_cents": schedule.amount_cents,
@@ -1044,6 +1048,7 @@ def sync_quickbooks_invoice(
             "open" if str(provider.get("EmailStatus") or "").lower() == "emailsent" else "draft"
         )
         row.accounting_status = "reconciled"
+        row.hosted_invoice_url = building_quickbooks_invoice_url(row.qbo_invoice_id)
         row.provider_payload_json = {
             **provider,
             "agent_synced_at": _now().isoformat(),
