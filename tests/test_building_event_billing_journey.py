@@ -220,9 +220,11 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
     def test_04_consolidated_invoice_does_not_recalculate_frozen_tax(self) -> None:
         client = BuildingQuickBooksClient()
         captured: dict = {}
+        captured_params: dict = {}
 
         def fake_request(method, path, *, params=None, payload=None):
             captured.update(payload or {})
+            captured_params.update(params or {})
             return {"Invoice": {"Id": "QB-EVENT-1"}}
 
         with patch.object(client, "_request", side_effect=fake_request):
@@ -244,6 +246,8 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
             line["SalesItemLineDetail"]["TaxCodeRef"]["value"] == "NON"
             for line in captured["Line"]
         ))
+        self.assertLessEqual(len(captured_params["requestid"]), 50)
+        self.assertTrue(captured_params["requestid"].startswith("building-"))
 
 
 if __name__ == "__main__":

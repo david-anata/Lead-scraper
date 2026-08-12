@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+import hashlib
 from typing import Any
 
 import requests
@@ -162,10 +163,13 @@ class BuildingQuickBooksClient:
                 "DetailType": "SalesItemLineDetail",
                 "SalesItemLineDetail": detail,
             })
+        provider_request_id = "building-" + hashlib.sha256(
+            idempotency_key.encode("utf-8")
+        ).hexdigest()[:40]
         data = self._request(
             "POST",
             "invoice",
-            params={"minorversion": "70", "requestid": idempotency_key},
+            params={"minorversion": "70", "requestid": provider_request_id},
             payload={
                 "CustomerRef": {"value": customer_id},
                 "DueDate": due_date.isoformat(),
