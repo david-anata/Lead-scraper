@@ -2939,6 +2939,8 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = ''' + json.dumps(
             self.assertIn("Next", html)
             self.assertIn("Import and classify Search Console indexing exclusions", html)
             self.assertIn("Verify qualified-lead attribution", html)
+            self.assertIn("Nothing needs you.", html)
+            self.assertNotIn("<strong>Needs you:</strong> Article research", html)
             self.assertNotIn("Earn citations. Never manufacture links.", html)
             self.assertNotIn("Measure movement without claiming causation.", html)
 
