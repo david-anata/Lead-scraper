@@ -130,7 +130,7 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
             schedules = session.query(BuildingBillingSchedule).all()
             self.assertEqual(len(schedules), 1)
             amounts = {row.billing_component: row.amount_cents for row in schedules}
-            self.assertEqual(amounts, {"full_amount": 162000})
+            self.assertEqual(amounts, {"event_invoice": 162000})
             invoice = schedules[0]
             self.assertEqual(invoice.source_quote_total_cents, 112000)
             self.assertTrue(invoice.source_quote_checksum)
@@ -139,7 +139,7 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
     def test_02_quickbooks_partial_payment_satisfies_deposit_and_is_idempotent(self) -> None:
         with self.factory() as session:
             schedule = session.query(BuildingBillingSchedule).filter_by(
-                billing_component="full_amount"
+                billing_component="event_invoice"
             ).one()
             schedule.status = "approved"
             schedule_id = schedule.id

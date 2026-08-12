@@ -116,7 +116,7 @@ class BuildingQuickBooksClient:
             "deposit",
             "final_balance",
             "security_deposit",
-            "full_amount",
+            "event_invoice",
         }:
             raise BuildingQuickBooksError(
                 "This Building schedule is not an event charge and has no verified QuickBooks item."

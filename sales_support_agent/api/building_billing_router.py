@@ -523,7 +523,7 @@ def prepare_event_billing(
                 f"{final_due.isoformat()} and non-taxable unless retained or applied"
             )
         components = [(
-            "full_amount",
+            "event_invoice",
             proposal.amount_cents + security_cents,
             _now().date(),
             payment_note + ".",
@@ -805,7 +805,9 @@ def create_invoice_from_schedule(
                         "Re-draft the schedule from the current quote before invoicing."
                     ),
                 )
-            if schedule.reservation_id:
+            if schedule.reservation_id and schedule.billing_component in {
+                "deposit", "final_balance", "security_deposit", "event_invoice"
+            }:
                 agreement = session.execute(
                     select(BuildingAgreement)
                     .where(
@@ -841,7 +843,7 @@ def create_invoice_from_schedule(
         if account is None or account.status != "active":
             raise HTTPException(status_code=409, detail="Billing account is unavailable.")
         invoice_line_items: list[dict[str, Any]] | None = None
-        if schedule.billing_component == "full_amount" and schedule.source_proposal_id:
+        if schedule.billing_component == "event_invoice" and schedule.source_proposal_id:
             event_proposal = session.get(BuildingProposal, schedule.source_proposal_id)
             readiness = session.execute(
                 select(BuildingPaymentRequestReadiness)
@@ -1053,7 +1055,7 @@ def sync_quickbooks_invoice(
             if (
                 schedule is not None
                 and reservation is not None
-                and schedule.billing_component in {"deposit", "full_amount", "one_time"}
+                and schedule.billing_component in {"deposit", "event_invoice", "one_time"}
             ):
                 readiness = session.execute(
                     select(BuildingPaymentRequestReadiness)
