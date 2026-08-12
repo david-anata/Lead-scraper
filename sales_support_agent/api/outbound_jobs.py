@@ -20,11 +20,12 @@ from __future__ import annotations
 import logging
 import os
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from threading import Event, Thread
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from sales_support_agent.services.job_lease import (
     claim_scheduled_job,
@@ -89,8 +90,18 @@ def _mark_ran(engine, now: datetime) -> None:
         logger.exception("[outbound-jobs] could not record that today's run started")
 
 
-_APP_URL = "https://agent.anatainc.com"
-_BATCH_LINK = f"{_APP_URL}/admin/api/outbound/brands.csv?scanned=1&max_new=200"
+def _agent_url() -> str:
+    """Return the environment's own Agent URL, never a hard-coded production host."""
+
+    return (
+        os.getenv("SALES_SUPPORT_AGENT_URL", "").strip()
+        or os.getenv("AGENT_URL", "").strip()
+        or "https://agent.anatainc.com"
+    ).rstrip("/")
+
+
+def _batch_link() -> str:
+    return f"{_agent_url()}/admin/api/outbound/brands.csv?scanned=1&max_new=200"
 
 
 def _sendable_brands(engine) -> list[dict]:
@@ -126,7 +137,7 @@ def _email_the_batch(engine, summary: dict) -> bool:
     lines = [
         f"{len(ready)} brand(s) are ready to put into Clay.",
         "",
-        f"Download the file:  {_BATCH_LINK}",
+        f"Download the file:  {_batch_link()}",
         "",
         "What is in it:",
     ]
@@ -251,3 +262,109 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
         out["emailed"] = _email_the_batch(engine, out)
     logger.info("[outbound-jobs] morning run: %s", out)
     return out
+
+
+def _authorized_scheduler_request(
+    request: Request,
+    *,
+    internal_api_key: str | None,
+    authorization: str | None,
+) -> bool:
+    """Accept the legacy internal key or Vercel's bearer cron secret."""
+
+    configured_internal = str(
+        getattr(request.app.state.settings, "internal_api_key", "") or ""
+    ).strip()
+    configured_cron = os.getenv("CRON_SECRET", "").strip()
+    provided_internal = str(internal_api_key or "").strip()
+    provided_bearer = str(authorization or "").strip()
+    if configured_internal and secrets.compare_digest(
+        configured_internal, provided_internal
+    ):
+        return True
+    if configured_cron and provided_bearer.startswith("Bearer "):
+        return secrets.compare_digest(configured_cron, provided_bearer[7:].strip())
+    return False
+
+
+@router.post("/run")
+@router.get("/run")
+async def run_scheduled_outbound(
+    request: Request,
+    x_internal_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Run the leased Denver morning cycle from Render or Vercel Cron.
+
+    Vercel preview stays incapable of external scheduled writes until the
+    explicit cutover flag is enabled. The legacy authenticated POST contract
+    remains available to the existing Render cron during migration.
+    """
+
+    if not _authorized_scheduler_request(
+        request,
+        internal_api_key=x_internal_api_key,
+        authorization=authorization,
+    ):
+        raise HTTPException(status_code=401, detail="Valid scheduler credential required.")
+
+    is_vercel_cron = request.method == "GET"
+    if is_vercel_cron and os.getenv(
+        "VERCEL_CRON_WRITES_ENABLED", "false"
+    ).strip().lower() not in {"1", "true", "yes", "on"}:
+        return JSONResponse(
+            {
+                "status": "disabled",
+                "message": "Vercel scheduled writes remain disabled until cutover.",
+            }
+        )
+
+    local_now = datetime.now(ZoneInfo(_TZ))
+    if local_now.hour != _RUN_HOUR:
+        return JSONResponse(
+            {
+                "status": "skipped",
+                "message": "Outbound morning runs only at 7 AM America/Denver.",
+                "local_time": local_now.isoformat(),
+            }
+        )
+
+    engine = request.app.state.session_factory.kw.get("bind")
+    lease = claim_scheduled_job(
+        engine,
+        job_key="outbound-morning",
+        run_key=local_now.date().isoformat(),
+        lease_minutes=180,
+    )
+    if lease is None:
+        return JSONResponse(
+            {
+                "status": "skipped",
+                "message": "Outbound morning already ran or is currently running.",
+            }
+        )
+
+    try:
+        result = run_morning_routine(now=local_now)
+        failed = not bool(result.get("ran")) and not bool(result.get("reason"))
+        finish_scheduled_job(
+            engine,
+            lease,
+            status="failed" if failed else "succeeded",
+            details=result,
+        )
+        return JSONResponse(
+            {"status": "failed" if failed else "succeeded", "details": result},
+            status_code=500 if failed else 200,
+        )
+    except Exception as exc:
+        finish_scheduled_job(
+            engine,
+            lease,
+            status="failed",
+            details={
+                "error": str(exc)[:500],
+                "failed_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        raise

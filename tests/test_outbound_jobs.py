@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 
 from sales_support_agent.api import outbound_jobs as jobs
@@ -173,3 +176,57 @@ class MorningDigestTests(unittest.TestCase):
                          "listings": [{"title": "T", "brand_price": 10.0,
                                        "cheapest": 8.0, "sellers_unknown": 5}]}})
         self.assertEqual(jobs._sendable_brands(e)[0]["domain"], "top.com")
+
+
+class ScheduledEndpointTests(unittest.TestCase):
+    def _client(self):
+        app = FastAPI()
+        app.state.settings = SimpleNamespace(internal_api_key="internal-secret")
+        app.state.session_factory = SimpleNamespace(
+            kw={"bind": create_engine("sqlite://", future=True)}
+        )
+        app.include_router(jobs.router)
+        return TestClient(app)
+
+    def test_scheduler_rejects_missing_credentials(self):
+        response = self._client().get("/api/jobs/outbound-morning/run")
+        self.assertEqual(response.status_code, 401)
+
+    def test_vercel_cron_stays_disabled_before_cutover(self):
+        import os
+
+        previous = os.environ.get("CRON_SECRET")
+        previous_writes = os.environ.get("VERCEL_CRON_WRITES_ENABLED")
+        os.environ["CRON_SECRET"] = "vercel-secret"
+        os.environ["VERCEL_CRON_WRITES_ENABLED"] = "false"
+        try:
+            response = self._client().get(
+                "/api/jobs/outbound-morning/run",
+                headers={"Authorization": "Bearer vercel-secret"},
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("CRON_SECRET", None)
+            else:
+                os.environ["CRON_SECRET"] = previous
+            if previous_writes is None:
+                os.environ.pop("VERCEL_CRON_WRITES_ENABLED", None)
+            else:
+                os.environ["VERCEL_CRON_WRITES_ENABLED"] = previous_writes
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "disabled")
+
+    def test_staging_digest_link_uses_staging_host(self):
+        import os
+
+        previous = os.environ.get("SALES_SUPPORT_AGENT_URL")
+        os.environ["SALES_SUPPORT_AGENT_URL"] = "https://agent-staging.anatainc.com/"
+        try:
+            self.assertTrue(
+                jobs._batch_link().startswith("https://agent-staging.anatainc.com/")
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("SALES_SUPPORT_AGENT_URL", None)
+            else:
+                os.environ["SALES_SUPPORT_AGENT_URL"] = previous

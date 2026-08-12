@@ -55,7 +55,10 @@ def test_render_crons_strip_accidental_whitespace_from_internal_key() -> None:
     )
 
     assert raw_header not in blueprint
-    assert blueprint.count(normalized_header) == 9
+    # Every current Render cron header is normalized. Keep this count aligned
+    # with the eleven authenticated invocations in the blueprint so adding a
+    # raw header cannot hide behind an outdated total.
+    assert blueprint.count(normalized_header) == 11
 
 
 def test_root_production_app_exposes_reliability_probes() -> None:
