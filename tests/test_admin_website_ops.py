@@ -44,6 +44,7 @@ from sales_support_agent.services.website_ops import (
     render_feedback_detail_page,
     render_indexing_page,
     render_query_map_page,
+    reconcile_codex_publications,
     render_queue_page,
     render_report_page,
     render_site_health_page,
@@ -688,6 +689,36 @@ example
             self.assertIn("https://anatainc.com/blog/one", content)
             self.assertIn("https://anatainc.com/blog/two", content)
             self.assertIn("Sitemap pages</span><strong>3</strong>", health)
+
+    def test_codex_publications_require_complete_production_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            settings.website_ops_site_urls = ("https://anatainc.com/",)
+            article = {
+                "slug": "verified-guide",
+                "title": "Verified Guide",
+                "primaryIntent": "how to verify a guide",
+                "publishedAt": datetime.now(timezone.utc).isoformat(),
+                "content": {"eyebrow": "Shipping OS"},
+                "sources": [{"title": "Official source", "url": "https://example.org/source"}],
+            }
+            sitemap = b"<urlset><url><loc>https://anatainc.com/blog/verified-guide</loc></url></urlset>"
+            blog = b'<a href="/blog/verified-guide">Verified Guide</a>'
+            page = b'<link rel="canonical" href="https://anatainc.com/blog/verified-guide"><script type="application/ld+json">{"@type":"Article"}</script><h1>Verified Guide</h1><a href="https://example.org/source">Official source</a>'
+            with mock.patch(
+                "sales_support_agent.services.website_ops.load_generated_article_records",
+                return_value=([article], "registry-sha"),
+            ), mock.patch(
+                "sales_support_agent.services.website_ops._LIVE_SITEMAP_CACHE",
+                (0.0, ()),
+            ), mock.patch(
+                "sales_support_agent.services.website_ops.urllib.request.urlopen",
+                side_effect=[io.BytesIO(sitemap), io.BytesIO(blog), io.BytesIO(page)],
+            ):
+                records = reconcile_codex_publications(settings)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["verification_status"], "verified")
+            self.assertEqual(records[0]["commit_sha"], "registry-sha")
 
     def test_query_map_renders_evidence_ownership_and_shadow_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

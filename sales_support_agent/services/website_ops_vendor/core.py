@@ -664,7 +664,8 @@ def render_daily_report_markdown(report: Mapping[str, Any]) -> str:
         f"- Healthy pages: `{report['pages_healthy']}`",
         f"- Pages with issues: `{report['pages_with_issues']}`",
         f"- Issues found: `{report['issues_found']}`",
-        f"- Status: `{report['status']}`",
+        f"- Crawl status: `{report['status']}`",
+        f"- Program outcome: `{report.get('program_status', 'unavailable')}`",
         "",
         "## Issue Mix",
     ]
@@ -1012,7 +1013,8 @@ def render_daily_report_html(report: Mapping[str, Any]) -> str:
         <div>Date: {esc(report['date'])}</div>
         <div>Generated: {esc(report['generated_at'])}</div>
         <div>Scope: {esc(report.get('scope', 'read-only'))}</div>
-        <div>Status: {esc(report['status'])}</div>
+        <div>Crawl status: {esc(report['status'])}</div>
+        <div>Program outcome: {esc(report.get('program_status', 'unavailable'))}</div>
       </div>
     </div>
     <div class="panel">

@@ -59,6 +59,7 @@ from sales_support_agent.services.website_ops_github import (
     execute_github_article_action,
     execute_github_metadata_action,
     github_metadata_is_configured,
+    load_generated_article_records,
     load_generated_article_identities,
 )
 from sales_support_agent.services.website_ops_outcomes import FAILED_OUTCOME, classify_run_outcome
@@ -399,6 +400,111 @@ def _live_sitemap_urls(settings: Settings) -> tuple[str, ...]:
     except (OSError, ValueError, ET.ParseError):
         pass
     return cached_urls
+
+
+def reconcile_codex_publications(
+    settings: Settings,
+    *,
+    business_date: date | None = None,
+) -> list[dict[str, Any]]:
+    """Verify Codex-owned publications and project them into Website Ops truth."""
+
+    target_date = business_date or datetime.now(ZoneInfo("America/Denver")).date()
+    try:
+        articles, registry_sha = load_generated_article_records()
+    except Exception:  # noqa: BLE001 - retained Agent evidence remains the safe fallback
+        return []
+    candidates: list[dict[str, Any]] = []
+    for article in articles:
+        try:
+            published = datetime.fromisoformat(
+                str(article.get("publishedAt", "")).replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError):
+            continue
+        if published.astimezone(ZoneInfo("America/Denver")).date() == target_date:
+            candidates.append(article)
+    if not candidates:
+        return []
+    sitemap_urls = set(_live_sitemap_urls(settings))
+    try:
+        blog_request = urllib.request.Request(
+            "https://anatainc.com/blog",
+            headers={"User-Agent": "anata-website-ops/2.0"},
+        )
+        with urllib.request.urlopen(blog_request, timeout=5) as response:
+            blog_html = response.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return []
+    verified_at = datetime.now(timezone.utc).isoformat()
+    verified: list[dict[str, Any]] = []
+    for article in sorted(candidates, key=lambda item: str(item.get("publishedAt", "")))[:8]:
+        slug = str(article.get("slug", "")).strip()
+        if not slug:
+            continue
+        production_url = f"https://anatainc.com/blog/{slug}"
+        if production_url not in sitemap_urls or f'/blog/{slug}' not in blog_html:
+            continue
+        try:
+            page_request = urllib.request.Request(
+                production_url,
+                headers={"User-Agent": "anata-website-ops/2.0"},
+            )
+            with urllib.request.urlopen(page_request, timeout=5) as response:
+                status_code = int(getattr(response, "status", 200) or 200)
+                page_html = response.read().decode("utf-8", errors="ignore")
+        except OSError:
+            continue
+        sources = [dict(item) for item in article.get("sources", []) or [] if isinstance(item, Mapping)]
+        source_visible = bool(sources) and any(
+            str(source.get("url", "")) in page_html or str(source.get("title", "")) in page_html
+            for source in sources
+        )
+        canonical_present = bool(
+            re.search(
+                rf'<link[^>]+(?:rel="canonical"[^>]+href="{re.escape(production_url)}"|href="{re.escape(production_url)}"[^>]+rel="canonical")',
+                page_html,
+                re.IGNORECASE,
+            )
+        )
+        structured_data_present = (
+            'application/ld+json' in page_html
+            and ('"Article"' in page_html or '\\"Article\\"' in page_html)
+        )
+        visible_title = str(article.get("title", "")).strip()
+        if not (
+            status_code == 200
+            and visible_title
+            and visible_title in page_html
+            and source_visible
+            and canonical_present
+            and structured_data_present
+        ):
+            continue
+        content = dict(article.get("content") or {})
+        verified.append(
+            {
+                "action_type": "publish_blog_article",
+                "status": "published",
+                "verification_status": "verified",
+                "page_url": production_url,
+                "production_url": production_url,
+                "title": visible_title,
+                "service_pillar": str(content.get("eyebrow", "") or "Content"),
+                "primary_intent": str(article.get("primaryIntent", "")),
+                "published_at": str(article.get("publishedAt", "")),
+                "verified_at": verified_at,
+                "sources_present": True,
+                "blog_link_check": "passed",
+                "sitemap_check": "passed",
+                "canonical_check": "passed",
+                "structured_data_check": "passed",
+                "commit_sha": registry_sha,
+                "deployment_reference": registry_sha,
+                "owner": "codex_routine",
+            }
+        )
+    return verified
 
 
 def _report_change_fingerprint(report: Mapping[str, Any]) -> str:
@@ -1790,8 +1896,28 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         action_queue=list(enriched_report.get("action_queue") or []),
         candidate_ledger=dict(enriched_report.get("candidate_ledger") or {}),
     )
+    codex_publications = reconcile_codex_publications(settings)
+    if codex_publications:
+        existing_urls = {
+            str(item.get("production_url") or item.get("page_url") or "").strip()
+            for item in enriched_report.get("executed_actions", []) or []
+            if isinstance(item, Mapping)
+        }
+        new_publications = [
+            item
+            for item in codex_publications
+            if str(item.get("production_url", "")).strip() not in existing_urls
+        ]
+        enriched_report["executed_actions"] = list(
+            enriched_report.get("executed_actions") or []
+        ) + new_publications
+        enriched_report["changes_applied"] = len(
+            enriched_report["executed_actions"]
+        )
+        enriched_report["codex_publications"] = codex_publications
     enriched_report["operations_summary"] = _build_operations_summary(enriched_report)
     enriched_report["run_outcome"] = classify_run_outcome(enriched_report)
+    enriched_report["program_status"] = enriched_report["run_outcome"]["status"]
     artifacts = website_ops.write_daily_report_artifacts(enriched_report, output_dir=output_dir, config=config)
     enriched_report["email_delivery"] = send_website_ops_report_email(
         settings,
@@ -2906,6 +3032,16 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     run_status = _feedback_status(str(run_state.get("status", "") or "idle"))
     report_status = str(latest_payload.get("status", "") or "").lower().replace("_", "-")
     executed_actions = [dict(item) for item in latest_payload.get("executed_actions", []) or [] if isinstance(item, Mapping)]
+    live_codex_publications = reconcile_codex_publications(settings)
+    known_action_urls = {
+        str(item.get("production_url") or item.get("page_url") or "").strip()
+        for item in executed_actions
+    }
+    executed_actions.extend(
+        item
+        for item in live_codex_publications
+        if str(item.get("production_url", "")).strip() not in known_action_urls
+    )
     published_actions = [
         item for item in executed_actions
         if str(item.get("verification_status", "")).lower() in {"verified", "passed", "production-verified"}
@@ -2916,6 +3052,12 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     live_article_count = sum(1 for url in live_sitemap_urls if "/blog/" in url)
     live_articles = live_article_count or retained_article_count
     published_today = len(published_actions)
+    operations_summary = dict(latest_payload.get("operations_summary") or {})
+    active_candidate_states = dict(operations_summary.get("candidate_states") or {})
+    active_qualified_count = sum(
+        int(active_candidate_states.get(name, 0) or 0)
+        for name in ("validated", "queued", "executing", "verifying")
+    )
     if run_status in {"queued", "running"}:
         state_label, state_tone = "Working", "neutral"
         state_copy = "Today’s plan is running. The page will refresh when the next verified result is available."
@@ -2925,6 +3067,9 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     elif published_today:
         state_label, state_tone = "On track", "ok"
         state_copy = f"{published_today} verified production change{'s' if published_today != 1 else ''} completed in the latest plan."
+    elif active_qualified_count:
+        state_label, state_tone = "Needs attention", "bad"
+        state_copy = f"{active_qualified_count} qualified item{'s are' if active_qualified_count != 1 else ' is'} waiting for execution or verification."
     else:
         state_label, state_tone = "Quiet day", "neutral"
         state_copy = "No safe production change is verified in the latest plan. Duplicate or unsupported work is skipped."
@@ -2957,7 +3102,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
               <a class="btn btn--ghost" href="/admin/website-ops/reports/latest">View latest report</a>
               <details><summary class="btn btn--ghost">More</summary><form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run weekly maintenance</button></form></details>
             </div>
-            <p class="muted">One report is emailed after the workday cycle. Last result: {html.escape(str(run_state.get('finished_at') or run_state.get('updated_at') or 'time unavailable'))}.</p>
+            <p class="muted">One report is emailed after the workday cycle. Last result: {html.escape(str(run_state.get('last_completed_at') or run_state.get('finished_at') or run_state.get('updated_at') or 'time unavailable'))}.</p>
         </section>
         <section class="ops-state ops-state--{'blocked' if state_tone == 'bad' else 'ready'} today-state" aria-labelledby="today-status"><div><p class="eyebrow">Today</p><h2 id="today-status">{state_label}</h2><p>{html.escape(state_copy)}</p><div class="mobile-output" aria-label="Today’s production output">{_summary_chip("Published", published_today, tone="good" if published_today else "neutral")}{_summary_chip("To goal", max(0, 8-published_today), tone="neutral")}{_summary_chip("Live", live_articles, tone="neutral")}</div><p class="muted"><strong>Needs you:</strong> {html.escape(needs_inline)}</p></div><span class="status-pill status-{state_tone}">{state_label}</span></section>
         <section class="grid-2 today-grid">
