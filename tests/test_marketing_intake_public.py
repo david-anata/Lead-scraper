@@ -405,7 +405,7 @@ class MarketingIntakeTests(unittest.TestCase):
         with mock.patch.object(M, "_build_shelf") as build:
             resp = self.client.post(
                 f"/api/public/marketing/intake/{data['intake_id']}/needs",
-                json={"token": data["token"], "needs": ["analytics"]},
+                json={"token": data["token"], "needs": ["strategy"]},
                 headers=HEADERS,
             )
         self.assertEqual(resp.status_code, 200, resp.text)
@@ -416,6 +416,18 @@ class MarketingIntakeTests(unittest.TestCase):
             headers=HEADERS,
         ).json()
         self.assertEqual(status["shelf"], {"status": "pending"})
+
+    def test_needs_without_market_intent_does_not_schedule_shelf(self) -> None:
+        data = self._create()
+        with mock.patch.object(M, "_build_shelf") as build:
+            resp = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/needs",
+                json={"token": data["token"], "needs": ["analytics", "advertising"]},
+                headers=HEADERS,
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertFalse(resp.json()["market_scheduled"])
+        build.assert_not_called()
 
     def test_needs_on_store_intake_has_no_shelf(self) -> None:
         data = self._create(kind="store", identifier="testbrand.com")

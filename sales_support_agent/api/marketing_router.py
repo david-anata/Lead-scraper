@@ -1608,6 +1608,8 @@ async def marketing_site_intake_create(
         brand_read = _compose_brand_read(identity, kind)
         run.summary_json = {
             "token": token,
+            "correlation_id": f"mkt_{secrets.token_hex(12)}",
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "kind": kind,
             "brand_read": brand_read,
             "brand_name": identity.get("brand_name", ""),
@@ -1634,6 +1636,10 @@ async def marketing_site_intake_create(
         "rating": identity.get("rating", ""),
         "ratings_total": identity.get("ratings_total", ""),
         "brand_read": brand_read,
+        "correlation_id": str(run.summary_json.get("correlation_id", "")),
+        "created_at": str(run.summary_json.get("created_at", "")),
+        "normalized_identifier": identity.get("asin", "") or identity.get("domain", ""),
+        "accepted_analysis_types": [],
     }
     # dtc_domain: for kind=asin the deck pipeline has no brand-website field to
     # reuse and we do not scrape search engines, so it is only present for
@@ -1804,7 +1810,7 @@ def _shelf_has_complete_comparison(shelf: Any) -> bool:
     return len(keys) >= _SHELF_REQUIRED_ITEMS
 
 
-def _build_shelf(app, intake_run_id: int, asin: str) -> None:
+def _build_shelf(app, intake_run_id: int, asin: str, previous_shelf: Any = None) -> None:
     """Background digital-shelf builder for ASIN intakes.
 
     Reuses the deck pipeline's competitor collection
@@ -1815,7 +1821,14 @@ def _build_shelf(app, intake_run_id: int, asin: str) -> None:
     from sales_support_agent.services.rainforest import RainforestClient
 
     try:
-        _write_shelf(app, intake_run_id, {"status": "pending"})
+        prior = previous_shelf if isinstance(previous_shelf, dict) else {}
+        attempt = max(1, int(prior.get("attempt", 0) or 0) + 1)
+        _write_shelf(app, intake_run_id, {
+            **prior,
+            "status": "refreshing" if _shelf_has_complete_comparison(prior) else "pending",
+            "attempt": attempt,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
         client = RainforestClient()
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(
@@ -1830,11 +1843,40 @@ def _build_shelf(app, intake_run_id: int, asin: str) -> None:
         products = [p for p in xray_report.products if (p.asin or "").upper() != target]
         target_product = client._product_to_xray(target_raw, display_order=0)
         shelf = _assemble_shelf_payload(target_product, products, list(xray_report.warnings or []))
-        _write_shelf(app, intake_run_id, shelf)
+        shelf["attempt"] = attempt
+        shelf["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if _shelf_has_complete_comparison(prior) and not _shelf_has_complete_comparison(shelf):
+            _write_shelf(app, intake_run_id, {
+                **prior,
+                "refresh_error": (
+                    f"Refresh returned {int(shelf.get('comparison_count', 0) or 0)} "
+                    "distinct outside brands, so the previous complete comparison was preserved."
+                ),
+                "failure_code": "incomplete_comparison",
+                "retryable": True,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+        else:
+            _write_shelf(app, intake_run_id, shelf)
     except Exception:  # noqa: BLE001
         logger.exception("[marketing_intake] shelf build failed for run %s", intake_run_id)
         try:
-            _write_shelf(app, intake_run_id, {"status": "empty"})
+            prior = previous_shelf if isinstance(previous_shelf, dict) else {}
+            if _shelf_has_complete_comparison(prior):
+                _write_shelf(app, intake_run_id, {
+                    **prior,
+                    "refresh_error": "Market evidence refresh did not complete.",
+                    "failure_code": "provider_unreachable",
+                    "retryable": True,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
+            else:
+                _write_shelf(app, intake_run_id, {
+                    "status": "empty",
+                    "failure_code": "provider_unreachable",
+                    "retryable": True,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
         except Exception:  # noqa: BLE001
             logger.exception("[marketing_intake] shelf failure write failed for run %s", intake_run_id)
 
@@ -1862,6 +1904,7 @@ async def marketing_site_intake_needs(
     if not isinstance(raw_needs, list):
         return JSONResponse(status_code=400, content={"detail": "needs must be a list."})
     needs = [str(n).strip().lower() for n in raw_needs if str(n).strip().lower() in _KNOWN_NEEDS]
+    refresh_market = body.get("refresh_market") is True
 
     with session_scope(request.app.state.session_factory) as session:
         run, error = _load_site_intake(session, intake_id, str(body.get("token", "") or ""))
@@ -1870,12 +1913,26 @@ async def marketing_site_intake_needs(
         summary = {**(run.summary_json or {}), "needs": needs}
         kind = str(summary.get("kind", "") or "")
         asin = str(summary.get("asin", "") or "")
-        if kind == "asin" and asin and not _shelf_has_complete_comparison(summary.get("shelf")):
-            summary["shelf"] = {"status": "pending"}
-            background_tasks.add_task(_build_shelf, request.app, run.id, asin)
+        previous_shelf = summary.get("shelf")
+        market_requested = bool({"strategy", "catalog"} & set(needs))
+        market_scheduled = False
+        if kind == "asin" and asin and market_requested and (
+            refresh_market or not _shelf_has_complete_comparison(previous_shelf)
+        ):
+            summary["shelf"] = {
+                **(previous_shelf if isinstance(previous_shelf, dict) else {}),
+                "status": "refreshing" if _shelf_has_complete_comparison(previous_shelf) else "pending",
+            }
+            background_tasks.add_task(_build_shelf, request.app, run.id, asin, previous_shelf)
+            market_scheduled = True
         run.summary_json = summary
         session.add(run)
-    return JSONResponse(content={"status": "ok"})
+    return JSONResponse(content={
+        "status": "ok",
+        "persisted_analyses": needs,
+        "market_scheduled": market_scheduled,
+        "accepted_at": datetime.now(timezone.utc).isoformat(),
+    })
 
 
 @router.post("/intake/{intake_id}/unlock")
@@ -2310,9 +2367,26 @@ def marketing_site_intake_status(
         if error is not None:
             return error
         summary = run.summary_json or {}
+        shelf = summary.get("shelf") if isinstance(summary.get("shelf"), dict) else None
+        needs = [str(n) for n in (summary.get("needs") or [])]
+        market_requested = bool({"strategy", "catalog"} & set(needs))
+        shelf_status = str((shelf or {}).get("status", "") or "")
+        if run.status == "failed":
+            overall_status = "failed"
+        elif market_requested and shelf_status in {"pending", "refreshing"}:
+            overall_status = "processing"
+        elif market_requested and shelf_status in {"ready", "incomplete"}:
+            overall_status = "ready" if shelf_status == "ready" else "partially_ready"
+        elif needs:
+            overall_status = "configured"
+        else:
+            overall_status = "created"
+        updated_at = str((shelf or {}).get("updated_at", "") or summary.get("created_at", ""))
         return JSONResponse(
             content={
-                "status": run.status,
+                "status": overall_status,
+                "correlation_id": _public_intake_correlation_id(run),
+                "updated_at": updated_at,
                 "kind": str(summary.get("kind", "") or ""),
                 "dtc_domain": (
                     str(summary.get("domain", "") or "")
@@ -2326,8 +2400,18 @@ def marketing_site_intake_status(
                 "rating": str(summary.get("rating", "") or ""),
                 "ratings_total": str(summary.get("ratings_total", "") or ""),
                 "brand_read": str(summary.get("brand_read", "") or ""),
-                "needs": [str(n) for n in (summary.get("needs") or [])],
-                "shelf": summary.get("shelf") or None,
+                "needs": needs,
+                "shelf": shelf,
+                "analyses": {
+                    "market_shelf": {
+                        "status": shelf_status or ("not_required" if not market_requested else "pending"),
+                        "updated_at": updated_at,
+                        "attempt": int((shelf or {}).get("attempt", 0) or 0),
+                        "failure_code": str((shelf or {}).get("failure_code", "") or ""),
+                        "message": str((shelf or {}).get("refresh_error", "") or ""),
+                        "retryable": bool((shelf or {}).get("retryable", False)),
+                    }
+                },
                 "delivery_status": _public_intake_delivery_status(run),
             }
         )
