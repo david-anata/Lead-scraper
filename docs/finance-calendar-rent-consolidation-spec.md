@@ -296,3 +296,11 @@ owners.
 Until David classifies a possible expense, reserve 100% of it when calculating
 rent. This is intentionally conservative and supports the stated priority:
 avoid a bounced expense or rent payment while rebuilding end-of-month cash.
+
+## Production implementation record
+
+Implemented and production-verified on 11 August 2026 through PRs #414, #415,
+#416, and #418. The live reconciliation established that the Calendar's
+$39,965 Boulder Ranch historical estimate is replaced by the operator-confirmed
+$30,000 balance rather than reserved a second time. Other planned and possible
+expenses remain fully reserved before any rent recommendation.
