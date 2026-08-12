@@ -38,3 +38,13 @@ def test_every_finance_page_exposes_draft_status_review_and_discard():
         assert wording in workspace
     assert "Review &amp; save all" in shell
     assert "Discard draft" in shell
+
+
+def test_review_page_global_save_submits_instead_of_reloading_review():
+    workspace = (REPO / "sales_support_agent/static/finance-workspace.js").read_text(encoding="utf-8")
+    page = (REPO / "sales_support_agent/services/cashflow/transaction_workspace_page.py").read_text(encoding="utf-8")
+
+    assert 'data-finance-workspace-confirm' in page
+    assert 'reviewLink?.addEventListener("click"' in workspace
+    assert "confirmationForm.requestSubmit()" in workspace
+    assert 'reviewLink.href = "#finance-workspace-confirm"' in workspace

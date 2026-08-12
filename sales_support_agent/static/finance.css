@@ -2761,6 +2761,7 @@ input:focus, select:focus, textarea:focus {
 .workspace-confirm label span { display: block; color: #667386; font-size: 12px; font-weight: 500; }
 .workspace-confirm textarea { min-height: 90px; padding: 12px; border: 1px solid rgba(43,54,68,.2); border-radius: 10px; font: inherit; }
 .workspace-confirm > div { display: flex; justify-content: flex-end; gap: 10px; }
+.finance-workspace-review-ready .workspace-confirm button[type="submit"] { display: none; }
 .workspace-receipt dl { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin: 0; }
 .workspace-receipt dl div { padding: 12px; border-radius: 10px; background: #f6f8fa; }
 .workspace-receipt dt { color: #667386; font-size: 12px; }.workspace-receipt dd { margin: 4px 0 0; font-weight: 800; }

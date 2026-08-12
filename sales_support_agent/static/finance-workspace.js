@@ -16,6 +16,7 @@
   const statusMessage = document.querySelector("[data-finance-draft-message]");
   const reviewLink = document.querySelector("[data-finance-draft-review]");
   const discardButton = document.querySelector("[data-finance-draft-discard]");
+  const confirmationForm = document.querySelector("[data-finance-workspace-confirm]");
   const panel = document.querySelector("[data-finance-object-panel]");
   const panelTitle = document.querySelector("[data-finance-object-title]");
   const panelBody = document.querySelector("[data-finance-object-body]");
@@ -42,6 +43,15 @@
     status.dataset.tone = tone;
     if (reviewLink) reviewLink.hidden = !state.changes.length;
     if (discardButton) discardButton.hidden = !state.changes.length;
+  };
+
+  const prepareConfirmationAction = () => {
+    if (!confirmationForm || !reviewLink) return;
+    const count = Number(confirmationForm.dataset.financeEligibleCount || 0);
+    reviewLink.href = "#finance-workspace-confirm";
+    reviewLink.textContent = `Save all ${count} eligible change${count === 1 ? "" : "s"}`;
+    reviewLink.setAttribute("role", "button");
+    document.body.classList.add("finance-workspace-review-ready");
   };
 
   const request = async (path, options = {}) => {
@@ -146,6 +156,13 @@
       state.saveFailed = true;
       announce(`Save failed: ${error.message}`, "error");
     }
+  });
+
+  reviewLink?.addEventListener("click", event => {
+    if (!confirmationForm) return;
+    event.preventDefault();
+    if (confirmationForm.requestSubmit) confirmationForm.requestSubmit();
+    else confirmationForm.submit();
   });
 
   const openObject = async (type, id) => {
@@ -299,7 +316,12 @@
       state.changes = result.draft?.changes || [];
       state.ready = true;
       renderSavedViews(result.saved_views);
-      if (state.changes.length) announce(`${state.changes.length} recovered change${state.changes.length === 1 ? "" : "s"} saved securely`, "success");
+      if (state.changes.length) {
+        announce(confirmationForm
+          ? `${state.changes.length} changes reviewed and ready to save`
+          : `${state.changes.length} recovered change${state.changes.length === 1 ? "" : "s"} saved securely`, "success");
+        prepareConfirmationAction();
+      }
       document.dispatchEvent(new CustomEvent("finance:workspace-ready", {detail: result}));
     })
     .catch(error => announce(`Draft protection unavailable: ${error.message}`, "error"));
