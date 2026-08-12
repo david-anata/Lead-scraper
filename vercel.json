@@ -8,7 +8,8 @@
       "functions": {
         "app.py": {
           "maxDuration": 800,
-          "memory": 2048
+          "memory": 2048,
+          "regions": ["pdx1"]
         }
       }
     }
