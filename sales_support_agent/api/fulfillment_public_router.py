@@ -62,6 +62,10 @@ from sales_support_agent.services.public_request_guard import (
     read_public_json_object,
 )
 from sales_support_agent.services.public_url_guard import public_http_url
+from sales_support_agent.services.durable_tasks import (
+    enqueue_durable_task,
+    execute_durable_task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -497,14 +501,19 @@ async def rate_sheet_unlock(
         },
     )
 
-    background_tasks.add_task(
-        _finish_unlock,
-        request.app,
-        run_id=run_id,
-        email=email,
-        monthly_orders=monthly_orders,
-        origin_zip=origin_zip,
+    engine = request.app.state.session_factory.kw.get("bind")
+    task_id = enqueue_durable_task(
+        engine,
+        task_type="fulfillment_finish_unlock",
+        idempotency_key=f"fulfillment-unlock:{run_id}:{correlation_id}",
+        payload={
+            "run_id": run_id,
+            "email": email,
+            "monthly_orders": monthly_orders,
+            "origin_zip": origin_zip,
+        },
     )
+    background_tasks.add_task(execute_durable_task, request.app, task_id)
     return JSONResponse(
         status_code=202,
         content={

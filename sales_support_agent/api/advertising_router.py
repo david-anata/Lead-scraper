@@ -43,6 +43,11 @@ from sales_support_agent.services.advertising.schema import ExternalCostRow, Goa
 from sales_support_agent.services.auth_deps import get_session_user_from_request, require_tool
 from sales_support_agent.services.access.pages import render_forbidden_page
 from sales_support_agent.services.public_request_guard import durable_rate_limit_response
+from sales_support_agent.services.durable_tasks import (
+    app_task_engine,
+    enqueue_durable_task,
+    execute_durable_task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -722,6 +727,7 @@ def _decode_pending(p: dict):
 
 @router.post("/audit/run")
 async def run(
+    request: Request,
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(default=[]),
     bulk_xlsx: Optional[UploadFile] = File(default=None),
@@ -799,13 +805,27 @@ async def run(
             goals=pending_goals,
             status="running",
         )
-        background_tasks.add_task(
-            _do_run_background,
-            batch=batch, labeled=labeled, ext_channel=ext_channel, ext_label=ext_label,
-            ext_amount=ext_amount, label=label, brand=brand, client_id=client_id,
-            goals_form=goals_form, confirmed=False,
-            run_id=pending_run_id,
+        engine = app_task_engine(request.app)
+        task_id = enqueue_durable_task(
+            engine,
+            task_type="advertising_audit",
+            idempotency_key=f"advertising-audit:{pending_run_id}",
+            payload={
+                "run_id": pending_run_id,
+                "inputs": _encode_pending(
+                    batch,
+                    labeled,
+                    ext_channel,
+                    ext_label,
+                    ext_amount,
+                    label,
+                    brand,
+                    client_id,
+                    goals_form,
+                ),
+            },
         )
+        background_tasks.add_task(execute_durable_task, request.app, task_id)
         return RedirectResponse(
             f"/admin/advertising/audit?run={pending_run_id}&msg=Audit+started.+Refresh+this+page+in+a+minute+to+see+downloads.",
             status_code=303,

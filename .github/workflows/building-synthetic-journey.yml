@@ -1,0 +1,30 @@
+name: Building Synthetic Journey
+
+on:
+  schedule:
+    - cron: "30 13 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: building-synthetic-journey
+  cancel-in-progress: false
+
+jobs:
+  isolated-golden-path:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the release code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.11"
+          cache: pip
+
+      - name: Install application dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run isolated Building journey and verify cleanup
+        run: python scripts/run_building_synthetic_journey.py

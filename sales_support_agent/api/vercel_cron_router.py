@@ -45,6 +45,7 @@ from sales_support_agent.services.job_lease import (
     claim_scheduled_job,
     finish_scheduled_job,
 )
+from sales_support_agent.services.durable_tasks import drain_durable_tasks
 
 
 router = APIRouter(prefix="/api/vercel-cron", tags=["vercel-cron"])
@@ -143,6 +144,19 @@ def daily_digest_cron(
     return run_daily_digest_job(
         DailyDigestRunRequest(), request, _internal_key(request)
     )
+
+
+@router.get("/durable-tasks")
+def durable_tasks_cron(
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Repair request-owned work that did not finish in its first function."""
+
+    if response := _authorize(authorization):
+        return response
+    result = drain_durable_tasks(request.app, limit=5)
+    return {"status": "succeeded", **result}
 
 
 @router.get("/sales-operator")

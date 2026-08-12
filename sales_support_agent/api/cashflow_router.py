@@ -73,6 +73,10 @@ from sales_support_agent.services.cashflow.finance_security import (
     csrf_token as finance_csrf_token,
     require_finance_write_security,
 )
+from sales_support_agent.services.durable_tasks import (
+    enqueue_durable_task,
+    execute_durable_task,
+)
 
 
 async def _set_finance_nav_user(request: Request) -> None:
@@ -190,7 +194,6 @@ async def plaid_webhook(request: Request, background_tasks: BackgroundTasks):
         PlaidClient,
         PlaidError,
         record_webhook,
-        sync_item,
         verify_webhook,
     )
 
@@ -224,7 +227,17 @@ async def plaid_webhook(request: Request, background_tasks: BackgroundTasks):
         webhook_type == "ITEM" and webhook_code in {"LOGIN_REPAIRED", "NEW_ACCOUNTS_AVAILABLE"}
     )
     if local_item_id and should_sync:
-        background_tasks.add_task(sync_item, local_item_id, settings=settings)
+        engine = request.app.state.session_factory.kw.get("bind")
+        task_id = enqueue_durable_task(
+            engine,
+            task_type="plaid_item_sync",
+            idempotency_key=(
+                f"plaid-sync:{local_item_id}:{webhook_type}:{webhook_code}:"
+                f"{payload.get('new_transactions', '')}"
+            ),
+            payload={"local_item_id": local_item_id},
+        )
+        background_tasks.add_task(execute_durable_task, request.app, task_id)
     return JSONResponse({"status": "accepted"})
 
 

@@ -56,6 +56,14 @@
       "schedule": "5 * * * *"
     },
     {
+      "path": "/api/vercel-cron/durable-tasks",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/vercel-cron/daily-digest",
+      "schedule": "0 16 * * 1-5"
+    },
+    {
       "path": "/api/vercel-cron/building-operations",
       "schedule": "20 * * * *"
     },

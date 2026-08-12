@@ -97,6 +97,7 @@ def init_cashflow_db(db_url: str) -> None:
 
 
 def init_database(session_factory: sessionmaker[Session]) -> None:
+    from sales_support_agent.services.durable_tasks import ensure_durable_task_schema
     from sales_support_agent.services.job_lease import ensure_job_lease_schema
     from sales_support_agent.services.website_ops_storage import (
         ensure_website_ops_storage_schema,
@@ -119,6 +120,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
         _backfill_legacy_settlements(engine)
         _repair_legacy_building_event_inquiries(session_factory)
         ensure_job_lease_schema(engine)
+        ensure_durable_task_schema(engine)
         ensure_website_ops_storage_schema(engine)
         ensure_fulfillment_report_storage_schema(engine)
         return
@@ -149,6 +151,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
             _ensure_email_login_table(engine)
             _repair_legacy_building_event_inquiries(session_factory)
             ensure_job_lease_schema(engine)
+            ensure_durable_task_schema(engine)
             ensure_website_ops_storage_schema(engine)
             ensure_fulfillment_report_storage_schema(engine)
         finally:

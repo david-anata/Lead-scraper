@@ -32,6 +32,10 @@ from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import AutomationAction, AutomationRun
 from sales_support_agent.services.audit import AuditService
 from sales_support_agent.services.deck.service import DeckGenerationService
+from sales_support_agent.services.durable_tasks import (
+    enqueue_durable_task,
+    execute_durable_task,
+)
 from sales_support_agent.services.marketing_junk_guard import (
     junk_signals,
     normalize_email_identity,
@@ -692,14 +696,19 @@ async def marketing_analysis_intake(
             email=email,
         )
 
-    background_tasks.add_task(
-        _run_analysis_and_deliver,
-        request.app,
-        intake_run_id=intake_run_id,
-        asin=asin,
-        email=email,
-        source=source,
+    engine = request.app.state.session_factory.kw.get("bind")
+    task_id = enqueue_durable_task(
+        engine,
+        task_type="marketing_analysis",
+        idempotency_key=f"marketing-analysis:{intake_run_id}",
+        payload={
+            "intake_run_id": intake_run_id,
+            "asin": asin,
+            "email": email,
+            "source": source,
+        },
     )
+    background_tasks.add_task(execute_durable_task, request.app, task_id)
     return JSONResponse(status_code=202, content={"status": "building"})
 
 
@@ -776,23 +785,28 @@ async def advertising_audit_intake(
             email=email,
         )
 
-    background_tasks.add_task(
-        _run_analysis_and_deliver,
-        request.app,
-        intake_run_id=intake_run_id,
-        asin=asin,
-        email=email,
-        source=source or "anatainc.com/tools/advertising-audit",
-        trigger="marketing_site_advertising_audit",
-        needs=["advertising"],
-        qualification={
-            "company": company,
-            "storefront": f"https://www.amazon.com/dp/{asin}",
-            "challenge": "Advertising Audit requested from anatainc.com.",
-            "next_step": "Call prospect and confirm the four-report handoff.",
-            "audit_run_id": str(intake_run_id),
+    engine = request.app.state.session_factory.kw.get("bind")
+    task_id = enqueue_durable_task(
+        engine,
+        task_type="marketing_analysis",
+        idempotency_key=f"marketing-advertising-audit:{intake_run_id}",
+        payload={
+            "intake_run_id": intake_run_id,
+            "asin": asin,
+            "email": email,
+            "source": source or "anatainc.com/tools/advertising-audit",
+            "trigger": "marketing_site_advertising_audit",
+            "needs": ["advertising"],
+            "qualification": {
+                "company": company,
+                "storefront": f"https://www.amazon.com/dp/{asin}",
+                "challenge": "Advertising Audit requested from anatainc.com.",
+                "next_step": "Call prospect and confirm the four-report handoff.",
+                "audit_run_id": str(intake_run_id),
+            },
         },
     )
+    background_tasks.add_task(execute_durable_task, request.app, task_id)
     return JSONResponse(
         status_code=202,
         content={
@@ -1872,7 +1886,14 @@ async def marketing_site_intake_needs(
         asin = str(summary.get("asin", "") or "")
         if kind == "asin" and asin and not _shelf_has_complete_comparison(summary.get("shelf")):
             summary["shelf"] = {"status": "pending"}
-            background_tasks.add_task(_build_shelf, request.app, run.id, asin)
+            engine = request.app.state.session_factory.kw.get("bind")
+            task_id = enqueue_durable_task(
+                engine,
+                task_type="marketing_build_shelf",
+                idempotency_key=f"marketing-shelf:{run.id}:{asin}",
+                payload={"intake_run_id": run.id, "asin": asin},
+            )
+            background_tasks.add_task(execute_durable_task, request.app, task_id)
         run.summary_json = summary
         session.add(run)
     return JSONResponse(content={"status": "ok"})
@@ -2022,29 +2043,39 @@ async def marketing_site_intake_unlock(
     )
 
     if kind == "asin" and asin:
-        background_tasks.add_task(
-            _run_analysis_and_deliver,
-            request.app,
-            intake_run_id=run_id,
-            asin=asin,
-            email=email,
-            source=source,
-            trigger="marketing_site_intake",
-            needs=needs,
-            qualification=qualification,
+        engine = request.app.state.session_factory.kw.get("bind")
+        task_id = enqueue_durable_task(
+            engine,
+            task_type="marketing_analysis",
+            idempotency_key=f"marketing-unlock-analysis:{run_id}",
+            payload={
+                "intake_run_id": run_id,
+                "asin": asin,
+                "email": email,
+                "source": source,
+                "trigger": "marketing_site_intake",
+                "needs": needs,
+                "qualification": qualification,
+            },
         )
+        background_tasks.add_task(execute_durable_task, request.app, task_id)
     else:
-        background_tasks.add_task(
-            _deliver_store_unlock,
-            request.app,
-            intake_run_id=run_id,
-            email=email,
-            domain=domain,
-            brand_name=brand_name,
-            needs=needs,
-            source=source,
-            qualification=qualification,
+        engine = request.app.state.session_factory.kw.get("bind")
+        task_id = enqueue_durable_task(
+            engine,
+            task_type="marketing_store_unlock",
+            idempotency_key=f"marketing-store-unlock:{run_id}",
+            payload={
+                "intake_run_id": run_id,
+                "email": email,
+                "domain": domain,
+                "brand_name": brand_name,
+                "needs": needs,
+                "source": source,
+                "qualification": qualification,
+            },
         )
+        background_tasks.add_task(execute_durable_task, request.app, task_id)
 
     captured = internal_lead_sent or hubspot_recorded
     with session_scope(request.app.state.session_factory) as session:

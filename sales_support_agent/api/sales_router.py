@@ -27,6 +27,10 @@ from sales_support_agent.models.entities import (
     MailboxSignal,
 )
 from sales_support_agent.services.auth_deps import get_current_user, require_tool
+from sales_support_agent.services.durable_tasks import (
+    enqueue_durable_task,
+    execute_durable_task,
+)
 from sales_support_agent.services.hubspot_sync.trigger import (
     hubspot_sync_status,
     start_hubspot_sync,
@@ -660,14 +664,6 @@ def retry_website_intake(
 ) -> Response:
     from datetime import datetime, timezone
 
-    from sales_support_agent.api.marketing_router import (
-        _deliver_store_unlock,
-        _run_analysis_and_deliver,
-    )
-    from sales_support_agent.api.fulfillment_public_router import (
-        _finish_unlock,
-        retry_rate_sheet_handoffs,
-    )
     from sales_support_agent.models.entities import AutomationRun
 
     with session_scope(request.app.state.session_factory) as session:
@@ -728,12 +724,18 @@ def retry_website_intake(
             else [str(item) for item in (summary.get("needs") or [])]
         )
         brand_name = str(summary.get("brand_name") or "")
+        retry_queued_at = datetime.now(timezone.utc).isoformat()
         if run_type == "fulfillment_rate_sheet" and rate_status == "failed":
             run.summary_json = {
                 **summary,
                 "public_rate_sheet_status": "building",
                 "public_rate_sheet_error": "",
-                "operator_retry_queued_at": datetime.now(timezone.utc).isoformat(),
+                "operator_retry_queued_at": retry_queued_at,
+            }
+        elif run_type == "fulfillment_rate_sheet":
+            run.summary_json = {
+                **summary,
+                "operator_retry_queued_at": retry_queued_at,
             }
         elif run_type != "fulfillment_rate_sheet":
             run.status = "running"
@@ -741,49 +743,61 @@ def retry_website_intake(
             run.summary_json = {
                 **summary,
                 "error": "",
-                "operator_retry_queued_at": datetime.now(timezone.utc).isoformat(),
+                "operator_retry_queued_at": retry_queued_at,
             }
         session.add(run)
 
+    engine = request.app.state.session_factory.kw.get("bind")
     if run_type == "fulfillment_rate_sheet" and rate_status == "ready":
-        background_tasks.add_task(
-            retry_rate_sheet_handoffs,
-            request.app,
-            run_id=intake_id,
+        task_id = enqueue_durable_task(
+            engine,
+            task_type="fulfillment_retry_handoffs",
+            idempotency_key=f"operator-retry-handoffs:{intake_id}:{retry_queued_at}",
+            payload={"run_id": intake_id},
         )
     elif run_type == "fulfillment_rate_sheet":
-        background_tasks.add_task(
-            _finish_unlock,
-            request.app,
-            run_id=intake_id,
-            email=email,
-            monthly_orders=summary.get("public_unlock_monthly_orders"),
-            origin_zip=str(summary.get("public_unlock_origin_zip") or ""),
+        task_id = enqueue_durable_task(
+            engine,
+            task_type="fulfillment_finish_unlock",
+            idempotency_key=f"operator-retry-fulfillment:{intake_id}:{retry_queued_at}",
+            payload={
+                "run_id": intake_id,
+                "email": email,
+                "monthly_orders": summary.get("public_unlock_monthly_orders"),
+                "origin_zip": str(summary.get("public_unlock_origin_zip") or ""),
+            },
         )
     elif run_type == "marketing_analysis_intake" or kind == "asin":
-        background_tasks.add_task(
-            _run_analysis_and_deliver,
-            request.app,
-            intake_run_id=intake_id,
-            asin=asin,
-            email=email,
-            source=source,
-            trigger="sales_operator_retry",
-            needs=needs,
-            qualification=qualification,
+        task_id = enqueue_durable_task(
+            engine,
+            task_type="marketing_analysis",
+            idempotency_key=f"operator-retry-analysis:{intake_id}:{retry_queued_at}",
+            payload={
+                "intake_run_id": intake_id,
+                "asin": asin,
+                "email": email,
+                "source": source,
+                "trigger": "sales_operator_retry",
+                "needs": needs,
+                "qualification": qualification,
+            },
         )
     else:
-        background_tasks.add_task(
-            _deliver_store_unlock,
-            request.app,
-            intake_run_id=intake_id,
-            email=email,
-            domain=domain,
-            brand_name=brand_name,
-            needs=needs,
-            source=source,
-            qualification=qualification,
+        task_id = enqueue_durable_task(
+            engine,
+            task_type="marketing_store_unlock",
+            idempotency_key=f"operator-retry-store:{intake_id}:{retry_queued_at}",
+            payload={
+                "intake_run_id": intake_id,
+                "email": email,
+                "domain": domain,
+                "brand_name": brand_name,
+                "needs": needs,
+                "source": source,
+                "qualification": qualification,
+            },
         )
+    background_tasks.add_task(execute_durable_task, request.app, task_id)
     clear_operator_snapshot_cache()
     return RedirectResponse(url="/admin/sales", status_code=303)
 

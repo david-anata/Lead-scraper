@@ -24,6 +24,7 @@ from sales_support_agent.models.database import (
     init_database,
 )
 from sales_support_agent.services.job_lease import ensure_job_lease_schema
+from sales_support_agent.services.durable_tasks import ensure_durable_task_schema
 from sales_support_agent.services.website_ops_storage import (
     ensure_website_ops_storage_schema,
 )
@@ -68,6 +69,7 @@ def main() -> None:
     with _migration_lock(engine):
         init_database(factory)
         ensure_job_lease_schema(engine)
+        ensure_durable_task_schema(engine)
         ensure_website_ops_storage_schema(engine)
         ensure_fulfillment_report_storage_schema(engine)
         configured_owner = (
