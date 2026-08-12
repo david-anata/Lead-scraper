@@ -729,6 +729,158 @@ def _write_email_delivery(settings: Settings, payload: Mapping[str, Any]) -> Non
         handle.write(json.dumps(dict(payload), sort_keys=True, default=str) + "\n")
 
 
+def _build_website_ops_email(
+    report: Mapping[str, Any],
+    *,
+    mode: str,
+) -> tuple[str, str]:
+    """Build the owner brief around outcomes, not implementation telemetry."""
+
+    outcome = dict(report.get("run_outcome") or {})
+    outcome_status = str(outcome.get("status", "") or "").strip().lower()
+    outcome_labels = {
+        "production_verified": "Completed",
+        "work_in_progress": "In progress",
+        "evidenced_wait": "Waiting for evidence",
+        "no_qualified_opportunity": "No safe change found",
+        "failed_outcome": "Needs attention",
+    }
+    outcome_label = outcome_labels.get(
+        outcome_status,
+        str(report.get("status", "Unknown")).replace("_", " ").title(),
+    )
+    executed = [
+        dict(item)
+        for item in report.get("executed_actions", []) or []
+        if isinstance(item, Mapping)
+    ]
+    verified = [
+        item
+        for item in executed
+        if str(item.get("verification_status", "")).strip().lower()
+        in {"verified", "passed", "production-verified"}
+    ]
+    production_count = int(
+        outcome.get("production_delta_count", len(verified)) or len(verified)
+    )
+    support_requests = list(
+        dict.fromkeys(
+            str(value).strip()
+            for value in report.get("support_requests", []) or []
+            if str(value).strip()
+        )
+    )
+    if support_requests:
+        action_phrase = (
+            f"{len(support_requests)} item{'s' if len(support_requests) != 1 else ''} need you"
+        )
+    elif outcome_status == "failed_outcome":
+        action_phrase = "system follow-up underway"
+    else:
+        action_phrase = "no action needed"
+    if outcome_status == "production_verified":
+        subject_state = (
+            f"{production_count} change{'s' if production_count != 1 else ''} verified"
+        )
+    else:
+        subject_state = outcome_label.lower()
+    subject = f"Website Ops {mode}: {subject_state} - {action_phrase}"
+
+    report_date = str(report.get("date", "") or "").strip()
+    summary = str(outcome.get("summary", "") or "").strip()
+    if not summary:
+        summary = (
+            f"{production_count} production change(s) were verified."
+            if production_count
+            else "No production change was verified in this cycle."
+        )
+
+    change_lines: list[str] = []
+    for item in verified:
+        title = str(item.get("title", "") or "").strip()
+        if not title:
+            title = str(item.get("action_type", "Website update")).replace("_", " ").title()
+        url = str(item.get("production_url", "") or item.get("page_url", "")).strip()
+        change_lines.append(f"- {title}")
+        if url:
+            change_lines.append(f"  {url}")
+    if not change_lines:
+        change_lines = ["- No production change was verified in this cycle."]
+
+    pages_reviewed = int(report.get("pages_reviewed", 0) or 0)
+    pages_healthy = int(report.get("pages_healthy", 0) or 0)
+    confirmed_issues = len(report.get("issues") or [])
+    analytics = dict(report.get("analytics_status") or {})
+    search_console = "Connected" if analytics.get("search_console") is True else "Unavailable"
+    ga4 = "Connected" if analytics.get("ga4") is True else "Unavailable"
+    health_lines = [
+        (
+            f"- {pages_healthy} of {pages_reviewed} reviewed pages passed current checks."
+            if pages_reviewed
+            else "- No page-health count was available for this cycle."
+        ),
+        f"- Confirmed website problems: {confirmed_issues}",
+        f"- Search Console: {search_console}",
+        f"- GA4: {ga4}",
+    ]
+
+    operations = dict(report.get("operations_summary") or {})
+    deferred = [
+        dict(item)
+        for item in operations.get("deferred_reasons", []) or []
+        if isinstance(item, Mapping) and int(item.get("count", 0) or 0)
+    ]
+    deferred_lines = [
+        f"- {int(item.get('count', 0) or 0)}: {str(item.get('reason', '')).strip()}"
+        for item in deferred[:3]
+    ]
+    if not deferred_lines:
+        deferred_lines = ["- No additional work was deferred."]
+
+    next_operation = str(outcome.get("next_operation", "") or "").strip()
+    if not next_operation:
+        current = dict((report.get("program_plan") or {}).get("current") or {})
+        next_operation = str(current.get("next_operation", "") or "").strip()
+    if not next_operation:
+        next_operation = "Run the next scheduled evidence and production check."
+
+    todo_lines = [f"- {item}" for item in support_requests]
+    if not todo_lines:
+        todo_lines = ["- Nothing today. Website Ops and Codex own the next steps."]
+
+    text = "\n".join(
+        [
+            f"Anata Website Ops - {mode.title()} update",
+            *([report_date] if report_date else []),
+            "",
+            "BOTTOM LINE",
+            f"{outcome_label}: {summary}",
+            "",
+            "VERIFIED WEBSITE CHANGES",
+            *change_lines,
+            "",
+            "WEBSITE HEALTH",
+            *health_lines,
+            "",
+            "WHY OTHER WORK WAS LEFT ALONE",
+            *deferred_lines,
+            "",
+            "WHAT HAPPENS NEXT",
+            f"- {next_operation}",
+            "",
+            "NEEDS YOU",
+            *todo_lines,
+            "",
+            "OPEN WEBSITE OPS",
+            "https://agent.anatainc.com/admin/website-ops",
+            "",
+            "READ THE FULL REPORT",
+            "https://agent.anatainc.com/admin/website-ops/reports/latest",
+        ]
+    )
+    return subject, text
+
+
 def send_website_ops_report_email(
     settings: Settings,
     *,
@@ -776,138 +928,7 @@ def send_website_ops_report_email(
             result["reason"] = "daily_cadence"
         return result
 
-    issues = list(report.get("issues") or [])
-    executed = list(report.get("executed_actions") or [])
-    support_requests = list(
-        dict.fromkeys(
-            str(value).strip()
-            for value in report.get("support_requests", []) or []
-            if str(value).strip()
-        )
-    )
-    priority_counts = dict(report.get("issue_counts_by_priority") or {})
-    change_lines = [
-        "- "
-        + " | ".join(
-            value
-            for value in (
-                str(item.get("action_type", "")).replace("_", " ").title(),
-                str(item.get("page_url", "")).strip(),
-                str(item.get("verification_status", "")).replace("_", " ").title(),
-            )
-            if value
-        )
-        for item in executed
-    ]
-    if not change_lines:
-        change_lines = ["- No production SEO changes were applied in this cycle."]
-    todo_lines = [f"- {item}" for item in support_requests]
-    if not todo_lines:
-        todo_lines = ["- Nothing requires your attention today."]
-    program_plan = dict(report.get("program_plan") or {})
-    current_work = dict(program_plan.get("current") or {})
-    next_work = [dict(item) for item in list(program_plan.get("next") or []) if isinstance(item, Mapping)]
-    work_lines = []
-    if current_work:
-        work_lines.append(
-            "- NOW | "
-            + " | ".join(
-                value
-                for value in (
-                    str(current_work.get("title", "")).strip(),
-                    str(current_work.get("state", "")).strip(),
-                    str(current_work.get("next_operation", "")).strip(),
-                )
-                if value
-            )
-        )
-    work_lines.extend(
-        "- NEXT | "
-        + " | ".join(
-            value
-            for value in (
-                str(item.get("title", "")).strip(),
-                str(item.get("state", "")).strip(),
-            )
-            if value
-        )
-        for item in next_work[:4]
-    )
-    if not work_lines:
-        work_lines = ["- Run the daily sweep to generate the next source-backed work plan."]
-    operations = dict(report.get("operations_summary") or {})
-    content_strategy = dict(operations.get("content_strategy") or {})
-    if content_strategy.get("next_topic"):
-        work_lines.append(
-            "- CONTENT | "
-            + " | ".join(
-                value
-                for value in (
-                    str(content_strategy.get("next_topic", "")).strip(),
-                    str(content_strategy.get("next_operation", "")).strip(),
-                    (
-                        "Earliest publish "
-                        + str(content_strategy.get("earliest_publish_date", "")).strip()
-                        if content_strategy.get("earliest_publish_date")
-                        else ""
-                    ),
-                )
-                if value
-            )
-        )
-    deferred_lines = [
-        f"- {int(item.get('count', 0) or 0)} | {str(item.get('reason', '')).strip()}"
-        for item in operations.get("deferred_reasons", []) or []
-        if int(item.get("count", 0) or 0)
-    ]
-    if not deferred_lines:
-        deferred_lines = ["- No candidates were deferred in this cycle."]
-    subject = (
-        f"Website Ops {mode}: {len(executed)} changed, "
-        f"{int(operations.get('auto_ready_actions', 0) or 0)} ready, "
-        f"{len(support_requests)} for you"
-    )
-    text = "\n".join(
-        [
-            f"Anata Website Ops {mode.title()} Report",
-            "",
-            f"Status: {report.get('status', 'unknown')}",
-            f"Pages reviewed: {report.get('pages_reviewed', 0)}",
-            f"Open findings: {len(issues)}",
-            f"Automated corrections: {len(executed)}",
-            f"Candidates observed: {int(operations.get('observed_candidates', 0) or 0)}",
-            f"Candidates validated: {int(operations.get('validated_candidates', 0) or 0)}",
-            f"Actions ready to run: {int(operations.get('auto_ready_actions', 0) or 0)}",
-            f"Actions requiring review: {int(operations.get('review_required_actions', 0) or 0)}",
-            f"Content briefs: {int(content_strategy.get('total_briefs', 0) or 0)}",
-            f"Articles ready: {int(content_strategy.get('ready_to_publish', 0) or 0)}",
-            f"Article daily minimum: {int(content_strategy.get('daily_article_minimum', 8) or 8)}",
-            f"Article daily target: {int(content_strategy.get('daily_article_target', 8) or 8)}",
-            (
-                "Priority: "
-                + ", ".join(
-                    f"{key} {value}" for key, value in sorted(priority_counts.items())
-                )
-            ),
-            "",
-            "Changes completed:",
-            *change_lines,
-            "",
-            "Why other work did not run:",
-            *deferred_lines,
-            "",
-            "Your to-do list:",
-            *todo_lines,
-            "",
-            "What Agent is working on next:",
-            *work_lines,
-            "",
-            "Review the evidence and full report:",
-            "https://agent.anatainc.com/admin/website-ops/reports/latest",
-            "Content strategy:",
-            "https://agent.anatainc.com/admin/website-ops/strategy",
-        ]
-    )
+    subject, text = _build_website_ops_email(report, mode=mode)
     result["attempted"] = True
     try:
         message_id = resend.send_message(

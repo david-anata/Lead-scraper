@@ -830,10 +830,84 @@ example
             self.assertEqual(second["reason"], "unchanged")
             self.assertEqual(send.call_count, 1)
             sent_text = send.call_args_list[0].kwargs["text"]
-            self.assertIn("Changes completed:", sent_text)
-            self.assertIn("Your to-do list:", sent_text)
-            self.assertIn("What Agent is working on next:", sent_text)
-            self.assertIn("Nothing requires your attention today.", sent_text)
+            self.assertIn("BOTTOM LINE", sent_text)
+            self.assertIn("VERIFIED WEBSITE CHANGES", sent_text)
+            self.assertIn("WEBSITE HEALTH", sent_text)
+            self.assertIn("WHAT HAPPENS NEXT", sent_text)
+            self.assertIn("NEEDS YOU", sent_text)
+            self.assertIn("Nothing today. Website Ops and Codex own the next steps.", sent_text)
+            self.assertIn("https://agent.anatainc.com/admin/website-ops", sent_text)
+            self.assertIn(
+                "https://agent.anatainc.com/admin/website-ops/reports/latest",
+                sent_text,
+            )
+            self.assertNotIn("/admin/website-ops/strategy", sent_text)
+
+    def test_daily_email_leads_with_verified_outcome_and_plain_language(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                website_ops_root=Path(tmpdir),
+                website_ops_report_email_to=("david@anatainc.com",),
+                website_ops_email_from="Anata Agent <noreply@anatainc.com>",
+                resend_api_key="test-key",
+                resend_from="Anata Agent <noreply@anatainc.com>",
+            )
+            report = self._fake_report()
+            report.update(
+                {
+                    "date": "2026-08-12",
+                    "pages_reviewed": 122,
+                    "pages_healthy": 122,
+                    "analytics_status": {"search_console": True, "ga4": True},
+                    "run_outcome": {
+                        "status": "production_verified",
+                        "summary": "1 production change was independently verified.",
+                        "production_delta_count": 1,
+                        "next_operation": "Measure indexing and qualified-lead evidence.",
+                    },
+                    "executed_actions": [
+                        {
+                            "action_type": "publish_blog_article",
+                            "title": "How to Validate GA4 Ecommerce Events",
+                            "production_url": "https://anatainc.com/blog/validate-ga4-ecommerce-events",
+                            "verification_status": "verified",
+                        }
+                    ],
+                    "operations_summary": {
+                        "deferred_reasons": [
+                            {
+                                "count": 19,
+                                "reason": "URL inspections timed out and will retry.",
+                            }
+                        ]
+                    },
+                }
+            )
+            with mock.patch(
+                "sales_support_agent.services.website_ops.ResendClient.send_message",
+                return_value="email-1",
+            ) as send:
+                result = send_website_ops_report_email(
+                    settings, mode="daily", report=report
+                )
+
+            self.assertTrue(result["sent"])
+            sent = send.call_args.kwargs
+            self.assertEqual(
+                sent["subject"],
+                "Website Ops daily: 1 change verified - no action needed",
+            )
+            self.assertIn(
+                "Completed: 1 production change was independently verified.",
+                sent["text"],
+            )
+            self.assertIn("122 of 122 reviewed pages passed", sent["text"])
+            self.assertIn("Search Console: Connected", sent["text"])
+            self.assertIn("GA4: Connected", sent["text"])
+            self.assertIn("How to Validate GA4 Ecommerce Events", sent["text"])
+            self.assertIn("19: URL inspections timed out and will retry.", sent["text"])
+            self.assertNotIn("Candidates observed", sent["text"])
+            self.assertNotIn("Content briefs", sent["text"])
 
     def test_daily_email_ignores_volatile_report_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
