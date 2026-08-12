@@ -39,7 +39,12 @@ REVENUE_OPS_DB_URL = (
 )
 
 SESSION_FACTORY = create_session_factory(REVENUE_OPS_DB_URL)
-init_database(SESSION_FACTORY)
+if not os.getenv("VERCEL"):
+    # Traditional hosts and local development keep the legacy convenience
+    # initializer. Vercel schema preparation is an explicit deployment step;
+    # running DDL during a serverless cold start exceeds the invocation boot
+    # window and can make otherwise healthy pages return 500.
+    init_database(SESSION_FACTORY)
 
 
 def generate_run_id() -> str:

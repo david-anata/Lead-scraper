@@ -12,9 +12,13 @@ from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
-from sqlalchemy.pool import NullPool
 
 logger = logging.getLogger(__name__)
+
+# All application instances share this Postgres advisory lock while applying
+# additive compatibility migrations.  Serverless platforms can cold-start
+# several instances at once; serializing schema work prevents DDL deadlocks.
+_SCHEMA_MIGRATION_LOCK_ID = 6_381_102_026
 
 
 class Base(DeclarativeBase):
@@ -68,9 +72,16 @@ def create_session_factory(database_url: str) -> sessionmaker[Session]:
         "pool_pre_ping": True,
     }
     if os.getenv("VERCEL") and not database_url.startswith("sqlite"):
-        # Serverless instances must not each hold a private persistent pool.
-        # Use the provider's pooled Postgres URL and release connections after use.
-        engine_options["poolclass"] = NullPool
+        # Neon supplies a transaction-pooled URL. Keep a very small local pool
+        # per warm function so information-dense pages do not establish a new
+        # TLS connection for every query, while still bounding total serverless
+        # connection use.
+        engine_options.update(
+            pool_size=1,
+            max_overflow=2,
+            pool_recycle=300,
+            pool_timeout=15,
+        )
     engine = create_engine(database_url, **engine_options)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, expire_on_commit=False)
 
@@ -108,30 +119,38 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
         ensure_website_ops_storage_schema(engine)
         return
 
-    # Production deployments use a persistent Postgres database. Running
-    # `create_all` on every boot slows startup enough to interfere with
-    # Render's promotion health checks. We only bootstrap a fresh Postgres
-    # database when no tables exist yet, then rely on additive compat
-    # migrations for subsequent boots.
-    with engine.connect() as connection:
-        connection.execute(text("SELECT 1"))
-    inspector = inspect(engine)
-    if not inspector.get_table_names():
-        Base.metadata.create_all(bind=engine)
-    _apply_postgres_compat_migrations(engine)
-    _ensure_building_tables(engine)
-    _ensure_building_columns(engine)
-    _ensure_finance_settlement_tables(engine)
-    _ensure_plaid_environment_column(engine)
-    ensure_finance_trust_schema(engine)
-    _backfill_legacy_settlements(engine)
-    _ensure_hr_tables(engine)
-    _ensure_content_tables(engine)
-    _ensure_hr_columns(engine)
-    _ensure_email_login_table(engine)
-    _repair_legacy_building_event_inquiries(session_factory)
-    ensure_job_lease_schema(engine)
-    ensure_website_ops_storage_schema(engine)
+    # Production deployments use a persistent Postgres database. Serverless
+    # cold starts can overlap, so acquire one database-scoped advisory lock
+    # before inspecting or changing the schema. Every initializer uses this
+    # function, including the legacy revenue-ops import path.
+    with engine.connect() as lock_connection:
+        lock_connection.execute(
+            text("SELECT pg_advisory_lock(:lock_id)"),
+            {"lock_id": _SCHEMA_MIGRATION_LOCK_ID},
+        )
+        try:
+            inspector = inspect(engine)
+            if not inspector.get_table_names():
+                Base.metadata.create_all(bind=engine)
+            _apply_postgres_compat_migrations(engine)
+            _ensure_building_tables(engine)
+            _ensure_building_columns(engine)
+            _ensure_finance_settlement_tables(engine)
+            _ensure_plaid_environment_column(engine)
+            ensure_finance_trust_schema(engine)
+            _backfill_legacy_settlements(engine)
+            _ensure_hr_tables(engine)
+            _ensure_content_tables(engine)
+            _ensure_hr_columns(engine)
+            _ensure_email_login_table(engine)
+            _repair_legacy_building_event_inquiries(session_factory)
+            ensure_job_lease_schema(engine)
+            ensure_website_ops_storage_schema(engine)
+        finally:
+            lock_connection.execute(
+                text("SELECT pg_advisory_unlock(:lock_id)"),
+                {"lock_id": _SCHEMA_MIGRATION_LOCK_ID},
+            )
 
 
 def _ensure_content_tables(engine: Any) -> None:
