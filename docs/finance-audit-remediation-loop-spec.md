@@ -176,3 +176,22 @@ page can silently abandon a draft. Any material failure becomes the next loop
 before this work is complete. Payroll/one-time/recurring decisions, merchant
 normalization, and cross-surface impact preview remain required scope if the
 live review does not expose a safer consolidation path.
+
+### Findings and correction
+
+- Production commit `9e4f867` passed its readiness check.
+- Calendar no longer counts the $39,965 estimate. It shows $30,000 remaining,
+  not scheduled, and reserves $4,112 planned plus $18,773 possible first.
+- Today now shows both the 14-day likely balance ($36,739.62) and the materially
+  different month-end likely balance (-$28,890.29), making the horizon risk
+  explicit.
+- Budget shows $10,075.16 posted plus $30,000 remaining rent and no longer
+  projects the old $26,027 value.
+- The 660px Budget view and 390px Today, Cash plan, Calendar, and Budget views
+  have no page-level overflow or competing fixed save controls.
+- A real recovered five-change draft correctly stopped an attempted navigation;
+  it was preserved and not discarded during QA.
+- The posted transaction drawer exposes the cleanup controls and correctly says
+  an unmatched bank withdrawal is still verified. Visual review found the
+  posted date rendered as a raw ISO timestamp, so loop 2 reformats it as a plain
+  business date.
