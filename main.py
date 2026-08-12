@@ -4482,24 +4482,50 @@ def admin_outbound_brands_csv(request: Request, max_new: int = 100) -> Response:
 
     import outbound_pipeline as _op
 
-    api_key, _clay_webhook = _op.load_config_from_env()
-    if not api_key:
-        return JSONResponse(status_code=400, content={"detail": "STORELEADS_API_KEY is not set on the server."})
+    limit = max(1, min(int(max_new or 100), 500))
 
-    processed = load_processed_domains()
+    # Export what the morning job already sourced AND enriched, not a fresh pull.
+    #
+    # run_storeleads_to_clay takes amazon_check as an OPTIONAL argument and this
+    # route never passed one, so every export was a brand-new StoreLeads pull the
+    # Amazon check had never seen. All 218 brands exported before 2026-08-12 reached
+    # Clay with empty amz_* columns and were gated out on arrival. The check was
+    # running the whole time; its results go to the lead store, which nothing read.
+    #
+    # Re-running the check here instead would be worse: it is minutes per brand and
+    # would hang the request. The morning job already paces it. load_leads flattens
+    # the stored facts back onto each lead exactly where leads_to_csv expects them.
+    leads: list = []
     try:
-        result = _op.run_storeleads_to_clay(
-            api_key=api_key,
-            clay_webhook_url="",  # CSV mode: always dry-run, never push
-            processed_domains=processed,
-            max_new=max(1, min(int(max_new or 100), 500)),
-            dry_run=True,
-        )
-    except Exception as exc:  # noqa: BLE001 — surface a clean error to the operator
-        logger.exception("[outbound] StoreLeads CSV build failed")
-        return JSONResponse(status_code=502, content={"detail": f"StoreLeads fetch failed: {exc}"})
+        from sales_support_agent.models.database import get_engine
+        from sales_support_agent.services import outbound_memory as _mem
 
-    csv_text = _op.leads_to_csv(result.leads)
+        leads = _mem.load_leads(get_engine(), limit=limit)
+    except Exception:  # noqa: BLE001 — an unreachable store falls back to a live pull
+        logger.exception("[outbound] could not read stored leads; falling back to a live pull")
+
+    if not leads:
+        # Cold start only: nothing sourced yet, so go and find some. These carry no
+        # Amazon findings until the morning job reaches them.
+        api_key, _clay_webhook = _op.load_config_from_env()
+        if not api_key:
+            return JSONResponse(status_code=400, content={"detail": "STORELEADS_API_KEY is not set on the server."})
+
+        processed = load_processed_domains()
+        try:
+            result = _op.run_storeleads_to_clay(
+                api_key=api_key,
+                clay_webhook_url="",  # CSV mode: always dry-run, never push
+                processed_domains=processed,
+                max_new=limit,
+                dry_run=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — surface a clean error to the operator
+            logger.exception("[outbound] StoreLeads CSV build failed")
+            return JSONResponse(status_code=502, content={"detail": f"StoreLeads fetch failed: {exc}"})
+        leads = result.leads
+
+    csv_text = _op.leads_to_csv(leads)
     return Response(
         content=csv_text,
         media_type="text/csv",
