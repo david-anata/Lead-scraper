@@ -10,12 +10,14 @@ from datetime import date, datetime, timezone
 from itertools import combinations
 import json
 from typing import Any
+from weakref import WeakSet
 
 from sqlalchemy import inspect, text
 
 from sales_support_agent.models.database import get_engine, upsert_cash_event
 
 ACTIVE_STATUSES = frozenset({"draft", "processing", "partial", "completed"})
+_HR_SCHEMA_READY: WeakSet[Any] = WeakSet()
 
 
 def _external_run_id(row: dict[str, Any]) -> str:
@@ -53,8 +55,10 @@ def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
     # Finance can be used against an older or narrowly initialized database
     # during restore/cutover checks. HR payroll is an additive source; its
     # absence must not break bank imports or other Finance reads.
-    if not inspect(engine).has_table("hr_payroll_runs"):
-        return {"synced": 0, "archived": 0}
+    if engine not in _HR_SCHEMA_READY:
+        if not inspect(engine).has_table("hr_payroll_runs"):
+            return {"synced": 0, "archived": 0}
+        _HR_SCHEMA_READY.add(engine)
     with engine.connect() as connection:
         runs = [dict(row._mapping) for row in connection.execute(text("""
             SELECT id, base44_id, pay_period_start, pay_period_end, pay_date,

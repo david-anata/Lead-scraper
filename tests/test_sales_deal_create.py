@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from sales_support_agent.integrations.hubspot import HubSpotClient  # noqa: E402
 from sales_support_agent.main import app  # noqa: E402
-from sales_support_agent.models.database import session_scope  # noqa: E402
+from sales_support_agent.models.database import create_session_factory, init_database, session_scope  # noqa: E402
 from sales_support_agent.models.entities import HubSpotDeal, HubSpotDealContact, SalesDealAsset  # noqa: E402
 from sales_support_agent.services.admin_auth import create_user_session_token  # noqa: E402
 from sales_support_agent.services.fulfillment_deck import storage as fulfillment_storage  # noqa: E402
@@ -68,9 +68,25 @@ def _fake_options() -> DealCreateOptions:
 class SalesDealCreateRouteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        cls._original_factory = app.state.session_factory
+        cls._database_path = os.path.join(
+            tempfile.gettempdir(),
+            "sales_deal_create_test.db",
+        )
+        cls._factory = create_session_factory("sqlite:///" + cls._database_path)
+        init_database(cls._factory)
+        app.state.session_factory = cls._factory
         cls.client = TestClient(app)
         cookie_name, token = _cookie_for("david@anatainc.com", "David")
         cls.client.cookies.set(cookie_name, token)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.client.close()
+        app.state.session_factory = cls._original_factory
+        cls._factory.kw["bind"].dispose()
+        if os.path.exists(cls._database_path):
+            os.remove(cls._database_path)
 
     def setUp(self) -> None:
         self.settings = app.state.agent_settings

@@ -32,6 +32,7 @@ def test_digest_is_aggregate_and_sent_once_per_recipient():
 
     with (
         mock.patch.object(notifications, "get_engine", return_value=engine),
+        mock.patch.object(notifications, "ensure_annual_compliance_tasks"),
         mock.patch.object(
             notifications, "_recipients", return_value=["david@anatainc.com"]
         ),
@@ -66,6 +67,7 @@ def test_dry_run_never_sends_or_writes_dedupe_event():
 
     with (
         mock.patch.object(notifications, "get_engine", return_value=engine),
+        mock.patch.object(notifications, "ensure_annual_compliance_tasks"),
         mock.patch.object(notifications, "_send") as send,
     ):
         result = notifications.run_daily_digest(
@@ -111,7 +113,10 @@ def test_reminder_counts_only_active_employees_missing_current_handbook():
         ))
         session.commit()
 
-    with mock.patch.object(notifications, "get_engine", return_value=engine):
+    with (
+        mock.patch.object(notifications, "get_engine", return_value=engine),
+        mock.patch.object(notifications, "ensure_annual_compliance_tasks"),
+    ):
         items = notifications.reminder_items(date(2026, 7, 23))
 
     handbook_item = next(

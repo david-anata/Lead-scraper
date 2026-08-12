@@ -41,28 +41,43 @@ _EXPECTED_TABLES = {
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
 class HRSchemaTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.database_path = os.path.join(
+            tempfile.gettempdir(), f"hr_schema_{uuid.uuid4().hex}.db"
+        )
+        cls.factory = db.create_session_factory("sqlite:///" + cls.database_path)
+        db.init_database(cls.factory)
+        cls.engine = cls.factory.kw["bind"]
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.engine.dispose()
+        if os.path.exists(cls.database_path):
+            os.remove(cls.database_path)
+
     def test_all_hr_tables_created(self) -> None:
-        names = set(inspect(db.get_engine()).get_table_names())
+        names = set(inspect(self.engine).get_table_names())
         self.assertTrue(_EXPECTED_TABLES.issubset(names),
                         f"missing HR tables: {_EXPECTED_TABLES - names}")
         self.assertIn("app_email_login_tokens", names)
         liability_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns("hr_tax_liabilities")
+            row["name"] for row in inspect(self.engine).get_columns("hr_tax_liabilities")
         }
         self.assertIn("confirmed_amount_cents", liability_columns)
         self.assertIn("filing_confirmation_number", liability_columns)
         time_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns("hr_time_entries")
+            row["name"] for row in inspect(self.engine).get_columns("hr_time_entries")
         }
         self.assertIn("elapsed_seconds", time_columns)
         input_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns("hr_payroll_inputs")
+            row["name"] for row in inspect(self.engine).get_columns("hr_payroll_inputs")
         }
         self.assertTrue({
             "source_reference", "recurring", "recurrence_key"
         }.issubset(input_columns))
         contractor_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns(
+            row["name"] for row in inspect(self.engine).get_columns(
                 "hr_contractor_profiles"
             )
         }
@@ -72,7 +87,7 @@ class HRSchemaTests(unittest.TestCase):
             "status",
         }.issubset(contractor_columns))
         offboarding_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns(
+            row["name"] for row in inspect(self.engine).get_columns(
                 "hr_offboarding_checklists"
             )
         }
@@ -80,13 +95,13 @@ class HRSchemaTests(unittest.TestCase):
             "final_pay_reference", "final_pay_evidence_note"
         }.issubset(offboarding_columns))
         company_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns(
+            row["name"] for row in inspect(self.engine).get_columns(
                 "hr_company_profiles"
             )
         }
         self.assertIn("final_approver_email", company_columns)
         check_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns(
+            row["name"] for row in inspect(self.engine).get_columns(
                 "hr_printed_checks"
             )
         }

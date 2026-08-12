@@ -55,17 +55,6 @@ from sales_support_agent.services.fulfillment_dashboard import (
     render_fulfillment_report_detail_page,
     render_fulfillment_reports_page,
 )
-from sales_support_agent.services.fulfillment_dashboard import (
-    fulfillment_report_entries,
-    latest_fulfillment_report_entry,
-    load_fulfillment_report_artifact,
-    load_fulfillment_report_by_slug,
-    load_latest_fulfillment_report,
-    render_fulfillment_dashboard_page,
-    render_fulfillment_not_found_page,
-    render_fulfillment_report_detail_page,
-    render_fulfillment_reports_page,
-)
 from sales_support_agent.services.website_ops import (
     get_website_ops_run_state,
     latest_report_entry as latest_website_ops_report_entry,
@@ -3142,11 +3131,11 @@ def build_csv_rows(
             "[ApolloPipeline] domain=%s people_search_candidates=%s enrichment_matches=%s "
             "candidates_with_any_email=%s candidates_with_brand_domain_email=%s "
             "final_contacts_selected=%s",
-            apollo_debug_stats["domain"],
-            apollo_debug_stats["people_search_candidates"],
-            apollo_debug_stats["enrichment_matches"],
-            apollo_debug_stats["candidates_with_any_email"],
-            apollo_debug_stats["candidates_with_brand_domain_email"],
+            apollo_debug_stats.get("domain", domain),
+            apollo_debug_stats.get("people_search_candidates", len(contacts)),
+            apollo_debug_stats.get("enrichment_matches", 0),
+            apollo_debug_stats.get("candidates_with_any_email", len(contacts)),
+            apollo_debug_stats.get("candidates_with_brand_domain_email", accepted_for_domain),
             accepted_for_domain,
         )
 

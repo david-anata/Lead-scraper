@@ -42,9 +42,21 @@ _BOX = {"length_in": 10, "width_in": 8, "height_in": 6, "weight_lb": 3, "dest_zi
 class ParcelQuoteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        factory = create_session_factory(os.environ["SALES_AGENT_DB_URL"])
-        init_database(factory)
+        cls._original_factory = app.state.session_factory
+        cls._factory = create_session_factory(os.environ["SALES_AGENT_DB_URL"])
+        init_database(cls._factory)
+        app.state.session_factory = cls._factory
+        cls._settings = app.state.agent_settings
+        cls._original_intake_key = cls._settings.marketing_site_intake_key
+        object.__setattr__(cls._settings, "marketing_site_intake_key", "test-intake-key")
         cls.client = TestClient(app)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.client.close()
+        app.state.session_factory = cls._original_factory
+        object.__setattr__(cls._settings, "marketing_site_intake_key", cls._original_intake_key)
+        cls._factory.kw["bind"].dispose()
 
     def _post(self, body, headers=_HEADERS):
         return self.client.post("/api/public/fulfillment/parcel-quote", json=body, headers=headers)

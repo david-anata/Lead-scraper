@@ -989,6 +989,11 @@ class DeckRoutingTests(unittest.TestCase):
         tmp.close()
         self.addCleanup(lambda: os.unlink(tmp.name))
         session_factory = create_session_factory(f"sqlite:///{tmp.name}")
+        engine = session_factory.kw["bind"]
+        # unittest cleanups run LIFO: close the TestClient first, dispose every
+        # pooled SQLite handle second, then remove the file. Without disposal,
+        # Windows correctly refuses to unlink a database still held open.
+        self.addCleanup(engine.dispose)
         init_database(session_factory)
 
         settings = _build_settings()
@@ -1006,7 +1011,9 @@ class DeckRoutingTests(unittest.TestCase):
         app.state.admin_dashboard_settings = settings
         app.state.session_factory = session_factory
         app.include_router(deck_router)
-        return TestClient(app, raise_server_exceptions=False), session_factory
+        client = TestClient(app, raise_server_exceptions=False)
+        self.addCleanup(client.close)
+        return client, session_factory
 
     def _seed_deck(self, session_factory) -> tuple[int, str, str]:
         """Run the service end-to-end once and return (run_id, token, slug)."""

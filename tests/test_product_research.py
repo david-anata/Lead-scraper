@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -42,8 +41,10 @@ class ProductResearchTests(unittest.TestCase):
         </html>
         """
 
-        fake_response = SimpleNamespace(text=html, content=html.encode("utf-8"), raise_for_status=lambda: None)
-        with mock.patch("sales_support_agent.services.product_research.requests.get", return_value=fake_response):
+        with mock.patch(
+            "sales_support_agent.services.product_research._amazon_session_get",
+            return_value=(html, []),
+        ):
             payload = _fetch_amazon_page_data("https://www.amazon.com/dp/B0TEST123")
 
         self.assertEqual(payload["title"], "Golf Hydration Lemon Lime Electrolyte Powder")

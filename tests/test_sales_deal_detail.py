@@ -22,7 +22,7 @@ os.environ.setdefault(
 from fastapi.testclient import TestClient  # noqa: E402
 
 from sales_support_agent.main import app  # noqa: E402
-from sales_support_agent.models.database import session_scope  # noqa: E402
+from sales_support_agent.models.database import create_session_factory, init_database, session_scope  # noqa: E402
 from sales_support_agent.models.entities import (  # noqa: E402
     AutomationRun,
     DeckVisitSession,
@@ -44,10 +44,23 @@ def _cookie_for(email: str, name: str = "User", role: str = "member"):
 class SalesDealDetailTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        cls._original_factory = app.state.session_factory
+        cls._database_path = os.path.join(tempfile.gettempdir(), "sales_deal_detail_test.db")
+        cls._factory = create_session_factory("sqlite:///" + cls._database_path)
+        init_database(cls._factory)
+        app.state.session_factory = cls._factory
         cls.client = TestClient(app)
         cookie_name, token = _cookie_for("david@anatainc.com", "David")  # seeded superadmin
         cls.client.cookies.set(cookie_name, token)
         cls._seed()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.client.close()
+        app.state.session_factory = cls._original_factory
+        cls._factory.kw["bind"].dispose()
+        if os.path.exists(cls._database_path):
+            os.remove(cls._database_path)
 
     def setUp(self) -> None:
         # Per test, not per class: app.state.settings is a shared global that
