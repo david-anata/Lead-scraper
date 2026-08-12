@@ -26,6 +26,13 @@
   const saveViewButton = document.querySelector("[data-finance-save-view]");
   const hasBudgetEditor = Boolean(document.querySelector("[data-trim-batch-form]"));
   const esc = value => String(value ?? "").replace(/[&<>'"]/g, character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"})[character]);
+  const financeDate = value => {
+    const raw = String(value || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return "Unavailable";
+    const [year, month, day] = raw.split("-").map(Number);
+    return new Intl.DateTimeFormat("en-US", {month: "short", day: "numeric", year: "numeric"})
+      .format(new Date(year, month - 1, day));
+  };
 
   const announce = (message, tone = "neutral") => {
     if (!status) return;
@@ -156,8 +163,8 @@
       const activity = (item.activity || []).map(event => `<li><strong>${esc(String(event.action_type || "").replaceAll("_", " "))}</strong><span>${esc(event.actor)} · ${esc(event.created_at)}</span></li>`).join("");
       const isPostedTransaction = item.record_kind === "transaction";
       const dateFacts = isPostedTransaction
-        ? `<div><dt>Posted date</dt><dd>${esc(item.effective_date || item.due_date || "Unavailable")}</dd></div>`
-        : `<div><dt>Due date</dt><dd>${esc(item.due_date || item.effective_date || "Not scheduled")}</dd></div>`;
+        ? `<div><dt>Posted date</dt><dd>${esc(financeDate(item.effective_date || item.due_date))}</dd></div>`
+        : `<div><dt>Due date</dt><dd>${esc(financeDate(item.due_date || item.effective_date) || "Not scheduled")}</dd></div>`;
       const cleanup = isPostedTransaction && !item.protected ? `<section class="finance-object-cleanup"><h3>Clean up this transaction</h3>
         <p>Choose any answers you know. They stay in one protected draft until you review and save everything together.</p>
         <div class="finance-object-actions" role="group" aria-label="Transaction cleanup actions">
