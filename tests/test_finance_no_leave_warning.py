@@ -19,6 +19,7 @@ def test_shared_workspace_warns_only_for_changes_not_confirmed_safe():
     assert "state.saving" in workspace
     assert "state.saveFailed" in workspace
     assert "state.unprotected = false" in workspace
+    assert "state.changes.length &&" not in workspace
 
 
 def test_the_draft_recovery_notice_is_still_there():
@@ -33,7 +34,7 @@ def test_every_finance_page_exposes_draft_status_review_and_discard():
     shell = (REPO / "sales_support_agent/services/cashflow/cashflow_helpers.py").read_text(encoding="utf-8")
     workspace = (REPO / "sales_support_agent/static/finance-workspace.js").read_text(encoding="utf-8")
 
-    for wording in ("Draft protected", "Saving", "Save failed"):
+    for wording in ("saved securely", "Saving", "Save failed"):
         assert wording in workspace
-    assert "Review and save" in shell
+    assert "Review &amp; save all" in shell
     assert "Discard draft" in shell
