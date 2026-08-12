@@ -27,6 +27,9 @@ from sales_support_agent.services.job_lease import ensure_job_lease_schema
 from sales_support_agent.services.website_ops_storage import (
     ensure_website_ops_storage_schema,
 )
+from sales_support_agent.services.fulfillment_report_storage import (
+    ensure_fulfillment_report_storage_schema,
+)
 
 
 logger = logging.getLogger("agent.predeploy")
@@ -66,6 +69,7 @@ def main() -> None:
         init_database(factory)
         ensure_job_lease_schema(engine)
         ensure_website_ops_storage_schema(engine)
+        ensure_fulfillment_report_storage_schema(engine)
         configured_owner = (
             settings.building_default_lead_owner
             or (

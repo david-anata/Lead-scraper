@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
+from starlette.middleware.base import BaseHTTPMiddleware
 
 
 _MAX_REPORT_BYTES = 25 * 1024 * 1024
@@ -96,3 +97,24 @@ def synchronize_fulfillment_reports(engine: Any, root: Path) -> dict[str, int]:
     if normalized.startswith("/var/data/"):
         return snapshot_fulfillment_reports(engine, root)
     return restore_fulfillment_reports(engine, root)
+
+
+class FulfillmentReportStorageMiddleware(BaseHTTPMiddleware):
+    """Hydrate Vercel's report cache only when a CS report route needs it."""
+
+    _PREFIXES = ("/admin/fulfillment/cs",)
+
+    def __init__(self, app: Any) -> None:
+        super().__init__(app)
+        self._hydrated = False
+
+    async def dispatch(self, request: Any, call_next: Any) -> Any:
+        if not request.url.path.startswith(self._PREFIXES):
+            return await call_next(request)
+        if not self._hydrated:
+            synchronize_fulfillment_reports(
+                request.app.state.session_factory.kw["bind"],
+                request.app.state.settings.fulfillment_cs_reports_dir,
+            )
+            self._hydrated = True
+        return await call_next(request)

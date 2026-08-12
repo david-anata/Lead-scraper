@@ -178,6 +178,10 @@ class WebsiteOpsStorageMiddleware(BaseHTTPMiddleware):
         "/api/jobs/website-ops",
     )
 
+    def __init__(self, app: Any) -> None:
+        super().__init__(app)
+        self._hydrated = False
+
     async def dispatch(self, request: Any, call_next: Any) -> Any:
         if not database_mirror_enabled() or not request.url.path.startswith(
             self._PREFIXES
@@ -199,6 +203,9 @@ class WebsiteOpsStorageMiddleware(BaseHTTPMiddleware):
                 )
             return await call_next(request)
         try:
+            if not self._hydrated:
+                synchronize_website_ops_cache(settings, engine)
+                self._hydrated = True
             response = await call_next(request)
             if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
                 snapshot_website_ops_root(engine, Path(settings.website_ops_root))

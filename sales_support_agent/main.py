@@ -136,7 +136,7 @@ def create_app() -> FastAPI:
             synchronize_website_ops_cache,
         )
 
-        if database_mirror_enabled():
+        if database_mirror_enabled() and not os.getenv("VERCEL"):
             storage_stats = synchronize_website_ops_cache(
                 settings,
                 session_factory.kw["bind"],
@@ -146,18 +146,19 @@ def create_app() -> FastAPI:
                 storage_stats["files"],
                 storage_stats["bytes"],
             )
-        from sales_support_agent.services.fulfillment_report_storage import (
-            synchronize_fulfillment_reports,
-        )
-        fulfillment_stats = synchronize_fulfillment_reports(
-            session_factory.kw["bind"],
-            settings.fulfillment_cs_reports_dir,
-        )
-        logger.info(
-            "lifecycle milestone=fulfillment_report_storage_ready files=%s bytes=%s",
-            fulfillment_stats["files"],
-            fulfillment_stats["bytes"],
-        )
+        if not os.getenv("VERCEL"):
+            from sales_support_agent.services.fulfillment_report_storage import (
+                synchronize_fulfillment_reports,
+            )
+            fulfillment_stats = synchronize_fulfillment_reports(
+                session_factory.kw["bind"],
+                settings.fulfillment_cs_reports_dir,
+            )
+            logger.info(
+                "lifecycle milestone=fulfillment_report_storage_ready files=%s bytes=%s",
+                fulfillment_stats["files"],
+                fulfillment_stats["bytes"],
+            )
         install_embedded_website_ops_scheduler(app)
         app.state.ready = True
         logger.info(
@@ -287,9 +288,13 @@ def create_app() -> FastAPI:
     from sales_support_agent.services.website_ops_storage import (
         WebsiteOpsStorageMiddleware,
     )
+    from sales_support_agent.services.fulfillment_report_storage import (
+        FulfillmentReportStorageMiddleware,
+    )
 
     install_performance_middleware(app, session_factory.kw.get("bind"))
     app.add_middleware(WebsiteOpsStorageMiddleware)
+    app.add_middleware(FulfillmentReportStorageMiddleware)
     install_access_middleware(app)
     app.add_exception_handler(ToolForbidden, render_forbidden_response)
     return app
