@@ -162,14 +162,15 @@ def _name_cell(row: dict) -> str:
 
 def _finance_css_version() -> str:
     """Return a release-specific cache key for the Finance stylesheet."""
+    asset_schema_version = "2"
     render_commit = os.getenv("RENDER_GIT_COMMIT", "").strip()
     if render_commit:
-        return render_commit[:12]
+        return f"{render_commit[:12]}-{asset_schema_version}"
     try:
         stylesheet = Path(__file__).resolve().parents[2] / "static" / "finance.css"
-        return str(stylesheet.stat().st_mtime_ns)
+        return f"{stylesheet.stat().st_mtime_ns}-{asset_schema_version}"
     except OSError:
-        return "1"
+        return asset_schema_version
 
 def _page_shell(title: str, active_section: str, body: str, *, flash: str = "") -> str:
     from sales_support_agent.services.admin_nav import (
