@@ -618,7 +618,10 @@ def _journey_sections(data: dict[str, Any], *, csrf_token: str) -> str:
         agreement_section += f'<p><a href="/admin/building/contracts/{_esc(contract.get("id"))}">Advanced contract record</a></p></div>'
     agreement_section += '</section>'
 
-    schedules = list(billing.get("schedules") or [])
+    schedules = [
+        row for row in (billing.get("schedules") or [])
+        if row.get("status") != "cancelled"
+    ]
     invoices = list(billing.get("invoices") or [])
     invoice_by_schedule = {str(row.get("billing_schedule_id") or ""): row for row in invoices}
     schedule_rows = ''
