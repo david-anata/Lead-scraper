@@ -52,6 +52,7 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
             "commercial_terms": {
                 "balance_due_days_before_event": 7,
             },
+            "tax_rate_bps": 745,
         }
         with cls.factory() as session:
             session.add(BuildingSpace(
@@ -86,7 +87,9 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
                 amount_cents=112000,
                 currency="USD",
                 line_items_json=[
-                    {"type": "pricing_subtotal", "amount_cents": 104235},
+                    {"type": "base", "name": "Venue rental", "description": "6 hours of venue time", "quantity": 6, "amount_cents": 78000},
+                    {"type": "fee", "name": "Routine cleaning", "quantity": 1, "amount_cents": 25000},
+                    {"type": "addon", "name": "Soda Machine", "quantity": 1, "amount_cents": 1235},
                     {"type": "tax", "amount_cents": 7765},
                 ],
                 rate_plan_id="arena-rate",
@@ -148,7 +151,7 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
         with (
             patch.object(BuildingQuickBooksClient, "is_configured", new_callable=lambda: property(lambda _self: True)),
             patch.object(BuildingQuickBooksClient, "ensure_customer", return_value={"Id": "QB-CUSTOMER-88"}),
-            patch.object(BuildingQuickBooksClient, "create_draft_invoice", return_value=provider_invoice),
+            patch.object(BuildingQuickBooksClient, "create_draft_invoice", return_value=provider_invoice) as create_invoice,
         ):
             created = self.client.post(
                 "/api/internal/building/billing/invoices",
@@ -161,6 +164,10 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
                 },
             )
         self.assertEqual(created.status_code, 200, created.text)
+        line_items = create_invoice.call_args.kwargs["line_items"]
+        self.assertEqual([item["type"] for item in line_items], ["event", "cleaning", "soda_machine", "deposit"])
+        self.assertEqual(line_items[0]["quantity"], 6)
+        self.assertEqual(create_invoice.call_args.kwargs["tax_rate_name"], "Arena approved contract 7.45%")
         invoice_id = created.json()["invoice"]["id"]
         qbo_evidence = {
             "Id": "QB-INV-88",
@@ -217,12 +224,14 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
         self.assertEqual(detail["ItemRef"]["value"], "79")
         self.assertEqual(detail["TaxCodeRef"]["value"], "NON")
 
-    def test_04_consolidated_invoice_does_not_recalculate_frozen_tax(self) -> None:
+    def test_04_consolidated_invoice_uses_verified_products_and_frozen_tax_rate(self) -> None:
         client = BuildingQuickBooksClient()
         captured: dict = {}
         captured_params: dict = {}
 
         def fake_request(method, path, *, params=None, payload=None):
+            if method == "GET":
+                return {"QueryResponse": {"TaxCode": [{"Id": "TAX-745", "Name": "Arena approved contract 7.45%"}]}}
             captured.update(payload or {})
             captured_params.update(params or {})
             return {"Invoice": {"Id": "QB-EVENT-1"}}
@@ -236,16 +245,23 @@ class BuildingEventBillingJourneyTests(unittest.TestCase):
                 due_date=datetime.now().date(),
                 idempotency_key="event-invoice-88",
                 line_items=[
-                    {"type": "deposit", "description": "Booking deposit", "amount_cents": 56000},
-                    {"type": "final_balance", "description": "Remaining event balance", "amount_cents": 56000},
-                    {"type": "security_deposit", "description": "Refundable security deposit", "amount_cents": 50000},
+                    {"type": "event", "description": "Venue rental", "quantity": 6, "amount_cents": 78000, "taxable": True},
+                    {"type": "cleaning", "description": "Cleaning", "quantity": 1, "amount_cents": 25000, "taxable": True},
+                    {"type": "soda_machine", "description": "Soda machine", "quantity": 1, "amount_cents": 9000, "taxable": True},
+                    {"type": "deposit", "description": "Refundable security deposit", "quantity": 1, "amount_cents": 50000, "taxable": False},
                 ],
+                tax_rate_name="Arena approved contract 7.45%",
             )
-        self.assertEqual(len(captured["Line"]), 3)
-        self.assertTrue(all(
-            line["SalesItemLineDetail"]["TaxCodeRef"]["value"] == "NON"
-            for line in captured["Line"]
-        ))
+        self.assertEqual(len(captured["Line"]), 4)
+        self.assertEqual(
+            [line["SalesItemLineDetail"]["ItemRef"]["value"] for line in captured["Line"]],
+            ["77", "78", "81", "79"],
+        )
+        self.assertEqual(
+            [line["SalesItemLineDetail"]["TaxCodeRef"]["value"] for line in captured["Line"]],
+            ["TAX", "TAX", "TAX", "NON"],
+        )
+        self.assertEqual(captured["TxnTaxDetail"]["TxnTaxCodeRef"]["value"], "TAX-745")
         self.assertLessEqual(len(captured_params["requestid"]), 50)
         self.assertTrue(captured_params["requestid"].startswith("building-"))
 

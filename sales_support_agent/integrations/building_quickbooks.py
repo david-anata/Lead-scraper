@@ -12,7 +12,13 @@ from sales_support_agent.api.qbo_auth_router import _load_tokens, get_valid_acce
 
 QBO_BASE_URL = "https://quickbooks.api.intuit.com/v3/company"
 VERIFIED_QBO_REALM_ID = "9130357569555476"
-BUILDING_ITEM_IDS = {"event": "77", "deposit": "79"}
+BUILDING_ITEM_IDS = {
+    "event": "77",
+    "cleaning": "78",
+    "deposit": "79",
+    "tables_chairs": "80",
+    "soda_machine": "81",
+}
 
 
 def building_quickbooks_invoice_url(invoice_id: str) -> str:
@@ -130,6 +136,7 @@ class BuildingQuickBooksClient:
         due_date: date,
         idempotency_key: str,
         line_items: list[dict[str, Any]] | None = None,
+        tax_rate_name: str = "",
     ) -> dict[str, Any]:
         if schedule_type not in {
             "one_time",
@@ -158,14 +165,21 @@ class BuildingQuickBooksClient:
         qbo_lines: list[dict[str, Any]] = []
         for item in line_items or []:
             item_amount = round(int(item["amount_cents"]) / 100, 2)
+            item_type = str(item.get("type") or "event")
+            item_id = BUILDING_ITEM_IDS.get(item_type)
+            if not item_id:
+                raise BuildingQuickBooksError(
+                    f"No verified QuickBooks product is mapped for {item_type.replace('_', ' ')}."
+                )
             detail: dict[str, Any] = {
-                "ItemRef": {"value": BUILDING_ITEM_IDS["deposit"] if item.get("type") == "security_deposit" else BUILDING_ITEM_IDS["event"]},
+                "ItemRef": {"value": item_id},
                 "Qty": 1,
                 "UnitPrice": item_amount,
-                # Event line amounts are gross of Agent-calculated sales tax;
-                # the refundable deposit is independently non-taxable.
-                "TaxCodeRef": {"value": "NON"},
+                "TaxCodeRef": {"value": "TAX" if item.get("taxable") else "NON"},
             }
+            quantity = int(item.get("quantity") or 1)
+            detail["Qty"] = quantity
+            detail["UnitPrice"] = round(item_amount / quantity, 2)
             qbo_lines.append({
                 "Amount": item_amount,
                 "Description": str(item["description"]),
@@ -175,22 +189,36 @@ class BuildingQuickBooksClient:
         provider_request_id = "building-" + hashlib.sha256(
             idempotency_key.encode("utf-8")
         ).hexdigest()[:40]
+        invoice_payload: dict[str, Any] = {
+            "CustomerRef": {"value": customer_id},
+            "DueDate": due_date.isoformat(),
+            "PrivateNote": f"Agent Building schedule {idempotency_key}",
+            "CustomerMemo": {"value": description.strip()},
+            "Line": qbo_lines or [{
+                "Amount": amount,
+                "Description": description.strip(),
+                "DetailType": "SalesItemLineDetail",
+                "SalesItemLineDetail": sales_detail,
+            }],
+        }
+        if tax_rate_name:
+            tax_data = self._request(
+                "GET", "query", params={"query": "SELECT * FROM TaxCode MAXRESULTS 1000", "minorversion": "70"}
+            )
+            matches = [
+                row for row in tax_data.get("QueryResponse", {}).get("TaxCode", [])
+                if str(row.get("Name") or "").strip().lower() == tax_rate_name.strip().lower()
+            ]
+            if len(matches) != 1:
+                raise BuildingQuickBooksError(
+                    f"QuickBooks tax rate '{tax_rate_name}' is unavailable or ambiguous."
+                )
+            invoice_payload["TxnTaxDetail"] = {"TxnTaxCodeRef": {"value": str(matches[0]["Id"])}}
         data = self._request(
             "POST",
             "invoice",
             params={"minorversion": "70", "requestid": provider_request_id},
-            payload={
-                "CustomerRef": {"value": customer_id},
-                "DueDate": due_date.isoformat(),
-                "PrivateNote": f"Agent Building schedule {idempotency_key}",
-                "CustomerMemo": {"value": description.strip()},
-                "Line": qbo_lines or [{
-                    "Amount": amount,
-                    "Description": description.strip(),
-                    "DetailType": "SalesItemLineDetail",
-                    "SalesItemLineDetail": sales_detail,
-                }],
-            },
+            payload=invoice_payload,
         )
         invoice = data.get("Invoice") or {}
         if not invoice.get("Id"):
