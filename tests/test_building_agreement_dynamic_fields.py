@@ -164,6 +164,13 @@ class CustomerContractTests(unittest.TestCase):
         ):
             self.assertIn(needle, self.flat, f"published term missing: {needle}")
 
+    def test_cancellation_terms_are_strict_without_a_graduated_refund_schedule(self) -> None:
+        self.assertIn("all payments are non-refundable", self.flat.lower())
+        self.assertIn("sole discretion", self.flat.lower())
+        self.assertNotIn("30 or more days before", self.flat.lower())
+        self.assertNotIn("14 to 29 days before", self.flat.lower())
+        self.assertNotIn("half the remaining balance", self.flat.lower())
+
     def test_it_reads_as_a_contract_not_a_review_schedule(self) -> None:
         self.assertIn("Signature:", self.body)
         self.assertIn("governed by the laws of the State of Utah", self.flat)

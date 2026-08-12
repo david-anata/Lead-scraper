@@ -35,11 +35,14 @@ ARENA_TAX_EVIDENCE = (
 )
 ARENA_TIMEZONE = ZoneInfo("America/Denver")
 ARENA_CANCELLATION_POLICY = (
-    "All payments are non-refundable. One transfer may be approved when "
-    "requested at least 14 days before the event, may be used only once, and "
-    "must move the event to an available date within six months. Paid amounts "
-    "carry forward to the approved transferred date; otherwise cancellation "
-    "forfeits paid amounts."
+    "All payments are non-refundable. A customer may request a date transfer "
+    "at least 14 days before the event, but Anata may approve or deny it in "
+    "its sole discretion based on date availability and operational "
+    "feasibility. An approved transfer may be used only once, must move the "
+    "event to an available date within six "
+    "months, and is subject to pricing current for the replacement date. Paid "
+    "amounts carry forward to the approved transferred date; otherwise "
+    "cancellation forfeits all paid amounts."
 )
 
 

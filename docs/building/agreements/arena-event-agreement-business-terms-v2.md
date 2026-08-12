@@ -75,18 +75,16 @@ The frozen cancellation policy for this booking is:
 
 Owner-approved policy:
 
-- 30 or more days before the event: the customer forfeits the non-refundable
-  booking deposit; other eligible amounts are refunded.
-- 14–29 days before the event: the customer owes the booking deposit plus 50%
-  of the remaining balance.
-- Fewer than 14 days before the event: the customer owes the full contract
-  total.
-- A customer may request one transfer at least 14 days before the original
-  event. The replacement event must occur within six months, is subject to
-  availability and current pricing, and receives credit for the existing
-  deposit.
-- If Anata cannot accommodate the requested replacement date, the deposit is
-  forfeited.
+- All payments are non-refundable if the customer cancels.
+- A customer may request a date transfer at least 14 days before the event, but
+  Anata may approve or deny the request in its sole discretion based on date
+  availability and operational feasibility.
+- An approved transfer may be used only once, must move the event to an
+  available date within six months, and is subject to pricing current for the
+  replacement date. Paid amounts are credited to the approved replacement
+  event.
+- If Anata does not approve a transfer, or the customer cancels the replacement
+  event, all paid amounts are forfeited.
 - A qualifying force-majeure event may receive a no-fee transfer within six
   months, subject to availability.
 - If Anata cancels for a reason within its control, customer payments are

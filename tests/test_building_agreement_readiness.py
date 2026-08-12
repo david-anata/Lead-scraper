@@ -197,7 +197,7 @@ class BuildingAgreementReadinessTests(unittest.TestCase):
         self.assertIn("not a signed agreement", download.text)
         self.assertIn("recorded through the governed action", download.text)
         self.assertIn(
-            'attachment; filename="anata-arena-agreement-business-terms-v2.md"',
+            'attachment; filename="anata-arena-agreement-business-terms-v3.md"',
             download.headers["content-disposition"],
         )
         self.assertEqual(download.headers["cache-control"], "private, no-store")
@@ -229,7 +229,7 @@ class BuildingAgreementReadinessTests(unittest.TestCase):
         with self.factory() as session:
             template = session.get(
                 BuildingAgreementTemplate,
-                "arena-event-agreement-business-terms-v2",
+                "arena-event-agreement-business-terms-v3",
             )
             self.assertIsNotNone(template)
             self.assertEqual(template.status, "in_review")
@@ -267,7 +267,7 @@ class BuildingAgreementReadinessTests(unittest.TestCase):
             self.assertEqual(
                 session.query(BuildingAuditEvent).filter_by(
                     entity_type="agreement_template",
-                    entity_id="arena-event-agreement-business-terms-v2",
+                    entity_id="arena-event-agreement-business-terms-v3",
                 ).count(),
                 2,
             )
