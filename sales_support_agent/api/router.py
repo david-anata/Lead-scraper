@@ -13,6 +13,7 @@ import re
 from urllib.parse import parse_qs, quote_plus
 import traceback
 from html import escape
+from zoneinfo import ZoneInfo
 
 import requests
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
@@ -1425,6 +1426,7 @@ def admin_dashboard_data(
     return ApiMessage(status="ok", message="Admin dashboard data loaded.", details=details)
 
 
+@router.post("/admin/website-ops/run-now")
 @router.post("/admin/api/website-ops/run")
 def admin_website_ops_run(request: Request, mode: str = Form(default="daily")) -> Response:
     _require_admin_enabled(request)

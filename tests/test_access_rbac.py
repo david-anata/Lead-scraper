@@ -197,6 +197,21 @@ class EnforcementTests(unittest.TestCase):
         self.assertEqual(r.status_code, 302)
         self.assertEqual(r.headers.get("location"), "/admin/website-ops?run_status=failed")
 
+    def test_website_ops_operator_run_route_is_authorized(self) -> None:
+        from unittest import mock
+
+        uid = store.upsert_user("website_operator@anatainc.com", "Website Operator")
+        store.set_user_permissions(uid, ["website_ops.seo"])
+        name, token = _cookie_for("website_operator@anatainc.com", "Website Operator")
+        self.client.cookies.set(name, token)
+        try:
+            with mock.patch("sales_support_agent.api.router.run_website_ops", side_effect=RuntimeError("setup blocked")):
+                r = self.client.post("/admin/website-ops/run-now", data={"mode": "daily"}, follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(r.headers.get("location"), "/admin/website-ops?run_status=failed")
+
     def test_website_ops_execute_approved_api_requires_queue_permission(self) -> None:
         name, token = _cookie_for("enf_fin@anatainc.com")
         self.client.cookies.set(name, token)

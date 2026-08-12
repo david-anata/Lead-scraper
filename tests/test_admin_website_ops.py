@@ -650,7 +650,7 @@ example
             self.assertIn("Codex publishes. Website Ops verifies and measures.", html)
             self.assertIn("Today’s publishing", html)
             self.assertIn("Needs you", html)
-            self.assertIn('action="/admin/api/website-ops/run"', html)
+            self.assertIn('action="/admin/website-ops/run-now"', html)
             self.assertIn("Run today’s plan", html)
             self.assertIn("Run weekly maintenance", html)
             self.assertIn("One report is emailed after the workday cycle", html)

@@ -84,15 +84,19 @@ class AccessControlMiddleware(BaseHTTPMiddleware):
             if get_session_user_from_request(request) is None:
                 return RedirectResponse(url="/admin/login", status_code=302)
             user = get_current_user(request)
-            if user and (
-                user.get("is_superadmin")
-                or grants_tool(set(user.get("permissions") or ()), tool.key)
-            ):
-                return await call_next(request)
-            return render_forbidden_response(request, ToolForbidden(user, tool.key))
-        except Exception:  # noqa: BLE001 — a guard error must never 500 every page; fail closed to login
+            allowed = bool(
+                user
+                and (
+                    user.get("is_superadmin")
+                    or grants_tool(set(user.get("permissions") or ()), tool.key)
+                )
+            )
+        except Exception:  # noqa: BLE001 — guard failures fail closed; application failures remain visible
             logger.exception("[access] authorization middleware error on %s", path)
             return RedirectResponse(url="/admin/login", status_code=302)
+        if allowed:
+            return await call_next(request)
+        return render_forbidden_response(request, ToolForbidden(user, tool.key))
 
 
 def install_access_middleware(app) -> None:
