@@ -730,6 +730,44 @@ async def update_paydown_settings(
     )
 
 
+@router.post("/calendar/rent-payment-reports", response_class=HTMLResponse)
+async def report_rent_payment_route(
+    request: Request, amount: str = Form(...), reported_on: str = Form(...),
+):
+    """Record a payment claim without asserting that bank cash moved."""
+    from sales_support_agent.services.cashflow.rent_payments import report_rent_payment
+    from sales_support_agent.services.cashflow.settings import get_paydown_settings
+
+    try:
+        payment_day = date.fromisoformat(str(reported_on)[:10])
+        settings = await asyncio.to_thread(get_paydown_settings)
+        current_user = get_current_user(request)
+        actor = "finance-operator"
+        if isinstance(current_user, dict):
+            actor = str(current_user.get("email") or current_user.get("name") or actor)
+        await asyncio.to_thread(
+            report_rent_payment,
+            amount_cents=_money_to_cents(amount),
+            reported_on=payment_day,
+            vendor_key=str(settings["vendor_key"]),
+            actor=actor,
+        )
+    except (ValueError, TypeError) as exc:
+        return RedirectResponse(
+            f"/admin/finances/calendar?flash={quote(str(exc))}", status_code=303
+        )
+    except Exception:
+        logger.exception("Rent payment report could not be saved")
+        return RedirectResponse(
+            "/admin/finances/calendar?flash=Rent%20payment%20report%20could%20not%20be%20saved",
+            status_code=303,
+        )
+    return RedirectResponse(
+        "/admin/finances/calendar?flash=Rent%20payment%20reported%20and%20awaiting%20bank%20confirmation",
+        status_code=303,
+    )
+
+
 @router.get("/budget", response_class=HTMLResponse)
 async def finance_budget(request: Request, flash: str = ""):
     view, review = await asyncio.gather(

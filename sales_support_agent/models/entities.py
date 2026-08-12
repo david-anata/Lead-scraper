@@ -654,6 +654,27 @@ class FinanceSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class FinanceRentPaymentReport(Base):
+    """Operator-reported rent payment awaiting authoritative bank evidence."""
+
+    __tablename__ = "finance_rent_payment_reports"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    vendor_key: Mapped[str] = mapped_column(String(255), index=True)
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    reported_on: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="awaiting_bank", index=True)
+    matched_transaction_id: Mapped[str] = mapped_column(String(255), default="")
+    actor: Mapped[str] = mapped_column(String(255), default="operator")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_finance_rent_report_match", "vendor_key", "amount_cents", "reported_on"),
+    )
+
+
 class PlaidItem(Base):
     """One consented Plaid institution connection; access tokens are sealed."""
 

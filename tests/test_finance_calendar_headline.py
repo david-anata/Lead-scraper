@@ -119,6 +119,9 @@ def _plan(**overrides) -> dict:
         "planned_total_cents": 27_636_00, "shortfall_cents": 0,
         "reserved_cents": 18_300_00, "unconfirmed_reserved_cents": 3_100_00,
         "floor_cents": 10_000_00, "savings_would_unlock_cents": 0,
+        "maximum_payment_cents": 28_000_00, "cushion_cents": 364_00,
+        "protection_start": TODAY, "protection_end": TODAY + timedelta(days=13),
+        "pending_payment_cents": 0, "pending_reports": [],
     }
     plan.update(overrides)
     return plan
@@ -139,7 +142,7 @@ def test_the_block_says_what_it_reserved_and_how_much_is_a_guess():
 
     assert "$18,300" in block
     assert "$3,100" in block
-    assert "not confirmed" in block
+    assert "not reserved" in block
 
 
 def test_no_spare_cash_proposes_nothing_and_points_at_collections():
@@ -147,11 +150,9 @@ def test_no_spare_cash_proposes_nothing_and_points_at_collections():
         instalments=[], planned_total_cents=0, excluded_vendor_cents=39_965_00,
     ))
 
-    assert "No rent payment is recommended yet" in block
-    assert "Nothing spare this month" in block
-    assert "$15,200 planned" in block
-    assert "$3,100 possible" in block
-    assert "$18,300 total" in block
+    assert "No additional rent payment is recommended right now" in block
+    assert "$18,300 confirmed or required" in block
+    assert "$3,100 in possible expenses" in block
     assert "$39,965 Boulder Ranch estimate is not added again" in block
     assert "/admin/finances/collections" in block
     assert "Change rent plan settings" in block

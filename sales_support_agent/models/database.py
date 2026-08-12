@@ -558,6 +558,7 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
         "finance_import_batches",
         "finance_import_rows",
         "finance_settings",
+        "finance_rent_payment_reports",
         "finance_action_audit",
         "finance_economic_transaction_groups",
         "finance_economic_transaction_members",

@@ -849,6 +849,30 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
         if savings > 0 else ""
     )
     balance_as_of = _as_date_or_none(plan.get("balance_as_of"))
+    protection_start = _as_date_or_none(plan.get("protection_start"))
+    protection_end = _as_date_or_none(plan.get("protection_end"))
+    pending_reports = [
+        item for item in (plan.get("pending_reports") or [])
+        if str(item.get("status") or "") in {"awaiting_bank", "needs_review"}
+    ]
+    pending_total = int(plan.get("pending_payment_cents") or 0)
+    pending_html = "".join(
+        '<div class="finance-alert finance-alert--warning"><strong>Awaiting bank confirmation</strong>'
+        f'<p>{_money(int(item.get("amount_cents") or 0))} reported paid on '
+        f'{html.escape(_date_label(_as_date_or_none(item.get("reported_on")), month="%b"))}. '
+        'We will reduce the rent balance when Plaid confirms it.</p></div>'
+        for item in pending_reports
+    )
+    report_html = f"""
+        <details class="cash-calendar-paydown__settings">
+          <summary>Report a rent payment</summary>
+          <form method="post" action="/admin/finances/calendar/rent-payment-reports">
+            <label>Amount paid<input name="amount" inputmode="decimal" required></label>
+            <label>Date paid<input name="reported_on" type="date" value="{protection_start.isoformat() if protection_start else ''}" required></label>
+            <p class="metric-note">This records what you sent. Plaid still confirms when money actually leaves.</p>
+            <button class="btn btn-secondary btn-sm" type="submit">Save as awaiting bank</button>
+          </form>
+        </details>"""
     settings_html = f"""
         <details class="cash-calendar-paydown__settings">
           <summary>Change rent plan settings</summary>
@@ -863,7 +887,7 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
         </details>"""
 
     if not plan.get("instalments"):
-        planned_reserved = max(0, reserved - unconfirmed)
+        planned_reserved = reserved
         excluded_vendor = int(plan.get("excluded_vendor_cents") or 0)
         balance_note = (
             f"Balance confirmed by you on {balance_as_of.strftime('%b')} {balance_as_of.day}."
@@ -879,19 +903,24 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
       <section class="cash-calendar-paydown">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Paying down</p>
         <h2>{vendor}</h2></div></div>
-        <p class="finance-plan-short"><strong>No rent payment is recommended yet.</strong>
-        Nothing spare this month after committed and possible expenses. Your
-        {_money(int(plan.get('cash_goal_cents') or 0))} goal is advisory and does not block rent.</p>
+        <p class="finance-plan-short"><strong>No additional rent payment is recommended right now.</strong>
+        Confirmed commitments through {html.escape(_date_label(protection_end, month='%b') if protection_end else 'next week')}
+        and {_money(pending_total)} already reported leave less than the {_money(50_000)} action threshold.</p>
         <p class="cash-calendar-paydown__lead">Monthly rent {_money(monthly)}. Plaid confirms
         {_money(paid)} sent this month.</p>
         <p class="cash-calendar-rent-balance"><strong>Rent remaining: {_money(remaining)} · not scheduled.</strong></p>
         <p class="metric-note">{html.escape(balance_note)}</p>
-        <p class="cash-calendar-paydown__note"><strong>Other expenses reserved before rent:</strong>
-        {_money(planned_reserved)} planned and {_money(unconfirmed)} possible,
-        {_money(reserved)} total.</p>
+        {pending_html}
+        <p class="cash-calendar-paydown__note"><strong>Protected before more rent:</strong>
+        {_money(planned_reserved)} confirmed or required through next week and
+        {_money(int(plan.get('floor_cents') or 0))} protected minimum.</p>
+        <p class="cash-calendar-paydown__note"><strong>Not reserved:</strong>
+        {_money(unconfirmed)} in possible expenses. These are warnings, not confirmed bills.</p>
+        <p><a class="btn btn-secondary btn-sm" href="/admin/finances/review">Review possible expenses</a></p>
         {excluded_note}
         <p><a class="btn btn-secondary btn-sm" href="/admin/finances/collections">See who owes you</a></p>
         {savings_line}
+        {report_html}
         {settings_html}
       </section>"""
 
@@ -902,6 +931,8 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
         for item in plan["instalments"]
     )
     total = int(plan.get("planned_total_cents") or 0)
+    maximum = int(plan.get("maximum_payment_cents") or 0)
+    cushion = int(plan.get("cushion_cents") or 0)
     shortfall = int(plan.get("shortfall_cents") or 0)
     basis = str(plan.get("balance_basis") or "")
     balance_date_label = (
@@ -923,6 +954,9 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
       <section class="cash-calendar-paydown" aria-labelledby="cash-calendar-paydown-title">
         <div class="money-section-heading"><div><p class="finance-eyebrow">Paying down</p>
         <h2 id="cash-calendar-paydown-title">{vendor}</h2></div></div>
+        <p class="finance-plan-ok"><strong>You can pay {_money(total)} toward rent now.</strong></p>
+        <p class="metric-note">Maximum based on confirmed commitments: {_money(maximum)}.
+        The recommendation keeps a {_money(cushion)} uncertainty cushion.</p>
         <p class="cash-calendar-paydown__lead">About {_money(monthly)} this month. You have sent
         {_money(paid)}. Remaining {_money(remaining)}.</p>
         <p class="metric-note"><strong>Balance source:</strong> {basis_copy}</p>
@@ -931,9 +965,15 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
           <tbody>{rows}</tbody>
           <tfoot><tr><th scope="row">Total</th><td class="amount-out">{_money(total)}</td><td></td></tr></tfoot>
         </table>
-        <p class="cash-calendar-paydown__note">Reserved for the rest of the month:
-        {_money(reserved)}, of which {_money(unconfirmed)} is not confirmed. If those
-        possible expenses do not occur you can send more, sooner.</p>
+        {pending_html}
+        <p class="cash-calendar-paydown__note">The math uses verified cash, subtracts
+        {_money(reserved)} confirmed or required through
+        {html.escape(_date_label(protection_end, month='%b') if protection_end else 'next week')},
+        {_money(int(plan.get('floor_cents') or 0))} protected minimum, and
+        {_money(pending_total)} already reported.</p>
+        <p class="cash-calendar-paydown__note"><strong>{_money(unconfirmed)} in possible expenses is not reserved.</strong>
+        Review those warnings before paying more than the recommendation.</p>
+        <p><a class="btn btn-secondary btn-sm" href="/admin/finances/review">Review possible expenses</a></p>
         <p class="cash-calendar-paydown__note">Your
         {_money(int(plan.get('cash_goal_cents') or 0))} cash goal is a target, not a blocker.
         Recommendations only protect your {_money(int(plan.get('floor_cents') or 0))}
@@ -941,6 +981,7 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
         shown only as a last resort and are never included automatically.</p>
         {shortfall_line}
         {savings_line}
+        {report_html}
         {settings_html}
       </section>"""
 def _instalment_when(value: Any) -> str:

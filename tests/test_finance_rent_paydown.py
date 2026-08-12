@@ -109,7 +109,8 @@ def test_cash_goal_is_advisory_while_minimum_floor_constrains_rent():
         monthly_cents=3_000_000, as_of=AS_OF,
     )
 
-    assert plan["planned_total_cents"] == 2_000_000
+    assert plan["maximum_payment_cents"] == 2_000_000
+    assert plan["planned_total_cents"] == 1_800_000
     assert plan["floor_cents"] == 0
     assert plan["cash_goal_cents"] == 1_000_000
 
@@ -139,30 +140,28 @@ def _balance_after_each_day(plan, *, events, rows, spendable):
 
 # --- the rule the whole thing exists to hold ------------------------------
 
-def test_no_instalment_takes_a_later_day_below_the_floor():
-    """The failure this prevents: comfortable today, short on the 22nd."""
+def test_no_instalment_takes_next_week_below_the_floor():
     events = [
         _event(AS_OF + timedelta(days=3), 400_000),
-        _event(AS_OF + timedelta(days=16), 2_600_000),   # the late hit
-        _event(AS_OF + timedelta(days=20), 300_000),
+        _event(AS_OF + timedelta(days=10), 2_600_000),
     ]
     plan = _plan(events=events, spendable=5_000_000)
 
-    lowest = _balance_after_each_day(plan, events=events, rows=[], spendable=5_000_000)
+    protected_events = [item for item in events if date.fromisoformat(item["date"]) <= plan["protection_end"]]
+    lowest = _balance_after_each_day(plan, events=protected_events, rows=[], spendable=5_000_000)
     assert lowest >= FLOOR, (
         f"the plan drives the balance to {lowest / 100:,.2f}, below the "
         f"{FLOOR / 100:,.2f} floor, on a day after the payment"
     )
 
 
-def test_a_bill_late_in_the_month_reduces_what_can_be_paid_today():
-    """A 14 day view cannot see this, which is why it over-promises."""
+def test_a_bill_after_next_week_does_not_reduce_the_pay_now_envelope():
     quiet = _plan(events=[], spendable=5_000_000)
     with_late_bill = _plan(
         events=[_event(AS_OF + timedelta(days=20), 2_500_000)], spendable=5_000_000
     )
 
-    assert quiet["planned_total_cents"] > with_late_bill["planned_total_cents"]
+    assert quiet["planned_total_cents"] == with_late_bill["planned_total_cents"]
 
 
 def test_instalments_never_exceed_what_is_left_to_pay():
@@ -246,15 +245,13 @@ def test_the_bill_being_paid_is_not_also_reserved_against():
 
 # --- what counts as money ------------------------------------------------
 
-def test_unconfirmed_bills_are_reserved_for_as_well():
-    """Under-reserving bounces a payment. Over-reserving just means paying more
-    next week, so the cautious side is the correct side."""
+def test_unconfirmed_bills_are_visible_but_not_reserved():
     plan = _plan(
         events=[_event(AS_OF + timedelta(days=5), 800_000, kind="history_warning")],
         spendable=5_000_000,
     )
 
-    assert plan["reserved_cents"] == 800_000
+    assert plan["reserved_cents"] == 0
     assert plan["unconfirmed_reserved_cents"] == 800_000
 
 
@@ -300,17 +297,61 @@ def test_money_owed_but_not_confirmed_is_not_counted_as_arriving():
     hoped = _plan(rows=[_incoming(2_000_000, AS_OF + timedelta(days=5), confidence="expected")],
                   spendable=1_500_000, monthly=9_000_000)
 
-    assert confirmed["planned_total_cents"] > hoped["planned_total_cents"]
+    assert confirmed["planned_total_cents"] == hoped["planned_total_cents"]
 
 
-def test_confirmed_money_arriving_lets_a_later_instalment_be_larger():
+def test_future_receivables_do_not_fund_a_pay_now_recommendation():
     plan = _plan(
         rows=[_incoming(3_000_000, AS_OF + timedelta(days=8))],
         spendable=1_500_000, monthly=9_000_000,
     )
 
-    assert len(plan["instalments"]) >= 2, "money arriving should open a second payment"
-    assert plan["instalments"][-1]["date"] > AS_OF
+    assert len(plan["instalments"]) == 1
+    assert plan["instalments"][0]["date"] == AS_OF
+
+
+def test_pending_report_is_subtracted_before_recommending_more():
+    plan = build_paydown_plan(
+        calendar=_calendar([]), rows=[], spendable_cents=893_777,
+        reserve_cents=0, floor_cents=0, cash_goal_cents=1_000_000,
+        vendor_key="boulder ranch", vendor_label="Boulder Ranch",
+        monthly_cents=3_000_000, as_of=AS_OF,
+        pending_reports=[{"amount_cents": 240_000, "status": "awaiting_bank"}],
+    )
+
+    assert plan["pending_payment_cents"] == 240_000
+    assert plan["maximum_payment_cents"] == 653_777
+    assert plan["planned_total_cents"] == 580_000
+
+
+def test_live_weekly_scenario_recommends_2400_then_stops_after_report():
+    commitments = [
+        _event(AS_OF + timedelta(days=2), 251_500),
+        _event(AS_OF + timedelta(days=9), 374_200),
+        _event(AS_OF + timedelta(days=5), 1_252_000, kind="history_warning"),
+    ]
+    before = build_paydown_plan(
+        calendar=_calendar(commitments), rows=[], spendable_cents=893_777,
+        reserve_cents=1_658_600, floor_cents=0, cash_goal_cents=10_000,
+        vendor_key="boulder ranch", vendor_label="Boulder Ranch",
+        monthly_cents=4_000_000, authoritative_balance_cents=3_000_000,
+        balance_as_of=AS_OF - timedelta(days=1), as_of=AS_OF,
+    )
+    after = build_paydown_plan(
+        calendar=_calendar(commitments), rows=[], spendable_cents=893_777,
+        reserve_cents=1_658_600, floor_cents=0, cash_goal_cents=10_000,
+        vendor_key="boulder ranch", vendor_label="Boulder Ranch",
+        monthly_cents=4_000_000, authoritative_balance_cents=3_000_000,
+        balance_as_of=AS_OF - timedelta(days=1), as_of=AS_OF,
+        pending_reports=[{"amount_cents": 240_000, "status": "awaiting_bank"}],
+    )
+
+    assert before["reserved_cents"] == 625_700
+    assert before["unconfirmed_reserved_cents"] == 1_252_000
+    assert before["maximum_payment_cents"] == 268_077
+    assert before["planned_total_cents"] == 240_000
+    assert after["maximum_payment_cents"] == 28_077
+    assert after["planned_total_cents"] == 0
 
 
 # --- when it cannot answer ------------------------------------------------

@@ -5,20 +5,14 @@ one by hand. Every number needed to do that already exists: the day by day
 calendar of what leaves, the confirmed money arriving, the checking balance and
 the cash floor. Nothing had ever put them together.
 
-Why this is not "Safe to commit"
---------------------------------
-That figure looks 14 days ahead, so it does not subtract the bills landing in
-the back half of the month. Paying rent with it is how a comfortable week turns
-into a short one on the 22nd. The walk here runs to the end of the month and
-holds one rule: **no proposed payment may take any later day below the floor**,
-not merely the day it is paid.
+The decision window runs through the end of next calendar week. Required and
+confirmed bills reduce the envelope. Historical warnings stay visible as risk,
+but do not silently turn into money that must be reserved.
 
 What it deliberately does not do
 --------------------------------
-It never moves money and nothing in this app can. It counts confirmed money in
-only, because money owed but not arrived is a wish. It reserves for unconfirmed
-bills as well as certain ones, because under-reserving bounces a payment while
-over-reserving only means paying more next week.
+It never moves money and nothing in this app can. Future receivables do not fund
+the pay-now amount, because money owed but not arrived is not cash.
 """
 
 from __future__ import annotations
@@ -38,6 +32,11 @@ PLANNED_KINDS = frozenset({"planned", "history_planned"})
 
 def _month_end(day: date) -> date:
     return day.replace(day=_calendar.monthrange(day.year, day.month)[1])
+
+
+def _end_of_next_week(day: date) -> date:
+    """Sunday at the end of the calendar week after ``day``."""
+    return day + timedelta(days=(6 - day.weekday()) + 7)
 
 
 def _as_date(value: Any) -> date | None:
@@ -181,9 +180,10 @@ def _outgoings_by_day(
                 excluded_vendor_cents += _cents(event.get("amount_cents"))
                 continue
             amount = _cents(event.get("amount_cents"))
-            outgoing[when] = outgoing.get(when, 0) + amount
             if kind in UNCONFIRMED_KINDS:
                 unconfirmed[when] = unconfirmed.get(when, 0) + amount
+            else:
+                outgoing[when] = outgoing.get(when, 0) + amount
     return outgoing, unconfirmed, excluded_vendor_cents
 
 
@@ -274,11 +274,12 @@ def build_paydown_plan(
     authoritative_balance_cents: int | None = None,
     balance_as_of: date | None = None,
     emergency_floor_cents: int = 0,
+    pending_reports: Sequence[Mapping[str, Any]] = (),
     as_of: date | None = None,
 ) -> dict[str, Any]:
     """Return dated instalments that never breach the floor on any later day."""
     as_of = as_of or date.today()
-    horizon_end = _month_end(as_of)
+    horizon_end = _end_of_next_week(as_of)
 
     calculation_id = str(calendar.get("calculation_id") or "")
     calendar_end = _as_date(calendar.get("end"))
@@ -289,7 +290,7 @@ def build_paydown_plan(
         return {
             "status": "paused",
             "message": "Rent recommendation paused because not all upcoming expenses were included.",
-            "reason": "Recurring expense history or the month-end calendar is unavailable.",
+            "reason": "Recurring expense history or the next-week calendar is unavailable.",
             "calculation_id": calculation_id,
             "instalments": [],
         }
@@ -327,33 +328,25 @@ def build_paydown_plan(
     outgoing, unconfirmed, excluded_vendor_cents = _outgoings_by_day(
         calendar, vendor_key=vendor_key, as_of=as_of, horizon_end=horizon_end
     )
-    incoming = _confirmed_incoming_by_day(rows, as_of=as_of, horizon_end=horizon_end)
-    _trajectory, headroom = _headroom_by_day(
-        spendable_cents=spendable_cents, outgoing=outgoing, incoming=incoming,
-        floor_cents=floor_cents, as_of=as_of, horizon_end=horizon_end,
-    )
-
-    instalments: list[dict[str, Any]] = []
-    committed = 0
-    for when in sorted(headroom):
-        if committed >= remaining:
-            break
-        payable = min(headroom[when], remaining) - committed
-        if payable <= 0:
-            continue
-        # A separate line for a small amount is noise, unless it completes the bill.
-        if payable < MATERIAL_INSTALMENT_CENTS and committed + payable < remaining:
-            continue
-        instalments.append({
-            "date": when,
-            "amount_cents": payable,
-            "why": _reason_for(when, as_of=as_of, incoming=incoming, outgoing=outgoing),
-        })
-        committed += payable
-
+    # Pay-now advice never relies on future receivables. Posted cash will raise
+    # the next recommendation after it actually arrives.
     reserved = sum(outgoing.values())
     unconfirmed_total = sum(unconfirmed.values())
-    shortfall = max(0, remaining - committed)
+    pending_total = sum(
+        int(item.get("amount_cents") or 0)
+        for item in pending_reports
+        if str(item.get("status") or "") in {"awaiting_bank", "needs_review"}
+    )
+    maximum = max(0, int(spendable_cents) - reserved - int(floor_cents) - pending_total)
+    maximum = min(maximum, remaining)
+    recommended = ((maximum * 90 // 100) // 10_000) * 10_000
+    if recommended < MATERIAL_INSTALMENT_CENTS:
+        recommended = 0
+    instalments = ([{
+        "date": as_of, "amount_cents": recommended,
+        "why": "after protecting confirmed bills through next week",
+    }] if recommended else [])
+    shortfall = max(0, remaining - recommended - pending_total)
     savings_unlock = min(shortfall, int(reserve_cents))
 
     return {
@@ -369,7 +362,13 @@ def build_paydown_plan(
         "balance_basis": balance_basis,
         "balance_as_of": balance_as_of,
         "instalments": instalments,
-        "planned_total_cents": committed,
+        "planned_total_cents": recommended,
+        "maximum_payment_cents": maximum,
+        "cushion_cents": max(0, maximum - recommended),
+        "protection_start": as_of,
+        "protection_end": horizon_end,
+        "pending_payment_cents": pending_total,
+        "pending_reports": list(pending_reports),
         "shortfall_cents": shortfall,
         "reserved_cents": reserved,
         "unconfirmed_reserved_cents": unconfirmed_total,
@@ -413,6 +412,10 @@ def load_paydown_plan(
             "calculation_id": str(calendar.get("calculation_id") or ""),
             "instalments": [],
         }
+    from sales_support_agent.services.cashflow.rent_payments import reconcile_rent_payment_reports
+    pending_reports = reconcile_rent_payment_reports(ledger, as_of=today)
+    # Reconciliation may advance the authoritative saved balance.
+    configured = get_paydown_settings()
     return build_paydown_plan(
         calendar=calendar,
         rows=ledger,
@@ -423,6 +426,7 @@ def load_paydown_plan(
         floor_cents=int(configured["emergency_floor_cents"]),
         cash_goal_cents=int(configured["cash_goal_cents"]),
         emergency_floor_cents=int(configured["emergency_floor_cents"]),
+        pending_reports=pending_reports,
         vendor_key=str(configured["vendor_key"]),
         vendor_label=str(configured["vendor_label"]),
         monthly_cents=int(configured["monthly_cents"]),
