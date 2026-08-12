@@ -29,5 +29,35 @@
         "path": "/:path*"
       }
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/vercel-cron/website-ops",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/vercel-cron/content",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/vercel-cron/stale-leads",
+      "schedule": "0 15 * * 1-5"
+    },
+    {
+      "path": "/api/vercel-cron/gmail-sync",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/vercel-cron/sales-operator",
+      "schedule": "5 * * * *"
+    },
+    {
+      "path": "/api/vercel-cron/hr-reminders",
+      "schedule": "5 * * * *"
+    },
+    {
+      "path": "/api/jobs/outbound-morning/run",
+      "schedule": "0 13,14 * * *"
+    }
   ]
 }

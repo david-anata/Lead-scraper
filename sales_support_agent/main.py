@@ -27,6 +27,7 @@ from sales_support_agent.api.website_ops_jobs_router import (
 )
 from sales_support_agent.api.content_router import router as content_router
 from sales_support_agent.api.outbound_jobs import router as outbound_jobs_router
+from sales_support_agent.api.vercel_cron_router import router as vercel_cron_router
 from sales_support_agent.api.sales_jobs_router import router as sales_jobs_router
 from sales_support_agent.api.sales_router import router as sales_router
 from sales_support_agent.api.brand_analysis_router import (
@@ -262,6 +263,7 @@ def create_app() -> FastAPI:
     app.include_router(website_ops_jobs_router)
     app.include_router(content_router)
     app.include_router(outbound_jobs_router)
+    app.include_router(vercel_cron_router)
     include_building_routers(app)
     from sales_support_agent.api.outbound_router import router as outbound_router
     app.include_router(outbound_router)
