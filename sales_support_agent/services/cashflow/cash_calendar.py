@@ -780,6 +780,7 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
 
     if not plan.get("instalments"):
         planned_reserved = max(0, reserved - unconfirmed)
+        excluded_vendor = int(plan.get("excluded_vendor_cents") or 0)
         balance_as_of = _as_date_or_none(plan.get("balance_as_of"))
         balance_note = (
             f"Balance confirmed by you on {balance_as_of.strftime('%b')} {balance_as_of.day}."
@@ -795,9 +796,10 @@ def _paydown_block(plan: Mapping[str, Any] | None) -> str:
         <p class="cash-calendar-paydown__lead">Monthly rent {_money(monthly)}. Plaid confirms
         {_money(paid)} sent this month. Remaining {_money(remaining)}.</p>
         <p class="metric-note">{html.escape(balance_note)}</p>
-        <p class="cash-calendar-paydown__note"><strong>Reserved before rent:</strong>
+        <p class="cash-calendar-paydown__note"><strong>Other expenses reserved before rent:</strong>
         {_money(planned_reserved)} planned and {_money(unconfirmed)} possible,
         {_money(reserved)} total.</p>
+        {f'<p class="metric-note">The Calendar\'s {_money(excluded_vendor)} {vendor} estimate is not added again because your confirmed {_money(remaining)} balance replaces it.</p>' if excluded_vendor else ''}
         <p><a class="btn btn-secondary btn-sm" href="/admin/finances/collections">See who owes you</a></p>
         {savings_line}
       </section>"""

@@ -148,7 +148,7 @@ def _paid_after_balance_date(
 
 def _outgoings_by_day(
     calendar: Mapping[str, Any], *, vendor_key: str, as_of: date, horizon_end: date
-) -> tuple[dict[date, int], dict[date, int]]:
+) -> tuple[dict[date, int], dict[date, int], int]:
     """What leaves each day, and how much of that nobody has confirmed.
 
     The chosen vendor's own future entries are excluded. Reserving for the rent
@@ -157,6 +157,7 @@ def _outgoings_by_day(
     """
     outgoing: dict[date, int] = {}
     unconfirmed: dict[date, int] = {}
+    excluded_vendor_cents = 0
     for bucket in calendar.get("days") or []:
         when = _as_date(bucket.get("date"))
         if when is None or when < as_of or when > horizon_end:
@@ -166,12 +167,13 @@ def _outgoings_by_day(
             if kind not in PLANNED_KINDS and kind not in UNCONFIRMED_KINDS:
                 continue
             if _same_vendor(_vendor_of(event), vendor_key):
+                excluded_vendor_cents += _cents(event.get("amount_cents"))
                 continue
             amount = _cents(event.get("amount_cents"))
             outgoing[when] = outgoing.get(when, 0) + amount
             if kind in UNCONFIRMED_KINDS:
                 unconfirmed[when] = unconfirmed.get(when, 0) + amount
-    return outgoing, unconfirmed
+    return outgoing, unconfirmed, excluded_vendor_cents
 
 
 def _confirmed_incoming_by_day(
@@ -310,7 +312,7 @@ def build_paydown_plan(
         remaining = max(0, int(monthly_cents) - paid)
         balance_basis = "estimated_from_monthly_payments"
 
-    outgoing, unconfirmed = _outgoings_by_day(
+    outgoing, unconfirmed, excluded_vendor_cents = _outgoings_by_day(
         calendar, vendor_key=vendor_key, as_of=as_of, horizon_end=horizon_end
     )
     incoming = _confirmed_incoming_by_day(rows, as_of=as_of, horizon_end=horizon_end)
@@ -359,6 +361,7 @@ def build_paydown_plan(
         "shortfall_cents": shortfall,
         "reserved_cents": reserved,
         "unconfirmed_reserved_cents": unconfirmed_total,
+        "excluded_vendor_cents": excluded_vendor_cents,
         "floor_cents": int(floor_cents),
         "emergency_floor_cents": int(emergency_floor_cents),
         "spendable_cents": int(spendable_cents),
