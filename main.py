@@ -44,6 +44,10 @@ from sales_support_agent.services.admin_dashboard import (
     render_login_page,
     render_sales_deck_page,
 )
+from sales_support_agent.services.admin_home import (
+    render_admin_home_page,
+    render_service_status_page,
+)
 from sales_support_agent.services.fulfillment_dashboard import (
     fulfillment_report_entries,
     latest_fulfillment_report_entry,
@@ -3988,13 +3992,7 @@ def admin_dashboard(request: Request) -> Response:
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
-    dashboard = fetch_remote_dashboard_data()
-    if should_run_auto_dashboard_sync(request, dashboard, admin_settings):
-        try:
-            _start_remote_dashboard_sync(request, force=False)
-        except Exception:
-            logger.exception("[AdminDashboard] auto sync on page load failed")
-    return HTMLResponse(render_dashboard_page(dashboard, user=_current_nav_user(request)))
+    return HTMLResponse(render_admin_home_page(user=_current_nav_user(request)))
 
 
 @app.get("/admin/sales-decks", response_class=HTMLResponse)
@@ -5128,9 +5126,13 @@ async def public_deck_heartbeat_proxy(
         )
 
 
-@app.get("/")
-def home() -> RedirectResponse:
-    return RedirectResponse(url="/admin/login", status_code=302)
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request) -> HTMLResponse:
+    """Human-readable service status; machine probes remain under /health/*."""
+
+    return HTMLResponse(
+        render_service_status_page(ready=bool(getattr(request.app.state, "ready", False)))
+    )
 
 
 @app.get("/api/status")
