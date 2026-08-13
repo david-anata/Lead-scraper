@@ -74,6 +74,10 @@ from sales_support_agent.services.admin_dashboard import (
     render_login_page,
     render_sales_deck_page,
 )
+from sales_support_agent.services.admin_home import (
+    render_admin_home_page,
+    render_service_status_page,
+)
 from sales_support_agent.services.discovery import ClickUpDiscoveryService
 from sales_support_agent.services.deck_generator import DeckGenerationService
 from sales_support_agent.services.deck.preview_image import render_sales_deck_preview_png
@@ -507,9 +511,13 @@ def _enforce_instantly_webhook_auth(request: Request) -> None:
             raise HTTPException(status_code=401, detail="Invalid internal API key.")
 
 
-@router.get("/", response_model=ApiMessage)
-def root() -> ApiMessage:
-    return ApiMessage(status="ok", message="Sales support agent is running.")
+@router.get("/", response_class=HTMLResponse)
+def root(request: Request) -> HTMLResponse:
+    """Human-readable service status; machine probes remain under /health/*."""
+
+    return HTMLResponse(
+        render_service_status_page(ready=bool(getattr(request.app.state, "ready", False)))
+    )
 
 
 @router.get("/health/live")
@@ -1015,7 +1023,6 @@ def admin_logout(request: Request) -> RedirectResponse:
     return response
 
 
-@router.get("/admin", response_class=HTMLResponse)
 @router.get("/admin/sales/fix-queue", response_class=HTMLResponse)
 def admin_dashboard(request: Request) -> Response:
     _require_admin_enabled(request)
@@ -1034,6 +1041,14 @@ def admin_dashboard(request: Request) -> Response:
     if settings.dashboard_auto_sync_enabled:
         _start_dashboard_sync(request, trigger="admin_page_load", force=False)
     return HTMLResponse(render_dashboard_page(dashboard, user=_get_request_user(request)))
+
+
+@router.get("/admin", response_class=HTMLResponse)
+def admin_home(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_admin_home_page(user=_get_request_user(request)))
 
 
 @router.get("/admin/sales/decks")
