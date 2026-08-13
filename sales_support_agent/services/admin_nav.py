@@ -59,7 +59,7 @@ _NAV_SECTIONS = [
     ]),
     _NavSection("website_ops", "Website Ops", "website_ops", [
         _NavSubpage("website_ops.seo", "Today", "/admin/website-ops", "seo_dashboard"),
-        _NavSubpage("website_ops.seo", "Content", "/admin/website-ops/content", "content"),
+        _NavSubpage("website_ops.seo", "Website publishing", "/admin/website-ops/content", "content"),
         _NavSubpage("website_ops.seo", "Site health", "/admin/website-ops/site-health", "site_health"),
         _NavSubpage("website_ops.reports", "History", "/admin/website-ops/reports", "reports"),
     ]),
@@ -81,11 +81,11 @@ _NAV_SECTIONS = [
         _NavSubpage("advertising.audit", "Bulk Planner", "/admin/advertising/bulk-profitability", "advertising_bulk_profitability", superadmin_only=True),
     ]),
     _NavSection("executive", "Executive", "executive", [
-        _NavSubpage("executive.summary", "Executive Summary", "/admin/executive", "executive"),
+        _NavSubpage("executive.summary", "Owner Overview", "/admin/executive", "executive"),
         _NavSubpage("executive.brand_analysis", "Brand Analysis", "/admin/executive/brand-analysis", "brand_analysis"),
     ]),
     _NavSection("fulfillment", "Fulfillment", "fulfillment", [
-        _NavSubpage("fulfillment.rate_sheets", "Sales Pipeline", "/admin/fulfillment/sales", "fulfillment_sales"),
+        _NavSubpage("fulfillment.rate_sheets", "Prospects & Assets", "/admin/fulfillment/sales", "fulfillment_sales"),
         _NavSubpage("fulfillment.dashboard", "CS Action Queue", "/admin/fulfillment/cs/", "fulfillment_dashboard"),
         _NavSubpage("fulfillment.reports", "CS Reports", "/admin/fulfillment/cs/reports/", "fulfillment_reports"),
     ]),

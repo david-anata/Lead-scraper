@@ -1306,7 +1306,7 @@ class NavAccessSafetyTests(unittest.TestCase):
         )
 
         self.assertIn('aria-label="Fulfillment pages"', nav)
-        self.assertIn(">Sales Pipeline</a>", nav)
+        self.assertIn(">Prospects &amp; Assets</a>", nav)
         self.assertIn(">CS Action Queue</a>", nav)
         self.assertIn(">CS Reports</a>", nav)
 

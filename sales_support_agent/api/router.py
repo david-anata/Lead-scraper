@@ -75,8 +75,14 @@ from sales_support_agent.services.admin_dashboard import (
     render_sales_deck_page,
 )
 from sales_support_agent.services.admin_home import (
+    accessible_workspaces,
+    build_home_context,
+    clear_recent_pages,
+    get_home_preferences,
+    record_recent_page,
     render_admin_home_page,
     render_service_status_page,
+    save_home_shortcuts,
 )
 from sales_support_agent.services.discovery import ClickUpDiscoveryService
 from sales_support_agent.services.deck_generator import DeckGenerationService
@@ -1048,7 +1054,80 @@ def admin_home(request: Request) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
         return RedirectResponse(url="/admin/login", status_code=302)
-    return HTMLResponse(render_admin_home_page(user=_get_request_user(request)))
+    user = _get_request_user(request) or {}
+    workspaces = accessible_workspaces(user)
+    preferences = get_home_preferences(user.get("email") or "", workspaces)
+    context = build_home_context(user, request.app.state.session_factory)
+    return HTMLResponse(render_admin_home_page(
+        user=user,
+        preferences=preferences,
+        context=context,
+        flash=request.query_params.get("ok", ""),
+    ))
+
+
+@router.post("/admin/home/clock")
+def admin_home_clock(request: Request, action: str = Form(default="")) -> Response:
+    _require_admin_enabled(request)
+    user, auth_response = _require_admin_tool(request, "hr.access")
+    if auth_response is not None:
+        return auth_response
+    from sales_support_agent.services.hr import store as hr_store
+
+    email = ((user or {}).get("email") or "").strip().lower()
+    employee = hr_store.get_employee_by_email(email)
+    if not employee:
+        return RedirectResponse(url="/admin?ok=employee_record_required", status_code=303)
+    employee_email = (employee.get("email") or email).strip().lower()
+    if action == "in":
+        _, result = hr_store.clock_in(employee_email, actor=email)
+    elif action == "out":
+        _, result = hr_store.clock_out(employee_email, actor=email)
+    else:
+        result = "invalid_clock_action"
+    return RedirectResponse(url=f"/admin?ok={quote_plus(result)}", status_code=303)
+
+
+@router.post("/admin/home/shortcuts")
+async def admin_home_shortcuts(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    user = _get_request_user(request) or {}
+    workspaces = accessible_workspaces(user)
+    form = await request.form()
+    selected = list(dict.fromkeys(str(value) for value in form.getlist("shortcut")))[:6]
+    ordered = sorted(selected, key=lambda item: int(str(form.get(f"order_{item}", "99"))) if str(form.get(f"order_{item}", "99")).isdigit() else 99)
+    save_home_shortcuts(user.get("email") or "", ordered, workspaces)
+    return RedirectResponse(url="/admin?ok=shortcuts_saved", status_code=303)
+
+
+@router.post("/admin/home/recent")
+async def admin_home_recent(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    user = _get_request_user(request) or {}
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "Invalid request."})
+    saved = record_recent_page(
+        user.get("email") or "",
+        str(payload.get("path") or "") if isinstance(payload, dict) else "",
+        accessible_workspaces(user),
+    )
+    return JSONResponse(status_code=200 if saved else 400, content={"saved": saved})
+
+
+@router.post("/admin/home/recent/clear")
+def admin_home_recent_clear(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    user = _get_request_user(request) or {}
+    clear_recent_pages(user.get("email") or "", accessible_workspaces(user))
+    return RedirectResponse(url="/admin?ok=recent_cleared", status_code=303)
 
 
 @router.get("/admin/sales/decks")

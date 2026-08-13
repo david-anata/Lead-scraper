@@ -13,6 +13,17 @@
     region.textContent = message;
   };
 
+  const path = window.location.pathname;
+  if (path.startsWith("/admin/") && !path.startsWith("/admin/home/") && !path.startsWith("/admin/login") && !path.startsWith("/admin/logout") && !path.startsWith("/admin/auth")) {
+    window.fetch("/admin/home/recent", {
+      method: "POST",
+      credentials: "same-origin",
+      keepalive: true,
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({path}),
+    }).catch(() => {});
+  }
+
   document.querySelectorAll("form[method='post']").forEach((form) => {
     form.addEventListener("submit", (event) => {
       if (event.defaultPrevented || !form.checkValidity()) return;

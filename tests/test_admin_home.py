@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from sales_support_agent.services.admin_home import (
+    _valid_recent_path,
+    accessible_workspaces,
     render_admin_home_page,
     render_service_status_page,
 )
@@ -52,4 +54,35 @@ def test_vercel_entrypoint_serves_status_and_authenticated_home() -> None:
         )
         landing = client.get("/admin")
         assert landing.status_code == 200
-        assert "Anata operating system" in landing.text
+        assert "Your Agent workspace" in landing.text
+        assert "Needs you" in landing.text
+        assert "Your shortcuts" in landing.text
+
+
+def test_recent_paths_exclude_auth_and_home_actions() -> None:
+    assert _valid_recent_path("/admin/sales/deals") is True
+    assert _valid_recent_path("/admin/login") is False
+    assert _valid_recent_path("/admin/home/clock") is False
+    assert _valid_recent_path("/admin/sales?owner=me") is False
+
+
+def test_workspace_directory_uses_revised_names() -> None:
+    workspaces = accessible_workspaces({"is_superadmin": True})
+    titles = {item["title"] for item in workspaces}
+    assert "Owner Overview" in titles
+    assert any(item["href"] == "/admin/fulfillment/sales" for item in workspaces)
+
+
+def test_home_renders_compact_clock_and_priority_items() -> None:
+    page = render_admin_home_page(
+        user={"name": "Alex Operator", "permissions": {"hr.access", "sales.deals"}},
+        preferences={"shortcuts": ["sales", "hr"], "recent": []},
+        context={
+            "clock": {"is_clocked_in": False, "last_event": "Last clock out 4:30 PM", "today_hours": 7.5},
+            "needs_you": [{"workspace": "Sales", "title": "Review Acme", "detail": "Record the next action.", "href": "/admin/sales/deals/1", "priority": 20}],
+        },
+    )
+    assert "Clocked out" in page
+    assert "7.50 hours today" in page
+    assert "Review Acme" in page
+    assert 'action="/admin/home/shortcuts"' in page
