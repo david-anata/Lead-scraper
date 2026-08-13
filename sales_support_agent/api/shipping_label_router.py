@@ -15,6 +15,7 @@ from sales_support_agent.services.shipping_label_purchase import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/public/fulfillment/labels", tags=["shipping-label-public"])
+_PUBLIC_CARRIERS = {"USPS", "UPS", "FEDEX", "DHL", "GLS", "UNIUNI"}
 
 
 def _text(value: Any, limit: int = 120) -> str:
@@ -66,8 +67,10 @@ async def rates(request: Request, x_internal_api_key: Optional[str] = Header(def
         clean_rates = []
         for rate in data.get("rates") or []:
             rate_id, amount = _text(rate.get("id"), 100), round(float(rate.get("rate") or 0) * 100)
-            if rate_id and amount > 0:
-                clean_rates.append({"id": rate_id, "carrier": _text(rate.get("carrier"), 60), "service": _text(rate.get("service"), 80), "amount_cents": amount, "delivery_days": rate.get("delivery_days")})
+            carrier = _text(rate.get("carrier"), 60).upper()
+            if rate_id and amount > 0 and carrier in _PUBLIC_CARRIERS:
+                clean_rates.append({"id": rate_id, "carrier": carrier, "service": _text(rate.get("service"), 80), "amount_cents": amount, "delivery_days": rate.get("delivery_days")})
+        clean_rates.sort(key=lambda item: item["amount_cents"])
         if not shipment_id or not clean_rates: raise RuntimeError("Incomplete carrier response")
         record, token = create_record(body, shipment_id, clean_rates)
         return {"purchase_id": record["purchase_id"], "access_token": token, "rates": clean_rates}
