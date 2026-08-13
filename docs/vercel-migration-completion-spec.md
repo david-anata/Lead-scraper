@@ -41,6 +41,7 @@ The Vercel duplicate is real and functional, but it is not yet a production-equi
 - The callback registry, redacted environment-parity receipt, read-only database/artifact comparator, and cutover/rollback runbook now exist.
 - Runtime performance is warm-fast and error-free on the current deployment, but two of five concurrent cold instances measured 6.5–7.0 seconds. The strict five-second cold-readiness threshold remains open pending provisioned concurrency or owner acceptance of the documented sub-ten-second limitation.
 - Personalized workspace home release `b032aec` is deployed as `dpl_DuYJ6n851cNVZkstd3MnqtVu5bFN`. The live desktop pass verified permission-filtered workspaces, assigned-work framing, ordered shortcut controls, recent-page persistence, revised Website Ops/Fulfillment/Executive labels, semantic main regions, and a clean browser console. Production remained unchanged.
+- Migration hardening release `ff46421` is deployed as `dpl_BKU8CpgwVtjHW6HCsUityRESQ3kQ`. The comparator now proves sampled-record fingerprints, timestamp watermarks, and PostgreSQL sequence state in addition to schema, row counts, and artifact hashes. An authenticated read-only synthetic health schedule is registered; its unauthenticated live path rejects with 401 and all write schedules remain disabled.
 
 The following items remain open and block a truthful claim of 100% completion:
 
