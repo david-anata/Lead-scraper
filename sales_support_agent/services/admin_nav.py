@@ -801,5 +801,5 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
       </div>
     </header>
     {content_target}
-    <script src="/static/admin-interactions.js?v=1" defer></script>
+    <script src="/static/admin-interactions.js?v=2" defer></script>
     """
