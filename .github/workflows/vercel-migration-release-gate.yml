@@ -1,0 +1,34 @@
+name: Vercel migration release gate
+
+on:
+  push:
+    branches:
+      - codex/vercel-agent-duplicate
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vercel-migration-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Compile application
+        run: python -m compileall -q sales_support_agent scripts app.py
+      - name: Run full regression suite
+        env:
+          PYTHONPATH: .
+        run: pytest -q
+

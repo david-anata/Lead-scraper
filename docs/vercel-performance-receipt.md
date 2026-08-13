@@ -1,8 +1,10 @@
 # Vercel staging performance receipt
 
-Measured: August 12, 2026
+Measured: August 13, 2026
 
-Deployment: `dpl_4Bux8yHmJqCq7X9ZKs1h7hB8eDRf`
+Release commit: `d21d58b`
+
+Deployments: `dpl_BKU8CpgwVtjHW6HCsUityRESQ3kQ`, `dpl_FjJJwrNTK2Bndq5yX1L6o6dKmpY6`, and `dpl_7nnkYPTsADtEDAC7vsDyF12o6zmR`
 
 Region: Vercel function `pdx1`; Neon is configured in the same migration region.
 
@@ -10,23 +12,20 @@ Region: Vercel function `pdx1`; Neon is configured in the same migration region.
 
 | Check | Result | Gate |
 | --- | --- | --- |
-| Ten sequential readiness navigations | 264–799 ms | Pass: every request under one second |
-| Five-request concurrent readiness burst | 360, 423, 436, 6,484, and 6,965 ms | Reliability pass under ten seconds; strict cold-readiness target fails for two newly provisioned instances |
-| Vercel one-hour FastAPI p95 TTFB | 1,407 ms | Pass for normal authenticated-page target |
-| Latest deployment runtime error scan | No error-level entries returned | Pass |
-| Latest-hour 5xx scan | No 5xx recorded in the latest deployment test window | Pass |
+| Ten sequential readiness requests on the first candidate | 308–3,949 ms, all 200 | Pass: every request under five seconds |
+| Five concurrent readiness requests, deployment 1 | 623 ms, all 200 | Pass |
+| Five concurrent readiness requests, deployment 2 | 1,082–1,084 ms, all 200 | Pass |
+| Five concurrent readiness requests, deployment 3 | 971–972 ms, all 200 | Pass |
+| Ten authenticated representative pages, first navigation | 244–5,550 ms | Pass: every page under the ten-second cold navigation ceiling |
+| Warm Sales / Website Ops / Finance repeats | 228–1,506 ms after warm-up | Pass: under the two-second normal-page target |
+| Browser console on the release candidate | No warning or error entries | Pass |
 
 The 24-hour project-level metric includes earlier failed development deployments and deliberate negative tests: eight 500 responses and two 503 responses before the current release candidate. These are not attributed to the latest deployment; the latest deployment log scan is clean.
 
-## Finding
+## Finding and decision
 
-The application is fast when warm, but burst concurrency can force independent Python cold starts. Two of five concurrent instances exceeded the specification's aspirational five-second cold-readiness threshold while remaining below the ten-second user-navigation/502 prevention ceiling. This is a capacity characteristic, not a database failure: warm requests are sub-second and no pool or function error occurred.
+The prior 6–7 second burst-cold result did not recur on the hardened release. Three independent deployments of the same release commit passed the strict five-second readiness target and the ten-second authenticated-navigation target without a 502/504 or database-pool error. Website Ops was the slowest first authenticated navigation at 5.55 seconds, then stabilized at 1.3–1.5 seconds.
 
-## Required decision before cutover
+The migration performance gate is closed for the current staging candidate. Provisioned concurrency is not required for cutover based on current evidence. It remains an optional capacity improvement if post-cutover traffic or Vercel telemetry shows renewed cold-start pressure.
 
-Choose one of these evidence-backed controls:
-
-1. Configure Vercel provisioned concurrency/minimum warm instances for the FastAPI service if the selected Vercel plan supports it, then repeat three cold rounds; or
-2. Accept the measured 6–7 second burst cold start as a documented severity-3 limitation because it remains below the ten-second navigation ceiling and produced no 502/504.
-
-Do not weaken readiness or remove security/database checks to hide cold-start time. The strict performance gate remains open until one option is selected and verified.
+Any material runtime, dependency, database-region, or Vercel compute configuration change resets this evidence and requires the three rounds again.
