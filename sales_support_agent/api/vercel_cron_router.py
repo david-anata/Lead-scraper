@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from sales_support_agent.api.content_router import ContentRunInput, content_run
 from sales_support_agent.api.building_booking_router import (
@@ -88,6 +89,61 @@ def _authorize(authorization: str | None) -> JSONResponse | None:
 
 def _internal_key(request: Request) -> str:
     return str(getattr(request.app.state.settings, "internal_api_key", "") or "")
+
+
+@router.get("/synthetic-health")
+def synthetic_health_cron(
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Read-only service/database journey that remains safe before cutover."""
+
+    _require_vercel_cron(authorization)
+    checks = {
+        "application_ready": bool(getattr(request.app.state, "ready", False)),
+        "database": False,
+    }
+    queue = {"queued": 0, "failed": 0, "running": 0}
+    try:
+        with request.app.state.session_factory() as session:
+            session.execute(text("SELECT 1"))
+            checks["database"] = True
+            try:
+                rows = session.execute(
+                    text(
+                        "SELECT status, COUNT(*) FROM durable_task_queue "
+                        "WHERE status IN ('queued', 'failed', 'running') GROUP BY status"
+                    )
+                ).all()
+                for status, count in rows:
+                    queue[str(status)] = int(count)
+            except Exception:
+                session.rollback()
+                queue["available"] = False
+            else:
+                queue["available"] = True
+    except Exception as exc:  # No credential or connection detail leaves the service.
+        return JSONResponse(
+            {
+                "status": "failed",
+                "checks": checks,
+                "queue": queue,
+                "reason": "database_unavailable",
+                "error_type": type(exc).__name__,
+            },
+            status_code=503,
+        )
+    healthy = all(checks.values())
+    return JSONResponse(
+        {
+            "status": "passed" if healthy else "degraded",
+            "checks": checks,
+            "queue": queue,
+            "external_writes": False,
+            "commit": getattr(request.app.state, "render_git_commit", "unknown"),
+        },
+        status_code=200 if healthy else 503,
+    )
 
 
 @router.get("/website-ops")

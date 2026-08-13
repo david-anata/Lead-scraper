@@ -61,7 +61,7 @@ def test_operator_shell_loads_shared_interaction_contracts() -> None:
     nav = render_agent_nav("website_ops", permissions={"website_ops.seo"})
     script = (ROOT / "sales_support_agent/static/admin-interactions.js").read_text(encoding="utf-8")
 
-    assert 'src="/static/admin-interactions.js?v=1"' in nav
+    assert 'src="/static/admin-interactions.js?v=2"' in nav
     assert "aria-busy" in script
     assert "confirmMessage" in script
     assert "data-paginate" in script
