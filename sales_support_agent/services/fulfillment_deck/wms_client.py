@@ -128,6 +128,37 @@ class AnataWMSClient:
 
     # -- rating -------------------------------------------------------------
 
+    def _account_post(self, path: str, body: dict, *, timeout: int = 60) -> dict:
+        import requests
+        response = requests.post(
+            f"{self.base_url}{path}",
+            headers={
+                "Authorization": f"Bearer {self._access_token()}",
+                "AccountID": self.account_number,
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("result") != "success":
+            raise RuntimeError(f"EliteWorks request failed: {str(payload.get('message') or '')[:200]}")
+        return payload.get("data") or {}
+
+    def create_shipment_rates(self, model: dict) -> dict:
+        return self._account_post("/api/account/add", {"class_key": "shipment", "model": {**model, "rate": True, "purchase": False}})
+
+    def purchase_label(self, *, shipment_id: str, rate_id: str) -> dict:
+        return self._account_post("/api/account/label/purchase", {
+            "shipment_id": shipment_id, "rate_id": rate_id, "signature": False,
+            "signature_adult": False, "saturday_delivery": False,
+            "insurance": False, "include_images": True,
+        })
+
+    def void_label(self, label_id: str) -> dict:
+        return self._account_post("/api/account/label/void", {"label_id": label_id})
+
     def quote_rates(self, package: ProductSpec, origin_zip: str, dest_zip: str) -> list:
         import requests
 
