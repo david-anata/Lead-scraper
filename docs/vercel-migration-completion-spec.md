@@ -21,12 +21,12 @@ Anata Agent will run on Vercel with the same pages, permissions, data, integrati
 - Preview publishing, embedded schedulers, and external writes remain disabled for safety.
 - Remaining gaps are callback/domain registration, durable scheduled execution, persistent artifact parity, integration write-path testing, cold-start proof, full page/state coverage, and cutover rehearsal.
 
-## Current execution status (August 12, 2026)
+## Current execution status (August 13, 2026)
 
 The Vercel duplicate is real and functional, but it is not yet a production-equivalent replacement. The following evidence has already been verified:
 
 - The staging project deploys from `codex/vercel-agent-duplicate` and uses an isolated Neon database in `pdx1`.
-- The stable hostname `agent-staging.anatainc.com` is attached to Vercel, but its DNS record has not yet been created, so the hostname does not resolve.
+- The stable hostname `agent-staging.anatainc.com` resolves to Vercel with valid HTTPS. Authenticated fallback login and canonical staging navigation pass; provider callback registration remains open.
 - Vercel schedules exist for Website Ops, Content, stale-lead scanning, Gmail ingestion, Sales operations, HR reminders, Building operations, and Outbound. They are authenticated and globally disabled with `VERCEL_CRON_WRITES_ENABLED=false`.
 - Website Ops and Fulfillment retained-report caches no longer hydrate during application startup. The latest measured external cold readiness response was approximately 4.6 seconds, down from a startup path that previously exceeded two minutes.
 - Fulfillment report files have a PostgreSQL-backed durable mirror with hash validation and lazy restore.
@@ -40,12 +40,13 @@ The Vercel duplicate is real and functional, but it is not yet a production-equi
 - Shared Website Ops, Fulfillment, and HR report libraries were audited at 1280px. An HR section-menu clipping defect was fixed and verified on deployment `dpl_4Bux8yHmJqCq7X9ZKs1h7hB8eDRf`; all 14 HR links are visible and the console is clean.
 - The callback registry, redacted environment-parity receipt, read-only database/artifact comparator, and cutover/rollback runbook now exist.
 - Runtime performance is warm-fast and error-free on the current deployment, but two of five concurrent cold instances measured 6.5–7.0 seconds. The strict five-second cold-readiness threshold remains open pending provisioned concurrency or owner acceptance of the documented sub-ten-second limitation.
+- Personalized workspace home release `b032aec` is deployed as `dpl_DuYJ6n851cNVZkstd3MnqtVu5bFN`. The live desktop pass verified permission-filtered workspaces, assigned-work framing, ordered shortcut controls, recent-page persistence, revised Website Ops/Fulfillment/Executive labels, semantic main regions, and a clean browser console. Production remained unchanged.
 
 The following items remain open and block a truthful claim of 100% completion:
 
 | Gate | Remaining work | Evidence required to close | Owner help required |
 | --- | --- | --- | --- |
-| Stable staging identity | Create DNS for `agent-staging.anatainc.com`; register staging callback and webhook URLs with every provider | Resolvable hostname; successful login/logout; callback registry with pass/fail receipts | Add the GoDaddy DNS record and provide access to provider consoles when an existing session is unavailable |
+| Stable staging identity | DNS and HTTPS are closed; register staging callback and webhook URLs with every provider | Successful provider login/logout and callback registry with pass/fail receipts | Provide access to provider consoles when an existing session is unavailable |
 | Production data parity | Export Render data, import/reconcile it in Neon, compare schema, counts, samples, sequences, and timestamps | Signed comparison report; repeatable full-plus-delta migration; successful restore rehearsal | Access to the authoritative Render database or an owner-provided export |
 | Artifact parity | Locate and migrate retained Website Ops/Fulfillment files and any uploaded/generated assets currently stored on Render | Source/destination counts, hashes, timestamps, and sampled rendered reports | Access to the Render persistent disk or an owner-provided archive |
 | Durable execution | Inventory every `BackgroundTasks` path; move must-survive work to a durable queue/job; add any missing digest or synthetic-health schedule | Job ledger, overlap/retry tests, forced-failure receipt, no orphan Render schedule | Provider sandbox records only if controlled write testing needs them |
@@ -60,11 +61,10 @@ The following items remain open and block a truthful claim of 100% completion:
 
 The engineering work should continue without waiting on these items, but these owner-controlled actions are mandatory before the corresponding gates can close:
 
-1. Add this DNS record without changing the production domain: `A agent-staging.anatainc.com 76.76.21.21`.
-2. Make the Render database and persistent artifacts available for a read-only migration export.
-3. Permit or perform staging callback registration in the external provider consoles.
-4. Supply a restricted-role staging account for permission QA.
-5. Before cutover, name the go/no-go owner and rollback owner and explicitly approve the production move.
+1. Make the Render database and persistent artifacts available for a read-only migration export.
+2. Permit or perform staging callback registration in the external provider consoles.
+3. Supply a restricted-role staging account for permission QA.
+4. Before cutover, name the go/no-go owner and rollback owner and explicitly approve the production move.
 
 No secret value belongs in this document, source control, screenshots, or QA reports.
 
