@@ -133,7 +133,9 @@ class StripeBillingClient:
             data={
                 "amount": amount_cents,
                 "currency": "usd",
-                "automatic_payment_methods[enabled]": "true",
+                # Card keeps the embedded flow on anatainc.com; redirect-based
+                # methods would strand an anonymous purchase after returning.
+                "payment_method_types[]": "card",
                 "metadata[shipping_label_purchase_id]": purchase_id,
             },
             idempotency_key=f"shipping-label:{purchase_id}:payment",
