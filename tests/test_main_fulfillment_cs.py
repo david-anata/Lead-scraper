@@ -350,7 +350,7 @@ class MainFulfillmentCSTests(unittest.TestCase):
         self.assertIn("topbar-section-band", nav_html)
         self.assertIn('href="/admin/fulfillment/sales"', nav_html)
         self.assertIn('href="/admin/fulfillment/cs/"', nav_html)
-        self.assertIn(">Sales Pipeline</a>", nav_html)
+        self.assertIn(">Prospects &amp; Assets</a>", nav_html)
         self.assertIn(">CS Reports</a>", nav_html)
 
 
