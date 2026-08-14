@@ -32,6 +32,10 @@
   ],
   "crons": [
     {
+      "path": "/api/vercel-cron/shadow-preflight",
+      "schedule": "* * * * *"
+    },
+    {
       "path": "/api/vercel-cron/synthetic-health",
       "schedule": "30 * * * *"
     },
