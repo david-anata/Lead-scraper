@@ -27,7 +27,16 @@ class Tool:
 # Ordered; grouped by section. `access.manage` gates the RBAC admin UI itself.
 TOOL_CATALOG: tuple[Tool, ...] = (
     Tool("sales.deals", "Control Room & Deal Board", "Sales", ("/admin/sales",)),
-    Tool("sales.priorities", "Fix Queue", "Sales", ("/admin",), exact=True),
+    # Workspace Home is available to every authenticated account and filters
+    # its contents by effective permissions. Fix Queue remains separately
+    # grantable at its canonical Sales route.
+    Tool(
+        "sales.priorities",
+        "Fix Queue",
+        "Sales",
+        ("/admin/sales/fix-queue",),
+        exact=True,
+    ),
     Tool("sales.decks", "Sales Decks", "Sales", ("/admin/sales-decks", "/admin/sales/decks", "/admin/api/generate-deck", "/admin/api/deck-runs")),
     Tool("website_ops.seo", "Overview, Indexing & Query Map", "Website Ops", ("/admin/website-ops", "/admin/website-ops/indexing", "/admin/website-ops/queries", "/admin/api/website-ops/run", "/admin/api/website-ops/status"), exact=True),
     Tool("website_ops.queue", "Queue", "Website Ops", ("/admin/website-ops/queue", "/admin/website-ops/feedback", "/admin/api/website-ops/feedback")),

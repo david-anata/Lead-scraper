@@ -1259,6 +1259,15 @@ class NavAccessSafetyTests(unittest.TestCase):
         nav = render_agent_nav(is_superadmin=True)
         self._assert_all_hrefs_accessible(nav, set(), is_superadmin=True)
 
+    def test_workspace_home_is_authenticated_but_not_tool_gated(self) -> None:
+        from sales_support_agent.services.access.middleware import _resolve_tool
+
+        self.assertIsNone(_resolve_tool("/admin"))
+        self.assertEqual(
+            _resolve_tool("/admin/sales/fix-queue").key,
+            "sales.priorities",
+        )
+
     def test_shell_has_skip_link_and_semantic_account_menu(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav
 
