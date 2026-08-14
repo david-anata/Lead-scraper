@@ -32,8 +32,8 @@ The Vercel duplicate is real and functional, but it is not yet a production-equi
 - Fulfillment report files have a PostgreSQL-backed durable mirror with hash validation and lazy restore.
 - Focused tests for cron authentication/leases, Building operations, Fulfillment storage, dashboards, Finance upload compatibility, intake compatibility, and canonical navigation pass.
 - Render production and `agent.anatainc.com` remain unchanged.
-- Release candidate `ab8d145` is deployed as Vercel deployment `dpl_Frrh3wxQTPVUWdMQ7jUMbvLDCF5o` and Vercel reports it ready at the stable staging hostname.
-- The hosted release gate passed against the exact deployed revision: 3,348 tests passed, one skipped, zero failed, plus 65 passing subtests. Finance renderer boundaries use and test the Denver operator business date so UTC midnight does not change the page or release result.
+- Release candidate code `aedbc4e` plus evidence-only commit `e38e96d` is deployed as Vercel deployment `dpl_mvLbqzjvW2n5fSFjHQHNAgwQFu5X`; Vercel reports it ready at the stable staging hostname.
+- The hosted release gate passed against the exact application-code revision: 3,350 tests passed, one skipped, zero failed, plus 65 passing subtests. Finance renderer boundaries use and test the Denver operator business date so UTC midnight does not change the page or release result.
 - Authenticated administrator login works on the immutable staging deployment. Ten major desktop sections render their canonical main navigation and expected page heading without browser console warnings or errors.
 - Sales Deal Board, Fulfillment Pipeline, HR Dashboard, and Finance were visually reviewed at 1440 by 900. Their global header, section navigation, content alignment, spacing, cards, and empty states are cohesive and unclipped.
 - The deployed desktop pass rechecked Workspace Home, Sales Deal Board, Fulfillment Prospects & Assets, Finance Today, and HR Dashboard. The shared full-width header, section navigation, content grid, cards, and empty states remain cohesive and unclipped.
@@ -42,17 +42,20 @@ The Vercel duplicate is real and functional, but it is not yet a production-equi
 - Performance is closed for the current candidate: three fresh deployments returned five concurrent readiness responses in 0.6–1.1 seconds, all 200; ten authenticated representative pages remained under the ten-second cold-navigation ceiling and warm repeats were under two seconds.
 - Personalized workspace home release `b032aec` is deployed as `dpl_DuYJ6n851cNVZkstd3MnqtVu5bFN`. The live desktop pass verified permission-filtered workspaces, assigned-work framing, ordered shortcut controls, recent-page persistence, revised Website Ops/Fulfillment/Executive labels, semantic main regions, and a clean browser console. Production remained unchanged.
 - Migration hardening release `ff46421` is deployed as `dpl_BKU8CpgwVtjHW6HCsUityRESQ3kQ`. The comparator now proves sampled-record fingerprints, timestamp watermarks, and PostgreSQL sequence state in addition to schema, row counts, and artifact hashes. An authenticated read-only synthetic health schedule is registered; its unauthenticated live path rejects with 401 and all write schedules remain disabled.
+- The production Render service is confirmed read-only as `Lead-scraper`, currently on commit `7d881c2`. Its source PostgreSQL database contains 171 tables and 223,016 rows at the August 13 inventory point.
+- Render confirms the production service has no persistent disk. Retained state that must survive migration is database-backed, including `website_ops_files`, `content_artifacts`, and report tables; there is no separate Render disk archive to transfer.
+- Staging now exposes an authenticated, read-only scheduler preflight contract. Its focused reliability/security checks and the hosted 3,350-test regression pass; the live unauthenticated path fails closed with 401.
 
 The following items remain open and block a truthful claim of 100% completion:
 
 | Gate | Remaining work | Evidence required to close | Owner help required |
 | --- | --- | --- | --- |
 | Stable staging identity | DNS and HTTPS are closed; register staging callback and webhook URLs with every provider | Successful provider login/logout and callback registry with pass/fail receipts | Provide access to provider consoles when an existing session is unavailable |
-| Production data parity | Export Render data, import/reconcile it in Neon, compare schema, counts, samples, sequences, and timestamps | Signed comparison report; repeatable full-plus-delta migration; successful restore rehearsal | Access to the authoritative Render database or an owner-provided export |
-| Artifact parity | Locate and migrate retained Website Ops/Fulfillment files and any uploaded/generated assets currently stored on Render | Source/destination counts, hashes, timestamps, and sampled rendered reports | Access to the Render persistent disk or an owner-provided archive |
+| Production data parity | Source access and baseline inventory are closed; export Render data, import/reconcile it in Neon, compare schema, counts, samples, sequences, and timestamps | Signed comparison report; repeatable full-plus-delta migration; successful restore rehearsal | Enter Vercel/Neon two-factor verification in the open Query console, or provide an approved migration window for the export/import |
+| Artifact parity | Closed as a separate filesystem gate: Render has no persistent disk; retained artifacts are represented in PostgreSQL and move with the database | Database comparison must include `website_ops_files`, `content_artifacts`, and report tables; sample retained reports after import | None beyond the database migration access above |
 | Durable execution | Inventory every `BackgroundTasks` path; move must-survive work to a durable queue/job; add any missing digest or synthetic-health schedule | Job ledger, overlap/retry tests, forced-failure receipt, no orphan Render schedule | Provider sandbox records only if controlled write testing needs them |
 | Integration parity | Exercise OAuth, webhooks, reads, controlled writes, permission failures, and audit receipts for every major integration | Workflow matrix containing happy path, failure path, operator receipt, and source-system receipt | Login/approval in Google, QuickBooks, Plaid, HubSpot, ClickUp, Slack, Riverside, or other provider consoles as encountered |
-| Regression suite | Closed: hosted full-suite pass completed against the exact deployed revision | 3,348 passed, one skipped, zero failed, plus 65 passing subtests | None |
+| Regression suite | Closed: hosted full-suite pass completed against the exact deployed application-code revision | 3,350 passed, one skipped, zero failed, plus 65 passing subtests | None |
 | Performance | Closed for the current candidate; repeat only after a material runtime/configuration change | Three fresh-deployment rounds and authenticated page timings recorded in `vercel-performance-receipt.md` | None |
 | Product QA | Complete 1280px and shared-report coverage; test keyboard, restricted permissions, loading/error/stale states, and repeat fresh-eyes pass | Three complete QA passes against one immutable deployment; screenshot and log evidence | Restricted-role test account or approval to create one in staging |
 | Rehearsal | Perform full snapshot plus delta rehearsal, validate jobs in shadow mode, prove rollback, time the runbook | Completed rehearsal record and rollback proof | Schedule a short rehearsal window and name the go/no-go and rollback owners |
@@ -62,8 +65,8 @@ The following items remain open and block a truthful claim of 100% completion:
 
 The engineering work should continue without waiting on these items, but these owner-controlled actions are mandatory before the corresponding gates can close:
 
-1. Make the Render database and persistent artifacts available for a read-only migration export.
-2. Permit or perform staging callback registration in the external provider consoles.
+1. Complete Vercel/Neon two-factor verification for the open read-only Query console so the target inventory and migration rehearsal can proceed.
+2. Permit or perform staging callback registration in the external provider consoles, beginning with the confirmed Google redirect mismatch.
 3. Supply a restricted-role staging account for permission QA.
 4. Before cutover, name the go/no-go owner and rollback owner and explicitly approve the production move.
 

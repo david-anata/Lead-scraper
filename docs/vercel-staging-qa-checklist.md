@@ -1,7 +1,7 @@
 # Agent staging QA links
 
-Release: `ab8d145`  
-Deployment: `dpl_Frrh3wxQTPVUWdMQ7jUMbvLDCF5o`  
+Release: `e38e96d` (application code `aedbc4e`)  
+Deployment: `dpl_mvLbqzjvW2n5fSFjHQHNAgwQFu5X`  
 Scope: desktop staging only; production is unchanged
 
 Use the same four checks on every page: the global header spans the viewport, the content aligns to the shared grid, the active workspace/page is clear, and no content is clipped or horizontally scrolling.

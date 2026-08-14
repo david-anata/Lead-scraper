@@ -19,9 +19,9 @@ Status: rehearsal-ready; execution requires the owner-approved maintenance windo
 ## Rehearsal
 
 1. Record the Render deployment identifier, Vercel deployment identifier, DNS state, provider callbacks, and scheduler state.
-2. Export a read-only full Render database snapshot and persistent-artifact archive.
-3. Restore both into isolated migration targets.
-4. Run `python scripts/vercel_migration_audit.py` with source and target database URLs and, when available, both artifact directories.
+2. Export a read-only full Render database snapshot. The production service has no persistent disk; retained Website Ops, Content, Fulfillment, and report artifacts are database-backed and remain inside this snapshot.
+3. Restore the snapshot into the isolated Neon migration target.
+4. Run `python scripts/vercel_migration_audit.py` with source and target database URLs. Artifact-directory arguments remain optional and are not required for the current Render service because no persistent disk exists.
 5. Correct every reported mismatch. Re-run the same restore to prove idempotency.
 6. Capture a second source delta and apply it once. Confirm no duplicate records or artifacts.
 7. Run authentication, one page per major section, shared reports, critical read paths, and dry-run job endpoints.
