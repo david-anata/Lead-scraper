@@ -7,8 +7,8 @@ Status: engineering candidate ready for provider registration and timed rehearsa
 - Branch: `codex/vercel-agent-duplicate`
 - Candidate application commit: `ce72a0a`
 - Full GitHub release gate: run `31815414887`, passed in 5m34s
-- Current immutable deployment: `dpl_H5LDvrC8UrN8vUF6MfisionZkUdb`
-- Immutable URL: `https://anata-agent-staging-i4ce6rj2k-david-narayans-projects.vercel.app`
+- Current immutable deployment: `dpl_G2EQnTDKdye7gwwheKvJhLN1Q1fK`
+- Immutable URL: `https://anata-agent-staging-1uxrn0rlx-david-narayans-projects.vercel.app`
 - Stable staging URL: `https://agent-staging.anatainc.com`
 - Database: Supabase project `vfcmljqakphwhslxtfzv`, `us-west-1`, dedicated restricted `agent_app` role
 
@@ -76,6 +76,11 @@ Status: engineering candidate ready for provider registration and timed rehearsa
   cleanup; the indexes remain unchanged now to preserve source/target schema
   parity. Newly reset index-usage statistics will be reviewed only after real
   post-cutover traffic.
+- A dedicated Resend staging webhook is enabled for delivery, bounce,
+  complaint, delay, and failure events. Its signing secret is stored as a
+  sensitive Vercel environment value and the resulting deployment is ready on
+  the stable staging alias. Five concurrent readiness calls returned 200. A
+  provider-generated signed test event is the remaining Resend receipt.
 
 ## Required before asking for cutover approval
 

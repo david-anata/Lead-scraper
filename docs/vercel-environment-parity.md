@@ -35,6 +35,9 @@ This receipt records variable names and configuration intent only. It never reco
 - Google sign-in and Gmail's staging redirect URIs are registered in the
   existing Google OAuth client without removing either production URI. Real
   Google sign-in to staging passes.
+- The dedicated Resend staging webhook is enabled for the five event types the
+  application supports. Its sensitive signing secret is deployed to Vercel;
+  deployment `dpl_G2EQnTDKdye7gwwheKvJhLN1Q1fK` is ready on the stable alias.
 
 ## Intentionally local or defaulted
 
@@ -53,7 +56,9 @@ These are not safe to invent or copy without validating the owning provider acco
   exist, but the signing secret itself is absent and must be supplied or
   confirmed in the Instantly console.
 - Provider-side registration still needs to be verified for QuickBooks, Plaid,
-  Resend, and, if those write paths are being launched, Stripe and Instantly.
+  and, if those write paths are being launched, Stripe and Instantly. Resend
+  registration is complete, but its provider-generated signed event receipt is
+  still required.
   Google sign-in and Gmail registration are complete; Gmail account consent is
   a separate controlled receipt.
 
