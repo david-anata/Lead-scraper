@@ -985,6 +985,15 @@ async def outbound_push_to_clay(request: Request) -> Response:
 
 
 _LEADS_CSS = """
+  .ld-header { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:24px; align-items:end; margin-bottom:20px; }
+  .ld-header h1 { font-size:clamp(28px,3vw,38px); }
+  .ld-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+  .ld-primary { padding:10px 16px!important; font-size:13px!important; }
+  .ld-command { display:flex; gap:10px; align-items:end; flex-wrap:wrap; margin:18px 0; padding:14px; border:1px solid #e5e7eb; border-radius:14px; background:#fafafa; }
+  .ld-command label { display:grid; gap:5px; color:#5d6977; font-size:12px; font-weight:700; }
+  .ld-command input,.ld-command select { min-height:40px; padding:8px 10px; border:1px solid #dfe3e6; border-radius:9px; background:#fff; color:#2b3644; font:inherit; }
+  .ld-command input { min-width:min(320px,80vw); }
+  .ld-result-count { margin-left:auto; align-self:center; color:#5d6977; font-size:13px; font-weight:700; }
   .ld-table { border-collapse:collapse; width:100%; background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden; }
   .ld-table th, .ld-table td { text-align:left; padding:9px 12px; border-bottom:1px solid #f0f0f3; font-size:13px; white-space:nowrap; }
   .ld-table th { background:#fafafa; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; }
@@ -996,6 +1005,8 @@ _LEADS_CSS = """
   .lo-btn { display:inline-block; padding:6px 12px; border-radius:9px; background:#2B3644; color:#fff;
     font-family:"Montserrat",sans-serif; font-weight:800; font-size:11px; text-decoration:none; white-space:nowrap; }
   .lo-btn:hover { background:#1f2833; color:#fff; }
+  .lo-btn:focus-visible { outline:3px solid rgba(133,187,218,.55); outline-offset:2px; }
+  @media(max-width:760px){.ld-header{grid-template-columns:1fr}.ld-actions{justify-content:flex-start}.ld-result-count{width:100%;margin-left:0}.ld-command input{min-width:0;width:100%}.ld-command label:first-child{width:100%}}
 """
 
 
@@ -1024,7 +1035,10 @@ def outbound_leads(request: Request) -> Response:
 
     if leads:
         rows = "".join(
-            f"<tr><td class='ld-{html.escape(str(l.get('tier') or '-'))}'>{html.escape(str(l.get('tier') or '-'))}</td>"
+            f"<tr data-company='1' data-tier='{html.escape(str(l.get('tier') or ''), quote=True)}' "
+            f"data-niche='{html.escape(str(l.get('niche') or ''), quote=True)}' "
+            f"data-search='{html.escape(' '.join(str(l.get(k) or '') for k in ('brand','domain','reason','recipe','country','niche')).lower(), quote=True)}'>"
+            f"<td class='ld-{html.escape(str(l.get('tier') or '-'))}'>{html.escape(str(l.get('tier') or '-'))}</td>"
             f"<td>{html.escape(str(l.get('brand') or '-'))}</td>"
             f"<td>{html.escape(str(l.get('domain') or ''))}</td>"
             f"<td>{html.escape(str(l.get('niche') or '-'))}</td>"
@@ -1047,11 +1061,22 @@ def outbound_leads(request: Request) -> Response:
     tier_line = " &middot; ".join(f"{k}: {v}" for k, v in sorted(tiers.items())) or "-"
     top_niches = ", ".join(f"{k} ({v})" for k, v in sorted(niches.items(), key=lambda x: -x[1])[:4]) or "-"
 
+    niche_options = "".join(
+        f'<option value="{html.escape(niche)}">{html.escape(niche.replace("_", " ").title())}</option>'
+        for niche in sorted(niches)
+    )
+
     body = f"""
-        <h1>Leads</h1>
-        <p class="sub">Our own record of every brand we have sourced. Clay enriches these and
-        Instantly sends to them, but the leads themselves live here, so losing access to
-        either tool never loses the leads.</p>
+        <header class="ld-header">
+          <div>
+            <h1>Company Library</h1>
+            <p class="sub">Find, review, and export every company sourced for prospecting. Lead Operations controls how new companies enter this library.</p>
+          </div>
+          <div class="ld-actions" aria-label="Company library actions">
+            <a class="lo-btn ld-primary" href="/admin/api/outbound/leads.csv">Download all for Clay</a>
+            <a class="lo-btn" href="/admin/outbound/brands">Find fresh companies</a>
+          </div>
+        </header>
 
         <div style="margin:0 0 18px">
           <span class="ld-stat"><b>{len(leads):,}</b> leads held</span>
@@ -1060,12 +1085,24 @@ def outbound_leads(request: Request) -> Response:
         </div>
         <p class="ld-note" style="margin:0 0 14px">Top niches: {html.escape(top_niches)}</p>
 
+        <nav class="ld-actions" aria-label="Prospecting workspace" style="justify-content:flex-start;margin-bottom:14px">
+          <a class="lo-btn" href="/admin/outbound/lead-ops">Manage sourcing</a>
+          <a class="lo-btn" href="/admin/outbound/scoreboard">View prospecting performance</a>
+        </nav>
+
+        <div class="ld-command" aria-label="Filter company library">
+          <label>Search companies<input id="ld-search" type="search" placeholder="Brand, domain, reason, or recipe"></label>
+          <label>Tier<select id="ld-tier"><option value="">All tiers</option><option value="A">Tier A</option><option value="B">Tier B</option><option value="C">Tier C</option></select></label>
+          <label>Niche<select id="ld-niche"><option value="">All niches</option>{niche_options}</select></label>
+          <span id="ld-count" class="ld-result-count" aria-live="polite">{len(leads):,} companies shown</span>
+        </div>
+
         <div class="ld-scroll">
         <table class="ld-table">
           <thead><tr><th>Tier</th><th>Brand</th><th>Domain</th><th>Niche</th><th>Country</th>
           <th>Revenue/yr</th><th>Score</th><th>Amazon</th><th>Market</th><th>Opening line</th>
           <th>Recipe</th><th>Settings</th><th>Sourced</th><th></th></tr></thead>
-          <tbody>{rows}</tbody>
+          <tbody id="ld-body">{rows}</tbody>
         </table>
         </div>
         <p class="ld-note">Showing the {len(leads):,} most recent. Every row records which
@@ -1074,11 +1111,49 @@ def outbound_leads(request: Request) -> Response:
         <p class="ld-note">Amazon shows how sure we are that we found the right listings.
         A brand we could not match keeps its row and says why, because a brand that
         disappears from this list looks like a brand we never had.</p>
+        <script>
+          (function(){{
+            var q=document.getElementById('ld-search'), tier=document.getElementById('ld-tier'),
+                niche=document.getElementById('ld-niche'), count=document.getElementById('ld-count'),
+                rows=Array.from(document.querySelectorAll('#ld-body tr[data-company]'));
+            function apply(){{
+              var text=(q.value||'').trim().toLowerCase(), t=tier.value, n=niche.value, visible=0;
+              rows.forEach(function(row){{
+                var show=(!text || row.dataset.search.indexOf(text)!==-1) && (!t || row.dataset.tier===t) && (!n || row.dataset.niche===n);
+                row.hidden=!show; if(show) visible+=1;
+              }});
+              count.textContent=visible.toLocaleString()+' compan'+(visible===1?'y':'ies')+' shown';
+            }}
+            q.addEventListener('input',apply); tier.addEventListener('change',apply); niche.addEventListener('change',apply);
+          }})();
+        </script>
     """
     return HTMLResponse(_shell_page(
         request, active="outbound_leads", title="Outbound Leads",
         extra_css=_LEADS_CSS + _AMAZON_CSS, body=body,
     ))
+
+
+@router.get("/admin/api/outbound/leads.csv", response_class=Response)
+def outbound_leads_csv(request: Request) -> Response:
+    """Export the complete stored company library in Clay-ready columns.
+
+    This read-only action does not mark companies as contacted or delivered.
+    """
+    import outbound_pipeline as _op
+    from sales_support_agent.services import outbound_memory
+
+    try:
+        from sales_support_agent.models.database import get_engine
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        engine = None
+    leads = outbound_memory.load_leads(engine, limit=None)
+    return Response(
+        content=_op.leads_to_csv(leads),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="anata_company_library_clay.csv"'},
+    )
 
 
 _LEAK_CSS = """

@@ -449,15 +449,20 @@ def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_
         return 0
 
 
-def load_leads(engine, limit: int = 500) -> list[dict[str, Any]]:
-    """Every sourced lead with its full record, newest first."""
+def load_leads(engine, limit: int | None = 500) -> list[dict[str, Any]]:
+    """Every sourced lead with its full record, newest first.
+
+    ``limit=None`` is used only by explicit full-library exports. Interactive
+    pages keep a numeric limit so their initial render remains bounded.
+    """
     if engine is None:
         return []
     try:
         ensure_table(engine)
         rows, cols = _read_leads(engine)
         out = []
-        for r in rows[:limit]:
+        selected_rows = rows if limit is None else rows[:max(0, int(limit))]
+        for r in selected_rows:
             d = dict(zip(cols, r))
             try:
                 d["signals"] = json.loads(d.get("signals") or "[]")
