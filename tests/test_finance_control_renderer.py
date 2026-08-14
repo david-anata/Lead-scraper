@@ -81,6 +81,10 @@ def _render(
             "sales_support_agent.services.cashflow.control.build_finance_control",
             return_value=state,
         ) as builder,
+        patch(
+            "sales_support_agent.services.cashflow.overview.operator_today",
+            return_value=TODAY,
+        ),
     ):
         page = asyncio.run(render_cashflow_overview_page())
     builder.assert_called_once_with(

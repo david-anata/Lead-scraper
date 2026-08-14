@@ -28,6 +28,7 @@ from sales_support_agent.services.cashflow.engine import (
 )
 from sales_support_agent.services.cashflow.obligations import list_obligations
 from sales_support_agent.services.cashflow.smart_cfo import load_smart_cfo_analysis
+from sales_support_agent.services.cashflow.business_time import operator_today
 
 
 def _resolve_current_balance(
@@ -143,7 +144,7 @@ def _build_daily_chart_data(days_back: int = 14, days_forward: int = 42) -> dict
     """
     from collections import defaultdict
 
-    today = date.today()
+    today = operator_today()
     start = today - timedelta(days=days_back)
     end   = today + timedelta(days=days_forward)
 
@@ -3259,7 +3260,7 @@ async def render_cashflow_overview_page(
         income_decisions, source_connections = None, None
     except Exception:
         income_decisions, source_connections = None, {"status": "error"}
-    today = date.today()
+    today = operator_today()
     control, fallback, control_error = _build_renderer_state(
         rows,
         balance_cents,
