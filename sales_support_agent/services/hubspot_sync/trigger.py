@@ -10,6 +10,7 @@ refreshes them in the background.
 from __future__ import annotations
 
 import logging
+import os
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from threading import Lock
@@ -25,8 +26,17 @@ from sales_support_agent.services.hubspot_sync.service import (
 logger = logging.getLogger(__name__)
 
 
+def _serverless_runtime() -> bool:
+    """Return true when a request may end before an in-process thread finishes."""
+
+    return bool(os.getenv("VERCEL", "").strip())
+
+
 def _ensure_state(app) -> None:
-    if getattr(app.state, "hubspot_sync_executor", None) is None:
+    if (
+        getattr(app.state, "hubspot_sync_executor", None) is None
+        and not _serverless_runtime()
+    ):
         app.state.hubspot_sync_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="hubspot-sync"
         )
@@ -98,6 +108,12 @@ def start_hubspot_sync(app, *, force: bool = False) -> dict[str, Any]:
     caller's changes (e.g. after an action approval) are guaranteed to land in the
     mirror even if the current run started before those changes.
     """
+    if _serverless_runtime():
+        return {
+            "status": "scheduled",
+            "running": False,
+            "message": "HubSpot refresh is handled by the scheduled sales job.",
+        }
     _ensure_state(app)
     try:
         _settings = _get_agent_settings(app)

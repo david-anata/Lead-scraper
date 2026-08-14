@@ -457,7 +457,10 @@ def sync_hubspot_sales(
             _maybe_fix_close_date(session, client, deal_id, as_of, result)
     except Exception as exc:  # noqa: BLE001
         logger.exception("[hubspot_sync] deal iteration failed")
-        result.errors.append(f"deal sync: {exc}")
+        # A database/flush failure leaves SQLAlchemy's transaction unusable.
+        # Do not continue and let session_scope attempt to commit that poisoned
+        # session; re-raise so it performs the rollback and records a failed run.
+        raise RuntimeError(f"HubSpot deal sync aborted: {exc}") from exc
 
     # Batch-read referenced companies and contacts (100 per call).
     try:

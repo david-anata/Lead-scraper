@@ -32,6 +32,10 @@ from sales_support_agent.models.entities import (  # noqa: E402
     HubSpotLineItem,
 )
 from sales_support_agent.services.hubspot_sync.service import sync_hubspot_sales  # noqa: E402
+from sales_support_agent.services.hubspot_sync.trigger import (  # noqa: E402
+    hubspot_sync_status,
+    start_hubspot_sync,
+)
 
 
 def _deal(did, name, amount, stage, closedate, owner="42"):
@@ -183,6 +187,39 @@ class HubSpotSyncTests(unittest.TestCase):
             result = sync_hubspot_sales(session, Unconfigured(), self._settings())
         self.assertFalse(result.as_dict()["ok"])
         self.assertTrue(result.errors)
+
+    def test_database_failure_aborts_instead_of_committing_failed_session(self):
+        client = FakeHubSpotClient()
+        with session_scope(self.sf) as session:
+            original_flush = session.flush
+
+            def _failed_flush(*args, **kwargs):
+                raise RuntimeError("database connection closed")
+
+            session.flush = _failed_flush  # type: ignore[method-assign]
+            with self.assertRaisesRegex(RuntimeError, "deal sync aborted"):
+                sync_hubspot_sales(session, client, self._settings())
+            session.flush = original_flush  # type: ignore[method-assign]
+
+
+class HubSpotSyncTriggerTests(unittest.TestCase):
+    def test_vercel_never_starts_an_in_process_sync(self):
+        previous = os.environ.get("VERCEL")
+        os.environ["VERCEL"] = "1"
+        app = SimpleNamespace(state=SimpleNamespace())
+        try:
+            result = start_hubspot_sync(app, force=True)
+            status = hubspot_sync_status(app)
+        finally:
+            if previous is None:
+                os.environ.pop("VERCEL", None)
+            else:
+                os.environ["VERCEL"] = previous
+
+        self.assertEqual(result["status"], "scheduled")
+        self.assertFalse(result["running"])
+        self.assertFalse(status["running"])
+        self.assertIsNone(getattr(app.state, "hubspot_sync_executor", None))
 
 
 class TestContactLinkPreservation(unittest.TestCase):
