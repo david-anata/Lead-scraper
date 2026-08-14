@@ -4,7 +4,7 @@ Generated from the mounted FastAPI application. Re-run
 `python scripts/generate_agent_route_inventory.py --output docs/agent-route-state-inventory.md`
 after adding, removing, or moving a route.
 
-Routes inventoried: **686**
+Routes inventoried: **687**
 
 | Family | Route | Method | Access | Renderer / handler | Primary job | Phase |
 |---|---|---|---|---|---|---|
@@ -652,6 +652,7 @@ Routes inventoried: **686**
 | Service / API | `/api/vercel-cron/building-operations` | `GET` | Service contract | `building_operations_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/content` | `GET` | Service contract | `content_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/daily-digest` | `GET` | Service contract | `daily_digest_cron` | Read, navigate, or download | Exempt |
+| Service / API | `/api/vercel-cron/daily-lead-build` | `GET` | Service contract | `daily_lead_build_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/durable-tasks` | `GET` | Service contract | `durable_tasks_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/gmail-sync` | `GET` | Service contract | `gmail_sync_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/hr-reminders` | `GET` | Service contract | `hr_reminders_cron` | Read, navigate, or download | Exempt |

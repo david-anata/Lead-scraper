@@ -35,6 +35,7 @@ All Vercel write schedules require `CRON_SECRET` and remain inert while `VERCEL_
 | Durable task repair | `/api/vercel-cron/durable-tasks` | Every 5 minutes | Disabled |
 | Daily digest | `/api/vercel-cron/daily-digest` | Weekdays | Disabled |
 | Building operations | `/api/vercel-cron/building-operations` | Hourly | Disabled |
+| Original daily lead build | `/api/vercel-cron/daily-lead-build` | Weekdays at 05:00 UTC | Disabled |
 | Outbound morning | `/api/jobs/outbound-morning/run` | Daily UTC windows with local-time guard | Disabled |
 | Synthetic health | `/api/vercel-cron/synthetic-health` | Hourly | Active read-only |
 
