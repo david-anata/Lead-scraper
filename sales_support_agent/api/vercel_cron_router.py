@@ -51,6 +51,17 @@ from sales_support_agent.services.durable_tasks import drain_durable_tasks
 
 router = APIRouter(prefix="/api/vercel-cron", tags=["vercel-cron"])
 _DENVER = ZoneInfo("America/Denver")
+_WRITE_SCHEDULES = (
+    "website-ops",
+    "content",
+    "stale-leads",
+    "gmail-sync",
+    "daily-digest",
+    "durable-tasks",
+    "sales-operator",
+    "hr-reminders",
+    "building-operations",
+)
 
 
 def _require_vercel_cron(authorization: str | None) -> None:
@@ -143,6 +154,51 @@ def synthetic_health_cron(
             "commit": getattr(request.app.state, "render_git_commit", "unknown"),
         },
         status_code=200 if healthy else 503,
+    )
+
+
+@router.get("/preflight")
+def cron_preflight(
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Prove the scheduler boundary is ready without running a scheduled job."""
+
+    _require_vercel_cron(authorization)
+    database_ready = False
+    durable_queue_ready = False
+    try:
+        with request.app.state.session_factory() as session:
+            session.execute(text("SELECT 1"))
+            database_ready = True
+            try:
+                session.execute(text("SELECT 1 FROM durable_task_queue LIMIT 1"))
+            except Exception:
+                session.rollback()
+            else:
+                durable_queue_ready = True
+    except Exception:
+        pass
+    checks = {
+        "application_ready": bool(getattr(request.app.state, "ready", False)),
+        "database_ready": database_ready,
+        "durable_queue_ready": durable_queue_ready,
+        "writes_disabled": not _cron_writes_enabled(),
+    }
+    passed = all(checks.values())
+    return JSONResponse(
+        {
+            "status": "passed" if passed else "failed",
+            "checks": checks,
+            "write_schedules": list(_WRITE_SCHEDULES),
+            "external_writes": False,
+            "message": (
+                "Scheduler prerequisites are ready; write schedules remain disabled."
+                if passed
+                else "One or more scheduler prerequisites are not ready."
+            ),
+        },
+        status_code=200 if passed else 503,
     )
 
 

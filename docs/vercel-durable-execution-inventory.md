@@ -40,6 +40,8 @@ All Vercel write schedules require `CRON_SECRET` and remain inert while `VERCEL_
 
 The synthetic route checks application readiness, performs a bounded database query, and reports durable-queue backlog without invoking any external provider or write path. It requires the cron bearer secret even though it is read-only.
 
+`/api/vercel-cron/preflight` is a second authenticated read-only receipt. It proves application readiness, database access, durable-queue schema availability, the full write-schedule inventory, and—critically—that the global write flag is still disabled. It fails closed if writes are enabled and never invokes a scheduled service.
+
 ## Cutover proof still required
 
 - Capture one authenticated read-only synthetic receipt from Vercel.
@@ -47,4 +49,3 @@ The synthetic route checks application readiness, performs a bounded database qu
 - Force one isolated durable-task failure, verify retry state, then recover it without duplicating the effect.
 - Immediately before cutover, verify Render schedules are stopped before changing `VERCEL_CRON_WRITES_ENABLED`.
 - Enable one Vercel schedule at a time and confirm its first successful ledger receipt.
-

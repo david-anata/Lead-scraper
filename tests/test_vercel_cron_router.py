@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from sales_support_agent.api.vercel_cron_router import router
 
@@ -13,7 +14,11 @@ from sales_support_agent.api.vercel_cron_router import router
 def _client(*, ready: bool = False) -> TestClient:
     app = FastAPI()
     app.state.settings = SimpleNamespace(internal_api_key="internal")
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     app.state.session_factory = sessionmaker(bind=engine)
     app.state.ready = ready
     app.state.render_git_commit = "test-commit"
@@ -34,6 +39,7 @@ def test_all_vercel_crons_require_bearer_secret(monkeypatch) -> None:
         "hr-reminders",
         "building-operations",
         "synthetic-health",
+        "preflight",
     ):
         assert _client().get(f"/api/vercel-cron/{path}").status_code == 401
 
@@ -71,3 +77,56 @@ def test_synthetic_health_is_read_only_and_available_before_cutover(monkeypatch)
     assert response.json()["status"] == "passed"
     assert response.json()["external_writes"] is False
     assert response.json()["checks"] == {"application_ready": True, "database": True}
+
+
+def test_cron_preflight_proves_prerequisites_without_enabling_writes(monkeypatch) -> None:
+    monkeypatch.setenv("CRON_SECRET", "cron-secret")
+    monkeypatch.setenv("VERCEL_CRON_WRITES_ENABLED", "false")
+    client = _client(ready=True)
+    with client.app.state.session_factory() as session:
+        session.execute(
+            __import__("sqlalchemy").text(
+                "CREATE TABLE durable_task_queue (id INTEGER PRIMARY KEY)"
+            )
+        )
+        session.commit()
+
+    response = client.get(
+        "/api/vercel-cron/preflight",
+        headers={"Authorization": "Bearer cron-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "passed"
+    assert response.json()["external_writes"] is False
+    assert response.json()["checks"] == {
+        "application_ready": True,
+        "database_ready": True,
+        "durable_queue_ready": True,
+        "writes_disabled": True,
+    }
+    assert response.json()["write_schedules"] == [
+        "website-ops",
+        "content",
+        "stale-leads",
+        "gmail-sync",
+        "daily-digest",
+        "durable-tasks",
+        "sales-operator",
+        "hr-reminders",
+        "building-operations",
+    ]
+
+
+def test_cron_preflight_fails_closed_if_writes_are_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("CRON_SECRET", "cron-secret")
+    monkeypatch.setenv("VERCEL_CRON_WRITES_ENABLED", "true")
+
+    response = _client(ready=True).get(
+        "/api/vercel-cron/preflight",
+        headers={"Authorization": "Bearer cron-secret"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["writes_disabled"] is False
+    assert response.json()["external_writes"] is False
