@@ -1,8 +1,14 @@
 # Agent staging QA links
 
-Release: `3aa3429`  
-Deployment: `dpl_Cf9SoDH4dudnwF1eNuiARTQDrg6B`  
+Release: latest `codex/vercel-agent-duplicate` staging candidate
+
+Deployment: canonical staging alias below
+
 Scope: desktop staging only; production is unchanged
+
+Automated access QA verifies that workspace shortcuts and Recent links are both
+filtered by the signed-in user's permissions. Direct requests to unauthorized
+Finance, Executive, and HR pages remain denied for a Sales-only account.
 
 Use the same four checks on every page: the global header spans the viewport, the content aligns to the shared grid, the active workspace/page is clear, and no content is clipped or horizontally scrolling.
 

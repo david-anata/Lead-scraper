@@ -77,7 +77,8 @@ def get_home_preferences(email: str, workspaces: list[dict[str, str]]) -> dict:
         shortcuts = allowed_ids[:4]
     recent = [
         item for item in stored.get("recent", [])
-        if isinstance(item, dict) and _valid_recent_path(str(item.get("path") or ""))
+        if isinstance(item, dict)
+        and _recent_path_is_accessible(str(item.get("path") or ""), workspaces)
     ][:4]
     return {"shortcuts": shortcuts[:6], "recent": recent}
 
@@ -98,8 +99,19 @@ def _valid_recent_path(path: str) -> bool:
     )
 
 
-def record_recent_page(email: str, path: str, workspaces: list[dict[str, str]]) -> bool:
+def _recent_path_is_accessible(path: str, workspaces: list[dict[str, str]]) -> bool:
+    """Keep recent navigation inside the signed-in user's workspace grants."""
     if not _valid_recent_path(path):
+        return False
+    return any(
+        path == href or path.startswith(f"{href.rstrip('/')}/")
+        for workspace in workspaces
+        if (href := str(workspace.get("href") or ""))
+    )
+
+
+def record_recent_page(email: str, path: str, workspaces: list[dict[str, str]]) -> bool:
+    if not _recent_path_is_accessible(path, workspaces):
         return False
     current = get_home_preferences(email, workspaces)
     title = _KNOWN_RECENT_TITLES.get(path)

@@ -3,6 +3,8 @@ from __future__ import annotations
 from sales_support_agent.services.admin_home import (
     _valid_recent_path,
     accessible_workspaces,
+    get_home_preferences,
+    record_recent_page,
     render_admin_home_page,
     render_service_status_page,
 )
@@ -64,6 +66,44 @@ def test_recent_paths_exclude_auth_and_home_actions() -> None:
     assert _valid_recent_path("/admin/login") is False
     assert _valid_recent_path("/admin/home/clock") is False
     assert _valid_recent_path("/admin/sales?owner=me") is False
+
+
+def test_recent_pages_are_filtered_to_authorized_workspaces(monkeypatch) -> None:
+    stored = {
+        "shortcuts": ["sales", "finance"],
+        "recent": [
+            {"path": "/admin/finances", "title": "Finance Today"},
+            {"path": "/admin/sales/deals", "title": "Sales Deal Board"},
+            {"path": "/admin/hr/reports", "title": "Reports"},
+        ],
+    }
+    monkeypatch.setattr(
+        "sales_support_agent.services.admin_home.kv_get_json",
+        lambda _key, _default: stored,
+    )
+    workspaces = accessible_workspaces({"permissions": {"sales.deals"}})
+
+    preferences = get_home_preferences("sales@example.com", workspaces)
+
+    assert preferences["shortcuts"] == ["sales"]
+    assert preferences["recent"] == [
+        {"path": "/admin/sales/deals", "title": "Sales Deal Board"}
+    ]
+
+
+def test_recent_page_rejects_an_inaccessible_workspace(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sales_support_agent.services.admin_home.kv_get_json",
+        lambda _key, _default: {},
+    )
+    monkeypatch.setattr(
+        "sales_support_agent.services.admin_home.kv_set_json",
+        lambda *_args: None,
+    )
+    workspaces = accessible_workspaces({"permissions": {"sales.deals"}})
+
+    assert record_recent_page("sales@example.com", "/admin/finances", workspaces) is False
+    assert record_recent_page("sales@example.com", "/admin/sales/deals", workspaces) is True
 
 
 def test_workspace_directory_uses_revised_names() -> None:
