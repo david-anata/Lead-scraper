@@ -1324,7 +1324,9 @@ class NavAccessSafetyTests(unittest.TestCase):
         self.assertIn("topbar-section-row", nav)
         self.assertIn("topbar-section-band", nav)
         self.assertIn('href="/admin/website-ops"', nav)
-        self.assertIn('href="/admin/website-ops/queue"', nav)
+        self.assertIn('href="/admin/website-ops/content"', nav)
+        self.assertIn('href="/admin/website-ops/site-health"', nav)
+        self.assertNotIn('href="/admin/website-ops/queue"', nav)
         # reports tool not held -> its pill must not appear.
         self.assertNotIn('href="/admin/website-ops/reports"', nav)
 
@@ -1333,8 +1335,24 @@ class NavAccessSafetyTests(unittest.TestCase):
 
         nav = render_agent_nav("sales_decks", sales_section="sales_decks", permissions={"sales.decks"})
         self.assertIn('href="/admin/sales-decks"', nav)
-        self.assertIn(">Sales Decks</a>", nav)
-        self.assertNotIn(">Sales Assets</a>", nav)
+        self.assertIn(">Sales Assets</a>", nav)
+        self.assertNotIn(">Sales Decks</a>", nav)
+
+    def test_sales_navigation_uses_operator_workspaces_not_implementation_pages(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+
+        nav = render_agent_nav(
+            "outbound_leads",
+            sales_section="outbound_leads",
+            permissions={"sales.deals", "sales.priorities", "sales.decks", "outbound.scoreboard"},
+        )
+        self.assertIn(">Sales Overview</a>", nav)
+        self.assertIn(">Pipeline</a>", nav)
+        self.assertIn(">Prospecting Performance</a>", nav)
+        self.assertIn(">Company Library</a>", nav)
+        self.assertIn(">HubSpot Fixes</a>", nav)
+        self.assertNotIn(">Brand List</a>", nav)
+        self.assertNotIn(">Lead Ops</a>", nav)
 
     def test_sales_fix_queue_uses_canonical_sales_route(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav
@@ -1346,6 +1364,19 @@ class NavAccessSafetyTests(unittest.TestCase):
         )
         self.assertIn('href="/admin/sales/fix-queue"', nav)
         self.assertNotIn('href="/admin">Fix Queue</a>', nav)
+
+    def test_hr_navigation_prioritizes_daily_workspaces(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+
+        nav = render_agent_nav(
+            "hr",
+            hr_section="dashboard",
+            permissions={"hr.access", "hr.payroll"},
+        )
+        for label in ("Today", "People", "Time &amp; Leave", "Payroll", "Compliance", "Manage"):
+            self.assertIn(f">{label}</a>", nav)
+        for implementation_page in ("Setup", "Teams", "Contractors", "Offboarding"):
+            self.assertNotIn(f">{implementation_page}</a>", nav)
 
     def test_superadmin_only_advertising_subpage_is_hidden_from_non_superadmins(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav

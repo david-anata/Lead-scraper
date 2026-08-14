@@ -44,18 +44,17 @@ class _NavSection:
 
 
 _NAV_SECTIONS = [
-    # Outbound lives INSIDE Sales: it is a sales motion, not a separate department.
-    # Control Room stays first so the Sales tab always lands on the overview.
+    # Prospecting lives inside Sales, but its implementation pages do not all
+    # deserve permanent navigation. Lead Ops and fresh-company sourcing remain
+    # reachable from the Company Library workspace.
     _NavSection("sales", "Sales", "sales", [
-        _NavSubpage("sales.deals", "Control Room", "/admin/sales", "sales_operator"),
-        _NavSubpage("sales.deals", "Deal Board", "/admin/sales/deals", "sales_deals"),
+        _NavSubpage("sales.deals", "Sales Overview", "/admin/sales", "sales_operator"),
+        _NavSubpage("sales.deals", "Pipeline", "/admin/sales/deals", "sales_deals"),
         _NavSubpage("sales.deals", "Rep Accountability", "/admin/sales/reps", "sales_reps"),
-        _NavSubpage("outbound.scoreboard", "Outbound", "/admin/outbound/scoreboard", "outbound_scoreboard"),
-        _NavSubpage("outbound.scoreboard", "Lead Ops", "/admin/outbound/lead-ops", "outbound_leadops"),
-        _NavSubpage("outbound.scoreboard", "Leads", "/admin/outbound/leads", "outbound_leads"),
-        _NavSubpage("outbound.scoreboard", "Brand List", "/admin/outbound/brands", "outbound_brands"),
-        _NavSubpage("sales.priorities", "Fix Queue", "/admin/sales/fix-queue", "sales"),
-        _NavSubpage("sales.decks", "Sales Decks", "/admin/sales-decks", "sales_decks"),
+        _NavSubpage("outbound.scoreboard", "Prospecting Performance", "/admin/outbound/scoreboard", "outbound_scoreboard"),
+        _NavSubpage("outbound.scoreboard", "Company Library", "/admin/outbound/leads", "outbound_leads"),
+        _NavSubpage("sales.priorities", "HubSpot Fixes", "/admin/sales/fix-queue", "sales"),
+        _NavSubpage("sales.decks", "Sales Assets", "/admin/sales-decks", "sales_decks"),
     ]),
     _NavSection("website_ops", "Website Ops", "website_ops", [
         _NavSubpage("website_ops.seo", "Today", "/admin/website-ops", "seo_dashboard"),
@@ -90,20 +89,12 @@ _NAV_SECTIONS = [
         _NavSubpage("fulfillment.reports", "CS Reports", "/admin/fulfillment/cs/reports/", "fulfillment_reports"),
     ]),
     _NavSection("hr", "HR", "hr", [
-        _NavSubpage("hr.access", "Dashboard", "/admin/hr", "dashboard"),
-        _NavSubpage("hr.payroll", "Setup", "/admin/hr/setup", "setup"),
-        _NavSubpage("hr.access", "Employees", "/admin/hr/employees", "employees"),
-        _NavSubpage("hr.access", "My onboarding", "/admin/hr/onboarding", "onboarding"),
-        _NavSubpage("hr.access", "Policies", "/admin/hr/policies", "policies"),
-        _NavSubpage("hr.payroll", "Teams", "/admin/hr/teams", "teams"),
-        _NavSubpage("hr.access", "Time & PTO", "/admin/hr/time", "time"),
-        _NavSubpage("hr.access", "Pay statements", "/admin/hr/pay-statements", "pay_statements"),
+        _NavSubpage("hr.access", "Today", "/admin/hr", "dashboard"),
+        _NavSubpage("hr.access", "People", "/admin/hr/employees", "employees"),
+        _NavSubpage("hr.access", "Time & Leave", "/admin/hr/time", "time"),
         _NavSubpage("hr.payroll", "Payroll", "/admin/hr/payroll", "payroll"),
         _NavSubpage("hr.payroll", "Compliance", "/admin/hr/compliance", "compliance"),
-        _NavSubpage("hr.payroll", "Contractors", "/admin/hr/contractors", "contractors"),
-        _NavSubpage("hr.payroll", "Offboarding", "/admin/hr/offboarding", "offboarding"),
-        _NavSubpage("hr.payroll", "Reports", "/admin/hr/reports", "reports"),
-        _NavSubpage("hr.payroll", "Settings", "/admin/hr/settings", "settings"),
+        _NavSubpage("hr.payroll", "Manage", "/admin/hr/settings", "settings"),
     ]),
     # Access/Team management is intentionally NOT a primary nav section — it lives
     # only in the profile dropdown ("Team"). Keeps the top nav identical on every

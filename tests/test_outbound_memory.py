@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 
@@ -199,6 +200,45 @@ class FullLeadRecordTests(unittest.TestCase):
 
     def test_load_leads_is_safe_without_a_database(self):
         self.assertEqual(m.load_leads(None), [])
+
+    def test_complete_library_export_can_load_every_company(self):
+        e = self._e()
+        m.record_leads(e, [self._lead(f"brand-{i}.com") for i in range(4)])
+        self.assertEqual(len(m.load_leads(e, limit=2)), 2)
+        self.assertEqual(len(m.load_leads(e, limit=None)), 4)
+
+    def test_company_library_csv_is_complete_and_read_only(self):
+        from sales_support_agent.api.outbound_router import outbound_leads_csv
+
+        e = self._e()
+        m.record_leads(e, [self._lead("a.com"), self._lead("b.com")])
+        before = m.load_contacted(e)
+        with patch("sales_support_agent.models.database.get_engine", return_value=e):
+            response = outbound_leads_csv(None)
+        body = response.body.decode("utf-8")
+        self.assertIn("a.com", body)
+        self.assertIn("b.com", body)
+        self.assertIn("anata_company_library_clay.csv", response.headers["content-disposition"])
+        self.assertEqual(m.load_contacted(e), before)
+
+    def test_company_library_groups_sourcing_filtering_and_export_actions(self):
+        from sales_support_agent.api.outbound_router import outbound_leads
+
+        e = self._e()
+        m.record_leads(e, [self._lead("rho.com")])
+        with (
+            patch("sales_support_agent.models.database.get_engine", return_value=e),
+            patch("sales_support_agent.api.outbound_router.get_current_user", return_value={}),
+        ):
+            response = outbound_leads(None)
+        body = response.body.decode("utf-8")
+        self.assertIn("Company Library", body)
+        self.assertIn("Download all for Clay", body)
+        self.assertIn("Find fresh companies", body)
+        self.assertIn("Manage sourcing", body)
+        self.assertIn("View prospecting performance", body)
+        self.assertIn('id="ld-search"', body)
+        self.assertIn("rho.com", body)
 
 
 if __name__ == "__main__":
