@@ -1,6 +1,6 @@
 # Anata Agent Vercel Migration Completion Spec
 
-Status: Supabase staging verification in progress — not ready for production cutover
+Status: engineering duplicate verified; owner-controlled provider checks and production cutover remain
 
 Target: a fully verified Vercel duplicate before any production-domain cutover
 
@@ -21,7 +21,11 @@ Anata Agent will run on Vercel with the same pages, permissions, data, integrati
 - Major authenticated desktop pages return successful responses and the shared shell has been visually reviewed.
 - Render production has not been changed.
 - Preview publishing, embedded schedulers, and external writes remain disabled for safety.
-- Remaining gaps are callback/domain registration, durable scheduled execution, persistent artifact parity, integration write-path testing, cold-start proof, full page/state coverage, and cutover rehearsal.
+- The durable database/artifact rehearsal, durable scheduled execution, cold-start
+  proof, permissions, desktop/page coverage, and rollback restore are closed for
+  the current candidate. Remaining gaps are migration-critical provider-console
+  receipts, the owner-approved final live delta, named cutover roles, the domain
+  move, and two-business-day production monitoring.
 
 ## Current execution status (August 14, 2026)
 
@@ -29,7 +33,10 @@ The Vercel duplicate is real and functional, but it is not yet a production-equi
 
 - The staging project deploys from `codex/vercel-agent-duplicate` and uses the
   isolated `anata-agent-staging` Supabase Pro project in `us-west-1`.
-- The stable hostname `agent-staging.anatainc.com` resolves to Vercel with valid HTTPS. Authenticated fallback login and canonical staging navigation pass; provider callback registration remains open.
+- The stable hostname `agent-staging.anatainc.com` resolves to Vercel with valid
+  HTTPS. Fallback and real Google sign-in pass. Google sign-in and Gmail staging
+  redirects are registered alongside production; QuickBooks, Plaid, and Resend
+  provider-console receipts remain open.
 - Vercel schedules exist for Website Ops, Content, stale-lead scanning, Gmail ingestion, Sales operations, HR reminders, Building operations, and Outbound. They are authenticated and globally disabled with `VERCEL_CRON_WRITES_ENABLED=false`.
 - Website Ops and Fulfillment retained-report caches no longer hydrate during application startup. The latest measured external cold readiness response was approximately 4.6 seconds, down from a startup path that previously exceeded two minutes.
 - Fulfillment report files have a PostgreSQL-backed durable mirror with hash validation and lazy restore.
@@ -71,29 +78,46 @@ The Vercel duplicate is real and functional, but it is not yet a production-equi
   jobs recorded successful Supabase ledger receipts, their database inputs and
   declared live configuration groups were ready, and no provider or external
   write was invoked.
+- Candidate `a58bb60` passed GitHub release gate `31813531252` in 5m50s and is
+  deployed as `dpl_Dpc31pxxiiS3Hdpnmz7xz8MWtN1J`. Five concurrent readiness
+  calls returned 200; authenticated Settings reports Supabase as Postgres, uses
+  the staging deck origin, and contains deployment-neutral operator copy. The
+  exact deployment log scan has no error-level or 5xx application entry.
+- An authenticated Render/Vercel comparison shows the same connected
+  system-managed Gmail path, five Finance accounts and their classifications,
+  reserve and liability totals, and $40,812 confirmed-money-in total. Personal
+  Gmail OAuth is therefore an optional enhancement receipt, not a blocker for
+  preserving the currently used inbox path.
 
 The following items remain open and block a truthful claim of 100% completion:
 
 | Gate | Remaining work | Evidence required to close | Owner help required |
 | --- | --- | --- | --- |
-| Stable staging identity | DNS and HTTPS are closed; register staging callback and webhook URLs with every provider | Successful provider login/logout and callback registry with pass/fail receipts | Provide access to provider consoles when an existing session is unavailable |
+| Stable staging identity | DNS, HTTPS, Google sign-in, and Gmail redirect registration are closed; register and test only the remaining migration-critical provider callbacks/webhooks | Successful provider login/logout and callback registry with pass/fail receipts | Sign in to Intuit and provide Plaid/Resend console access |
 | Production data parity | Full snapshot equality is closed on Supabase: 171 tables, 223,016 rows, full-row fingerprints, and 61 sequence states match. Rehearse the final delta during the approved cutover window. | `vercel-supabase-migration-rehearsal-receipt.md`; final delta receipt | Owner approval remains separately mandatory for the production delta/cutover window |
 | Artifact parity | Closed as a separate filesystem gate: Render has no persistent disk; retained artifacts are represented in PostgreSQL and move with the database | Database comparison must include `website_ops_files`, `content_artifacts`, and report tables; sample retained reports after import | None beyond the database migration access above |
-| Durable execution | Inventory every `BackgroundTasks` path; move must-survive work to a durable queue/job; add any missing digest or synthetic-health schedule | Job ledger, overlap/retry tests, forced-failure receipt, no orphan Render schedule | Provider sandbox records only if controlled write testing needs them |
-| Integration parity | Exercise OAuth, webhooks, reads, controlled writes, permission failures, and audit receipts for every major integration | Workflow matrix containing happy path, failure path, operator receipt, and source-system receipt | Login/approval in Google, QuickBooks, Plaid, HubSpot, ClickUp, Slack, Riverside, or other provider consoles as encountered |
+| Durable execution | Closed: every retained Render schedule has a Vercel replacement; all 11 write jobs passed shadow receipts plus durable failure/retry/overlap/replay tests | Scheduler map, job ledger, forced-failure receipt, and no orphan Agent schedule | None before the approved one-at-a-time production enablement |
+| Integration parity | Google and current rendered Gmail/Finance continuity are closed; complete provider-owned receipts required for active QuickBooks, Plaid, and Resend flows. Stripe and Instantly block only their own unlaunched write paths unless the owner confirms Render depends on them. | Workflow matrix containing happy path, failure path, operator receipt, and source-system receipt | Intuit sign-in; Plaid/Resend console access; owner classification of Stripe and Instantly production use |
 | Regression suite | Closed: hosted full-suite pass completed against the exact deployed application-code revision | 3,352 passed, one skipped, zero failed, plus 65 passing subtests | None |
 | Performance | Closed for the current candidate; repeat only after a material runtime/configuration change | Three fresh-deployment rounds and authenticated page timings recorded in `vercel-performance-receipt.md` | None |
-| Product QA | Complete 1280px and shared-report coverage; test keyboard, restricted permissions, loading/error/stale states, and repeat fresh-eyes pass | Three complete QA passes against one immutable deployment; screenshot and log evidence | Restricted-role test account or approval to create one in staging |
-| Rehearsal | Perform full snapshot plus delta rehearsal, validate jobs in shadow mode, prove rollback, time the runbook | Completed rehearsal record and rollback proof | Schedule a short rehearsal window and name the go/no-go and rollback owners |
+| Product QA | Closed for the current candidate: administrator, fresh-session, restricted-role, 13-page desktop, shared-report, keyboard/landmark, overflow, and log checks pass | Three complete QA passes against the immutable candidate; screenshot and log evidence | None unless a material application/configuration change resets the affected pass |
+| Rehearsal | Full snapshot parity, job shadow mode, and isolated rollback restore are closed; the final live delta can occur only after writers stop in the approved window | Current rehearsal and rollback receipts plus final live-delta receipt | Approve a maintenance window and confirm the named go/no-go and rollback owners |
 | Production cutover | Final delta, domain/callback move, one-at-a-time job enablement, verification, and monitoring | Owner sign-off, successful cutover log, two clean business days | Explicit cutover approval; DNS/provider-console access during the window |
 
 ### Required external configuration
 
 The engineering work should continue without waiting on these items, but these owner-controlled actions are mandatory before the corresponding gates can close:
 
-1. Permit or perform staging callback registration in the external provider consoles, beginning with the confirmed Google redirect mismatch.
-2. Supply a restricted-role staging account for permission QA.
-3. Before cutover, name the go/no-go owner and rollback owner and explicitly approve the production move.
+1. Sign in to the open Intuit developer tab so the QuickBooks staging callback
+   can be registered and a read-only company receipt captured.
+2. Provide Plaid and Resend console access for their provider-owned staging
+   registrations and signed/read-only receipts.
+3. Confirm whether Stripe payments and the Instantly event webhook are active
+   Render dependencies. If not, they remain disabled and do not block hosting
+   parity.
+4. Before cutover, name the go/no-go and rollback owners and explicitly approve
+   the maintenance window, production-domain move, final live delta, provider
+   callback move, and one-at-a-time scheduler enablement.
 
 No secret value belongs in this document, source control, screenshots, or QA reports.
 
