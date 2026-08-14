@@ -5,16 +5,16 @@ Status: engineering candidate ready for provider registration and timed rehearsa
 ## Candidate identity
 
 - Branch: `codex/vercel-agent-duplicate`
-- Candidate application commit: `1a05919`
-- Full GitHub release gate: run `31773863474`, passed in 6m07s
-- Final immutable performance deployment: `dpl_F2zLkQvKDqGhvmwo1o2iYrQVir5w`
-- Immutable URL: `https://anata-agent-staging-mkqcc5o3y-david-narayans-projects.vercel.app`
+- Candidate application commit: `de4649f`
+- Full GitHub release gate: run `31775515243`, passed in 5m39s
+- Current immutable deployment: `dpl_35QkwPcDhpy5jjc3tdvkibccgcgy`
+- Immutable URL: `https://anata-agent-staging-mj1oxzlnt-david-narayans-projects.vercel.app`
 - Stable staging URL: `https://agent-staging.anatainc.com`
 - Database: Supabase project `vfcmljqakphwhslxtfzv`, `us-west-1`, dedicated restricted `agent_app` role
 
 ## Passed engineering gates
 
-- Full hosted regression gate passed for `1a05919`.
+- Full hosted regression gate passed for `de4649f`.
 - Tracked-secret scan: 797 tracked files, zero findings. The scan reports only
   file, line, and pattern name and never prints a candidate value.
 - Dependency audit: 46 declared/runtime dependencies, zero known vulnerabilities.
@@ -45,6 +45,13 @@ Status: engineering candidate ready for provider registration and timed rehearsa
   its request, while Render retains its existing background behavior. The final
   deployment log scan contains no HubSpot background error, error-level entry,
   or 5xx response.
+- The current candidate also uses the configured QuickBooks callback in its
+  setup help and recovers genuinely stale Website Ops runs before the first
+  daily pulse. Focused tests and the complete hosted gate passed after both
+  changes. Five concurrent stable-hostname readiness requests returned the
+  Agent `{"status":"ready"}` response, and authenticated Website Ops,
+  Finance/QuickBooks, and Deal Board reads returned 200. The exact deployment
+  log scan contains no error-level, HubSpot-background, or 5xx entry.
 - The legacy Neon marketplace resource is disconnected from the Agent project,
   and all Neon-provided environment variables are absent. The resource itself
   remains undeleted as recoverable historical data until the owner separately

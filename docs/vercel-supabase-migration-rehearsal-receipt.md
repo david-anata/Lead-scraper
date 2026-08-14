@@ -158,9 +158,16 @@ window.
 ## Final staging candidate addendum
 
 Candidate `1a05919` passed GitHub release gate `31773863474` and was deployed
-three independent times after the Supabase-only environment rebuild. The final
-stable staging deployment is `dpl_F2zLkQvKDqGhvmwo1o2iYrQVir5w`. Two complete
+three independent times after the Supabase-only environment rebuild. Two complete
 authenticated 13-page desktop passes at 1280x720 found the expected headings,
 native main landmarks, valid skip targets, no horizontal overflow, and no
 unexpected access denial. Exact-deployment logs contain no error-level,
-HubSpot-background, or 5xx entry. Production remains unchanged.
+HubSpot-background, or 5xx entry.
+
+The current application candidate `de4649f` passed full gate `31775515243` and
+is the stable staging deployment `dpl_35QkwPcDhpy5jjc3tdvkibccgcgy`. It adds
+only deployment-aware QuickBooks setup help and a corrected stale-run recovery
+predicate. Five concurrent readiness calls and authenticated Website Ops,
+Finance/QuickBooks, and Deal Board reads passed on the stable hostname after its
+alias was confirmed; the exact-deployment error, HubSpot-background, and 5xx
+log scans were empty. Production remains unchanged.

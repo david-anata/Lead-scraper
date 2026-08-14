@@ -52,3 +52,22 @@ of pretending a detached serverless thread will finish.
 The migration performance gate is closed for the current staging candidate. Provisioned concurrency is not required for cutover based on current evidence. It remains an optional capacity improvement if post-cutover traffic or Vercel telemetry shows renewed cold-start pressure.
 
 Any material runtime, dependency, database-region, or Vercel compute configuration change resets this evidence and requires the three rounds again.
+
+## Candidate amendment — August 14, 2026
+
+The current application candidate is `de4649f`, hosted as
+`dpl_35QkwPcDhpy5jjc3tdvkibccgcgy`. The two commits after the three-deployment
+performance baseline change only deployment-aware QuickBooks setup copy and
+the stale-run predicate used by an explicitly forced Website Ops recovery.
+They do not change read-path query work, dependencies, database region, or
+Vercel compute configuration, so the three-deployment performance baseline
+above remains applicable.
+
+The amended candidate passed full gate `31775515243` in 5m39s. On the stable
+staging hostname, five concurrent readiness calls returned Agent's JSON
+readiness response with status 200. Authenticated Website Ops,
+Finance/QuickBooks, and Deal Board reads also returned 200. An exact-deployment
+scan after the checks found no error-level, HubSpot-background, or 5xx entry.
+The immutable deployment URL itself is protected by Vercel Authentication, so
+application-level checks use the stable custom hostname after confirming that
+the hostname aliases this exact deployment.

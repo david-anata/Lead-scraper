@@ -1,7 +1,7 @@
 # Vercel staging workflow QA matrix
 
-Candidate baseline: `1a05919` / immutable deployment
-`dpl_F2zLkQvKDqGhvmwo1o2iYrQVir5w`
+Candidate baseline: `de4649f` / immutable deployment
+`dpl_35QkwPcDhpy5jjc3tdvkibccgcgy`
 
 Staging: `https://agent-staging.anatainc.com`
 
@@ -26,7 +26,10 @@ communications, CRM mutation, and production publishing remained disabled.
 
 Application, database, permission, durable scheduling, read workflows, and
 failure boundaries are verified on staging. Two complete 13-page desktop passes
-and one Sales-only restricted-role pass succeeded on the exact candidate, with
-no overflow or direct-route data leak. Provider-console registration and
+and one Sales-only restricted-role pass succeeded on the performance-equivalent
+baseline, with no overflow or direct-route data leak. The current candidate then
+passed the complete hosted gate plus authenticated Website Ops,
+Finance/QuickBooks, and Deal Board smoke checks on the stable hostname after its
+alias was confirmed. Provider-console registration and
 controlled source-system receipts remain the integration-parity work that
 cannot be completed solely from the application workspace.
