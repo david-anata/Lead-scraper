@@ -152,7 +152,7 @@ class InboxConnectionsTests(unittest.TestCase):
                 google_oauth_allowed_domain="anatainc.com",
                 admin_password="fallback-password",
                 admin_session_secret="session-secret",
-                sales_agent_db_url="postgresql://example",
+                sales_agent_db_url="postgresql+psycopg://example",
                 clickup_api_token="clickup-token",
                 clickup_list_id="clickup-list",
                 lead_build_url="https://lead-builder.example",

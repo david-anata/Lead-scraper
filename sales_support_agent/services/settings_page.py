@@ -237,7 +237,7 @@ def render_settings_page(
 
     # ── 4. Core runtime card ───────────────────────────────────────────────
     db_url = str(getattr(s, "sales_agent_db_url", "") or "")
-    if db_url.startswith(("postgres://", "postgresql://")):
+    if db_url.startswith(("postgres://", "postgresql://", "postgresql+")):
         db_backend = "Postgres"
     elif db_url.startswith("sqlite"):
         db_backend = "SQLite"
