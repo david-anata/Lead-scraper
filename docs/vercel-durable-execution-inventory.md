@@ -1,6 +1,6 @@
 # Vercel durable execution inventory
 
-Status: implementation complete; staging shadow receipts and cutover enablement remain open
+Status: hosted queue recovery proof complete; schedule shadow receipts and cutover enablement remain open
 
 ## Safety boundary
 
@@ -45,8 +45,17 @@ The synthetic route checks application readiness, performs a bounded database qu
 
 ## Cutover proof still required
 
-- Capture one authenticated read-only synthetic receipt from Vercel.
+- Authenticated synthetic-health and scheduler preflight receipts are complete.
+- Hosted durable recovery receipt is complete. Vercel's scheduler invoked the
+  staging-only recovery probe on August 13, 2026 at 21:57 Denver time against
+  deployment `dpl_BWbYGD3D5rS4BpBg6NgrQY72opUT` (`895432a`). Supabase retained
+  task `7f1005b8b36644ee8c6f5818d5fe1174`: the first attempt failed intentionally,
+  an overlapping claim was refused, attempt two succeeded, replay was refused,
+  and `external_writes` remained false.
+- The first hosted attempt exposed request-time queue DDL by the restricted
+  application role. The runtime now skips all schema maintenance when
+  `AGENT_RUNTIME_SCHEMA_MAINTENANCE=false`; controlled predeploy execution is
+  the only DDL owner. The repeated hosted probe passed.
 - Invoke each write schedule in shadow/dry-run mode where supported and record its audit receipt.
-- Force one isolated durable-task failure, verify retry state, then recover it without duplicating the effect.
 - Immediately before cutover, verify Render schedules are stopped before changing `VERCEL_CRON_WRITES_ENABLED`.
 - Enable one Vercel schedule at a time and confirm its first successful ledger receipt.
