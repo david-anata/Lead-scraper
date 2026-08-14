@@ -47,6 +47,7 @@ from sales_support_agent.services.job_lease import (
     finish_scheduled_job,
 )
 from sales_support_agent.services.durable_tasks import drain_durable_tasks
+from sales_support_agent.services.durable_tasks import run_durable_recovery_probe
 
 
 router = APIRouter(prefix="/api/vercel-cron", tags=["vercel-cron"])
@@ -201,6 +202,35 @@ def cron_preflight(
         },
         status_code=200 if passed else 503,
     )
+
+
+@router.get("/durable-recovery-probe")
+def durable_recovery_probe(
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Run a staging-only queue recovery proof with no external side effect."""
+
+    _require_vercel_cron(authorization)
+    is_staging = os.getenv("VERCEL_STAGING", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not is_staging:
+        raise HTTPException(status_code=404, detail="Recovery probe is staging-only.")
+    if _cron_writes_enabled():
+        raise HTTPException(
+            status_code=409,
+            detail="Disable scheduled writes before running the recovery probe.",
+        )
+    correlation_id = f"vercel-{datetime.now(tz=_DENVER).strftime('%Y%m%dT%H%M%S%f')}"
+    result = run_durable_recovery_probe(
+        request.app.state.session_factory.kw.get("bind"),
+        correlation_id=correlation_id,
+    )
+    return JSONResponse(result, status_code=200 if result["status"] == "passed" else 503)
 
 
 @router.get("/website-ops")

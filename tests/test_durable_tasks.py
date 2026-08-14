@@ -9,6 +9,7 @@ from sales_support_agent.services.durable_tasks import (
     enqueue_durable_task,
     ensure_durable_task_schema,
     finish_durable_task,
+    run_durable_recovery_probe,
 )
 
 
@@ -99,3 +100,17 @@ def test_failed_task_records_error_and_can_be_reclaimed_when_due(tmp_path) -> No
     assert retry is not None
     assert retry.attempts == 2
     assert retry.owner_token != first.owner_token
+
+
+def test_recovery_probe_proves_failure_retry_overlap_and_replay(tmp_path) -> None:
+    engine = _engine(tmp_path)
+
+    result = run_durable_recovery_probe(engine, correlation_id="release-candidate-1")
+
+    assert result["status"] == "passed"
+    assert result["attempts"] == 2
+    assert result["failure_recorded"] is True
+    assert result["recovered"] is True
+    assert result["overlap_blocked"] is True
+    assert result["replay_blocked"] is True
+    assert result["external_writes"] is False

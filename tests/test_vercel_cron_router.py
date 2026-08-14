@@ -40,6 +40,7 @@ def test_all_vercel_crons_require_bearer_secret(monkeypatch) -> None:
         "building-operations",
         "synthetic-health",
         "preflight",
+        "durable-recovery-probe",
         "daily-lead-build",
     ):
         assert _client().get(f"/api/vercel-cron/{path}").status_code == 401
@@ -133,6 +134,40 @@ def test_cron_preflight_fails_closed_if_writes_are_enabled(monkeypatch) -> None:
     assert response.status_code == 503
     assert response.json()["checks"]["writes_disabled"] is False
     assert response.json()["external_writes"] is False
+
+
+def test_durable_recovery_probe_is_staging_only_and_has_no_external_write(monkeypatch) -> None:
+    monkeypatch.setenv("CRON_SECRET", "cron-secret")
+    monkeypatch.setenv("VERCEL_STAGING", "true")
+    monkeypatch.setenv("VERCEL_CRON_WRITES_ENABLED", "false")
+
+    response = _client(ready=True).get(
+        "/api/vercel-cron/durable-recovery-probe",
+        headers={"Authorization": "Bearer cron-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "passed"
+    assert response.json()["attempts"] == 2
+    assert response.json()["overlap_blocked"] is True
+    assert response.json()["replay_blocked"] is True
+    assert response.json()["external_writes"] is False
+
+
+def test_durable_recovery_probe_rejects_non_staging_and_enabled_writes(monkeypatch) -> None:
+    monkeypatch.setenv("CRON_SECRET", "cron-secret")
+    headers = {"Authorization": "Bearer cron-secret"}
+
+    monkeypatch.delenv("VERCEL_STAGING", raising=False)
+    assert _client().get(
+        "/api/vercel-cron/durable-recovery-probe", headers=headers
+    ).status_code == 404
+
+    monkeypatch.setenv("VERCEL_STAGING", "true")
+    monkeypatch.setenv("VERCEL_CRON_WRITES_ENABLED", "true")
+    assert _client().get(
+        "/api/vercel-cron/durable-recovery-probe", headers=headers
+    ).status_code == 409
 
 
 def test_daily_lead_build_preserves_render_schedule_contract(monkeypatch) -> None:

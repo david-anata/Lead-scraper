@@ -268,6 +268,82 @@ def finish_durable_task(
         )
 
 
+def run_durable_recovery_probe(engine: Any, *, correlation_id: str) -> dict[str, Any]:
+    """Prove the hosted queue's failure, retry, overlap, and replay contracts.
+
+    The probe never dispatches a business task or calls an external provider.
+    Its completed queue row is intentionally retained as an operator receipt.
+    """
+
+    probe_key = "".join(
+        character for character in str(correlation_id) if character.isalnum() or character in "-_"
+    )[:80]
+    if not probe_key:
+        raise ValueError("A correlation ID is required for the recovery probe.")
+    task_id = enqueue_durable_task(
+        engine,
+        task_type="migration_recovery_probe",
+        idempotency_key=f"migration-recovery-probe:{probe_key}",
+        payload={"correlation_id": probe_key, "external_writes": False},
+        max_attempts=2,
+    )
+    first = claim_durable_task(engine, task_id=task_id, lease_minutes=1)
+    if first is None:
+        raise RuntimeError("Recovery probe could not acquire its first lease.")
+    overlap_blocked = claim_durable_task(engine, task_id=task_id) is None
+    finish_durable_task(
+        engine,
+        first,
+        succeeded=False,
+        error="intentional staging recovery probe failure",
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE durable_task_queue SET available_at = :available_at "
+                "WHERE id = :id AND status = 'failed'"
+            ),
+            {"available_at": _now().isoformat(), "id": task_id},
+        )
+    second = claim_durable_task(engine, task_id=task_id, lease_minutes=1)
+    if second is None:
+        raise RuntimeError("Recovery probe could not reacquire its failed task.")
+    finish_durable_task(
+        engine,
+        second,
+        succeeded=True,
+        result={"probe": "passed", "external_writes": False},
+    )
+    replay_blocked = claim_durable_task(engine, task_id=task_id) is None
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT status, attempts, last_error, result_json "
+                "FROM durable_task_queue WHERE id = :id"
+            ),
+            {"id": task_id},
+        ).first()
+    if row is None:
+        raise RuntimeError("Recovery probe receipt was not retained.")
+    passed = (
+        str(row[0]) == "succeeded"
+        and int(row[1]) == 2
+        and overlap_blocked
+        and replay_blocked
+    )
+    return {
+        "status": "passed" if passed else "failed",
+        "task_id": task_id,
+        "correlation_id": probe_key,
+        "attempts": int(row[1]),
+        "overlap_blocked": overlap_blocked,
+        "replay_blocked": replay_blocked,
+        "failure_recorded": first.attempts == 1,
+        "recovered": str(row[0]) == "succeeded",
+        "external_writes": False,
+    }
+
+
 def _dispatch(app: Any, claim: DurableTaskClaim) -> dict[str, Any]:
     """Call the existing business service for one persisted task intent."""
 
