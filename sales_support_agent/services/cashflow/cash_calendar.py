@@ -561,6 +561,7 @@ def _historical_data(
 def load_cash_calendar(
     *, as_of: date | None = None, rows: Sequence[Mapping[str, Any]] | None = None,
     future_days: int = FUTURE_DAYS,
+    paydown_settings: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Load the live ledger, settlement evidence, and bank-pattern warnings.
 
@@ -600,7 +601,7 @@ def load_cash_calendar(
     try:
         from sales_support_agent.services.cashflow.settings import get_paydown_settings
 
-        configured = get_paydown_settings()
+        configured = dict(paydown_settings) if paydown_settings is not None else get_paydown_settings()
         authoritative_paydown = (
             configured
             if str(configured.get("vendor_key") or "").strip()

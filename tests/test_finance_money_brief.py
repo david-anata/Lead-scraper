@@ -29,6 +29,9 @@ def _state(*, trust_ready: bool = True) -> dict:
         "trust_gate": {
             "ready": trust_ready,
             "issues": [] if trust_ready else ["One payment has conflicting evidence."],
+            "payable_issues": [] if trust_ready else [
+                {"id": "payment-1", "reason": "source conflict"}
+            ],
         },
         "data_quality": {
             "summary": "185 records excluded; 0 open items need amounts.",
@@ -49,10 +52,6 @@ def _brief(*, trust_ready: bool = True):
         patch(
             "sales_support_agent.services.cashflow.money_brief._normalise_renderer_state",
             return_value=state,
-        ),
-        patch(
-            "sales_support_agent.services.cashflow.bulk_resolve.list_review_items",
-            return_value={"total": 1 if not trust_ready else 0, "groups": []},
         ),
     ):
         return build_finance_brief(
@@ -85,7 +84,6 @@ def test_month_end_outlook_reserves_calendar_costs_and_authoritative_rent() -> N
     with (
         patch("sales_support_agent.services.cashflow.money_brief._build_renderer_state", return_value=({}, {}, False)),
         patch("sales_support_agent.services.cashflow.money_brief._normalise_renderer_state", return_value=state),
-        patch("sales_support_agent.services.cashflow.bulk_resolve.list_review_items", return_value={"total": 0}),
     ):
         brief = build_finance_brief(
             rows=[], balance_cents=2_661_227, balance_as_of="2026-08-11",
@@ -150,7 +148,9 @@ def test_live_brief_uses_spendable_plaid_cash_not_reserves() -> None:
 
 
 def test_today_is_a_five_number_brief_without_old_dashboard_surfaces() -> None:
-    page = render_money_brief_page(_brief(trust_ready=False))
+    brief = _brief(trust_ready=False)
+    page = render_money_brief_page(brief)
+    assert brief.review_count == 1
     for label in (
         "Verified cash now",
         "Confirmed money in",

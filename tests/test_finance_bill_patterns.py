@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import statistics
 from datetime import date, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -829,3 +830,22 @@ def test_a_short_horizon_does_not_invent_extra_occurrences(finance_engine):
         assert row["due_date"] <= date(2026, 6, 23) + timedelta(days=21), (
             "everything except the reach-ahead must sit inside the window"
         )
+
+
+def test_request_cache_reuses_one_exact_pattern_result() -> None:
+    import sales_support_agent.services.cashflow.bill_patterns as module
+
+    module._PATTERN_CACHE.clear()
+    expected = {"patterns": [], "tracked": []}
+    with (
+        patch.object(module, "_data_stamp", return_value=("stamp",)) as stamp,
+        patch.object(module, "_list_bill_patterns_uncached", return_value=expected) as build,
+        module.bill_pattern_request_cache(),
+    ):
+        first = module.list_bill_patterns(as_of=date(2026, 8, 13))
+        second = module.list_bill_patterns(as_of=date(2026, 8, 13))
+
+    assert first is expected
+    assert second is expected
+    stamp.assert_called_once_with()
+    build.assert_called_once()

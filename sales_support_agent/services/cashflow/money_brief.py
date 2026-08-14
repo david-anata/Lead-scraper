@@ -302,12 +302,11 @@ def build_finance_brief(
     calculation_id = str((calendar_snapshot or {}).get("calculation_id") or "") or hashlib.sha256(
         json.dumps(proof, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]
-    try:
-        from sales_support_agent.services.cashflow.bulk_resolve import list_review_items
-
-        review_count = int(list_review_items().get("total") or 0)
-    except Exception:
-        review_count = 0
+    # The trust gate already classifies the same annotated obligations used by
+    # the Review page. Re-reading and re-annotating the entire ledger here made
+    # the landing page perform a second payroll sync and duplicate evidence
+    # queries without changing the answer.
+    review_count = len(list(state["trust_gate"].get("payable_issues") or []))
     return FinanceBrief(
         calculation_id=calculation_id,
         as_of=today.isoformat(),
@@ -330,50 +329,67 @@ def build_finance_brief(
 def load_finance_brief(settings: Any) -> FinanceBrief:
     """Load current evidence without mutating bank or accounting records."""
     try:
-        rows = list_obligations(limit=10_000)
-        rows, settlement_annotations = _load_settlement_context(rows)
-        balance_cents, balance_as_of, balance_source = _resolve_current_balance(
-            rows,
-            plaid_environment=str(getattr(settings, "plaid_environment", "sandbox") or "sandbox"),
+        from sales_support_agent.services.cashflow.bill_patterns import (
+            bill_pattern_request_cache,
         )
-        if str(balance_source).lower() == "plaid":
-            accounts = load_accounts_overview()
-            if int(accounts.get("account_count") or 0) > 0:
-                # The headline and Accounts page must use the exact same role
-                # selection. Savings/reserve balances stay visible but are not
-                # silently added to spendable cash.
-                balance_cents = int(accounts.get("spendable_cents") or 0)
-                balance_as_of = str(accounts.get("as_of") or balance_as_of)
-        income_decisions, source_connections = _load_finance_control_inputs(settings)
-        today = operator_today()
-        calendar_snapshot = None
-        paydown_plan = None
-        try:
-            from sales_support_agent.services.cashflow.cash_calendar import load_cash_calendar
-            from sales_support_agent.services.cashflow.rent_paydown import load_paydown_plan
+        from sales_support_agent.services.cashflow.settings import get_paydown_settings
 
-            month_end = today.replace(day=monthrange(today.year, today.month)[1])
-            calendar_snapshot = load_cash_calendar(
-                rows=rows, as_of=today, future_days=max(0, (month_end - today).days),
+        with bill_pattern_request_cache():
+            rows = list_obligations(limit=10_000)
+            rows, settlement_annotations = _load_settlement_context(rows)
+            balance_cents, balance_as_of, balance_source = _resolve_current_balance(
+                rows,
+                plaid_environment=str(getattr(settings, "plaid_environment", "sandbox") or "sandbox"),
             )
-            paydown_plan = load_paydown_plan(
-                rows=rows, calendar=calendar_snapshot, as_of=today,
-            )
-        except Exception:
+            accounts = None
+            if str(balance_source).lower() == "plaid":
+                accounts = load_accounts_overview()
+                if int(accounts.get("account_count") or 0) > 0:
+                    # The headline and Accounts page must use the exact same role
+                    # selection. Savings/reserve balances stay visible but are not
+                    # silently added to spendable cash.
+                    balance_cents = int(accounts.get("spendable_cents") or 0)
+                    balance_as_of = str(accounts.get("as_of") or balance_as_of)
+            income_decisions, source_connections = _load_finance_control_inputs(settings)
+            today = operator_today()
             calendar_snapshot = None
             paydown_plan = None
-        return build_finance_brief(
-            rows=rows,
-            balance_cents=balance_cents,
-            balance_as_of=balance_as_of,
-            balance_source=balance_source,
-            settlement_annotations=settlement_annotations,
-            income_decisions=income_decisions,
-            source_connections=source_connections,
-            calendar_snapshot=calendar_snapshot,
-            paydown_plan=paydown_plan,
-            as_of=today,
-        )
+            try:
+                from sales_support_agent.services.cashflow.cash_calendar import load_cash_calendar
+                from sales_support_agent.services.cashflow.rent_paydown import load_paydown_plan
+
+                configured_paydown = get_paydown_settings()
+                if accounts is None:
+                    accounts = load_accounts_overview()
+                month_end = today.replace(day=monthrange(today.year, today.month)[1])
+                calendar_snapshot = load_cash_calendar(
+                    rows=rows,
+                    as_of=today,
+                    future_days=max(0, (month_end - today).days),
+                    paydown_settings=configured_paydown,
+                )
+                paydown_plan = load_paydown_plan(
+                    rows=rows,
+                    calendar=calendar_snapshot,
+                    as_of=today,
+                    accounts_overview=accounts,
+                    paydown_settings=configured_paydown,
+                )
+            except Exception:
+                calendar_snapshot = None
+                paydown_plan = None
+            return build_finance_brief(
+                rows=rows,
+                balance_cents=balance_cents,
+                balance_as_of=balance_as_of,
+                balance_source=balance_source,
+                settlement_annotations=settlement_annotations,
+                income_decisions=income_decisions,
+                source_connections=source_connections,
+                calendar_snapshot=calendar_snapshot,
+                paydown_plan=paydown_plan,
+                as_of=today,
+            )
     except Exception:
         # Authentication and transition states must still render a safe Finance
         # shell when the database is unavailable. Zero is never presented as a

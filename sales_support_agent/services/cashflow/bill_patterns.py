@@ -38,6 +38,8 @@ projected amount. See ``_projected_bill_amount``.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import calendar
 import json
 import re
@@ -104,6 +106,25 @@ _NOT_A_MERCHANT = frozenset({
 # Memoised answer, keyed by the data fingerprint so a new payment or a recorded
 # answer invalidates it immediately rather than after a timeout.
 _PATTERN_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
+_REQUEST_PATTERN_CACHE: ContextVar[dict[tuple[Any, ...], dict[str, Any]] | None] = (
+    ContextVar("finance_bill_pattern_request_cache", default=None)
+)
+
+
+@contextmanager
+def bill_pattern_request_cache():
+    """Reuse one exact pattern result within a single Finance read.
+
+    The process cache still validates its database fingerprint between requests.
+    This narrower cache only avoids repeating that fingerprint and the same
+    pattern analysis several times while one page builds its brief, calendar,
+    and forecast.
+    """
+    token = _REQUEST_PATTERN_CACHE.set({})
+    try:
+        yield
+    finally:
+        _REQUEST_PATTERN_CACHE.reset(token)
 # How many of these land in a month, used only to rank by cost.
 _MONTHLY_MULTIPLIER = {
     "weekly": 52 / 12,
@@ -139,9 +160,15 @@ def list_bill_patterns(
     """
     as_of = as_of or datetime.utcnow().date()
     lookback_days = max(1, int(lookback_days))
+    request_key = (as_of, lookback_days, scope)
+    request_cache = _REQUEST_PATTERN_CACHE.get()
+    if request_cache is not None and request_key in request_cache:
+        return request_cache[request_key]
     cache_key = (as_of, lookback_days, scope, _data_stamp())
     cached = _PATTERN_CACHE.get(cache_key)
     if cached is not None:
+        if request_cache is not None:
+            request_cache[request_key] = cached
         return cached
     result = _list_bill_patterns_uncached(
         as_of=as_of, lookback_days=lookback_days, scope=scope
@@ -150,6 +177,8 @@ def list_bill_patterns(
     # holding every day's answer in memory.
     _PATTERN_CACHE.clear()
     _PATTERN_CACHE[cache_key] = result
+    if request_cache is not None:
+        request_cache[request_key] = result
     return result
 
 

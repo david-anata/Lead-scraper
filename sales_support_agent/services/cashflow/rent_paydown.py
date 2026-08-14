@@ -387,6 +387,8 @@ def load_paydown_plan(
     *, rows: Iterable[Mapping[str, Any]] | None = None,
     calendar: Mapping[str, Any] | None = None,
     as_of: date | None = None,
+    accounts_overview: Mapping[str, Any] | None = None,
+    paydown_settings: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Convenience loader. Pass ``rows`` to share one ledger read with the page."""
     from sales_support_agent.services.cashflow.accounts_view import load_accounts_overview
@@ -401,8 +403,16 @@ def load_paydown_plan(
     horizon = max(0, (_month_end(today) - today).days)
     if calendar is None:
         calendar = load_cash_calendar(as_of=today, rows=ledger, future_days=horizon)
-    accounts = load_accounts_overview()
-    configured = get_paydown_settings()
+    accounts = (
+        dict(accounts_overview)
+        if accounts_overview is not None
+        else load_accounts_overview()
+    )
+    configured = (
+        dict(paydown_settings)
+        if paydown_settings is not None
+        else get_paydown_settings()
+    )
     if not _cash_balance_is_fresh(accounts.get("as_of"), today=today):
         return {
             "status": "paused",

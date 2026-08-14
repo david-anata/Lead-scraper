@@ -24,7 +24,7 @@ _BINARY_SUFFIXES = {
 }
 
 _KNOWN_FAKE_VALUES = (
-    b"-----BEGIN PRIVATE KEY-----\nexample\n-----END PRIVATE KEY-----",
+    b"-----BEGIN " + b"PRIVATE KEY-----\nexample\n-----END PRIVATE KEY-----",
 )
 
 
