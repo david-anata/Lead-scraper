@@ -993,9 +993,13 @@ _LEADS_CSS = """
   .ld-note { margin:12px 0 0; font-size:14px; color:rgba(43,54,68,.7); }
   .ld-stat { display:inline-block; margin-right:22px; font-size:14px; }
   .ld-stat b { font-size:20px; font-family:"Montserrat",sans-serif; }
+  .ld-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:18px 0; }
+  .ld-action-note { flex-basis:100%; font-size:13px; color:rgba(43,54,68,.7); }
   .lo-btn { display:inline-block; padding:6px 12px; border-radius:9px; background:#2B3644; color:#fff;
     font-family:"Montserrat",sans-serif; font-weight:800; font-size:11px; text-decoration:none; white-space:nowrap; }
   .lo-btn:hover { background:#1f2833; color:#fff; }
+  .lo-btn:focus-visible { outline:3px solid rgba(30,129,176,.35); outline-offset:2px; }
+  .ld-primary { padding:10px 16px; font-size:13px; }
 """
 
 
@@ -1053,6 +1057,12 @@ def outbound_leads(request: Request) -> Response:
         Instantly sends to them, but the leads themselves live here, so losing access to
         either tool never loses the leads.</p>
 
+        <div class="ld-actions" aria-label="Lead export actions">
+          <a class="lo-btn ld-primary" href="/admin/api/outbound/leads.csv">Download all for Clay</a>
+          <a class="lo-btn" href="/admin/outbound/brands">Pull fresh brands</a>
+          <span class="ld-action-note">The download is a read-only export. It does not send leads or change their status.</span>
+        </div>
+
         <div style="margin:0 0 18px">
           <span class="ld-stat"><b>{len(leads):,}</b> leads held</span>
           <span class="ld-stat"><b>{avg}</b> average size</span>
@@ -1079,6 +1089,30 @@ def outbound_leads(request: Request) -> Response:
         request, active="outbound_leads", title="Outbound Leads",
         extra_css=_LEADS_CSS + _AMAZON_CSS, body=body,
     ))
+
+
+@router.get("/admin/api/outbound/leads.csv", response_class=Response)
+def outbound_leads_csv(request: Request) -> Response:
+    """Download the complete stored company library in Clay-ready CSV format.
+
+    Unlike the fresh-brand pull, this is read-only: exporting historical leads
+    must not change deduplication, delivery, or contact state.
+    """
+    import outbound_pipeline as _op
+    from sales_support_agent.services import outbound_memory
+
+    try:
+        from sales_support_agent.models.database import get_engine
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        engine = None
+
+    leads = outbound_memory.load_leads(engine, limit=None)
+    return Response(
+        content=_op.leads_to_csv(leads),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="anata_all_clay_brands.csv"'},
+    )
 
 
 _LEAK_CSS = """

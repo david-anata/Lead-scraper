@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 
@@ -199,6 +200,27 @@ class FullLeadRecordTests(unittest.TestCase):
 
     def test_load_leads_is_safe_without_a_database(self):
         self.assertEqual(m.load_leads(None), [])
+
+    def test_complete_export_can_load_every_stored_lead(self):
+        e = self._e()
+        m.record_leads(e, [self._lead(f"brand-{i}.com") for i in range(4)])
+        self.assertEqual(len(m.load_leads(e, limit=2)), 2)
+        self.assertEqual(len(m.load_leads(e, limit=None)), 4)
+
+    def test_clay_library_export_is_read_only_and_complete(self):
+        from sales_support_agent.api.outbound_router import outbound_leads_csv
+
+        e = self._e()
+        m.record_leads(e, [self._lead("a.com"), self._lead("b.com")])
+        before = m.load_contacted(e)
+        with patch("sales_support_agent.models.database.get_engine", return_value=e):
+            response = outbound_leads_csv(None)
+
+        body = response.body.decode("utf-8")
+        self.assertIn("a.com", body)
+        self.assertIn("b.com", body)
+        self.assertIn("anata_all_clay_brands.csv", response.headers["content-disposition"])
+        self.assertEqual(m.load_contacted(e), before)
 
 
 if __name__ == "__main__":
