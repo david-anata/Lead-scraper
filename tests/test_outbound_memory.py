@@ -238,7 +238,17 @@ class FullLeadRecordTests(unittest.TestCase):
         self.assertIn("Manage sourcing", body)
         self.assertIn("View prospecting performance", body)
         self.assertIn('id="ld-search"', body)
+        self.assertIn("companies held", body)
         self.assertIn("rho.com", body)
+
+        empty = self._e()
+        with (
+            patch("sales_support_agent.models.database.get_engine", return_value=empty),
+            patch("sales_support_agent.api.outbound_router.get_current_user", return_value={}),
+        ):
+            empty_body = outbound_leads(None).body.decode("utf-8")
+        self.assertIn("Use Find fresh companies to create the first batch", empty_body)
+        self.assertNotIn("No leads stored yet", empty_body)
 
 
 if __name__ == "__main__":

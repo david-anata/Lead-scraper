@@ -1056,7 +1056,10 @@ def outbound_leads(request: Request) -> Response:
             for l in leads
         )
     else:
-        rows = "<tr><td colspan='14'>No leads stored yet. Pull a batch on Lead Ops.</td></tr>"
+        rows = (
+            "<tr><td colspan='14'>No companies stored yet. "
+            "Use Find fresh companies to create the first batch.</td></tr>"
+        )
 
     tier_line = " &middot; ".join(f"{k}: {v}" for k, v in sorted(tiers.items())) or "-"
     top_niches = ", ".join(f"{k} ({v})" for k, v in sorted(niches.items(), key=lambda x: -x[1])[:4]) or "-"
@@ -1079,8 +1082,8 @@ def outbound_leads(request: Request) -> Response:
         </header>
 
         <div style="margin:0 0 18px">
-          <span class="ld-stat"><b>{len(leads):,}</b> leads held</span>
-          <span class="ld-stat"><b>{avg}</b> average size</span>
+          <span class="ld-stat"><b>{len(leads):,}</b> companies held</span>
+          <span class="ld-stat"><b>{avg}</b> average company size</span>
           <span class="ld-stat">{html.escape(tier_line)}</span>
         </div>
         <p class="ld-note" style="margin:0 0 14px">Top niches: {html.escape(top_niches)}</p>
@@ -1129,7 +1132,7 @@ def outbound_leads(request: Request) -> Response:
         </script>
     """
     return HTMLResponse(_shell_page(
-        request, active="outbound_leads", title="Outbound Leads",
+        request, active="outbound_leads", title="Company Library",
         extra_css=_LEADS_CSS + _AMAZON_CSS, body=body,
     ))
 
