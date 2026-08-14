@@ -56,6 +56,11 @@ Status: engineering candidate ready for provider registration and timed rehearsa
   and all Neon-provided environment variables are absent. The resource itself
   remains undeleted as recoverable historical data until the owner separately
   authorizes destructive deletion.
+- Supabase's August 14 advisor scan contains no warning- or error-level security
+  finding. Its four duplicate-index warnings are documented for post-cutover
+  cleanup; the indexes remain unchanged now to preserve source/target schema
+  parity. Newly reset index-usage statistics will be reviewed only after real
+  post-cutover traffic.
 
 ## Required before asking for cutover approval
 
