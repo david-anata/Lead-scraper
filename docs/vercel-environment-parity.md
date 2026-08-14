@@ -38,6 +38,10 @@ This receipt records variable names and configuration intent only. It never reco
 - The dedicated Resend staging webhook is enabled for the five event types the
   application supports. Its sensitive signing secret is deployed to Vercel;
   deployment `dpl_G2EQnTDKdye7gwwheKvJhLN1Q1fK` is ready on the stable alias.
+- The QuickBooks staging callback is registered alongside production in the
+  Anata Agent Intuit application. A real OAuth authorization returned to the
+  staging callback, consumed its one-time state, and stored fresh tokens for
+  the verified Anata company without changing QuickBooks accounting data.
 
 ## Intentionally local or defaulted
 
@@ -55,8 +59,9 @@ These are not safe to invent or copy without validating the owning provider acco
 - `INSTANTLY_WEBHOOK_SECRET`: the allowed-event and secret-header settings
   exist, but the signing secret itself is absent and must be supplied or
   confirmed in the Instantly console.
-- Provider-side registration still needs to be verified for QuickBooks, Plaid,
-  and, if those write paths are being launched, Stripe and Instantly. Resend
+- Provider-side registration still needs to be verified for Plaid and, if
+  those write paths are being launched, Stripe and Instantly. QuickBooks and
+  Resend registrations are complete. Resend
   registration is complete, but its provider-generated signed event receipt is
   still required.
   Google sign-in and Gmail registration are complete; Gmail account consent is

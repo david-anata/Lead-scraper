@@ -10,7 +10,7 @@ Never place credentials, tokens, webhook signing secrets, or customer payloads i
 | --- | --- | --- | --- | --- |
 | Google | Agent sign-in | `https://agent-staging.anatainc.com/admin/auth/callback` | `https://agent.anatainc.com/admin/auth/callback` | August 14: David added the staging URI alongside production in the existing Agent OAuth client. A real Google sign-in returned to staging, created the expected Agent session, and landed on David's authorized workspace. A fabricated callback still returns `state_mismatch`. No production URI was removed. |
 | Gmail | Connected inbox OAuth | `https://agent-staging.anatainc.com/admin/settings/inboxes/callback` | Same path on `agent.anatainc.com` | August 14: David added the staging inbox callback alongside the production and staging sign-in callbacks. Authorization now reaches Google's account/consent flow instead of `redirect_uri_mismatch`. Production and staging both show the same connected system-managed legacy inbox; user-connected Gmail consent is therefore an enhancement receipt, not a blocker for preserving the current inbox path. |
-| QuickBooks | Finance OAuth | `https://agent-staging.anatainc.com/admin/finances/qbo/callback` | Same path on `agent.anatainc.com` | Explicit staging environment variable set; August 14: missing parameters and fabricated state both reject with 400 before token exchange. Console registration and read-only company test pending. |
+| QuickBooks | Finance OAuth | `https://agent-staging.anatainc.com/admin/finances/qbo/callback` | Same path on `agent.anatainc.com` | August 14: the staging callback is saved alongside production in the Anata Agent Intuit application. A real OAuth authorization selected the verified Anata company, returned to staging, consumed its one-time state, stored fresh tokens, and completed with 303 before the authenticated workspace returned 200. The callback log recorded the approved realm and a one-hour access-token lifetime; no callback error or 5xx occurred. |
 | Plaid | Link OAuth return | `https://agent-staging.anatainc.com/admin/finances/plaid/oauth-return` | Same path on `agent.anatainc.com` | Explicit staging environment variable set; authenticated return renders Accounts & setup so Plaid Link can resume; dashboard registration and sandbox Link test pending |
 | Plaid | Signed webhook | `https://agent-staging.anatainc.com/api/integrations/plaid/webhook` | Same path on `agent.anatainc.com` | Explicit staging environment variable set; August 14: unsigned sandbox-shaped payload rejects with 401 and `verification_missing`. Signed sandbox delivery pending. |
 | Instantly | Sales event webhook | `https://agent-staging.anatainc.com/api/integrations/instantly/webhook` | Same path on `agent.anatainc.com` | August 14: unsigned payload rejects with 401 before processing. A dedicated signing secret and provider delivery remain pending. |
@@ -30,9 +30,8 @@ code and Vercel cannot complete them silently.
 1. In staging Settings, choose **Connect your inbox**, select the intended
    Google account, and approve the requested Gmail access. Then capture a
    read-only sync receipt; do not send an email.
-2. In the Intuit developer application, add
-   `https://agent-staging.anatainc.com/admin/finances/qbo/callback` alongside
-   production. Run the application's read-only company connection test.
+2. QuickBooks callback registration and real OAuth connection are complete.
+   Preserve both production and staging redirect URIs until cutover is closed.
 3. In Plaid, register the staging redirect and webhook URLs shown above. Use
    Sandbox Link and a signed sandbox webhook; do not connect a real bank merely
    for QA.
@@ -76,6 +75,18 @@ added as separate authorized redirect URIs. Real Google sign-in returned to
 rendered the workspace home. The only application write was the expected
 staging authentication/session audit state; no email, customer communication,
 Gmail mailbox mutation, or production change occurred.
+
+## August 14 QuickBooks happy-path receipt
+
+Operator: David Narayan. Provider environment: the production-mode Anata Agent
+application in Intuit Developer. The production callback remained registered
+while the staging callback was added and verified after a fresh settings reload.
+Agent generated a one-time OAuth state, Intuit authorized the verified Anata
+company, and Intuit returned to the staging callback. Agent consumed the state,
+stored the encrypted tokens and approved realm, logged a one-hour access-token
+lifetime, redirected with 303, and rendered the authenticated staging workspace
+with 200. No invoice, payment, category, customer, or other QuickBooks record was
+created or changed by this connection receipt.
 
 ## August 14 production-parity observation
 

@@ -81,6 +81,11 @@ Status: engineering candidate ready for provider registration and timed rehearsa
   sensitive Vercel environment value and the resulting deployment is ready on
   the stable staging alias. Five concurrent readiness calls returned 200. A
   provider-generated signed test event is the remaining Resend receipt.
+- The QuickBooks staging callback is saved alongside production in Intuit. A
+  real OAuth authorization selected the verified Anata company, returned to
+  staging, passed one-time state validation, stored fresh tokens, and rendered
+  the authenticated workspace. The callback completed with 303, the workspace
+  returned 200, and no QuickBooks accounting record was changed.
 
 ## Required before asking for cutover approval
 
