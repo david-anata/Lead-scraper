@@ -1,6 +1,6 @@
 # Vercel staging callback registry
 
-Status: registration and provider verification pending owner-console access
+Status: Google registration verified; remaining provider registration and receipts in progress
 
 Stable staging origin: `https://agent-staging.anatainc.com`
 
@@ -8,8 +8,8 @@ Never place credentials, tokens, webhook signing secrets, or customer payloads i
 
 | Provider | Purpose | Staging callback or webhook | Production callback currently in use | Staging verification |
 | --- | --- | --- | --- | --- |
-| Google | Agent sign-in | `https://agent-staging.anatainc.com/admin/auth/callback` | `https://agent.anatainc.com/admin/auth/callback` | August 14: authorization starts at Google with the exact staging callback, a signed state, and the expected identity scopes; a fabricated callback returns `state_mismatch`. Google still returns `redirect_uri_mismatch` until the owner adds the staging URI alongside production in the OAuth client. |
-| Gmail | Connected inbox OAuth | `https://agent-staging.anatainc.com/admin/settings/inboxes/callback` | Same path on `agent.anatainc.com` | August 14: a callback without an authenticated session returns to login without exchanging a code. Console registration and read-only inbox test pending. |
+| Google | Agent sign-in | `https://agent-staging.anatainc.com/admin/auth/callback` | `https://agent.anatainc.com/admin/auth/callback` | August 14: David added the staging URI alongside production in the existing Agent OAuth client. A real Google sign-in returned to staging, created the expected Agent session, and landed on David's authorized workspace. A fabricated callback still returns `state_mismatch`. No production URI was removed. |
+| Gmail | Connected inbox OAuth | `https://agent-staging.anatainc.com/admin/settings/inboxes/callback` | Same path on `agent.anatainc.com` | August 14: David added the staging inbox callback alongside the production and staging sign-in callbacks. Authorization now reaches Google's account/consent flow instead of `redirect_uri_mismatch`. Granting Gmail account access and capturing the read-only inbox receipt awaits the owner's explicit consent. |
 | QuickBooks | Finance OAuth | `https://agent-staging.anatainc.com/admin/finances/qbo/callback` | Same path on `agent.anatainc.com` | Explicit staging environment variable set; August 14: missing parameters and fabricated state both reject with 400 before token exchange. Console registration and read-only company test pending. |
 | Plaid | Link OAuth return | `https://agent-staging.anatainc.com/admin/finances/plaid/oauth-return` | Same path on `agent.anatainc.com` | Explicit staging environment variable set; authenticated return renders Accounts & setup so Plaid Link can resume; dashboard registration and sandbox Link test pending |
 | Plaid | Signed webhook | `https://agent-staging.anatainc.com/api/integrations/plaid/webhook` | Same path on `agent.anatainc.com` | Explicit staging environment variable set; August 14: unsigned sandbox-shaped payload rejects with 401 and `verification_missing`. Signed sandbox delivery pending. |
@@ -38,3 +38,14 @@ exact staging deployment log scan after the checks contained no error-level or
 5xx entry. These negative-path receipts prove fail-closed behavior only; they do
 not replace the provider-generated signed happy-path receipts still marked
 pending.
+
+## August 14 Google happy-path receipt
+
+Operator: David Narayan. Provider environment: Google OAuth client in the
+`anata inc` Google Cloud project. The existing production sign-in callback was
+preserved. The staging sign-in callback and staging Gmail inbox callback were
+added as separate authorized redirect URIs. Real Google sign-in returned to
+`agent-staging.anatainc.com`, established David's authorized Agent session, and
+rendered the workspace home. The only application write was the expected
+staging authentication/session audit state; no email, customer communication,
+Gmail mailbox mutation, or production change occurred.

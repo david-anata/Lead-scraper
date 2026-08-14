@@ -164,10 +164,11 @@ native main landmarks, valid skip targets, no horizontal overflow, and no
 unexpected access denial. Exact-deployment logs contain no error-level,
 HubSpot-background, or 5xx entry.
 
-The current application candidate `de4649f` passed full gate `31775515243` and
-is the stable staging deployment `dpl_35QkwPcDhpy5jjc3tdvkibccgcgy`. It adds
-only deployment-aware QuickBooks setup help and a corrected stale-run recovery
-predicate. Five concurrent readiness calls and authenticated Website Ops,
-Finance/QuickBooks, and Deal Board reads passed on the stable hostname after its
-alias was confirmed; the exact-deployment error, HubSpot-background, and 5xx
-log scans were empty. Production remains unchanged.
+The current application candidate `a58bb60` passed full gate `31813531252` in
+5m50s and is the stable staging deployment
+`dpl_Dpc31pxxiiS3Hdpnmz7xz8MWtN1J`. In addition to the prior recovery fixes, it
+uses deployment-neutral operator copy, an explicit staging deck origin, and a
+correct Postgres label for SQLAlchemy driver URLs. Five concurrent readiness
+calls and the authenticated Settings read passed after the stable alias was
+confirmed; the exact-deployment error-level and 5xx application log scans were
+empty. Production remains unchanged.

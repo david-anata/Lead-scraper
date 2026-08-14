@@ -1,6 +1,6 @@
 # Vercel environment parity receipt
 
-Reviewed: August 12, 2026
+Reviewed: August 14, 2026
 
 Project: `anata-agent-staging`
 
@@ -8,7 +8,7 @@ This receipt records variable names and configuration intent only. It never reco
 
 ## Verified
 
-- Vercel exposes 151 production-scoped variable names for the staging project;
+- Vercel exposes 152 production-scoped variable names for the staging project;
   names were re-audited after the Supabase cutover rehearsal.
 - `SALES_AGENT_DB_URL` points to Supabase's session pooler through the dedicated
   non-owner `agent_app` role.
@@ -27,6 +27,8 @@ This receipt records variable names and configuration intent only. It never reco
 - `ANTHROPIC_API_KEY` is present for configured AI paths; `OPENAI_API_KEY` is optional for the selected provider paths.
 - `ADMIN_DASHBOARD_SESSION_SECRET` safely backs the optional dedicated Building campaign-token secret.
 - Explicit staging values were added for `QB_REDIRECT_URI`, `PLAID_WEBHOOK_URL`, and `PLAID_REDIRECT_URI` so those flows cannot fall back to production-domain defaults.
+- `DECK_PUBLIC_BASE_URL` explicitly uses `https://agent-staging.anatainc.com`,
+  so staging-generated deck links do not fall back to the production hostname.
 - Google sign-in, Gmail, QuickBooks, Plaid, and Resend credential names are
   present. Provider-side registration and controlled receipts remain separate
   from environment presence.

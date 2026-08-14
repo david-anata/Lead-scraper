@@ -5,17 +5,17 @@ Status: engineering candidate ready for provider registration and timed rehearsa
 ## Candidate identity
 
 - Branch: `codex/vercel-agent-duplicate`
-- Candidate application commit: `de4649f`
-- Full GitHub release gate: run `31775515243`, passed in 5m39s
-- Current immutable deployment: `dpl_35QkwPcDhpy5jjc3tdvkibccgcgy`
-- Immutable URL: `https://anata-agent-staging-mj1oxzlnt-david-narayans-projects.vercel.app`
+- Candidate application commit: `a58bb60`
+- Full GitHub release gate: run `31813531252`, passed in 5m50s
+- Current immutable deployment: `dpl_Dpc31pxxiiS3Hdpnmz7xz8MWtN1J`
+- Immutable URL: `https://anata-agent-staging-p7s6ax9lt-david-narayans-projects.vercel.app`
 - Stable staging URL: `https://agent-staging.anatainc.com`
 - Database: Supabase project `vfcmljqakphwhslxtfzv`, `us-west-1`, dedicated restricted `agent_app` role
 
 ## Passed engineering gates
 
-- Full hosted regression gate passed for `de4649f`.
-- Tracked-secret scan: 797 tracked files, zero findings. The scan reports only
+- Full hosted regression gate passed for `a58bb60`.
+- Tracked-secret scan: 798 tracked files, zero findings. The scan reports only
   file, line, and pattern name and never prints a candidate value.
 - Dependency audit: 46 declared/runtime dependencies, zero known vulnerabilities.
 - Route inventory regenerated: 689 mounted FastAPI routes.
@@ -52,6 +52,13 @@ Status: engineering candidate ready for provider registration and timed rehearsa
   Agent `{"status":"ready"}` response, and authenticated Website Ops,
   Finance/QuickBooks, and Deal Board reads returned 200. The exact deployment
   log scan contains no error-level, HubSpot-background, or 5xx entry.
+- The final staging amendment removes Render-only operator guidance, pins deck
+  links to the staging hostname, and identifies SQLAlchemy PostgreSQL driver
+  URLs as Postgres on Settings. Google sign-in passed against the registered
+  staging callback. Five concurrent readiness requests and an authenticated
+  Settings inspection passed on the exact deployment; Settings reports
+  `Postgres`, the staging deck origin, and provider-neutral deployment copy.
+  Its exact log scan contains no error-level or 5xx application entry.
 - The legacy Neon marketplace resource is disconnected from the Agent project,
   and all Neon-provided environment variables are absent. The resource itself
   remains undeleted as recoverable historical data until the owner separately

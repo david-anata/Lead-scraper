@@ -55,19 +55,21 @@ Any material runtime, dependency, database-region, or Vercel compute configurati
 
 ## Candidate amendment — August 14, 2026
 
-The current application candidate is `de4649f`, hosted as
-`dpl_35QkwPcDhpy5jjc3tdvkibccgcgy`. The two commits after the three-deployment
-performance baseline change only deployment-aware QuickBooks setup copy and
-the stale-run predicate used by an explicitly forced Website Ops recovery.
+The current application candidate is `a58bb60`, hosted as
+`dpl_Dpc31pxxiiS3Hdpnmz7xz8MWtN1J`. The commits after the three-deployment
+performance baseline change only deployment-aware operator copy, the stale-run
+predicate used by an explicitly forced Website Ops recovery, an explicit
+staging deck origin, and Settings' database-driver label.
 They do not change read-path query work, dependencies, database region, or
 Vercel compute configuration, so the three-deployment performance baseline
 above remains applicable.
 
-The amended candidate passed full gate `31775515243` in 5m39s. On the stable
+The amended candidate passed full gate `31813531252` in 5m50s. On the stable
 staging hostname, five concurrent readiness calls returned Agent's JSON
-readiness response with status 200. Authenticated Website Ops,
-Finance/QuickBooks, and Deal Board reads also returned 200. An exact-deployment
-scan after the checks found no error-level, HubSpot-background, or 5xx entry.
+readiness response with status 200. Authenticated Settings rendered the
+expected `Postgres` database label, staging deck origin, and deployment-neutral
+copy. An exact-deployment scan after the checks found no error-level or 5xx
+application entry.
 The immutable deployment URL itself is protected by Vercel Authentication, so
 application-level checks use the stable custom hostname after confirming that
 the hostname aliases this exact deployment.

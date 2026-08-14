@@ -1,7 +1,7 @@
 # Vercel staging workflow QA matrix
 
-Candidate baseline: `de4649f` / immutable deployment
-`dpl_35QkwPcDhpy5jjc3tdvkibccgcgy`
+Candidate baseline: `a58bb60` / immutable deployment
+`dpl_Dpc31pxxiiS3Hdpnmz7xz8MWtN1J`
 
 Staging: `https://agent-staging.anatainc.com`
 
@@ -10,7 +10,7 @@ communications, CRM mutation, and production publishing remained disabled.
 
 | Area | Hosted happy/read path | Hosted rejected/error path | Automated coverage | Still requires provider or owner action |
 | --- | --- | --- | --- | --- |
-| Authentication and access | Fallback administrator login, logout, workspace home, and permission-filtered navigation pass | Unknown/deleted restricted identity has no workspace grant; direct Finance access for a Sales-only identity returns friendly `No access`; invalid OAuth state is rejected | Access, invite, email-link, Google-session, direct-route, and recent-history permission tests pass | Register Google staging redirect and repeat Google login; repeat one-time email delivery through the live mail provider |
+| Authentication and access | Fallback administrator login, real Google sign-in, logout, workspace home, and permission-filtered navigation pass | Unknown/deleted restricted identity has no workspace grant; direct Finance access for a Sales-only identity returns friendly `No access`; invalid OAuth state is rejected | Access, invite, email-link, Google-session, direct-route, and recent-history permission tests pass | Repeat one-time email delivery through the live mail provider |
 | Sales | Deal Board and control/report reads return 200 with current Supabase mirror data; ordinary Vercel reads never spawn a HubSpot thread; the explicit Sync form uses a tested in-request path | Missing provider configuration and unauthorized route tests fail closed; a database disconnect aborts and rolls back instead of committing a failed session | HubSpot sync, ClickUp rules, Gmail signals, stale lead, Sales operator, CSRF, and Slack receipt tests pass | Controlled ClickUp/HubSpot/Slack/Gmail source-system write receipts |
 | Website Ops | Today page, publishing, site health, and report library render; 144 retained files are readable | Empty/error renderer and storage-hash rejection tests pass | Storage durability, site-health, action, report, and canonical-shell tests pass | One provider-backed plan execution and recovery receipt after callback/provider approval |
 | Content | Control Room and retained artifacts render; scheduler shadow confirms Riverside boundary configured | Publishing remains in shadow and refuses live destinations without approval | Ingestion, transcript, artifact, approval, channel playbook, learning-loop, and publishing-gate tests pass | Signed Riverside/provider ingestion plus platform-specific shadow delivery receipts |
@@ -31,5 +31,6 @@ baseline, with no overflow or direct-route data leak. The current candidate then
 passed the complete hosted gate plus authenticated Website Ops,
 Finance/QuickBooks, and Deal Board smoke checks on the stable hostname after its
 alias was confirmed. Provider-console registration and
-controlled source-system receipts remain the integration-parity work that
+Google sign-in and its registered staging callback are now verified. Remaining
+controlled source-system receipts are the integration-parity work that
 cannot be completed solely from the application workspace.
