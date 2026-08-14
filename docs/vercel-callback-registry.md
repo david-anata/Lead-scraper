@@ -8,7 +8,7 @@ Never place credentials, tokens, webhook signing secrets, or customer payloads i
 
 | Provider | Purpose | Staging callback or webhook | Production callback currently in use | Staging verification |
 | --- | --- | --- | --- | --- |
-| Google | Agent sign-in | `https://agent-staging.anatainc.com/admin/auth/callback` | `https://agent.anatainc.com/admin/auth/callback` | Fallback login passes; invalid state returns `state_mismatch`; Google console registration pending |
+| Google | Agent sign-in | `https://agent-staging.anatainc.com/admin/auth/callback` | `https://agent.anatainc.com/admin/auth/callback` | Live authorization reaches Google with the correct staging callback but Google returns `redirect_uri_mismatch`; add the staging URI alongside production in the Google OAuth client, then repeat sign-in. Fallback login passes; invalid state returns `state_mismatch`. |
 | Gmail | Connected inbox OAuth | `https://agent-staging.anatainc.com/admin/settings/inboxes/callback` | Same path on `agent.anatainc.com` | Console registration and read-only inbox test pending |
 | QuickBooks | Finance OAuth | `https://agent-staging.anatainc.com/admin/finances/qbo/callback` | Same path on `agent.anatainc.com` | Explicit staging environment variable set; invalid/expired state rejected; console registration and read-only company test pending |
 | Plaid | Link OAuth return | `https://agent-staging.anatainc.com/admin/finances/plaid/oauth-return` | Same path on `agent.anatainc.com` | Explicit staging environment variable set; dashboard registration and sandbox Link test pending |
