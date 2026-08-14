@@ -79,6 +79,39 @@ async def rates(request: Request, x_internal_api_key: Optional[str] = Header(def
         return JSONResponse(status_code=503, content={"detail": "Live carrier rates are temporarily unavailable."})
 
 
+@router.post("/address/verify")
+async def verify_address(request: Request, x_internal_api_key: Optional[str] = Header(default=None)):
+    denied = _auth(request, x_internal_api_key)
+    if denied: return denied
+    limited = durable_rate_limit_response(request, scope="shipping-label:address-verify", limit=30)
+    if limited: return limited
+    body, bad = await _json_body(request)
+    if bad: return bad
+    address = _address(body.get("address"))
+    if not address:
+        return JSONResponse(status_code=400, content={"detail": "Complete the address before checking it."})
+    try:
+        data = live_wms().verify_address(address)
+        verified = bool(data.get("verified"))
+        raw_choices = [data.get("address")] if verified and isinstance(data.get("address"), dict) else data.get("suggestions") or []
+        suggestions = []
+        for raw in raw_choices[:5]:
+            if not isinstance(raw, dict): continue
+            suggestion = {
+                "street_1": _text(raw.get("street_1"), 100), "street_2": _text(raw.get("street_2"), 100),
+                "city": _text(raw.get("city"), 100), "state": _text(raw.get("state"), 2).upper(),
+                "postal": _text(raw.get("postal"), 10), "postal_sub": _text(raw.get("postal_sub"), 10), "country": "US",
+            }
+            if all(suggestion[key] for key in ("street_1", "city", "state", "postal")):
+                suggestions.append(suggestion)
+        if verified and not suggestions:
+            suggestions = [{key: address.get(key, "") for key in ("street_1", "street_2", "city", "state", "postal", "country")}]
+        return {"verified": verified, "suggestions": suggestions}
+    except Exception:
+        logger.exception("Shipping address verification failed")
+        return JSONResponse(status_code=503, content={"detail": "Address verification is temporarily unavailable. Try again."})
+
+
 @router.post("/payment")
 async def payment(request: Request, x_internal_api_key: Optional[str] = Header(default=None)):
     denied = _auth(request, x_internal_api_key)

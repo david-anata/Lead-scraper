@@ -149,6 +149,10 @@ class AnataWMSClient:
     def create_shipment_rates(self, model: dict) -> dict:
         return self._account_post("/api/account/add", {"class_key": "shipment", "model": {**model, "rate": True, "purchase": False}})
 
+    def verify_address(self, address: dict) -> dict:
+        """Return EliteWorks' normalized address or deliverable suggestions."""
+        return self._account_post("/api/account/address/verify", address, timeout=30)
+
     def purchase_label(self, *, shipment_id: str, rate_id: str) -> dict:
         return self._account_post("/api/account/label/purchase", {
             "shipment_id": shipment_id, "rate_id": rate_id, "signature": False,
