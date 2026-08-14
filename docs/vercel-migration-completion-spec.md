@@ -49,6 +49,7 @@ The Vercel duplicate is real and functional, but it is not yet a production-equi
 - Render confirms the production service has no persistent disk. Retained state that must survive migration is database-backed, including `website_ops_files`, `content_artifacts`, and report tables; there is no separate Render disk archive to transfer.
 - Staging now exposes an authenticated, read-only scheduler preflight contract. Its focused reliability/security checks and the hosted 3,350-test regression pass; the live unauthenticated path fails closed with 401.
 - The live Render scheduler inventory found and closed one missing Vercel job: the original weekday daily lead build now retains its 05:00 UTC cadence, Denver date, 150-domain limit, and lead-builder execution path. `vercel-scheduler-cutover-map.md` records every retained, upgraded, retired, and explicitly out-of-scope Render service; a manifest test prevents silent schedule loss.
+- Vercel's own Cron dashboard successfully triggered the protected read-only synthetic-health route on August 13 at 19:38 Denver time. The request returned HTTP 200 in 31.6 ms with one 2.0 ms database query; the preceding automatic run also returned 200. Combined with the verified unauthenticated 401 response, this closes the scheduler-authentication receipt without exposing `CRON_SECRET` or enabling any writer.
 
 The following items remain open and block a truthful claim of 100% completion:
 
