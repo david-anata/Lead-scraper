@@ -129,3 +129,28 @@ to the repository-supported `psycopg2` dialect:
 
 Render production remains the authority. This receipt does not authorize DNS,
 callback, scheduler-writer, or production database cutover.
+
+## Isolated rollback-restore proof
+
+Repeated August 13, 2026 after candidate `8e5dcfb` passed its full release gate.
+The PostgreSQL 17.11 client/server binaries and the saved archives were used
+entirely on localhost; neither Supabase nor Render was modified.
+
+- `agent-supabase-postimport-premigration-2026-08-14.dir.tar.gz` restored with
+  `--exit-on-error --no-owner --no-privileges --schema=public --jobs=4` in
+  12.890 seconds.
+- The restored rollback state contained 172 public tables and 223,018 rows.
+- Key recovered counts were: 12 application users, 6,738 cash events, 144
+  Website Ops files, and 174 scheduled-job receipts.
+- The saved Render base export independently restored in 17.267 seconds with
+  171 tables and 223,016 rows.
+- The two expected rollback-snapshot additions were one HR audit event and one
+  key/value record; `fulfillment_report_files` was the expected empty additive
+  target table.
+- Both local databases shut down cleanly, port 55432 stopped listening, and the
+  two temporary data directories were deleted and verified absent. The source
+  archives remain intact outside the repository as the recoverable evidence.
+
+This proves the base and rollback archives are readable and restorable. It does
+not replace the final live-delta capture required inside the approved cutover
+window.
