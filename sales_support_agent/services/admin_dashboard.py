@@ -1680,36 +1680,29 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
     )
     email_form_html = (
         """<form method="post" action="/admin/auth/email">
-              <label for="email-login">Email address</label>
+              <label for="email-login">Work email</label>
               <input id="email-login" name="email" type="email"
                 autocomplete="email" inputmode="email"
-                placeholder="you@example.com" required />
-              <button type="submit">Email me a one-time link</button>
-              <p class="fallback-note" style="margin-top:14px">
-                Works with Gmail, Yahoo, Outlook, iCloud, and other email providers.
-                No new password is required.
-              </p>
+                placeholder="you@anatainc.com" required />
+              <button type="submit">Continue with email</button>
             </form>"""
         if show_email_form
         else ""
     )
     google_divider_html = (
-        '<div class="login-divider"><span>Or use Google</span></div>'
+        '<div class="login-divider"><span>or</span></div>'
         if (show_email_form and show_google_button)
         else ""
     )
-    fallback_divider_html = (
-        '<div class="login-divider"><span>Admin fallback</span></div>'
-        if ((show_google_button or show_email_form) and show_password_form)
-        else ""
-    )
     password_form_html = (
-        f"""<form method="post" action="{html.escape(password_form_action, quote=True)}">
-              <p class="fallback-note">Use the shared break-glass password only for authorized administrator recovery. Employees use email or Google sign-in.</p>
-              <label for="password">Shared fallback password</label>
-              <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter shared fallback password" required />
-              <button type="submit">Continue with fallback</button>
-            </form>"""
+        f"""<details class="recovery">
+              <summary>Admin recovery</summary>
+              <form method="post" action="{html.escape(password_form_action, quote=True)}">
+                <label for="password">Recovery password</label>
+                <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter recovery password" required />
+                <button type="submit">Continue</button>
+              </form>
+            </details>"""
         if show_password_form
         else ""
     )
@@ -1725,257 +1718,180 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/admin.css?v=2">
     <style>
-      :root {{
-        --dark-blue: #2B3644;
-        --alt-dark-blue: #33445C;
-        --light-blue: #85BBDA;
-        --brown: #BFA889;
-        --light-brown: #F9F7F3;
-        --white: #FFFFFF;
-        --text: #2B3644;
-        --shadow: rgba(43, 54, 68, 0.10);
-        --danger: #8b4c42;
-      }}
       * {{ box-sizing: border-box; }}
       body {{
         margin: 0;
         min-height: 100vh;
-        background: var(--light-brown);
-        color: var(--text);
+        background: var(--agent-page);
+        color: var(--agent-ink);
         font-family: "Inter", "Segoe UI", sans-serif;
-        display: flex;
-        flex-direction: column;
       }}
       .shell {{
-        max-width: 1320px;
-        margin: 0 auto;
-        padding: 32px 24px 48px;
-        width: 100%;
-        flex: 1 0 auto;
+        min-height: 100vh;
         display: grid;
-        align-items: center;
+        place-items: center;
+        padding-block: 48px;
       }}
-      .workspace {{
-        background: var(--white);
-        border: 1px solid rgba(43, 54, 68, 0.10);
-        border-radius: 28px;
-        box-shadow: 0 18px 40px var(--shadow);
-        padding: 34px;
-        min-height: calc(100vh - 98px);
-        display: grid;
-        align-content: center;
+      .login-shell {{
+        width: min(100%, 420px);
       }}
-      .split {{
-        display: grid;
-        grid-template-columns: 1.05fr .95fr;
-        gap: 40px;
-        align-items: start;
+      .brand {{
+        display: block;
+        margin: 0 0 28px;
+        color: var(--agent-ink);
+        font: 800 2rem/1 "Montserrat", sans-serif;
+        letter-spacing: -0.055em;
+        text-align: center;
       }}
-      .eyebrow {{
-        display: inline-block;
-        padding: 14px 22px;
-        border-radius: 6px;
-        background: var(--dark-blue);
-        color: var(--white);
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 16px;
-        line-height: 1;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        margin-bottom: 24px;
+      .brand span {{ color: var(--agent-blue); }}
+      .login-card {{
+        padding: 36px;
+        border: 1px solid var(--agent-border);
+        border-radius: var(--agent-radius-card);
+        background: var(--agent-surface);
+        box-shadow: 0 18px 44px var(--agent-shadow);
       }}
       h1 {{
         margin: 0;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 800;
-        font-size: 58px;
-        line-height: 0.96;
-        letter-spacing: -0.05em;
-        color: var(--dark-blue);
+        color: var(--agent-ink);
+        font: 800 2rem/1.15 "Montserrat", sans-serif;
+        letter-spacing: -0.04em;
+        text-align: center;
       }}
-      .highlight {{
-        color: var(--light-blue);
-      }}
-      .copy {{
-        font-family: "Inter", "Segoe UI", sans-serif;
-        font-weight: 300;
-        font-size: 18px;
+      .intro {{
+        margin: 10px 0 28px;
+        color: var(--agent-ink-muted);
         line-height: 1.5;
-        color: var(--dark-blue);
+        text-align: center;
       }}
-      .copy p {{
-        margin: 0 0 22px;
-      }}
-      .login-card {{
-        margin-top: 16px;
-        padding-top: 18px;
-        border-top: 2px solid rgba(43, 54, 68, 0.12);
-      }}
-      .login-card h2 {{
-        margin: 0 0 14px;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 36px;
-        line-height: 1;
-        color: var(--dark-blue);
-      }}
-      .login-card p {{
-        margin: 0 0 26px;
-        font-family: "Inter", "Segoe UI", sans-serif;
-        font-weight: 300;
-        font-size: 18px;
-        line-height: 1.5;
-        color: var(--dark-blue);
-      }}
-      .login-card .fallback-note {{
-        margin: 0 0 18px;
-        font-size: 14px;
-        color: rgba(43,54,68,0.64);
-      }}
+      form {{ margin: 0; }}
       label {{
         display: block;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 16px;
-        letter-spacing: 0.04em;
+        margin: 0 0 8px;
+        color: var(--agent-ink);
+        font: 700 .75rem/1.3 "Montserrat", sans-serif;
+        letter-spacing: .04em;
         text-transform: uppercase;
-        margin-bottom: 12px;
       }}
       input {{
         width: 100%;
-        padding: 18px 20px;
-        border-radius: 10px;
-        border: 2px solid rgba(43, 54, 68, 0.16);
-        background: var(--white);
-        font-family: "Inter", "Segoe UI", sans-serif;
-        font-weight: 300;
-        font-size: 18px;
-        margin-bottom: 22px;
-        color: var(--dark-blue);
+        min-height: 48px;
+        margin: 0 0 12px;
+        padding: 0 14px;
+        border: 1px solid var(--agent-border);
+        border-radius: var(--agent-radius-control);
+        background: var(--agent-surface);
+        color: var(--agent-ink);
+        font: 500 1rem/1.4 "Inter", "Segoe UI", sans-serif;
       }}
-      button {{
-        width: auto;
-        border: 0;
-        border-radius: 999px;
-        padding: 16px 28px;
-        background: var(--light-blue);
-        color: var(--white);
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 18px;
-        cursor: pointer;
-        box-shadow: 0 18px 34px var(--shadow);
-      }}
-      .notice {{
-        border-radius: 10px;
-        padding: 16px 18px;
-        margin-bottom: 20px;
-        font-family: "Inter", "Segoe UI", sans-serif;
-        font-weight: 300;
-        font-size: 16px;
-      }}
-      .error {{
-        background: rgba(138,63,47,.08);
-        color: var(--danger);
-        border: 1px solid rgba(138,63,47,.18);
-      }}
-      .footer-bar {{
-        height: 18px;
-        background: var(--alt-dark-blue);
-        margin-top: 0;
-      }}
+      input::placeholder {{ color: var(--agent-ink-muted); opacity: .72; }}
+      button,
       .google-btn {{
+        min-height: 48px;
+        width: 100%;
         display: flex;
         align-items: center;
         justify-content: center;
         gap: 10px;
-        width: 100%;
-        padding: 16px 24px;
-        border-radius: 999px;
-        border: 2px solid rgba(43, 54, 68, 0.16);
-        background: var(--white);
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 16px;
-        color: var(--dark-blue);
+        padding: 0 18px;
+        border-radius: var(--agent-radius-control);
+        font: 700 .9rem/1 "Montserrat", sans-serif;
         text-decoration: none;
         cursor: pointer;
-        transition: border-color 120ms ease, box-shadow 120ms ease;
-        margin-bottom: 22px;
+        transition: background-color 140ms ease, border-color 140ms ease;
       }}
-      .google-btn:hover {{
-        border-color: rgba(43, 54, 68, 0.3);
-        box-shadow: 0 6px 18px rgba(43,54,68,0.10);
+      button {{
+        border: 1px solid var(--agent-ink);
+        background: var(--agent-ink);
+        color: var(--agent-surface);
+      }}
+      button:hover {{ background: var(--agent-blue-strong); border-color: var(--agent-blue-strong); }}
+      .google-btn {{
+        border: 1px solid var(--agent-border);
+        background: var(--agent-surface);
+        color: var(--agent-ink);
+      }}
+      .google-btn:hover {{ border-color: var(--agent-ink); }}
+      input:focus-visible,
+      button:focus-visible,
+      .google-btn:focus-visible,
+      summary:focus-visible {{
+        outline: 3px solid var(--agent-blue);
+        outline-offset: 3px;
+      }}
+      .notice {{
+        margin: 0 0 18px;
+        padding: 12px 14px;
+        border: 1px solid color-mix(in srgb, var(--agent-danger) 28%, transparent);
+        border-radius: var(--agent-radius-control);
+        background: color-mix(in srgb, var(--agent-danger) 8%, var(--agent-surface));
+        color: var(--agent-danger);
+        font-size: .9rem;
+        line-height: 1.45;
       }}
       .login-divider {{
         display: flex;
         align-items: center;
         gap: 12px;
-        margin-bottom: 22px;
-        color: rgba(43,54,68,0.36);
-        font-size: 13px;
-        font-weight: 700;
+        margin: 18px 0;
+        color: var(--agent-ink-muted);
+        font-size: .75rem;
         text-transform: uppercase;
-        letter-spacing: 0.06em;
       }}
-      .login-divider::before, .login-divider::after {{
+      .login-divider::before,
+      .login-divider::after {{
         content: "";
         flex: 1;
         height: 1px;
-        background: rgba(43,54,68,0.12);
+        background: var(--agent-border);
       }}
-      @media (max-width: 1200px) {{
-        .shell {{
-          padding: 24px 20px 36px;
-        }}
-        .split {{
-          grid-template-columns: 1fr;
-          gap: 28px;
-        }}
-        h1 {{
-          font-size: clamp(40px, 10vw, 58px);
-        }}
+      .recovery {{
+        margin-top: 22px;
+        padding-top: 18px;
+        border-top: 1px solid var(--agent-border);
       }}
-      @media (max-width: 920px) {{
-        .workspace {{
-          min-height: auto;
-        }}
-        .copy,
-        .login-card p,
-        input,
-        label,
-        button {{
-          font-size: 16px;
-        }}
+      .recovery summary {{
+        color: var(--agent-ink-muted);
+        cursor: pointer;
+        font-size: .85rem;
+        text-align: center;
+      }}
+      .recovery[open] summary {{ margin-bottom: 18px; }}
+      .recovery button {{ background: var(--agent-surface); color: var(--agent-ink); }}
+      .recovery button:hover {{ background: var(--agent-page); border-color: var(--agent-ink); }}
+      .privacy {{
+        margin: 18px 0 0;
+        color: var(--agent-ink-muted);
+        font-size: .78rem;
+        line-height: 1.45;
+        text-align: center;
+      }}
+      @media (max-width: 520px) {{
+        .shell {{ padding-block: 28px; }}
+        .login-card {{ padding: 28px 22px; }}
+      }}
+      @media (prefers-reduced-motion: reduce) {{
+        button,
+        .google-btn {{ transition: none; }}
       }}
     </style>
   </head>
   <body class="app app--transition">
     <main id="agent-main-content" class="shell app-container app-page">
-      <div class="workspace">
-      <div class="split">
-        <section>
-          <div class="eyebrow">Agent admin</div>
-          <h1>Access your <span class="highlight">Agent</span> workspace.</h1>
-        </section>
-        <section class="copy">
-          <p>Agent gives each person only the approved work and employee tools connected to their account.</p>
-          <div class="login-card">
-            <h2>Sign in securely.</h2>
-            <p>Use the email address approved for your account. Employees can use any email provider.</p>
-            {error_html}
-            {email_form_html}
-            {google_divider_html}
-            {google_button_html}
-            {fallback_divider_html}
-            {password_form_html}
-          </div>
-        </section>
-      </div>
-      </div>
+      <section class="login-shell" aria-labelledby="login-title">
+        <div class="brand" aria-label="Agent">agent<span>.</span></div>
+        <div class="login-card">
+          <h1 id="login-title">Welcome back</h1>
+          <p class="intro">Sign in to your workspace.</p>
+          {error_html}
+          {email_form_html}
+          {google_divider_html}
+          {google_button_html}
+          {password_form_html}
+          <p class="privacy">Access is limited to approved accounts.</p>
+        </div>
+      </section>
     </main>
-    <div class="footer-bar" aria-hidden="true"></div>
   </body>
 </html>"""
 

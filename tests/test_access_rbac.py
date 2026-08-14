@@ -584,10 +584,9 @@ class AccessFinalizeTests(unittest.TestCase):
         self.assertNotIn('<div class="login-divider">', google_only)
         both = render_login_page(show_google_button=True, show_password_form=True)
         self.assertIn('name="password"', both)
-        self.assertIn('<div class="login-divider">', both)
-        self.assertIn("Admin fallback", both)
-        self.assertIn("shared break-glass password", both)
-        self.assertIn("Continue with fallback", both)
+        self.assertIn("Admin recovery", both)
+        self.assertIn("Recovery password", both)
+        self.assertNotIn("shared break-glass password", both)
         self.assertNotIn("GET STARTED", both)
 
     def test_login_page_offers_provider_neutral_email_link(self) -> None:
@@ -599,9 +598,9 @@ class AccessFinalizeTests(unittest.TestCase):
             show_password_form=False,
         )
         self.assertIn('action="/admin/auth/email"', page)
-        self.assertIn("Email me a one-time link", page)
-        self.assertIn("Yahoo", page)
-        self.assertIn("Or use Google", page)
+        self.assertIn("Continue with email", page)
+        self.assertNotIn("Yahoo", page)
+        self.assertIn('<div class="login-divider"><span>or</span></div>', page)
 
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
