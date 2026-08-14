@@ -8,10 +8,13 @@ This receipt records variable names and configuration intent only. It never reco
 
 ## Verified
 
-- Vercel exposes 163 production-scoped variable names for the staging project.
+- Vercel environment names were re-audited after the Supabase cutover rehearsal.
 - `SALES_AGENT_DB_URL` points to Supabase's session pooler through the dedicated
-  non-owner `agent_app` role. Legacy Neon integration variables remain only
-  until Supabase verification and rollback evidence are complete.
+  non-owner `agent_app` role.
+- The legacy Neon marketplace resource is disconnected from this Vercel
+  project. All 16 Neon-provided environment names (`DATABASE_URL`, `PG*`,
+  `POSTGRES_*`, and `NEON_PROJECT_ID`) were verified absent before rebuilding
+  the final candidate. The Neon resource was retained, not deleted.
 - `AGENT_RUNTIME_SCHEMA_MAINTENANCE=false` prevents ordinary Vercel requests
   from attempting owner-only DDL. Schema changes run through the controlled
   pre-deploy migration instead.

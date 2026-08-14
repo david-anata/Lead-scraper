@@ -132,7 +132,7 @@ callback, scheduler-writer, or production database cutover.
 
 ## Isolated rollback-restore proof
 
-Repeated August 13, 2026 after candidate `8e5dcfb` passed its full release gate.
+Repeated August 13, 2026 after the Finance candidate `8e5dcfb` passed its full release gate.
 The PostgreSQL 17.11 client/server binaries and the saved archives were used
 entirely on localhost; neither Supabase nor Render was modified.
 
@@ -154,3 +154,13 @@ entirely on localhost; neither Supabase nor Render was modified.
 This proves the base and rollback archives are readable and restorable. It does
 not replace the final live-delta capture required inside the approved cutover
 window.
+
+## Final staging candidate addendum
+
+Candidate `1a05919` passed GitHub release gate `31773863474` and was deployed
+three independent times after the Supabase-only environment rebuild. The final
+stable staging deployment is `dpl_F2zLkQvKDqGhvmwo1o2iYrQVir5w`. Two complete
+authenticated 13-page desktop passes at 1280x720 found the expected headings,
+native main landmarks, valid skip targets, no horizontal overflow, and no
+unexpected access denial. Exact-deployment logs contain no error-level,
+HubSpot-background, or 5xx entry. Production remains unchanged.

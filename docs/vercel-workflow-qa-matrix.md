@@ -1,7 +1,7 @@
 # Vercel staging workflow QA matrix
 
-Candidate baseline: `8e5dcfb` / immutable deployment
-`dpl_4ZcSCzu27ANS5HbtpmzDEmhCvcDz`
+Candidate baseline: `1a05919` / immutable deployment
+`dpl_F2zLkQvKDqGhvmwo1o2iYrQVir5w`
 
 Staging: `https://agent-staging.anatainc.com`
 
@@ -11,7 +11,7 @@ communications, CRM mutation, and production publishing remained disabled.
 | Area | Hosted happy/read path | Hosted rejected/error path | Automated coverage | Still requires provider or owner action |
 | --- | --- | --- | --- | --- |
 | Authentication and access | Fallback administrator login, logout, workspace home, and permission-filtered navigation pass | Unknown/deleted restricted identity has no workspace grant; direct Finance access for a Sales-only identity returns friendly `No access`; invalid OAuth state is rejected | Access, invite, email-link, Google-session, direct-route, and recent-history permission tests pass | Register Google staging redirect and repeat Google login; repeat one-time email delivery through the live mail provider |
-| Sales | Deal Board and control/report reads return 200 with current Supabase mirror data | Missing provider configuration and unauthorized route tests fail closed | HubSpot sync, ClickUp rules, Gmail signals, stale lead, Sales operator, and Slack receipt tests pass | Controlled ClickUp/HubSpot/Slack/Gmail source-system write receipts |
+| Sales | Deal Board and control/report reads return 200 with current Supabase mirror data; ordinary Vercel reads never spawn a HubSpot thread; the explicit Sync form uses a tested in-request path | Missing provider configuration and unauthorized route tests fail closed; a database disconnect aborts and rolls back instead of committing a failed session | HubSpot sync, ClickUp rules, Gmail signals, stale lead, Sales operator, CSRF, and Slack receipt tests pass | Controlled ClickUp/HubSpot/Slack/Gmail source-system write receipts |
 | Website Ops | Today page, publishing, site health, and report library render; 144 retained files are readable | Empty/error renderer and storage-hash rejection tests pass | Storage durability, site-health, action, report, and canonical-shell tests pass | One provider-backed plan execution and recovery receipt after callback/provider approval |
 | Content | Control Room and retained artifacts render; scheduler shadow confirms Riverside boundary configured | Publishing remains in shadow and refuses live destinations without approval | Ingestion, transcript, artifact, approval, channel playbook, learning-loop, and publishing-gate tests pass | Signed Riverside/provider ingestion plus platform-specific shadow delivery receipts |
 | Finance | Finance Today and read APIs render from Supabase in 6.36–6.79 seconds cold and 252 ms warm; Finance categories remain distinct | Invalid QuickBooks state and unsigned Plaid webhook reject; runtime role cannot execute DDL | Plaid, QuickBooks, reconciliation, evidence, preview/apply/undo, permissions, renderer, and request-reuse tests pass | Register callbacks and run sandbox/read-only QuickBooks and Plaid flows; no money movement is authorized |
@@ -25,7 +25,7 @@ communications, CRM mutation, and production publishing remained disabled.
 ## Current conclusion
 
 Application, database, permission, durable scheduling, read workflows, and
-failure boundaries are verified on staging. Two complete 12-page desktop passes
+failure boundaries are verified on staging. Two complete 13-page desktop passes
 and one Sales-only restricted-role pass succeeded on the exact candidate, with
 no overflow or direct-route data leak. Provider-console registration and
 controlled source-system receipts remain the integration-parity work that

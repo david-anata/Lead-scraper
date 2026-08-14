@@ -5,16 +5,16 @@ Status: engineering candidate ready for provider registration and timed rehearsa
 ## Candidate identity
 
 - Branch: `codex/vercel-agent-duplicate`
-- Candidate application commit: `8e5dcfb`
-- Full GitHub release gate: run `31770662065`, passed in 5m07s
-- Final immutable performance deployment: `dpl_4ZcSCzu27ANS5HbtpmzDEmhCvcDz`
-- Immutable URL: `https://anata-agent-staging-6vnk7c9sk-david-narayans-projects.vercel.app`
+- Candidate application commit: `1a05919`
+- Full GitHub release gate: run `31773863474`, passed in 6m07s
+- Final immutable performance deployment: `dpl_F2zLkQvKDqGhvmwo1o2iYrQVir5w`
+- Immutable URL: `https://anata-agent-staging-mkqcc5o3y-david-narayans-projects.vercel.app`
 - Stable staging URL: `https://agent-staging.anatainc.com`
 - Database: Supabase project `vfcmljqakphwhslxtfzv`, `us-west-1`, dedicated restricted `agent_app` role
 
 ## Passed engineering gates
 
-- Full hosted regression gate passed for `8e5dcfb`.
+- Full hosted regression gate passed for `1a05919`.
 - Tracked-secret scan: 797 tracked files, zero findings. The scan reports only
   file, line, and pattern name and never prints a candidate value.
 - Dependency audit: 46 declared/runtime dependencies, zero known vulnerabilities.
@@ -28,8 +28,9 @@ Status: engineering candidate ready for provider registration and timed rehearsa
   with no external effect.
 - All 11 write schedules have successful Supabase shadow receipts with readable
   database inputs, configured declared dependencies, and no external writes.
-- Three separate deployments passed concurrent readiness; 12 authenticated
-  representative pages passed two complete desktop passes at 1280px. Finance
+- Three separate deployments of the final commit passed concurrent readiness;
+  13 authenticated representative pages passed two complete desktop passes at
+  1280px. Finance
   completed in 6.36–6.79 seconds cold and 252 ms warm after its query fix.
 - Administrator and fresh-session passes found every expected heading, main
   landmark, skip target, and no horizontal overflow. A temporary restricted
@@ -39,6 +40,15 @@ Status: engineering candidate ready for provider registration and timed rehearsa
   seconds and recovered 172 tables / 223,018 rows, including all 144 retained
   Website Ops files. The isolated databases were stopped and securely removed.
 - Vercel schedules remain globally write-disabled. Render production remains unchanged.
+- Deal Board reads no longer launch an in-process HubSpot thread on Vercel.
+  The explicit, CSRF-protected Sync action remains functional by completing in
+  its request, while Render retains its existing background behavior. The final
+  deployment log scan contains no HubSpot background error, error-level entry,
+  or 5xx response.
+- The legacy Neon marketplace resource is disconnected from the Agent project,
+  and all Neon-provided environment variables are absent. The resource itself
+  remains undeleted as recoverable historical data until the owner separately
+  authorizes destructive deletion.
 
 ## Required before asking for cutover approval
 
