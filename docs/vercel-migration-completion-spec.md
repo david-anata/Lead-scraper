@@ -65,6 +65,12 @@ The Vercel duplicate is real and functional, but it is not yet a production-equi
   rejected overlap, recovered on attempt two, and rejected replay with no
   external write. This live test found and fixed residual request-time queue
   DDL; the restricted Supabase runtime role now performs no schema maintenance.
+- Vercel's scheduler completed a second hosted shadow matrix covering Website
+  Ops, Content, stale leads, Gmail, daily digest, durable repair, Sales operator,
+  HR reminders, Building operations, daily lead build, and Outbound. All 11
+  jobs recorded successful Supabase ledger receipts, their database inputs and
+  declared live configuration groups were ready, and no provider or external
+  write was invoked.
 
 The following items remain open and block a truthful claim of 100% completion:
 

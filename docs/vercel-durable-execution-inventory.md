@@ -56,6 +56,13 @@ The synthetic route checks application readiness, performs a bounded database qu
   application role. The runtime now skips all schema maintenance when
   `AGENT_RUNTIME_SCHEMA_MAINTENANCE=false`; controlled predeploy execution is
   the only DDL owner. The repeated hosted probe passed.
-- Invoke each write schedule in shadow/dry-run mode where supported and record its audit receipt.
+- Hosted schedule shadow receipts are complete. On August 13, 2026 at 22:02
+  Denver time, Vercel invoked the staging-only shadow matrix against deployment
+  `dpl_6rhS5AkPouVLY3XVtt6HCJA8qRGU` (`d86f2d1`). All 11 write schedules
+  recorded `succeeded` receipts under correlation ID
+  `vercel-shadow-20260813T220231360265`. Every required database table was
+  readable, every declared live configuration group was present, and every
+  receipt recorded `external_writes=false`. The temporary trigger was removed
+  immediately after evidence capture.
 - Immediately before cutover, verify Render schedules are stopped before changing `VERCEL_CRON_WRITES_ENABLED`.
 - Enable one Vercel schedule at a time and confirm its first successful ledger receipt.
