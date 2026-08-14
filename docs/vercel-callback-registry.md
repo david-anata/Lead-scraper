@@ -21,6 +21,33 @@ Never place credentials, tokens, webhook signing secrets, or customer payloads i
 
 For every row, record the test date, operator, provider environment, result, source-system event identifier, Agent audit identifier, and whether the test produced any external write. Staging schedules and external writes remain disabled until cutover approval.
 
+## Owner action queue
+
+The following actions require the account owner because they grant account
+access, select a money environment, or change a provider-owned allowlist. Agent
+code and Vercel cannot complete them silently.
+
+1. In staging Settings, choose **Connect your inbox**, select the intended
+   Google account, and approve the requested Gmail access. Then capture a
+   read-only sync receipt; do not send an email.
+2. In the Intuit developer application, add
+   `https://agent-staging.anatainc.com/admin/finances/qbo/callback` alongside
+   production. Run the application's read-only company connection test.
+3. In Plaid, register the staging redirect and webhook URLs shown above. Use
+   Sandbox Link and a signed sandbox webhook; do not connect a real bank merely
+   for QA.
+4. In Resend, confirm or add the staging webhook for the supported delivery,
+   bounce, complaint, delay, and failure events. Copy the matching signing
+   secret into Vercel and redeploy before testing a signed provider event.
+5. Decide whether Stripe billing is already required for production parity. If
+   yes, explicitly select test mode for staging, register the staging webhook,
+   and add its test keys. If no, keep payment execution disabled and track it
+   as a separate Building launch dependency.
+6. Decide whether the Instantly event webhook is already required for
+   production parity. If yes, create one shared secret in the provider and
+   Vercel and run a non-customer test event. If no, keep the current API/read
+   integration and track webhook enablement separately.
+
 ## Pass criteria
 
 - Every OAuth authorization returns to `agent-staging.anatainc.com`, never Render.

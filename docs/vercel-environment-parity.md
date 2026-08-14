@@ -32,6 +32,9 @@ This receipt records variable names and configuration intent only. It never reco
 - Google sign-in, Gmail, QuickBooks, Plaid, and Resend credential names are
   present. Provider-side registration and controlled receipts remain separate
   from environment presence.
+- Google sign-in and Gmail's staging redirect URIs are registered in the
+  existing Google OAuth client without removing either production URI. Real
+  Google sign-in to staging passes.
 
 ## Intentionally local or defaulted
 
@@ -49,7 +52,24 @@ These are not safe to invent or copy without validating the owning provider acco
 - `INSTANTLY_WEBHOOK_SECRET`: the allowed-event and secret-header settings
   exist, but the signing secret itself is absent and must be supplied or
   confirmed in the Instantly console.
-- Provider-side allowlists for Google, Gmail, QuickBooks, Plaid, Stripe, Resend, and Instantly still need the staging hostname registered and tested.
+- Provider-side registration still needs to be verified for QuickBooks, Plaid,
+  Resend, and, if those write paths are being launched, Stripe and Instantly.
+  Google sign-in and Gmail registration are complete; Gmail account consent is
+  a separate controlled receipt.
+
+## Cutover-blocker classification
+
+An absent integration does not become a migration blocker merely because the
+repository contains future-facing code for it. Before go/no-go, compare each
+provider with the behavior operators actually rely on in Render production:
+
+- Authentication, current Gmail/Resend delivery, current QuickBooks reads, and
+  current Plaid reads must retain parity if they are active production flows.
+- Stripe keys and the Instantly webhook secret block certification and launch
+  of those specific write paths. They block the hosting cutover only if the
+  go/no-go owner confirms that Render production currently depends on them.
+- No migration QA step may enable a new payment, outbound-email, CRM-write, or
+  publishing capability simply to make an environment checklist appear green.
 
 ## Recheck command
 

@@ -4,10 +4,16 @@ Status: Supabase rehearsal complete; production execution requires the owner-app
 
 ## Named roles
 
-- Go/no-go owner: pending
-- Rollback owner: pending
-- Migration operator: pending
-- Business verification owner: pending
+- Recommended go/no-go owner: David Narayan; confirmation pending
+- Recommended rollback owner: David Narayan or a named technical delegate;
+  confirmation pending
+- Migration operator: Codex-guided execution in the approved migration task;
+  human owner remains present for DNS, provider consent, and go/no-go
+- Recommended business verification owner: David Narayan; confirmation pending
+
+One person may fill more than one role, but cutover does not begin until the
+names are explicitly confirmed and the rollback owner is available throughout
+the maintenance window.
 
 ## Safety conditions
 
@@ -42,7 +48,9 @@ receipt remains historical evidence only; Neon is no longer the target.
 - Immutable Vercel deployment is READY and matches the approved commit.
 - Full regression suite and all three QA passes are clean.
 - Database and artifact audit returns `"ok": true`.
-- Staging callbacks and signed webhooks pass.
+- Every migration-critical staging callback and signed webhook passes. A
+  future-facing provider that is not active in Render may remain disabled when
+  the go/no-go owner explicitly records it as outside parity scope.
 - Render writers are still active and Vercel writers are still disabled before the maintenance window.
 - A current backup has been restored successfully at least once.
 - Go/no-go and rollback owners are present.
