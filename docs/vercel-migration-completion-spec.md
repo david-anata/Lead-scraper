@@ -1,6 +1,6 @@
 # Anata Agent Vercel Migration Completion Spec
 
-Status: execution in progress — not ready for production cutover
+Status: Supabase staging verification in progress — not ready for production cutover
 
 Target: a fully verified Vercel duplicate before any production-domain cutover
 
@@ -12,9 +12,11 @@ Anata Agent will run on Vercel with the same pages, permissions, data, integrati
 
 ## Verified starting point
 
-- A Vercel preview project and isolated Neon database exist.
-- The FastAPI application deploys as one Vercel service in `pdx1`, beside Neon.
-- Startup schema work is removed from the request path and Neon initialization is serialized.
+- A Vercel staging project and isolated Supabase Pro database exist.
+- The FastAPI application deploys as one Vercel service and connects to the
+  `us-west-1` Supabase session pooler through a dedicated application role.
+- Startup schema work is removed from the request path; schema changes are
+  applied as controlled Supabase migrations rather than by the runtime role.
 - Website Ops has a PostgreSQL-backed durability boundary for its historical filesystem contract.
 - Major authenticated desktop pages return successful responses and the shared shell has been visually reviewed.
 - Render production has not been changed.
@@ -25,7 +27,8 @@ Anata Agent will run on Vercel with the same pages, permissions, data, integrati
 
 The Vercel duplicate is real and functional, but it is not yet a production-equivalent replacement. The following evidence has already been verified:
 
-- The staging project deploys from `codex/vercel-agent-duplicate` and uses an isolated Neon database in `pdx1`.
+- The staging project deploys from `codex/vercel-agent-duplicate` and uses the
+  isolated `anata-agent-staging` Supabase Pro project in `us-west-1`.
 - The stable hostname `agent-staging.anatainc.com` resolves to Vercel with valid HTTPS. Authenticated fallback login and canonical staging navigation pass; provider callback registration remains open.
 - Vercel schedules exist for Website Ops, Content, stale-lead scanning, Gmail ingestion, Sales operations, HR reminders, Building operations, and Outbound. They are authenticated and globally disabled with `VERCEL_CRON_WRITES_ENABLED=false`.
 - Website Ops and Fulfillment retained-report caches no longer hydrate during application startup. The latest measured external cold readiness response was approximately 4.6 seconds, down from a startup path that previously exceeded two minutes.
@@ -43,9 +46,16 @@ The Vercel duplicate is real and functional, but it is not yet a production-equi
 - Personalized workspace home release `b032aec` is deployed as `dpl_DuYJ6n851cNVZkstd3MnqtVu5bFN`. The live desktop pass verified permission-filtered workspaces, assigned-work framing, ordered shortcut controls, recent-page persistence, revised Website Ops/Fulfillment/Executive labels, semantic main regions, and a clean browser console. Production remained unchanged.
 - Migration hardening release `ff46421` is deployed as `dpl_BKU8CpgwVtjHW6HCsUityRESQ3kQ`. The comparator now proves sampled-record fingerprints, timestamp watermarks, and PostgreSQL sequence state in addition to schema, row counts, and artifact hashes. An authenticated read-only synthetic health schedule is registered; its unauthenticated live path rejects with 401 and all write schedules remain disabled.
 - The production Render service is confirmed read-only as `Lead-scraper`, currently on commit `7d881c2`. Its source PostgreSQL database contains 171 tables and 223,016 rows at the August 13 inventory point.
-- The isolated Neon target baseline was inventoried through the already-authorized Vercel project connection with a read-only PostgreSQL transaction. Before import it contains 167 tables, 233 rows, and seven non-empty tables; the retained artifact/report tables sampled there are empty. This proves staging has not yet received the production dataset and provides a clean pre-import comparison point.
+- The isolated Supabase target was inventoried before import and backed up. The
+  verified Render dump was restored without owner or privilege restoration.
+  All 171 source tables, 223,016 rows, full-row fingerprints, and 61 sequence
+  states match; the dedicated Vercel application role passed a direct read
+  probe and the browser-facing Supabase roles have no table access.
 - The protected Render logical export completed and was verified before restore: 151,670,231 compressed bytes, SHA-256 `2BE5B16E7F0484C69A218BAFFF3C5A5C4984BB0BA28CD249D0548EADA8861F18`, 1,428 restore entries, 171 tables, 171 table-data sets, and 61 sequences.
-- The first isolated restore rehearsal failed safely at Neon's externally enforced 512 MB Free-plan project limit. The working staging database remained unchanged, the 350,461,952-byte partial rehearsal database was removed, staging readiness returned HTTP 200, and `vercel-database-rehearsal-receipt.md` records the complete evidence.
+- The earlier Neon rehearsal failed safely at its Free-plan capacity limit and
+  remains documented as historical evidence. The owner subsequently approved
+  Supabase Pro; `vercel-supabase-migration-rehearsal-receipt.md` is the current
+  migration authority.
 - Render confirms the production service has no persistent disk. Retained state that must survive migration is database-backed, including `website_ops_files`, `content_artifacts`, and report tables; there is no separate Render disk archive to transfer.
 - Staging now exposes an authenticated, read-only scheduler preflight contract. Its focused reliability/security checks and the hosted 3,350-test regression pass; the live unauthenticated path fails closed with 401.
 - The live Render scheduler inventory found and closed one missing Vercel job: the original weekday daily lead build now retains its 05:00 UTC cadence, Denver date, 150-domain limit, and lead-builder execution path. `vercel-scheduler-cutover-map.md` records every retained, upgraded, retired, and explicitly out-of-scope Render service; a manifest test prevents silent schedule loss.
@@ -56,7 +66,7 @@ The following items remain open and block a truthful claim of 100% completion:
 | Gate | Remaining work | Evidence required to close | Owner help required |
 | --- | --- | --- | --- |
 | Stable staging identity | DNS and HTTPS are closed; register staging callback and webhook URLs with every provider | Successful provider login/logout and callback registry with pass/fail receipts | Provide access to provider consoles when an existing session is unavailable |
-| Production data parity | Source export, target baseline, and rollback snapshot are closed; upgrade Neon from Free to Launch, rerun the isolated import, and compare schema, counts, samples, sequences, and timestamps | Signed comparison report; repeatable full-plus-delta migration; successful restore rehearsal | Approve the billable Neon Launch plan; owner approval remains separately mandatory for the later production delta/cutover window |
+| Production data parity | Full snapshot equality is closed on Supabase: 171 tables, 223,016 rows, full-row fingerprints, and 61 sequence states match. Rehearse the final delta during the approved cutover window. | `vercel-supabase-migration-rehearsal-receipt.md`; final delta receipt | Owner approval remains separately mandatory for the production delta/cutover window |
 | Artifact parity | Closed as a separate filesystem gate: Render has no persistent disk; retained artifacts are represented in PostgreSQL and move with the database | Database comparison must include `website_ops_files`, `content_artifacts`, and report tables; sample retained reports after import | None beyond the database migration access above |
 | Durable execution | Inventory every `BackgroundTasks` path; move must-survive work to a durable queue/job; add any missing digest or synthetic-health schedule | Job ledger, overlap/retry tests, forced-failure receipt, no orphan Render schedule | Provider sandbox records only if controlled write testing needs them |
 | Integration parity | Exercise OAuth, webhooks, reads, controlled writes, permission failures, and audit receipts for every major integration | Workflow matrix containing happy path, failure path, operator receipt, and source-system receipt | Login/approval in Google, QuickBooks, Plaid, HubSpot, ClickUp, Slack, Riverside, or other provider consoles as encountered |
@@ -70,10 +80,9 @@ The following items remain open and block a truthful claim of 100% completion:
 
 The engineering work should continue without waiting on these items, but these owner-controlled actions are mandatory before the corresponding gates can close:
 
-1. Approve changing the Vercel Neon installation from Free to the usage-based Launch plan. The verified production snapshot cannot fit inside Free's 0.5 GB project limit.
-2. Permit or perform staging callback registration in the external provider consoles, beginning with the confirmed Google redirect mismatch.
-3. Supply a restricted-role staging account for permission QA.
-4. Before cutover, name the go/no-go owner and rollback owner and explicitly approve the production move.
+1. Permit or perform staging callback registration in the external provider consoles, beginning with the confirmed Google redirect mismatch.
+2. Supply a restricted-role staging account for permission QA.
+3. Before cutover, name the go/no-go owner and rollback owner and explicitly approve the production move.
 
 No secret value belongs in this document, source control, screenshots, or QA reports.
 
@@ -117,11 +126,14 @@ Acceptance:
 
 ### Phase 2 — Complete durable data and artifact parity
 
-Inventory every read and write location and assign it one durable owner: Neon, an approved object store, or an external source of truth. Remove any production dependency on Vercel's ephemeral filesystem.
+Inventory every read and write location and assign it one durable owner:
+Supabase, an approved object store, or an external source of truth. Remove any
+production dependency on Vercel's ephemeral filesystem.
 
 Work:
 
-- Compare Render database schema and row counts with Neon for every application table.
+- Compare Render database schema, row values, and sequence state with Supabase
+  for every application table.
 - Rehearse a fresh full export/import followed by a delta import while Render remains authoritative.
 - Migrate Website Ops retained artifacts and verify file hashes, counts, timestamps, and report rendering.
 - Move Fulfillment CS reports, uploaded files, generated decks, exports, and any other retained artifacts to durable storage or document why they are reproducible and intentionally not migrated.
@@ -203,10 +215,11 @@ Work:
 
 - Capture cold and warm latency for readiness, login, and one representative page per major section.
 - Record Vercel function startup milestones, request duration, database query time/count, response size, and upstream-call time.
-- Confirm Vercel compute and Neon remain in the same region.
+- Confirm Vercel compute and the Supabase pooler remain regionally compatible.
 - Remove synchronous startup work that is not required to answer the request.
 - Profile the Finance brief and other query-heavy pages; add bounded caching or query changes only when evidence supports it.
-- Test database pool exhaustion, Neon suspend/resume, provider timeout, retry, and one failed deployment.
+- Test database pool exhaustion, Supabase connection recovery, provider timeout,
+  retry, and one failed deployment.
 - Configure alerts for readiness failures, 5xx rate, job failures, and abnormal latency.
 
 Acceptance thresholds:
@@ -237,7 +250,8 @@ Pass C — Fresh-eyes regression:
 
 - Repeat the critical workflows after at least one new deployment using a clean session.
 - Compare screenshots and response metrics with the approved release candidate.
-- Review Vercel logs, Neon activity, job ledger, and provider audit logs for silent errors or unexpected writes.
+- Review Vercel logs, Supabase activity, job ledger, and provider audit logs for
+  silent errors or unexpected writes.
 
 Acceptance:
 
@@ -308,14 +322,17 @@ Rollback action:
 Work proceeds in this order so that later QA is not invalidated by foundational changes:
 
 1. **Close infrastructure inventory:** finish the environment, route, scheduler, background-task, durable-state, callback, and artifact inventories.
-2. **Close durability:** complete Render-to-Neon migration tooling, artifact transfer, queue/job conversion, ledgering, idempotency, backup, and restore.
+2. **Close durability:** complete Render-to-Supabase migration tooling, artifact
+   transfer, queue/job conversion, ledgering, idempotency, backup, and restore.
 3. **Close staging identity:** make the stable hostname resolve and register/test every staging callback and webhook.
 4. **Close workflow parity:** run the page/API/integration matrix with staging-safe data and resolve every permission, audit, and error-state defect.
 5. **Create the release candidate:** run the clean full suite, security/secret/dependency checks, and performance tests; deploy one immutable candidate.
 6. **Review the same candidate three times:** complete automated/structural, operator/visual, and fresh-session regression passes. A material code, schema, environment, callback, or job change invalidates the affected evidence and requires that pass to be repeated.
 7. **Rehearse cutover and rollback:** time the final migration, prove rollback, and resolve all rehearsal findings before requesting approval.
 8. **Cut over only after explicit approval:** move the production identity, enable jobs one at a time, and verify every critical workflow.
-9. **Complete monitoring:** hold Render rollback-ready and review application logs, Neon activity, job receipts, integration audit logs, data counts, and operator reports during two full business days.
+9. **Complete monitoring:** hold Render rollback-ready and review application
+   logs, Supabase activity, job receipts, integration audit logs, data counts,
+   and operator reports during two full business days.
 
 ## Review and defect rules
 
@@ -354,7 +371,8 @@ The migration approval record must state:
 ## Recommended defaults for unresolved decisions
 
 - Use `agent-staging.anatainc.com` for the stable preview identity.
-- Keep Neon as the primary Vercel database and keep compute in `pdx1`.
+- Keep Supabase PostgreSQL as the primary Vercel database and use its supported
+  IPv4 session pooler for the server application.
 - Use Vercel Cron for short orchestration and a durable queue for work that can outlive one request, retry, or fan out.
 - Use private object storage for durable binary artifacts rather than storing large files in PostgreSQL.
 - Keep staging in shadow/read-only mode by default; enable a write only for a named test and disable it immediately afterward.

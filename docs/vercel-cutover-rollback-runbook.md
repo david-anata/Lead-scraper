@@ -1,6 +1,6 @@
 # Vercel cutover and rollback runbook
 
-Status: rehearsal-ready; execution requires the owner-approved maintenance window and source access
+Status: Supabase rehearsal complete; production execution requires the owner-approved maintenance window
 
 ## Named roles
 
@@ -18,12 +18,18 @@ Status: rehearsal-ready; execution requires the owner-approved maintenance windo
 
 ## Rehearsal
 
-Pre-import baseline recorded August 13, 2026: Render source 171 tables / 223,016 rows; isolated Neon target 167 tables / 233 rows / seven non-empty tables. The target inventory ran in a read-only transaction and its temporary environment file was deleted immediately after use. The first isolated restore proved that Neon's 512 MB Free-plan project limit is insufficient; the partial rehearsal database was removed and the retry requires owner approval for the usage-based Launch plan. See `vercel-database-rehearsal-receipt.md`.
+The owner approved Supabase Pro as the durable Vercel database target. The full
+Render snapshot was restored into the isolated `anata-agent-staging` Supabase
+project. All 171 source tables, 223,016 rows, full-row fingerprints, and 61
+sequence states match. The application uses a dedicated non-owner role and the
+Supabase browser-facing roles have no table access. See
+`vercel-supabase-migration-rehearsal-receipt.md`. The earlier Neon capacity
+receipt remains historical evidence only; Neon is no longer the target.
 
 1. Record the Render deployment identifier, Vercel deployment identifier, DNS state, provider callbacks, and scheduler state.
 2. Export a read-only full Render database snapshot. The production service has no persistent disk; retained Website Ops, Content, Fulfillment, and report artifacts are database-backed and remain inside this snapshot.
-3. Run `python scripts/vercel_migration_capacity.py` with the target URL and extracted source-snapshot byte count. Do not restore unless the credential-free receipt returns `"ok": true` with the default 2x source-snapshot headroom.
-4. Restore the snapshot into the isolated Neon migration target.
+3. Confirm the Supabase project has at least 2x the extracted source-snapshot size available before restoring.
+4. Restore the snapshot into the isolated Supabase migration target with owner and privilege restoration disabled.
 5. Run `python scripts/vercel_migration_audit.py` with source and target database URLs. Artifact-directory arguments remain optional and are not required for the current Render service because no persistent disk exists.
 6. Correct every reported mismatch. Re-run the same restore to prove idempotency.
 7. Capture a second source delta and apply it once. Confirm no duplicate records or artifacts.
@@ -70,4 +76,4 @@ Rollback immediately for authentication failure, permission leakage, missing or 
 
 ## Two-business-day monitoring
 
-Review Vercel 5xx and latency, Neon connections and errors, durable-task backlog, cron/job failures, provider webhook receipts, authentication failures, data-count drift, report freshness, and operator feedback at opening, midday, and close. Keep Render rollback-ready until this monitoring period and the seven-day retention rule both pass.
+Review Vercel 5xx and latency, Supabase connections and errors, durable-task backlog, cron/job failures, provider webhook receipts, authentication failures, data-count drift, report freshness, and operator feedback at opening, midday, and close. Keep Render rollback-ready until this monitoring period and the seven-day retention rule both pass.

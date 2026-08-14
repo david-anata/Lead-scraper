@@ -691,6 +691,7 @@ def _ensure_vendor_columns(engine: Any) -> None:
     if "finance_vendors" not in set(inspector.get_table_names()):
         return
     columns = {column["name"] for column in inspector.get_columns("finance_vendors")}
+    indexes = {index["name"] for index in inspector.get_indexes("finance_vendors")}
     timestamp_columns = {
         "renewal_date": "DATE",
     }
@@ -723,14 +724,20 @@ def _ensure_vendor_columns(engine: Any) -> None:
                 connection.execute(text(
                     f"ALTER TABLE finance_vendors {clause} {column} {ddl}"
                 ))
-        connection.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_finance_vendors_agreement_status "
-            "ON finance_vendors(agreement_status)"
-        ))
-        connection.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_finance_vendors_renewal_date "
-            "ON finance_vendors(renewal_date)"
-        ))
+        # Production application roles intentionally cannot perform DDL.  Avoid
+        # asking PostgreSQL to authorize CREATE INDEX when the migration-owned
+        # indexes already exist; PostgreSQL checks table ownership even for
+        # ``IF NOT EXISTS``.
+        if "ix_finance_vendors_agreement_status" not in indexes:
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_finance_vendors_agreement_status "
+                "ON finance_vendors(agreement_status)"
+            ))
+        if "ix_finance_vendors_renewal_date" not in indexes:
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_finance_vendors_renewal_date "
+                "ON finance_vendors(renewal_date)"
+            ))
 
 
 def _ensure_collection_draft_columns(engine: Any) -> None:
