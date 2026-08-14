@@ -21,7 +21,7 @@ Anata Agent will run on Vercel with the same pages, permissions, data, integrati
 - Preview publishing, embedded schedulers, and external writes remain disabled for safety.
 - Remaining gaps are callback/domain registration, durable scheduled execution, persistent artifact parity, integration write-path testing, cold-start proof, full page/state coverage, and cutover rehearsal.
 
-## Current execution status (August 13, 2026)
+## Current execution status (August 14, 2026)
 
 The Vercel duplicate is real and functional, but it is not yet a production-equivalent replacement. The following evidence has already been verified:
 
@@ -32,11 +32,11 @@ The Vercel duplicate is real and functional, but it is not yet a production-equi
 - Fulfillment report files have a PostgreSQL-backed durable mirror with hash validation and lazy restore.
 - Focused tests for cron authentication/leases, Building operations, Fulfillment storage, dashboards, Finance upload compatibility, intake compatibility, and canonical navigation pass.
 - Render production and `agent.anatainc.com` remain unchanged.
-- Release candidate `c42153c` is deployed as Vercel deployment `dpl_7cBM4uCpv2u6fiJ9CFNrxuEdvkY7` and Vercel reports it ready.
-- The full regression collection reached 3,329 passing tests, one skipped test, and six remaining order-dependent fixture failures. The two corrected real-order boundaries then passed independently: 2,237 tests plus one skip through Parcel Quote, followed by 844 tests through Sales detail. A final clean full-suite pass remains required against `c42153c` before this gate closes.
+- Release candidate `ab8d145` is deployed as Vercel deployment `dpl_Frrh3wxQTPVUWdMQ7jUMbvLDCF5o` and Vercel reports it ready at the stable staging hostname.
+- The hosted release gate passed against the exact deployed revision: 3,348 tests passed, one skipped, zero failed, plus 65 passing subtests. Finance renderer boundaries use and test the Denver operator business date so UTC midnight does not change the page or release result.
 - Authenticated administrator login works on the immutable staging deployment. Ten major desktop sections render their canonical main navigation and expected page heading without browser console warnings or errors.
 - Sales Deal Board, Fulfillment Pipeline, HR Dashboard, and Finance were visually reviewed at 1440 by 900. Their global header, section navigation, content alignment, spacing, cards, and empty states are cohesive and unclipped.
-- The clean single-process regression suite now passes completely: 3,335 passed, one skipped, zero failed, plus 65 passing subtests.
+- The deployed desktop pass rechecked Workspace Home, Sales Deal Board, Fulfillment Prospects & Assets, Finance Today, and HR Dashboard. The shared full-width header, section navigation, content grid, cards, and empty states remain cohesive and unclipped.
 - Shared Website Ops, Fulfillment, and HR report libraries were audited at 1280px. An HR section-menu clipping defect was fixed and verified on deployment `dpl_4Bux8yHmJqCq7X9ZKs1h7hB8eDRf`; all 14 HR links are visible and the console is clean.
 - The callback registry, redacted environment-parity receipt, read-only database/artifact comparator, and cutover/rollback runbook now exist.
 - Performance is closed for the current candidate: three fresh deployments returned five concurrent readiness responses in 0.6–1.1 seconds, all 200; ten authenticated representative pages remained under the ten-second cold-navigation ceiling and warm repeats were under two seconds.
@@ -52,7 +52,7 @@ The following items remain open and block a truthful claim of 100% completion:
 | Artifact parity | Locate and migrate retained Website Ops/Fulfillment files and any uploaded/generated assets currently stored on Render | Source/destination counts, hashes, timestamps, and sampled rendered reports | Access to the Render persistent disk or an owner-provided archive |
 | Durable execution | Inventory every `BackgroundTasks` path; move must-survive work to a durable queue/job; add any missing digest or synthetic-health schedule | Job ledger, overlap/retry tests, forced-failure receipt, no orphan Render schedule | Provider sandbox records only if controlled write testing needs them |
 | Integration parity | Exercise OAuth, webhooks, reads, controlled writes, permission failures, and audit receipts for every major integration | Workflow matrix containing happy path, failure path, operator receipt, and source-system receipt | Login/approval in Google, QuickBooks, Plaid, HubSpot, ClickUp, Slack, Riverside, or other provider consoles as encountered |
-| Regression suite | Closed: clean full-suite pass completed after the fixture repairs | 3,335 passed, one skipped, zero failed | None |
+| Regression suite | Closed: hosted full-suite pass completed against the exact deployed revision | 3,348 passed, one skipped, zero failed, plus 65 passing subtests | None |
 | Performance | Closed for the current candidate; repeat only after a material runtime/configuration change | Three fresh-deployment rounds and authenticated page timings recorded in `vercel-performance-receipt.md` | None |
 | Product QA | Complete 1280px and shared-report coverage; test keyboard, restricted permissions, loading/error/stale states, and repeat fresh-eyes pass | Three complete QA passes against one immutable deployment; screenshot and log evidence | Restricted-role test account or approval to create one in staging |
 | Rehearsal | Perform full snapshot plus delta rehearsal, validate jobs in shadow mode, prove rollback, time the runbook | Completed rehearsal record and rollback proof | Schedule a short rehearsal window and name the go/no-go and rollback owners |
