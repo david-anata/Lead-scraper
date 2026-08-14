@@ -238,7 +238,9 @@ class FullLeadRecordTests(unittest.TestCase):
         self.assertIn("Manage sourcing", body)
         self.assertIn("View prospecting performance", body)
         self.assertIn('id="ld-search"', body)
-        self.assertIn("companies held", body)
+        self.assertIn("Companies held", body)
+        self.assertIn("Average yearly sales", body)
+        self.assertIn("Tier mix", body)
         self.assertIn("rho.com", body)
 
         empty = self._e()
