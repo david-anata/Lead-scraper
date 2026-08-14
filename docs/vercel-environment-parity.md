@@ -8,7 +8,8 @@ This receipt records variable names and configuration intent only. It never reco
 
 ## Verified
 
-- Vercel environment names were re-audited after the Supabase cutover rehearsal.
+- Vercel exposes 151 production-scoped variable names for the staging project;
+  names were re-audited after the Supabase cutover rehearsal.
 - `SALES_AGENT_DB_URL` points to Supabase's session pooler through the dedicated
   non-owner `agent_app` role.
 - The legacy Neon marketplace resource is disconnected from this Vercel
@@ -26,6 +27,9 @@ This receipt records variable names and configuration intent only. It never reco
 - `ANTHROPIC_API_KEY` is present for configured AI paths; `OPENAI_API_KEY` is optional for the selected provider paths.
 - `ADMIN_DASHBOARD_SESSION_SECRET` safely backs the optional dedicated Building campaign-token secret.
 - Explicit staging values were added for `QB_REDIRECT_URI`, `PLAID_WEBHOOK_URL`, and `PLAID_REDIRECT_URI` so those flows cannot fall back to production-domain defaults.
+- Google sign-in, Gmail, QuickBooks, Plaid, and Resend credential names are
+  present. Provider-side registration and controlled receipts remain separate
+  from environment presence.
 
 ## Intentionally local or defaulted
 
@@ -40,7 +44,9 @@ This receipt records variable names and configuration intent only. It never reco
 These are not safe to invent or copy without validating the owning provider account:
 
 - `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`: Building payment processing cannot be certified until the owner selects the correct Stripe environment and webhook endpoint.
-- `INSTANTLY_WEBHOOK_SECRET`: the secret-header name exists, but the signing secret must be supplied or confirmed in the Instantly console.
+- `INSTANTLY_WEBHOOK_SECRET`: the allowed-event and secret-header settings
+  exist, but the signing secret itself is absent and must be supplied or
+  confirmed in the Instantly console.
 - Provider-side allowlists for Google, Gmail, QuickBooks, Plaid, Stripe, Resend, and Instantly still need the staging hostname registered and tested.
 
 ## Recheck command

@@ -266,5 +266,25 @@ class TestQBOAuthRoutes(unittest.TestCase):
         self.assertEqual(len(rows), 0, "Tokens must be cleared even when Intuit revoke fails")
 
 
+class TestQBOSettingsPage(unittest.TestCase):
+    def test_setup_help_uses_the_configured_staging_callback(self):
+        from sales_support_agent.services.cashflow.qbo_settings import (
+            render_qbo_settings_page,
+        )
+
+        staging = "https://agent-staging.anatainc.com/admin/finances/qbo/callback"
+        with (
+            patch.dict(os.environ, {"QB_REDIRECT_URI": staging}),
+            patch(
+                "sales_support_agent.api.qbo_auth_router._load_tokens",
+                return_value=None,
+            ),
+        ):
+            page = render_qbo_settings_page()
+
+        self.assertIn(f"QB_REDIRECT_URI={staging}", page)
+        self.assertIn(f"<code>{staging}</code>", page)
+
+
 if __name__ == "__main__":
     unittest.main()

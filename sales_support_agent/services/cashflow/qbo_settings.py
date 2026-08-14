@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import os
 from datetime import datetime, timezone, timedelta
 
 from sales_support_agent.services.cashflow.cashflow_helpers import _page_shell
@@ -11,6 +12,14 @@ from sales_support_agent.services.cashflow.cashflow_helpers import _page_shell
 def render_qbo_settings_page(*, flash: str = "") -> str:
     """Render the QB connection status page."""
     today = datetime.now(timezone.utc)
+    redirect_uri = (
+        os.getenv(
+            "QB_REDIRECT_URI",
+            "https://agent.anatainc.com/admin/finances/qbo/callback",
+        ).strip()
+        or "https://agent.anatainc.com/admin/finances/qbo/callback"
+    )
+    redirect_uri_html = html.escape(redirect_uri)
 
     # Load token state
     connected    = False
@@ -89,19 +98,19 @@ def render_qbo_settings_page(*, flash: str = "") -> str:
     )
 
     # -- Setup instructions -------------------------------------------------------
-    setup_html = "" if connected else """
+    setup_html = "" if connected else f"""
     <div class="card" style="margin-top:0">
       <h2>How to Connect</h2>
       <ol style="line-height:2;color:var(--text);padding-left:1.2rem">
         <li>
-          Set these environment variables on your server (or Render dashboard):
+          Set these environment variables on the active deployment:
           <pre style="background:#1e293b;color:#e2e8f0;padding:12px;border-radius:6px;margin:8px 0;font-size:13px">QB_CLIENT_ID=your-intuit-client-id
 QB_CLIENT_SECRET=your-intuit-client-secret
-QB_REDIRECT_URI=https://agent.anatainc.com/admin/finances/qbo/callback
+QB_REDIRECT_URI={redirect_uri_html}
 QB_TOKEN_SECRET=&lt;random 32+ char string&gt;</pre>
         </li>
         <li>In your <a href="https://developer.intuit.com" target="_blank">Intuit developer portal</a>,
-          add <code>https://agent.anatainc.com/admin/finances/qbo/callback</code>
+          add <code>{redirect_uri_html}</code>
           as a redirect URI for your app.</li>
         <li>Click <strong>Connect QuickBooks</strong> above — you'll be redirected to Intuit
           to authorise the connection.</li>
