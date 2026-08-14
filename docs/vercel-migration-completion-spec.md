@@ -78,11 +78,16 @@ The Vercel duplicate is real and functional, but it is not yet a production-equi
   jobs recorded successful Supabase ledger receipts, their database inputs and
   declared live configuration groups were ready, and no provider or external
   write was invoked.
-- Candidate `a58bb60` passed GitHub release gate `31813531252` in 5m50s and is
-  deployed as `dpl_Dpc31pxxiiS3Hdpnmz7xz8MWtN1J`. Five concurrent readiness
+- Candidate `ce72a0a` passed GitHub release gate `31815414887` in 5m34s and is
+  deployed as `dpl_H5LDvrC8UrN8vUF6MfisionZkUdb`. Five concurrent readiness
   calls returned 200; authenticated Settings reports Supabase as Postgres, uses
   the staging deck origin, and contains deployment-neutral operator copy. The
   exact deployment log scan has no error-level or 5xx application entry.
+- The same candidate's sign-in page is now a minimal centered card with one
+  heading and one line of guidance. Email and Google remain first-class;
+  break-glass access is preserved behind an `Admin recovery` disclosure. Its
+  live desktop visual, semantic, error, focus, reduced-motion, and recovery
+  states pass without clipping or horizontal overflow.
 - An authenticated Render/Vercel comparison shows the same connected
   system-managed Gmail path, five Finance accounts and their classifications,
   reserve and liability totals, and $40,812 confirmed-money-in total. Personal

@@ -5,16 +5,16 @@ Status: engineering candidate ready for provider registration and timed rehearsa
 ## Candidate identity
 
 - Branch: `codex/vercel-agent-duplicate`
-- Candidate application commit: `a58bb60`
-- Full GitHub release gate: run `31813531252`, passed in 5m50s
-- Current immutable deployment: `dpl_Dpc31pxxiiS3Hdpnmz7xz8MWtN1J`
-- Immutable URL: `https://anata-agent-staging-p7s6ax9lt-david-narayans-projects.vercel.app`
+- Candidate application commit: `ce72a0a`
+- Full GitHub release gate: run `31815414887`, passed in 5m34s
+- Current immutable deployment: `dpl_H5LDvrC8UrN8vUF6MfisionZkUdb`
+- Immutable URL: `https://anata-agent-staging-i4ce6rj2k-david-narayans-projects.vercel.app`
 - Stable staging URL: `https://agent-staging.anatainc.com`
 - Database: Supabase project `vfcmljqakphwhslxtfzv`, `us-west-1`, dedicated restricted `agent_app` role
 
 ## Passed engineering gates
 
-- Full hosted regression gate passed for `a58bb60`.
+- Full hosted regression gate passed for `ce72a0a`.
 - Tracked-secret scan: 798 tracked files, zero findings. The scan reports only
   file, line, and pattern name and never prints a candidate value.
 - Dependency audit: 46 declared/runtime dependencies, zero known vulnerabilities.
@@ -59,6 +59,14 @@ Status: engineering candidate ready for provider registration and timed rehearsa
   Settings inspection passed on the exact deployment; Settings reports
   `Postgres`, the staging deck origin, and provider-neutral deployment copy.
   Its exact log scan contains no error-level or 5xx application entry.
+- The current candidate replaces the authentication marketing split-screen
+  with one focused sign-in card. Email and Google authentication remain
+  visible, while the break-glass password stays available behind a native
+  `Admin recovery` disclosure. The live 1440px visual pass found no clipping or
+  overflow; the semantic region, labeled fields, focus styles, error state,
+  reduced-motion fallback, and collapsed/expanded recovery states pass. Five
+  concurrent readiness calls returned 200 and the exact deployment logs have
+  no error-level or 5xx application entry.
 - The legacy Neon marketplace resource is disconnected from the Agent project,
   and all Neon-provided environment variables are absent. The resource itself
   remains undeleted as recoverable historical data until the owner separately
