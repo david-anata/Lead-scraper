@@ -41,6 +41,7 @@ def test_all_vercel_crons_require_bearer_secret(monkeypatch) -> None:
         "synthetic-health",
         "preflight",
         "durable-recovery-probe",
+        "shadow-preflight",
         "daily-lead-build",
     ):
         assert _client().get(f"/api/vercel-cron/{path}").status_code == 401
@@ -119,6 +120,7 @@ def test_cron_preflight_proves_prerequisites_without_enabling_writes(monkeypatch
         "hr-reminders",
         "building-operations",
         "daily-lead-build",
+        "outbound-morning",
     ]
 
 

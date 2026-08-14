@@ -48,6 +48,10 @@ from sales_support_agent.services.job_lease import (
 )
 from sales_support_agent.services.durable_tasks import drain_durable_tasks
 from sales_support_agent.services.durable_tasks import run_durable_recovery_probe
+from sales_support_agent.services.schedule_shadow import (
+    run_schedule_shadow_matrix,
+    shadow_schedule_names,
+)
 
 
 router = APIRouter(prefix="/api/vercel-cron", tags=["vercel-cron"])
@@ -63,6 +67,7 @@ _WRITE_SCHEDULES = (
     "hr-reminders",
     "building-operations",
     "daily-lead-build",
+    "outbound-morning",
 )
 
 
@@ -230,6 +235,37 @@ def durable_recovery_probe(
         request.app.state.session_factory.kw.get("bind"),
         correlation_id=correlation_id,
     )
+    return JSONResponse(result, status_code=200 if result["status"] == "passed" else 503)
+
+
+@router.get("/shadow-preflight")
+def schedule_shadow_preflight(
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Record staging shadow receipts for every write schedule without providers."""
+
+    _require_vercel_cron(authorization)
+    is_staging = os.getenv("VERCEL_STAGING", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not is_staging:
+        raise HTTPException(status_code=404, detail="Shadow preflight is staging-only.")
+    if _cron_writes_enabled():
+        raise HTTPException(
+            status_code=409,
+            detail="Disable scheduled writes before running shadow preflight.",
+        )
+    correlation_id = f"vercel-shadow-{datetime.now(tz=_DENVER).strftime('%Y%m%dT%H%M%S%f')}"
+    result = run_schedule_shadow_matrix(
+        request.app.state.session_factory.kw.get("bind"),
+        environment=os.environ,
+        correlation_id=correlation_id,
+    )
+    result["write_schedules"] = list(shadow_schedule_names())
     return JSONResponse(result, status_code=200 if result["status"] == "passed" else 503)
 
 
