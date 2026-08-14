@@ -96,7 +96,11 @@ def init_cashflow_db(db_url: str) -> None:
     logger.info("Cashflow DB initialized: %s", db_url.split("@")[-1][:40] if "@" in db_url else db_url[:40])
 
 
-def init_database(session_factory: sessionmaker[Session]) -> None:
+def init_database(
+    session_factory: sessionmaker[Session],
+    *,
+    force_schema_maintenance: bool = False,
+) -> None:
     from sales_support_agent.services.durable_tasks import ensure_durable_task_schema
     from sales_support_agent.services.job_lease import ensure_job_lease_schema
     from sales_support_agent.services.website_ops_storage import (
@@ -110,19 +114,24 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     if engine is None:
         raise RuntimeError("Session factory is missing an engine binding.")
     _register_models()
+    from sales_support_agent.services.schema_policy import schema_maintenance_allowed
+
+    if not schema_maintenance_allowed(engine, force=force_schema_maintenance):
+        logger.info("Database schema maintenance skipped for restricted runtime role.")
+        return
     if engine.dialect.name == "sqlite":
         Base.metadata.create_all(bind=engine)
         _ensure_building_columns(engine)
         _ensure_hr_columns(engine)
         _ensure_email_login_table(engine)
         _apply_sqlite_compat_migrations(engine)
-        ensure_finance_trust_schema(engine)
+        ensure_finance_trust_schema(engine, force=force_schema_maintenance)
         _backfill_legacy_settlements(engine)
         _repair_legacy_building_event_inquiries(session_factory)
-        ensure_job_lease_schema(engine)
-        ensure_durable_task_schema(engine)
-        ensure_website_ops_storage_schema(engine)
-        ensure_fulfillment_report_storage_schema(engine)
+        ensure_job_lease_schema(engine, force=force_schema_maintenance)
+        ensure_durable_task_schema(engine, force=force_schema_maintenance)
+        ensure_website_ops_storage_schema(engine, force=force_schema_maintenance)
+        ensure_fulfillment_report_storage_schema(engine, force=force_schema_maintenance)
         return
 
     # Production deployments use a persistent Postgres database. Serverless
@@ -143,17 +152,17 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
             _ensure_building_columns(engine)
             _ensure_finance_settlement_tables(engine)
             _ensure_plaid_environment_column(engine)
-            ensure_finance_trust_schema(engine)
+            ensure_finance_trust_schema(engine, force=force_schema_maintenance)
             _backfill_legacy_settlements(engine)
             _ensure_hr_tables(engine)
             _ensure_content_tables(engine)
             _ensure_hr_columns(engine)
             _ensure_email_login_table(engine)
             _repair_legacy_building_event_inquiries(session_factory)
-            ensure_job_lease_schema(engine)
-            ensure_durable_task_schema(engine)
-            ensure_website_ops_storage_schema(engine)
-            ensure_fulfillment_report_storage_schema(engine)
+            ensure_job_lease_schema(engine, force=force_schema_maintenance)
+            ensure_durable_task_schema(engine, force=force_schema_maintenance)
+            ensure_website_ops_storage_schema(engine, force=force_schema_maintenance)
+            ensure_fulfillment_report_storage_schema(engine, force=force_schema_maintenance)
         finally:
             lock_connection.execute(
                 text("SELECT pg_advisory_unlock(:lock_id)"),
@@ -962,7 +971,11 @@ def _backfill_legacy_settlements(engine: Any) -> None:
             """), {"id": obligation_id, "status": status, "now": datetime.utcnow()})
 
 
-def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
+def ensure_finance_trust_schema(
+    target_engine: Any | None = None,
+    *,
+    force: bool = False,
+) -> None:
     """Install only additive Phase 0 Finance schema changes.
 
     This is intentionally callable by import services because some tests and
@@ -973,7 +986,7 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
         "AGENT_RUNTIME_SCHEMA_MAINTENANCE",
         "true",
     ).strip().lower() in {"1", "true", "yes", "on"}
-    if db_engine.dialect.name == "postgresql" and not runtime_schema_maintenance:
+    if db_engine.dialect.name == "postgresql" and not runtime_schema_maintenance and not force:
         # Vercel connects with a deliberately non-owner role. Schema changes
         # are applied once by ``scripts/predeploy_agent.py`` with the migration
         # owner; ordinary requests must never attempt DDL.

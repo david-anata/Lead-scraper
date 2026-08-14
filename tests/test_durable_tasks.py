@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine, text
 
@@ -114,3 +115,10 @@ def test_recovery_probe_proves_failure_retry_overlap_and_replay(tmp_path) -> Non
     assert result["overlap_blocked"] is True
     assert result["replay_blocked"] is True
     assert result["external_writes"] is False
+
+
+def test_restricted_postgres_runtime_never_attempts_queue_ddl(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_RUNTIME_SCHEMA_MAINTENANCE", "false")
+    engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    ensure_durable_task_schema(engine)

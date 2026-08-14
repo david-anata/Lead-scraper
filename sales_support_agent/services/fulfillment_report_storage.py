@@ -10,11 +10,15 @@ from typing import Any
 from sqlalchemy import text
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from sales_support_agent.services.schema_policy import schema_maintenance_allowed
+
 
 _MAX_REPORT_BYTES = 25 * 1024 * 1024
 
 
-def ensure_fulfillment_report_storage_schema(engine: Any) -> None:
+def ensure_fulfillment_report_storage_schema(engine: Any, *, force: bool = False) -> None:
+    if not schema_maintenance_allowed(engine, force=force):
+        return
     binary_type = "BYTEA" if engine.dialect.name == "postgresql" else "BLOB"
     with engine.begin() as connection:
         connection.execute(text(f"""

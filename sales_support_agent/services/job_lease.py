@@ -15,6 +15,8 @@ from uuid import uuid4
 
 from sqlalchemy import text
 
+from sales_support_agent.services.schema_policy import schema_maintenance_allowed
+
 
 @dataclass(frozen=True)
 class JobLease:
@@ -25,8 +27,11 @@ class JobLease:
     owner_token: str
 
 
-def ensure_job_lease_schema(engine: Any) -> None:
+def ensure_job_lease_schema(engine: Any, *, force: bool = False) -> None:
     """Create the additive lease table used by cron-owned jobs."""
+
+    if not schema_maintenance_allowed(engine, force=force):
+        return
 
     ddl = """
         CREATE TABLE IF NOT EXISTS scheduled_job_runs (

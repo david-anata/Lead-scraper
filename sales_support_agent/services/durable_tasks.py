@@ -18,6 +18,8 @@ from uuid import uuid4
 
 from sqlalchemy import text
 
+from sales_support_agent.services.schema_policy import schema_maintenance_allowed
+
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +50,11 @@ def app_task_engine(app: Any) -> Any:
     return get_engine()
 
 
-def ensure_durable_task_schema(engine: Any) -> None:
+def ensure_durable_task_schema(engine: Any, *, force: bool = False) -> None:
     """Create the additive queue table used by request-owned durable work."""
+
+    if not schema_maintenance_allowed(engine, force=force):
+        return
 
     with engine.begin() as connection:
         connection.execute(

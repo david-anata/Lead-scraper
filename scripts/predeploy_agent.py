@@ -67,11 +67,11 @@ def main() -> None:
     engine = factory.kw["bind"]
     logger.info("predeploy milestone=database_connected")
     with _migration_lock(engine):
-        init_database(factory)
-        ensure_job_lease_schema(engine)
-        ensure_durable_task_schema(engine)
-        ensure_website_ops_storage_schema(engine)
-        ensure_fulfillment_report_storage_schema(engine)
+        init_database(factory, force_schema_maintenance=True)
+        ensure_job_lease_schema(engine, force=True)
+        ensure_durable_task_schema(engine, force=True)
+        ensure_website_ops_storage_schema(engine, force=True)
+        ensure_fulfillment_report_storage_schema(engine, force=True)
         configured_owner = (
             settings.building_default_lead_owner
             or (

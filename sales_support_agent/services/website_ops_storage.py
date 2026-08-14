@@ -19,12 +19,16 @@ from sqlalchemy import text
 from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from sales_support_agent.services.schema_policy import schema_maintenance_allowed
+
 
 _MAX_FILE_BYTES = 25 * 1024 * 1024
 _CACHE_SYNC_LOCK = RLock()
 
 
-def ensure_website_ops_storage_schema(engine: Any) -> None:
+def ensure_website_ops_storage_schema(engine: Any, *, force: bool = False) -> None:
+    if not schema_maintenance_allowed(engine, force=force):
+        return
     binary_type = "BYTEA" if engine.dialect.name == "postgresql" else "BLOB"
     with engine.begin() as connection:
         connection.execute(
