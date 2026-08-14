@@ -190,7 +190,7 @@ def outbound_brands_page(request: Request) -> Response:
     api_key, _clay = _op.load_config_from_env()
     key_note = (
         '<div class="note">STORELEADS_API_KEY is not set on this service yet, so the '
-        'download will not work. Add it on Render (sales-support-agent service) and redeploy.</div>'
+        'download will not work. Add it to the active deployment environment and redeploy.</div>'
         if not api_key else ""
     )
 
@@ -694,7 +694,7 @@ def outbound_lead_ops(request: Request) -> Response:
         clay_strip = (f"<b>Clay: connected.</b> {html.escape(_cl.budget_note(_used))} "
                       "Send to Clay puts brands straight into your table, no file needed.")
     else:
-        clay_strip = ("<b>Clay: not connected.</b> Add the webhook address on Render as "
+        clay_strip = ("<b>Clay: not connected.</b> Add the webhook address to the active deployment environment as "
                       "CLAY_WEBHOOK_URL and the Send to Clay buttons switch on. "
                       "Pull now and the file download work either way.")
 
@@ -927,7 +927,7 @@ async def outbound_push_to_clay(request: Request) -> Response:
     if not webhook_url:
         return JSONResponse(status_code=400, content={
             "ok": False, "reason": "Clay is not connected yet. Add the webhook address on "
-                                   "Render as CLAY_WEBHOOK_URL to turn this on."})
+                                   "the active deployment environment as CLAY_WEBHOOK_URL to turn this on."})
 
     api_key, _ = _op.load_config_from_env()
     if not api_key:

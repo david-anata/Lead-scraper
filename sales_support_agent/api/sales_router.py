@@ -856,7 +856,7 @@ async def create_deal(request: Request) -> Response:
 
     client = HubSpotClient(settings)
     if not client.is_configured:
-        msg = "HubSpot token is not configured. Set HUBSPOT_API_TOKEN or HUBSPOT_PRIVATE_APP_TOKEN in Render."
+        msg = "HubSpot token is not configured. Set HUBSPOT_API_TOKEN or HUBSPOT_PRIVATE_APP_TOKEN in the active deployment environment."
         if _wants_json(request):
             return JSONResponse({"ok": False, "error": msg}, status_code=503)
         return HTMLResponse(
@@ -975,7 +975,7 @@ def deal_board(request: Request, my: bool = False) -> HTMLResponse:
         logger.exception("[sales] deal_board route error")
         return HTMLResponse(
             f"<pre style='font-family:monospace;padding:2rem;white-space:pre-wrap'>"
-            f"Deal Board Error — check Render logs for full context.\n\n{_tb}</pre>",
+            f"Deal Board Error — check deployment logs for full context.\n\n{_tb}</pre>",
             status_code=500,
         )
 

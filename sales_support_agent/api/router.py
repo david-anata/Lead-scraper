@@ -942,7 +942,7 @@ def admin_login_page(request: Request) -> HTMLResponse:
     unavailable_message = ""
     if not show_google_button and not show_email_form and not show_password_form:
         unavailable_message = (
-            "Login is not configured on this deployment. Add email delivery, Google OAuth, or a break-glass password in Render."
+            "Login is not configured on this deployment. Add email delivery, Google OAuth, or a break-glass password in the active deployment environment."
         )
     elif not show_google_button and not show_email_form and show_password_form:
         unavailable_message = (

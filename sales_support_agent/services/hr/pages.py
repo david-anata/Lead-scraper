@@ -627,10 +627,10 @@ def _flash(flash: Optional[str]) -> str:
         "company_profile_saved": "Employer legal profile saved.",
         "company_profile_invalid": "Complete the employer profile and evidence note.",
         "calendar_ready": "OOO calendar connection and event-write permission confirmed.",
-        "calendar_calendar_id_missing": "Add the Anata OOO Calendar ID in Render, deploy, and test again.",
+        "calendar_calendar_id_missing": "Add the Anata OOO Calendar ID in the active deployment environment, deploy, and test again.",
         "calendar_calendar_id_invalid": "Use the dedicated Anata OOO Calendar ID, not the primary-calendar alias.",
-        "calendar_credential_missing": "Add the protected OOO service-account credential in Render, deploy, and test again.",
-        "calendar_credential_invalid": "The protected OOO credential is invalid or incomplete. Replace it in Render.",
+        "calendar_credential_missing": "Add the protected OOO service-account credential in the active deployment environment, deploy, and test again.",
+        "calendar_credential_invalid": "The protected OOO credential is invalid or incomplete. Replace it in the active deployment environment.",
         "calendar_permission_missing": "Val must share the Anata OOO calendar with the service account using “Make changes to events.”",
         "calendar_calendar_not_found": "The calendar was not found. Check its Calendar ID and sharing permission.",
         "calendar_api_unavailable": "Google Calendar could not be verified. Nothing changed; try again.",
@@ -2188,7 +2188,7 @@ def render_hr_settings(
         '<p class="hr-help"><strong>Service account to share the calendar with:</strong> '
         f'{_esc(calendar.get("service_account_email"))}</p>'
         if calendar.get("service_account_email") else
-        '<p class="hr-help"><strong>Service account:</strong> Add the protected calendar credential in Render first; its safe sharing email will appear here after deployment.</p>'
+        '<p class="hr-help"><strong>Service account:</strong> Add the protected calendar credential to the active deployment environment first; its safe sharing email will appear here after deployment.</p>'
     )
     body = f"""
     {_flash(flash)}
@@ -2216,14 +2216,14 @@ def render_hr_settings(
       <ol class="hr-sub">
         <li>Create or open the dedicated Google Calendar named <strong>Anata OOO</strong>.</li>
         <li>Share it with the service-account email listed above using “Make changes to events.”</li>
-        <li>In Render, set <code>HR_OOO_GOOGLE_CALENDAR_ID</code> and <code>HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON</code>, then deploy.</li>
+        <li>In the active deployment environment, set <code>HR_OOO_GOOGLE_CALENDAR_ID</code> and <code>HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON</code>, then deploy.</li>
         <li>Return to Time &amp; PTO and retry any item marked as needing calendar attention.</li>
       </ol>
       <form method="post" action="/admin/hr/settings/ooo-calendar/test">
         <button class="hr-btn hr-btn-light" type="submit"{' disabled' if not calendar.get('configured') else ''}>Test calendar connection</button>
       </form>
       <p class="hr-help">The test checks calendar visibility and event-write permission without creating an employee event.</p>
-      <p class="hr-help">Never paste the service-account JSON into an HR form, email, or employee record. It belongs only in Render’s secret environment settings.</p>
+      <p class="hr-help">Never paste the service-account JSON into an HR form, email, or employee record. It belongs only in the deployment’s protected environment settings.</p>
     </section>
     <section class="hr-card">
       <div class="hr-kicker">Base44 recovery</div>

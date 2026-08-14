@@ -636,7 +636,7 @@ def create_quote(run_id: int, request: Request) -> RedirectResponse:
         msg = "Creating HubSpot quote — refresh in a few seconds to see the Quote button."
     except Exception:
         logger.exception("[fulfillment_deck] hubspot create_quote failed")
-        msg = "Quote creation failed — check that HUBSPOT_API_TOKEN is set in Render."
+        msg = "Quote creation failed — check that HUBSPOT_API_TOKEN is set in the active deployment environment."
     return RedirectResponse(
         f"{_BASE}/runs/{run_id}/review?msg=" + quote_plus(msg),
         status_code=303,

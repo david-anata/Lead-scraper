@@ -513,7 +513,7 @@ def sync_clickup_finance(settings):
                 if "401" in err_str or "Unauthorized" in err_str:
                     logger.warning(
                         "ClickUp 401 for list %s — API token invalid or expired. "
-                        "Refresh at ClickUp → Profile → Apps → API Token and update CLICKUP_API_TOKEN on Render.",
+                        "Refresh at ClickUp → Profile → Apps → API Token and update CLICKUP_API_TOKEN in the active deployment environment.",
                         list_id,
                     )
                 else:

@@ -225,7 +225,7 @@ def render_batch_cleanup_page(
         if failed:
             flash_html = (
                 f'<div class="flash flash--warn">'
-                f"{applied} action(s) applied, {failed} failed — check Render logs for details."
+                f"{applied} action(s) applied, {failed} failed — check deployment logs for details."
                 f"</div>"
             )
         else:

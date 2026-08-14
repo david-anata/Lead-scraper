@@ -1613,7 +1613,7 @@ def render_fulfillment_sales_page(
             setTimeout(() => {{ btn.textContent = 'Send to warehouse →'; }}, 3000);
           }} else {{
             btn.textContent = 'Send to warehouse →';
-            var errMsg = (d.error || '').includes('FULFILLMENT_TEAM_EMAIL') ? 'Email not configured — set FULFILLMENT_TEAM_EMAIL in Render' : (d.error || 'Error sending');
+            var errMsg = (d.error || '').includes('FULFILLMENT_TEAM_EMAIL') ? 'Email not configured — set FULFILLMENT_TEAM_EMAIL in the active deployment environment' : (d.error || 'Error sending');
             var errEl = document.getElementById('send-err-' + runId);
             if (errEl) {{ errEl.textContent = errMsg; errEl.style.display = 'block'; setTimeout(() => {{ errEl.style.display = 'none'; }}, 8000); }}
           }}

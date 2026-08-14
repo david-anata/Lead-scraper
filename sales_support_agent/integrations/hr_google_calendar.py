@@ -40,9 +40,9 @@ class HRGoogleCalendarClient:
         try:
             info = json.loads(self.service_account_json)
         except (json.JSONDecodeError, TypeError):
-            return "The OOO calendar credential is invalid. Replace it in Render."
+            return "The OOO calendar credential is invalid. Replace it in the active deployment environment."
         if not info.get("client_email") or not info.get("private_key"):
-            return "The OOO calendar credential is incomplete. Replace it in Render."
+            return "The OOO calendar credential is incomplete. Replace it in the active deployment environment."
         return ""
 
     @property
@@ -127,7 +127,7 @@ class HRGoogleCalendarClient:
         if response.status_code == 401:
             return False, "credential_invalid", (
                 "Google rejected the protected service-account credential. "
-                "Replace it in Render, deploy, and test again."
+                "Replace it in the active deployment environment, deploy, and test again."
             )
         if response.status_code == 403:
             return False, "permission_missing", (
