@@ -75,6 +75,22 @@ def _daily_run_is_fresh(state: dict[str, Any], local_now: datetime) -> bool:
     ) <= WEBSITE_OPS_RUNNING_STALE_AFTER
 
 
+def _running_run_is_stale(daily: dict[str, Any], local_now: datetime) -> bool:
+    """Evaluate an explicit recovery request without the pre-pulse health grace."""
+
+    if str(daily.get("status", "")) != "running":
+        return False
+    try:
+        started_at = datetime.fromisoformat(str(daily.get("last_started_at", "")))
+    except (TypeError, ValueError):
+        return True
+    if started_at.tzinfo is None:
+        return True
+    return local_now.astimezone(ZoneInfo("UTC")) - started_at.astimezone(
+        ZoneInfo("UTC")
+    ) > WEBSITE_OPS_RUNNING_STALE_AFTER
+
+
 def _daily_run_has_verified_outcome(
     state: dict[str, Any], local_now: datetime
 ) -> bool:
@@ -655,10 +671,7 @@ async def run_scheduled_website_ops(request: Request) -> dict:
     if engine is not None and lease is None and force and requested_mode == "daily":
         current_state = get_website_ops_run_state(request.app.state.settings, "daily")
         state_status = str(current_state.get("status", ""))
-        running_is_stale = state_status == "running" and not _daily_run_is_fresh(
-            {"runs": {"daily": current_state}},
-            local_now,
-        )
+        running_is_stale = _running_run_is_stale(current_state, local_now)
         if state_status != "running" or running_is_stale:
             attempt_reference = "|".join(
                 (

@@ -69,6 +69,7 @@ from sales_support_agent.services.website_ops_vendor.executor import (
 from sales_support_agent.api.website_ops_jobs_router import (
     _daily_run_has_verified_outcome,
     _daily_run_is_fresh,
+    _running_run_is_stale,
     _latest_autonomous_execution_error,
     _run_due_modes,
     _run_embedded_pulse,
@@ -1045,6 +1046,17 @@ example
                 ":force-recovery:",
                 claim.call_args_list[1].kwargs["run_key"],
             )
+
+    def test_explicit_recovery_detects_a_stale_run_before_first_pulse(self) -> None:
+        local_now = datetime(2026, 8, 14, 3, 0, tzinfo=ZoneInfo("America/Denver"))
+        state = {
+            "status": "running",
+            "last_started_at": (
+                local_now.astimezone(timezone.utc) - timedelta(hours=2)
+            ).isoformat(),
+        }
+
+        self.assertTrue(_running_run_is_stale(state, local_now))
 
     def test_scheduled_modes_add_weekly_and_monthly_on_first_monday(self) -> None:
         first_monday = datetime(2026, 8, 3, 8, 0, tzinfo=timezone.utc)
