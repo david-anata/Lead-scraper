@@ -18,15 +18,18 @@ Status: rehearsal-ready; execution requires the owner-approved maintenance windo
 
 ## Rehearsal
 
+Pre-import baseline recorded August 13, 2026: Render source 171 tables / 223,016 rows; isolated Neon target 167 tables / 233 rows / seven non-empty tables. The target inventory ran in a read-only transaction and its temporary environment file was deleted immediately after use. The first isolated restore proved that Neon's 512 MB Free-plan project limit is insufficient; the partial rehearsal database was removed and the retry requires owner approval for the usage-based Launch plan. See `vercel-database-rehearsal-receipt.md`.
+
 1. Record the Render deployment identifier, Vercel deployment identifier, DNS state, provider callbacks, and scheduler state.
 2. Export a read-only full Render database snapshot. The production service has no persistent disk; retained Website Ops, Content, Fulfillment, and report artifacts are database-backed and remain inside this snapshot.
-3. Restore the snapshot into the isolated Neon migration target.
-4. Run `python scripts/vercel_migration_audit.py` with source and target database URLs. Artifact-directory arguments remain optional and are not required for the current Render service because no persistent disk exists.
-5. Correct every reported mismatch. Re-run the same restore to prove idempotency.
-6. Capture a second source delta and apply it once. Confirm no duplicate records or artifacts.
-7. Run authentication, one page per major section, shared reports, critical read paths, and dry-run job endpoints.
-8. Simulate rollback by restoring the pre-rehearsal target snapshot and rerunning the smoke checks.
-9. Record elapsed time for full snapshot, delta, audit, smoke test, and rollback.
+3. Run `python scripts/vercel_migration_capacity.py` with the target URL and extracted source-snapshot byte count. Do not restore unless the credential-free receipt returns `"ok": true` with the default 2x source-snapshot headroom.
+4. Restore the snapshot into the isolated Neon migration target.
+5. Run `python scripts/vercel_migration_audit.py` with source and target database URLs. Artifact-directory arguments remain optional and are not required for the current Render service because no persistent disk exists.
+6. Correct every reported mismatch. Re-run the same restore to prove idempotency.
+7. Capture a second source delta and apply it once. Confirm no duplicate records or artifacts.
+8. Run authentication, one page per major section, shared reports, critical read paths, and dry-run job endpoints.
+9. Simulate rollback by restoring the pre-rehearsal target snapshot and rerunning the smoke checks.
+10. Record elapsed time for full snapshot, delta, audit, smoke test, and rollback.
 
 ## Go/no-go checklist
 
