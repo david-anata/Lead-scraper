@@ -1635,7 +1635,10 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         """))
         connection.execute(text("""
             CREATE OR REPLACE FUNCTION set_cash_event_record_kind()
-            RETURNS TRIGGER AS $$
+            RETURNS TRIGGER
+            LANGUAGE plpgsql
+            SET search_path = pg_catalog, public
+            AS $$
             BEGIN
                 IF NEW.source IN ('csv', 'qbo_bank')
                    OR NEW.status = 'posted'
@@ -1646,7 +1649,7 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                 END IF;
                 RETURN NEW;
             END;
-            $$ LANGUAGE plpgsql
+            $$
         """))
         connection.execute(text("DROP TRIGGER IF EXISTS set_cash_event_record_kind_trigger ON cash_events"))
         connection.execute(text("""
