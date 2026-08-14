@@ -34,6 +34,7 @@ from sales_support_agent.models.entities import (  # noqa: E402
 from sales_support_agent.services.hubspot_sync.service import sync_hubspot_sales  # noqa: E402
 from sales_support_agent.services.hubspot_sync.trigger import (  # noqa: E402
     hubspot_sync_status,
+    run_hubspot_sync_now,
     start_hubspot_sync,
 )
 
@@ -220,6 +221,21 @@ class HubSpotSyncTriggerTests(unittest.TestCase):
         self.assertFalse(result["running"])
         self.assertFalse(status["running"])
         self.assertIsNone(getattr(app.state, "hubspot_sync_executor", None))
+
+    def test_explicit_vercel_sync_runs_in_the_request(self):
+        app = SimpleNamespace(state=SimpleNamespace())
+        expected = {"ok": True, "completed_at": "now"}
+        from unittest.mock import patch
+
+        with patch(
+            "sales_support_agent.services.hubspot_sync.trigger._run_sync",
+            return_value=expected,
+        ) as run:
+            result = run_hubspot_sync_now(app)
+
+        self.assertEqual(result, expected)
+        run.assert_called_once_with(app)
+        self.assertIsNotNone(app.state.hubspot_sync_lock)
 
 
 class TestContactLinkPreservation(unittest.TestCase):

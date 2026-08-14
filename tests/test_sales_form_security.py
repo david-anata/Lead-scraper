@@ -14,6 +14,7 @@ os.environ.setdefault(
 
 import re
 import unittest
+from unittest import mock
 
 try:
     from fastapi.testclient import TestClient
@@ -88,6 +89,32 @@ class SalesFormSecurityTests(unittest.TestCase):
             data={"_csrf_token": csrf_token(user)},
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_vercel_sync_button_completes_inside_the_request(self) -> None:
+        page = self.client.get("/admin/sales/deals")
+        token_match = re.search(
+            r'name="_csrf_token" value="([0-9a-f]{16,})"', page.text
+        )
+        self.assertIsNotNone(token_match)
+        with (
+            mock.patch.dict(os.environ, {"VERCEL": "1"}),
+            mock.patch(
+                "sales_support_agent.api.sales_router.run_hubspot_sync_now"
+            ) as run_now,
+            mock.patch(
+                "sales_support_agent.api.sales_router.start_hubspot_sync"
+            ) as start_background,
+        ):
+            response = self.client.post(
+                "/admin/sales/deals/sync",
+                headers=self.browser_headers,
+                follow_redirects=False,
+                data={"_csrf_token": token_match.group(1)},
+            )
+
+        self.assertEqual(response.status_code, 303)
+        run_now.assert_called_once_with(app)
+        start_background.assert_not_called()
 
     def test_mismatched_origin_is_rejected(self) -> None:
         response = self.client.post(

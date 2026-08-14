@@ -137,6 +137,18 @@ def start_hubspot_sync(app, *, force: bool = False) -> dict[str, Any]:
         return {"status": "started", "running": True, "message": "HubSpot sync started."}
 
 
+def run_hubspot_sync_now(app) -> dict[str, Any]:
+    """Run an explicit operator-requested refresh inside the current request.
+
+    Vercel cannot guarantee completion of work left in an in-process thread
+    after a response is returned. The Deal Board's explicit Sync action uses
+    this path there, while automatic page loads remain mirror-only.
+    """
+
+    _ensure_state(app)
+    return _run_sync(app)
+
+
 def hubspot_sync_status(app) -> dict[str, Any]:
     _ensure_state(app)
     current: Future | None = app.state.hubspot_sync_future

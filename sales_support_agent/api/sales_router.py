@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import html
+import os
 
 from urllib.parse import quote
 
@@ -33,6 +34,7 @@ from sales_support_agent.services.durable_tasks import (
 )
 from sales_support_agent.services.hubspot_sync.trigger import (
     hubspot_sync_status,
+    run_hubspot_sync_now,
     start_hubspot_sync,
 )
 from sales_support_agent.services.sales.actions import ContactInfo, compute_pending_actions
@@ -980,7 +982,10 @@ def deal_board(request: Request, my: bool = False) -> HTMLResponse:
 
 @router.post("/deals/sync", dependencies=FORM_DEPS)
 def trigger_sync(request: Request) -> RedirectResponse:
-    start_hubspot_sync(request.app, force=True)
+    if os.getenv("VERCEL", "").strip():
+        run_hubspot_sync_now(request.app)
+    else:
+        start_hubspot_sync(request.app, force=True)
     return RedirectResponse(url="/admin/sales/deals", status_code=303)
 
 
