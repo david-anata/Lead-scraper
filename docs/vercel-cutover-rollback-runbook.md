@@ -43,6 +43,7 @@ Status: rehearsal-ready; execution requires the owner-approved maintenance windo
 1. Announce the short read-only or maintenance window.
 2. Record final source counts and scheduler receipts.
 3. Disable Render schedules and external writers; verify they are stopped.
+   Use `docs/vercel-scheduler-cutover-map.md` as the exact allowlist; unrelated Render projects remain untouched.
 4. Take and apply the final database and artifact delta.
 5. Run the migration audit and stop immediately on any mismatch.
 6. Promote the already-approved Vercel deployment without rebuilding it.
