@@ -1000,13 +1000,14 @@ _LEADS_CSS = """
   .ld-scroll { max-width:100%; overflow-x:auto; }
   .ld-A{color:#0a7d33;font-weight:800} .ld-B{color:#b54708;font-weight:800} .ld-C{color:#6b7280;font-weight:800}
   .ld-note { margin:12px 0 0; font-size:14px; color:rgba(43,54,68,.7); }
-  .ld-stat { display:inline-block; margin-right:22px; font-size:14px; }
-  .ld-stat b { font-size:20px; font-family:"Montserrat",sans-serif; }
+  .ld-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:0 0 18px; }
+  .ld-stat { display:grid; gap:4px; padding:13px 14px; border-left:3px solid #85bbda; background:#f8fafb; color:#5d6977; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.035em; }
+  .ld-stat b { color:#2b3644; font-size:18px; font-family:"Montserrat",sans-serif; text-transform:none; letter-spacing:0; }
   .lo-btn { display:inline-block; padding:6px 12px; border-radius:9px; background:#2B3644; color:#fff;
     font-family:"Montserrat",sans-serif; font-weight:800; font-size:11px; text-decoration:none; white-space:nowrap; }
   .lo-btn:hover { background:#1f2833; color:#fff; }
   .lo-btn:focus-visible { outline:3px solid rgba(133,187,218,.55); outline-offset:2px; }
-  @media(max-width:760px){.ld-header{grid-template-columns:1fr}.ld-actions{justify-content:flex-start}.ld-result-count{width:100%;margin-left:0}.ld-command input{min-width:0;width:100%}.ld-command label:first-child{width:100%}}
+  @media(max-width:760px){.ld-header{grid-template-columns:1fr}.ld-actions{justify-content:flex-start}.ld-summary{grid-template-columns:1fr}.ld-result-count{width:100%;margin-left:0}.ld-command input{min-width:0;width:100%}.ld-command label:first-child{width:100%}}
 """
 
 
@@ -1031,7 +1032,7 @@ def outbound_leads(request: Request) -> Response:
         if l.get("niche"):
             niches[l["niche"]] = niches.get(l["niche"], 0) + 1
         revenue += int(l.get("revenue_cents") or 0)
-    avg = f"${revenue // max(len(leads), 1) // 100:,}" if leads else "-"
+    avg = f"${revenue // max(len(leads), 1) // 100:,}" if leads else "Not available"
 
     if leads:
         rows = "".join(
@@ -1061,8 +1062,8 @@ def outbound_leads(request: Request) -> Response:
             "Use Find fresh companies to create the first batch.</td></tr>"
         )
 
-    tier_line = " &middot; ".join(f"{k}: {v}" for k, v in sorted(tiers.items())) or "-"
-    top_niches = ", ".join(f"{k} ({v})" for k, v in sorted(niches.items(), key=lambda x: -x[1])[:4]) or "-"
+    tier_line = " &middot; ".join(f"{k}: {v}" for k, v in sorted(tiers.items())) or "Not classified"
+    top_niches = ", ".join(f"{k} ({v})" for k, v in sorted(niches.items(), key=lambda x: -x[1])[:4]) or "No niche distribution yet"
 
     niche_options = "".join(
         f'<option value="{html.escape(niche)}">{html.escape(niche.replace("_", " ").title())}</option>'
@@ -1081,10 +1082,10 @@ def outbound_leads(request: Request) -> Response:
           </div>
         </header>
 
-        <div style="margin:0 0 18px">
-          <span class="ld-stat"><b>{len(leads):,}</b> companies held</span>
-          <span class="ld-stat"><b>{avg}</b> average company size</span>
-          <span class="ld-stat">{html.escape(tier_line)}</span>
+        <div class="ld-summary" aria-label="Company library summary">
+          <span class="ld-stat"><b>{len(leads):,}</b>Companies held</span>
+          <span class="ld-stat"><b>{avg}</b>Average yearly sales</span>
+          <span class="ld-stat"><b>{tier_line}</b>Tier mix</span>
         </div>
         <p class="ld-note" style="margin:0 0 14px">Top niches: {html.escape(top_niches)}</p>
 
