@@ -27,8 +27,9 @@ jobs:
         run: pip install -r requirements.txt pytest
       - name: Compile application
         run: python -m compileall -q sales_support_agent scripts app.py
+      - name: Scan tracked files for concrete secrets
+        run: python scripts/scan_tracked_secrets.py
       - name: Run full regression suite
         env:
           PYTHONPATH: .
         run: pytest -q
-

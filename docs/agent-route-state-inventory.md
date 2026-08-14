@@ -4,7 +4,7 @@ Generated from the mounted FastAPI application. Re-run
 `python scripts/generate_agent_route_inventory.py --output docs/agent-route-state-inventory.md`
 after adding, removing, or moving a route.
 
-Routes inventoried: **687**
+Routes inventoried: **689**
 
 | Family | Route | Method | Access | Renderer / handler | Primary job | Phase |
 |---|---|---|---|---|---|---|
@@ -653,11 +653,13 @@ Routes inventoried: **687**
 | Service / API | `/api/vercel-cron/content` | `GET` | Service contract | `content_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/daily-digest` | `GET` | Service contract | `daily_digest_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/daily-lead-build` | `GET` | Service contract | `daily_lead_build_cron` | Read, navigate, or download | Exempt |
+| Service / API | `/api/vercel-cron/durable-recovery-probe` | `GET` | Service contract | `durable_recovery_probe` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/durable-tasks` | `GET` | Service contract | `durable_tasks_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/gmail-sync` | `GET` | Service contract | `gmail_sync_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/hr-reminders` | `GET` | Service contract | `hr_reminders_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/preflight` | `GET` | Service contract | `cron_preflight` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/sales-operator` | `GET` | Service contract | `sales_operator_cron` | Read, navigate, or download | Exempt |
+| Service / API | `/api/vercel-cron/shadow-preflight` | `GET` | Service contract | `schedule_shadow_preflight` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/stale-leads` | `GET` | Service contract | `stale_leads_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/synthetic-health` | `GET` | Service contract | `synthetic_health_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/website-ops` | `GET` | Service contract | `website_ops_cron` | Read, navigate, or download | Exempt |
