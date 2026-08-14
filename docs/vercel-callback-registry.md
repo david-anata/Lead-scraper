@@ -9,7 +9,7 @@ Never place credentials, tokens, webhook signing secrets, or customer payloads i
 | Provider | Purpose | Staging callback or webhook | Production callback currently in use | Staging verification |
 | --- | --- | --- | --- | --- |
 | Google | Agent sign-in | `https://agent-staging.anatainc.com/admin/auth/callback` | `https://agent.anatainc.com/admin/auth/callback` | August 14: David added the staging URI alongside production in the existing Agent OAuth client. A real Google sign-in returned to staging, created the expected Agent session, and landed on David's authorized workspace. A fabricated callback still returns `state_mismatch`. No production URI was removed. |
-| Gmail | Connected inbox OAuth | `https://agent-staging.anatainc.com/admin/settings/inboxes/callback` | Same path on `agent.anatainc.com` | August 14: David added the staging inbox callback alongside the production and staging sign-in callbacks. Authorization now reaches Google's account/consent flow instead of `redirect_uri_mismatch`. Granting Gmail account access and capturing the read-only inbox receipt awaits the owner's explicit consent. |
+| Gmail | Connected inbox OAuth | `https://agent-staging.anatainc.com/admin/settings/inboxes/callback` | Same path on `agent.anatainc.com` | August 14: David added the staging inbox callback alongside the production and staging sign-in callbacks. Authorization now reaches Google's account/consent flow instead of `redirect_uri_mismatch`. Production and staging both show the same connected system-managed legacy inbox; user-connected Gmail consent is therefore an enhancement receipt, not a blocker for preserving the current inbox path. |
 | QuickBooks | Finance OAuth | `https://agent-staging.anatainc.com/admin/finances/qbo/callback` | Same path on `agent.anatainc.com` | Explicit staging environment variable set; August 14: missing parameters and fabricated state both reject with 400 before token exchange. Console registration and read-only company test pending. |
 | Plaid | Link OAuth return | `https://agent-staging.anatainc.com/admin/finances/plaid/oauth-return` | Same path on `agent.anatainc.com` | Explicit staging environment variable set; authenticated return renders Accounts & setup so Plaid Link can resume; dashboard registration and sandbox Link test pending |
 | Plaid | Signed webhook | `https://agent-staging.anatainc.com/api/integrations/plaid/webhook` | Same path on `agent.anatainc.com` | Explicit staging environment variable set; August 14: unsigned sandbox-shaped payload rejects with 401 and `verification_missing`. Signed sandbox delivery pending. |
@@ -76,3 +76,16 @@ added as separate authorized redirect URIs. Real Google sign-in returned to
 rendered the workspace home. The only application write was the expected
 staging authentication/session audit state; no email, customer communication,
 Gmail mailbox mutation, or production change occurred.
+
+## August 14 production-parity observation
+
+Authenticated Settings reads on Render production and Vercel staging each show
+one connected, system-managed legacy Gmail inbox with zero connection errors.
+The two Finance Accounts & setup reads each show the same five Plaid-backed
+accounts, account roles, reserve totals, and credit-card liability. The visible
+checking balance differs by $79.79 because staging and production are separate
+database snapshots while Render remains authoritative. Both Finance briefs show
+the same $40,812 confirmed-money-in total attributed to QuickBooks and confirmed
+Anata receivables. This proves rendered source-data continuity, not a live OAuth
+refresh or signed-webhook receipt; those narrower provider checks remain listed
+above where required.
