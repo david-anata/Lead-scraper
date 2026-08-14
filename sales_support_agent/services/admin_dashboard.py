@@ -3688,7 +3688,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
   </head>
   <body>
     {render_agent_nav("sales", sales_section="sales", user=user)}
-    <div id="agent-main-content" class="shell app-container app-page" role="main">
+    <main id="agent-main-content" class="shell app-container app-page" tabindex="-1">
       <div class="workspace">
         <section class="page-header">
           <div>
@@ -3806,7 +3806,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
           </div>
         </details>
       </div>
-    </div>
+    </main>
     <div class="footer-bar" aria-hidden="true"></div>
     <script>
       const syncButton = document.getElementById("sync-dashboard-button");
@@ -7579,7 +7579,7 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
   </head>
   <body>
     {render_agent_nav("executive", executive_section="executive", user=user)}
-    <div id="agent-main-content" class="shell app-container app-page" role="main">
+    <main id="agent-main-content" class="shell app-container app-page" tabindex="-1">
       <div class="workspace">
         <section class="page-header">
           <div>
@@ -7678,7 +7678,7 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
           </details>
         </section>
       </div>
-    </div>
+    </main>
     <div class="footer-bar" aria-hidden="true"></div>
     <script>
       const executiveData = {payload_json};
