@@ -231,7 +231,7 @@ def render_settings_page(
         <a class="quick-link" href="/admin/access">&#128101; Manage access</a>
       </div>
       <p class="muted-note">
-        Secrets are masked in Render. This card only reports whether the runtime can see the required auth configuration.
+        Secrets stay masked in the deployment environment. This card only reports whether the runtime can see the required auth configuration.
       </p>
     </div>"""
 
@@ -335,7 +335,7 @@ def render_settings_page(
         <tr><td>AWS access key</td><td>{_masked(aws_key)}</td></tr>
       </table>
       <p style="font-size:12px;color:rgba(43,54,68,0.38);margin:14px 0 0;">
-        Configuration is managed via Render environment variables.
+        Configuration is managed through the active deployment environment.
         Contact your administrator to update credentials.
       </p>
     </div>"""

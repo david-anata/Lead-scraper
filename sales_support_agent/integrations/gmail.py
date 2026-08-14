@@ -259,4 +259,4 @@ class GmailClient:
             return "Set the missing GMAIL_* environment variables on the sales-support-agent service and redeploy."
         if stage == "send_message":
             return "Inbound sync can still be validated first. Confirm DAILY_DIGEST_EMAIL_TO only after Gmail auth succeeds."
-        return "Check the Gmail OAuth client, refresh token, and Render environment variables on the sales-support-agent service."
+        return "Check the Gmail OAuth client, refresh token, and active deployment environment variables on the sales-support-agent service."
