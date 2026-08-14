@@ -969,6 +969,15 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
     small deployments initialize the shared engine without ``init_database``.
     """
     db_engine = target_engine or get_engine()
+    runtime_schema_maintenance = os.getenv(
+        "AGENT_RUNTIME_SCHEMA_MAINTENANCE",
+        "true",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if db_engine.dialect.name == "postgresql" and not runtime_schema_maintenance:
+        # Vercel connects with a deliberately non-owner role. Schema changes
+        # are applied once by ``scripts/predeploy_agent.py`` with the migration
+        # owner; ordinary requests must never attempt DDL.
+        return
     from sales_support_agent.services.cashflow.vendor_aliases import ensure_vendor_alias_schema
     ensure_vendor_alias_schema(db_engine)
     _register_models()

@@ -208,3 +208,14 @@ def test_existing_vendor_table_gets_every_agreement_column_idempotently():
         "renewal_date", "auto_renewal", "cancellation_notice_days", "owner",
         "evidence_note", "created_by", "updated_by",
     } <= columns
+
+
+def test_serverless_application_role_skips_runtime_finance_ddl(monkeypatch):
+    from sales_support_agent.models.database import ensure_finance_trust_schema
+
+    class RestrictedPostgresEngine:
+        class dialect:
+            name = "postgresql"
+
+    monkeypatch.setenv("AGENT_RUNTIME_SCHEMA_MAINTENANCE", "false")
+    ensure_finance_trust_schema(RestrictedPostgresEngine())

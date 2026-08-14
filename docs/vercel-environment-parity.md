@@ -9,7 +9,12 @@ This receipt records variable names and configuration intent only. It never reco
 ## Verified
 
 - Vercel exposes 163 production-scoped variable names for the staging project.
-- The Neon/PostgreSQL connection variables are present.
+- `SALES_AGENT_DB_URL` points to Supabase's session pooler through the dedicated
+  non-owner `agent_app` role. Legacy Neon integration variables remain only
+  until Supabase verification and rollback evidence are complete.
+- `AGENT_RUNTIME_SCHEMA_MAINTENANCE=false` prevents ordinary Vercel requests
+  from attempting owner-only DDL. Schema changes run through the controlled
+  pre-deploy migration instead.
 - `VERCEL_STAGING` is present.
 - `VERCEL_CRON_WRITES_ENABLED` is present and staging writes remain disabled.
 - `CRON_SECRET` is present.

@@ -38,6 +38,15 @@ not present in Vercel.
 
 Both archives remain outside the repository and contain no credentials.
 
+Immediately before applying the current application schema, a second isolated
+rollback archive was created:
+
+- Archive: `agent-supabase-postimport-premigration-2026-08-14.dir.tar.gz`
+- Size: 151,048,153 bytes
+- Entries: 209
+- SHA-256:
+  `AB8B7FEDDB3CF808711891D42BC0CFDD5D614969EE4C26E37FB1D67908E523A8`
+
 ## Restore and parity result
 
 The Render directory-format dump was restored with PostgreSQL 17 tooling using
@@ -64,6 +73,19 @@ and is intentionally excluded from the 171-table source equality claim. The
 production service has no persistent Fulfillment report disk to migrate, so
 the canonical staging state is an explicit empty report library rather than a
 fabricated report history.
+
+The repository's normal `scripts/predeploy_agent.py` migration was then run
+once under its PostgreSQL advisory lock with the Supabase owner. Its first
+attempt was canceled safely while an old serverless connection held an idle
+transaction lock. The transaction rolled back. The application role now has a
+60-second idle-in-transaction timeout, the stale transaction cleared, and the
+second migration completed in 36.7 seconds. The existing Arena agreement,
+commercial draft, and tax decision were preserved unchanged.
+
+Vercel sets `AGENT_RUNTIME_SCHEMA_MAINTENANCE=false`. This makes request-time
+Finance helpers skip DDL after pre-deploy preparation, so the restricted
+application role is never promoted to table owner merely to satisfy legacy
+`CREATE INDEX IF NOT EXISTS` calls.
 
 ## Security result
 
