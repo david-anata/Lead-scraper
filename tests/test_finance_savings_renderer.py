@@ -15,6 +15,16 @@ TODAY = date.today()
 BALANCE_AS_OF = TODAY.isoformat()
 
 
+@pytest.fixture(autouse=True)
+def _pin_finance_business_date():
+    """Keep renderer fixtures on the same Denver business date as Finance."""
+    with patch(
+        "sales_support_agent.services.cashflow.overview.operator_today",
+        return_value=TODAY,
+    ):
+        yield
+
+
 def _control_state() -> dict:
     return {
         "cash_position": {

@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from sales_support_agent.services.cashflow.cash_calendar import (
+    _operator_today,
     _date_label,
     _next_week_headline,
     _paydown_block,
@@ -19,7 +20,7 @@ from sales_support_agent.services.cashflow.cash_calendar import (
 )
 from sales_support_agent.services.cashflow.overview import _money
 
-TODAY = date.today()
+TODAY = _operator_today()
 NEXT_MONDAY = TODAY + timedelta(days=(7 - TODAY.weekday()))
 
 
