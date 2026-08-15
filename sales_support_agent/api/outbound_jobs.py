@@ -106,7 +106,7 @@ def _sendable_brands(engine) -> list[dict]:
     return ready
 
 
-def _email_the_batch(engine, summary: dict) -> bool:
+def _email_the_batch(engine, summary: dict, *, force: bool = False) -> bool:
     """Tell David what is waiting, so he never has to go looking for it.
 
     A link rather than an attachment: the file is regenerated on download, so a
@@ -115,21 +115,27 @@ def _email_the_batch(engine, summary: dict) -> bool:
     trains you to ignore the daily email.
     """
     from sales_support_agent.config import load_settings
+    from sales_support_agent.services import outbound_memory
     from sales_support_agent.services.access import notify
+
+    prefs = outbound_memory.load_delivery_settings(engine)
+    if not force and (not prefs["enabled"] or prefs["frequency"] != "daily"):
+        return False
 
     ready = _sendable_brands(engine)
     if not ready:
         logger.info("[outbound-jobs] nothing sendable today, no email")
         return False
 
-    to = os.getenv("OUTBOUND_DIGEST_TO", "david@anatainc.com").strip()
+    recipients = [x.strip() for x in prefs.get("email_recipients", "").replace(";", ",").split(",") if x.strip()]
+    if force and not recipients:
+        recipients = [os.getenv("OUTBOUND_DIGEST_TO", "david@anatainc.com").strip()]
     lines = [
         f"{len(ready)} brand(s) are ready to put into Clay.",
-        "",
-        f"Download the file:  {_BATCH_LINK}",
-        "",
-        "What is in it:",
     ]
+    if prefs.get("content_mode") == "link" or force:
+        lines += ["", f"Download the file:  {_BATCH_LINK}"]
+    lines += ["", "What is in it:"]
     for lead in ready[:40]:
         brand = str(lead.get("brand") or lead.get("domain") or "").strip()
         opener = str(lead.get("reason") or "").strip()
@@ -151,9 +157,32 @@ def _email_the_batch(engine, summary: dict) -> bool:
     ]
 
     try:
-        return notify._send(load_settings(), to_email=to,
-                            subject=f"Outbound: {len(ready)} brands ready for Clay",
-                            text="\n".join(lines))
+        settings = load_settings()
+        sent = False
+        if prefs.get("email_enabled") or force:
+            for recipient in recipients:
+                ok = notify._send(settings, to_email=recipient,
+                                  subject=f"Outbound: {len(ready)} brands ready for Clay",
+                                  text="\n".join(lines))
+                sent = ok or sent
+                outbound_memory.record_delivery_attempt(
+                    engine, recipe="daily digest", destination="email", target=recipient,
+                    status="sent" if ok else "failed",
+                )
+        if prefs.get("slack_enabled"):
+            from sales_support_agent.integrations.slack import SlackClient
+            try:
+                slack_ok = bool(SlackClient(settings).post_message(text="\n".join(lines)).get("ok"))
+            except Exception:  # noqa: BLE001
+                logger.exception("[outbound-jobs] daily Slack delivery failed")
+                slack_ok = False
+            sent = slack_ok or sent
+            outbound_memory.record_delivery_attempt(
+                engine, recipe="daily digest", destination="slack",
+                target=str(getattr(settings, "slack_channel_id", "") or "configured channel"),
+                status="sent" if slack_ok else "failed",
+            )
+        return sent
     except Exception:  # noqa: BLE001 - a failed email must not fail the morning
         logger.exception("[outbound-jobs] could not send the morning digest")
         return False
@@ -212,11 +241,12 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
         out["pulled"] += len(result.leads)
         already |= {str(l.get("domain") or "") for l in result.leads}
 
-        if engine is not None and result.leads:
-            outbound_memory.record_leads(engine, result.leads,
-                                         source=result.recipe or "scheduled",
-                                         config_version=version)
-            outbound_memory.record_run(
+        if engine is not None:
+            if result.leads:
+                outbound_memory.record_leads(engine, result.leads,
+                                             source=result.recipe or "scheduled",
+                                             config_version=version)
+            run_id = outbound_memory.record_run(
                 engine, recipe=result.recipe or recipe.key, scanned=result.scanned,
                 matched=result.matched_icp, fresh=len(result.leads),
                 skipped_seen=result.skipped_already_contacted,
@@ -224,6 +254,17 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
                 config_version=version, delivery="scheduled",
                 delivered=len(result.leads), note="automatic morning run",
             )
+            outbound_memory.record_run_leads(engine, run_id, result.leads)
+            try:
+                from sales_support_agent.services.outbound_delivery import deliver_completed_pull
+                deliver_completed_pull(engine, {
+                    "recipe": result.recipe or recipe.key, "scanned": result.scanned,
+                    "matched": result.matched_icp, "fresh": len(result.leads),
+                    "skipped_seen": result.skipped_already_contacted,
+                    "partial": bool(getattr(result, "partial", False)), "config_version": version,
+                })
+            except Exception:  # noqa: BLE001
+                logger.exception("[outbound-jobs] automatic pull delivery failed")
 
     # 2. Check the best of them on Amazon, so the opening lines exist before
     #    anyone opens the page. Bounded, because each brand costs minutes.

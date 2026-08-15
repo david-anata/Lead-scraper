@@ -146,8 +146,68 @@ _RUN_ALTERS = (
     f"ALTER TABLE {_RUNS_TABLE} ADD COLUMN delivered INTEGER",
 )
 _SELECT_RUNS_SQL = (
-    f"SELECT recipe, scanned, matched, fresh, skipped_seen, partial, note, ran_at, config_version, delivery, delivered "
+    f"SELECT id, recipe, scanned, matched, fresh, skipped_seen, partial, note, ran_at, config_version, delivery, delivered "
     f"FROM {_RUNS_TABLE} ORDER BY ran_at DESC"
+)
+
+_RUN_LEADS_TABLE = "outbound_pull_run_leads"
+_CREATE_RUN_LEADS_SQL = f"""
+CREATE TABLE IF NOT EXISTS {_RUN_LEADS_TABLE} (
+    run_id INTEGER NOT NULL,
+    domain TEXT NOT NULL,
+    lead_json TEXT NOT NULL,
+    captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (run_id, domain)
+)
+"""
+
+_DELIVERY_TABLE = "outbound_delivery_settings"
+_CREATE_DELIVERY_SQL = f"""
+CREATE TABLE IF NOT EXISTS {_DELIVERY_TABLE} (
+    id INTEGER PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    email_enabled INTEGER NOT NULL DEFAULT 0,
+    slack_enabled INTEGER NOT NULL DEFAULT 0,
+    frequency TEXT NOT NULL DEFAULT 'every_pull',
+    email_recipients TEXT NOT NULL DEFAULT '',
+    content_mode TEXT NOT NULL DEFAULT 'link',
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+_EXPORTS_TABLE = "outbound_export_history"
+_CREATE_EXPORTS_SQL = f"""
+CREATE TABLE IF NOT EXISTS {_EXPORTS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor TEXT NOT NULL DEFAULT '',
+    run_ids TEXT NOT NULL,
+    source_rows INTEGER NOT NULL DEFAULT 0,
+    unique_companies INTEGER NOT NULL DEFAULT 0,
+    duplicates_removed INTEGER NOT NULL DEFAULT 0,
+    include_duplicates INTEGER NOT NULL DEFAULT 0,
+    filename TEXT NOT NULL DEFAULT '',
+    exported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+_CREATE_EXPORTS_SQL_PG = _CREATE_EXPORTS_SQL.replace(
+    "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY"
+)
+_DELIVERY_HISTORY_TABLE = "outbound_delivery_history"
+_CREATE_DELIVERY_HISTORY_SQL = f"""
+CREATE TABLE IF NOT EXISTS {_DELIVERY_HISTORY_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER,
+    recipe TEXT NOT NULL DEFAULT '',
+    destination TEXT NOT NULL,
+    target TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+_CREATE_DELIVERY_HISTORY_SQL_PG = _CREATE_DELIVERY_HISTORY_SQL.replace(
+    "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY"
 )
 
 
@@ -234,29 +294,36 @@ def ensure_runs_table(engine) -> None:
                 conn.execute(text(stmt))
         except Exception:  # noqa: BLE001 — column already present
             pass
+    with engine.begin() as conn:
+        conn.execute(text(_CREATE_RUN_LEADS_SQL))
+        conn.execute(text(_CREATE_DELIVERY_SQL))
+        conn.execute(text(_CREATE_EXPORTS_SQL_PG if is_pg else _CREATE_EXPORTS_SQL))
+        conn.execute(text(_CREATE_DELIVERY_HISTORY_SQL_PG if is_pg else _CREATE_DELIVERY_HISTORY_SQL))
 
 
 def record_run(engine, *, recipe: str, scanned: int, matched: int, fresh: int,
                skipped_seen: int, partial: bool = False, note: str = "",
                config_version: int = 0, delivery: str = "file",
-               delivered: int = 0) -> bool:
-    """Log one pull. Best-effort: a failure here must never break a pull."""
+               delivered: int = 0) -> int:
+    """Log one pull and return its id. Best-effort: zero on failure."""
     if engine is None:
         return False
     try:
         ensure_runs_table(engine)
+        is_pg = "postgres" in str(getattr(engine, "url", "")).lower()
         with engine.begin() as conn:
-            conn.execute(text(_INSERT_RUN_SQL), {
+            result = conn.execute(text(_INSERT_RUN_SQL + (" RETURNING id" if is_pg else "")), {
                 "recipe": recipe or "", "scanned": int(scanned), "matched": int(matched),
                 "fresh": int(fresh), "skipped_seen": int(skipped_seen),
                 "partial": 1 if partial else 0, "note": note or "",
                 "config_version": int(config_version or 0),
                 "delivery": delivery or "file", "delivered": int(delivered or 0),
             })
-        return True
+            run_id = result.scalar_one() if is_pg else getattr(result, "lastrowid", None)
+        return int(run_id or 0)
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-memory] record_run failed")
-        return False
+        return 0
 
 
 def total_delivered(engine) -> int:
@@ -286,11 +353,11 @@ def load_runs(engine, limit: int = 30) -> list[dict[str, Any]]:
         out = []
         for r in rows[:limit]:
             out.append({
-                "recipe": r[0], "scanned": r[1], "matched": r[2], "fresh": r[3],
-                "skipped_seen": r[4], "partial": bool(r[5]), "note": r[6], "ran_at": r[7],
-                "config_version": r[8] if len(r) > 8 else 0,
-                "delivery": (r[9] if len(r) > 9 else None) or "file",
-                "delivered": (r[10] if len(r) > 10 else 0) or 0,
+                "id": int(r[0]), "recipe": r[1], "scanned": r[2], "matched": r[3], "fresh": r[4],
+                "skipped_seen": r[5], "partial": bool(r[6]), "note": r[7], "ran_at": r[8],
+                "config_version": r[9] if len(r) > 9 else 0,
+                "delivery": (r[10] if len(r) > 10 else None) or "file",
+                "delivered": (r[11] if len(r) > 11 else 0) or 0,
             })
         return out
     except Exception:  # noqa: BLE001
@@ -298,6 +365,185 @@ def load_runs(engine, limit: int = 30) -> list[dict[str, Any]]:
         return []
 
 
+def record_run_leads(engine, run_id: int, leads: Iterable[dict[str, Any]]) -> int:
+    """Persist the exact company membership of a pull without changing suppression."""
+    if engine is None or not run_id:
+        return 0
+    payload = []
+    seen: set[str] = set()
+    for lead in leads:
+        domain = _norm(lead.get("domain"))
+        website = _norm(lead.get("website")).replace("https://", "").replace("http://", "").rstrip("/")
+        brand = _norm(lead.get("brand") or lead.get("company"))
+        identity = domain or website or (f"name:{brand}" if brand else "")
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        payload.append({"run_id": int(run_id), "domain": identity, "lead_json": json.dumps(lead, default=str)})
+    if not payload:
+        return 0
+    try:
+        ensure_runs_table(engine)
+        with engine.begin() as conn:
+            conn.execute(text(
+                f"INSERT INTO {_RUN_LEADS_TABLE} (run_id, domain, lead_json) "
+                "VALUES (:run_id, :domain, :lead_json) ON CONFLICT (run_id, domain) DO NOTHING"
+            ), payload)
+        return len(payload)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] record_run_leads failed")
+        return 0
+
+
+def load_run_leads(engine, run_ids: Iterable[int]) -> list[dict[str, Any]]:
+    """Return exact pull rows, including provenance, for selected run ids."""
+    wanted = sorted({int(x) for x in run_ids if int(x) > 0})
+    if engine is None or not wanted:
+        return []
+    try:
+        ensure_runs_table(engine)
+        placeholders = ",".join(f":r{i}" for i in range(len(wanted)))
+        params = {f"r{i}": value for i, value in enumerate(wanted)}
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                f"SELECT l.run_id, l.lead_json, r.recipe, r.ran_at, r.partial, r.config_version "
+                f"FROM {_RUN_LEADS_TABLE} l JOIN {_RUNS_TABLE} r ON r.id=l.run_id "
+                f"WHERE l.run_id IN ({placeholders}) ORDER BY r.ran_at DESC, r.id DESC, l.domain"
+            ), params).fetchall()
+        out = []
+        for row in rows:
+            lead = json.loads(row[1] or "{}")
+            lead.update({"pull_id": int(row[0]), "pull_recipe": row[2] or "",
+                         "pull_date": str(row[3] or ""),
+                         "pull_status": "cut short" if row[4] else "complete",
+                         "settings_version": int(row[5] or 0), "source": "StoreLeads"})
+            out.append(lead)
+        return out
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] load_run_leads failed")
+        return []
+
+
+def run_lead_counts(engine, run_ids: Iterable[int]) -> dict[int, int]:
+    wanted = sorted({int(x) for x in run_ids if int(x) > 0})
+    if engine is None or not wanted:
+        return {}
+    try:
+        ensure_runs_table(engine)
+        placeholders = ",".join(f":r{i}" for i in range(len(wanted)))
+        params = {f"r{i}": value for i, value in enumerate(wanted)}
+        with engine.connect() as conn:
+            rows = conn.execute(text(f"SELECT run_id, COUNT(*) FROM {_RUN_LEADS_TABLE} WHERE run_id IN ({placeholders}) GROUP BY run_id"), params).fetchall()
+        return {int(row[0]): int(row[1]) for row in rows}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def load_delivery_settings(engine) -> dict[str, Any]:
+    defaults = {"enabled": False, "email_enabled": False, "slack_enabled": False,
+                "frequency": "every_pull", "email_recipients": "",
+                "content_mode": "link", "updated_by": "", "updated_at": ""}
+    if engine is None:
+        return defaults
+    try:
+        ensure_runs_table(engine)
+        with engine.connect() as conn:
+            row = conn.execute(text(f"SELECT enabled,email_enabled,slack_enabled,frequency,email_recipients,content_mode,updated_by,updated_at FROM {_DELIVERY_TABLE} WHERE id=1")).fetchone()
+        if not row:
+            return defaults
+        return {"enabled": bool(row[0]), "email_enabled": bool(row[1]), "slack_enabled": bool(row[2]),
+                "frequency": row[3] or "every_pull", "email_recipients": row[4] or "",
+                "content_mode": row[5] or "link", "updated_by": row[6] or "", "updated_at": str(row[7] or "")}
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] load_delivery_settings failed")
+        return defaults
+
+
+def save_delivery_settings(engine, values: dict[str, Any], *, actor: str = "") -> bool:
+    if engine is None:
+        return False
+    try:
+        ensure_runs_table(engine)
+        payload = {"enabled": _flag(values.get("enabled")), "email_enabled": _flag(values.get("email_enabled")),
+                   "slack_enabled": _flag(values.get("slack_enabled")),
+                   "frequency": values.get("frequency") if values.get("frequency") in {"every_pull", "daily"} else "every_pull",
+                   "email_recipients": _text(values.get("email_recipients")),
+                   "content_mode": values.get("content_mode") if values.get("content_mode") in {"link", "summary"} else "link",
+                   "updated_by": _text(actor)}
+        with engine.begin() as conn:
+            conn.execute(text(f"""INSERT INTO {_DELIVERY_TABLE}
+                (id,enabled,email_enabled,slack_enabled,frequency,email_recipients,content_mode,updated_by,updated_at)
+                VALUES (1,:enabled,:email_enabled,:slack_enabled,:frequency,:email_recipients,:content_mode,:updated_by,CURRENT_TIMESTAMP)
+                ON CONFLICT (id) DO UPDATE SET enabled=:enabled,email_enabled=:email_enabled,slack_enabled=:slack_enabled,
+                frequency=:frequency,email_recipients=:email_recipients,content_mode=:content_mode,
+                updated_by=:updated_by,updated_at=CURRENT_TIMESTAMP"""), payload)
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] save_delivery_settings failed")
+        return False
+
+
+def record_export(engine, *, actor: str, run_ids: Iterable[int], source_rows: int,
+                  unique_companies: int, duplicates_removed: int,
+                  include_duplicates: bool, filename: str) -> bool:
+    if engine is None:
+        return False
+    try:
+        ensure_runs_table(engine)
+        with engine.begin() as conn:
+            conn.execute(text(f"INSERT INTO {_EXPORTS_TABLE} (actor,run_ids,source_rows,unique_companies,duplicates_removed,include_duplicates,filename) VALUES (:actor,:run_ids,:source_rows,:unique_companies,:duplicates_removed,:include_duplicates,:filename)"),
+                         {"actor": actor, "run_ids": ",".join(str(int(x)) for x in run_ids),
+                          "source_rows": source_rows, "unique_companies": unique_companies,
+                          "duplicates_removed": duplicates_removed, "include_duplicates": 1 if include_duplicates else 0,
+                          "filename": filename})
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] record_export failed")
+        return False
+
+
+def load_exports(engine, limit: int = 8) -> list[dict[str, Any]]:
+    if engine is None:
+        return []
+    try:
+        ensure_runs_table(engine)
+        with engine.connect() as conn:
+            rows = conn.execute(text(f"SELECT actor,run_ids,source_rows,unique_companies,duplicates_removed,filename,exported_at FROM {_EXPORTS_TABLE} ORDER BY exported_at DESC")).fetchall()
+        return [{"actor": r[0], "run_ids": r[1], "source_rows": r[2], "unique_companies": r[3],
+                 "duplicates_removed": r[4], "filename": r[5], "exported_at": r[6]} for r in rows[:limit]]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def record_delivery_attempt(engine, *, run_id: int = 0, recipe: str = "",
+                            destination: str, target: str = "", status: str,
+                            detail: str = "") -> bool:
+    if engine is None:
+        return False
+    try:
+        ensure_runs_table(engine)
+        with engine.begin() as conn:
+            conn.execute(text(f"INSERT INTO {_DELIVERY_HISTORY_TABLE} (run_id,recipe,destination,target,status,detail) VALUES (:run_id,:recipe,:destination,:target,:status,:detail)"),
+                         {"run_id": int(run_id or 0), "recipe": _text(recipe),
+                          "destination": _text(destination), "target": _text(target),
+                          "status": _text(status), "detail": _text(detail)[:500]})
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] record_delivery_attempt failed")
+        return False
+
+
+def load_delivery_history(engine, limit: int = 8) -> list[dict[str, Any]]:
+    if engine is None:
+        return []
+    try:
+        ensure_runs_table(engine)
+        with engine.connect() as conn:
+            rows = conn.execute(text(f"SELECT recipe,destination,target,status,attempted_at FROM {_DELIVERY_HISTORY_TABLE} ORDER BY attempted_at DESC")).fetchall()
+        return [{"recipe": r[0], "destination": r[1], "target": r[2],
+                 "status": r[3], "attempted_at": r[4]} for r in rows[:limit]]
+    except Exception:  # noqa: BLE001
+        return []
 def ensure_table(engine) -> None:
     with engine.begin() as conn:
         conn.execute(text(_CREATE_SQL))
