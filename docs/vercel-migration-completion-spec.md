@@ -107,15 +107,15 @@ The following items remain open and block a truthful claim of 100% completion:
 | Gate | Remaining work | Evidence required to close | Owner help required |
 | --- | --- | --- | --- |
 | Stable staging identity | Closed: DNS, HTTPS, Google sign-in, Gmail redirect registration, QuickBooks OAuth, Plaid redirect/webhook registration, and Resend signed delivery are verified | Successful provider login/logout and callback registry with pass/fail receipts | None before cutover |
-| Production data parity | Full snapshot equality is closed on Supabase: 171 tables, 223,016 rows, full-row fingerprints, and 61 sequence states match. Rehearse the final delta during the approved cutover window. | `vercel-supabase-migration-rehearsal-receipt.md`; final delta receipt | Owner approval remains separately mandatory for the production delta/cutover window |
+| Production data parity | Full snapshot equality is closed on Supabase: 171 tables, 223,016 rows, full-row fingerprints, and 61 sequence states match. Run one fresh data-only source refresh after writers stop during the approved cutover window, preserving the verified target schema and security configuration. | `vercel-supabase-migration-rehearsal-receipt.md`; final refresh receipt and every-row comparator | Owner approval remains separately mandatory for the production refresh/cutover window |
 | Artifact parity | Closed as a separate filesystem gate: Render has no persistent disk; retained artifacts are represented in PostgreSQL and move with the database | Database comparison must include `website_ops_files`, `content_artifacts`, and report tables; sample retained reports after import | None beyond the database migration access above |
 | Durable execution | Closed: every retained Render schedule has a Vercel replacement; all 11 write jobs passed shadow receipts plus durable failure/retry/overlap/replay tests | Scheduler map, job ledger, forced-failure receipt, and no orphan Agent schedule | None before the approved one-at-a-time production enablement |
 | Integration parity | Closed for current production behavior: Google, QuickBooks, Plaid, Resend, and the preserved system-managed Gmail path have receipts. Stripe is website-only and the optional Instantly event receiver is unused, so both remain disabled in Agent. | Workflow matrix containing happy path, failure path, operator receipt, and source-system receipt | None before cutover |
 | Regression suite | Closed: hosted full-suite pass completed against the exact deployed application-code revision | 3,352 passed, one skipped, zero failed, plus 65 passing subtests | None |
 | Performance | Closed for the current candidate; repeat only after a material runtime/configuration change | Three fresh-deployment rounds and authenticated page timings recorded in `vercel-performance-receipt.md` | None |
 | Product QA | Closed for the current candidate: administrator, fresh-session, restricted-role, 13-page desktop, shared-report, keyboard/landmark, overflow, and log checks pass | Three complete QA passes against the immutable candidate; screenshot and log evidence | None unless a material application/configuration change resets the affected pass |
-| Rehearsal | Full snapshot parity, job shadow mode, and isolated rollback restore are closed; the final live delta can occur only after writers stop in the approved window | Current rehearsal and rollback receipts plus final live-delta receipt | Approve a maintenance window and confirm the named go/no-go and rollback owners |
-| Production cutover | Final delta, domain/callback move, one-at-a-time job enablement, verification, and monitoring | Owner sign-off, successful cutover log, two clean business days | Explicit cutover approval; DNS/provider-console access during the window |
+| Rehearsal | Full snapshot parity, job shadow mode, and isolated rollback restore are closed; the final live refresh can occur only after writers stop in the approved window | Current rehearsal and rollback receipts plus final live-refresh receipt | Approve a maintenance window and confirm the named go/no-go and rollback owners |
+| Production cutover | Final refresh, production-domain move, callback verification, one-at-a-time job enablement, verification, and monitoring | Owner sign-off, successful cutover log, two clean business days | Explicit cutover approval; DNS access during the window |
 
 ### Required external configuration
 
@@ -128,8 +128,8 @@ The engineering work should continue without waiting on these items, but these o
 3. Stripe is website-only and the optional Instantly event receiver is not an
    active Agent dependency. Both remain disabled and do not block parity.
 4. Before cutover, name the go/no-go and rollback owners and explicitly approve
-   the maintenance window, production-domain move, final live delta, provider
-   callback move, and one-at-a-time scheduler enablement.
+   the maintenance window, production-domain move, final live refresh,
+   callback verification, and one-at-a-time scheduler enablement.
 
 No secret value belongs in this document, source control, screenshots, or QA reports.
 
@@ -330,9 +330,12 @@ Cutover order:
 
 1. Enter a short maintenance/read-only window where required.
 2. Stop Render schedulers and external writers.
-3. Run the final delta migration and integrity check.
+3. Run the final data-only source refresh and every-row integrity check while
+   preserving the verified Supabase schema, RLS, and grants.
 4. Promote the approved Vercel deployment without rebuilding it.
-5. Point `agent.anatainc.com` to Vercel and update production callbacks.
+5. Attach and point `agent.anatainc.com` to Vercel. The public hostname and
+   callback paths remain unchanged, so verify existing provider registrations
+   rather than rewriting them.
 6. Verify authentication, readiness, one page per section, and critical writes.
 7. Enable Vercel jobs one at a time and confirm each receipt.
 8. Monitor intensively for at least two business days while keeping Render rollback-ready.

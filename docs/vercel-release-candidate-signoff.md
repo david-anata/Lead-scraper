@@ -120,13 +120,13 @@ Status: engineering candidate ready for owner-approved production cutover; produ
    is not Agent's billing rail, and the unused Instantly event webhook is not a
    cutover gate.
 2. During the approved maintenance window, capture and apply the final
-   production delta, rerun the parity audit, and record the current source
+   production data-only refresh, rerun the every-row parity audit, and record the current source
    snapshot identifier. The base restore and rollback archive restore are timed
-   and proven; only the live final delta remains.
+   and proven; only the live final refresh remains.
 3. Name the go/no-go owner, rollback owner, migration operator, and business
    verification owner.
 4. Obtain explicit approval for the production maintenance window, domain move,
-   provider callback change, and one-at-a-time scheduler enablement.
+   callback verification, and one-at-a-time scheduler enablement.
 
 ## Production safety statement
 

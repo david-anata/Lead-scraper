@@ -2,6 +2,22 @@
 
 Status: Supabase rehearsal complete; production execution requires the owner-approved maintenance window
 
+## Current production identity
+
+- `agent.anatainc.com` currently resolves by CNAME to
+  `lead-scraper-jb3u.onrender.com` with a 3,600-second authoritative TTL.
+- `agent-staging.anatainc.com` resolves to Vercel at `76.76.21.21`.
+- The Vercel project currently owns the verified staging hostname but does not
+  yet have `agent.anatainc.com` attached. Attach it only inside the approved
+  window, then replace the GoDaddy production CNAME with the Vercel-recommended
+  `A agent 76.76.21.21` record.
+- Reserve a two-hour maintenance window because some clients may retain the old
+  production answer for up to one hour. Render must remain healthy throughout.
+- The public hostname and every production callback path remain unchanged.
+  Google, Gmail, QuickBooks, Plaid, Resend, and other providers should be
+  verified after DNS moves; do not rewrite their already-correct
+  `https://agent.anatainc.com/...` URLs merely because hosting changes.
+
 ## Named roles
 
 - Recommended go/no-go owner: David Narayan; confirmation pending
@@ -61,10 +77,19 @@ receipt remains historical evidence only; Neon is no longer the target.
 2. Record final source counts and scheduler receipts.
 3. Disable Render schedules and external writers; verify they are stopped.
    Use `docs/vercel-scheduler-cutover-map.md` as the exact allowlist; unrelated Render projects remain untouched.
-4. Take and apply the final database and artifact delta.
+4. Take fresh source and target rollback archives. Replace Supabase's public
+   table data with one maintenance-window Render `pg_dump --data-only` refresh,
+   rather than attempting an unproven row-by-row delta. Truncate public target
+   tables with `RESTART IDENTITY CASCADE`, then restore with `pg_restore
+   --exit-on-error --data-only --no-owner --no-privileges`. This preserves the
+   already-verified Supabase schema, RLS, grants, restricted `agent_app` role,
+   and target-only empty table while replacing operational data and sequence
+   values from the stopped authoritative source.
 5. Run the migration audit and stop immediately on any mismatch.
 6. Promote the already-approved Vercel deployment without rebuilding it.
-7. Move `agent.anatainc.com` DNS and exact provider callbacks to Vercel.
+7. Attach `agent.anatainc.com` to the approved Vercel project and replace only
+   its GoDaddy DNS record. Verify the existing production provider callbacks;
+   their hostname and paths do not change.
 8. Verify readiness, login/logout, one page per section, restricted permissions, and critical read workflows.
 9. Set `VERCEL_CRON_WRITES_ENABLED=true` with an empty
    `VERCEL_CRON_ENABLED_JOBS` allowlist. Add one exact job name at a time in the
