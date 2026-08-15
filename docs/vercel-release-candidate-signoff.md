@@ -1,14 +1,14 @@
 # Agent Vercel release-candidate sign-off
 
-Status: engineering candidate ready for provider registration and timed rehearsal; production cutover not approved
+Status: engineering candidate ready for owner-approved production cutover; production cutover not approved
 
 ## Candidate identity
 
 - Branch: `codex/vercel-agent-duplicate`
-- Candidate application commit: `49d3566`
-- Full GitHub release gate: run `31867103933`, passed
-- Current immutable deployment: `dpl_E87snooNbkNKjVbokqaSfwmxdbq6`
-- Immutable URL: `https://anata-agent-staging-mi5r66qcz-david-narayans-projects.vercel.app`
+- Candidate application commit: `c6fabf1`
+- Full GitHub release gate: run `31867676137`, passed
+- Current immutable deployment: `dpl_A1gaRVTrmJVLvzio1YQfFis8kxKh`
+- Immutable URL: `https://anata-agent-staging-luhwrkjpd-david-narayans-projects.vercel.app`
 - Stable staging URL: `https://agent-staging.anatainc.com`
 - Database: Supabase project `vfcmljqakphwhslxtfzv`, `us-west-1`, dedicated restricted `agent_app` role
 
@@ -102,22 +102,30 @@ Status: engineering candidate ready for provider registration and timed rehearsa
   overflow or browser errors. Five concurrent readiness requests returned 200,
   the removed Resend staging probe returned 404, and the exact deployment had
   no error-level log entries.
+- The final database comparator now fingerprints every normalized row in every
+  table, in addition to counts, schema, sequences, samples, and optional
+  artifacts. A regression proves that it detects changed content beyond the
+  five-row sample window. Vercel scheduled writers now require both the global
+  cutover flag and an explicit per-job allowlist entry, so jobs can be enabled
+  and receipted one at a time. Staging has the global flag false and an explicit
+  no-job allowlist. The exact deployment passed five concurrent readiness
+  requests, unauthenticated cron rejection, Finance and HR browser checks, and
+  an error-level log scan with no findings.
 
 ## Required before asking for cutover approval
 
-1. Complete the optional user-connected Gmail consent receipt if that feature
-   is promoted beyond the existing system-managed inbox. Google sign-in,
-   QuickBooks, Plaid, and Resend receipts are complete. Stripe is not Agent's
-   billing rail, and the unused Instantly event webhook is not a cutover gate.
-2. Capture controlled provider happy-path receipts using sandbox or staging-safe
-   records; do not move money, publish content, or contact customers merely for QA.
-3. During the approved maintenance window, capture and apply the final
+1. Keep optional user-connected Gmail outside the cutover unless the business
+   separately chooses to launch it. The preserved system-managed inbox,
+   Google sign-in, QuickBooks, Plaid, and Resend receipts are complete. Stripe
+   is not Agent's billing rail, and the unused Instantly event webhook is not a
+   cutover gate.
+2. During the approved maintenance window, capture and apply the final
    production delta, rerun the parity audit, and record the current source
    snapshot identifier. The base restore and rollback archive restore are timed
    and proven; only the live final delta remains.
-4. Name the go/no-go owner, rollback owner, migration operator, and business
+3. Name the go/no-go owner, rollback owner, migration operator, and business
    verification owner.
-5. Obtain explicit approval for the production maintenance window, domain move,
+4. Obtain explicit approval for the production maintenance window, domain move,
    provider callback change, and one-at-a-time scheduler enablement.
 
 ## Production safety statement
