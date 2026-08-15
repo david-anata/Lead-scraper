@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _send(settings, *, to_email: str, subject: str, text: str) -> bool:
+def _send(settings, *, to_email: str, subject: str, text: str, attachments=None) -> bool:
     """Send via the first configured provider (Resend, then Gmail).
 
     Returns True only if a provider accepted the message. Never raises — a send
@@ -29,7 +29,10 @@ def _send(settings, *, to_email: str, subject: str, text: str) -> bool:
         from sales_support_agent.integrations.resend import ResendClient
         resend = ResendClient(settings)
         if resend.is_configured():
-            resend.send_message(to=(to_email,), subject=subject, text=text)
+            kwargs = {"to": (to_email,), "subject": subject, "text": text}
+            if attachments:
+                kwargs["attachments"] = attachments
+            resend.send_message(**kwargs)
             return True
     except Exception:  # noqa: BLE001 — fall through to Gmail / copy-link
         logger.exception("Resend send to %s failed; trying Gmail", to_email)
@@ -39,7 +42,10 @@ def _send(settings, *, to_email: str, subject: str, text: str) -> bool:
         from sales_support_agent.integrations.gmail import GmailClient
         gmail = GmailClient(settings)
         if gmail.is_configured():
-            gmail.send_message(to=(to_email,), subject=subject, text=text)
+            kwargs = {"to": (to_email,), "subject": subject, "text": text}
+            if attachments:
+                kwargs["attachments"] = attachments
+            gmail.send_message(**kwargs)
             return True
     except Exception:  # noqa: BLE001 — email must never block the access flow
         logger.exception("Gmail send to %s failed", to_email)

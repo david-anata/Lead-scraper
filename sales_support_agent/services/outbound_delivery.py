@@ -5,6 +5,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+
+def _csv_attachment(leads: list[dict[str, Any]], filename: str) -> list[dict[str, Any]]:
+    if not leads:
+        return []
+    import outbound_pipeline
+    return [{"filename": filename, "content": outbound_pipeline.leads_to_csv(leads).encode("utf-8"),
+             "content_type": "text/csv"}]
+
 logger = logging.getLogger(__name__)
 
 _LEAD_OPS_URL = "https://agent.anatainc.com/admin/outbound/lead-ops"
@@ -39,17 +47,20 @@ def deliver_completed_pull(engine, run: dict[str, Any], *, force: bool = False,
         return result
 
     settings = load_settings()
-    text = summary_text(run, include_link=prefs.get("content_mode") == "link", test=test)
+    text = summary_text(run, include_link=True, test=test)
+    leads = outbound_memory.load_run_leads(engine, [int(run.get("id") or 0)]) if run.get("id") else []
+    attachments = _csv_attachment(leads, f"anata-leads-pull-{int(run.get('id') or 0)}.csv")
     if prefs["email_enabled"]:
         recipients = [x.strip() for x in prefs["email_recipients"].replace(";", ",").split(",") if x.strip()]
         sent = 0
         for recipient in recipients:
             ok = notify._send(settings, to_email=recipient,
                             subject=f"Outbound: {run.get('fresh', 0)} fresh companies from {run.get('recipe') or 'pull'}",
-                            text=text)
+                            text=text, attachments=attachments)
             outbound_memory.record_delivery_attempt(engine, run_id=int(run.get("id") or 0),
                 recipe=str(run.get("recipe") or ""), destination="email", target=recipient,
-                status="sent" if ok else "failed")
+                status="sent" if ok else "failed",
+                detail=f"CSV attached ({len(leads)} companies)" if attachments else "No lead rows available to attach")
             if ok:
                 sent += 1
         result["email"] = "sent" if sent == len(recipients) and recipients else ("partial" if sent else "failed")

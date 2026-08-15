@@ -439,6 +439,40 @@ def run_lead_counts(engine, run_ids: Iterable[int]) -> dict[int, int]:
         return {}
 
 
+def backfill_legacy_run_leads(engine) -> int:
+    """Recover exact older pull membership when the stored counts prove it.
+
+    Before per-run snapshots existed, full lead rows were inserted immediately
+    before the run record.  The interval between consecutive run timestamps is
+    therefore a safe candidate set.  We persist it only when the candidate
+    count exactly equals the run's recorded fresh count; ambiguous pulls remain
+    unavailable instead of returning a plausible-but-wrong file.
+    """
+    if engine is None:
+        return 0
+    try:
+        runs = sorted(load_runs(engine, limit=1000), key=lambda item: (str(item["ran_at"]), item["id"]))
+        leads = sorted(load_leads(engine, limit=None), key=lambda item: str(item.get("first_seen_at") or ""))
+        existing = run_lead_counts(engine, [run["id"] for run in runs])
+        recovered = 0
+        previous_at = ""
+        for run in runs:
+            ran_at = str(run.get("ran_at") or "")
+            fresh = int(run.get("fresh") or 0)
+            if fresh > 0 and not existing.get(run["id"]):
+                recipe = str(run.get("recipe") or "")
+                candidates = [lead for lead in leads
+                              if previous_at < str(lead.get("first_seen_at") or "") <= ran_at
+                              and str(lead.get("recipe") or lead.get("source") or "") == recipe]
+                if len(candidates) == fresh:
+                    recovered += record_run_leads(engine, run["id"], candidates)
+            previous_at = max(previous_at, ran_at)
+        return recovered
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] legacy pull recovery failed")
+        return 0
+
+
 def load_delivery_settings(engine) -> dict[str, Any]:
     defaults = {"enabled": False, "email_enabled": False, "slack_enabled": False,
                 "frequency": "every_pull", "email_recipients": "",

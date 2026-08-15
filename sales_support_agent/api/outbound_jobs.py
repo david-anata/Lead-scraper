@@ -160,14 +160,17 @@ def _email_the_batch(engine, summary: dict, *, force: bool = False) -> bool:
         settings = load_settings()
         sent = False
         if prefs.get("email_enabled") or force:
+            from sales_support_agent.services.outbound_delivery import _csv_attachment
+            attachments = _csv_attachment(ready, "anata-leads-daily-digest.csv")
             for recipient in recipients:
                 ok = notify._send(settings, to_email=recipient,
                                   subject=f"Outbound: {len(ready)} brands ready for Clay",
-                                  text="\n".join(lines))
+                                  text="\n".join(lines), attachments=attachments)
                 sent = ok or sent
                 outbound_memory.record_delivery_attempt(
                     engine, recipe="daily digest", destination="email", target=recipient,
                     status="sent" if ok else "failed",
+                    detail=f"CSV attached ({len(ready)} companies)" if attachments else "No lead rows available to attach",
                 )
         if prefs.get("slack_enabled"):
             from sales_support_agent.integrations.slack import SlackClient
@@ -258,6 +261,7 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
             try:
                 from sales_support_agent.services.outbound_delivery import deliver_completed_pull
                 deliver_completed_pull(engine, {
+                    "id": run_id,
                     "recipe": result.recipe or recipe.key, "scanned": result.scanned,
                     "matched": result.matched_icp, "fresh": len(result.leads),
                     "skipped_seen": result.skipped_already_contacted,

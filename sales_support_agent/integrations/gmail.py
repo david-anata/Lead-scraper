@@ -122,11 +122,11 @@ class GmailClient:
             stage="create_draft",
         )
 
-    def send_message(self, *, to: tuple[str, ...], subject: str, text: str, cc: tuple[str, ...] = ()) -> dict[str, Any]:
+    def send_message(self, *, to: tuple[str, ...], subject: str, text: str, cc: tuple[str, ...] = (), attachments=None) -> dict[str, Any]:
         if not to:
             return {"ok": False, "skipped": True, "reason": "missing_recipients"}
 
-        raw = self._build_raw_message(to=to, subject=subject, text=text, cc=cc)
+        raw = self._build_raw_message(to=to, subject=subject, text=text, cc=cc, attachments=attachments)
         return self._request(
             "POST",
             f"users/{self.user_id}/messages/send",
@@ -134,13 +134,19 @@ class GmailClient:
             stage="send_message",
         )
 
-    def _build_raw_message(self, *, to: tuple[str, ...], subject: str, text: str, cc: tuple[str, ...] = ()) -> str:
+    def _build_raw_message(self, *, to: tuple[str, ...], subject: str, text: str, cc: tuple[str, ...] = (), attachments=None) -> str:
         msg = EmailMessage()
         msg["To"] = ", ".join(to)
         if cc:
             msg["Cc"] = ", ".join(cc)
         msg["Subject"] = subject
         msg.set_content(text)
+        for item in attachments or ():
+            content_type = str(item.get("content_type") or "application/octet-stream")
+            maintype, _, subtype = content_type.partition("/")
+            msg.add_attachment(item.get("content") or b"", maintype=maintype or "application",
+                               subtype=subtype or "octet-stream",
+                               filename=str(item.get("filename") or "attachment"))
         return base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
 
     def _request(
