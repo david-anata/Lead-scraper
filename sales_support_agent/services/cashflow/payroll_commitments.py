@@ -138,7 +138,12 @@ def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
             str(current.get("source_id") or "") == run_id,
             int(current.get("amount_cents") or 0) == net,
             _as_date(current.get("due_date")) == _as_date(run.get("pay_date")),
-            str(current.get("status") or "") == finance_status,
+            # Active obligation status is derived from due date and posted
+            # settlement evidence. It may legitimately be planned, pending,
+            # overdue, partially paid, or paid, so HR must not rewrite it back
+            # to the source projection status on every read. Inactive runs do
+            # still need their explicit cancellation reflected.
+            active or str(current.get("status") or "") == finance_status,
             str(current.get("source_status") or "") == hr_status,
             str(current.get("confidence") or "") == confidence,
             str(current.get("workflow_status") or "") == workflow_status,
