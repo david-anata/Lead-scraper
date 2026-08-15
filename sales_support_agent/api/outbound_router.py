@@ -818,7 +818,9 @@ def outbound_lead_ops(request: Request) -> Response:
     if runs:
         run_rows = "".join(
             f"<tr data-recipe='{html.escape(recipe_labels.get(x['recipe'], x['recipe']) or '')}' data-status='{'cut-short' if x['partial'] else 'complete'}' data-date='{html.escape(str(x['ran_at'])[:10])}' data-version='{int(x.get('config_version') or 0)}'>"
-            f"<td><input class='lo-check run-check' type='checkbox' aria-label='Select {html.escape(x['recipe'] or 'pull')}' value='{x['id']}' {'disabled title=\"Exact results unavailable for this older pull\"' if not run_lead_counts.get(x['id']) else ''}></td>"
+            f"<td><input class='lo-check run-check' type='checkbox' aria-label='Select {html.escape(x['recipe'] or 'pull')}' value='{x['id']}' "
+            + ("disabled title='Exact results unavailable for this older pull'" if not run_lead_counts.get(x['id']) else "")
+            + "></td>"
             f"<td>{html.escape(str(x['ran_at'])[:16])}</td><td><b>{html.escape(recipe_labels.get(x['recipe'], x['recipe']) or '-')}</b>"
             + (f"<br><small>{html.escape(x['recipe'])}</small>" if x.get('recipe') in recipe_labels else "") + "</td>"
             f"<td>{x['scanned']:,}</td><td>{x['matched']:,}</td><td><b>{x['fresh']:,}</b></td>"
