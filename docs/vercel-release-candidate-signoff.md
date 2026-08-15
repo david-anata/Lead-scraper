@@ -5,10 +5,10 @@ Status: engineering candidate ready for provider registration and timed rehearsa
 ## Candidate identity
 
 - Branch: `codex/vercel-agent-duplicate`
-- Candidate application commit: `ce72a0a`
-- Full GitHub release gate: run `31815414887`, passed in 5m34s
-- Current immutable deployment: `dpl_G2EQnTDKdye7gwwheKvJhLN1Q1fK`
-- Immutable URL: `https://anata-agent-staging-1uxrn0rlx-david-narayans-projects.vercel.app`
+- Candidate application commit: `49d3566`
+- Full GitHub release gate: run `31867103933`, passed
+- Current immutable deployment: `dpl_E87snooNbkNKjVbokqaSfwmxdbq6`
+- Immutable URL: `https://anata-agent-staging-mi5r66qcz-david-narayans-projects.vercel.app`
 - Stable staging URL: `https://agent-staging.anatainc.com`
 - Database: Supabase project `vfcmljqakphwhslxtfzv`, `us-west-1`, dedicated restricted `agent_app` role
 
@@ -94,6 +94,14 @@ Status: engineering candidate ready for provider registration and timed rehearsa
   environment-specific Plaid key, logged `processed=false`, executed zero
   database queries, and triggered no Finance sync or production-shaped data
   mutation. The primary Finance Plaid environment remains production.
+- Finance's 30-second read cache is shared through the configured database so
+  separate Vercel instances do not each rebuild the same brief. On the exact
+  deployment, the first authenticated desktop load completed in 6.75 seconds
+  and the next three completed in 0.30-0.68 seconds. HR Payroll completed in
+  2.56 seconds. Both pages rendered their expected heading without horizontal
+  overflow or browser errors. Five concurrent readiness requests returned 200,
+  the removed Resend staging probe returned 404, and the exact deployment had
+  no error-level log entries.
 
 ## Required before asking for cutover approval
 
