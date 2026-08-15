@@ -1,6 +1,6 @@
 # Vercel staging callback registry
 
-Status: Google and Resend registration verified; remaining provider receipts in progress
+Status: Google, QuickBooks, and Plaid receipts verified; remaining provider receipts in progress
 
 Stable staging origin: `https://agent-staging.anatainc.com`
 
@@ -11,8 +11,8 @@ Never place credentials, tokens, webhook signing secrets, or customer payloads i
 | Google | Agent sign-in | `https://agent-staging.anatainc.com/admin/auth/callback` | `https://agent.anatainc.com/admin/auth/callback` | August 14: David added the staging URI alongside production in the existing Agent OAuth client. A real Google sign-in returned to staging, created the expected Agent session, and landed on David's authorized workspace. A fabricated callback still returns `state_mismatch`. No production URI was removed. |
 | Gmail | Connected inbox OAuth | `https://agent-staging.anatainc.com/admin/settings/inboxes/callback` | Same path on `agent.anatainc.com` | August 14: David added the staging inbox callback alongside the production and staging sign-in callbacks. Authorization now reaches Google's account/consent flow instead of `redirect_uri_mismatch`. Production and staging both show the same connected system-managed legacy inbox; user-connected Gmail consent is therefore an enhancement receipt, not a blocker for preserving the current inbox path. |
 | QuickBooks | Finance OAuth | `https://agent-staging.anatainc.com/admin/finances/qbo/callback` | Same path on `agent.anatainc.com` | August 14: the staging callback is saved alongside production in the Anata Agent Intuit application. A real OAuth authorization selected the verified Anata company, returned to staging, consumed its one-time state, stored fresh tokens, and completed with 303 before the authenticated workspace returned 200. The callback log recorded the approved realm and a one-hour access-token lifetime; no callback error or 5xx occurred. |
-| Plaid | Link OAuth return | `https://agent-staging.anatainc.com/admin/finances/plaid/oauth-return` | Same path on `agent.anatainc.com` | Explicit staging environment variable set; authenticated return renders Accounts & setup so Plaid Link can resume; dashboard registration and sandbox Link test pending |
-| Plaid | Signed webhook | `https://agent-staging.anatainc.com/api/integrations/plaid/webhook` | Same path on `agent.anatainc.com` | Explicit staging environment variable set; August 14: unsigned sandbox-shaped payload rejects with 401 and `verification_missing`. Signed sandbox delivery pending. |
+| Plaid | Link OAuth return | `https://agent-staging.anatainc.com/admin/finances/plaid/oauth-return` | Same path on `agent.anatainc.com` | August 14: production and staging returns are both registered. Plaid Sandbox Link completed with the documented mock credentials and created a Sandbox Item; no real bank was connected. |
+| Plaid | Signed webhook | `https://agent-staging.anatainc.com/api/integrations/plaid/webhook` | Same path on `agent.anatainc.com` | August 14: unsigned payload rejects with 401. After the isolated Sandbox verifier was deployed, two provider-signed Sandbox deliveries returned 200, logged `environment=sandbox processed=false`, executed zero database queries, and triggered no Finance sync or data mutation. |
 | Instantly | Sales event webhook | `https://agent-staging.anatainc.com/api/integrations/instantly/webhook` | Same path on `agent.anatainc.com` | August 14: unsigned payload rejects with 401 before processing. A dedicated signing secret and provider delivery remain pending. |
 | Stripe | Building billing webhook | `https://agent-staging.anatainc.com/api/integrations/stripe/webhook` | Same path on `agent.anatainc.com` | August 14: unsigned payload rejects with 400 and confirms Stripe verification is not configured. Owner must select the Stripe environment and register its secret before a signed test event. |
 | Resend | Building email webhook | `https://agent-staging.anatainc.com/api/integrations/resend/webhook` | Same path on `agent.anatainc.com` | August 14: a dedicated enabled staging webhook was registered for delivery, bounce, complaint, delay, and failure events. Its signing secret was stored as Vercel's sensitive `RESEND_WEBHOOK_SECRET`, a fresh immutable deployment was promoted, and five concurrent readiness checks passed. Unsigned payloads reject with 401. A controlled provider-generated signed event remains pending. |
@@ -32,9 +32,9 @@ code and Vercel cannot complete them silently.
    read-only sync receipt; do not send an email.
 2. QuickBooks callback registration and real OAuth connection are complete.
    Preserve both production and staging redirect URIs until cutover is closed.
-3. In Plaid, register the staging redirect and webhook URLs shown above. Use
-   Sandbox Link and a signed sandbox webhook; do not connect a real bank merely
-   for QA.
+3. Plaid staging redirect, Sandbox Link, and provider-signed webhook receipts
+   are complete. Preserve the production and staging return URIs until cutover
+   is closed; keep the isolated Sandbox verifier unset in the live Render app.
 4. Resend registration and secret deployment are complete. Send one controlled
    Resend test email to `delivered@resend.dev`, then record the signed webhook
    receipt. Do not use a customer address.
@@ -87,6 +87,19 @@ stored the encrypted tokens and approved realm, logged a one-hour access-token
 lifetime, redirected with 303, and rendered the authenticated staging workspace
 with 200. No invoice, payment, category, customer, or other QuickBooks record was
 created or changed by this connection receipt.
+
+## August 14 Plaid happy-path receipt
+
+Operator: Codex, with David Narayan supplying the Sandbox verification secret
+directly to Vercel. Provider environment: Plaid Sandbox. Production and staging
+OAuth returns remained registered, while the Sandbox configuration delivered
+webhooks to the staging hostname. A fresh Sandbox Link flow used Plaid's mock
+`user_good` profile and connected three mock accounts. Two provider-signed
+webhooks reached deployment `dpl_UVYBWGwk7Vzwpad9RK7Qvi6sSaBn`, returned 200,
+and logged `environment=sandbox processed=false`. Both requests executed zero
+database queries; neither recorded an Item, enqueued a sync, changed Finance
+data, connected a real bank, or affected Render production. Finance continues
+to use the primary production Plaid environment for ordinary reads.
 
 ## August 14 production-parity observation
 

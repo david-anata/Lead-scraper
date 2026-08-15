@@ -86,11 +86,18 @@ Status: engineering candidate ready for provider registration and timed rehearsa
   staging, passed one-time state validation, stored fresh tokens, and rendered
   the authenticated workspace. The callback completed with 303, the workspace
   returned 200, and no QuickBooks accounting record was changed.
+- Plaid now has both the production and staging OAuth return URIs registered,
+  and its Sandbox webhook points at staging. Deployment
+  `dpl_UVYBWGwk7Vzwpad9RK7Qvi6sSaBn` verified two provider-signed Sandbox
+  deliveries with HTTP 200. Each receipt was authenticated against the
+  environment-specific Plaid key, logged `processed=false`, executed zero
+  database queries, and triggered no Finance sync or production-shaped data
+  mutation. The primary Finance Plaid environment remains production.
 
 ## Required before asking for cutover approval
 
-1. Register and test staging callbacks/webhooks in Google, Gmail, QuickBooks,
-   Plaid, Instantly, Stripe, and Resend as applicable.
+1. Register and test remaining applicable staging callbacks/webhooks in Gmail,
+   Instantly, Stripe, and Resend. Google, QuickBooks, and Plaid are complete.
 2. Capture controlled provider happy-path receipts using sandbox or staging-safe
    records; do not move money, publish content, or contact customers merely for QA.
 3. During the approved maintenance window, capture and apply the final
