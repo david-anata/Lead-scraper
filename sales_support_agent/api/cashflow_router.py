@@ -10,7 +10,7 @@ import logging
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import lru_cache
-from time import monotonic
+from time import monotonic, time
 from typing import Any
 from contextvars import ContextVar
 from urllib.parse import quote, urlparse
@@ -41,6 +41,10 @@ from sales_support_agent.services.cashflow.obligations import (
 )
 from sales_support_agent.services.cashflow.overview import render_cashflow_overview_page
 from sales_support_agent.services.cashflow.money_brief import (
+    AttentionCase,
+    EvidenceAmount,
+    FinanceBrief,
+    Outlook,
     load_finance_brief,
     render_accounts_page,
     render_calculation_page,
@@ -89,6 +93,62 @@ from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
 logger = logging.getLogger(__name__)
 
 _FINANCE_BRIEF_CACHE_SECONDS = 30.0
+_FINANCE_BRIEF_SHARED_CACHE_KEY = "finance_brief:v1"
+
+
+def _shared_finance_cache_enabled(request: Request) -> bool:
+    """Use durable shared cache only when the app has a configured database."""
+    return bool(str(getattr(_finance_settings(request), "sales_agent_db_url", "") or "").strip())
+
+
+def _finance_brief_from_dict(data: Any) -> FinanceBrief | None:
+    """Rebuild the typed brief from trusted application-generated JSON."""
+    if not isinstance(data, dict):
+        return None
+    try:
+        return FinanceBrief(
+            calculation_id=str(data["calculation_id"]),
+            as_of=str(data["as_of"]),
+            source_label=str(data["source_label"]),
+            balance_available=bool(data["balance_available"]),
+            trust_ready=data.get("trust_ready"),
+            review_count=int(data["review_count"]),
+            amounts=tuple(EvidenceAmount(**item) for item in data["amounts"]),
+            outlooks=tuple(Outlook(**item) for item in data["outlooks"]),
+            month_end_outlooks=tuple(Outlook(**item) for item in data["month_end_outlooks"]),
+            attention=tuple(AttentionCase(**item) for item in data["attention"]),
+            excluded_summary=str(data["excluded_summary"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _load_shared_finance_brief(today: str) -> FinanceBrief | None:
+    from sales_support_agent.models.database import kv_get_json
+
+    cached = kv_get_json(_FINANCE_BRIEF_SHARED_CACHE_KEY) or {}
+    if str(cached.get("as_of") or "") != today:
+        return None
+    if float(cached.get("expires_at") or 0) <= time():
+        return None
+    return _finance_brief_from_dict(cached.get("brief"))
+
+
+def _store_shared_finance_brief(today: str, brief: FinanceBrief) -> None:
+    from dataclasses import asdict
+    from sales_support_agent.models.database import kv_set_json
+
+    kv_set_json(_FINANCE_BRIEF_SHARED_CACHE_KEY, {
+        "as_of": today,
+        "expires_at": time() + _FINANCE_BRIEF_CACHE_SECONDS,
+        "brief": asdict(brief),
+    })
+
+
+def _clear_shared_finance_brief() -> None:
+    from sales_support_agent.models.database import kv_set_json
+
+    kv_set_json(_FINANCE_BRIEF_SHARED_CACHE_KEY, {})
 
 
 async def _load_request_finance_brief(request: Request) -> tuple[Any, bool]:
@@ -105,18 +165,32 @@ async def _load_request_finance_brief(request: Request) -> tuple[Any, bool]:
     cached = getattr(request.app.state, "finance_brief_cache", None)
     if cached and cached[0] > now and cached[1] == today:
         return cached[2], True
+    if _shared_finance_cache_enabled(request):
+        shared = await asyncio.to_thread(_load_shared_finance_brief, today)
+        if shared is not None:
+            request.app.state.finance_brief_cache = (
+                now + _FINANCE_BRIEF_CACHE_SECONDS,
+                today,
+                shared,
+            )
+            return shared, True
     brief = await asyncio.to_thread(load_finance_brief, _finance_settings(request))
     request.app.state.finance_brief_cache = (
         now + _FINANCE_BRIEF_CACHE_SECONDS,
         today,
         brief,
     )
+    if _shared_finance_cache_enabled(request):
+        await asyncio.to_thread(_store_shared_finance_brief, today, brief)
     return brief, False
 
 
 def clear_finance_brief_cache(app: Any) -> None:
     """Make the next read rebuild from source evidence."""
     app.state.finance_brief_cache = None
+    settings = getattr(app.state, "agent_settings", None) or getattr(app.state, "settings", None)
+    if str(getattr(settings, "sales_agent_db_url", "") or "").strip():
+        _clear_shared_finance_brief()
 
 
 def _finance_settings(request: Request) -> Any:

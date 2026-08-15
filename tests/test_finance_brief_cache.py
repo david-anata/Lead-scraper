@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 from types import SimpleNamespace
 
 from sales_support_agent.api import cashflow_router
+from sales_support_agent.services.cashflow.money_brief import (
+    AttentionCase,
+    EvidenceAmount,
+    FinanceBrief,
+    Outlook,
+)
 
 
 def _request() -> SimpleNamespace:
@@ -68,3 +75,54 @@ def test_cash_plan_response_exposes_cache_hit_for_operations(monkeypatch) -> Non
 
     assert first.headers["X-Finance-Brief-Cache"] == "miss"
     assert second.headers["X-Finance-Brief-Cache"] == "hit"
+
+
+def _brief() -> FinanceBrief:
+    amount = EvidenceAmount("cash", "Cash", 100, "verified", "Plaid", "2026-08-14", "formula")
+    outlook = Outlook("likely", "Likely", 100, "formula", "explanation")
+    attention = AttentionCase("ready", "Ready", "Clear", "/admin/finances", "Open", "ready")
+    return FinanceBrief(
+        calculation_id="calc-1",
+        as_of="2026-08-14",
+        source_label="Plaid",
+        balance_available=True,
+        trust_ready=True,
+        review_count=0,
+        amounts=(amount,),
+        outlooks=(outlook,),
+        month_end_outlooks=(outlook,),
+        attention=(attention,),
+        excluded_summary="None",
+    )
+
+
+def test_shared_cache_rehydrates_typed_brief_across_instances(monkeypatch) -> None:
+    request = _request()
+    request.app.state.agent_settings.sales_agent_db_url = "postgresql://configured"
+    expected = _brief()
+    monkeypatch.setattr(
+        cashflow_router,
+        "_load_shared_finance_brief",
+        lambda today: cashflow_router._finance_brief_from_dict(asdict(expected)),
+    )
+    monkeypatch.setattr(
+        cashflow_router,
+        "load_finance_brief",
+        lambda _settings: (_ for _ in ()).throw(AssertionError("source rebuild must not run")),
+    )
+
+    brief, cache_hit = asyncio.run(cashflow_router._load_request_finance_brief(request))
+
+    assert cache_hit is True
+    assert brief == expected
+
+
+def test_shared_cache_is_cleared_after_finance_write(monkeypatch) -> None:
+    request = _request()
+    request.app.state.agent_settings.sales_agent_db_url = "postgresql://configured"
+    cleared: list[bool] = []
+    monkeypatch.setattr(cashflow_router, "_clear_shared_finance_brief", lambda: cleared.append(True))
+
+    cashflow_router.clear_finance_brief_cache(request.app)
+
+    assert cleared == [True]
