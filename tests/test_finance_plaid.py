@@ -15,7 +15,7 @@ from sales_support_agent.models.database import (
 )
 from sales_support_agent.services.cashflow.plaid import (
     PlaidClient, PlaidError, _WEBHOOK_KEY_CACHE, _cents, _upsert_transaction,
-    disconnect_item, store_item, verify_webhook,
+    disconnect_item, store_item, verify_webhook, verify_webhook_environments,
 )
 
 
@@ -77,6 +77,13 @@ def test_missing_credentials_fail_closed():
     with pytest.raises(PlaidError) as error:
         PlaidClient(_settings(plaid_client_id=""))
     assert error.value.code == "not_configured"
+
+
+def test_client_can_override_environment_and_secret_for_isolated_verification():
+    client = PlaidClient(_settings(), environment="production", secret="other-secret")
+    assert client.environment == "production"
+    assert client.base_url == "https://production.plaid.com"
+    assert client.secret == "other-secret"
 
 
 def test_link_token_is_transactions_only():
@@ -465,3 +472,70 @@ def test_webhook_rejects_replay_outside_five_minutes():
     with pytest.raises(PlaidError) as error:
         verify_webhook(raw, token, client=client)
     assert error.value.code == "verification_expired"
+
+
+def test_webhook_key_cache_is_namespaced_by_environment():
+    raw = b'{}'
+    token, key = _signed_webhook(raw)
+    _WEBHOOK_KEY_CACHE.clear()
+    calls = []
+
+    def fetch(environment):
+        return lambda key_id: calls.append((environment, key_id)) or key
+
+    sandbox = SimpleNamespace(
+        base_url="https://sandbox.plaid.com",
+        webhook_verification_key=fetch("sandbox"),
+    )
+    production = SimpleNamespace(
+        base_url="https://production.plaid.com",
+        webhook_verification_key=fetch("production"),
+    )
+    verify_webhook(raw, token, client=sandbox)
+    verify_webhook(raw, token, client=production)
+    assert calls == [("sandbox", "test-key"), ("production", "test-key")]
+
+
+def test_environment_fallback_only_for_unknown_verification_key():
+    primary = SimpleNamespace(
+        base_url="https://production.plaid.com",
+        webhook_verification_key=lambda key_id: (_ for _ in ()).throw(
+            PlaidError("unknown key", code="INVALID_WEBHOOK_VERIFICATION_KEY_ID")
+        ),
+    )
+    raw = b'{}'
+    token, key = _signed_webhook(raw)
+    fallback = SimpleNamespace(
+        base_url="https://sandbox.plaid.com",
+        webhook_verification_key=lambda key_id: key,
+    )
+    _WEBHOOK_KEY_CACHE.clear()
+    _, environment = verify_webhook_environments(
+        raw,
+        token,
+        clients=[("production", primary), ("sandbox", fallback)],
+    )
+    assert environment == "sandbox"
+
+
+def test_environment_fallback_does_not_mask_other_verification_failures():
+    raw = b'{}'
+    token, _ = _signed_webhook(raw)
+    primary = SimpleNamespace(
+        base_url="https://production.plaid.com",
+        webhook_verification_key=lambda key_id: (_ for _ in ()).throw(
+            PlaidError("network down", code="network_error")
+        ),
+    )
+    fallback = SimpleNamespace(
+        base_url="https://sandbox.plaid.com",
+        webhook_verification_key=lambda key_id: pytest.fail("fallback must not run"),
+    )
+    _WEBHOOK_KEY_CACHE.clear()
+    with pytest.raises(PlaidError) as error:
+        verify_webhook_environments(
+            raw,
+            token,
+            clients=[("production", primary), ("sandbox", fallback)],
+        )
+    assert error.value.code == "network_error"

@@ -11,7 +11,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import requests
@@ -40,13 +40,21 @@ class PlaidError(RuntimeError):
 
 
 class PlaidClient:
-    def __init__(self, settings: Any, *, session: requests.Session | None = None) -> None:
-        environment = str(settings.plaid_environment or "sandbox").lower()
+    def __init__(
+        self,
+        settings: Any,
+        *,
+        session: requests.Session | None = None,
+        environment: str | None = None,
+        secret: str | None = None,
+    ) -> None:
+        environment = str(environment or settings.plaid_environment or "sandbox").lower()
         if environment not in PLAID_BASE_URLS:
             raise ValueError("PLAID_ENV must be sandbox, development, or production")
         self.base_url = PLAID_BASE_URLS[environment]
         self.client_id = str(settings.plaid_client_id or "")
-        self.secret = str(settings.plaid_secret or "")
+        self.environment = environment
+        self.secret = str(secret if secret is not None else settings.plaid_secret or "")
         self.webhook_url = str(settings.plaid_webhook_url or "")
         self.redirect_uri = str(getattr(settings, "plaid_redirect_uri", "") or "")
         self.session = session or requests.Session()
@@ -123,7 +131,7 @@ class PlaidClient:
         return key
 
 
-_WEBHOOK_KEY_CACHE: dict[str, dict[str, Any]] = {}
+_WEBHOOK_KEY_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 def verify_webhook(raw_body: bytes, signed_jwt: str, *, client: PlaidClient) -> dict[str, Any]:
@@ -137,12 +145,13 @@ def verify_webhook(raw_body: bytes, signed_jwt: str, *, client: PlaidClient) -> 
     if header.get("alg") != "ES256" or not header.get("kid"):
         raise PlaidError("Plaid verification algorithm is invalid", code="verification_algorithm")
     key_id = str(header["kid"])
-    jwk = _WEBHOOK_KEY_CACHE.get(key_id)
+    cache_key = (str(getattr(client, "base_url", "default")), key_id)
+    jwk = _WEBHOOK_KEY_CACHE.get(cache_key)
     if not jwk:
         jwk = client.webhook_verification_key(key_id)
         if jwk.get("alg") != "ES256" or jwk.get("kid") != key_id or jwk.get("kty") != "EC":
             raise PlaidError("Plaid verification key is invalid", code="verification_key_invalid")
-        _WEBHOOK_KEY_CACHE[key_id] = jwk
+        _WEBHOOK_KEY_CACHE[cache_key] = jwk
     try:
         key = jwt.PyJWK.from_dict(jwk).key
         claims = jwt.decode(
@@ -152,7 +161,7 @@ def verify_webhook(raw_body: bytes, signed_jwt: str, *, client: PlaidClient) -> 
     except jwt.PyJWTError as exc:
         # A rotated key may reuse a stale local cache only after a process has
         # lived through rollover. Retry once with Plaid's current JWK.
-        _WEBHOOK_KEY_CACHE.pop(key_id, None)
+        _WEBHOOK_KEY_CACHE.pop(cache_key, None)
         raise PlaidError("Plaid webhook signature is invalid", code="verification_signature") from exc
     issued_at = int(claims.get("iat") or 0)
     now = int(datetime.now(timezone.utc).timestamp())
@@ -163,6 +172,32 @@ def verify_webhook(raw_body: bytes, signed_jwt: str, *, client: PlaidClient) -> 
     if not hmac.compare_digest(expected_hash, actual_hash):
         raise PlaidError("Plaid webhook body does not match its signature", code="verification_body")
     return claims
+
+
+def verify_webhook_environments(
+    raw_body: bytes,
+    signed_jwt: str,
+    *,
+    clients: Sequence[tuple[str, PlaidClient]],
+) -> tuple[dict[str, Any], str]:
+    """Verify against ordered environments without weakening failure handling.
+
+    Plaid signing-key IDs are environment-specific. A secondary verifier may
+    therefore be tried only when the primary environment says the key ID does
+    not exist. Signature, age, and body failures never fall through.
+    """
+    if not clients:
+        raise PlaidError("Plaid webhook verifier is not configured", code="not_configured")
+    invalid_key_error: PlaidError | None = None
+    for environment, client in clients:
+        try:
+            return verify_webhook(raw_body, signed_jwt, client=client), environment
+        except PlaidError as exc:
+            if exc.code != "INVALID_WEBHOOK_VERIFICATION_KEY_ID":
+                raise
+            invalid_key_error = exc
+    assert invalid_key_error is not None
+    raise invalid_key_error
 
 
 def local_item_id_for_external(external_item_id: str) -> str | None:

@@ -194,23 +194,44 @@ async def plaid_webhook(request: Request, background_tasks: BackgroundTasks):
         PlaidClient,
         PlaidError,
         record_webhook,
-        verify_webhook,
+        verify_webhook_environments,
     )
 
     settings = _finance_settings(request)
     raw_body = await request.body()
     signed_jwt = request.headers.get("Plaid-Verification", "")
-    client = PlaidClient(settings)
+    expected_environment = str(settings.plaid_environment or "sandbox").lower()
+    verification_clients = [(expected_environment, PlaidClient(settings))]
+    test_environment = str(getattr(settings, "plaid_webhook_test_environment", "") or "").lower()
+    test_secret = str(getattr(settings, "plaid_webhook_test_secret", "") or "")
+    if test_environment and test_secret and test_environment != expected_environment:
+        verification_clients.append((
+            test_environment,
+            PlaidClient(settings, environment=test_environment, secret=test_secret),
+        ))
     try:
-        verify_webhook(raw_body, signed_jwt, client=client)
+        _, verified_environment = verify_webhook_environments(
+            raw_body,
+            signed_jwt,
+            clients=verification_clients,
+        )
         payload = json.loads(raw_body)
     except (PlaidError, json.JSONDecodeError) as exc:
         code = exc.code if isinstance(exc, PlaidError) else "invalid_json"
         raise HTTPException(status_code=401, detail={"code": code, "message": "Webhook verification failed"}) from exc
     payload_environment = str(payload.get("environment") or "").lower()
-    expected_environment = str(settings.plaid_environment or "sandbox").lower()
-    if payload_environment and payload_environment != expected_environment:
+    if payload_environment and payload_environment != verified_environment:
         raise HTTPException(status_code=401, detail={"code": "environment_mismatch", "message": "Webhook verification failed"})
+    if verified_environment != expected_environment:
+        logger.info(
+            "Plaid test webhook verified environment=%s processed=false",
+            verified_environment,
+        )
+        return JSONResponse({
+            "status": "accepted",
+            "environment": verified_environment,
+            "processed": False,
+        })
     webhook_type = str(payload.get("webhook_type") or "").upper()
     webhook_code = str(payload.get("webhook_code") or "").upper()
     external_item_id = str(payload.get("item_id") or "")

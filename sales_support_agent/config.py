@@ -210,6 +210,8 @@ class Settings:
     plaid_token_secret: str = ""
     plaid_webhook_url: str = ""
     plaid_redirect_uri: str = ""
+    plaid_webhook_test_environment: str = ""
+    plaid_webhook_test_secret: str = ""
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     google_oauth_allowed_domain: str = "anatainc.com"
@@ -680,6 +682,10 @@ def load_settings() -> Settings:
             os.getenv("PLAID_REDIRECT_URI", "https://agent.anatainc.com/admin/finances/plaid/oauth-return").strip()
             or "https://agent.anatainc.com/admin/finances/plaid/oauth-return"
         ),
+        # Optional verifier for provider-generated staging receipts. It never
+        # changes the primary Plaid environment used by Finance reads.
+        plaid_webhook_test_environment=os.getenv("PLAID_WEBHOOK_TEST_ENV", "").strip().lower(),
+        plaid_webhook_test_secret=os.getenv("PLAID_WEBHOOK_TEST_SECRET", "").strip(),
         google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip(),
         google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),
         google_oauth_allowed_domain=(os.getenv("GOOGLE_OAUTH_ALLOWED_DOMAIN", "anatainc.com").strip() or "anatainc.com"),
