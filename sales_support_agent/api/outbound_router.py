@@ -329,6 +329,7 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "",
         try:
             from sales_support_agent.services.outbound_delivery import deliver_completed_pull
             deliver_completed_pull(engine, {
+                "id": run_id,
                 "recipe": result.recipe or "icp_baseline", "scanned": result.scanned,
                 "matched": result.matched_icp, "fresh": result.fresh,
                 "skipped_seen": result.skipped_already_contacted, "partial": result.partial,
@@ -796,6 +797,7 @@ def outbound_lead_ops(request: Request) -> Response:
     try:
         from sales_support_agent.services import outbound_memory
         runs = outbound_memory.load_runs(_eng, limit=50)
+        outbound_memory.backfill_legacy_run_leads(_eng)
         run_lead_counts = outbound_memory.run_lead_counts(_eng, [r["id"] for r in runs])
         delivery_prefs = outbound_memory.load_delivery_settings(_eng)
         export_history = outbound_memory.load_exports(_eng, limit=6)
@@ -930,7 +932,7 @@ def outbound_lead_ops(request: Request) -> Response:
             <label><input id="delivery-slack" type="checkbox" {'checked' if delivery_prefs['slack_enabled'] else ''}> Slack</label>
             <label>Frequency <select id="delivery-frequency"><option value="every_pull" {'selected' if delivery_prefs['frequency']=='every_pull' else ''}>After every pull</option><option value="daily" {'selected' if delivery_prefs['frequency']=='daily' else ''}>Daily digest</option></select></label>
             <label class="wide">Email recipients<input id="delivery-recipients" type="text" value="{html.escape(delivery_prefs['email_recipients'])}" placeholder="david@anatainc.com"></label>
-            <label>Contents <select id="delivery-content"><option value="link" {'selected' if delivery_prefs['content_mode']=='link' else ''}>Summary + secure download link</option><option value="summary" {'selected' if delivery_prefs['content_mode']=='summary' else ''}>Summary only</option></select></label>
+            <label>Contents <select id="delivery-content"><option value="link" {'selected' if delivery_prefs['content_mode']=='link' else ''}>CSV attachment + summary + secure link</option><option value="summary" {'selected' if delivery_prefs['content_mode']=='summary' else ''}>CSV attachment + summary</option></select></label>
           </div>
           <div style="margin-top:12px"><button class="lo-save" id="delivery-save" type="button">Save delivery settings</button> <button class="lo-save" id="delivery-test" type="button">Send test</button></div>
           <p class="lo-msg" id="delivery-message" aria-live="polite"></p>

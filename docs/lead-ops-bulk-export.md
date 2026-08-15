@@ -7,9 +7,10 @@ results, and read-only delivery of those results to Anata operators.
 
 Every new pull records its summary in `outbound_pull_runs` and its exact company
 membership in `outbound_pull_run_leads`. This additive record is what makes an
-individual pull or a selection of pulls reproducibly downloadable. Older runs
-that predate exact membership are shown as unavailable rather than reconstructed
-from ambiguous timestamps.
+individual pull or a selection of pulls reproducibly downloadable. For older
+runs, Lead Ops attempts a one-time recovery from the company timestamp window,
+recipe, and recorded fresh count. It enables the pull only when the recovered
+row count exactly matches the recorded count; ambiguous runs remain unavailable.
 
 Downloading never writes to `outbound_contacted_domains`, never triggers Clay,
 and never changes a company's operational state. Combined exports deduplicate by
@@ -26,8 +27,10 @@ each pull or in the existing daily morning digest. Email and Slack credentials
 remain deployment environment variables; the page stores only operator choices
 and recipient addresses.
 
-Delivery notifications contain pull counts, status, settings version, and an
-authenticated Lead Ops link when link mode is selected. Notifications never
+Email delivery includes a Clay-ready CSV attachment plus pull counts, status,
+settings version, and an authenticated Lead Ops link. Daily digest email uses a
+combined CSV of the ready companies. Slack includes the summary and secure page
+link because its channel delivery remains message-only. Notifications never
 contact prospects or alter suppression. Each provider attempt is written to
 `outbound_delivery_history` with destination, target, status, and timestamp.
 
