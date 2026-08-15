@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -26,6 +27,7 @@ from sales_support_agent.models.entities import (
     BuildingTransactionalMessage,
     BuildingSuppression,
 )
+from sales_support_agent.integrations.resend import ResendClient
 
 
 router = APIRouter(prefix="/api/integrations/resend", tags=["resend-webhook"])
@@ -47,6 +49,31 @@ RECIPIENT_STATUSES = {
     "email.delivery_delayed": "delivery_delayed",
     "email.failed": "failed",
 }
+
+
+@router.post("/staging-delivery-probe")
+async def staging_delivery_probe(request: Request) -> dict[str, Any]:
+    """Send one provider test message from Vercel staging, never production.
+
+    This temporary migration probe has a fixed Resend test recipient and a
+    fixed idempotency key, so it cannot contact customers or be used to send
+    multiple messages. It is removed after the signed webhook receipt.
+    """
+    is_staging = os.getenv("VERCEL_STAGING", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if not is_staging or request.url.hostname != "agent-staging.anatainc.com":
+        raise HTTPException(status_code=404, detail="Not found.")
+    client = ResendClient(request.app.state.settings)
+    if not client.is_configured():
+        raise HTTPException(status_code=503, detail="Email delivery is not configured.")
+    message_id = client.send_message(
+        to="delivered@resend.dev",
+        subject="Anata Agent Vercel staging verification",
+        text="Controlled staging delivery verification. No customer action is required.",
+        idempotency_key="agent-vercel-staging-resend-receipt-2026-08-14",
+    )
+    return {"ok": True, "provider_accepted": bool(message_id)}
 
 
 def _now() -> datetime:
