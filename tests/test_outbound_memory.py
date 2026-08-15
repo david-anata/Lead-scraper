@@ -108,6 +108,42 @@ class RunTrackingTests(unittest.TestCase):
                                       fresh=0, skipped_seen=0))
         self.assertEqual(m.load_runs(object()), [])
 
+    def test_exact_pull_membership_is_exportable_without_changing_contact_memory(self):
+        e = self._engine()
+        run_id = m.record_run(e, recipe="social_surge", scanned=20, matched=3,
+                              fresh=2, skipped_seen=1)
+        before = m.load_contacted(e)
+        self.assertEqual(m.record_run_leads(e, run_id, [
+            {"domain": "a.com", "brand": "A"}, {"domain": "b.com", "brand": "B"},
+        ]), 2)
+        leads = m.load_run_leads(e, [run_id])
+        self.assertEqual({x["domain"] for x in leads}, {"a.com", "b.com"})
+        self.assertEqual(leads[0]["pull_recipe"], "social_surge")
+        self.assertEqual(m.load_contacted(e), before)
+
+    def test_delivery_settings_round_trip(self):
+        e = self._engine()
+        self.assertTrue(m.save_delivery_settings(e, {
+            "enabled": "1", "email_enabled": "1", "slack_enabled": "0",
+            "frequency": "every_pull", "email_recipients": "david@anatainc.com",
+            "content_mode": "link",
+        }, actor="david@anatainc.com"))
+        prefs = m.load_delivery_settings(e)
+        self.assertTrue(prefs["enabled"])
+        self.assertTrue(prefs["email_enabled"])
+        self.assertFalse(prefs["slack_enabled"])
+        self.assertEqual(prefs["email_recipients"], "david@anatainc.com")
+
+    def test_export_history_records_only_metadata(self):
+        e = self._engine()
+        self.assertTrue(m.record_export(e, actor="david@anatainc.com", run_ids=[1, 2],
+                                        source_rows=4, unique_companies=3,
+                                        duplicates_removed=1, include_duplicates=False,
+                                        filename="companies.csv"))
+        item = m.load_exports(e)[0]
+        self.assertEqual(item["run_ids"], "1,2")
+        self.assertEqual(item["unique_companies"], 3)
+
 
 class ReleaseTests(unittest.TestCase):
     """Brands pulled but never actually emailed must be recoverable, without
