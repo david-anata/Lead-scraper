@@ -78,9 +78,10 @@ Status: engineering candidate ready for provider registration and timed rehearsa
   post-cutover traffic.
 - A dedicated Resend staging webhook is enabled for delivery, bounce,
   complaint, delay, and failure events. Its signing secret is stored as a
-  sensitive Vercel environment value and the resulting deployment is ready on
-  the stable staging alias. Five concurrent readiness calls returned 200. A
-  provider-generated signed test event is the remaining Resend receipt.
+  sensitive Vercel environment value. A controlled message to Resend's own
+  `delivered@resend.dev` test address was provider-accepted, and its signed
+  `email.delivered` webhook returned 200 on staging. The one-time fixed-recipient
+  probe was removed after the receipt; no customer was contacted.
 - The QuickBooks staging callback is saved alongside production in Intuit. A
   real OAuth authorization selected the verified Anata company, returned to
   staging, passed one-time state validation, stored fresh tokens, and rendered
@@ -96,8 +97,10 @@ Status: engineering candidate ready for provider registration and timed rehearsa
 
 ## Required before asking for cutover approval
 
-1. Register and test remaining applicable staging callbacks/webhooks in Gmail,
-   Instantly, Stripe, and Resend. Google, QuickBooks, and Plaid are complete.
+1. Complete the optional user-connected Gmail consent receipt if that feature
+   is promoted beyond the existing system-managed inbox. Google sign-in,
+   QuickBooks, Plaid, and Resend receipts are complete. Stripe is not Agent's
+   billing rail, and the unused Instantly event webhook is not a cutover gate.
 2. Capture controlled provider happy-path receipts using sandbox or staging-safe
    records; do not move money, publish content, or contact customers merely for QA.
 3. During the approved maintenance window, capture and apply the final

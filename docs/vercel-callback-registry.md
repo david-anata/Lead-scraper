@@ -1,6 +1,6 @@
 # Vercel staging callback registry
 
-Status: Google, QuickBooks, and Plaid receipts verified; remaining provider receipts in progress
+Status: required Google, QuickBooks, Plaid, and Resend receipts verified
 
 Stable staging origin: `https://agent-staging.anatainc.com`
 
@@ -13,9 +13,9 @@ Never place credentials, tokens, webhook signing secrets, or customer payloads i
 | QuickBooks | Finance OAuth | `https://agent-staging.anatainc.com/admin/finances/qbo/callback` | Same path on `agent.anatainc.com` | August 14: the staging callback is saved alongside production in the Anata Agent Intuit application. A real OAuth authorization selected the verified Anata company, returned to staging, consumed its one-time state, stored fresh tokens, and completed with 303 before the authenticated workspace returned 200. The callback log recorded the approved realm and a one-hour access-token lifetime; no callback error or 5xx occurred. |
 | Plaid | Link OAuth return | `https://agent-staging.anatainc.com/admin/finances/plaid/oauth-return` | Same path on `agent.anatainc.com` | August 14: production and staging returns are both registered. Plaid Sandbox Link completed with the documented mock credentials and created a Sandbox Item; no real bank was connected. |
 | Plaid | Signed webhook | `https://agent-staging.anatainc.com/api/integrations/plaid/webhook` | Same path on `agent.anatainc.com` | August 14: unsigned payload rejects with 401. After the isolated Sandbox verifier was deployed, two provider-signed Sandbox deliveries returned 200, logged `environment=sandbox processed=false`, executed zero database queries, and triggered no Finance sync or data mutation. |
-| Instantly | Sales event webhook | `https://agent-staging.anatainc.com/api/integrations/instantly/webhook` | Same path on `agent.anatainc.com` | August 14: unsigned payload rejects with 401 before processing. A dedicated signing secret and provider delivery remain pending. |
-| Stripe | Building billing webhook | `https://agent-staging.anatainc.com/api/integrations/stripe/webhook` | Same path on `agent.anatainc.com` | August 14: unsigned payload rejects with 400 and confirms Stripe verification is not configured. Owner must select the Stripe environment and register its secret before a signed test event. |
-| Resend | Building email webhook | `https://agent-staging.anatainc.com/api/integrations/resend/webhook` | Same path on `agent.anatainc.com` | August 14: a dedicated enabled staging webhook was registered for delivery, bounce, complaint, delay, and failure events. Its signing secret was stored as Vercel's sensitive `RESEND_WEBHOOK_SECRET`, a fresh immutable deployment was promoted, and five concurrent readiness checks passed. Unsigned payloads reject with 401. A controlled provider-generated signed event remains pending. |
+| Instantly | Optional legacy sales event webhook | `https://agent-staging.anatainc.com/api/integrations/instantly/webhook` | Same path on `agent.anatainc.com` | Not a migration dependency. Agent retains the fail-closed optional receiver, but the business does not identify this webhook as an active workflow and staging has no dedicated secret. Outbound lead exports/API reads remain separate. |
+| Stripe | Optional Building payment-confirmation webhook | `https://agent-staging.anatainc.com/api/integrations/stripe/webhook` | Same path on `agent.anatainc.com` | Not a migration dependency. Code and launch readiness identify QuickBooks as Agent's billing rail and Stripe only as an optional automatic-confirmation path. Website label payments are outside Agent's hosting cutover. The unconfigured receiver continues to fail closed. |
+| Resend | Building email webhook | `https://agent-staging.anatainc.com/api/integrations/resend/webhook` | Same path on `agent.anatainc.com` | August 14: dedicated staging webhook registered for delivery, bounce, complaint, delay, and failure. Unsigned payloads reject with 401. A controlled message to `delivered@resend.dev` was accepted, produced a provider-signed `email.delivered` webhook, and staging returned 200 after recording the event. No customer was contacted; the fixed-recipient one-time probe was removed immediately afterward. |
 
 ## Verification receipt requirements
 
@@ -35,17 +35,13 @@ code and Vercel cannot complete them silently.
 3. Plaid staging redirect, Sandbox Link, and provider-signed webhook receipts
    are complete. Preserve the production and staging return URIs until cutover
    is closed; keep the isolated Sandbox verifier unset in the live Render app.
-4. Resend registration and secret deployment are complete. Send one controlled
-   Resend test email to `delivered@resend.dev`, then record the signed webhook
-   receipt. Do not use a customer address.
-5. Decide whether Stripe billing is already required for production parity. If
-   yes, explicitly select test mode for staging, register the staging webhook,
-   and add its test keys. If no, keep payment execution disabled and track it
-   as a separate Building launch dependency.
-6. Decide whether the Instantly event webhook is already required for
-   production parity. If yes, create one shared secret in the provider and
-   Vercel and run a non-customer test event. If no, keep the current API/read
-   integration and track webhook enablement separately.
+4. Resend registration, secret deployment, controlled provider delivery, and
+   signed webhook receipt are complete. Preserve the staging webhook until
+   cutover validation is closed.
+5. Stripe remains an optional future Agent integration. The separate website
+   label-payment implementation is not part of this Agent migration.
+6. Instantly webhook enablement remains an optional future sales integration;
+   it is not required to preserve an identified active Agent workflow.
 
 ## Pass criteria
 
@@ -100,6 +96,17 @@ and logged `environment=sandbox processed=false`. Both requests executed zero
 database queries; neither recorded an Item, enqueued a sync, changed Finance
 data, connected a real bank, or affected Render production. Finance continues
 to use the primary production Plaid environment for ordinary reads.
+
+## August 14 Resend happy-path receipt
+
+Operator: Codex. Provider environment: the dedicated Resend staging webhook.
+Agent sent one idempotent message to Resend's documented
+`delivered@resend.dev` test address. Resend accepted it, then delivered a signed
+`email.delivered` event to the staging webhook. The send probe returned 200 with
+provider acceptance, and the signed webhook returned 200 after seven database
+queries recorded the event and audit evidence. No customer address was used.
+The temporary fixed-recipient staging probe was removed immediately after the
+receipt and is absent from the final candidate.
 
 ## August 14 production-parity observation
 
