@@ -22,7 +22,10 @@ Queue evidence includes status, attempts, maximum attempts, availability time, l
 
 ## Scheduled jobs
 
-All Vercel write schedules require `CRON_SECRET` and remain inert while `VERCEL_CRON_WRITES_ENABLED=false`.
+All Vercel write schedules require `CRON_SECRET`. A writer runs only when
+`VERCEL_CRON_WRITES_ENABLED=true` **and** its exact job name appears in the
+comma-separated `VERCEL_CRON_ENABLED_JOBS` allowlist. Before cutover the global
+flag is false and the allowlist is empty.
 
 | Schedule | Vercel route | Cadence | State before cutover |
 | --- | --- | --- | --- |
@@ -64,5 +67,8 @@ The synthetic route checks application readiness, performs a bounded database qu
   readable, every declared live configuration group was present, and every
   receipt recorded `external_writes=false`. The temporary trigger was removed
   immediately after evidence capture.
-- Immediately before cutover, verify Render schedules are stopped before changing `VERCEL_CRON_WRITES_ENABLED`.
+- Immediately before cutover, verify Render schedules are stopped before
+  changing `VERCEL_CRON_WRITES_ENABLED`. Begin with an empty
+  `VERCEL_CRON_ENABLED_JOBS` value, then append and verify one exact job name at
+  a time in the documented cutover order.
 - Enable one Vercel schedule at a time and confirm its first successful ledger receipt.

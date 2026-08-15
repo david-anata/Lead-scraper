@@ -55,6 +55,24 @@ def test_database_snapshot_reports_sample_content_drift(tmp_path: Path) -> None:
     assert differences[0]["source"]["sample_sha256"] != differences[0]["target"]["sample_sha256"]
 
 
+def test_database_snapshot_reports_content_drift_outside_sample(tmp_path: Path) -> None:
+    source_url = _database(tmp_path / "source-full.db", 8)
+    target_url = _database(tmp_path / "target-full.db", 8)
+    target = create_engine(target_url)
+    with target.begin() as connection:
+        connection.execute(text("UPDATE examples SET name = 'Changed' WHERE id = 8"))
+    target.dispose()
+
+    differences = audit._differences(
+        audit._database_snapshot(source_url),
+        audit._database_snapshot(target_url),
+    )
+
+    assert differences[0]["kind"] == "table_mismatch"
+    assert differences[0]["source"]["sample_sha256"] == differences[0]["target"]["sample_sha256"]
+    assert differences[0]["source"]["full_row_sha256"] != differences[0]["target"]["full_row_sha256"]
+
+
 def test_artifact_snapshot_uses_relative_paths_and_hashes(tmp_path: Path) -> None:
     root = tmp_path / "artifacts"
     nested = root / "reports"

@@ -309,13 +309,22 @@ async def run_scheduled_outbound(
         raise HTTPException(status_code=401, detail="Valid scheduler credential required.")
 
     is_vercel_cron = request.method == "GET"
-    if is_vercel_cron and os.getenv(
+    enabled_jobs = {
+        item.strip().lower()
+        for item in os.getenv("VERCEL_CRON_ENABLED_JOBS", "").split(",")
+        if item.strip()
+    }
+    writes_enabled = os.getenv(
         "VERCEL_CRON_WRITES_ENABLED", "false"
-    ).strip().lower() not in {"1", "true", "yes", "on"}:
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if is_vercel_cron and not (
+        writes_enabled and ("outbound-morning" in enabled_jobs or "*" in enabled_jobs)
+    ):
         return JSONResponse(
             {
                 "status": "disabled",
-                "message": "Vercel scheduled writes remain disabled until cutover.",
+                "job": "outbound-morning",
+                "message": "This Vercel scheduled writer remains disabled until explicitly allowlisted at cutover.",
             }
         )
 

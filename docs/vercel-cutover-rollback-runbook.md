@@ -66,7 +66,11 @@ receipt remains historical evidence only; Neon is no longer the target.
 6. Promote the already-approved Vercel deployment without rebuilding it.
 7. Move `agent.anatainc.com` DNS and exact provider callbacks to Vercel.
 8. Verify readiness, login/logout, one page per section, restricted permissions, and critical read workflows.
-9. Enable Vercel jobs one at a time. Confirm a successful ledger receipt before enabling the next job.
+9. Set `VERCEL_CRON_WRITES_ENABLED=true` with an empty
+   `VERCEL_CRON_ENABLED_JOBS` allowlist. Add one exact job name at a time in the
+   order from `docs/vercel-scheduler-cutover-map.md`, deploy the environment
+   revision, invoke that job once, and confirm its successful ledger receipt
+   before appending the next name. Do not use the `*` wildcard during cutover.
 10. End the maintenance window only after the business verification owner signs off.
 
 ## Rollback triggers
@@ -75,7 +79,9 @@ Rollback immediately for authentication failure, permission leakage, missing or 
 
 ## Rollback sequence
 
-1. Disable all Vercel schedules and external writers.
+1. Empty `VERCEL_CRON_ENABLED_JOBS`, set
+   `VERCEL_CRON_WRITES_ENABLED=false`, and deploy that environment revision.
+   Verify every write route returns `status=disabled` before proceeding.
 2. Point `agent.anatainc.com` and provider callbacks back to Render.
 3. Re-enable Render writers only after confirming Vercel writers are stopped.
 4. If any Vercel-era writes occurred, export and reconcile them before restoring service; never discard them silently.

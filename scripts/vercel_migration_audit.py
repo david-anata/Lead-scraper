@@ -60,6 +60,19 @@ def _database_snapshot(url: str) -> dict[str, Any]:
                         separators=(",", ":"),
                     ).encode("utf-8")
                 ).hexdigest()
+                row_hashes: list[bytes] = []
+                all_rows = connection.execution_options(stream_results=True).execute(
+                    select(reflected)
+                ).mappings()
+                for row in all_rows:
+                    encoded = json.dumps(
+                        _normalise_row(dict(row)),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    row_hashes.append(hashlib.sha256(encoded).digest())
+                row_hashes.sort()
+                full_row_hash = hashlib.sha256(b"".join(row_hashes)).hexdigest()
                 watermarks: dict[str, str | None] = {}
                 for column_name in WATERMARK_COLUMNS:
                     if column_name in reflected.c:
@@ -74,6 +87,7 @@ def _database_snapshot(url: str) -> dict[str, Any]:
                     "primary_key": primary_key,
                     "sample_size": len(sample_rows),
                     "sample_sha256": sample_hash,
+                    "full_row_sha256": full_row_hash,
                     "watermarks": watermarks,
                     "columns": [
                         {

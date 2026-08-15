@@ -37,7 +37,7 @@ The Vercel duplicate is real and functional, but it is not yet a production-equi
   HTTPS. Fallback and real Google sign-in pass. Google sign-in and Gmail staging
   redirects are registered alongside production; QuickBooks, Plaid, and Resend
   provider-console receipts remain open.
-- Vercel schedules exist for Website Ops, Content, stale-lead scanning, Gmail ingestion, Sales operations, HR reminders, Building operations, and Outbound. They are authenticated and globally disabled with `VERCEL_CRON_WRITES_ENABLED=false`.
+- Vercel schedules exist for Website Ops, Content, stale-lead scanning, Gmail ingestion, Sales operations, HR reminders, Building operations, and Outbound. They are authenticated and disabled by both `VERCEL_CRON_WRITES_ENABLED=false` and an empty per-job `VERCEL_CRON_ENABLED_JOBS` allowlist.
 - Website Ops and Fulfillment retained-report caches no longer hydrate during application startup. The latest measured external cold readiness response was approximately 4.6 seconds, down from a startup path that previously exceeded two minutes.
 - Fulfillment report files have a PostgreSQL-backed durable mirror with hash validation and lazy restore.
 - Focused tests for cron authentication/leases, Building operations, Fulfillment storage, dashboards, Finance upload compatibility, intake compatibility, and canonical navigation pass.
@@ -106,11 +106,11 @@ The following items remain open and block a truthful claim of 100% completion:
 
 | Gate | Remaining work | Evidence required to close | Owner help required |
 | --- | --- | --- | --- |
-| Stable staging identity | DNS, HTTPS, Google sign-in, Gmail redirect registration, QuickBooks OAuth, and Resend webhook registration are closed; register and test only the remaining migration-critical provider callbacks/webhooks | Successful provider login/logout and callback registry with pass/fail receipts | Sign in to Plaid |
+| Stable staging identity | Closed: DNS, HTTPS, Google sign-in, Gmail redirect registration, QuickBooks OAuth, Plaid redirect/webhook registration, and Resend signed delivery are verified | Successful provider login/logout and callback registry with pass/fail receipts | None before cutover |
 | Production data parity | Full snapshot equality is closed on Supabase: 171 tables, 223,016 rows, full-row fingerprints, and 61 sequence states match. Rehearse the final delta during the approved cutover window. | `vercel-supabase-migration-rehearsal-receipt.md`; final delta receipt | Owner approval remains separately mandatory for the production delta/cutover window |
 | Artifact parity | Closed as a separate filesystem gate: Render has no persistent disk; retained artifacts are represented in PostgreSQL and move with the database | Database comparison must include `website_ops_files`, `content_artifacts`, and report tables; sample retained reports after import | None beyond the database migration access above |
 | Durable execution | Closed: every retained Render schedule has a Vercel replacement; all 11 write jobs passed shadow receipts plus durable failure/retry/overlap/replay tests | Scheduler map, job ledger, forced-failure receipt, and no orphan Agent schedule | None before the approved one-at-a-time production enablement |
-| Integration parity | Google, QuickBooks OAuth, and current rendered Gmail/Finance continuity are closed; Resend registration is closed; complete provider-owned receipts required for Plaid and Resend. Stripe and Instantly block only their own unlaunched write paths unless the owner confirms Render depends on them. | Workflow matrix containing happy path, failure path, operator receipt, and source-system receipt | Plaid sign-in; owner classification of Stripe and Instantly production use |
+| Integration parity | Closed for current production behavior: Google, QuickBooks, Plaid, Resend, and the preserved system-managed Gmail path have receipts. Stripe is website-only and the optional Instantly event receiver is unused, so both remain disabled in Agent. | Workflow matrix containing happy path, failure path, operator receipt, and source-system receipt | None before cutover |
 | Regression suite | Closed: hosted full-suite pass completed against the exact deployed application-code revision | 3,352 passed, one skipped, zero failed, plus 65 passing subtests | None |
 | Performance | Closed for the current candidate; repeat only after a material runtime/configuration change | Three fresh-deployment rounds and authenticated page timings recorded in `vercel-performance-receipt.md` | None |
 | Product QA | Closed for the current candidate: administrator, fresh-session, restricted-role, 13-page desktop, shared-report, keyboard/landmark, overflow, and log checks pass | Three complete QA passes against the immutable candidate; screenshot and log evidence | None unless a material application/configuration change resets the affected pass |
@@ -122,12 +122,11 @@ The following items remain open and block a truthful claim of 100% completion:
 The engineering work should continue without waiting on these items, but these owner-controlled actions are mandatory before the corresponding gates can close:
 
 1. QuickBooks callback registration and OAuth verification are complete.
-2. Sign in to the open Plaid tab for its provider-owned staging registration
-   and sandbox receipt. Resend console registration is complete; its remaining
-   receipt uses Resend's controlled test address, not a customer.
-3. Confirm whether Stripe payments and the Instantly event webhook are active
-   Render dependencies. If not, they remain disabled and do not block hosting
-   parity.
+2. Plaid staging registration and its signed Sandbox receipts are complete.
+   Resend's signed delivery receipt used its controlled test address, not a
+   customer.
+3. Stripe is website-only and the optional Instantly event receiver is not an
+   active Agent dependency. Both remain disabled and do not block parity.
 4. Before cutover, name the go/no-go and rollback owners and explicitly approve
    the maintenance window, production-domain move, final live delta, provider
    callback move, and one-at-a-time scheduler enablement.

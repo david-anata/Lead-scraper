@@ -23,7 +23,11 @@ Reviewed against the live Render dashboard on August 13, 2026. Render stays auth
 
 1. Record the last successful Render receipt for each retained job.
 2. Disable only the Render jobs listed above; leave unrelated projects untouched.
-3. Confirm `VERCEL_CRON_WRITES_ENABLED=false`, apply the final database delta, and pass the migration comparator.
-4. Switch the global flag once, then verify the first Vercel receipt for each job in the order shown above.
+3. Confirm `VERCEL_CRON_WRITES_ENABLED=false` and
+   `VERCEL_CRON_ENABLED_JOBS` is empty, apply the final database delta, and pass
+   the migration comparator.
+4. Set the global flag true while the allowlist remains empty. Add one exact
+   Vercel job name to `VERCEL_CRON_ENABLED_JOBS`, deploy that environment
+   revision, invoke the matching route once, and verify its ledger receipt
+   before appending the next name. Never use `*` during cutover.
 5. On any duplicate or failed external effect, disable Vercel writes before re-enabling the matching Render job.
-

@@ -20,7 +20,9 @@ This receipt records variable names and configuration intent only. It never reco
   from attempting owner-only DDL. Schema changes run through the controlled
   pre-deploy migration instead.
 - `VERCEL_STAGING` is present.
-- `VERCEL_CRON_WRITES_ENABLED` is present and staging writes remain disabled.
+- `VERCEL_CRON_WRITES_ENABLED` is present and false; the separate
+  `VERCEL_CRON_ENABLED_JOBS` allowlist is empty, so staging writers remain
+  disabled at both gates.
 - `CRON_SECRET` is present.
 - `CLICKUP_API_KEY` satisfies the application's supported `CLICKUP_API_TOKEN` alias.
 - `INSTANTLY_AI` satisfies the application's supported `INSTANTLY_API_KEY` alias.
@@ -36,8 +38,10 @@ This receipt records variable names and configuration intent only. It never reco
   existing Google OAuth client without removing either production URI. Real
   Google sign-in to staging passes.
 - The dedicated Resend staging webhook is enabled for the five event types the
-  application supports. Its sensitive signing secret is deployed to Vercel;
-  deployment `dpl_G2EQnTDKdye7gwwheKvJhLN1Q1fK` is ready on the stable alias.
+  application supports. Its sensitive signing secret is deployed to Vercel.
+  A provider-accepted message to Resend's controlled test address produced a
+  signed `email.delivered` receipt with HTTP 200; the temporary probe was then
+  removed and verified 404.
 - The QuickBooks staging callback is registered alongside production in the
   Anata Agent Intuit application. A real OAuth authorization returned to the
   staging callback, consumed its one-time state, and stored fresh tokens for
@@ -51,21 +55,22 @@ This receipt records variable names and configuration intent only. It never reco
 - `AMAZON_PROFIT_API_BASE_URL` uses the current documented default until the upstream service is separately migrated.
 - HR out-of-office Google Calendar variables are optional and not part of the launched HR flows.
 
-## Provider configuration still missing or unproven
+## Optional provider paths intentionally outside migration parity
 
-These are not safe to invent or copy without validating the owning provider account:
+These paths remain disabled and fail closed. They are not used by the current
+Agent production workflow and are not hosting-cutover dependencies:
 
-- `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`: Building payment processing cannot be certified until the owner selects the correct Stripe environment and webhook endpoint.
-- `INSTANTLY_WEBHOOK_SECRET`: the allowed-event and secret-header settings
-  exist, but the signing secret itself is absent and must be supplied or
-  confirmed in the Instantly console.
-- Provider-side registration still needs to be verified for Plaid and, if
-  those write paths are being launched, Stripe and Instantly. QuickBooks and
-  Resend registrations are complete. Resend
-  registration is complete, but its provider-generated signed event receipt is
-  still required.
-  Google sign-in and Gmail registration are complete; Gmail account consent is
-  a separate controlled receipt.
+- `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`: Agent uses QuickBooks as its
+  billing rail. The separate website's label-payment Stripe integration is
+  outside this hosting migration.
+- `INSTANTLY_WEBHOOK_SECRET`: Agent retains an optional legacy event receiver,
+  but the business does not identify it as an active production workflow.
+  Outbound Instantly reads and exports are separate and remain configured.
+
+Plaid staging redirect registration and two provider-signed Sandbox webhook
+receipts are complete. QuickBooks OAuth, Google sign-in, and Resend signed
+delivery receipts are also complete. User-connected Gmail consent remains an
+optional enhancement because the preserved system-managed inbox is working.
 
 ## Cutover-blocker classification
 

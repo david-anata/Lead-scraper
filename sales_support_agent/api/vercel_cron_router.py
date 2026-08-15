@@ -91,18 +91,32 @@ def _cron_writes_enabled() -> bool:
     }
 
 
-def _disabled() -> JSONResponse:
+def _enabled_cron_jobs() -> set[str]:
+    return {
+        item.strip().lower()
+        for item in os.getenv("VERCEL_CRON_ENABLED_JOBS", "").split(",")
+        if item.strip()
+    }
+
+
+def _cron_job_enabled(job: str) -> bool:
+    enabled = _enabled_cron_jobs()
+    return _cron_writes_enabled() and (job in enabled or "*" in enabled)
+
+
+def _disabled(job: str) -> JSONResponse:
     return JSONResponse(
         {
             "status": "disabled",
-            "message": "Vercel scheduled writes remain disabled until cutover.",
+            "job": job,
+            "message": "This Vercel scheduled writer remains disabled until explicitly allowlisted at cutover.",
         }
     )
 
 
-def _authorize(authorization: str | None) -> JSONResponse | None:
+def _authorize(authorization: str | None, job: str) -> JSONResponse | None:
     _require_vercel_cron(authorization)
-    return None if _cron_writes_enabled() else _disabled()
+    return None if _cron_job_enabled(job) else _disabled(job)
 
 
 def _internal_key(request: Request) -> str:
@@ -274,7 +288,7 @@ def website_ops_cron(
     request: Request,
     authorization: str | None = Header(default=None),
 ):
-    if response := _authorize(authorization):
+    if response := _authorize(authorization, "website-ops"):
         return response
     return _run_embedded_pulse(request.app.state.settings, datetime.now(_DENVER))
 
@@ -286,7 +300,7 @@ def daily_lead_build_cron(
 ):
     """Run the original weekday lead build with Render's exact input contract."""
 
-    if response := _authorize(authorization):
+    if response := _authorize(authorization, "daily-lead-build"):
         return response
     import main as lead_builder
 
@@ -313,7 +327,7 @@ def content_cron(
     request: Request,
     authorization: str | None = Header(default=None),
 ):
-    if response := _authorize(authorization):
+    if response := _authorize(authorization, "content"):
         return response
     return content_run(ContentRunInput(mode="scheduled"), request)
 
@@ -323,7 +337,7 @@ def stale_leads_cron(
     request: Request,
     authorization: str | None = Header(default=None),
 ):
-    if response := _authorize(authorization):
+    if response := _authorize(authorization, "stale-leads"):
         return response
     return run_stale_lead_job(
         StaleLeadRunRequest(dry_run=False), request, _internal_key(request)
@@ -335,7 +349,7 @@ def gmail_sync_cron(
     request: Request,
     authorization: str | None = Header(default=None),
 ):
-    if response := _authorize(authorization):
+    if response := _authorize(authorization, "gmail-sync"):
         return response
     return run_gmail_sync_job(
         GmailSyncRequest(dry_run=False), request, _internal_key(request)
@@ -347,7 +361,7 @@ def daily_digest_cron(
     request: Request,
     authorization: str | None = Header(default=None),
 ):
-    if response := _authorize(authorization):
+    if response := _authorize(authorization, "daily-digest"):
         return response
     return run_daily_digest_job(
         DailyDigestRunRequest(), request, _internal_key(request)
@@ -361,7 +375,7 @@ def durable_tasks_cron(
 ):
     """Repair request-owned work that did not finish in its first function."""
 
-    if response := _authorize(authorization):
+    if response := _authorize(authorization, "durable-tasks"):
         return response
     result = drain_durable_tasks(request.app, limit=5)
     return {"status": "succeeded", **result}
@@ -372,7 +386,7 @@ async def sales_operator_cron(
     request: Request,
     authorization: str | None = Header(default=None),
 ):
-    if response := _authorize(authorization):
+    if response := _authorize(authorization, "sales-operator"):
         return response
     return await sales_operator_run_job(request, _internal_key(request))
 
@@ -382,7 +396,7 @@ async def hr_reminders_cron(
     request: Request,
     authorization: str | None = Header(default=None),
 ):
-    if response := _authorize(authorization):
+    if response := _authorize(authorization, "hr-reminders"):
         return response
     return await hr_reminders_run(
         request,
@@ -403,7 +417,7 @@ async def building_operations_cron(
     remains authoritative.
     """
 
-    if response := _authorize(authorization):
+    if response := _authorize(authorization, "building-operations"):
         return response
     internal_key = _internal_key(request)
     engine = request.app.state.session_factory.kw.get("bind")

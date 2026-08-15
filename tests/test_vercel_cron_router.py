@@ -68,6 +68,22 @@ def test_all_vercel_crons_are_inert_before_cutover(monkeypatch) -> None:
         assert response.json()["status"] == "disabled"
 
 
+def test_global_switch_only_runs_explicitly_allowlisted_job(monkeypatch) -> None:
+    monkeypatch.setenv("CRON_SECRET", "cron-secret")
+    monkeypatch.setenv("VERCEL_CRON_WRITES_ENABLED", "true")
+    monkeypatch.setenv("VERCEL_CRON_ENABLED_JOBS", "daily-lead-build")
+    headers = {"Authorization": "Bearer cron-secret"}
+
+    response = _client().get("/api/vercel-cron/website-ops", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "disabled",
+        "job": "website-ops",
+        "message": "This Vercel scheduled writer remains disabled until explicitly allowlisted at cutover.",
+    }
+
+
 def test_synthetic_health_is_read_only_and_available_before_cutover(monkeypatch) -> None:
     monkeypatch.setenv("CRON_SECRET", "cron-secret")
     monkeypatch.setenv("VERCEL_CRON_WRITES_ENABLED", "false")
@@ -175,6 +191,7 @@ def test_durable_recovery_probe_rejects_non_staging_and_enabled_writes(monkeypat
 def test_daily_lead_build_preserves_render_schedule_contract(monkeypatch) -> None:
     monkeypatch.setenv("CRON_SECRET", "cron-secret")
     monkeypatch.setenv("VERCEL_CRON_WRITES_ENABLED", "true")
+    monkeypatch.setenv("VERCEL_CRON_ENABLED_JOBS", "daily-lead-build")
     observed = {}
 
     def execute(payload, *, scheduler_source):
