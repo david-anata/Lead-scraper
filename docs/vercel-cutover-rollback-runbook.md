@@ -1,18 +1,15 @@
 # Vercel cutover and rollback runbook
 
-Status: Supabase rehearsal complete; production execution requires the owner-approved maintenance window
+Status: production cut over to Vercel on August 16, 2026; rollback monitoring active
 
 ## Current production identity
 
-- `agent.anatainc.com` currently resolves by CNAME to
-  `lead-scraper-jb3u.onrender.com` with a 3,600-second authoritative TTL.
-- `agent-staging.anatainc.com` resolves to Vercel at `76.76.21.21`.
-- The Vercel project currently owns the verified staging hostname but does not
-  yet have `agent.anatainc.com` attached. Attach it only inside the approved
-  window, then replace the GoDaddy production CNAME with the Vercel-recommended
-  `A agent 76.76.21.21` record.
-- Reserve a two-hour maintenance window because some clients may retain the old
-  production answer for up to one hour. Render must remain healthy throughout.
+- `agent.anatainc.com` resolves by CNAME to
+  `5d8f9dc770aa7bd0.vercel-dns-016.com` and is served by Vercel with a valid
+  production certificate.
+- `agent-staging.anatainc.com` remains attached to the same Vercel project.
+- The Render web service remains healthy as the rollback target. Only the Agent
+  Render schedulers are suspended; unrelated Render projects were untouched.
 - The public hostname and every production callback path remain unchanged.
   Google, Gmail, QuickBooks, Plaid, Resend, and other providers should be
   verified after DNS moves; do not rewrite their already-correct
@@ -20,12 +17,10 @@ Status: Supabase rehearsal complete; production execution requires the owner-app
 
 ## Named roles
 
-- Recommended go/no-go owner: David Narayan; confirmation pending
-- Recommended rollback owner: David Narayan or a named technical delegate;
-  confirmation pending
-- Migration operator: Codex-guided execution in the approved migration task;
-  human owner remains present for DNS, provider consent, and go/no-go
-- Recommended business verification owner: David Narayan; confirmation pending
+- Go/no-go owner: David Narayan
+- Rollback owner: David Narayan
+- Migration operator: Codex
+- Business verification owner: David Narayan
 
 One person may fill more than one role, but cutover does not begin until the
 names are explicitly confirmed and the rollback owner is available throughout
@@ -40,10 +35,11 @@ the maintenance window.
 
 ## Rehearsal
 
-The owner approved Supabase Pro as the durable Vercel database target. The full
-Render snapshot was restored into the isolated `anata-agent-staging` Supabase
-project. All 171 source tables, 223,016 rows, full-row fingerprints, and 61
-sequence states match. The application uses a dedicated non-owner role and the
+The owner approved Supabase Pro as the durable Vercel database target. The final
+Render snapshot was restored into the `anata-agent-staging` Supabase project.
+All 175 source tables passed count and every-row fingerprint comparison after
+the four source-only outbound tables were recreated from the authoritative
+schema. The application uses a dedicated non-owner role and the
 Supabase browser-facing roles have no table access. See
 `vercel-supabase-migration-rehearsal-receipt.md`. The earlier Neon capacity
 receipt remains historical evidence only; Neon is no longer the target.
@@ -116,3 +112,27 @@ Rollback immediately for authentication failure, permission leakage, missing or 
 ## Two-business-day monitoring
 
 Review Vercel 5xx and latency, Supabase connections and errors, durable-task backlog, cron/job failures, provider webhook receipts, authentication failures, data-count drift, report freshness, and operator feedback at opening, midday, and close. Keep Render rollback-ready until this monitoring period and the seven-day retention rule both pass.
+
+## August 16 production receipt
+
+- Final Render source archive: `/tmp/agent-source-final.dump`, 153,463,946
+  bytes, with 175 table-data entries. The Supabase pre-cutover rollback archive
+  is `/tmp/agent-supabase-precutover.dump`, 151,893,833 bytes.
+- The ordered restore and direct copy of the three legacy
+  `outbound_export_history` rows completed. All 175 tables then passed exact
+  count and sorted row-hash comparison (`FINAL_PARITY_EXIT:0`).
+- The temporary migration role was revoked and dropped. Supabase retained RLS,
+  denied browser-role table grants, and the restricted `agent_app` grants.
+- Production health, storage, Google sign-in, owner access, all nine major
+  workspaces, Finance Review, Website Ops Reports, Fulfillment CS Reports, and
+  HR Reports passed on the production hostname without desktop overflow.
+  Plaid and QuickBooks both report August 16 source freshness.
+- Vercel writer receipts passed for durable tasks, Gmail sync, Website Ops,
+  Content orchestration, Sales operator, HR reminders, Building operations,
+  stale-lead scan, daily digest, and the time-guarded outbound morning job.
+- `daily-lead-build` remains intentionally absent from the Vercel allowlist.
+  Its GitHub credential was repaired, but Apollo then rejected the configured
+  API key as invalid. Keep the corresponding Render job suspended; add the job
+  only after a replacement Apollo key produces a successful controlled receipt.
+- Render stays rollback-ready during the monitoring period. Do not re-enable a
+  Render scheduler while its Vercel counterpart remains allowlisted.

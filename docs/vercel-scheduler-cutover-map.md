@@ -1,6 +1,6 @@
 # Render-to-Vercel scheduler cutover map
 
-Status: complete inventory; every retained job has a Vercel replacement and remains globally disabled before cutover
+Status: production handoff completed for every retained job except `daily-lead-build`, which remains disabled pending a valid Apollo API key
 
 Reviewed against the live Render dashboard on August 13, 2026. Render stays authoritative until cutover approval.
 

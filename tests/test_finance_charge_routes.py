@@ -24,6 +24,8 @@ from sales_support_agent.models.database import init_database, insert_cash_event
 
 TODAY = date.today()
 THIS_MONDAY = TODAY - timedelta(days=TODAY.weekday())
+NEXT_DUE_DATE = TODAY + timedelta(days=1)
+CHARGE_WEEK = NEXT_DUE_DATE - timedelta(days=NEXT_DUE_DATE.weekday())
 
 
 @pytest.fixture()
@@ -42,7 +44,7 @@ def books(monkeypatch):
                 record_kind="obligation", event_type="outflow", category="utilities",
                 name="Lehi City Power", vendor_or_customer="Lehi City Power",
                 description="Lehi City Power", amount_cents=89_000 + index,
-                due_date=TODAY + timedelta(days=index + 1), status="planned",
+                due_date=NEXT_DUE_DATE + timedelta(days=index), status="planned",
                 confidence="confirmed", created_at=now, updated_at=now,
             )
     return engine
@@ -74,7 +76,7 @@ def test_opening_a_total_lists_the_charges_behind_it(books):
     client, ctx = _client()
     try:
         response = client.get(
-            f"/admin/finances/calendar/charges?week={THIS_MONDAY.isoformat()}&state=unpaid"
+            f"/admin/finances/calendar/charges?week={CHARGE_WEEK.isoformat()}&state=unpaid"
         )
     finally:
         for item in ctx:

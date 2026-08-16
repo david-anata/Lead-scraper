@@ -1,14 +1,14 @@
 # Agent Vercel release-candidate sign-off
 
-Status: engineering candidate ready for owner-approved production cutover; production cutover not approved
+Status: production cutover completed August 16, 2026; post-cutover monitoring active
 
 ## Candidate identity
 
 - Branch: `codex/vercel-agent-duplicate`
-- Candidate application commit: `c6fabf1`
+- Production application commit: `fcbaefb`
 - Full GitHub release gate: run `31867676137`, passed
-- Current immutable deployment: `dpl_A1gaRVTrmJVLvzio1YQfFis8kxKh`
-- Immutable URL: `https://anata-agent-staging-luhwrkjpd-david-narayans-projects.vercel.app`
+- Current production deployment at sign-off: `dpl_9NjpDWpcpy8pFhracGujUEsWiYjb`
+- Production URL: `https://agent.anatainc.com`
 - Stable staging URL: `https://agent-staging.anatainc.com`
 - Database: Supabase project `vfcmljqakphwhslxtfzv`, `us-west-1`, dedicated restricted `agent_app` role
 
@@ -112,24 +112,20 @@ Status: engineering candidate ready for owner-approved production cutover; produ
   requests, unauthenticated cron rejection, Finance and HR browser checks, and
   an error-level log scan with no findings.
 
-## Required before asking for cutover approval
+## Post-cutover follow-up
 
-1. Keep optional user-connected Gmail outside the cutover unless the business
-   separately chooses to launch it. The preserved system-managed inbox,
-   Google sign-in, QuickBooks, Plaid, and Resend receipts are complete. Stripe
-   is not Agent's billing rail, and the unused Instantly event webhook is not a
-   cutover gate.
-2. During the approved maintenance window, capture and apply the final
-   production data-only refresh, rerun the every-row parity audit, and record the current source
-   snapshot identifier. The base restore and rollback archive restore are timed
-   and proven; only the live final refresh remains.
-3. Name the go/no-go owner, rollback owner, migration operator, and business
-   verification owner.
-4. Obtain explicit approval for the production maintenance window, domain move,
-   callback verification, and one-at-a-time scheduler enablement.
+1. Replace the invalid Apollo API key, run one controlled
+   `/api/vercel-cron/daily-lead-build` receipt, and only then append
+   `daily-lead-build` to the production allowlist.
+2. Review opening, midday, and close health/log/job receipts for two business
+   days and retain Render rollback readiness for at least seven days.
+3. Stripe remains website-only and the unused Instantly event webhook remains
+   outside Agent migration scope.
 
 ## Production safety statement
 
-This record does not authorize changing `agent.anatainc.com`, disabling Render,
-enabling Vercel writer schedules, moving callbacks, or running a final production
-delta. Those actions require the explicit owner approval described above.
+David Narayan authorized the immediate production window and named David as
+go/no-go, rollback, and business-verification owner, with Codex as migration
+operator. The production domain, database, callbacks, and one-at-a-time Vercel
+scheduler handoff were executed under that approval. Render remains available
+for rollback; its Agent schedulers remain suspended.

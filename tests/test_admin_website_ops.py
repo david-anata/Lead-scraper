@@ -822,7 +822,10 @@ example
             with mock.patch(
                 "sales_support_agent.services.website_ops.ResendClient.send_message",
                 return_value="email-1",
-            ) as send:
+            ) as send, mock.patch(
+                "sales_support_agent.services.website_ops._notification_business_day",
+                return_value=("2026-07-27", True),
+            ):
                 first = send_website_ops_report_email(settings, mode="daily", report=report)
                 second = send_website_ops_report_email(settings, mode="daily", report=report)
             self.assertTrue(first["sent"])
@@ -852,7 +855,10 @@ example
             with mock.patch(
                 "sales_support_agent.services.website_ops.ResendClient.send_message",
                 return_value="email-1",
-            ) as send:
+            ) as send, mock.patch(
+                "sales_support_agent.services.website_ops._notification_business_day",
+                return_value=("2026-07-27", True),
+            ):
                 send_website_ops_report_email(settings, mode="daily", report=first_report)
                 second = send_website_ops_report_email(settings, mode="daily", report=second_report)
             self.assertFalse(second["sent"])

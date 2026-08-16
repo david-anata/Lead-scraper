@@ -146,7 +146,7 @@ class HRSectionTests(unittest.TestCase):
             _default_payroll_date(date(2026, 8, 20)),
             date(2026, 8, 20),
         )
-        page = self._get("/admin/hr/payroll", self.sa)
+        page = self._get("/admin/hr/payroll?period_date=2026-08-01", self.sa)
         self.assertEqual(page.status_code, 200)
         self.assertIn("Prepare 2026-08-01–2026-08-15", page.text)
 
