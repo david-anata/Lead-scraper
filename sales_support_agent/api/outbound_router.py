@@ -373,6 +373,8 @@ _LEADOPS_CSS = """
   .lo-run-tools input,.lo-run-tools select,.lo-delivery input,.lo-delivery select { min-height:40px;padding:8px 10px;border:1px solid var(--border);border-radius:9px;background:#fff; }
   .lo-selection { position:sticky;bottom:12px;z-index:4;display:flex;align-items:center;justify-content:space-between;gap:14px;max-width:1000px;margin:12px 0;padding:12px 14px;border-radius:12px;background:#2B3644;color:#fff;box-shadow:0 12px 26px rgba(43,54,68,.22); }
   .lo-selection[hidden] { display:none; } .lo-selection button { background:#fff;color:#2B3644;border:0;border-radius:8px;padding:9px 13px;font-weight:800;cursor:pointer; }
+  .lo-download { display:inline-block;background:#fff;color:#2B3644;border-radius:8px;padding:9px 13px;font-weight:800;text-decoration:none; }
+  .lo-download[aria-disabled="true"] { opacity:.55;pointer-events:none; }
   .lo-check { width:18px;height:18px;accent-color:#2B3644; }
   .lo-status { display:inline-flex;padding:3px 7px;border-radius:99px;background:#eef2f6;font-size:12px;font-weight:700; }
   .lo-status.warn { background:#fff1db;color:#8a4b00; }
@@ -787,7 +789,7 @@ def outbound_lead_ops(request: Request) -> Response:
             f"<td><b>{html.escape(r.label)}</b><br>"
             f"<span style='color:rgba(43,54,68,.6)'>{html.escape(r.reason_for(tunables))}</span></td>"
             f"<td>{html.escape(due)}</td><td>{cap_now}</td>"
-            f"<td><a class='lo-btn' href='/admin/api/outbound/brands.csv?recipe={r.key}'>Pull now</a>"
+            f"<td><a class='lo-btn' download='anata-{r.key}-leads.csv' href='/admin/api/outbound/brands.csv?recipe={r.key}'>Pull now</a>"
             + (f" <button class='lo-btn lo-push' data-recipe='{r.key}' type='button'>Send to Clay</button>"
                if _clay_url else "")
             + "</td></tr>"
@@ -831,7 +833,7 @@ def outbound_lead_ops(request: Request) -> Response:
             + (f" ({x.get('delivered')})" if x.get('delivery') == 'clay' else "") + "</td>"
             f"<td><span class='lo-status {'warn' if x['partial'] else ''}'>{'cut short' if x['partial'] else 'complete'}</span></td>"
             f"<td>v{x.get('config_version') or 0}</td>"
-            + (f"<td><a href='/admin/api/outbound/pulls.csv?run_ids={x['id']}'>Download</a></td>" if run_lead_counts.get(x['id']) else ("<td>Unavailable</td>" if x.get('fresh') else "<td>No companies</td>"))
+            + (f"<td><a download='anata-pull-{x['id']}.csv' href='/admin/api/outbound/pulls.csv?run_ids={x['id']}'>Download</a></td>" if run_lead_counts.get(x['id']) else ("<td>Unavailable</td>" if x.get('fresh') else "<td>No companies</td>"))
             + "</tr>"
             for x in runs
         )
@@ -915,7 +917,7 @@ def outbound_lead_ops(request: Request) -> Response:
         </table></div>
         <div class="lo-selection" id="selection-bar" hidden>
           <div><b id="selection-summary">0 pulls selected</b><br><small id="selection-detail">Choose pulls to combine.</small></div>
-          <div><label style="margin-right:8px"><input id="include-duplicates" type="checkbox"> Include duplicates</label><button id="preview-export" type="button">Preview export</button> <button id="download-export" type="button">Download selected CSV</button></div>
+          <div><label style="margin-right:8px"><input id="include-duplicates" type="checkbox"> Include duplicates</label><button id="preview-export" type="button">Preview export</button> <a class="lo-download" id="download-export" aria-disabled="true" download="anata-selected-pulls.csv">Download selected CSV</a></div>
         </div>
         <div class="lo-clay" id="export-preview" hidden aria-live="polite"></div>
         <p class="lo-note">Fresh is what you actually get: brands that fit, that we have
@@ -987,7 +989,8 @@ def outbound_lead_ops(request: Request) -> Response:
             function esc(v){{return String(v||'').replace(/[&<>"']/g,function(c){{return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c];}});}}
             function chosen(){{return checks.filter(function(c){{return c.checked;}}).map(function(c){{return c.value;}});}}
             function visible(c){{return c.closest('tr').style.display!=='none'&&!c.disabled;}}
-            function sync(){{var ids=chosen();bar.hidden=!ids.length;summary.textContent=ids.length+' pull'+(ids.length===1?'':'s')+' selected';detail.textContent='Preview to confirm unique companies and duplicates.';}}
+            function downloadUrl(){{var ids=chosen(),dupes=document.getElementById('include-duplicates').checked;return ids.length?'/admin/api/outbound/pulls.csv?run_ids='+ids.join(',')+'&include_duplicates='+(dupes?'1':'0'):'';}}
+            function sync(){{var ids=chosen(),download=document.getElementById('download-export'),url=downloadUrl();bar.hidden=!ids.length;summary.textContent=ids.length+' pull'+(ids.length===1?'':'s')+' selected';detail.textContent='Preview to confirm unique companies and duplicates.';download.setAttribute('aria-disabled',url?'false':'true');if(url)download.setAttribute('href',url);else download.removeAttribute('href');}}
             checks.forEach(function(c){{c.addEventListener('change',sync);}});
             function selectVisible(value){{checks.forEach(function(c){{if(visible(c))c.checked=value;}});sync();}}
             document.getElementById('select-page').addEventListener('click',function(){{selectVisible(true);}});
@@ -998,7 +1001,7 @@ def outbound_lead_ops(request: Request) -> Response:
             document.getElementById('preview-export').addEventListener('click',function(){{var ids=chosen(),dupes=document.getElementById('include-duplicates').checked;preview.hidden=false;preview.textContent='Preparing preview...';fetch('/admin/api/outbound/pulls/preview?run_ids='+ids.join(',')+'&include_duplicates='+(dupes?'1':'0'))
               .then(function(r){{return r.json();}}).then(function(d){{var names=(d.sample||[]).map(function(x){{return x.brand||x.domain;}}).filter(Boolean).join(', ');preview.innerHTML='<b>'+d.exported_companies+' companies in this file</b> from '+d.selected_pulls+' pulls · '+d.source_rows+' source rows · '+d.duplicates_removed+' duplicates removed'+(d.unavailable_pulls?' · '+d.unavailable_pulls+' older pulls unavailable':'')+(names?'<br><small>Sample: '+esc(names)+'</small>':'')+'.';detail.textContent=d.exported_companies+' companies · '+d.duplicates_removed+' duplicates removed';}})
               .catch(function(){{preview.textContent='Preview could not be prepared. Your selection is still here.';}});}});
-            document.getElementById('download-export').addEventListener('click',function(){{var ids=chosen(),dupes=document.getElementById('include-duplicates').checked;if(ids.length)location.href='/admin/api/outbound/pulls.csv?run_ids='+ids.join(',')+'&include_duplicates='+(dupes?'1':'0');}});
+            document.getElementById('include-duplicates').addEventListener('change',sync);
             function deliveryData(){{var f=new FormData();['enabled','email','slack'].forEach(function(k){{f.append(k,document.getElementById('delivery-'+k).checked?'1':'0');}});f.append('frequency',document.getElementById('delivery-frequency').value);f.append('email_recipients',document.getElementById('delivery-recipients').value);f.append('content_mode',document.getElementById('delivery-content').value);return f;}}
             function save(test){{var m=document.getElementById('delivery-message');m.textContent=test?'Sending a clearly labeled test...':'Saving...';fetch(test?'/admin/api/outbound/delivery/test':'/admin/api/outbound/delivery/settings',{{method:'POST',body:deliveryData()}}).then(function(r){{return r.json();}}).then(function(d){{m.textContent=d.reason||'Saved.';}}).catch(function(){{m.textContent='Could not reach the server.';}});}}
             document.getElementById('delivery-save').addEventListener('click',function(){{save(false);}});document.getElementById('delivery-test').addEventListener('click',function(){{save(true);}});
