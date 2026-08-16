@@ -218,3 +218,35 @@ def test_daily_lead_build_preserves_render_schedule_contract(monkeypatch) -> Non
         "personal_contacts_found": 8,
     }
     assert observed["scheduler_source"] == "vercel_cron"
+
+
+def test_content_cron_uses_the_authenticated_scheduler_boundary(monkeypatch) -> None:
+    monkeypatch.setenv("CRON_SECRET", "cron-secret")
+    monkeypatch.setenv("VERCEL_CRON_WRITES_ENABLED", "true")
+    monkeypatch.setenv("VERCEL_CRON_ENABLED_JOBS", "content")
+    observed = {}
+
+    def run_cycle(session_factory, settings, *, mode, force):
+        observed.update(
+            session_factory=session_factory,
+            settings=settings,
+            mode=mode,
+            force=force,
+        )
+        return {"status": "ok", "mode": mode}
+
+    monkeypatch.setattr(
+        "sales_support_agent.api.vercel_cron_router.run_content_cycle",
+        run_cycle,
+    )
+    client = _client(ready=True)
+    response = client.get(
+        "/api/vercel-cron/content",
+        headers={"Authorization": "Bearer cron-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "mode": "scheduled"}
+    assert observed["session_factory"] is client.app.state.session_factory
+    assert observed["settings"] is client.app.state.settings
+    assert observed["force"] is False

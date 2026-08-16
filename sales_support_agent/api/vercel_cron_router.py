@@ -16,7 +16,6 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from sales_support_agent.api.content_router import ContentRunInput, content_run
 from sales_support_agent.api.building_booking_router import (
     CommunicationRunInput,
     run_booking_communications,
@@ -48,6 +47,7 @@ from sales_support_agent.services.job_lease import (
 )
 from sales_support_agent.services.durable_tasks import drain_durable_tasks
 from sales_support_agent.services.durable_tasks import run_durable_recovery_probe
+from sales_support_agent.services.content_automation import run_content_cycle
 from sales_support_agent.services.schedule_shadow import (
     run_schedule_shadow_matrix,
     shadow_schedule_names,
@@ -329,7 +329,12 @@ def content_cron(
 ):
     if response := _authorize(authorization, "content"):
         return response
-    return content_run(ContentRunInput(mode="scheduled"), request)
+    return run_content_cycle(
+        request.app.state.session_factory,
+        request.app.state.settings,
+        mode="scheduled",
+        force=False,
+    )
 
 
 @router.get("/stale-leads")
