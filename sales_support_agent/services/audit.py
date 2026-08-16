@@ -3,12 +3,27 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from sales_support_agent.models.entities import AutomationAction, AutomationRun, IntegrationLog
+
+
+_DEDUPE_KEY_MAX_LENGTH = 255
+
+
+def _stored_dedupe_key(value: str) -> str:
+    """Return a stable database-safe representation of an action dedupe key."""
+
+    normalized = str(value or "")
+    if len(normalized) <= _DEDUPE_KEY_MAX_LENGTH:
+        return normalized
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    prefix_length = _DEDUPE_KEY_MAX_LENGTH - len(digest) - 1
+    return f"{normalized[:prefix_length]}:{digest}"
 
 
 class AuditService:
@@ -45,7 +60,7 @@ class AuditService:
             clickup_task_id=clickup_task_id,
             system=system,
             action_type=action_type,
-            dedupe_key=dedupe_key,
+            dedupe_key=_stored_dedupe_key(dedupe_key),
             success=success,
             error_message=error_message,
             before_json=before or {},
@@ -59,7 +74,7 @@ class AuditService:
         if not dedupe_key:
             return False
         query = select(AutomationAction.id).where(
-            AutomationAction.dedupe_key == dedupe_key,
+            AutomationAction.dedupe_key == _stored_dedupe_key(dedupe_key),
             AutomationAction.success.is_(True),
         )
         return self.session.execute(query).first() is not None
