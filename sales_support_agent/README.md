@@ -1,5 +1,19 @@
 # Sales Support Agent
 
+## Video resources for the SEO routine
+
+The content scheduler checks Anata's public YouTube channel feed each day and
+stores recent uploads as source resources. Set
+`CONTENT_YOUTUBE_SOURCE_CHANNEL_ID` to override the verified Anata channel.
+The feed is read-only and does not use a model API.
+
+An authenticated operator can review the resources at `/admin/content` or read
+their transcript-backed payloads from `/admin/api/content/video-resources`.
+Videos without a transcript remain marked `awaiting_transcript`; they are not
+eligible for blog qualification. The weekday Codex SEO routine owns research,
+one-page-one-intent checks, article creation, deployment, and production
+verification.
+
 This FastAPI app handles post-creation sales support inside your existing ClickUp CRM workflow. It does not create new leads in the normal flow. It starts after the ClickUp task already exists and focuses on follow-through, stale-lead prevention, append-only activity logging, owner-directed reminders, daily digests, and mailbox-based signal intake.
 
 ## What Phase 1 Includes

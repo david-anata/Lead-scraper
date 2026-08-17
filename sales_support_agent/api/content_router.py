@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.services.auth_deps import require_any_tool
 from sales_support_agent.services.content_engine import (
+    content_video_resources,
     control_room_data,
     ingest_source_assets,
     render_content_control_room,
@@ -57,8 +58,9 @@ class SourceAssetInput(BaseModel):
 
 
 class SourceBatchInput(BaseModel):
-    """One normalized Riverside episode payload."""
+    """One normalized owned-source episode payload."""
 
+    provider: Literal["riverside", "youtube"] = "riverside"
     episode_id: str = Field(min_length=1, max_length=255)
     assets: list[SourceAssetInput] = Field(min_length=1, max_length=250)
 
@@ -71,6 +73,7 @@ class ContentRunInput(BaseModel):
         "daily_brief",
         "seo_blog",
         "episode_harvest",
+        "youtube_harvest",
         "social_distribution",
         "personal_distribution",
         "daily_distribution",
@@ -189,6 +192,8 @@ def content_status(
             "generated_at": data["generated_at"].isoformat(),
             "next_daily_run": data["next_daily_run"].isoformat(),
             "source_asset_count": data["source_asset_count"],
+            "video_resource_count": data["video_resource_count"],
+            "awaiting_transcript_count": data["awaiting_transcript_count"],
             "artifact_count": data["artifact_count"],
             "publication_count": data["publication_count"],
             "coverage_missing_count": data["coverage_missing_count"],
@@ -204,7 +209,7 @@ def content_source_assets(
     payload: SourceBatchInput,
     request: Request,
 ) -> dict[str, Any]:
-    """Ingest normalized Riverside assets from a trusted MCP/API relay."""
+    """Ingest normalized owned-source assets from a trusted relay."""
 
     _require_internal_key(request)
     with session_scope(request.app.state.session_factory) as session:
@@ -212,9 +217,22 @@ def content_source_assets(
             session,
             episode_id=payload.episode_id,
             assets=[item.model_dump() for item in payload.assets],
-            actor="trusted:riverside-relay",
+            actor=f"trusted:{payload.provider}-relay",
+            provider=payload.provider,
         )
     return {"status": "ok", **result}
+
+
+@router.get("/admin/api/content/video-resources")
+def video_resources(
+    request: Request,
+    _user: dict = Depends(CONTENT_VIEW),
+) -> dict[str, Any]:
+    """Expose transcript-backed resources to the authenticated Codex routine."""
+
+    with session_scope(request.app.state.session_factory) as session:
+        items = content_video_resources(session, include_transcript=True)
+    return {"count": len(items), "resources": items}
 
 
 @router.post("/api/jobs/content/daily-brief")
