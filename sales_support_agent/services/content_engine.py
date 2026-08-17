@@ -116,7 +116,14 @@ def _safe_source_url(value: str) -> str:
     parsed = urlsplit(raw)
     if parsed.scheme not in {"http", "https"}:
         return ""
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    query = ""
+    if parsed.netloc.lower() in {"youtube.com", "www.youtube.com"}:
+        from urllib.parse import parse_qs, urlencode
+
+        video_id = (parse_qs(parsed.query).get("v") or [""])[0]
+        if video_id.replace("-", "").replace("_", "").isalnum():
+            query = urlencode({"v": video_id})
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, ""))
 
 
 def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dict]:
