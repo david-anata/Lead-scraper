@@ -197,6 +197,12 @@ class Settings:
     # Stop ClickUp creating finance obligations, once native recurring
     # schedules cover them. Default False so nothing changes until it is set.
     disable_clickup_finance_sync: bool = False
+    # Addresses this system SENDS from. The daily digest goes out through the same
+    # mailbox the sync polls, so without this the digest is read back in as inbound
+    # mail. When one of these is also a lead in ClickUp (a test form submission using
+    # your own address, say), the digest matches that lead by sender and fires a
+    # "new reply" alert every single day.
+    gmail_self_addresses: tuple[str, ...] = ()
     # QuickBooks Online (QBO) — AR invoice sync
     qbo_client_id: str = ""
     qbo_client_secret: str = ""
@@ -422,8 +428,12 @@ def load_settings() -> Settings:
     gmail_client_secret = os.getenv("GMAIL_CLIENT_SECRET", "").strip()
     gmail_refresh_token = os.getenv("GMAIL_REFRESH_TOKEN", "").strip()
     gmail_user_id = os.getenv("GMAIL_USER_ID", "me").strip() or "me"
-    gmail_poll_query = os.getenv("GMAIL_POLL_QUERY", "newer_than:2d").strip() or "newer_than:2d"
+    # -from:me keeps our own sent mail out of the sync. The daily digest is sent
+    # through this same mailbox, so without it the digest is polled straight back
+    # in and logged against whichever lead it mentions.
+    gmail_poll_query = os.getenv("GMAIL_POLL_QUERY", "newer_than:2d -from:me").strip() or "newer_than:2d -from:me"
     gmail_poll_max_messages = int((os.getenv("GMAIL_POLL_MAX_MESSAGES", "25") or "25").strip())
+    gmail_self_addresses = _parse_csv_tuple(os.getenv("GMAIL_SELF_ADDRESSES", ""), default=())
     gmail_source_domains = _parse_csv_tuple(os.getenv("GMAIL_SOURCE_DOMAINS", "fulfil.com"), default=("fulfil.com",))
     fallback_gmail_accounts = _default_gmail_mailbox_accounts(
         access_token=gmail_access_token,
@@ -512,6 +522,7 @@ def load_settings() -> Settings:
         gmail_user_id=gmail_user_id,
         gmail_poll_query=gmail_poll_query,
         gmail_poll_max_messages=gmail_poll_max_messages,
+        gmail_self_addresses=gmail_self_addresses,
         gmail_source_domains=gmail_source_domains,
         gmail_mailbox_accounts=gmail_mailbox_accounts,
         resend_api_key=os.getenv("RESEND_API_KEY", "").strip(),

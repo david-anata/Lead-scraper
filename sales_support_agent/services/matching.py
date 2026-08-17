@@ -61,6 +61,25 @@ class LeadMatchingService:
             if email and email.strip()
         )
 
+        # Mail we sent is never a lead replying to us.
+        #
+        # The daily digest goes out through the same mailbox the sync polls, and the
+        # poll query has no sender filter, so it comes straight back in as inbound.
+        # When one of our own addresses is ALSO a lead in ClickUp - a test form
+        # submission using your own address - the sender matched that lead directly
+        # and every digest logged a "reply" and pinged the assignee in Slack.
+        #
+        # Guarding here rather than only in the Gmail query is deliberate: the query
+        # is configurable and per-account, so a future account added without the
+        # exclusion would silently reopen the loop. This is the backstop.
+        self_addresses = {
+            address.strip().lower()
+            for address in getattr(self.settings, "gmail_self_addresses", ())
+            if address and address.strip()
+        }
+        if normalized_sender and normalized_sender in self_addresses:
+            return None
+
         sender_match = self._query_by_email(normalized_sender) if normalized_sender else None
         if sender_match is not None:
             return sender_match

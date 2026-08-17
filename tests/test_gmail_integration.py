@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+from dataclasses import replace
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -336,6 +337,81 @@ class GmailJobTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result.clickup_task_id, "task-456")
+
+    def test_our_own_daily_digest_is_not_treated_as_a_lead_reply(self) -> None:
+        """The digest goes out through the same mailbox the sync polls.
+
+        Regression for the loop that fired a "new reply" Slack alert and a ClickUp
+        comment every morning: the digest is sent from david@anatainc.com, that
+        address is also a lead (a test form submission), so the sender matched the
+        lead directly and the digest was logged as that lead replying.
+        """
+        settings = replace(self.settings, gmail_self_addresses=("david@anatainc.com",))
+        session = self.session_factory()
+        try:
+            session.add(
+                LeadMirror(
+                    clickup_task_id="task-789",
+                    list_id=settings.clickup_list_id,
+                    task_name="David Narayan | Fulfillment eBook Form | Test",
+                    task_url="https://app.clickup.com/t/task-789",
+                    status="new lead",
+                    email="david@anatainc.com",
+                    created_at=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+                    last_sync_at=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+                    raw_task_payload={},
+                )
+            )
+            session.commit()
+
+            matcher = LeadMatchingService(settings, _FakeClickUpClient(), session)
+            result = matcher.find_mailbox_match(
+                sender_email="david@anatainc.com",
+                sender_domain="anatainc.com",
+                # The digest body lists every signal's sender_email, so a real lead's
+                # address rides along in the text too.
+                candidate_emails=("david@anatainc.com", "buyer@example.com"),
+                sync_on_miss=False,
+            )
+        finally:
+            session.close()
+
+        self.assertIsNone(result)
+
+    def test_a_real_lead_still_matches_when_self_addresses_are_configured(self) -> None:
+        """The guard must not swallow genuine inbound replies."""
+        settings = replace(self.settings, gmail_self_addresses=("david@anatainc.com",))
+        session = self.session_factory()
+        try:
+            session.add(
+                LeadMirror(
+                    clickup_task_id="task-901",
+                    list_id=settings.clickup_list_id,
+                    task_name="Real Prospect",
+                    task_url="https://app.clickup.com/t/task-901",
+                    status="new lead",
+                    email="buyer@example.com",
+                    created_at=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+                    last_sync_at=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+                    raw_task_payload={},
+                )
+            )
+            session.commit()
+
+            matcher = LeadMatchingService(settings, _FakeClickUpClient(), session)
+            result = matcher.find_mailbox_match(
+                sender_email="buyer@example.com",
+                sender_domain="example.com",
+                candidate_emails=("buyer@example.com",),
+                sync_on_miss=False,
+            )
+        finally:
+            session.close()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.clickup_task_id, "task-901")
 
 
 if __name__ == "__main__":

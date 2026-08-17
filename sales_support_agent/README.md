@@ -71,9 +71,14 @@ Operational:
 - `GMAIL_CLIENT_SECRET`
 - `GMAIL_REFRESH_TOKEN`
 - `GMAIL_USER_ID`
-- `GMAIL_POLL_QUERY`
+- `GMAIL_POLL_QUERY` (defaults to `newer_than:2d -from:me`; keep the `-from:me` or our own
+  sent mail, including the daily digest, gets polled back in as inbound)
 - `GMAIL_POLL_MAX_MESSAGES`
 - `GMAIL_SOURCE_DOMAINS`
+- `GMAIL_SELF_ADDRESSES` — comma separated addresses this system sends from. Mail from these
+  is never treated as a lead reply. Set this even though the poll query excludes sent mail:
+  the query is per-account and configurable, so this is the backstop that stops a newly added
+  mailbox silently reopening the loop.
 - `INSTANTLY_WEBHOOK_SECRET`
 - `INSTANTLY_WEBHOOK_SECRET_HEADER`
 
