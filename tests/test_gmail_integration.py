@@ -379,6 +379,53 @@ class GmailJobTests(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_unrelated_mail_never_lands_on_a_lead_that_uses_our_own_address(self) -> None:
+        """The venue business's own mail was landing on the sales test lead.
+
+        Wedding enquiries, supplier invoices and HR threads all resolved to
+        "David Narayan | Fulfillment eBook Form | Test" because that record was
+        created with an internal address, so anything sent from or mentioning that
+        address matched it. Guard on the LEAD's address, not just the sender, so a
+        magnet record cannot collect unrelated mail by any path.
+        """
+        settings = replace(
+            self.settings,
+            gmail_self_addresses=("david@anatainc.com",),
+            gmail_source_domains=("anatainc.com",),
+        )
+        session = self.session_factory()
+        try:
+            session.add(
+                LeadMirror(
+                    clickup_task_id="8688pu7e0",
+                    list_id=settings.clickup_list_id,
+                    task_name="David Narayan | Fulfillment eBook Form | Test",
+                    task_url="https://app.clickup.com/t/8688pu7e0",
+                    status="new lead",
+                    email="david@anatainc.com",
+                    created_at=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+                    last_sync_at=datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc),
+                    raw_task_payload={},
+                )
+            )
+            session.commit()
+
+            matcher = LeadMatchingService(settings, _FakeClickUpClient(), session)
+            # A real wedding enquiry, from a third party, that merely quotes David's
+            # address in the thread. Body fallback is live because the sender domain
+            # is configured as a source domain.
+            result = matcher.find_mailbox_match(
+                sender_email="bride@example.com",
+                sender_domain="anatainc.com",
+                candidate_emails=("bride@example.com", "david@anatainc.com"),
+                sync_on_miss=False,
+            )
+        finally:
+            session.close()
+
+        self.assertIsNone(result)
+
     def test_a_real_lead_still_matches_when_self_addresses_are_configured(self) -> None:
         """The guard must not swallow genuine inbound replies."""
         settings = replace(self.settings, gmail_self_addresses=("david@anatainc.com",))

@@ -80,7 +80,22 @@ class LeadMatchingService:
         if normalized_sender and normalized_sender in self_addresses:
             return None
 
-        sender_match = self._query_by_email(normalized_sender) if normalized_sender else None
+        def _usable(match: LeadMirror | None) -> LeadMirror | None:
+            """Never attribute mail to a lead whose own address is one of ours.
+
+            A test form submission made with an internal address becomes a magnet:
+            every message that mentions or is sent from that address resolves to it.
+            In production one such record collected wedding enquiries, supplier
+            invoices, HR mail and fundraising threads, all logged as that lead
+            replying, every 15 minutes.
+            """
+            if match is None:
+                return None
+            if (match.email or "").strip().lower() in self_addresses:
+                return None
+            return match
+
+        sender_match = _usable(self._query_by_email(normalized_sender)) if normalized_sender else None
         if sender_match is not None:
             return sender_match
 
@@ -89,7 +104,7 @@ class LeadMatchingService:
         fallback_candidates = tuple(candidate for candidate in normalized_candidates if candidate != normalized_sender)
         if allow_body_fallback:
             for candidate in fallback_candidates:
-                match = self._query_by_email(candidate)
+                match = _usable(self._query_by_email(candidate))
                 if match is not None:
                     return match
 
@@ -98,13 +113,13 @@ class LeadMatchingService:
 
         ClickUpSyncService(self.settings, self.clickup_client, self.session).sync_list(include_closed=True)
 
-        sender_match = self._query_by_email(normalized_sender) if normalized_sender else None
+        sender_match = _usable(self._query_by_email(normalized_sender)) if normalized_sender else None
         if sender_match is not None:
             return sender_match
 
         if allow_body_fallback:
             for candidate in fallback_candidates:
-                match = self._query_by_email(candidate)
+                match = _usable(self._query_by_email(candidate))
                 if match is not None:
                     return match
         return None
