@@ -135,6 +135,9 @@ def test_youtube_resource_ingestion_is_idempotent_and_waits_for_transcript() -> 
     assert first == {"created": 1, "existing": 0}
     assert second == {"created": 0, "existing": 1}
     assert resources[0]["video_id"] == "P2APW9iqEzU"
+    assert resources[0]["source_url"] == (
+        "https://www.youtube.com/watch?v=P2APW9iqEzU"
+    )
     assert resources[0]["transcript_status"] == "awaiting_transcript"
     assert resources[0]["transcript_text"] == ""
 
