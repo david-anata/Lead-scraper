@@ -96,6 +96,7 @@ def test_scheduler_catches_up_after_six_and_deduplicates_the_day() -> None:
         assert due_scheduled_jobs(session, now=after) == [
             ("daily_brief", "2026-07-29:daily_brief"),
             ("episode_harvest", "2026-07-29:episode_harvest"),
+            ("youtube_harvest", "2026-07-29:youtube_harvest"),
         ]
         session.add(
             ContentJobRun(
@@ -107,7 +108,8 @@ def test_scheduler_catches_up_after_six_and_deduplicates_the_day() -> None:
         )
         session.commit()
         assert due_scheduled_jobs(session, now=after) == [
-            ("episode_harvest", "2026-07-29:episode_harvest")
+            ("episode_harvest", "2026-07-29:episode_harvest"),
+            ("youtube_harvest", "2026-07-29:youtube_harvest"),
         ]
 
 
@@ -118,6 +120,7 @@ def test_monday_scheduler_includes_comparable_weekly_retrospective() -> None:
         assert due_scheduled_jobs(session, now=monday) == [
             ("daily_brief", "2026-08-03:daily_brief"),
             ("episode_harvest", "2026-08-03:episode_harvest"),
+            ("youtube_harvest", "2026-08-03:youtube_harvest"),
             ("weekly_retrospective", "2026-W32:weekly_retrospective"),
         ]
 

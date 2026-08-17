@@ -78,6 +78,12 @@ JOB_DEFINITIONS: dict[str, ContentJobDefinition] = {
         ("riverside",),
         schedule="episode_ready",
     ),
+    "youtube_harvest": ContentJobDefinition(
+        "youtube_harvest",
+        "YouTube resource harvest",
+        (),
+        schedule="daily_after_0600",
+    ),
     "social_distribution": ContentJobDefinition(
         "social_distribution",
         "Native social distribution",
@@ -321,6 +327,7 @@ def due_scheduled_jobs(session: Session, *, now: datetime) -> list[tuple[str, st
     candidates = [
         ("daily_brief", _daily_run_key(now, "daily_brief")),
         ("episode_harvest", _daily_run_key(now, "episode_harvest")),
+        ("youtube_harvest", _daily_run_key(now, "youtube_harvest")),
     ]
     if local.weekday() == 0:
         candidates.append(
@@ -861,6 +868,41 @@ def run_content_cycle(
                             run=row,
                             actor="job:content-orchestrator",
                         )
+                if job_key == "youtube_harvest" and not blockers:
+                    import os
+
+                    from sales_support_agent.integrations.youtube_source import (
+                        YouTubeFeedClient,
+                    )
+
+                    channel_id = os.getenv(
+                        "CONTENT_YOUTUBE_SOURCE_CHANNEL_ID",
+                        "UCDvyO7gjwDzmMg2fzZHn49Q",
+                    ).strip()
+                    videos = YouTubeFeedClient(channel_id=channel_id).list_recent_videos()
+                    ingested["episodes"] = len(videos)
+                    for video in videos:
+                        result = ingest_source_assets(
+                            session,
+                            episode_id=video.video_id,
+                            provider="youtube",
+                            actor="job:youtube-feed-v1",
+                            assets=[
+                                {
+                                    "asset_id": video.video_id,
+                                    "asset_type": "video",
+                                    "status": "awaiting_transcript",
+                                    "title": video.title,
+                                    "source_url": video.url,
+                                    "metadata": {
+                                        "channel_id": video.channel_id,
+                                        "published_at": video.published_at,
+                                    },
+                                }
+                            ],
+                        )
+                        ingested["created"] += result["created"]
+                        ingested["existing"] += result["existing"]
                 published = None
                 portfolio: dict[str, dict[str, Any]] = {}
                 if job_key == "daily_distribution" and not blockers:
@@ -906,7 +948,7 @@ def run_content_cycle(
                         "staged_candidates": staged,
                         "publication_id": published.id if published else "",
                         "daily_portfolio": portfolio,
-                        "riverside_ingestion": ingested,
+                        "source_ingestion": ingested,
                         "execution_mode": (
                             "live"
                             if published is not None
@@ -930,6 +972,7 @@ def run_content_cycle(
                     "staged_candidates": staged,
                     "publication_id": published.id if published else "",
                     "daily_portfolio": portfolio,
+                    "source_ingestion": ingested,
                 }
             finish_scheduled_job(
                 engine,
