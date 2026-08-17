@@ -162,6 +162,13 @@ class OutboundPagesStillRenderTests(unittest.TestCase):
     def test_lead_ops_renders(self):
         r = self._as_admin("/admin/outbound/lead-ops")
         self.assertEqual(r.status_code, 200)
+        self.assertIn("Download selected CSV", r.text)
+        self.assertIn('id="download-export" aria-disabled="true" download="anata-selected-pulls.csv"', r.text)
+        self.assertIn("download='anata-new_growth_app-leads.csv'", r.text)
+        self.assertIn("function downloadUrl()", r.text)
+        self.assertNotIn("location.href='/admin/api/outbound/pulls.csv", r.text)
+        self.assertIn("Delivery settings", r.text)
+        self.assertIn("Automatically deliver results", r.text)
 
     def test_brands_page_renders(self):
         r = self._as_admin("/admin/outbound/brands")

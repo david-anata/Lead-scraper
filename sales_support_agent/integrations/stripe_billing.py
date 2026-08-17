@@ -127,6 +127,30 @@ class StripeBillingClient:
             idempotency_key=f"{idempotency_key}:invoice",
         )
 
+    def create_payment_intent(self, *, amount_cents: int, purchase_id: str) -> dict[str, Any]:
+        return self._request(
+            "POST", "/v1/payment_intents",
+            data={
+                "amount": amount_cents,
+                "currency": "usd",
+                # Card keeps the embedded flow on anatainc.com; redirect-based
+                # methods would strand an anonymous purchase after returning.
+                "payment_method_types[]": "card",
+                "metadata[shipping_label_purchase_id]": purchase_id,
+            },
+            idempotency_key=f"shipping-label:{purchase_id}:payment",
+        )
+
+    def retrieve_payment_intent(self, payment_intent_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/v1/payment_intents/{payment_intent_id}")
+
+    def refund_payment(self, *, payment_intent_id: str, purchase_id: str) -> dict[str, Any]:
+        return self._request(
+            "POST", "/v1/refunds",
+            data={"payment_intent": payment_intent_id, "metadata[shipping_label_purchase_id]": purchase_id},
+            idempotency_key=f"shipping-label:{purchase_id}:refund",
+        )
+
     def verify_webhook(
         self,
         *,

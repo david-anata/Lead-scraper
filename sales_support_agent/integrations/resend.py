@@ -12,6 +12,7 @@ behavior until RESEND_API_KEY is set.
 
 from __future__ import annotations
 
+import base64
 import logging
 
 import requests
@@ -40,6 +41,7 @@ class ResendClient:
         idempotency_key: str = "",
         from_address: str = "",
         cc=None,
+        attachments=None,
     ) -> str:
         """Send a plain-text email. Raises on transport/HTTP error so the caller
         (notify.py) can log and fall through to the next sender."""
@@ -65,6 +67,14 @@ class ResendClient:
                     seen.add(cleaned.lower())
             if copies:
                 payload["cc"] = copies
+        if attachments:
+            payload["attachments"] = [
+                {
+                    "filename": str(item.get("filename") or "attachment"),
+                    "content": base64.b64encode(item.get("content") or b"").decode("ascii"),
+                }
+                for item in attachments
+            ]
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",

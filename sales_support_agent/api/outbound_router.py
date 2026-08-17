@@ -10,6 +10,8 @@ this router just exposes them. Read-only and dry-run: nothing sends, nothing pus
 from __future__ import annotations
 
 import html
+import csv
+import io
 import json
 import logging
 from datetime import datetime, timezone
@@ -317,12 +319,24 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "",
             # Record full leads (domain + tier + signals) for dedup AND efficacy.
             outbound_memory.record_leads(engine, result.leads, source=result.recipe or "csv_export", config_version=version)
         # Log the pull itself, so Lead Ops shows what we pulled and when.
-        outbound_memory.record_run(
+        run_id = outbound_memory.record_run(
             engine, recipe=result.recipe or "icp_baseline", scanned=result.scanned,
             matched=result.matched_icp, fresh=result.fresh,
             skipped_seen=result.skipped_already_contacted, partial=result.partial,
             config_version=version, delivery="file",
         )
+        outbound_memory.record_run_leads(engine, run_id, result.leads)
+        try:
+            from sales_support_agent.services.outbound_delivery import deliver_completed_pull
+            deliver_completed_pull(engine, {
+                "id": run_id,
+                "recipe": result.recipe or "icp_baseline", "scanned": result.scanned,
+                "matched": result.matched_icp, "fresh": result.fresh,
+                "skipped_seen": result.skipped_already_contacted, "partial": result.partial,
+                "config_version": version,
+            })
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound] automatic pull delivery failed")
 
     return Response(
         content=_op.leads_to_csv(result.leads),
@@ -354,7 +368,63 @@ _LEADOPS_CSS = """
     border:1px solid var(--border); font-size:14px; }
   .lo-push { border:none; cursor:pointer; font-family:"Montserrat",sans-serif; }
   .lo-today { padding:14px 16px; border-radius:14px; background:rgba(133,187,218,.14); border:1px solid rgba(43,54,68,.08); font-size:15px; }
+  .lo-table-wrap { max-width:1000px; }
+  .lo-run-tools { display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0 10px; }
+  .lo-run-tools input,.lo-run-tools select,.lo-delivery input,.lo-delivery select { min-height:40px;padding:8px 10px;border:1px solid var(--border);border-radius:9px;background:#fff; }
+  .lo-selection { position:sticky;bottom:12px;z-index:4;display:flex;align-items:center;justify-content:space-between;gap:14px;max-width:1000px;margin:12px 0;padding:12px 14px;border-radius:12px;background:#2B3644;color:#fff;box-shadow:0 12px 26px rgba(43,54,68,.22); }
+  .lo-selection[hidden] { display:none; } .lo-selection button { background:#fff;color:#2B3644;border:0;border-radius:8px;padding:9px 13px;font-weight:800;cursor:pointer; }
+  .lo-download { display:inline-block;background:#fff;color:#2B3644;border-radius:8px;padding:9px 13px;font-weight:800;text-decoration:none; }
+  .lo-download[aria-disabled="true"] { opacity:.55;pointer-events:none; }
+  .lo-check { width:18px;height:18px;accent-color:#2B3644; }
+  .lo-status { display:inline-flex;padding:3px 7px;border-radius:99px;background:#eef2f6;font-size:12px;font-weight:700; }
+  .lo-status.warn { background:#fff1db;color:#8a4b00; }
+  .lo-delivery { max-width:1000px;border:1px solid var(--border);border-radius:14px;padding:16px;background:#fff; }
+  .lo-delivery-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px; }
+  .lo-delivery label { display:flex;gap:8px;align-items:center;font-size:14px;font-weight:650; }
+  .lo-delivery .wide { grid-column:1/-1;display:flex;flex-direction:column;align-items:stretch; }
+  .lo-history { margin:10px 0 0;padding-left:18px;color:rgba(43,54,68,.72);font-size:13px; }
+  .lo-secondary { max-width:1000px;margin:18px 0 0;border-top:1px solid var(--border);padding-top:12px; }
+  .lo-secondary>summary { cursor:pointer;font-weight:800;font-family:"Montserrat",sans-serif; }
+  @media(max-width:700px){ .lo-table-wrap{overflow-x:auto}.lo-table{display:block;max-width:100%;overflow-x:auto}.lo-delivery-grid{grid-template-columns:1fr}.lo-selection{align-items:flex-start;flex-direction:column}.lo-selection>div:last-child{display:flex;flex-wrap:wrap;gap:8px}.shell{padding:20px 12px}.workspace{padding:22px 16px;overflow:hidden} }
 """
+
+
+def _dedupe_pull_leads(leads: list[dict[str, Any]], *, include_duplicates: bool = False) -> tuple[list[dict[str, Any]], int]:
+    if include_duplicates:
+        return leads, 0
+    selected: dict[str, dict[str, Any]] = {}
+    sources: dict[str, list[str]] = {}
+    for index, lead in enumerate(leads):
+        domain = str(lead.get("domain") or "").strip().lower().removeprefix("www.")
+        website = str(lead.get("website") or "").strip().lower().replace("https://", "").replace("http://", "").rstrip("/")
+        name = str(lead.get("brand") or lead.get("company") or "").strip().lower()
+        key = domain or website or name or f"row-{index}"
+        source = str(lead.get("pull_id") or "")
+        sources.setdefault(key, [])
+        if source and source not in sources[key]:
+            sources[key].append(source)
+        if key not in selected:
+            selected[key] = dict(lead)
+    for key, lead in selected.items():
+        lead["source_pulls"] = ",".join(sources[key])
+    result = list(selected.values())
+    return result, max(0, len(leads) - len(result))
+
+
+def _pulls_csv(leads: list[dict[str, Any]]) -> str:
+    import outbound_pipeline as _op
+    base = list(csv.DictReader(io.StringIO(_op.leads_to_csv(leads))))
+    provenance = ("pull_id", "pull_recipe", "pull_date", "pull_status", "settings_version", "source", "source_pulls", "selected_export_date")
+    headers = [_op.clay_header(field) for field in _op.CLAY_CSV_COLUMNS] + list(provenance)
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=headers, extrasaction="ignore")
+    writer.writeheader()
+    exported = datetime.now(timezone.utc).date().isoformat()
+    for original, row in zip(leads, base):
+        for field in provenance:
+            row[field] = exported if field == "selected_export_date" else original.get(field, "")
+        writer.writerow(row)
+    return buf.getvalue()
 
 
 _AMAZON_CSS = """
@@ -710,6 +780,7 @@ def outbound_lead_ops(request: Request) -> Response:
         )
 
     rows = []
+    recipe_labels = {recipe.key: recipe.label for recipe in _rx.RECIPES}
     for r in _rx.RECIPES:
         due = "Today" if r.key in todays_keys else ("Tue / Wed" if r.cadence == "weekly" else "Weekdays")
         cap_now = r.cap(tunables)
@@ -718,7 +789,7 @@ def outbound_lead_ops(request: Request) -> Response:
             f"<td><b>{html.escape(r.label)}</b><br>"
             f"<span style='color:rgba(43,54,68,.6)'>{html.escape(r.reason_for(tunables))}</span></td>"
             f"<td>{html.escape(due)}</td><td>{cap_now}</td>"
-            f"<td><a class='lo-btn' href='/admin/api/outbound/brands.csv?recipe={r.key}'>Pull now</a>"
+            f"<td><a class='lo-btn' download='anata-{r.key}-leads.csv' href='/admin/api/outbound/brands.csv?recipe={r.key}'>Pull now</a>"
             + (f" <button class='lo-btn lo-push' data-recipe='{r.key}' type='button'>Send to Clay</button>"
                if _clay_url else "")
             + "</td></tr>"
@@ -727,24 +798,56 @@ def outbound_lead_ops(request: Request) -> Response:
     # Past pulls, so we can see what each recipe actually returns over time.
     try:
         from sales_support_agent.services import outbound_memory
-        runs = outbound_memory.load_runs(_eng, limit=25)
+        runs = outbound_memory.load_runs(_eng, limit=50)
+        outbound_memory.backfill_legacy_run_leads(_eng)
+        run_lead_counts = outbound_memory.run_lead_counts(_eng, [r["id"] for r in runs])
+        delivery_prefs = outbound_memory.load_delivery_settings(_eng)
+        export_history = outbound_memory.load_exports(_eng, limit=6)
+        delivery_history = outbound_memory.load_delivery_history(_eng, limit=6)
         changes = _st.load_changes(_eng, limit=20)
     except Exception:  # noqa: BLE001
-        runs, changes = [], []
+        runs, changes, export_history, delivery_history, run_lead_counts = [], [], [], [], {}
+        delivery_prefs = {"enabled": False, "email_enabled": False, "slack_enabled": False,
+                          "frequency": "every_pull", "email_recipients": "", "content_mode": "link"}
+    try:
+        from sales_support_agent.config import load_settings
+        from sales_support_agent.integrations.slack import SlackClient
+        from sales_support_agent.services.access.notify import email_delivery_configured
+        _delivery_runtime = load_settings()
+        email_connected = email_delivery_configured(_delivery_runtime)
+        slack_connected = SlackClient(_delivery_runtime).is_configured()
+    except Exception:  # noqa: BLE001
+        email_connected = slack_connected = False
 
     if runs:
         run_rows = "".join(
-            f"<tr><td>{html.escape(str(x['ran_at'])[:16])}</td><td>{html.escape(x['recipe'] or '-')}</td>"
+            f"<tr data-recipe='{html.escape(recipe_labels.get(x['recipe'], x['recipe']) or '')}' data-status='{'cut-short' if x['partial'] else 'complete'}' data-date='{html.escape(str(x['ran_at'])[:10])}' data-version='{int(x.get('config_version') or 0)}'>"
+            f"<td><input class='lo-check run-check' type='checkbox' aria-label='Select {html.escape(x['recipe'] or 'pull')}' value='{x['id']}' "
+            + ("disabled title='Exact results unavailable for this older pull'" if not run_lead_counts.get(x['id']) else "")
+            + "></td>"
+            f"<td>{html.escape(str(x['ran_at'])[:16])}</td><td><b>{html.escape(recipe_labels.get(x['recipe'], x['recipe']) or '-')}</b>"
+            + (f"<br><small>{html.escape(x['recipe'])}</small>" if x.get('recipe') in recipe_labels else "") + "</td>"
             f"<td>{x['scanned']:,}</td><td>{x['matched']:,}</td><td><b>{x['fresh']:,}</b></td>"
             f"<td>{x['skipped_seen']:,}</td>"
             f"<td>{'Clay' if x.get('delivery') == 'clay' else 'file'}"
             + (f" ({x.get('delivered')})" if x.get('delivery') == 'clay' else "") + "</td>"
-            f"<td>{'cut short' if x['partial'] else 'complete'}</td>"
-            f"<td>v{x.get('config_version') or 0}</td></tr>"
+            f"<td><span class='lo-status {'warn' if x['partial'] else ''}'>{'cut short' if x['partial'] else 'complete'}</span></td>"
+            f"<td>v{x.get('config_version') or 0}</td>"
+            + (f"<td><a download='anata-pull-{x['id']}.csv' href='/admin/api/outbound/pulls.csv?run_ids={x['id']}'>Download</a></td>" if run_lead_counts.get(x['id']) else ("<td>Unavailable</td>" if x.get('fresh') else "<td>No companies</td>"))
+            + "</tr>"
             for x in runs
         )
     else:
-        run_rows = "<tr><td colspan='9'>No pulls yet. Use a Pull now button above.</td></tr>"
+        run_rows = "<tr><td colspan='11'>No pulls yet. Use a Pull now button above.</td></tr>"
+
+    history_items = "".join(
+        f"<li>{html.escape(str(item['exported_at'])[:16])} · {item['unique_companies']} companies · {html.escape(item['actor'] or 'operator')}</li>"
+        for item in export_history
+    ) or "<li>No exports recorded yet.</li>"
+    delivery_items = "".join(
+        f"<li>{html.escape(str(item['attempted_at'])[:16])} · {html.escape(item['destination'])} · {html.escape(item['status'])} · {html.escape(item['recipe'] or 'digest')}</li>"
+        for item in delivery_history
+    ) or "<li>No delivery attempts recorded yet.</li>"
 
 
     try:
@@ -781,7 +884,8 @@ def outbound_lead_ops(request: Request) -> Response:
     body = f"""
         <h1>Lead ops</h1>
         <p class="sub">What we pull from StoreLeads, what makes it fire, and what every
-        pull actually returned. Building the list only - nothing here sends.</p>
+        pull returned. Pulling and downloading never contacts a company; optional delivery
+        settings only notify your own team.</p>
 
         <div class="lo-today">{html.escape(today_line)}</div>
         <div class="lo-clay">{clay_strip}</div>
@@ -797,21 +901,57 @@ def outbound_lead_ops(request: Request) -> Response:
         its data weekly on Monday. The core ICP pull runs every weekday to keep volume steady.
         Caps are deliberately small: frequent and low beats one big blast.</p>
 
+        <p class="lo-h">Recent pulls</p>
+        <div class="lo-run-tools">
+          <input id="run-search" type="search" placeholder="Filter recipes" aria-label="Filter recent pulls">
+          <select id="run-status" aria-label="Filter by status"><option value="">All statuses</option><option value="complete">Complete</option><option value="cut-short">Cut short</option></select>
+          <input id="run-from" type="date" aria-label="Pulls from date">
+          <input id="run-to" type="date" aria-label="Pulls through date">
+          <select id="run-version" aria-label="Filter by settings version"><option value="">All settings versions</option>{''.join(f'<option value="{v}">v{v}</option>' for v in sorted({int(r.get('config_version') or 0) for r in runs}, reverse=True))}</select>
+          <button class="lo-save" id="select-page" type="button">Select all matching</button>
+          <button class="lo-save" id="clear-selection" type="button">Clear</button>
+        </div>
+        <div class="lo-table-wrap"><table class="lo-table">
+          <thead><tr><th><input class="lo-check" id="check-all" type="checkbox" aria-label="Select all visible pulls"></th><th>When</th><th>Recipe</th><th>Scanned</th><th>Fit ICP</th><th>Fresh</th><th>Already seen</th><th>Delivered</th><th>Status</th><th>Settings</th><th></th></tr></thead>
+          <tbody>{run_rows}</tbody>
+        </table></div>
+        <div class="lo-selection" id="selection-bar" hidden>
+          <div><b id="selection-summary">0 pulls selected</b><br><small id="selection-detail">Choose pulls to combine.</small></div>
+          <div><label style="margin-right:8px"><input id="include-duplicates" type="checkbox"> Include duplicates</label><button id="preview-export" type="button">Preview export</button> <a class="lo-download" id="download-export" aria-disabled="true" download="anata-selected-pulls.csv">Download selected CSV</a></div>
+        </div>
+        <div class="lo-clay" id="export-preview" hidden aria-live="polite"></div>
+        <p class="lo-note">Fresh is what you actually get: brands that fit, that we have
+        never contacted before. Already seen is the never-email-twice memory doing its job.
+        Settings shows which tuning version each pull ran under. Older pulls created before exact
+        result storage was added will explain that their file is unavailable instead of guessing.</p>
+
+        <p class="lo-h">Delivery settings</p>
+        <div class="lo-delivery">
+          <p class="lo-note" style="margin:0 0 12px">Email: <b>{'connected' if email_connected else 'not connected'}</b> · Slack: <b>{'connected' if slack_connected else 'not connected'}</b></p>
+          <div class="lo-delivery-grid">
+            <label><input id="delivery-enabled" type="checkbox" {'checked' if delivery_prefs['enabled'] else ''}> Automatically deliver results</label>
+            <label><input id="delivery-email" type="checkbox" {'checked' if delivery_prefs['email_enabled'] else ''}> Email</label>
+            <label><input id="delivery-slack" type="checkbox" {'checked' if delivery_prefs['slack_enabled'] else ''}> Slack</label>
+            <label>Frequency <select id="delivery-frequency"><option value="every_pull" {'selected' if delivery_prefs['frequency']=='every_pull' else ''}>After every pull</option><option value="daily" {'selected' if delivery_prefs['frequency']=='daily' else ''}>Daily digest</option></select></label>
+            <label class="wide">Email recipients<input id="delivery-recipients" type="text" value="{html.escape(delivery_prefs['email_recipients'])}" placeholder="david@anatainc.com"></label>
+            <label>Contents <select id="delivery-content"><option value="link" {'selected' if delivery_prefs['content_mode']=='link' else ''}>CSV attachment + summary + secure link</option><option value="summary" {'selected' if delivery_prefs['content_mode']=='summary' else ''}>CSV attachment + summary</option></select></label>
+          </div>
+          <div style="margin-top:12px"><button class="lo-save" id="delivery-save" type="button">Save delivery settings</button> <button class="lo-save" id="delivery-test" type="button">Send test</button></div>
+          <p class="lo-msg" id="delivery-message" aria-live="polite"></p>
+          <p class="lo-note">Delivery is read-only. It never marks a company contacted or sent to Clay.</p>
+          <details><summary>Recent exports</summary><ul class="lo-history">{history_items}</ul></details>
+          <details><summary>Delivery history</summary><ul class="lo-history">{delivery_items}</ul></details>
+        </div>
+
+        <details class="lo-secondary"><summary>Amazon and LinkedIn operations</summary>
         <p class="lo-h">Amazon brand control</p>
         {amazon_panel}
         <p class="lo-note">Scanned always equals findings plus skipped plus absent. If those
         do not add up, a scan was cut short and the numbers above are hiding it. Skipped is
         not a failure: it is us refusing to guess which listings belong to a brand.</p>
+        </details>
 
-        <p class="lo-h">Recent pulls</p>
-        <table class="lo-table">
-          <thead><tr><th>When</th><th>Recipe</th><th>Scanned</th><th>Fit ICP</th><th>Fresh</th><th>Already seen</th><th>Delivered</th><th>Status</th><th>Settings</th></tr></thead>
-          <tbody>{run_rows}</tbody>
-        </table>
-        <p class="lo-note">Fresh is what you actually get: brands that fit, that we have
-        never contacted before. Already seen is the never-email-twice memory doing its job.
-        Settings shows which tuning version each pull ran under.</p>
-
+        <details class="lo-secondary"><summary>Suppression and tuning controls</summary>
         <p class="lo-h">Brands already used</p>
         <div class="lo-clay">
           <b>{contacted_count} brands</b> are marked as already contacted and will be skipped
@@ -840,6 +980,33 @@ def outbound_lead_ops(request: Request) -> Response:
           <thead><tr><th>Version</th><th>When</th><th>Setting</th><th>Change</th><th>Note</th><th>Who</th></tr></thead>
           <tbody>{change_rows}</tbody>
         </table>
+        </details>
+        <script>
+          (function(){{
+            var checks=[].slice.call(document.querySelectorAll('.run-check'));
+            var bar=document.getElementById('selection-bar'), summary=document.getElementById('selection-summary');
+            var detail=document.getElementById('selection-detail'), preview=document.getElementById('export-preview');
+            function esc(v){{return String(v||'').replace(/[&<>"']/g,function(c){{return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c];}});}}
+            function chosen(){{return checks.filter(function(c){{return c.checked;}}).map(function(c){{return c.value;}});}}
+            function visible(c){{return c.closest('tr').style.display!=='none'&&!c.disabled;}}
+            function downloadUrl(){{var ids=chosen(),dupes=document.getElementById('include-duplicates').checked;return ids.length?'/admin/api/outbound/pulls.csv?run_ids='+ids.join(',')+'&include_duplicates='+(dupes?'1':'0'):'';}}
+            function sync(){{var ids=chosen(),download=document.getElementById('download-export'),url=downloadUrl();bar.hidden=!ids.length;summary.textContent=ids.length+' pull'+(ids.length===1?'':'s')+' selected';detail.textContent='Preview to confirm unique companies and duplicates.';download.setAttribute('aria-disabled',url?'false':'true');if(url)download.setAttribute('href',url);else download.removeAttribute('href');}}
+            checks.forEach(function(c){{c.addEventListener('change',sync);}});
+            function selectVisible(value){{checks.forEach(function(c){{if(visible(c))c.checked=value;}});sync();}}
+            document.getElementById('select-page').addEventListener('click',function(){{selectVisible(true);}});
+            document.getElementById('clear-selection').addEventListener('click',function(){{checks.forEach(function(c){{c.checked=false;}});sync();preview.hidden=true;}});
+            document.getElementById('check-all').addEventListener('change',function(e){{selectVisible(e.target.checked);}});
+            function filter(){{var q=document.getElementById('run-search').value.toLowerCase(),s=document.getElementById('run-status').value,from=document.getElementById('run-from').value,to=document.getElementById('run-to').value,v=document.getElementById('run-version').value;checks.forEach(function(c){{var r=c.closest('tr');r.style.display=((!q||r.dataset.recipe.toLowerCase().indexOf(q)>=0)&&(!s||r.dataset.status===s)&&(!from||r.dataset.date>=from)&&(!to||r.dataset.date<=to)&&(!v||r.dataset.version===v))?'':'none';}});}}
+            ['run-search','run-status','run-from','run-to','run-version'].forEach(function(id){{document.getElementById(id).addEventListener(id==='run-search'?'input':'change',filter);}});
+            document.getElementById('preview-export').addEventListener('click',function(){{var ids=chosen(),dupes=document.getElementById('include-duplicates').checked;preview.hidden=false;preview.textContent='Preparing preview...';fetch('/admin/api/outbound/pulls/preview?run_ids='+ids.join(',')+'&include_duplicates='+(dupes?'1':'0'))
+              .then(function(r){{return r.json();}}).then(function(d){{var names=(d.sample||[]).map(function(x){{return x.brand||x.domain;}}).filter(Boolean).join(', ');preview.innerHTML='<b>'+d.exported_companies+' companies in this file</b> from '+d.selected_pulls+' pulls · '+d.source_rows+' source rows · '+d.duplicates_removed+' duplicates removed'+(d.unavailable_pulls?' · '+d.unavailable_pulls+' older pulls unavailable':'')+(names?'<br><small>Sample: '+esc(names)+'</small>':'')+'.';detail.textContent=d.exported_companies+' companies · '+d.duplicates_removed+' duplicates removed';}})
+              .catch(function(){{preview.textContent='Preview could not be prepared. Your selection is still here.';}});}});
+            document.getElementById('include-duplicates').addEventListener('change',sync);
+            function deliveryData(){{var f=new FormData();['enabled','email','slack'].forEach(function(k){{f.append(k,document.getElementById('delivery-'+k).checked?'1':'0');}});f.append('frequency',document.getElementById('delivery-frequency').value);f.append('email_recipients',document.getElementById('delivery-recipients').value);f.append('content_mode',document.getElementById('delivery-content').value);return f;}}
+            function save(test){{var m=document.getElementById('delivery-message');m.textContent=test?'Sending a clearly labeled test...':'Saving...';fetch(test?'/admin/api/outbound/delivery/test':'/admin/api/outbound/delivery/settings',{{method:'POST',body:deliveryData()}}).then(function(r){{return r.json();}}).then(function(d){{m.textContent=d.reason||'Saved.';}}).catch(function(){{m.textContent='Could not reach the server.';}});}}
+            document.getElementById('delivery-save').addEventListener('click',function(){{save(false);}});document.getElementById('delivery-test').addEventListener('click',function(){{save(true);}});
+          }})();
+        </script>
         <script>
           (function(){{
             var rb=document.getElementById('rel-go'), rm=document.getElementById('rel-msg');
@@ -905,6 +1072,92 @@ def outbound_lead_ops(request: Request) -> Response:
     ))
 
 
+def _run_ids(raw: str) -> list[int]:
+    ids: list[int] = []
+    for value in str(raw or "").split(","):
+        try:
+            number = int(value.strip())
+        except ValueError:
+            continue
+        if number > 0 and number not in ids:
+            ids.append(number)
+    return ids[:100]
+
+
+@router.get("/admin/api/outbound/pulls/preview", response_class=JSONResponse)
+def outbound_pulls_preview(request: Request, run_ids: str = "", include_duplicates: int = 0) -> Response:
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_memory
+
+    ids = _run_ids(run_ids)
+    runs = {r["id"]: r for r in outbound_memory.load_runs(get_engine(), limit=500)}
+    selected = [runs[i] for i in ids if i in runs]
+    leads = outbound_memory.load_run_leads(get_engine(), ids)
+    exported, duplicates = _dedupe_pull_leads(leads, include_duplicates=bool(include_duplicates))
+    available = {int(x.get("pull_id") or 0) for x in leads}
+    return JSONResponse(content={
+        "selected_pulls": len(selected), "source_rows": len(leads),
+        "unique_companies": len(_dedupe_pull_leads(leads)[0]), "exported_companies": len(exported),
+        "duplicates_removed": duplicates,
+        "unavailable_pulls": sum(1 for run in selected if run.get("fresh") and run["id"] not in available),
+        "zero_result_pulls": sum(1 for run in selected if not run.get("fresh")),
+        "sample": [{"brand": x.get("brand"), "domain": x.get("domain"), "pull_recipe": x.get("pull_recipe")} for x in exported[:5]],
+    })
+
+
+@router.get("/admin/api/outbound/pulls.csv", response_class=Response)
+def outbound_pulls_csv(request: Request, run_ids: str = "", include_duplicates: int = 0) -> Response:
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_memory
+
+    ids = _run_ids(run_ids)
+    engine = get_engine()
+    leads = outbound_memory.load_run_leads(engine, ids)
+    selected, duplicates = _dedupe_pull_leads(leads, include_duplicates=bool(include_duplicates))
+    filename = f"anata-company-pulls-{datetime.now(timezone.utc).date().isoformat()}.csv"
+    user = get_current_user(request) or {}
+    outbound_memory.record_export(
+        engine, actor=str(user.get("email") or user.get("name") or "operator"), run_ids=ids,
+        source_rows=len(leads), unique_companies=len(selected), duplicates_removed=duplicates,
+        include_duplicates=bool(include_duplicates), filename=filename,
+    )
+    return Response(content=_pulls_csv(selected), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@router.post("/admin/api/outbound/delivery/settings", response_class=JSONResponse)
+async def outbound_delivery_settings(request: Request) -> Response:
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_memory
+
+    form = await request.form()
+    recipients = str(form.get("email_recipients") or "").strip()
+    if form.get("email") == "1" and not recipients:
+        return JSONResponse(status_code=400, content={"ok": False, "reason": "Add at least one email recipient."})
+    user = get_current_user(request) or {}
+    saved = outbound_memory.save_delivery_settings(get_engine(), {
+        "enabled": form.get("enabled"), "email_enabled": form.get("email"),
+        "slack_enabled": form.get("slack"), "frequency": form.get("frequency"),
+        "email_recipients": recipients, "content_mode": form.get("content_mode"),
+    }, actor=str(user.get("email") or user.get("name") or "operator"))
+    return JSONResponse(status_code=200 if saved else 500, content={"ok": saved, "reason": "Delivery settings saved." if saved else "Delivery settings could not be saved."})
+
+
+@router.post("/admin/api/outbound/delivery/test", response_class=JSONResponse)
+async def outbound_delivery_test(request: Request) -> Response:
+    saved = await outbound_delivery_settings(request)
+    if saved.status_code != 200:
+        return saved
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services.outbound_delivery import deliver_completed_pull
+    result = deliver_completed_pull(get_engine(), {
+        "recipe": "Test delivery", "scanned": 25, "matched": 12, "fresh": 10,
+        "skipped_seen": 2, "partial": False, "config_version": 0,
+    }, force=True, test=True)
+    return JSONResponse(content={"ok": bool(result.get("sent")), "result": result,
+                                 "reason": f"Test complete: email {result['email']}, Slack {result['slack']}."})
+
+
 @router.post("/admin/api/outbound/push", response_class=JSONResponse)
 async def outbound_push_to_clay(request: Request) -> Response:
     """Pull one recipe and send it straight to Clay, no file in between.
@@ -965,13 +1218,14 @@ async def outbound_push_to_clay(request: Request) -> Response:
             outbound_memory.record_leads(
                 engine, [l for l in result.leads if l.get("domain") in accepted],
                 source=result.recipe or "clay_push", config_version=version)
-        outbound_memory.record_run(
+        run_id = outbound_memory.record_run(
             engine, recipe=result.recipe or "icp_baseline", scanned=result.scanned,
             matched=result.matched_icp, fresh=result.fresh,
             skipped_seen=result.skipped_already_contacted, partial=result.partial,
             config_version=version, delivery="clay", delivered=pushed.accepted,
             note=pushed.reason[:200],
         )
+        outbound_memory.record_run_leads(engine, run_id, result.leads)
 
     return JSONResponse(content={
         "ok": pushed.rejected == 0,
@@ -985,17 +1239,29 @@ async def outbound_push_to_clay(request: Request) -> Response:
 
 
 _LEADS_CSS = """
+  .ld-header { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:24px; align-items:end; margin-bottom:20px; }
+  .ld-header h1 { font-size:clamp(28px,3vw,38px); }
+  .ld-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+  .ld-primary { padding:10px 16px!important; font-size:13px!important; }
+  .ld-command { display:flex; gap:10px; align-items:end; flex-wrap:wrap; margin:18px 0; padding:14px; border:1px solid #e5e7eb; border-radius:14px; background:#fafafa; }
+  .ld-command label { display:grid; gap:5px; color:#5d6977; font-size:12px; font-weight:700; }
+  .ld-command input,.ld-command select { min-height:40px; padding:8px 10px; border:1px solid #dfe3e6; border-radius:9px; background:#fff; color:#2b3644; font:inherit; }
+  .ld-command input { min-width:min(320px,80vw); }
+  .ld-result-count { margin-left:auto; align-self:center; color:#5d6977; font-size:13px; font-weight:700; }
   .ld-table { border-collapse:collapse; width:100%; background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden; }
   .ld-table th, .ld-table td { text-align:left; padding:9px 12px; border-bottom:1px solid #f0f0f3; font-size:13px; white-space:nowrap; }
   .ld-table th { background:#fafafa; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; }
   .ld-scroll { max-width:100%; overflow-x:auto; }
   .ld-A{color:#0a7d33;font-weight:800} .ld-B{color:#b54708;font-weight:800} .ld-C{color:#6b7280;font-weight:800}
   .ld-note { margin:12px 0 0; font-size:14px; color:rgba(43,54,68,.7); }
-  .ld-stat { display:inline-block; margin-right:22px; font-size:14px; }
-  .ld-stat b { font-size:20px; font-family:"Montserrat",sans-serif; }
+  .ld-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:0 0 18px; }
+  .ld-stat { display:grid; gap:4px; padding:13px 14px; border-left:3px solid #85bbda; background:#f8fafb; color:#5d6977; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.035em; }
+  .ld-stat b { color:#2b3644; font-size:18px; font-family:"Montserrat",sans-serif; text-transform:none; letter-spacing:0; }
   .lo-btn { display:inline-block; padding:6px 12px; border-radius:9px; background:#2B3644; color:#fff;
     font-family:"Montserrat",sans-serif; font-weight:800; font-size:11px; text-decoration:none; white-space:nowrap; }
   .lo-btn:hover { background:#1f2833; color:#fff; }
+  .lo-btn:focus-visible { outline:3px solid rgba(133,187,218,.55); outline-offset:2px; }
+  @media(max-width:760px){.ld-header{grid-template-columns:1fr}.ld-actions{justify-content:flex-start}.ld-summary{grid-template-columns:1fr}.ld-result-count{width:100%;margin-left:0}.ld-command input{min-width:0;width:100%}.ld-command label:first-child{width:100%}}
 """
 
 
@@ -1020,11 +1286,14 @@ def outbound_leads(request: Request) -> Response:
         if l.get("niche"):
             niches[l["niche"]] = niches.get(l["niche"], 0) + 1
         revenue += int(l.get("revenue_cents") or 0)
-    avg = f"${revenue // max(len(leads), 1) // 100:,}" if leads else "-"
+    avg = f"${revenue // max(len(leads), 1) // 100:,}" if leads else "Not available"
 
     if leads:
         rows = "".join(
-            f"<tr><td class='ld-{html.escape(str(l.get('tier') or '-'))}'>{html.escape(str(l.get('tier') or '-'))}</td>"
+            f"<tr data-company='1' data-tier='{html.escape(str(l.get('tier') or ''), quote=True)}' "
+            f"data-niche='{html.escape(str(l.get('niche') or ''), quote=True)}' "
+            f"data-search='{html.escape(' '.join(str(l.get(k) or '') for k in ('brand','domain','reason','recipe','country','niche')).lower(), quote=True)}'>"
+            f"<td class='ld-{html.escape(str(l.get('tier') or '-'))}'>{html.escape(str(l.get('tier') or '-'))}</td>"
             f"<td>{html.escape(str(l.get('brand') or '-'))}</td>"
             f"<td>{html.escape(str(l.get('domain') or ''))}</td>"
             f"<td>{html.escape(str(l.get('niche') or '-'))}</td>"
@@ -1042,30 +1311,56 @@ def outbound_leads(request: Request) -> Response:
             for l in leads
         )
     else:
-        rows = "<tr><td colspan='14'>No leads stored yet. Pull a batch on Lead Ops.</td></tr>"
+        rows = (
+            "<tr><td colspan='14'>No companies stored yet. "
+            "Use Find fresh companies to create the first batch.</td></tr>"
+        )
 
-    tier_line = " &middot; ".join(f"{k}: {v}" for k, v in sorted(tiers.items())) or "-"
-    top_niches = ", ".join(f"{k} ({v})" for k, v in sorted(niches.items(), key=lambda x: -x[1])[:4]) or "-"
+    tier_line = " &middot; ".join(f"{k}: {v}" for k, v in sorted(tiers.items())) or "Not classified"
+    top_niches = ", ".join(f"{k} ({v})" for k, v in sorted(niches.items(), key=lambda x: -x[1])[:4]) or "No niche distribution yet"
+
+    niche_options = "".join(
+        f'<option value="{html.escape(niche)}">{html.escape(niche.replace("_", " ").title())}</option>'
+        for niche in sorted(niches)
+    )
 
     body = f"""
-        <h1>Leads</h1>
-        <p class="sub">Our own record of every brand we have sourced. Clay enriches these and
-        Instantly sends to them, but the leads themselves live here, so losing access to
-        either tool never loses the leads.</p>
+        <header class="ld-header">
+          <div>
+            <h1>Company Library</h1>
+            <p class="sub">Find, review, and export every company sourced for prospecting. Lead Operations controls how new companies enter this library.</p>
+          </div>
+          <div class="ld-actions" aria-label="Company library actions">
+            <a class="lo-btn ld-primary" href="/admin/api/outbound/leads.csv">Download all for Clay</a>
+            <a class="lo-btn" href="/admin/outbound/brands">Find fresh companies</a>
+          </div>
+        </header>
 
-        <div style="margin:0 0 18px">
-          <span class="ld-stat"><b>{len(leads):,}</b> leads held</span>
-          <span class="ld-stat"><b>{avg}</b> average size</span>
-          <span class="ld-stat">{html.escape(tier_line)}</span>
+        <div class="ld-summary" aria-label="Company library summary">
+          <span class="ld-stat"><b>{len(leads):,}</b>Companies held</span>
+          <span class="ld-stat"><b>{avg}</b>Average yearly sales</span>
+          <span class="ld-stat"><b>{tier_line}</b>Tier mix</span>
         </div>
         <p class="ld-note" style="margin:0 0 14px">Top niches: {html.escape(top_niches)}</p>
+
+        <nav class="ld-actions" aria-label="Prospecting workspace" style="justify-content:flex-start;margin-bottom:14px">
+          <a class="lo-btn" href="/admin/outbound/lead-ops">Manage sourcing</a>
+          <a class="lo-btn" href="/admin/outbound/scoreboard">View prospecting performance</a>
+        </nav>
+
+        <div class="ld-command" aria-label="Filter company library">
+          <label>Search companies<input id="ld-search" type="search" placeholder="Brand, domain, reason, or recipe"></label>
+          <label>Tier<select id="ld-tier"><option value="">All tiers</option><option value="A">Tier A</option><option value="B">Tier B</option><option value="C">Tier C</option></select></label>
+          <label>Niche<select id="ld-niche"><option value="">All niches</option>{niche_options}</select></label>
+          <span id="ld-count" class="ld-result-count" aria-live="polite">{len(leads):,} companies shown</span>
+        </div>
 
         <div class="ld-scroll">
         <table class="ld-table">
           <thead><tr><th>Tier</th><th>Brand</th><th>Domain</th><th>Niche</th><th>Country</th>
           <th>Revenue/yr</th><th>Score</th><th>Amazon</th><th>Market</th><th>Opening line</th>
           <th>Recipe</th><th>Settings</th><th>Sourced</th><th></th></tr></thead>
-          <tbody>{rows}</tbody>
+          <tbody id="ld-body">{rows}</tbody>
         </table>
         </div>
         <p class="ld-note">Showing the {len(leads):,} most recent. Every row records which
@@ -1074,11 +1369,49 @@ def outbound_leads(request: Request) -> Response:
         <p class="ld-note">Amazon shows how sure we are that we found the right listings.
         A brand we could not match keeps its row and says why, because a brand that
         disappears from this list looks like a brand we never had.</p>
+        <script>
+          (function(){{
+            var q=document.getElementById('ld-search'), tier=document.getElementById('ld-tier'),
+                niche=document.getElementById('ld-niche'), count=document.getElementById('ld-count'),
+                rows=Array.from(document.querySelectorAll('#ld-body tr[data-company]'));
+            function apply(){{
+              var text=(q.value||'').trim().toLowerCase(), t=tier.value, n=niche.value, visible=0;
+              rows.forEach(function(row){{
+                var show=(!text || row.dataset.search.indexOf(text)!==-1) && (!t || row.dataset.tier===t) && (!n || row.dataset.niche===n);
+                row.hidden=!show; if(show) visible+=1;
+              }});
+              count.textContent=visible.toLocaleString()+' compan'+(visible===1?'y':'ies')+' shown';
+            }}
+            q.addEventListener('input',apply); tier.addEventListener('change',apply); niche.addEventListener('change',apply);
+          }})();
+        </script>
     """
     return HTMLResponse(_shell_page(
-        request, active="outbound_leads", title="Outbound Leads",
+        request, active="outbound_leads", title="Company Library",
         extra_css=_LEADS_CSS + _AMAZON_CSS, body=body,
     ))
+
+
+@router.get("/admin/api/outbound/leads.csv", response_class=Response)
+def outbound_leads_csv(request: Request) -> Response:
+    """Export the complete stored company library in Clay-ready columns.
+
+    This read-only action does not mark companies as contacted or delivered.
+    """
+    import outbound_pipeline as _op
+    from sales_support_agent.services import outbound_memory
+
+    try:
+        from sales_support_agent.models.database import get_engine
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        engine = None
+    leads = outbound_memory.load_leads(engine, limit=None)
+    return Response(
+        content=_op.leads_to_csv(leads),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="anata_company_library_clay.csv"'},
+    )
 
 
 _LEAK_CSS = """
@@ -1710,7 +2043,7 @@ async def outbound_email_batch(request: Request) -> Response:
             "ok": True, "sent": False, "brands": 0,
             "reason": "No brands have a finding yet, so there is nothing worth emailing."})
 
-    sent = _jobs._email_the_batch(engine, {"pulled": 0, "scanned": len(ready)})
+    sent = _jobs._email_the_batch(engine, {"pulled": 0, "scanned": len(ready)}, force=True)
     return JSONResponse(content={
         "ok": True, "sent": bool(sent), "brands": len(ready),
         "reason": (f"Emailed {len(ready)} brand(s)." if sent else
