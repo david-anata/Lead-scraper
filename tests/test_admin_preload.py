@@ -26,8 +26,6 @@ class AdminPreloadTests(unittest.TestCase):
             owner_queues=[],
             latest_sync_at=datetime(2026, 3, 14, 11, 0, tzinfo=timezone.utc),
             latest_run_summary={},
-            lead_builder_ready=True,
-            lead_builder_missing=[],
         )
         settings = SimpleNamespace(admin_auto_sync_max_age_minutes=30)
 
@@ -55,8 +53,6 @@ class AdminPreloadTests(unittest.TestCase):
             owner_queues=[],
             latest_sync_at=None,
             latest_run_summary={},
-            lead_builder_ready=True,
-            lead_builder_missing=[],
         )
         settings = SimpleNamespace(admin_auto_sync_max_age_minutes=30)
         self.assertTrue(dashboard_needs_auto_sync(dashboard, settings))

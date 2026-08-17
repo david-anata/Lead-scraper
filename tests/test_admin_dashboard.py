@@ -64,14 +64,12 @@ class AdminDashboardTests(unittest.TestCase):
             dashboard = build_dashboard_data(
                 settings=self._settings(),
                 session=session,
-                lead_builder_status={"ready": False, "missing": ["STORELEADS_API_KEY"]},
                 clickup_client=self._FakeClickUpClient(),
                 as_of_date=date(2026, 3, 14),
             )
 
         rebuilt = dashboard_data_from_dict(dashboard_data_to_dict(dashboard))
         self.assertEqual(rebuilt.as_of_date.isoformat(), "2026-03-14")
-        self.assertEqual(rebuilt.lead_builder_missing, ["STORELEADS_API_KEY"])
         self.assertTrue(rebuilt.deck_generator_ready)
 
     def test_page_specific_dashboard_projection_skips_unrelated_data(self) -> None:
@@ -105,14 +103,12 @@ class AdminDashboardTests(unittest.TestCase):
             queue_only = build_dashboard_data(
                 settings=settings,
                 session=session,
-                lead_builder_status={"ready": True, "missing": []},
                 as_of_date=date(2026, 3, 14),
                 include_deck_history=False,
             )
             decks_only = build_dashboard_data(
                 settings=settings,
                 session=session,
-                lead_builder_status={"ready": True, "missing": []},
                 as_of_date=date(2026, 3, 14),
                 include_lead_queue=False,
             )
@@ -163,7 +159,6 @@ class AdminDashboardTests(unittest.TestCase):
             dashboard = build_dashboard_data(
                 settings=self._settings(),
                 session=session,
-                lead_builder_status={"ready": True, "missing": []},
                 clickup_client=self._FakeClickUpClient(),
                 as_of_date=date(2026, 3, 14),
             )
@@ -200,7 +195,6 @@ class AdminDashboardTests(unittest.TestCase):
             dashboard = build_dashboard_data(
                 settings=self._settings(),
                 session=session,
-                lead_builder_status={"ready": True, "missing": []},
                 clickup_client=self._FakeClickUpClient(),
                 as_of_date=date(2026, 3, 14),
             )
@@ -253,7 +247,6 @@ class AdminDashboardTests(unittest.TestCase):
             dashboard = build_dashboard_data(
                 settings=settings,
                 session=session,
-                lead_builder_status={"ready": True, "missing": []},
                 clickup_client=self._FakeClickUpClient(),
                 as_of_date=date(2026, 3, 14),
             )

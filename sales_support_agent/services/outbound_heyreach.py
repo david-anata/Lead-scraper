@@ -1,11 +1,11 @@
 """Push Clay's found contacts into a HeyReach campaign, so LinkedIn runs beside email.
 
 There is already a HeyReach connector in this repo, but it lives in the root
-main.py lead builder, which is a different Render service and a different lead
+retired outbound flow, which was a different service and lead
 flow. This one belongs to the outbound system on the agent: the brands the
 Amazon check has qualified, enriched by Clay into people, sent to LinkedIn.
 
-The API contract here is not invented. It is the same one the lead builder has
+The API contract uses the established shape that has
 been using in production: X-API-KEY, AddLeadsToCampaignV2, and a lead shaped
 firstName / lastName / email / company / position / linkedinUrl.
 
@@ -42,7 +42,7 @@ _PROFILE_RE = re.compile(r"^https://([a-z0-9-]+\.)?linkedin\.com/in/[^/\s]+$", r
 def normalize_profile_url(url: str) -> str:
     """One canonical form per person, so dedupe actually dedupes.
 
-    Same shape as the lead builder's normalize_linkedin_url, deliberately: the
+    Normalize profile URLs consistently: the
     two systems may end up sharing a processed list, and two spellings of the
     same profile would defeat the whole point.
     """

@@ -124,7 +124,6 @@ class Settings:
     gmail_mailbox_accounts: tuple[GmailMailboxAccount, ...]
     resend_api_key: str
     resend_from: str
-    lead_build_url: str
     sales_agent_db_url: str
     internal_api_key: str
     marketing_site_intake_key: str
@@ -528,7 +527,6 @@ def load_settings() -> Settings:
         gmail_mailbox_accounts=gmail_mailbox_accounts,
         resend_api_key=os.getenv("RESEND_API_KEY", "").strip(),
         resend_from=(os.getenv("RESEND_FROM", "").strip() or "Anata Agent <noreply@anatainc.com>"),
-        lead_build_url=os.getenv("LEAD_BUILD_URL", "").strip().rstrip("/"),
         sales_agent_db_url=(os.getenv("SALES_AGENT_DB_URL", "").strip() or _default_db_url()),
         internal_api_key=os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip(),
         marketing_site_intake_key=os.getenv("MARKETING_SITE_INTAKE_KEY", "").strip(),

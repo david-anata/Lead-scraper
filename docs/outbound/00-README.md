@@ -5,7 +5,7 @@ the side agency. This folder is the setup kit. Follow the docs in order.
 
 ## The flow
 StoreLeads finds the brands  ->  Clay finds the person + verified email + writes the personal
-line (replaces Apollo)  ->  Instantly sends from your warmed domains  ->  the app orchestrates
+line (uses Clay enrichment)  ->  Instantly sends from your warmed domains  ->  the app orchestrates
 and keeps the scoreboard. Sales/HubSpot come next.
 
 ## The offer

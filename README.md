@@ -1,322 +1,41 @@
-# Lead Scraper Repo
+# Anata Agent
 
-This repo now contains two FastAPI services:
+Anata Agent is Anata's internal operating workspace. It combines Sales, Website Ops,
+Finance, Advertising, Executive, Fulfillment, HR, Building, and outbound operations in
+one authenticated application.
 
-- the original lead-scraper service in [`main.py`](/Users/davidnarayan/Documents/Playground/Lead-scraper/main.py)
-- the new post-creation ClickUp sales support agent in [`sales_support_agent/main.py`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/main.py)
+## Outbound system
 
-## Lead Scraper Service
+The supported lead workflow is:
 
-The original service builds outbound lead lists for ecommerce brands.
+1. StoreLeads supplies candidate brands.
+2. Agent applies recipes, ICP qualification, scoring, and never-contact-twice memory.
+3. Agent records Amazon findings and prepares approved brands.
+4. Clay enriches and verifies contacts.
+5. Instantly and HeyReach deliver approved outreach.
 
-It:
+The scheduled entry point is `POST /api/jobs/outbound-morning/run`. Lead Ops pages and
+APIs live under `/admin/outbound` and `/admin/api/outbound`.
 
-- queries StoreLeads for domains that match a fixed ICP
-- enriches those domains with contact data from Apollo
-- filters for personal emails that match the store domain
-- generates CSV output for Instantly and LinkedIn workflows
-- uploads the generated CSV files to Slack
-- posts a summary message to Slack
-
-## Environment Variables
-
-Copy `.env.example` to `.env` or export the variables directly in your shell before starting the API.
-
-Required:
-
-- `STORELEADS_API_KEY`: authenticates requests to StoreLeads when fetching domains that match the ICP
-- `APOLLO_API_KEY`: authenticates requests to Apollo when enriching domains with contact data
-- `SLACK_BOT_TOKEN`: authenticates Slack API calls for file uploads and summary messages
-- `SLACK_CHANNEL_ID`: Slack channel that receives uploaded CSV files and the run summary
-
-Optional:
-
-- `INSTANTLY_CAMPAIGN_ID`: included in the generated Instantly CSV rows as the campaign ID field
-- `INSTANTLY_API_KEY`: when set with `INSTANTLY_CAMPAIGN_ID`, the app also pushes accepted leads directly into the Instantly campaign API
-- `INSTANTLY_AI`: supported as an alias for `INSTANTLY_API_KEY` if your existing deployment already uses that env var name
-- `HEYREACH_API_KEY`: when set with `HEYREACH_CAMPAIGN_ID`, the app also pushes accepted leads with valid LinkedIn URLs directly into HeyReach
-- `HEYREACH_CAMPAIGN_ID`: HeyReach campaign that receives accepted leads; the campaign should be launched once in HeyReach before API adds are used
-- `HEYREACH_ADD_LEADS_TO_CAMPAIGN_URL`: optional override for the HeyReach public add-to-campaign endpoint if their API path changes
-- `DAILY_NEW_LEAD_LIMIT`: caps how many new leads can be added to Instantly in a single day; recommended production default is `15`
-- `ENABLE_WEEKDAY_ONLY_IMPORTS`: when `true`, blocks scheduled imports on Saturday and Sunday
-- `STATE_BACKEND`: state storage backend for processed domains and daily import counts; use `github` to avoid Render local-disk resets
-- `GITHUB_STATE_TOKEN`: GitHub token with contents write access, required when `STATE_BACKEND=github`
-- `GITHUB_STATE_REPO`: repo used for durable state storage, for example `david-anata/Lead-scraper`
-- `GITHUB_STATE_BRANCH`: branch used only for state commits; recommended value is `state`
-- `GITHUB_STATE_BASE_BRANCH`: branch to copy from if the state branch does not exist yet; usually `main`
-- `GITHUB_STATE_PROCESSED_DOMAINS_PATH`: path of the processed-domain CSV on the state branch
-- `GITHUB_STATE_DAILY_IMPORTS_PATH`: path of the daily import counter CSV on the state branch
-- `GITHUB_STATE_HEYREACH_LEADS_PATH`: path of the processed HeyReach lead state on the state branch
-- `PROCESSED_DOMAINS_FILE`: optional override for the temporary processed-domain state file
-- `DAILY_IMPORT_LOG_FILE`: optional override for the temporary daily import counter file
-- `HEYREACH_PROCESSED_LEADS_FILE`: optional override for the temporary processed HeyReach lead state file
-
-If any required variables are missing, the app fails clearly at startup.
-
-## Project Structure
-
-- `main.py`: original lead-scraper FastAPI application entrypoint and all service logic
-- `sales_support_agent/`: modular ClickUp sales support agent
-- `requirements.txt`: shared Python dependencies
-
-## Run Locally
-
-1. Create and activate a virtual environment.
-2. Install dependencies from `requirements.txt`.
-3. Copy `.env.example` to `.env` or export the required environment variables.
-4. Start the FastAPI server with Uvicorn.
-
-Example:
+## Run locally
 
 ```bash
-cd /Users/davidnarayan/Documents/Playground/Lead-scraper
-python3 -m venv .venv
-source .venv/bin/activate
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
-
-cp .env.example .env
-
-export STORELEADS_API_KEY="your-storeleads-key"
-export APOLLO_API_KEY="your-apollo-key"
-export SLACK_BOT_TOKEN="your-slack-bot-token"
-export SLACK_CHANNEL_ID="your-slack-channel-id"
-export INSTANTLY_CAMPAIGN_ID="your-instantly-campaign-id"
-export INSTANTLY_API_KEY="your-instantly-api-key"
-# or, if your deploy already uses this name:
-export INSTANTLY_AI="your-instantly-api-key"
-export HEYREACH_API_KEY="your-heyreach-api-key"
-export HEYREACH_CAMPAIGN_ID="your-heyreach-campaign-id"
-export DAILY_NEW_LEAD_LIMIT="15"
-export ENABLE_WEEKDAY_ONLY_IMPORTS="true"
-export STATE_BACKEND="github"
-export GITHUB_STATE_TOKEN="your-github-token"
-export GITHUB_STATE_REPO="david-anata/Lead-scraper"
-export GITHUB_STATE_BRANCH="state"
-export GITHUB_STATE_BASE_BRANCH="main"
-```
-
-## Start the FastAPI Server
-
-Run:
-
-```bash
-cd /Users/davidnarayan/Documents/Playground/Lead-scraper
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Available endpoints:
+Set the environment variables required for the sections you use. The primary database is
+configured with `SALES_AGENT_DB_URL`; outbound sourcing requires `STORELEADS_API_KEY`.
+See `sales_support_agent/README.md` and the documents under `docs/` for section-specific
+configuration and operating procedures.
 
-- `GET /`
-- `GET /health`
-- `POST /run-lead-build`
-
-## Call `/run-lead-build`
-
-Send a JSON body with:
-
-- `date`: string used in output filenames and LinkedIn rows
-- `max_domains`: optional integer, defaults to `150`
-
-Example request:
+## Verification
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/run-lead-build" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "date": "2026-03-11",
-    "max_domains": 150
-  }'
+python -m pytest
 ```
 
-## Expected Output
-
-Successful run with contacts found:
-
-- returns a CSV response as the HTTP body
-- response content type is `text/csv`
-- response includes a `Content-Disposition` header with a filename like `instantly_upload_2026-03-11.csv`
-- uploads the Instantly CSV to Slack
-- posts a Slack summary with scanned domain counts, pacing information, scheduler source, and Instantly/HeyReach import counts
-
-Successful run with no valid personal contacts found:
-
-- returns JSON like:
-
-```json
-{
-  "status": "ok",
-  "message": "No valid personal contacts found for this run.",
-  "domains_scanned": 0,
-  "icp_matches": 0,
-  "apollo_contacts_found": 0,
-  "personal_contacts_found": 0
-}
-```
-
-Health check:
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-Response:
-
-```json
-{
-  "status": "ok"
-}
-```
-
-## Anata Building operations
-
-Agent is the operational source of truth for Anata Building inventory, CRM,
-bookings, agreements, billing evidence, campaigns, and lifecycle checklists.
-
-Confirmed bookings also maintain CRM relationships automatically:
-
-- a workspace becomes an active tenant relationship when occupancy begins and
-  is closed when move-out completes
-- an event must have an active responsible contact before confirmation
-- confirming the event creates a reservation-scoped `event_host` relationship
-- completing or cancelling the event closes that relationship while preserving
-  its history for future event-host audiences
-- event and workspace inquiries remain prospects until their commercial
-  workflow closes; an event inquiry alone is never treated as a confirmed host
-- new inquiries receive an owner and response deadline immediately; configure
-  `BUILDING_DEFAULT_LEAD_OWNER` and `BUILDING_RESPONSE_SLA_HOURS` (default `4`)
-  to match the operating team
-- the hourly operator job expires due soft holds, releases their availability,
-  queues calendar cleanup, and preserves an audit record
-- private-office availability published to the website is derived from active
-  Agent holds and occupancy; known release dates are exposed without customer
-  or contract details
-- future-office submissions create an explainable `waitlist` relationship
-  rather than mixing those contacts into ordinary office prospects
-- approved campaign snapshots can be sent immediately or scheduled in Mountain
-  Time; the hourly operator job delivers due campaigns and rechecks permission
-  and suppression at delivery time
-- approval freezes the reviewed sender identity as well as content and
-  recipients, so later configuration changes cannot alter who the message is
-  sent from
-- tenant and community rosters can be staged from a reviewed CSV, compared
-  against existing contacts, and applied only after typed confirmation;
-  existing profile data and marketing opt-outs are preserved
-- failed campaign deliveries can be retried without resending successful
-  recipients; Resend idempotency keys reduce duplicate sends during retries
-
-## Daily Automation
-
-Recommended production scheduler:
-
-- primary: Render Cron
-- backup/manual rerun: GitHub Actions
-
-### Website Ops query and citation intelligence
-
-Website Ops runs query collection daily and broader outcome review monthly
-through the existing scheduler. Generative SEO work is owned by a
-once-per-workday Codex routine in production; the Agent retains inventory,
-measurement, verification, and reporting responsibilities without calling a
-model API.
-
-Configure:
-
-```txt
-OPENAI_API_KEY=your-openai-project-key
-WEBSITE_OPS_CONTENT_EXECUTION_MODE=codex
-WEBSITE_OPS_CITATION_TESTING_ENABLED=false
-WEBSITE_OPS_CITATION_PROVIDER=auto
-WEBSITE_OPS_OPENAI_CITATION_MODEL=gpt-5-mini
-WEBSITE_OPS_ANTHROPIC_CITATION_MODEL=claude-sonnet-4-6
-WEBSITE_OPS_CITATION_MAX_CLUSTERS=5
-```
-
-With the production values above, article generation and citation-model calls
-cannot originate from Agent even when a provider key exists for another Agent
-feature. `WEBSITE_OPS_CONTENT_EXECUTION_MODE=api` is an explicit rollback mode
-and must not be enabled while the Codex routine is active. Missing citation
-evidence remains unavailable and cannot produce zero-valued citation claims.
-
-## HeyReach Setup
-
-To enable LinkedIn automation in parallel with email:
-
-1. In HeyReach, launch the target campaign at least once.
-2. Add `HEYREACH_API_KEY` and `HEYREACH_CAMPAIGN_ID` to your Render web service.
-3. Redeploy the app.
-4. Run a small `/run-lead-build` test.
-5. Check Slack for:
-   - `HeyReach import status`
-   - `HeyReach leads attempted`
-   - `HeyReach leads added`
-   - `HeyReach leads skipped`
-   - `HeyReach missing LinkedIn URLs`
-
-The app only sends accepted leads that have a valid `linkedin_url`, and it keeps a separate processed-lead state so the same LinkedIn profile is not re-added to the same HeyReach campaign across runs.
-
-### Render Cron
-
-Configure Render Cron to send:
-
-- method: `POST`
-- URL: `https://agent.anatainc.com/run-lead-build?scheduler_source=render_cron`
-- body:
-
-```json
-{
-  "date": "YYYY-MM-DD",
-  "max_domains": 150
-}
-```
-
-Recommended schedule:
-
-- weekdays at `8:00 AM America/Denver`
-
-The app will still enforce:
-
-- `DAILY_NEW_LEAD_LIMIT=15`
-- `ENABLE_WEEKDAY_ONLY_IMPORTS=true`
-
-### Durable State Without Postgres
-
-Render free services do not provide durable local disk for the processed-domain and daily import counters. To keep moving forward through new domains without paying for Postgres, switch the app to GitHub-backed state:
-
-```txt
-STATE_BACKEND=github
-GITHUB_STATE_TOKEN=your-github-token-with-contents-write-access
-GITHUB_STATE_REPO=david-anata/Lead-scraper
-GITHUB_STATE_BRANCH=state
-GITHUB_STATE_BASE_BRANCH=main
-```
-
-Recommended setup:
-
-- create a fine-grained GitHub token with repository contents read/write access
-- store state on a dedicated `state` branch so routine state commits do not touch `main`
-- let the app auto-create the `state` branch from `main` if it does not exist yet
-
-### GitHub Actions Backup Runner
-
-The repo includes a manual/backup workflow at [`.github/workflows/daily-lead-build.yml`](/Users/davidnarayan/Documents/Playground/Lead-scraper/.github/workflows/daily-lead-build.yml).
-
-Set this GitHub Actions secret exactly:
-
-```txt
-LEAD_BUILD_URL=https://lead-scraper-jb3u.onrender.com
-```
-
-## Sales Support Agent
-
-The sales support agent works only after a lead already exists in ClickUp. It monitors existing lead tasks, tracks meaningful touches, updates existing follow-up fields when available, logs append-only task comments, and reminds the assigned AE when a lead is untouched or stale.
-
-Run it separately:
-
-```bash
-cd /Users/davidnarayan/Documents/Playground/Lead-scraper
-uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
-```
-
-See the dedicated setup and system diagram in [`sales_support_agent/README.md`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/README.md).
-
-No quotes, no trailing slash, and no extra spaces.
+Production runs on Vercel. Follow `docs/vercel-cutover-rollback-runbook.md` and the
+repository deployment rules for releases and rollback.

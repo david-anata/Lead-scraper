@@ -22,7 +22,7 @@ YouTube video" step cannot be done because that video was never provided.
 
 ## A. Brand sourcing and dedup (StoreLeads -> CSV)
 
-1. Does the app pull brands from StoreLeads and not Apollo? ✅ Yes (outbound_pipeline, StoreLeads-only; Apollo removed earlier).
+1. Does the app pull brands from StoreLeads? ✅ Yes (outbound_pipeline, StoreLeads-only).
 2. Is the pull rate-limit safe? ✅ Retries on 429 with backoff; paces pages; returns partial instead of failing (test_outbound_pipeline).
 3. If StoreLeads cuts us off mid-run, do we keep what we gathered? ✅ Yes, `partial` flag set, brands returned (test_outbound_pipeline).
 4. Does the ICP gate enforce Shopify only? ✅ test_outbound_pipeline (platform gate).

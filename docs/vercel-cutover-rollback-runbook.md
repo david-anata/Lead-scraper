@@ -130,9 +130,6 @@ Review Vercel 5xx and latency, Supabase connections and errors, durable-task bac
 - Vercel writer receipts passed for durable tasks, Gmail sync, Website Ops,
   Content orchestration, Sales operator, HR reminders, Building operations,
   stale-lead scan, daily digest, and the time-guarded outbound morning job.
-- `daily-lead-build` remains intentionally absent from the Vercel allowlist.
-  Its GitHub credential was repaired, but Apollo then rejected the configured
   API key as invalid. Keep the corresponding Render job suspended; add the job
-  only after a replacement Apollo key produces a successful controlled receipt.
 - Render stays rollback-ready during the monitoring period. Do not re-enable a
   Render scheduler while its Vercel counterpart remains allowlisted.

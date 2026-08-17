@@ -76,41 +76,9 @@ class MainFulfillmentCSTests(unittest.TestCase):
         website_ops.website_ops_run_is_due = lambda settings, mode="daily": False
         website_ops.write_website_ops_run_state = lambda settings, mode, payload: payload
 
-        lead_build_revenue = ModuleType("sales_support_agent.services.lead_build_revenue")
-        lead_build_revenue.build_revenue_fields = lambda *args, **kwargs: {}
-        lead_build_revenue.format_money_compact = lambda value: str(value)
-        lead_build_revenue.format_money_exact = lambda value: str(value)
-        lead_build_revenue.parse_monthly_sales = lambda value: value
-
-        revenue_ops = ModuleType("sales_support_agent.services.revenue_ops")
-        for name in (
-            "append_daily_import_count_db",
-            "append_processed_domains_db",
-            "append_processed_heyreach_leads_db",
-            "complete_lead_run",
-            "create_lead_run",
-            "fail_lead_run",
-            "get_lead_run",
-            "get_lead_run_csv",
-            "load_apollo_attempts_db",
-            "load_daily_import_counts_db",
-            "load_processed_domains_db",
-            "load_processed_heyreach_leads_db",
-            "load_source_cursor_db",
-            "mark_lead_run_started",
-            "record_lead_run_item",
-            "save_source_cursor_db",
-            "update_lead_run_stage",
-            "upsert_apollo_attempts_db",
-            "upsert_lead_rows",
-        ):
-            setattr(revenue_ops, name, lambda *args, **kwargs: None)
-
         stub_modules = {
             "sales_support_agent.services.admin_dashboard": admin_dashboard,
             "sales_support_agent.services.website_ops": website_ops,
-            "sales_support_agent.services.lead_build_revenue": lead_build_revenue,
-            "sales_support_agent.services.revenue_ops": revenue_ops,
         }
         with mock.patch.dict(sys.modules, stub_modules):
             return importlib.reload(importlib.import_module("main"))
@@ -226,7 +194,6 @@ class MainFulfillmentCSTests(unittest.TestCase):
             reports_dir = Path(tmpdir) / "reports"
             self._write_report_fixture(reports_dir, slug)
             env = {
-                "APOLLO_API_KEY": "apollo-test",
                 "SLACK_BOT_TOKEN": "slack-test",
                 "SLACK_CHANNEL_ID": "C123",
                 "ADMIN_DASHBOARD_PASSWORD": "secret-pass",
@@ -273,7 +240,6 @@ class MainFulfillmentCSTests(unittest.TestCase):
             reports_dir = Path(tmpdir) / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
             env = {
-                "APOLLO_API_KEY": "apollo-test",
                 "SLACK_BOT_TOKEN": "slack-test",
                 "SLACK_CHANNEL_ID": "C123",
                 "ADMIN_DASHBOARD_PASSWORD": "secret-pass",
@@ -299,7 +265,6 @@ class MainFulfillmentCSTests(unittest.TestCase):
             reports_dir = Path(tmpdir) / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
             env = {
-                "APOLLO_API_KEY": "apollo-test",
                 "SLACK_BOT_TOKEN": "slack-test",
                 "SLACK_CHANNEL_ID": "C123",
                 "ADMIN_DASHBOARD_PASSWORD": "secret-pass",

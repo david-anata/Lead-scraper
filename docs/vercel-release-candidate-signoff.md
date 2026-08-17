@@ -114,9 +114,6 @@ Status: production cutover completed August 16, 2026; post-cutover monitoring ac
 
 ## Post-cutover follow-up
 
-1. Replace the invalid Apollo API key, run one controlled
-   `/api/vercel-cron/daily-lead-build` receipt, and only then append
-   `daily-lead-build` to the production allowlist.
 2. Review opening, midday, and close health/log/job receipts for two business
    days and retain Render rollback readiness for at least seven days.
 3. Stripe remains website-only and the unused Instantly event webhook remains

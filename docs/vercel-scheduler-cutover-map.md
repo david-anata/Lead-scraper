@@ -1,12 +1,10 @@
 # Render-to-Vercel scheduler cutover map
 
-Status: production handoff completed for every retained job except `daily-lead-build`, which remains disabled pending a valid Apollo API key
 
 Reviewed against the live Render dashboard on August 13, 2026. Render stays authoritative until cutover approval.
 
 | Render job | Live Render cadence | Vercel replacement | Vercel cadence | Cutover disposition |
 | --- | --- | --- | --- | --- |
-| `daily-lead-build` (`crn-d6pnlrn5gffc73dnm5a0`) | Weekdays 05:00 UTC, date in Denver, maximum 150 domains | `/api/vercel-cron/daily-lead-build` | Weekdays 05:00 UTC | Retain. Same date, limit, lead-builder service, and external handoff behavior; disabled before cutover. |
 | `sales-support-stale-scan` (`crn-d6qdnrfpm1nc73b13mf0`) | Weekdays 15:00 UTC | `/api/vercel-cron/stale-leads` | Weekdays 15:00 UTC | Retain one-for-one. |
 | `sales-support-operator-review` (`crn-d928ivq8qa3s73d0igu0`) | Hourly at :05; also runs HR reminders | `/api/vercel-cron/sales-operator` and `/api/vercel-cron/hr-reminders` | Hourly at :05 | Retain as two independently receipted steps so one failure cannot hide the other. |
 | `website-ops-scheduler` (`crn-d9jc35navr4c73c7qmrg`) | Hourly at :00 | `/api/vercel-cron/website-ops` | Hourly at :00 | Retain one-for-one. |

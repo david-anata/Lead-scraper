@@ -83,49 +83,6 @@ def append_processed_domains_db(domains: set[str], run_date: str) -> None:
             company.last_seen_at = datetime.now(timezone.utc)
 
 
-def load_apollo_attempts_db() -> dict[str, dict[str, str]]:
-    with session_scope(SESSION_FACTORY) as session:
-        rows = session.execute(
-            select(Cooldown).where(Cooldown.scope == "apollo_people_domain")
-        ).scalars()
-        attempts = {
-            str(row.entity_key or "").strip().lower(): {
-                "domain": str(row.entity_key or "").strip().lower(),
-                "last_attempted_at": row.last_attempted_at.isoformat() if row.last_attempted_at else "",
-                "result": row.result or "",
-                "cooldown_until": row.cooldown_until.isoformat() if row.cooldown_until else "",
-            }
-            for row in rows
-            if str(row.entity_key or "").strip()
-        }
-    return attempts
-
-
-def upsert_apollo_attempts_db(attempt_rows: list[dict[str, str]]) -> None:
-    if not attempt_rows:
-        return
-    with session_scope(SESSION_FACTORY) as session:
-        existing = {
-            str(row.entity_key or "").strip().lower(): row
-            for row in session.execute(
-                select(Cooldown).where(Cooldown.scope == "apollo_people_domain")
-            ).scalars()
-        }
-        for attempt in attempt_rows:
-            domain = str(attempt.get("domain") or "").strip().lower()
-            if not domain:
-                continue
-            cooldown = existing.get(domain)
-            if cooldown is None:
-                cooldown = Cooldown(scope="apollo_people_domain", entity_key=domain)
-                session.add(cooldown)
-                existing[domain] = cooldown
-            cooldown.result = str(attempt.get("result") or "")
-            cooldown.last_attempted_at = _parse_iso_datetime(str(attempt.get("last_attempted_at") or ""))
-            cooldown.cooldown_until = _parse_iso_datetime(str(attempt.get("cooldown_until") or ""))
-            cooldown.metadata_json = dict(attempt)
-
-
 def load_source_cursor_db(source_key: str, default: int) -> int:
     with session_scope(SESSION_FACTORY) as session:
         cursor = session.execute(

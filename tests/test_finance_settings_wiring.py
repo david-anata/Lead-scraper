@@ -6,7 +6,7 @@ from sales_support_agent.api.cashflow_router import _finance_settings, _plaid_cl
 
 
 def test_finance_prefers_full_agent_settings_over_root_app_settings():
-    root_settings = SimpleNamespace(apollo_api_key="legacy-root")
+    root_settings = SimpleNamespace()
     agent_settings = SimpleNamespace(
         plaid_client_id="client",
         plaid_secret="secret",

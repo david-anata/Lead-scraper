@@ -20,15 +20,6 @@ from fastapi import APIRouter, File, Form, Header, HTTPException, Request, Uploa
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from sqlalchemy import func, inspect, select, text
 
-from main import (
-    ICPBuildRequest as LeadBuildRequest,
-    enqueue_lead_build,
-    fetch_lead_run_status,
-    get_lead_run_csv,
-    get_missing_required_settings as get_missing_lead_builder_settings,
-    load_settings as load_lead_builder_settings,
-)
-
 from sales_support_agent.config import get_missing_runtime_settings
 from sales_support_agent.integrations.clickup import ClickUpAPIError, ClickUpClient
 from sales_support_agent.integrations.gmail import GmailClient, GmailIntegrationError
@@ -188,23 +179,6 @@ def _validate_runtime(request: Request) -> None:
         )
 
 
-def _lead_builder_status(settings: Optional[object] = None) -> dict[str, object]:
-    try:
-        lead_settings = load_lead_builder_settings()
-        missing = get_missing_lead_builder_settings(lead_settings)
-        if not missing:
-            return {"ready": True, "missing": [], "mode": "local"}
-        remote_url = getattr(settings, "lead_build_url", "") if settings is not None else ""
-        if remote_url:
-            return {"ready": True, "missing": missing, "mode": "remote", "lead_build_url": str(remote_url)}
-        return {"ready": False, "missing": missing, "mode": "local"}
-    except Exception as exc:
-        remote_url = getattr(settings, "lead_build_url", "") if settings is not None else ""
-        if remote_url:
-            return {"ready": True, "missing": [str(exc)], "mode": "remote", "lead_build_url": str(remote_url)}
-        return {"ready": False, "missing": [str(exc)], "mode": "local"}
-
-
 def _require_admin_enabled(request: Request) -> None:
     if not admin_login_enabled(request.app.state.settings):
         raise HTTPException(
@@ -339,7 +313,6 @@ def _inline_sync_dashboard_data(request: Request, settings) -> dict[str, object]
         dashboard = build_dashboard_data(
             settings=settings,
             session=session,
-            lead_builder_status=_lead_builder_status(settings),
             clickup_client=ClickUpClient(settings),
             include_deck_history=False,
         )
@@ -355,104 +328,6 @@ def _inline_sync_executive_data(request: Request, settings) -> dict[str, object]
             clickup_client=ClickUpClient(settings),
         )
     return executive_data_to_dict(executive)
-
-
-def _remote_lead_builder_url(request: Request) -> str:
-    return str(getattr(request.app.state.settings, "lead_build_url", "") or "").rstrip("/")
-
-
-def _queue_remote_lead_build(request: Request, payload: dict[str, object]) -> dict[str, object]:
-    lead_build_url = _remote_lead_builder_url(request)
-    if not lead_build_url:
-        raise HTTPException(status_code=503, detail="LEAD_BUILD_URL is not configured on this service.")
-    response = requests.post(
-        f"{lead_build_url}/run-lead-build?async=true",
-        headers={"Content-Type": "application/json", "X-Scheduler-Source": "admin_dashboard"},
-        json=payload,
-        timeout=60,
-    )
-    payload_json = response.json()
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=payload_json.get("detail") or payload_json.get("message") or "Remote lead build failed.")
-    details = dict(payload_json.get("details") or {})
-    run_id = str(details.get("run_id") or "")
-    return {
-        "run_id": run_id,
-        "poll_url": f"/admin/api/lead-runs/{run_id}",
-        "download_url": f"/admin/api/lead-runs/{run_id}/download",
-        "remote": True,
-    }
-
-
-def _fetch_remote_lead_run_status(request: Request, run_id: str) -> Optional[dict[str, object]]:
-    lead_build_url = _remote_lead_builder_url(request)
-    if not lead_build_url:
-        return None
-    response = requests.get(f"{lead_build_url}/lead-runs/{run_id}", timeout=30)
-    if response.status_code == 404:
-        return None
-    response.raise_for_status()
-    payload = response.json()
-    return dict(payload.get("details") or {})
-
-
-def _download_remote_lead_run(request: Request, run_id: str) -> Optional[Response]:
-    lead_build_url = _remote_lead_builder_url(request)
-    if not lead_build_url:
-        return None
-    response = requests.get(f"{lead_build_url}/lead-runs/{run_id}/download", timeout=60)
-    if response.status_code == 404:
-        return None
-    if response.status_code == 409:
-        return JSONResponse(status_code=409, content={"detail": "Lead run is not complete yet."})
-    if response.status_code >= 400:
-        try:
-            payload = response.json()
-        except Exception:
-            payload = {"detail": "Remote lead run download failed."}
-        return JSONResponse(status_code=response.status_code, content=payload)
-    return Response(
-        content=response.content,
-        media_type=response.headers.get("content-type", "text/csv"),
-        headers={"Content-Disposition": response.headers.get("content-disposition", 'attachment; filename="instantly_upload.csv"')},
-    )
-
-
-def _run_dashboard_sync(app: object, *, trigger: str) -> dict[str, object]:
-    settings = app.state.settings
-    with session_scope(app.state.session_factory) as session:
-        clickup_summary = ClickUpSyncService(settings, ClickUpClient(settings), session).sync_list(include_closed=True)
-        stale_summary = StaleLeadJob(settings, ClickUpClient(settings), SlackClient(settings), session).run(dry_run=True)
-        mirrored_leads = list(
-            session.execute(
-                select(LeadMirror).where(LeadMirror.list_id == settings.clickup_list_id)
-            ).scalars()
-        )
-    active_leads = sum(
-        1
-        for lead in mirrored_leads
-        if is_active_pipeline_status(
-            lead.status or "",
-            active_statuses=settings.active_statuses,
-            inactive_statuses=settings.inactive_statuses,
-        )
-    )
-    synced_tasks = int(clickup_summary.get("synced_tasks", 0) or 0)
-    if synced_tasks == 0:
-        message = "Dashboard sync finished, but ClickUp returned 0 tasks. Check CLICKUP_LIST_ID and ClickUp token access."
-    elif active_leads == 0:
-        message = "Dashboard sync finished, but 0 tasks are still classified as in-flight opportunities. Check your ClickUp status names."
-    else:
-        message = f"Dashboard sync finished. Synced {synced_tasks} tasks and found {active_leads} active leads."
-    return {
-        "clickup_sync": clickup_summary,
-        "stale_lead_scan": stale_summary,
-        "gmail_sync": {"status": "skipped", "reason": "enable once Gmail OAuth is fixed"},
-        "trigger": trigger,
-        "mirrored_leads": len(mirrored_leads),
-        "active_leads": active_leads,
-        "message": message,
-    }
 
 
 def _dashboard_sync_worker(app: object, *, trigger: str) -> None:
@@ -1040,7 +915,6 @@ def admin_dashboard(request: Request) -> Response:
         dashboard = build_dashboard_data(
             settings=settings,
             session=session,
-            lead_builder_status=_lead_builder_status(settings),
             clickup_client=ClickUpClient(settings),
             include_deck_history=False,
         )
@@ -1153,7 +1027,6 @@ def admin_sales_decks(request: Request) -> Response:
         dashboard = build_dashboard_data(
             settings=settings,
             session=session,
-            lead_builder_status=_lead_builder_status(settings),
             clickup_client=ClickUpClient(settings),
             include_lead_queue=False,
         )
@@ -1499,7 +1372,6 @@ def admin_dashboard_data(
         dashboard = build_dashboard_data(
             settings=settings,
             session=session,
-            lead_builder_status=_lead_builder_status(settings),
             clickup_client=ClickUpClient(settings),
         )
     details = dashboard_data_to_dict(dashboard)
@@ -1726,91 +1598,6 @@ def admin_executive_data(
         status="ok",
         message="Executive summary data loaded.",
         details=details,
-    )
-
-
-@router.post("/admin/api/run-lead-build", response_model=None)
-async def admin_run_lead_build(request: Request) -> Response:
-    _require_admin_enabled(request)
-    if not _is_admin_authenticated(request):
-        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
-    lead_builder_status = _lead_builder_status(request.app.state.settings)
-    if not lead_builder_status.get("ready"):
-        return JSONResponse(
-            status_code=503,
-            content={
-                "detail": "Lead builder is not configured on this service.",
-                "missing": lead_builder_status.get("missing", []),
-            },
-        )
-
-    payload = await request.json()
-    build_request = LeadBuildRequest(**payload)
-    if lead_builder_status.get("mode") == "remote":
-        remote_details = _queue_remote_lead_build(request, build_request.model_dump())
-        return JSONResponse(
-            status_code=202,
-            content={
-                "status": "queued",
-                "message": "Lead build queued on the remote lead engine.",
-                "details": remote_details,
-            },
-        )
-
-    run_id = enqueue_lead_build(build_request, scheduler_source="admin_dashboard")
-    return JSONResponse(
-        status_code=202,
-        content={
-            "status": "queued",
-            "message": "Lead build queued.",
-            "details": {
-                "run_id": run_id,
-                "poll_url": f"/admin/api/lead-runs/{run_id}",
-                "download_url": f"/admin/api/lead-runs/{run_id}/download",
-            },
-        },
-    )
-
-
-@router.get("/admin/api/lead-runs/{run_id}", response_model=None)
-def admin_lead_run_status(request: Request, run_id: str) -> JSONResponse:
-    _require_admin_enabled(request)
-    if not _is_admin_authenticated(request):
-        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
-
-    payload = fetch_lead_run_status(run_id)
-    if payload is None:
-        payload = _fetch_remote_lead_run_status(request, run_id)
-    if payload is None:
-        return JSONResponse(status_code=404, content={"detail": "Lead run not found."})
-    return JSONResponse(status_code=200, content={"status": "ok", "message": "Lead run status loaded.", "details": payload})
-
-
-@router.get("/admin/api/lead-runs/{run_id}/download", response_model=None)
-def admin_lead_run_download(request: Request, run_id: str) -> Response:
-    _require_admin_enabled(request)
-    if not _is_admin_authenticated(request):
-        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
-
-    payload = fetch_lead_run_status(run_id)
-    if payload is None:
-        remote_response = _download_remote_lead_run(request, run_id)
-        if remote_response is not None:
-            return remote_response
-    if payload is None:
-        return JSONResponse(status_code=404, content={"detail": "Lead run not found."})
-    if payload.get("status") != "completed":
-        return JSONResponse(status_code=409, content={"detail": "Lead run is not complete yet."})
-
-    csv_content = get_lead_run_csv(run_id)
-    if not csv_content:
-        return JSONResponse(status_code=404, content={"detail": "No CSV was produced for this run."})
-
-    filename_date = str(payload.get("run_date") or "lead_run")
-    return Response(
-        content=csv_content,
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename=\"instantly_upload_{filename_date}.csv\"'},
     )
 
 

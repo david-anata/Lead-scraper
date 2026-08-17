@@ -85,7 +85,6 @@ _RAW_RULES: list[tuple[str, str]] = [
     (r"LOOM|LOOM\.COM", "software"),
     (r"MICROSOFT|MICROSOFT#", "software"),
     (r"GODADDY|DNH\*GODADDY", "software"),
-    (r"APOLLO\.IO", "software"),
     (r"HEYREACH", "software"),
     (r"HUNTER\.IO", "software"),
     (r"APPFOLIO", "software"),

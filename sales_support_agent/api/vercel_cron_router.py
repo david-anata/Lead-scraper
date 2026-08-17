@@ -66,7 +66,6 @@ _WRITE_SCHEDULES = (
     "sales-operator",
     "hr-reminders",
     "building-operations",
-    "daily-lead-build",
     "outbound-morning",
 )
 
@@ -291,35 +290,6 @@ def website_ops_cron(
     if response := _authorize(authorization, "website-ops"):
         return response
     return _run_embedded_pulse(request.app.state.settings, datetime.now(_DENVER))
-
-
-@router.get("/daily-lead-build")
-def daily_lead_build_cron(
-    request: Request,
-    authorization: str | None = Header(default=None),
-):
-    """Run the original weekday lead build with Render's exact input contract."""
-
-    if response := _authorize(authorization, "daily-lead-build"):
-        return response
-    import main as lead_builder
-
-    payload = lead_builder.ICPBuildRequest(
-        date=datetime.now(_DENVER).date().isoformat(),
-        max_domains=150,
-    )
-    result = lead_builder.execute_lead_build(
-        payload,
-        scheduler_source="vercel_cron",
-    )
-    return {
-        "status": "succeeded",
-        "date": payload.date,
-        "max_domains": payload.max_domains,
-        "domains_scanned": result.raw_scanned,
-        "accepted_lead_target": result.accepted_lead_target,
-        "personal_contacts_found": result.successful_contacts,
-    }
 
 
 @router.get("/content")

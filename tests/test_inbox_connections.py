@@ -155,7 +155,6 @@ class InboxConnectionsTests(unittest.TestCase):
                 sales_agent_db_url="postgresql+psycopg://example",
                 clickup_api_token="clickup-token",
                 clickup_list_id="clickup-list",
-                lead_build_url="https://lead-builder.example",
                 deck_public_base_url="https://agent.example",
                 shared_brand_package_path="/opt/render/project/src/shared/anata_brand",
                 website_ops_execute_approved=True,
@@ -184,7 +183,6 @@ class InboxConnectionsTests(unittest.TestCase):
         self.assertIn("HubSpot write token", html)
         self.assertIn("Sales write-back path", html)
         self.assertIn("Preview first", html)
-        self.assertIn("https://lead-builder.example", html)
         self.assertIn("https://agent.example", html)
         self.assertIn("deployment environment", html)
         self.assertNotIn("Render environment", html)

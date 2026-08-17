@@ -245,7 +245,6 @@ def render_settings_page(
         db_backend = "—"
     clickup_token = getattr(s, "clickup_api_token", "") or ""
     clickup_list = getattr(s, "clickup_list_id", "") or ""
-    lead_build_url = _esc(getattr(s, "lead_build_url", "") or "—")
     deck_public_base_url = _esc(getattr(s, "deck_public_base_url", "") or "—")
     brand_package_path = _esc(str(getattr(s, "shared_brand_package_path", "") or "—"))
 
@@ -256,7 +255,6 @@ def render_settings_page(
         <tr><td>App database</td><td>{_configured(bool(db_url))} · {db_backend}</td></tr>
         <tr><td>ClickUp token</td><td>{_configured(bool(clickup_token))}</td></tr>
         <tr><td>ClickUp list</td><td>{_configured(bool(clickup_list))}</td></tr>
-        <tr><td>Lead builder endpoint</td><td>{lead_build_url}</td></tr>
         <tr><td>Deck public base URL</td><td>{deck_public_base_url}</td></tr>
         <tr><td>Brand package path</td><td>{brand_package_path}</td></tr>
       </table>

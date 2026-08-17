@@ -17,7 +17,6 @@ EXPECTED_SCHEDULES = {
     "/api/vercel-cron/durable-tasks": "*/5 * * * *",
     "/api/vercel-cron/daily-digest": "0 16 * * 1-5",
     "/api/vercel-cron/building-operations": "20 * * * *",
-    "/api/vercel-cron/daily-lead-build": "0 5 * * 1-5",
     "/api/jobs/outbound-morning/run": "0 13,14 * * *",
 }
 

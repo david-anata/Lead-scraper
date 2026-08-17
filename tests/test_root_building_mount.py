@@ -65,7 +65,6 @@ def test_both_entrypoints_mount_complete_building_surface() -> None:
 
 def test_root_runtime_uses_complete_agent_settings_for_operational_routers() -> None:
     test_app = FastAPI()
-    lead_builder = SimpleNamespace(apollo_api_key="lead-builder")
     agent_settings = SimpleNamespace(
         internal_api_key="agent-internal",
         building_campaign_token_secret="building-csrf",
@@ -75,9 +74,8 @@ def test_root_runtime_uses_complete_agent_settings_for_operational_routers() -> 
         "sales_support_agent.config.load_settings",
         return_value=agent_settings,
     ):
-        production_main._configure_agent_runtime_settings(test_app, lead_builder)
+        production_main._configure_agent_runtime_settings(test_app)
 
-    assert test_app.state.lead_builder_settings is lead_builder
     assert test_app.state.agent_settings is agent_settings
     assert test_app.state.settings is agent_settings
 

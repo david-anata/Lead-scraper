@@ -1,8 +1,8 @@
-# Clay Table Blueprint — the Apollo replacement
+# Clay Table Blueprint — the enrichment handoff
 
 Goal: take a bare list of ecommerce store domains from StoreLeads and turn each one into a
 real decision-maker with a verified email and one personalized line, then push only the good,
-qualified leads into Instantly. Clay does everything Apollo used to do, plus the qualification
+qualified leads into Instantly. Clay handles contact enrichment and qualification
 and personalization.
 
 Build this as one Clay table, left to right. Each numbered item is one column.

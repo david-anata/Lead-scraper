@@ -50,15 +50,6 @@ _SHADOW_CONTRACTS: dict[str, dict[str, Any]] = {
         "tables": ("building_inquiries", "building_campaigns", "scheduled_job_runs"),
         "config": (),
     },
-    "daily-lead-build": {
-        "tables": ("scheduled_job_runs",),
-        "config": (
-            ("STORELEADS_API_KEY",),
-            ("APOLLO_API_KEY",),
-            ("SLACK_BOT_TOKEN",),
-            ("SLACK_CHANNEL_ID",),
-        ),
-    },
     "outbound-morning": {
         "tables": ("outbound_settings", "scheduled_job_runs"),
         "config": (("STORELEADS_API_KEY",),),

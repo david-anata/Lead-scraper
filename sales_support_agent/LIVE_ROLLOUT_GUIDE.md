@@ -2,7 +2,7 @@
 
 ## Goal
 
-Launch the sales support agent using the same stack pattern as the current lead builder:
+Launch the sales support agent using the same stack pattern as the existing service:
 
 - GitHub repo for source control
 - Render web service for the FastAPI app
@@ -58,7 +58,7 @@ git push origin main
 
 ## Part 2: Create the Render Web Service
 
-This follows the same pattern as the current lead builder app.
+This follows the same pattern as the existing service app.
 
 Render web services are configured in the Dashboard under `+ New > Web Service`. Source: [Render Web Services docs](https://render.com/docs/web-services).
 
@@ -95,7 +95,7 @@ Where to click:
 Recommended values:
 
 - Name: `sales-support-agent`
-- Region: same region as your current lead builder service
+- Region: same region as your existing service
 - Branch: `main`
 - Runtime: `Python 3`
 - Root Directory: leave blank unless your Render setup already uses a subdirectory
@@ -105,7 +105,7 @@ Recommended values:
 Where to click:
 
 1. In the `Name` field, type `sales-support-agent`.
-2. In `Region`, choose the same region as the lead builder.
+2. In `Region`, choose the same region as the existing service.
 3. In `Branch`, choose `main`.
 4. In `Runtime`, choose `Python 3`.
 5. In `Build Command`, paste:
@@ -358,7 +358,7 @@ Slack should now be treated as the urgent attention layer, not the full reportin
 
 ### Step 15: Confirm the existing Slack bot token and channel
 
-If you already use Slack with the lead builder, you may be able to reuse the same bot token and channel.
+If you already use Slack with the existing service, you may be able to reuse the same bot token and channel.
 
 Required:
 
@@ -698,7 +698,7 @@ Then test:
 
 ## Part 8: Create Render Cron
 
-The current lead builder already uses Render Cron as the primary scheduler. Source: [Render Cron Jobs docs](https://render.com/docs/cronjobs).
+The existing application uses scheduled jobs for recurring operations. Source: [Render Cron Jobs docs](https://render.com/docs/cronjobs).
 
 ### Step 26: Create the stale-lead Render Cron
 
@@ -764,7 +764,6 @@ Confirm:
 
 ## Part 9: Add GitHub Actions Backup
 
-This mirrors the backup approach already used by the lead builder workflow in [`.github/workflows/daily-lead-build.yml`](/Users/davidnarayan/Documents/Playground/Lead-scraper/.github/workflows/daily-lead-build.yml).
 
 ### Step 30: Confirm the backup GitHub Actions workflow exists
 

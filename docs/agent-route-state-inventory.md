@@ -46,8 +46,6 @@ Routes inventoried: **689**
 | Admin / shared | `/admin/api/deck-runs/{run_id}/attach-deal` | `POST` | Authenticated + route permission | `admin_attach_deck_run_to_deal` | Mutation; preserve confirmation/audit contract | 3–6 |
 | Admin / shared | `/admin/api/digital-shelf/generate-deck` | `POST` | Authenticated + route permission | `admin_digital_shelf_generate_deck` | Mutation; preserve confirmation/audit contract | 3–6 |
 | Admin / shared | `/admin/api/generate-deck` | `POST` | Authenticated + route permission | `admin_generate_deck` | Mutation; preserve confirmation/audit contract | 3–6 |
-| Admin / shared | `/admin/api/lead-runs/{run_id}` | `GET` | Authenticated + route permission | `admin_lead_run_status` | Read, navigate, or download | 3–6 |
-| Admin / shared | `/admin/api/lead-runs/{run_id}/download` | `GET` | Authenticated + route permission | `admin_lead_run_download` | Read, navigate, or download | 3–6 |
 | Admin / shared | `/admin/api/outbound/amazon-scan` | `GET` | Authenticated + route permission | `outbound_amazon_scan_status` | Read, navigate, or download | 3–6 |
 | Admin / shared | `/admin/api/outbound/amazon-scan` | `POST` | Authenticated + route permission | `outbound_amazon_scan` | Mutation; preserve confirmation/audit contract | 3–6 |
 | Admin / shared | `/admin/api/outbound/brands.csv` | `GET` | Authenticated + route permission | `outbound_brands_csv` | Read, navigate, or download | 3–6 |
@@ -62,7 +60,6 @@ Routes inventoried: **689**
 | Admin / shared | `/admin/api/outbound/run-morning` | `POST` | Authenticated + route permission | `outbound_run_morning` | Mutation; preserve confirmation/audit contract | 3–6 |
 | Admin / shared | `/admin/api/outbound/settings` | `POST` | Authenticated + route permission | `outbound_save_settings` | Mutation; preserve confirmation/audit contract | 3–6 |
 | Admin / shared | `/admin/api/outbound/video-url` | `POST` | Authenticated + route permission | `outbound_set_video_url` | Mutation; preserve confirmation/audit contract | 3–6 |
-| Admin / shared | `/admin/api/run-lead-build` | `POST` | Authenticated + route permission | `admin_run_lead_build` | Mutation; preserve confirmation/audit contract | 3–6 |
 | Admin / shared | `/admin/api/sync-dashboard` | `POST` | Authenticated + route permission | `admin_sync_dashboard` | Mutation; preserve confirmation/audit contract | 3–6 |
 | Admin / shared | `/admin/api/sync-dashboard/status` | `GET` | Authenticated + route permission | `admin_sync_dashboard_status` | Read, navigate, or download | 3–6 |
 | Admin / shared | `/admin/api/website-ops/actions/execute-approved` | `POST` | Authenticated + route permission | `admin_website_ops_execute_approved` | Mutation; preserve confirmation/audit contract | 3–6 |
@@ -652,7 +649,6 @@ Routes inventoried: **689**
 | Service / API | `/api/vercel-cron/building-operations` | `GET` | Service contract | `building_operations_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/content` | `GET` | Service contract | `content_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/daily-digest` | `GET` | Service contract | `daily_digest_cron` | Read, navigate, or download | Exempt |
-| Service / API | `/api/vercel-cron/daily-lead-build` | `GET` | Service contract | `daily_lead_build_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/durable-recovery-probe` | `GET` | Service contract | `durable_recovery_probe` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/durable-tasks` | `GET` | Service contract | `durable_tasks_cron` | Read, navigate, or download | Exempt |
 | Service / API | `/api/vercel-cron/gmail-sync` | `GET` | Service contract | `gmail_sync_cron` | Read, navigate, or download | Exempt |

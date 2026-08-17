@@ -2,10 +2,8 @@
 
 ## Project Mission
 
-This repo now supports two related operational tools:
-
-1. the original outbound lead-scraper service
-2. the ClickUp sales support agent that keeps existing leads moving after creation
+This repo supports the unified Anata Agent internal operating workspace and its
+StoreLeads-based outbound system.
 
 The sales support agent powers an internal sales support automation flow that ensures Account Executives follow up on time, maintain CRM hygiene in ClickUp, and do not let opportunities go stale.
 
@@ -19,7 +17,7 @@ The sales support agent powers an internal sales support automation flow that en
 
 ## Current File Structure
 
-- `main.py`: original single-file lead-scraper FastAPI app
+- `main.py`: unified FastAPI application entry point
 - `sales_support_agent/`: modular sales support agent app
 - `requirements.txt`: shared Python dependencies
 - `README.md`: repo-level instructions
@@ -64,11 +62,7 @@ pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Lead-scraper routes:
-
-- `GET /`
-- `GET /health`
-- `POST /run-lead-build`
+Core routes include `GET /`, `GET /health`, and the authenticated `/admin` workspace.
 
 Sales support agent:
 
@@ -79,12 +73,8 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 
 ## Required Environment Variables
 
-Lead-scraper required variables:
-
-- `STORELEADS_API_KEY`
-- `APOLLO_API_KEY`
-- `SLACK_BOT_TOKEN`
-- `SLACK_CHANNEL_ID`
+Outbound sourcing requires `STORELEADS_API_KEY`. Delivery integrations are configured
+independently and must fail clearly when their own required variables are absent.
 
 Sales support agent required variables:
 
@@ -103,14 +93,8 @@ Each app should fail clearly when its own required variables are missing.
 
 Preserve business logic unless the user explicitly asks to change it.
 
-That includes:
-
-- the current lead selection flow
-- StoreLeads query behavior
-- Apollo filtering behavior
-- CSV output shape
-- Slack upload and summary behavior
-- route paths and response behavior
+That includes the supported StoreLeads recipe, qualification, deduplication, Clay,
+Instantly, and HeyReach contracts unless the user explicitly changes them.
 
 For the sales support agent:
 

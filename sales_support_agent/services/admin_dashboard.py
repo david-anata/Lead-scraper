@@ -67,8 +67,6 @@ class DashboardData:
     # construction sites pass every field explicitly.
     sync_auto_enabled: bool = False
     sync_stale_after_minutes: int = 0
-    lead_builder_ready: bool = False
-    lead_builder_missing: list[str] = field(default_factory=list)
     deck_generator_ready: bool = False
     deck_generator_missing: list[str] = field(default_factory=list)
     recent_deck_runs: list[dict[str, object]] = field(default_factory=list)
@@ -557,8 +555,6 @@ def dashboard_data_to_dict(data: DashboardData) -> dict[str, object]:
         "latest_run_summary": data.latest_run_summary,
         "sync_auto_enabled": data.sync_auto_enabled,
         "sync_stale_after_minutes": data.sync_stale_after_minutes,
-        "lead_builder_ready": data.lead_builder_ready,
-        "lead_builder_missing": data.lead_builder_missing,
         "deck_generator_ready": data.deck_generator_ready,
         "deck_generator_missing": data.deck_generator_missing,
         "recent_deck_runs": data.recent_deck_runs,
@@ -606,8 +602,6 @@ def dashboard_data_from_dict(payload: dict[str, object]) -> DashboardData:
         latest_run_summary=dict(payload.get("latest_run_summary", {})),
         sync_auto_enabled=bool(payload.get("sync_auto_enabled", True)),
         sync_stale_after_minutes=int(payload.get("sync_stale_after_minutes", 30) or 30),
-        lead_builder_ready=bool(payload.get("lead_builder_ready")),
-        lead_builder_missing=[str(item) for item in payload.get("lead_builder_missing", [])],
         deck_generator_ready=bool(payload.get("deck_generator_ready")),
         deck_generator_missing=[str(item) for item in payload.get("deck_generator_missing", [])],
         recent_deck_runs=[dict(item) for item in payload.get("recent_deck_runs", [])],
@@ -800,7 +794,6 @@ def _display_source_name(raw_value: str) -> str:
         return "Unknown"
 
     known_labels = {
-        "apollo": "Apollo",
         "clickup": "ClickUp",
         "gmail": "Gmail",
         "instantly": "Instantly",
@@ -989,7 +982,6 @@ def build_dashboard_data(
     *,
     settings: Settings,
     session: Session,
-    lead_builder_status: dict[str, object],
     clickup_client: object | None = None,
     as_of_date: date | None = None,
     max_items_per_owner: int = 8,
@@ -1192,8 +1184,6 @@ def build_dashboard_data(
         latest_run_summary=latest_run_summary,
         sync_auto_enabled=settings.dashboard_auto_sync_enabled,
         sync_stale_after_minutes=max(1, settings.dashboard_auto_sync_max_age_minutes),
-        lead_builder_ready=bool(lead_builder_status.get("ready")),
-        lead_builder_missing=[str(item) for item in lead_builder_status.get("missing", [])],
         deck_generator_ready=True,
         deck_generator_missing=deck_generator_missing,
         recent_deck_runs=recent_deck_runs,
@@ -2019,14 +2009,6 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
         if data.sync_auto_enabled
         else "Ready."
     )
-    lead_builder_notice = (
-        '<div class="notice warning">Lead builder is missing env vars: '
-        + html.escape(", ".join(data.lead_builder_missing))
-        + "</div>"
-        if not data.lead_builder_ready
-        else '<div class="notice success">Lead builder is ready. Running it here will still add leads to Instantly and return the CSV immediately.</div>'
-    )
-    today_value = data.as_of_date.isoformat()
     latest_run_summary = data.latest_run_summary or {}
     dashboard_error = str(latest_run_summary.get("dashboard_error", "") or "").strip()
     sync_state, sync_state_note = _sync_confidence_state(
@@ -3679,29 +3661,6 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
                 <div class="status-line" id="sync-status">{sync_status_initial}</div>
               </div>
 
-              <div class="panel-card" id="lead-pull-panel">
-                <div class="card-title-line">
-                  <h3>Run lead pull</h3>
-                  {info_hint("Runs the outbound lead pipeline from this dashboard. It sources fresh companies, finds matched contacts, adds accepted leads into Instantly, and then returns the CSV download for review.")}
-                </div>
-                <p>Run the active lead pipeline here. Leads still go to Instantly first, then the CSV downloads immediately.</p>
-                {lead_builder_notice}
-                <form class="lead-form" id="lead-build-form">
-                  <label>
-                    Run date
-                    <input type="date" name="date" value="{html.escape(today_value)}" required />
-                  </label>
-                  <label>
-                    Max domains
-                    <input type="number" name="max_domains" min="1" max="1000" step="1" value="150" required />
-                  </label>
-                  <div class="lead-submit">
-                    <button type="submit">PULL LEADS</button>
-                  </div>
-                </form>
-                <div class="status-line" id="run-status">Scrape Status: Ready.</div>
-              </div>
-
               <section class="meta-card">
                 <div class="card-title-line">
                   <h2>Board health</h2>
@@ -3730,8 +3689,6 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       const latestSyncIso = {json.dumps(latest_sync_iso)};
       const dashboardAutoSyncEnabled = {json.dumps(data.sync_auto_enabled)};
       const dashboardSyncMaxAgeMinutes = {int(data.sync_stale_after_minutes)};
-      const form = document.getElementById("lead-build-form");
-      const status = document.getElementById("run-status");
       const deckForm = document.getElementById("deck-generator-form");
       const deckStatus = document.getElementById("deck-status");
       const deckSubmitButton = document.getElementById("deck-submit-button");
@@ -4250,98 +4207,6 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
           syncStatus.textContent = error instanceof Error ? error.message : "Unable to auto-refresh the board.";
         }}
       }}, 150);
-
-      form?.addEventListener("submit", async (event) => {{
-        event.preventDefault();
-        status.textContent = "Queueing lead build...";
-        const formData = new FormData(form);
-        const payload = {{
-          date: formData.get("date"),
-          max_domains: Number(formData.get("max_domains") || 150),
-        }};
-        try {{
-          const response = await fetch("/admin/api/run-lead-build", {{
-            method: "POST",
-            headers: {{ "Content-Type": "application/json" }},
-            body: JSON.stringify(payload),
-          }});
-          const payloadJson = await response.json().catch(() => ({{ detail: "Lead build failed." }}));
-          if (!response.ok) {{
-            status.textContent = payloadJson.message || payloadJson.detail || payloadJson.error_type || "Lead build failed.";
-            return;
-          }}
-
-          const runId = payloadJson.details?.run_id;
-          const pollUrl = payloadJson.details?.poll_url;
-          const downloadUrl = payloadJson.details?.download_url;
-          if (!runId || !pollUrl) {{
-            status.textContent = "Lead build queued, but the run ID was missing.";
-            return;
-          }}
-
-          status.textContent = `Lead build queued. Run ID: ${{runId}}. Waiting for completion...`;
-
-          const pollRun = async () => {{
-            const statusResponse = await fetch(pollUrl, {{ method: "GET" }});
-            const statusPayload = await statusResponse.json().catch(() => ({{ detail: "Lead run polling failed." }}));
-            if (!statusResponse.ok) {{
-              status.textContent = statusPayload.detail || "Lead run polling failed.";
-              return true;
-            }}
-
-            const details = statusPayload.details || {{}};
-            const runStatus = details.status || "unknown";
-            const currentStage = details.current_stage || "queued";
-            const summary = details.summary || {{}};
-
-            if (runStatus === "completed") {{
-              const contactsFound = summary.personal_contacts_found || 0;
-              if (details.has_csv && downloadUrl) {{
-                const csvResponse = await fetch(downloadUrl, {{ method: "GET" }});
-                if (csvResponse.ok) {{
-                  const blob = await csvResponse.blob();
-                  const disposition = csvResponse.headers.get("content-disposition") || "";
-                  const match = disposition.match(/filename=\"([^\"]+)\"/);
-                  const filename = match ? match[1] : "instantly_upload.csv";
-                  const url = URL.createObjectURL(blob);
-                  const anchor = document.createElement("a");
-                  anchor.href = url;
-                  anchor.download = filename;
-                  document.body.appendChild(anchor);
-                  anchor.click();
-                  anchor.remove();
-                  URL.revokeObjectURL(url);
-                  status.textContent = `Lead build finished. CSV download started. Contacts selected: ${{contactsFound}}.`;
-                  return true;
-                }}
-              }}
-
-              status.textContent = summary.message || `Lead build finished. No CSV produced. Contacts selected: ${{contactsFound}}.`;
-              return true;
-            }}
-
-            if (runStatus === "failed") {{
-              status.textContent = details.error_message || "Lead build failed.";
-              return true;
-            }}
-
-            status.textContent = `Lead build running. Stage: ${{currentStage}}...`;
-            return false;
-          }};
-
-          for (let attempt = 0; attempt < 180; attempt += 1) {{
-            const done = await pollRun();
-            if (done) {{
-              return;
-            }}
-            await new Promise((resolve) => window.setTimeout(resolve, 2000));
-          }}
-
-          status.textContent = "Lead build is still running. Refresh later to check the run status.";
-        }} catch (error) {{
-          status.textContent = "Lead build failed before a response came back.";
-        }}
-      }});
 
       deckForm?.addEventListener("submit", async (event) => {{
         event.preventDefault();

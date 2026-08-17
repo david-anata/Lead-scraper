@@ -42,7 +42,6 @@ def test_all_vercel_crons_require_bearer_secret(monkeypatch) -> None:
         "preflight",
         "durable-recovery-probe",
         "shadow-preflight",
-        "daily-lead-build",
     ):
         assert _client().get(f"/api/vercel-cron/{path}").status_code == 401
 
@@ -61,7 +60,6 @@ def test_all_vercel_crons_are_inert_before_cutover(monkeypatch) -> None:
         "sales-operator",
         "hr-reminders",
         "building-operations",
-        "daily-lead-build",
     ):
         response = _client().get(f"/api/vercel-cron/{path}", headers=headers)
         assert response.status_code == 200
@@ -71,7 +69,7 @@ def test_all_vercel_crons_are_inert_before_cutover(monkeypatch) -> None:
 def test_global_switch_only_runs_explicitly_allowlisted_job(monkeypatch) -> None:
     monkeypatch.setenv("CRON_SECRET", "cron-secret")
     monkeypatch.setenv("VERCEL_CRON_WRITES_ENABLED", "true")
-    monkeypatch.setenv("VERCEL_CRON_ENABLED_JOBS", "daily-lead-build")
+    monkeypatch.setenv("VERCEL_CRON_ENABLED_JOBS", "content")
     headers = {"Authorization": "Bearer cron-secret"}
 
     response = _client().get("/api/vercel-cron/website-ops", headers=headers)
@@ -135,7 +133,6 @@ def test_cron_preflight_proves_prerequisites_without_enabling_writes(monkeypatch
         "sales-operator",
         "hr-reminders",
         "building-operations",
-        "daily-lead-build",
         "outbound-morning",
     ]
 
@@ -186,38 +183,6 @@ def test_durable_recovery_probe_rejects_non_staging_and_enabled_writes(monkeypat
     assert _client().get(
         "/api/vercel-cron/durable-recovery-probe", headers=headers
     ).status_code == 409
-
-
-def test_daily_lead_build_preserves_render_schedule_contract(monkeypatch) -> None:
-    monkeypatch.setenv("CRON_SECRET", "cron-secret")
-    monkeypatch.setenv("VERCEL_CRON_WRITES_ENABLED", "true")
-    monkeypatch.setenv("VERCEL_CRON_ENABLED_JOBS", "daily-lead-build")
-    observed = {}
-
-    def execute(payload, *, scheduler_source):
-        observed.update(payload=payload, scheduler_source=scheduler_source)
-        return SimpleNamespace(
-            raw_scanned=42,
-            accepted_lead_target=12,
-            successful_contacts=8,
-        )
-
-    monkeypatch.setattr("main.execute_lead_build", execute)
-    response = _client(ready=True).get(
-        "/api/vercel-cron/daily-lead-build",
-        headers={"Authorization": "Bearer cron-secret"},
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "status": "succeeded",
-        "date": observed["payload"].date,
-        "max_domains": 150,
-        "domains_scanned": 42,
-        "accepted_lead_target": 12,
-        "personal_contacts_found": 8,
-    }
-    assert observed["scheduler_source"] == "vercel_cron"
 
 
 def test_content_cron_uses_the_authenticated_scheduler_boundary(monkeypatch) -> None:
