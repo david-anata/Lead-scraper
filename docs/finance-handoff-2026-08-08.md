@@ -127,9 +127,24 @@ found" and can look like the gate itself failing.
 several times a day from parallel sessions. A stale baseline invents both
 regressions and fixes. Compare failure *sets*, never counts.
 
-**Two Render services.** `sales-support-agent` is this app.
-`Lead-scraper` is a different app that looks similar. Setting env vars on the
-wrong one has cost hours before.
+**Production is Vercel, and it does not build from `main`.** As of 2026-08-19
+`agent.anatainc.com` is served by the Vercel project `anata-agent-staging`,
+built from the branch `codex/vercel-agent-duplicate`. Work merged into `main`
+is not live. Confirm with `git log -1 origin/codex/vercel-agent-duplicate`
+before assuming anything you can see in `main` is deployed. `render.yaml` is
+still in the tree and is now history, not configuration.
+
+**The Vercel entrypoint is not the file you think it is.** `app.py` imports
+`sales_support_agent/main.py`. The root `main.py` is a second, much larger
+FastAPI application that is imported for its helpers but never served. Anything
+registered on its `@app.on_event("startup")` hooks does not run in production.
+That is how the finance background loop went silent after the migration.
+
+**Scheduled work is Vercel Cron, and it is allowlisted twice.** Schedules live
+in `vercel.json` and route into `sales_support_agent/api/vercel_cron_router.py`.
+A schedule stays inert unless `VERCEL_CRON_WRITES_ENABLED` is on *and* its job
+name is in `VERCEL_CRON_ENABLED_JOBS`. A disabled job returns HTTP 200 with
+`status: disabled`, so a green status code proves nothing about whether it ran.
 
 **~2,481 lines of unreachable page code.** Eleven complete page modules
 (`forecast.py`, `ap.py`, `ar.py`, `ledger.py`, `alerts.py`, `scenario.py`,

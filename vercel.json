@@ -72,6 +72,10 @@
       "schedule": "20 * * * *"
     },
     {
+      "path": "/api/vercel-cron/finance-sync",
+      "schedule": "10 */2 * * *"
+    },
+    {
       "path": "/api/jobs/outbound-morning/run",
       "schedule": "0 13,14 * * *"
     }

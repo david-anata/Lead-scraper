@@ -38,6 +38,7 @@ def test_all_vercel_crons_require_bearer_secret(monkeypatch) -> None:
         "sales-operator",
         "hr-reminders",
         "building-operations",
+        "finance-sync",
         "synthetic-health",
         "preflight",
         "durable-recovery-probe",
@@ -60,6 +61,7 @@ def test_all_vercel_crons_are_inert_before_cutover(monkeypatch) -> None:
         "sales-operator",
         "hr-reminders",
         "building-operations",
+        "finance-sync",
     ):
         response = _client().get(f"/api/vercel-cron/{path}", headers=headers)
         assert response.status_code == 200
@@ -134,6 +136,7 @@ def test_cron_preflight_proves_prerequisites_without_enabling_writes(monkeypatch
         "hr-reminders",
         "building-operations",
         "outbound-morning",
+        "finance-sync",
     ]
 
 

@@ -26,6 +26,26 @@ from sales_support_agent.services.sales.public_tool_alerts import (
 logger = logging.getLogger(__name__)
 
 
+def _release_connection(session: Any) -> None:
+    """Hand the database connection back before a long call to somebody else.
+
+    The pool checks a connection is alive when it hands one out, not while it
+    is held. This job spends minutes inside HubSpot and the operator snapshot
+    between its database steps, and the database closes a connection that sits
+    idle that long. Holding one across the gap is what made every scheduled run
+    fail with "SSL connection has been closed unexpectedly" after the move to
+    serverless, where the gaps got longer and the pool no longer had a
+    long-lived process keeping it warm.
+
+    Committing here returns the connection to the pool, so the next database
+    step is handed a freshly checked one. The work already done stays done,
+    which is also what we want: a run that dies in HubSpot should not silently
+    erase the audit row that says it started.
+    """
+
+    session.commit()
+
+
 class SalesOperatorReviewJob:
     def __init__(self, settings: Settings, session_factory: Any):
         self.settings = settings
@@ -51,6 +71,7 @@ class SalesOperatorReviewJob:
         with session_scope(self.session_factory) as session:
             audit = AuditService(session)
             run = audit.start_run("sales_operator_review", trigger=trigger, metadata=metadata)
+            _release_connection(session)
             try:
                 hubspot_sync_summary: dict[str, Any] = {"status": "skipped", "reason": "disabled"}
                 if run_hubspot_sync:
@@ -74,6 +95,7 @@ class SalesOperatorReviewJob:
                         trigger=trigger,
                     )
 
+                _release_connection(session)
                 writeback = run_writeback(
                     self.settings,
                     session_factory=self.session_factory,
@@ -85,6 +107,10 @@ class SalesOperatorReviewJob:
                     session_factory=self.session_factory,
                     force_refresh=True,
                 )
+                # The step that actually failed every hour: by this point the
+                # session had been idle through HubSpot, the writeback and the
+                # snapshot, and its connection was long dead.
+                _release_connection(session)
                 public_tool_alerts = (
                     {"sent": False, "skipped": True, "reason": "dry run"}
                     if dry_run
