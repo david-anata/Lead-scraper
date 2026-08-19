@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import secrets
@@ -72,6 +72,17 @@ def _session():
         session.rollback()
         raise
     finally:
+        session.close()
+
+
+@contextmanager
+def _readonly_session():
+    """A session that always rolls back, so a read path cannot persist anything."""
+    session = Session(get_engine(), expire_on_commit=False)
+    try:
+        yield session
+    finally:
+        session.rollback()
         session.close()
 
 
@@ -948,6 +959,314 @@ def record_liability_action(liability_id: int, *, action: str,
         return True, f"liability_{action}"
 
 
+def _calculate_employee_period(
+    session: Session, *, employee: dict, period, settings: dict,
+    inputs: list[dict], strict: bool = True,
+) -> dict:
+    """Compute one employee's pay for one period.
+
+    Shared by prepare_payroll and preview_payroll so a preview can never show a
+    number the real run would not produce.
+
+    strict=True is preparation: readiness has already proven every required
+    record exists, so a missing one is a programming error. strict=False is
+    preview: a missing W-4 gates the withholding lines instead of guessing a
+    filing status, and a missing opening balance is computed from zero with an
+    explicit caveat attached to the affected lines.
+    """
+    email = employee["email"]
+    employment = employee.get("employment") or {}
+    unavailable: list[dict] = []
+    caveats: list[dict] = []
+
+    workweek_start = period.start_date - timedelta(
+        days=(period.start_date.weekday() + 1) % 7
+    )
+    entries = session.query(HRTimeEntry).filter(
+        HRTimeEntry.employee_email == email,
+        HRTimeEntry.date >= workweek_start,
+        HRTimeEntry.date <= period.end_date,
+    ).all()
+    hours_by_date: dict[date, Decimal] = {}
+    for row in entries:
+        exact_hours = (
+            Decimal(row.elapsed_seconds) / Decimal(3600)
+            if row.elapsed_seconds else Decimal(str(row.hours or 0))
+        )
+        hours_by_date[row.date] = hours_by_date.get(row.date, Decimal("0")) + exact_hours
+    regular_hours, overtime_hours = period_overtime(
+        hours_by_date, period.start_date, period.end_date
+    )
+    approved_pto = Decimal(str(session.query(
+        func.coalesce(func.sum(HRPTORequest.hours), 0)
+    ).filter(
+        HRPTORequest.employee_email == email,
+        HRPTORequest.status == "approved",
+        HRPTORequest.start_date <= period.end_date,
+        HRPTORequest.end_date >= period.start_date,
+    ).scalar() or 0))
+    holidays = holiday_pay_proposals(email, period.start_date, period.end_date)
+    holiday_hours = sum((Decimal(str(row["hours"])) for row in holidays), Decimal("0"))
+    if employment.get("pay_basis") == "fixed_semimonthly":
+        base_gross = int(employment.get("fixed_pay_per_period_cents") or 0)
+        gross_parts = {
+            "regular_cents": base_gross, "overtime_cents": 0,
+            "holiday_cents": 0, "pto_cents": 0, "gross_cents": base_gross,
+        }
+    else:
+        gross_parts = hourly_gross(
+            rate_cents=int(employee.get("hourly_rate_cents") or 0),
+            regular_hours=regular_hours, overtime_hours=overtime_hours,
+            holiday_hours=holiday_hours, pto_hours=approved_pto,
+        )
+    emp_inputs = [
+        item for item in inputs
+        if item["employee_email"] == email and item["status"] == "approved"
+    ]
+    taxable_additions = sum(
+        item["amount_cents"] for item in emp_inputs
+        if item["input_type"] in {
+            "bonus", "commission", "holiday_adjustment", "manual_correction"
+        } and item["taxable"]
+    )
+    reimbursements = sum(
+        item["amount_cents"] for item in emp_inputs
+        if item["input_type"] == "reimbursement"
+    )
+    deductions = sum(
+        item["amount_cents"] for item in emp_inputs
+        if item["input_type"] in {"deduction", "garnishment"}
+    )
+    taxable_gross = gross_parts["gross_cents"] + taxable_additions
+
+    election = session.query(HRTaxElection).filter(
+        HRTaxElection.employee_email == email,
+        HRTaxElection.effective_date <= period.end_date,
+        HRTaxElection.superseded_at.is_(None),
+    ).order_by(HRTaxElection.effective_date.desc()).first()
+    if election is None:
+        if strict:
+            raise ValueError(f"missing current Form W-4 for {email}")
+        unavailable.append({
+            "line": "Federal and Utah income tax withholding",
+            "reason": "No current Form W-4 on file",
+            "detail": (
+                "Filing status, dependents, and extra withholding change this "
+                "figure materially. Nothing is shown rather than a guess."
+            ),
+        })
+        federal = None
+        utah = None
+    else:
+        federal = (
+            {"withholding_cents": 0, "trace": {
+                "method": "Form W-4 exempt election", "effective_date": "2026-01-01",
+            }}
+            if election.exempt_from_federal_withholding else
+            federal_income_tax_2026(
+                taxable_gross, filing_status=election.filing_status,
+                two_jobs=election.two_jobs,
+                dependents_credit_cents=election.dependents_credit_cents,
+                other_income_cents=election.other_income_cents,
+                deductions_cents=election.deductions_cents,
+                extra_withholding_cents=election.extra_withholding_cents,
+            )
+        )
+        utah = utah_income_tax_2026(taxable_gross, filing_status=election.filing_status)
+
+    opening = session.query(HROpeningPayrollBalance).filter_by(
+        employee_email=email, tax_year=period.end_date.year
+    ).one_or_none()
+    if opening is None:
+        if strict:
+            raise ValueError(f"missing opening payroll balance for {email}")
+        caveats.append({
+            "line": "Social Security, FUTA, and Utah unemployment",
+            "reason": f"No confirmed {period.end_date.year} opening balance",
+            "detail": (
+                "Computed as if no wages were paid before Anata's records "
+                "begin. If earlier wages exist, the wage-base caps are applied "
+                "too late and these amounts are overstated."
+            ),
+        })
+        opening_ss_cents = 0
+        opening_futa_cents = 0
+        opening_ui_cents = 0
+    else:
+        opening_ss_cents = opening.social_security_wages_cents
+        opening_futa_cents = opening.futa_wages_cents
+        opening_ui_cents = opening.utah_ui_wages_cents
+
+    prior_calculations = session.query(HRPayrollCalculation).join(
+        HRPayrollRun,
+        HRPayrollRun.base44_id == HRPayrollCalculation.payroll_run_id,
+    ).filter(
+        HRPayrollCalculation.employee_email == email,
+        HRPayrollRun.status.in_(("approved", "checks_issued", "closed")),
+        HRPayrollRun.pay_date >= date(period.end_date.year, 1, 1),
+        HRPayrollRun.pay_date < period.pay_date,
+    ).all()
+    prior_taxable_wages_cents = sum(
+        int((row.results_json or {}).get("taxable_gross_cents", 0))
+        for row in prior_calculations
+    )
+    ss_ytd_cents = opening_ss_cents + prior_taxable_wages_cents
+    futa_ytd_cents = opening_futa_cents + prior_taxable_wages_cents
+    utah_ui_ytd_cents = opening_ui_cents + prior_taxable_wages_cents
+    fica = fica_2026(taxable_gross, ytd_before_cents=ss_ytd_cents)
+
+    # The Utah unemployment rate comes from Utah's annual notice. It has no
+    # defensible default, so an unset rate gates the line rather than becoming
+    # a zero that would read as "no unemployment tax owed".
+    try:
+        utah_ui_rate = Decimal((settings.get("utah_ui_rate") or "").strip())
+    except InvalidOperation:
+        utah_ui_rate = None
+    if utah_ui_rate is None:
+        if strict:
+            raise ValueError("Utah unemployment rate is not configured")
+        unavailable.append({
+            "line": "Utah unemployment (employer)",
+            "reason": "No 2026 Utah unemployment rate on file",
+            "detail": (
+                "The rate comes from Utah's annual employer notice and cannot "
+                "be assumed. Record it in payroll settings."
+            ),
+        })
+    unemployment = employer_unemployment_2026(
+        taxable_gross,
+        futa_ytd_before_cents=futa_ytd_cents,
+        utah_ui_ytd_before_cents=utah_ui_ytd_cents,
+        utah_ui_rate=utah_ui_rate if utah_ui_rate is not None else Decimal("0"),
+    )
+    utah_ui_cents = None if utah_ui_rate is None else unemployment["utah_ui_cents"]
+    employer_taxes_cents = (
+        None if utah_ui_cents is None else (
+            fica["social_security_employer_cents"] + fica["medicare_employer_cents"]
+            + unemployment["futa_cents"] + utah_ui_cents
+        )
+    )
+
+    if federal is None or utah is None:
+        employee_taxes = None
+        net = None
+    else:
+        employee_taxes = (
+            federal["withholding_cents"] + utah["withholding_cents"]
+            + fica["social_security_employee_cents"] + fica["medicare_employee_cents"]
+        )
+        net = taxable_gross + reimbursements - employee_taxes - deductions
+
+    results = {
+        **gross_parts,
+        "taxable_additions_cents": taxable_additions,
+        "taxable_gross_cents": taxable_gross,
+        "reimbursements_cents": reimbursements,
+        "deductions_cents": deductions,
+        "federal_cents": None if federal is None else federal["withholding_cents"],
+        "utah_cents": None if utah is None else utah["withholding_cents"],
+        "social_security_cents": fica["social_security_employee_cents"],
+        "medicare_cents": fica["medicare_employee_cents"],
+        "employee_taxes_cents": employee_taxes,
+        "net_cents": net,
+        "utah_unemployment_cents": utah_ui_cents,
+        "employer_taxes_cents": employer_taxes_cents,
+    }
+    results["total_employer_cost_cents"] = (
+        None if employer_taxes_cents is None else
+        taxable_gross + reimbursements + employer_taxes_cents
+    )
+    input_snapshot = {
+        "period_start": period.start_date.isoformat(),
+        "period_end": period.end_date.isoformat(),
+        "pay_date": period.pay_date.isoformat(),
+        "employee_email": email, "regular_hours": str(regular_hours),
+        "overtime_hours": str(overtime_hours), "holiday_hours": str(holiday_hours),
+        "pto_hours": str(approved_pto), "payroll_inputs": emp_inputs,
+    }
+    trace = {
+        "federal": None if federal is None else federal["trace"],
+        "utah": None if utah is None else utah["trace"],
+        "supplemental_wages": {
+            "amount_cents": taxable_additions,
+            "method": "aggregate with regular wages",
+        },
+        "fica": {**fica, "ytd_before_cents": ss_ytd_cents},
+        "unemployment": {
+            **unemployment, "futa_ytd_before_cents": futa_ytd_cents,
+            "utah_ui_ytd_before_cents": utah_ui_ytd_cents,
+        },
+    }
+    return {
+        "employee_email": email,
+        "employee_name": employee.get("full_name") or employee.get("name") or email,
+        "pay_basis": employment.get("pay_basis"),
+        "hourly_rate_cents": employee.get("hourly_rate_cents"),
+        "regular_hours": regular_hours, "overtime_hours": overtime_hours,
+        "holiday_hours": holiday_hours, "pto_hours": approved_pto,
+        "inputs": input_snapshot, "results": results, "trace": trace,
+        "unavailable": unavailable, "caveats": caveats,
+        "complete": not unavailable,
+    }
+
+
+def preview_payroll(containing: date) -> dict:
+    """Calculate the whole period without saving anything.
+
+    This is the dry run. It writes no payroll run, no calculation rows, and no
+    audit event, and it never moves money or files a tax. It exists so the
+    rules can be read and checked before the readiness gate opens, using the
+    same code path preparation uses.
+
+    Employees whose figures depend on a missing record are still listed. The
+    lines that cannot be computed are named in each row's "unavailable" rather
+    than filled with a guess, and those employees are excluded from the totals.
+    """
+    period, settings, employees, inputs, readiness = _period_context(containing)
+    rows: list[dict] = []
+    with _readonly_session() as session:
+        for employee in employees:
+            rows.append(_calculate_employee_period(
+                session, employee=employee, period=period,
+                settings=settings, inputs=inputs, strict=False,
+            ))
+
+    complete = [row for row in rows if row["complete"]]
+
+    def _total(key: str) -> tuple[int, int]:
+        """Sum one line across the employees where it exists.
+
+        Returns the total and how many employees were left out, so the page can
+        say so instead of presenting a short total as if it covered everyone.
+        """
+        values = [row["results"][key] for row in rows]
+        known = [value for value in values if value is not None]
+        return sum(known), len(values) - len(known)
+
+    totals = {}
+    missing_counts = {}
+    for key in (
+        "taxable_gross_cents", "employer_taxes_cents", "reimbursements_cents",
+        "deductions_cents", "employee_taxes_cents", "net_cents",
+        "total_employer_cost_cents",
+    ):
+        totals[key], missing_counts[key] = _total(key)
+    totals["gross_cents"] = totals["taxable_gross_cents"]
+    totals["employer_cost_cents"] = totals["total_employer_cost_cents"]
+    return {
+        "period": period,
+        "settings": settings,
+        "readiness": readiness,
+        "rows": rows,
+        "totals": totals,
+        "missing_counts": missing_counts,
+        "complete_count": len(complete),
+        "employee_count": len(rows),
+        "totals_are_partial": len(complete) != len(rows),
+        "caveats": [c for row in rows for c in row["caveats"]],
+    }
+
+
 def prepare_payroll(containing: date, *, actor: str) -> tuple[bool, str]:
     period, settings, employees, inputs, readiness = _period_context(containing)
     if not readiness["ready"]:
@@ -962,163 +1281,28 @@ def prepare_payroll(containing: date, *, actor: str) -> tuple[bool, str]:
         source_hash = _period_source_hash(session, period, employees, inputs, settings)
         for employee in employees:
             email = employee["email"]
-            employment = employee.get("employment") or {}
-            workweek_start = period.start_date - timedelta(
-                days=(period.start_date.weekday() + 1) % 7
+            calc = _calculate_employee_period(
+                session, employee=employee, period=period,
+                settings=settings, inputs=inputs, strict=True,
             )
-            entries = session.query(HRTimeEntry).filter(
-                HRTimeEntry.employee_email == email,
-                HRTimeEntry.date >= workweek_start,
-                HRTimeEntry.date <= period.end_date,
-            ).all()
-            hours_by_date: dict[date, Decimal] = {}
-            for row in entries:
-                exact_hours = (
-                    Decimal(row.elapsed_seconds) / Decimal(3600)
-                    if row.elapsed_seconds else Decimal(str(row.hours or 0))
-                )
-                hours_by_date[row.date] = hours_by_date.get(row.date, Decimal("0")) + exact_hours
-            regular_hours, overtime_hours = period_overtime(
-                hours_by_date, period.start_date, period.end_date
-            )
-            approved_pto = Decimal(str(session.query(
-                func.coalesce(func.sum(HRPTORequest.hours), 0)
-            ).filter(
-                HRPTORequest.employee_email == email,
-                HRPTORequest.status == "approved",
-                HRPTORequest.start_date <= period.end_date,
-                HRPTORequest.end_date >= period.start_date,
-            ).scalar() or 0))
-            holidays = holiday_pay_proposals(email, period.start_date, period.end_date)
-            holiday_hours = sum((Decimal(str(row["hours"])) for row in holidays), Decimal("0"))
-            if employment.get("pay_basis") == "fixed_semimonthly":
-                base_gross = int(employment.get("fixed_pay_per_period_cents") or 0)
-                gross_parts = {
-                    "regular_cents": base_gross, "overtime_cents": 0,
-                    "holiday_cents": 0, "pto_cents": 0, "gross_cents": base_gross,
-                }
-            else:
-                gross_parts = hourly_gross(
-                    rate_cents=int(employee.get("hourly_rate_cents") or 0),
-                    regular_hours=regular_hours, overtime_hours=overtime_hours,
-                    holiday_hours=holiday_hours, pto_hours=approved_pto,
-                )
-            emp_inputs = [
-                item for item in inputs
-                if item["employee_email"] == email and item["status"] == "approved"
-            ]
-            taxable_additions = sum(
-                item["amount_cents"] for item in emp_inputs
-                if item["input_type"] in {
-                    "bonus", "commission", "holiday_adjustment", "manual_correction"
-                } and item["taxable"]
-            )
-            reimbursements = sum(
-                item["amount_cents"] for item in emp_inputs
-                if item["input_type"] == "reimbursement"
-            )
-            deductions = sum(
-                item["amount_cents"] for item in emp_inputs
-                if item["input_type"] in {"deduction", "garnishment"}
-            )
-            taxable_gross = gross_parts["gross_cents"] + taxable_additions
-            election = session.query(HRTaxElection).filter(
-                HRTaxElection.employee_email == email,
-                HRTaxElection.effective_date <= period.end_date,
-                HRTaxElection.superseded_at.is_(None),
-            ).order_by(HRTaxElection.effective_date.desc()).first()
-            federal = (
-                {"withholding_cents": 0, "trace": {
-                    "method": "Form W-4 exempt election", "effective_date": "2026-01-01",
-                }}
-                if election.exempt_from_federal_withholding else
-                federal_income_tax_2026(
-                    taxable_gross, filing_status=election.filing_status,
-                    two_jobs=election.two_jobs,
-                    dependents_credit_cents=election.dependents_credit_cents,
-                    other_income_cents=election.other_income_cents,
-                    deductions_cents=election.deductions_cents,
-                    extra_withholding_cents=election.extra_withholding_cents,
-                )
-            )
-            utah = utah_income_tax_2026(taxable_gross, filing_status=election.filing_status)
-            opening = session.query(HROpeningPayrollBalance).filter_by(
-                employee_email=email, tax_year=period.end_date.year
-            ).one()
-            prior_calculations = session.query(HRPayrollCalculation).join(
-                HRPayrollRun,
-                HRPayrollRun.base44_id == HRPayrollCalculation.payroll_run_id,
-            ).filter(
-                HRPayrollCalculation.employee_email == email,
-                HRPayrollRun.status.in_(("approved", "checks_issued", "closed")),
-                HRPayrollRun.pay_date >= date(period.end_date.year, 1, 1),
-                HRPayrollRun.pay_date < period.pay_date,
-            ).all()
-            prior_taxable_wages_cents = sum(
-                int((row.results_json or {}).get("taxable_gross_cents", 0))
-                for row in prior_calculations
-            )
-            ss_ytd_cents = opening.social_security_wages_cents + prior_taxable_wages_cents
-            futa_ytd_cents = opening.futa_wages_cents + prior_taxable_wages_cents
-            utah_ui_ytd_cents = opening.utah_ui_wages_cents + prior_taxable_wages_cents
-            fica = fica_2026(taxable_gross, ytd_before_cents=ss_ytd_cents)
-            unemployment = employer_unemployment_2026(
-                taxable_gross,
-                futa_ytd_before_cents=futa_ytd_cents,
-                utah_ui_ytd_before_cents=utah_ui_ytd_cents,
-                utah_ui_rate=Decimal(settings["utah_ui_rate"]),
-            )
-            employee_taxes = (
-                federal["withholding_cents"] + utah["withholding_cents"]
-                + fica["social_security_employee_cents"] + fica["medicare_employee_cents"]
-            )
-            net = taxable_gross + reimbursements - employee_taxes - deductions
-            if net < 0:
+            results = calc["results"]
+            input_snapshot = calc["inputs"]
+            trace = calc["trace"]
+            if results["net_cents"] < 0:
                 return False, "negative_net_pay"
-            results = {
-                **gross_parts, "taxable_additions_cents": taxable_additions,
-                "taxable_gross_cents": taxable_gross, "reimbursements_cents": reimbursements,
-                "deductions_cents": deductions, "federal_cents": federal["withholding_cents"],
-                "utah_cents": utah["withholding_cents"],
-                "social_security_cents": fica["social_security_employee_cents"],
-                "medicare_cents": fica["medicare_employee_cents"],
-                "net_cents": net, "employer_taxes_cents": (
-                    fica["social_security_employer_cents"]
-                    + fica["medicare_employer_cents"] + unemployment["futa_cents"]
-                    + unemployment["utah_ui_cents"]
-                ),
-            }
-            results["total_employer_cost_cents"] = (
-                taxable_gross + reimbursements + results["employer_taxes_cents"]
-            )
-            input_snapshot = {
-                "period_start": period.start_date.isoformat(),
-                "period_end": period.end_date.isoformat(), "pay_date": period.pay_date.isoformat(),
-                "employee_email": email, "regular_hours": str(regular_hours),
-                "overtime_hours": str(overtime_hours), "holiday_hours": str(holiday_hours),
-                "pto_hours": str(approved_pto), "payroll_inputs": emp_inputs,
-            }
-            trace = {"federal": federal["trace"], "utah": utah["trace"],
-                     "supplemental_wages": {
-                         "amount_cents": taxable_additions,
-                         "method": "aggregate with regular wages",
-                     },
-                     "fica": {**fica, "ytd_before_cents": ss_ytd_cents},
-                     "unemployment": {
-                         **unemployment, "futa_ytd_before_cents": futa_ytd_cents,
-                         "utah_ui_ytd_before_cents": utah_ui_ytd_cents,
-                     }}
             payload = json.dumps(
                 {"inputs": input_snapshot, "results": results, "trace": trace},
                 sort_keys=True, default=str, separators=(",", ":"),
             )
             snapshot_hash = hashlib.sha256(payload.encode()).hexdigest()
             calculations.append((email, input_snapshot, results, trace, snapshot_hash))
-            totals["gross"] += taxable_gross
-            totals["net"] += net
-            totals["taxes"] += employee_taxes + results["employer_taxes_cents"]
-            totals["deductions"] += deductions
-            totals["reimbursements"] += reimbursements
+            totals["gross"] += results["taxable_gross_cents"]
+            totals["net"] += results["net_cents"]
+            totals["taxes"] += (
+                results["employee_taxes_cents"] + results["employer_taxes_cents"]
+            )
+            totals["deductions"] += results["deductions_cents"]
+            totals["reimbursements"] += results["reimbursements_cents"]
             totals["employer_taxes"] += results["employer_taxes_cents"]
         run = HRPayrollRun(
             base44_id=run_id, pay_period_start=period.start_date,
