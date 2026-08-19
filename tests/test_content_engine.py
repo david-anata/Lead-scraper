@@ -20,6 +20,7 @@ from sales_support_agent.models.database import (
 from sales_support_agent.services.access.catalog import ALL_TOOL_KEYS, grants_tool
 from sales_support_agent.services.admin_nav import render_agent_nav
 from sales_support_agent.services.content_engine import (
+    content_video_resources,
     dependency_health,
     ingest_source_assets,
     record_orchestration_check,
@@ -102,6 +103,45 @@ def test_source_ingestion_is_idempotent_and_redacts_signed_urls() -> None:
         assert len(list(session.scalars(select(ContentAuditEvent)))) == 1
 
 
+def test_youtube_resource_ingestion_is_idempotent_and_waits_for_transcript() -> None:
+    factory = _factory()
+    payload = {
+        "asset_id": "P2APW9iqEzU",
+        "asset_type": "video",
+        "status": "awaiting_transcript",
+        "title": "Shopify Opens Native B2B",
+        "source_url": "https://www.youtube.com/watch?v=P2APW9iqEzU",
+        "metadata": {
+            "channel_id": "UCDvyO7gjwDzmMg2fzZHn49Q",
+            "published_at": "2026-08-01T12:00:00+00:00",
+        },
+    }
+    with session_scope(factory) as session:
+        first = ingest_source_assets(
+            session,
+            episode_id="P2APW9iqEzU",
+            assets=[payload],
+            actor="test-youtube",
+            provider="youtube",
+        )
+        second = ingest_source_assets(
+            session,
+            episode_id="P2APW9iqEzU",
+            assets=[payload],
+            actor="test-youtube",
+            provider="youtube",
+        )
+        resources = content_video_resources(session, include_transcript=True)
+    assert first == {"created": 1, "existing": 0}
+    assert second == {"created": 0, "existing": 1}
+    assert resources[0]["video_id"] == "P2APW9iqEzU"
+    assert resources[0]["source_url"] == (
+        "https://www.youtube.com/watch?v=P2APW9iqEzU"
+    )
+    assert resources[0]["transcript_status"] == "awaiting_transcript"
+    assert resources[0]["transcript_text"] == ""
+
+
 def test_orchestration_preflight_is_idempotent_and_truthful() -> None:
     factory = _factory()
     with session_scope(factory) as session:
@@ -160,7 +200,8 @@ def test_control_room_uses_canonical_structure_and_truthful_empty_state() -> Non
         page = render_content_control_room(session, _settings(), user=user)
     assert 'class="app-container app-page content-page"' in page
     assert "Content Control Room" in page
-    assert "Riverside-to-growth production line" in page
+    assert "Source-to-growth production line" in page
+    assert "Videos ready for blog review" in page
     assert "No content runs yet" in page
     assert "Developer-only MCP access is not counted as production-ready." in page
     assert "The Six C's" in page

@@ -10,13 +10,14 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAgreement,
     BuildingAgreementTemplate,
     BuildingAuditEvent,
+    BuildingAvailabilityBlock,
     BuildingCalendarProjection,
     BuildingContact,
     BuildingInquiry,
@@ -36,6 +37,17 @@ from sales_support_agent.services.building_event_calendar import (
 from sales_support_agent.services.building_inquiry_workspace import (
     is_test_inquiry,
     render_inquiry_workspace,
+)
+from sales_support_agent.services.building_calendar import (
+    queue_calendar_projection,
+)
+from sales_support_agent.services.building_agreement_readiness import (
+    propagate_event_readiness_terminal_state,
+)
+from sales_support_agent.services.building_contract_readiness import (
+    active_reservation_for,
+    contract_readiness,
+    undo_refusal,
 )
 from sales_support_agent.services.building_event_journey import load_event_journey
 from sales_support_agent.services.building_lead_intake import prefill_event_interview
@@ -194,6 +206,21 @@ def _calendar_view(
     return result
 
 
+def _contract_target_label(view: dict[str, Any]) -> str:
+    """Name the date and hours the press is about to take, before it is taken.
+
+    Saying it on the button is what makes one press safe: the operator reads
+    the decision rather than discovering it afterwards.
+    """
+
+    label = str(view.get("selected_label") or "")
+    if not label:
+        return ""
+    window = dict(view.get("preview_window") or {})
+    guests = str(window.get("guests") or "")
+    return f"{label} (guests {guests})" if guests else label
+
+
 def _contract_confirmation(view: dict[str, Any]) -> dict[str, Any]:
     """Describe the date a contract is about to take, and what it would sit on.
 
@@ -349,11 +376,7 @@ def inquiry_workspace(
             if relationship is not None
             else None
         )
-        reservation = session.execute(
-            select(BuildingReservation)
-            .where(BuildingReservation.inquiry_id == inquiry.id)
-            .order_by(BuildingReservation.created_at.desc())
-        ).scalars().first()
+        reservation = active_reservation_for(session, inquiry.id)
         activity = session.execute(
             select(BuildingAuditEvent)
             .where(
@@ -487,6 +510,37 @@ def inquiry_workspace(
             )
             if confirm == "contract":
                 data["confirm_contract"] = _contract_confirmation(data)
+        # The page and the route ask the same question, so the page can never
+        # offer a press the route would refuse.
+        verdict = contract_readiness(
+            session,
+            inquiry,
+            current_total_cents=compute_totals(stored_pricing)["total_cents"],
+        )
+        if verdict.blocked and verdict.reason != "already_has_contract":
+            data["contract_blocked"] = {
+                "reason": verdict.reason,
+                "message": verdict.message,
+                "fix_url": verdict.fix_url,
+                "fix_label": verdict.fix_label,
+            }
+        elif verdict.ready and reservation is None:
+            label = _contract_target_label(data)
+            if not label and inquiry.preferred_date:
+                # A lead intake filed as a workspace request never builds the
+                # calendar view, but it still has the date the customer asked
+                # for, and that is the date the press will take.
+                label = inquiry.preferred_date.strftime("%A, %B %d, %Y")
+            data["contract_target"] = label
+        if reservation is not None:
+            agreement_row = session.execute(
+                select(BuildingAgreement)
+                .where(BuildingAgreement.reservation_id == reservation.id)
+                .order_by(BuildingAgreement.version.desc())
+            ).scalars().first()
+            data["contract_undoable"] = not undo_refusal(
+                session, agreement_row, reservation
+            )
     return HTMLResponse(
         render_inquiry_workspace(
             navigation=render_agent_nav("building", user=user),
@@ -636,9 +690,6 @@ async def create_contract_from_lead(
     target = f"/admin/building/inquiries/{inquiry_id}"
     actor = str(user.get("email") or "building-operator")
     form = await request.form()
-    confirmed = str(form.get("confirm_hold") or "").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
     override = str(form.get("override_conflicts") or "").strip().lower() in {
         "1", "true", "yes", "on",
     }
@@ -646,26 +697,46 @@ async def create_contract_from_lead(
         inquiry = session.get(BuildingInquiry, inquiry_id)
         if inquiry is None:
             raise HTTPException(status_code=404, detail="Inquiry not found.")
-        reservation = session.execute(
-            select(BuildingReservation)
-            .where(BuildingReservation.inquiry_id == inquiry.id)
-            .order_by(BuildingReservation.created_at.desc())
-        ).scalars().first()
+        # The same verdict the page used to decide whether to draw a button. A
+        # press that arrives anyway (a stale tab, a resubmit) gets the reason in
+        # writing rather than a reload that says nothing.
+        verdict = contract_readiness(
+            session,
+            inquiry,
+            current_total_cents=compute_totals(
+                _seeded_pricing(session, dict(inquiry.payload_json or {}))
+            )["total_cents"],
+        )
+        reservation = active_reservation_for(session, inquiry.id)
         has_reservation = reservation is not None
         reservation_id = reservation.id if reservation else ""
+    if verdict.blocked:
+        return RedirectResponse(
+            f"{target}?error={quote_plus(verdict.message)}", status_code=303
+        )
     if not has_reservation:
-        if not confirmed:
-            # Ask rather than refuse. The page shows the window it is about to
-            # take, and whatever it would be booked over.
+        plan, plan_error = _auto_hold_plan(request, inquiry_id=inquiry_id, form=form)
+        if plan_error:
+            return RedirectResponse(
+                f"{target}?error={quote_plus(plan_error)}", status_code=303
+            )
+        # One press does the job. The single exception is a date already taken:
+        # there is one Arena, so double-booking it is a decision somebody makes
+        # looking at what they would be booking over.
+        if plan.get("clash") and not override:
             return RedirectResponse(
                 f"{target}?confirm=contract#date-review", status_code=303
             )
         reservation_id, error = _take_the_date(
-            request, inquiry_id=inquiry_id, form=form, actor=actor, override=override
+            request,
+            inquiry_id=inquiry_id,
+            form=plan["form"],
+            actor=actor,
+            override=override,
         )
         if error:
             return RedirectResponse(
-                f"{target}?error={quote_plus(error)}#date-review", status_code=303
+                f"{target}?error={quote_plus(error)}", status_code=303
             )
     with session_scope(request.app.state.session_factory) as session:
         inquiry = session.get(BuildingInquiry, inquiry_id)
@@ -732,6 +803,85 @@ async def create_contract_from_lead(
     )
 
 
+@router.post("/{inquiry_id}/contract/undo", dependencies=FORM_DEPS)
+async def undo_contract_from_lead(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.agreements.prepare")),
+) -> RedirectResponse:
+    """Put the lead back the way it was before the contract was created.
+
+    One press created the hold, the quote and the package, so one press takes
+    all three back. Nothing is deleted: the agreement and quote versions stay in
+    the history as cancelled, because billing and invoicing read those records
+    and a deleted quote would strand an invoice.
+    """
+
+    target = f"/admin/building/inquiries/{inquiry_id}"
+    actor = str(user.get("email") or "building-operator")
+    now = datetime.now(timezone.utc)
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        reservation = active_reservation_for(session, inquiry.id)
+        agreement = (
+            session.execute(
+                select(BuildingAgreement)
+                .where(BuildingAgreement.reservation_id == reservation.id)
+                .order_by(BuildingAgreement.version.desc())
+            ).scalars().first()
+            if reservation is not None
+            else None
+        )
+        refusal = undo_refusal(session, agreement, reservation)
+        if refusal:
+            return RedirectResponse(
+                f"{target}?error={quote_plus(refusal)}", status_code=303
+            )
+
+        before = {
+            "reservation_status": reservation.status,
+            "agreement_id": agreement.id,
+            "agreement_version": agreement.version,
+            "agreement_status": agreement.preparation_status,
+        }
+        session.execute(
+            delete(BuildingAvailabilityBlock).where(
+                BuildingAvailabilityBlock.source_reference
+                == f"reservation:{reservation.id}"
+            )
+        )
+        reservation.status = "cancelled"
+        reservation.hold_expires_at = None
+        reservation.updated_at = now
+        # Cancels the prepared package and its payment readiness in one place,
+        # the same way an expiring hold does, so an undone contract and an
+        # expired one leave the records in the same shape.
+        propagate_event_readiness_terminal_state(
+            session, reservation, terminal_status="cancelled", actor=actor
+        )
+        queue_calendar_projection(session, reservation)
+        session.add(BuildingAuditEvent(
+            entity_type="inquiry",
+            entity_id=inquiry.id,
+            action="lead_contract_undone",
+            actor=actor,
+            before_json=before,
+            after_json={
+                "reservation_status": "cancelled",
+                "availability_released": True,
+                "undone_at": now.isoformat(),
+                "customer_contacted": False,
+            },
+        ))
+    return RedirectResponse(
+        f"{target}?notice=Undone.+The+date+is+free+again+and+the+contract+is"
+        "+cancelled.",
+        status_code=303,
+    )
+
+
 def _approved_template_id(request: Request) -> str:
     with session_scope(request.app.state.session_factory) as session:
         row = session.execute(
@@ -759,6 +909,84 @@ def _internal_api_key(request: Request) -> str:
     return key
 
 
+def _auto_hold_plan(
+    request: Request, *, inquiry_id: str, form: Any
+) -> tuple[dict[str, Any], str]:
+    """Work out the date and hours this press should take, without asking.
+
+    The page already derives all of it from the customer's own request: the day
+    they asked for, the hours they gave, and the owner's setup and teardown
+    buffers. Making the operator re-pick it on a second screen only asked them
+    to retype what the lead already said. A date the form carries wins, because
+    that is a deliberate choice made on the clash screen.
+    """
+
+    carried = {
+        key: str(form.get(key) or "").strip()
+        for key in ("event_date", "guest_start_time", "guest_end_time", "attendance")
+    }
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        payload = dict(inquiry.payload_json or {})
+        details = {
+            key: value for key, value in payload.items() if not str(key).startswith("_")
+        }
+        view = _calendar_view(
+            session,
+            inquiry=inquiry,
+            details=details,
+            month="",
+            date_choice=carried["event_date"],
+        )
+        interview = dict(payload.get("_event_interview") or {})
+    if not view:
+        return {}, "No event offering is set up to book against."
+
+    event_date = carried["event_date"] or str(view.get("selected_date") or "")
+    if not event_date:
+        return {}, (
+            "This lead has no requested date, so there is nothing to hold. "
+            "Add a date to the lead, then create the contract."
+        )
+    guest_start = carried["guest_start_time"] or str(view.get("guest_start") or "")
+    guest_end = carried["guest_end_time"] or str(view.get("guest_end") or "")
+    if not guest_start or not guest_end:
+        return {}, (
+            "This lead has no event hours, so there is nothing to hold. Add "
+            "the hours to the lead, then create the contract."
+        )
+
+    attendance = carried["attendance"]
+    if not attendance:
+        attendance = str(interview.get("attendance") or "").split(" ")[0] or "0"
+
+    cell = next(
+        (
+            item
+            for item in view.get("calendar", {}).get("cells", [])
+            if item.get("iso") == event_date
+        ),
+        {},
+    )
+    clash = (
+        str(cell.get("note") or "the calendar")
+        if cell.get("state") in {"pending", "booked", "external"}
+        else ""
+    )
+    return {
+        "form": {
+            "event_date": event_date,
+            "guest_start_time": guest_start,
+            "guest_end_time": guest_end,
+            "attendance": attendance,
+        },
+        "clash": clash,
+        "label": str(view.get("selected_label") or event_date),
+    }, ""
+
+
 def _take_the_date(
     request: Request,
     *,
@@ -778,14 +1006,9 @@ def _take_the_date(
         inquiry = session.get(BuildingInquiry, inquiry_id)
         if inquiry is None:
             raise HTTPException(status_code=404, detail="Inquiry not found.")
-        if inquiry.kind != "event":
-            return "", "Only event inquiries take a date this way."
-        existing = session.execute(
-            select(BuildingReservation).where(
-                BuildingReservation.inquiry_id == inquiry.id
-            )
-        ).scalars().first()
-        if existing is not None:
+        # A released hold must not block the next press, or undo would be a
+        # one-way door.
+        if active_reservation_for(session, inquiry.id) is not None:
             return "", "This lead already has a booking."
         relationship = session.execute(
             select(BuildingRelationship).where(

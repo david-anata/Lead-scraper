@@ -276,21 +276,54 @@ def _contract_link(data: dict[str, Any], *, csrf_token: str) -> str:
                 '<span>Freezes the current tax-inclusive pricing as a new version. '
                 'The earlier agreement stays in the audit history; nothing is sent.</span></form>'
             )
+        undo = ""
+        if data.get("contract_undoable"):
+            undo = (
+                '<form class="lead-price__contract" method="post" '
+                f'action="/admin/building/inquiries/{_esc(data.get("id"))}/contract/undo">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                '<button class="lead-button" type="submit">Undo</button>'
+                "<span>Releases the date, cancels the contract, and puts this "
+                "lead back. Available until the contract is sent.</span></form>"
+            )
         return (
             '<div class="lead-price__contract">'
             f'<a class="lead-button{"" if stale else " lead-button--primary"}" '
             f'href="/admin/building/contracts/{_esc(agreement.get("id"))}">'
             f'Open the contract</a>'
             f'<span>Version {_esc(agreement.get("version"))} · {_esc(state)}{signing}</span>'
-            "</div>" + revision
+            "</div>" + undo + revision
         )
+    # A button that cannot succeed is worse than no button: pressing it used to
+    # reload the page, jump to a section that is not drawn on this lead, and say
+    # nothing at all. Where the press cannot work, the reason takes its place.
+    blocked = dict(data.get("contract_blocked") or {})
+    if blocked:
+        fix = (
+            f'<a class="lead-button" href="{_esc(blocked.get("fix_url"))}">'
+            f'{_esc(blocked.get("fix_label"))}</a>'
+            if blocked.get("fix_url") and blocked.get("fix_label")
+            else ""
+        )
+        return (
+            '<div class="lead-price__contract lead-price__contract--blocked">'
+            "<strong>Cannot create a contract from this lead yet</strong>"
+            f'<span>{_esc(blocked.get("message"))}</span>{fix}</div>'
+        )
+    taking = str(data.get("contract_target") or "")
+    detail = (
+        f"Holds {taking}, freezes this pricing, and prepares the contract. "
+        "Nothing is sent."
+        if taking
+        else "Writes this pricing into the booking and prepares the contract. "
+        "Nothing is sent."
+    )
     return (
         '<form class="lead-price__contract" method="post" '
         f'action="/admin/building/inquiries/{_esc(data.get("id"))}/contract">'
         f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
         '<button class="lead-button" type="submit">Create the contract</button>'
-        "<span>Writes this pricing into the booking and prepares the contract. "
-        "Nothing is sent.</span>"
+        f"<span>{_esc(detail)}</span>"
         "</form>"
     )
 
@@ -312,9 +345,11 @@ def _confirm_contract_panel(
     if not confirm:
         return ""
     action = f"/admin/building/inquiries/{_esc(data.get('id'))}/contract"
-    if blockers:
+    clash_pending = bool(confirm.get("clash"))
+    if blockers and not clash_pending:
         # Offering a button the hold would refuse just moves the dead end one
-        # click later.
+        # click later. A clash is the exception: the press already cleared
+        # every check, so the only open question is the double-booking itself.
         return (
             '<div class="lead-cal__confirm"><h3>A few answers first</h3>'
             '<p>Taking a date needs these from the interview above: '

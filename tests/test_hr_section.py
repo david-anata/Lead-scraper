@@ -146,9 +146,16 @@ class HRSectionTests(unittest.TestCase):
             _default_payroll_date(date(2026, 8, 20)),
             date(2026, 8, 20),
         )
+        # The default period follows the clock once the first live date passes,
+        # so derive the expected period instead of pinning one that expires.
+        from sales_support_agent.services.hr.payroll import semimonthly_period
+
+        expected = semimonthly_period(_default_payroll_date())
         page = self._get("/admin/hr/payroll", self.sa)
         self.assertEqual(page.status_code, 200)
-        self.assertIn("Prepare 2026-08-01–2026-08-15", page.text)
+        self.assertIn(
+            f"Prepare {expected.start_date}–{expected.end_date}", page.text,
+        )
 
     def test_create_and_list_employee(self):
         import uuid

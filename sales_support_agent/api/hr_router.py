@@ -59,6 +59,7 @@ from sales_support_agent.services.hr.pages import (
     render_hr_employee_record_missing,
     render_hr_payroll_control,
     render_hr_payroll_approval,
+    render_hr_payroll_preview,
     render_hr_payroll_run,
     render_hr_pay_statements,
     render_hr_settings,
@@ -1355,6 +1356,16 @@ async def hr_payroll(request: Request, period_date: date | None = None,
                      user: dict = Depends(_pay_view_guard)):
     return HTMLResponse(render_hr_payroll_control(
         payroll_store.control_room(period_date or _default_payroll_date()),
+        user=user, flash=_flash(request),
+    ))
+
+
+@router.get("/payroll/preview", response_class=HTMLResponse)
+async def hr_payroll_preview(request: Request, period_date: date | None = None,
+                             user: dict = Depends(_pay_view_guard)):
+    """Read-only dry run of the period. Prepares nothing and saves nothing."""
+    return HTMLResponse(render_hr_payroll_preview(
+        payroll_store.preview_payroll(period_date or _default_payroll_date()),
         user=user, flash=_flash(request),
     ))
 

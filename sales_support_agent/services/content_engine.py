@@ -116,7 +116,14 @@ def _safe_source_url(value: str) -> str:
     parsed = urlsplit(raw)
     if parsed.scheme not in {"http", "https"}:
         return ""
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    query = ""
+    if parsed.netloc.lower() in {"youtube.com", "www.youtube.com"}:
+        from urllib.parse import parse_qs, urlencode
+
+        video_id = (parse_qs(parsed.query).get("v") or [""])[0]
+        if video_id.replace("-", "").replace("_", "").isalnum():
+            query = urlencode({"v": video_id})
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, ""))
 
 
 def dependency_health(settings: Any, *, source_asset_count: int = 0) -> list[dict]:
@@ -266,9 +273,13 @@ def ingest_source_assets(
     episode_id: str,
     assets: list[dict[str, Any]],
     actor: str,
+    provider: str = "riverside",
 ) -> dict[str, int]:
     """Idempotently persist normalized source assets from a trusted relay."""
 
+    provider = provider.strip().lower()
+    if provider not in {"riverside", "youtube"}:
+        raise ValueError("Unsupported content source provider.")
     created = 0
     existing = 0
     for raw in assets:
@@ -285,7 +296,7 @@ def ingest_source_assets(
             continue
         row = session.execute(
             select(ContentSourceAsset).where(
-                ContentSourceAsset.provider == "riverside",
+                ContentSourceAsset.provider == provider,
                 ContentSourceAsset.external_asset_id == external_id,
             )
         ).scalar_one_or_none()
@@ -293,11 +304,11 @@ def ingest_source_assets(
             existing += 1
         else:
             fingerprint = hashlib.sha256(
-                f"riverside:{episode_id}:{external_id}".encode("utf-8")
+                f"{provider}:{episode_id}:{external_id}".encode("utf-8")
             ).hexdigest()
             row = ContentSourceAsset(
                 id=uuid4().hex,
-                provider="riverside",
+                provider=provider,
                 episode_external_id=episode_id,
                 external_asset_id=external_id,
                 asset_type=asset_type,
@@ -312,7 +323,10 @@ def ingest_source_assets(
                     key: value
                     for key, value in dict(raw.get("metadata") or {}).items()
                     if key
-                    in {"duration_ms", "aspect_ratio", "width", "height", "language"}
+                    in {
+                        "duration_ms", "aspect_ratio", "width", "height",
+                        "language", "channel_id", "published_at",
+                    }
                 },
             )
             session.add(row)
@@ -497,6 +511,7 @@ def control_room_data(session: Session, settings: Any) -> dict[str, Any]:
     source_count = int(
         session.scalar(select(func.count()).select_from(ContentSourceAsset)) or 0
     )
+    video_resources = content_video_resources(session, include_transcript=False)
     publication_count = int(
         session.scalar(select(func.count()).select_from(ContentPublication)) or 0
     )
@@ -575,6 +590,11 @@ def control_room_data(session: Session, settings: Any) -> dict[str, Any]:
         "generated_at": generated_at,
         "next_daily_run": _next_daily_run(generated_at),
         "source_asset_count": source_count,
+        "video_resources": video_resources,
+        "video_resource_count": len(video_resources),
+        "awaiting_transcript_count": sum(
+            1 for item in video_resources if item["transcript_status"] != "ready"
+        ),
         "artifact_count": artifact_count,
         "publication_count": publication_count,
         "latest_artifact": latest_artifact,
@@ -596,6 +616,76 @@ def control_room_data(session: Session, settings: Any) -> dict[str, Any]:
     }
 
 
+def content_video_resources(
+    session: Session, *, include_transcript: bool = False
+) -> list[dict[str, Any]]:
+    """Return safe, deterministic source records for the Codex blog routine."""
+
+    assets = list(
+        session.scalars(
+            select(ContentSourceAsset)
+            .where(ContentSourceAsset.asset_type.in_(("video", "transcript")))
+            .order_by(ContentSourceAsset.ingested_at.desc())
+            .limit(200)
+        )
+    )
+    transcripts = list(
+        session.scalars(
+            select(ContentTranscript).order_by(ContentTranscript.created_at.desc())
+        )
+    )
+    transcript_by_source = {item.source_asset_id: item for item in transcripts}
+    transcript_by_episode: dict[str, ContentTranscript] = {}
+    for item in transcripts:
+        transcript_by_episode.setdefault(item.episode_external_id, item)
+    resources: list[dict[str, Any]] = []
+    represented: set[str] = set()
+    for asset in assets:
+        if asset.asset_type != "video":
+            continue
+        transcript = transcript_by_source.get(asset.id) or transcript_by_episode.get(
+            asset.episode_external_id
+        )
+        if transcript:
+            represented.add(transcript.id)
+        item: dict[str, Any] = {
+            "resource_id": asset.id,
+            "provider": asset.provider,
+            "episode_id": asset.episode_external_id,
+            "video_id": asset.external_asset_id if asset.provider == "youtube" else "",
+            "title": asset.title or "Untitled video",
+            "source_url": asset.source_url,
+            "published_at": dict(asset.metadata_json or {}).get("published_at", ""),
+            "transcript_status": "ready" if transcript else "awaiting_transcript",
+            "transcript_id": transcript.id if transcript else "",
+            "transcript_fingerprint": transcript.text_fingerprint if transcript else "",
+        }
+        if include_transcript:
+            item["transcript_text"] = transcript.text if transcript else ""
+        resources.append(item)
+    source_by_id = {item.id: item for item in assets}
+    for transcript in transcripts:
+        if transcript.id in represented:
+            continue
+        source = source_by_id.get(transcript.source_asset_id)
+        item = {
+            "resource_id": transcript.source_asset_id,
+            "provider": source.provider if source else "riverside",
+            "episode_id": transcript.episode_external_id,
+            "video_id": "",
+            "title": (source.title if source else "") or "Transcript resource",
+            "source_url": source.source_url if source else "",
+            "published_at": "",
+            "transcript_status": "ready",
+            "transcript_id": transcript.id,
+            "transcript_fingerprint": transcript.text_fingerprint,
+        }
+        if include_transcript:
+            item["transcript_text"] = transcript.text
+        resources.append(item)
+    return resources
+
+
 def render_content_control_room(
     session: Session,
     settings: Any,
@@ -607,6 +697,22 @@ def render_content_control_room(
     data = control_room_data(session, settings)
     runs = data["runs"]
     artifacts = data["artifacts"]
+    video_rows = "".join(
+        f"""
+        <tr>
+          <td><strong>{html.escape(item['title'])}</strong><br><span class="content-muted">{html.escape(item['provider'].title())}</span></td>
+          <td>{_status_badge(item['transcript_status'])}</td>
+          <td>{html.escape(item['published_at'] or 'Not supplied')}</td>
+          <td>{(f'<a href="{html.escape(item["source_url"])}" rel="noopener">Open source</a>' if item['source_url'] else 'Link not supplied')}</td>
+        </tr>
+        """
+        for item in data["video_resources"]
+    )
+    video_workspace = (
+        f'<table class="app-table app-table--sticky"><thead><tr><th>Video resource</th><th>Transcript</th><th>Published</th><th>Source</th></tr></thead><tbody>{video_rows}</tbody></table>'
+        if video_rows
+        else '<div class="app-state-panel"><h2>No video resources yet</h2><p>The daily source check will add recent YouTube uploads here. A transcript is required before Codex can qualify a blog.</p></div>'
+    )
     run_rows = "".join(
         f"""
         <tr>
@@ -764,7 +870,9 @@ def render_content_control_room(
     </section>
 
     <section class="app-metric-strip" aria-label="Content engine summary">
-      <div class="app-metric"><div class="app-metric__value">{data['source_asset_count']}</div><div class="app-metric__label">Riverside source assets</div></div>
+      <div class="app-metric"><div class="app-metric__value">{data['source_asset_count']}</div><div class="app-metric__label">Source resources</div></div>
+      <div class="app-metric"><div class="app-metric__value">{data['video_resource_count']}</div><div class="app-metric__label">Video resources</div></div>
+      <div class="app-metric"><div class="app-metric__value">{data['awaiting_transcript_count']}</div><div class="app-metric__label">Need transcripts</div></div>
       <div class="app-metric"><div class="app-metric__value">{data['artifact_count']}</div><div class="app-metric__label">Staged artifacts</div></div>
       <div class="app-metric"><div class="app-metric__value">{data['publication_count']}</div><div class="app-metric__label">Verified publications</div></div>
       <div class="app-metric"><div class="app-metric__value">{data['ready_destination_count']}</div><div class="app-metric__label">Destinations ready to publish</div></div>
@@ -782,8 +890,13 @@ def render_content_control_room(
     </section>
 
     <section class="content-section" aria-labelledby="pipeline-title">
-      <div class="content-section__head"><div><p class="content-eyebrow">Automation</p><h2 id="pipeline-title">Riverside-to-growth production line</h2></div><p>Research → creation → native distribution → learning</p></div>
+      <div class="content-section__head"><div><p class="content-eyebrow">Automation</p><h2 id="pipeline-title">Source-to-growth production line</h2></div><p>Research → creation → native distribution → learning</p></div>
       <ol class="content-pipeline">{pipeline}</ol>
+    </section>
+
+    <section class="content-section" aria-labelledby="video-resources-title">
+      <div class="content-section__head"><div><p class="content-eyebrow">Reusable resources</p><h2 id="video-resources-title">Videos ready for blog review</h2></div><p>Codex only qualifies transcript-backed resources. Missing transcripts are held safely.</p></div>
+      <div class="app-data-workspace">{video_workspace}</div>
     </section>
 
     <section class="content-section" aria-labelledby="artifacts-title">
