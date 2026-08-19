@@ -79,13 +79,14 @@ def prefill_event_interview(
     return answers, sorted(answers)
 
 
+#: Only what a contract actually needs to exist. Event purpose, format and the
+#: agreed next step are good sales hygiene and are still prompted for, but the
+#: package builder never reads them, so gating a contract on them stopped work
+#: for no gain.
 EVENT_QUALIFICATION_REQUIREMENTS = (
-    ("event_purpose", "event purpose"),
-    ("event_format", "event format"),
     ("candidate_dates", "candidate dates"),
     ("guest_schedule", "guest schedule"),
     ("attendance", "attendance"),
-    ("agreed_next_step", "agreed next step"),
 )
 
 

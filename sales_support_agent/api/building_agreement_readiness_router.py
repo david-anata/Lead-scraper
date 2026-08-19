@@ -84,7 +84,10 @@ CONTRACTABLE_RESERVATION_STATUSES = frozenset({
 CONTRACTABLE_QUOTE_STATUSES = frozenset({"draft", "approved", "sent", "accepted"})
 
 PREPARATION_TRANSITIONS = {
-    "prepared": {"in_review"},
+    # A package that is only prepared has been shown to nobody, so it can be
+    # taken back. Once it is in review it has an audience and cancelling it is
+    # a decision made on the contract, not an undo on the lead.
+    "prepared": {"in_review", "cancelled"},
     "in_review": {"approved"},
     "approved": set(),
     "expired": set(),
