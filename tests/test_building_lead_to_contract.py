@@ -238,10 +238,13 @@ class LeadToContractTests(unittest.TestCase):
         self.assertIn("Create revised agreement", page.text)
         self.assertNotIn("Approve and create the signing copy", page.text)
 
-    def test_03_a_lead_with_no_booking_is_asked_not_refused(self) -> None:
-        """A contract needs a date, but wanting one is not an error. The page
-        asks which date it is about to take rather than sending the operator
-        away to do it first."""
+    def test_03_a_lead_with_no_customer_is_told_why_not(self) -> None:
+        """A lead nobody is linked to cannot become a contract, and saying so
+        beats a confirmation screen that would fail one press later.
+
+        This replaces the earlier ask-first behaviour: the press no longer asks
+        which date to take, it takes the date the lead already carries, so the
+        only thing left to say is what is genuinely missing."""
         with self.factory() as session:
             session.add(BuildingInquiry(
                 id="lead-2", idempotency_key="lead-2-key", kind="event",
@@ -249,23 +252,30 @@ class LeadToContractTests(unittest.TestCase):
                 payload_json={"_lifecycle": {"stage": "new"}},
             ))
             session.commit()
-        asked = self.client.post(
+        refused = self.client.post(
             "/admin/building/inquiries/lead-2/contract",
             headers=self.headers, follow_redirects=False,
             data={"_csrf_token": self._csrf("lead-2")},
         )
-        self.assertEqual(asked.status_code, 303, asked.text)
-        self.assertNotIn("error=", asked.headers["location"])
-        self.assertIn("confirm=contract", asked.headers["location"])
-        self.assertIn("#date-review", asked.headers["location"])
+        self.assertEqual(refused.status_code, 303, refused.text)
+        self.assertIn("error=", refused.headers["location"])
+        self.assertIn("No+customer+is+linked", refused.headers["location"])
         with self.factory() as session:
             self.assertEqual(
                 session.query(BuildingReservation).filter_by(
                     inquiry_id="lead-2"
                 ).count(),
                 0,
-                "asking must not take a date by itself",
+                "a refusal must not take a date",
             )
+        # And the page says the same thing in place of a button that cannot work.
+        page = self.client.get("/admin/building/inquiries/lead-2")
+        self.assertIn("Cannot create a contract from this lead yet", page.text)
+        self.assertIn("No customer is linked to this lead yet.", page.text)
+        self.assertNotIn(
+            ">Create the contract</button>", page.text,
+            "a lead that cannot contract must not offer the press",
+        )
 
     def test_02b_the_lead_and_its_contract_link_to_each_other(self) -> None:
         """A contract is an output of a lead. Reaching one from the other should

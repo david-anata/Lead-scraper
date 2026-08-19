@@ -250,8 +250,17 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
         self.assertEqual(responded.status_code, 303, responded.text)
         incomplete = self.client.get("/admin/building/inquiries/jordan-inquiry")
         self.assertIn("Still needed before qualification", incomplete.text)
-        self.assertIn("event purpose", incomplete.text)
-        self.assertIn("agreed next step", incomplete.text)
+        # Only what a contract actually needs blocks qualification now. Purpose,
+        # format and next step are still asked for, they just no longer stop
+        # work, because the package builder never reads them. On this lead that
+        # takes the blocking list from four answers down to one.
+        blocking = incomplete.text.split(
+            "Still needed before qualification"
+        )[1].split("</p>")[0]
+        self.assertIn("guest schedule", blocking)
+        self.assertNotIn("event purpose", blocking)
+        self.assertNotIn("event format", blocking)
+        self.assertNotIn("agreed next step", blocking)
 
         token = re.search(r'name="_csrf_token" value="([^"]+)"', incomplete.text)
         saved = self.client.post(
