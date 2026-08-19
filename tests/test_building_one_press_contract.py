@@ -214,16 +214,34 @@ class OnePressContractTests(unittest.TestCase):
 
     # ---- refusals, in writing -----------------------------------------
 
-    def test_04_a_non_event_lead_says_why_and_offers_no_button(self) -> None:
-        """The exact dead click David hit: the press used to reload in silence."""
-        self._lead("press-4", kind="tour")
+    def test_04_a_workspace_filed_lead_still_makes_its_contract(self) -> None:
+        """The exact lead David was stuck on.
+
+        Arena enquiries arrive from Eventective filed as workspace requests,
+        carrying an event date and Arena pricing. Refusing those because of the
+        intake label was correct and useless: the operator could read why and
+        still not do their job."""
+        self._lead("press-4", kind="workspace")
         page = self.client.get("/admin/building/inquiries/press-4")
-        self.assertIn("Cannot create a contract from this lead yet", page.text)
-        self.assertIn("recorded as a tour, not an event", page.text)
-        self.assertNotIn(">Create the contract</button>", page.text)
-        refused = self._press("press-4")
-        self.assertIn("error=", refused.headers["location"])
-        self.assertNotIn("confirm=contract", refused.headers["location"])
+        self.assertIn(">Create the contract</button>", page.text)
+        self.assertNotIn("Cannot create a contract from this lead yet", page.text)
+        pressed = self._press("press-4")
+        self.assertEqual(pressed.status_code, 303, pressed.text)
+        self.assertNotIn("error=", pressed.headers["location"])
+        with self.factory() as session:
+            reservation = session.query(BuildingReservation).filter_by(
+                inquiry_id="press-4"
+            ).one()
+            agreement = session.query(BuildingAgreement).filter_by(
+                reservation_id=reservation.id
+            ).one()
+            self.assertEqual(agreement.preparation_status, "prepared")
+
+    def test_04b_a_workspace_lead_names_its_date_on_the_button(self) -> None:
+        self._lead("press-4b", kind="workspace", days_out=52)
+        page = self.client.get("/admin/building/inquiries/press-4b")
+        target = (date.today() + timedelta(days=52)).strftime("%A, %B %d, %Y")
+        self.assertIn(f"Holds {target}", page.text)
 
     def test_05_every_refusal_reaches_the_page_as_words(self) -> None:
         """A redirect that says nothing is the bug. Each cause must carry text."""
@@ -236,7 +254,7 @@ class OnePressContractTests(unittest.TestCase):
 
     def test_06_a_refusal_never_points_at_a_section_that_is_not_drawn(self) -> None:
         """The original failure was an anchor with nothing to anchor to."""
-        self._lead("press-6", kind="tour")
+        self._lead("press-6", with_customer=False)
         refused = self._press("press-6")
         location = refused.headers["location"]
         if "#" in location:

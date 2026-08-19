@@ -932,8 +932,16 @@ def create_event_review(
             return _event_review_response(row, proposal, replayed=True)
 
         inquiry = session.get(BuildingInquiry, payload.inquiry_id)
-        if inquiry is None or inquiry.kind != "event":
-            raise HTTPException(status_code=404, detail="Accepted event inquiry not found.")
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        # Intake's label is not a precondition. Arena enquiries arrive from
+        # Eventective filed as workspace requests, carrying an event date and
+        # Arena pricing, and holding a date for one is the same operation with
+        # the same conflict checks. Refusing on the label stopped real work and
+        # protected nothing.
+        if inquiry.kind != "event":
+            inquiry.kind = "event"
+            session.add(inquiry)
         inquiry_payload = dict(inquiry.payload_json or {})
         lifecycle = dict(inquiry_payload.get("_lifecycle") or {})
         entry_stage = str(lifecycle.get("stage") or "new")

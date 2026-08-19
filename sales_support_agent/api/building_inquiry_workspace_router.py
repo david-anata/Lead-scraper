@@ -525,7 +525,13 @@ def inquiry_workspace(
                 "fix_label": verdict.fix_label,
             }
         elif verdict.ready and reservation is None:
-            data["contract_target"] = _contract_target_label(data)
+            label = _contract_target_label(data)
+            if not label and inquiry.preferred_date:
+                # A lead intake filed as a workspace request never builds the
+                # calendar view, but it still has the date the customer asked
+                # for, and that is the date the press will take.
+                label = inquiry.preferred_date.strftime("%A, %B %d, %Y")
+            data["contract_target"] = label
         if reservation is not None:
             agreement_row = session.execute(
                 select(BuildingAgreement)
@@ -1000,8 +1006,6 @@ def _take_the_date(
         inquiry = session.get(BuildingInquiry, inquiry_id)
         if inquiry is None:
             raise HTTPException(status_code=404, detail="Inquiry not found.")
-        if inquiry.kind != "event":
-            return "", "Only event inquiries take a date this way."
         # A released hold must not block the next press, or undo would be a
         # one-way door.
         if active_reservation_for(session, inquiry.id) is not None:
