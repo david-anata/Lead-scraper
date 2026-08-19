@@ -90,7 +90,7 @@ def _mark_ran(engine, now: datetime) -> None:
 
 
 _APP_URL = "https://agent.anatainc.com"
-_BATCH_LINK = f"{_APP_URL}/admin/api/outbound/brands.csv?scanned=1&max_new=200"
+_BATCH_LINK = f"{_APP_URL}/admin/api/outbound/brands.csv?max_new=200"
 
 
 def _sendable_brands(engine) -> list[dict]:

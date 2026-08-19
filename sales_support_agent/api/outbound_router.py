@@ -204,7 +204,7 @@ def outbound_brands_page(request: Request) -> Response:
         <div class="field">
           <label for="count">How many brands</label>
           <input id="count" type="number" min="1" max="500" value="100">
-          <a class="btn" id="dl" href="/admin/api/outbound/brands.csv?max_new=100">Download brand CSV</a>
+          <a class="btn" id="dl" href="/admin/api/outbound/brands.csv?max_new=200">Download brands ready for Clay</a>
         </div>
 
         <h2 style="font-size:15px;margin:20px 0 6px;">What to do with it</h2>
@@ -237,113 +237,46 @@ def outbound_brands_page(request: Request) -> Response:
 
 
 @router.get("/admin/api/outbound/brands.csv", response_class=Response)
-def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "",
-                        scanned: int = 0) -> Response:
-    """Brands as a CSV to import into Clay. Sends nothing.
+def outbound_brands_csv(request: Request, max_new: int = 200) -> Response:
+    """The brands that are ready to go into Clay. Sends nothing.
 
-    Two sources, and the difference matters.
+    Ready means the Amazon check has run, was not skipped, and actually found
+    something worth opening with. Everything else is withheld on purpose:
 
-    Default: pull fresh brands from StoreLeads. Fast, but a brand sourced this
-    second has not been near Amazon, so every amz_* column is empty and Clay has
-    nothing to write an opening line from.
+      * Never checked - Clay gets empty amz_* columns and the send gate blocks
+        the contact on arrival. 218 brands were exported this way before anyone
+        noticed, and not one of them could be emailed.
+      * Checked, found nothing - the brand still carries its old plan-upgrade
+        opening line, which pitches the previous offer under an Amazon subject.
 
-    scanned=1: export the brands we already hold that have been through the
-    Amazon check. This is the one to hand Clay. Without it the scan writes its
-    findings to our own records and they never reach the file, which is exactly
-    what happened the first time this ran.
+    There used to be a second mode that pulled straight from StoreLeads and
+    returned brands seconds old. That is what produced the unusable exports, so
+    it is gone. Discovery is the morning job's job; this route only exports.
     """
     import outbound_pipeline as _op
-    import outbound_recipes as _rx
     from sales_support_agent.models.database import get_engine
     from sales_support_agent.services import outbound_memory
 
-    if scanned:
-        try:
-            engine = get_engine()
-        except Exception:  # noqa: BLE001
-            engine = None
-        held = outbound_memory.load_leads(engine, limit=2000) if engine is not None else []
-        # Checked, matched, AND actually found something worth opening with. A
-        # brand we looked at and found nothing on still carries the old
-        # plan-upgrade line, which pitches the previous offer and reads as a
-        # non sequitur under an Amazon email. Not sendable on this campaign.
-        ready = [l for l in held
-                 if str(l.get("amazon_checked_at") or "").strip()
-                 and not str(l.get("amazon_skipped_reason") or "").strip()
-                 and str(l.get("amz_situation") or "").strip()]
-        ready.sort(key=lambda l: -int(l.get("score") or 0))
-        ready = ready[:max(1, min(int(max_new or 100), 2000))]
-        body = _op.leads_to_csv(ready)
-        return Response(
-            content=body, media_type="text/csv",
-            headers={"Content-Disposition": 'attachment; filename="anata_scanned_brands.csv"'},
-        )
-
-    # Validate the request before the environment, so a typo'd recipe always
-    # reports as a typo rather than as a missing key.
-    chosen = _rx.recipe(recipe) if recipe else None
-    if recipe and chosen is None:
-        return JSONResponse(status_code=400, content={"detail": f"Unknown recipe '{recipe}'."})
-
-    api_key, _clay = _op.load_config_from_env()
-    if not api_key:
-        return JSONResponse(status_code=400, content={"detail": "STORELEADS_API_KEY is not set on this service."})
-
-    # Never-email-twice: skip brands already exported, then remember the new ones.
     try:
         engine = get_engine()
-    except Exception:  # noqa: BLE001 — dedup is best-effort; build anyway
+    except Exception:  # noqa: BLE001
         engine = None
-    already = outbound_memory.load_contacted(engine) if engine is not None else set()
 
-    from sales_support_agent.services import outbound_settings as _st
-    tunables = _st.effective(engine, _rx.DEFAULT_SETTINGS) if engine is not None else _rx.DEFAULT_SETTINGS
-    version = _st.config_version(engine) if engine is not None else 0
-    cap = chosen.cap(tunables) if chosen else max(1, min(int(max_new or 100), 500))
-    try:
-        result = _op.run_storeleads_to_clay(
-            api_key=api_key,
-            clay_webhook_url="",  # dry-run: build the list, push nothing
-            processed_domains=already,
-            max_new=cap,
-            dry_run=True,
-            recipe=chosen,
-            settings=tunables,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("[outbound] StoreLeads CSV build failed")
-        return JSONResponse(status_code=502, content={"detail": f"StoreLeads fetch failed: {exc}"})
-
-    if engine is not None:
-        if result.leads:
-            # Record full leads (domain + tier + signals) for dedup AND efficacy.
-            outbound_memory.record_leads(engine, result.leads, source=result.recipe or "csv_export", config_version=version)
-        # Log the pull itself, so Lead Ops shows what we pulled and when.
-        run_id = outbound_memory.record_run(
-            engine, recipe=result.recipe or "icp_baseline", scanned=result.scanned,
-            matched=result.matched_icp, fresh=result.fresh,
-            skipped_seen=result.skipped_already_contacted, partial=result.partial,
-            config_version=version, delivery="file",
-        )
-        outbound_memory.record_run_leads(engine, run_id, result.leads)
-        try:
-            from sales_support_agent.services.outbound_delivery import deliver_completed_pull
-            deliver_completed_pull(engine, {
-                "id": run_id,
-                "recipe": result.recipe or "icp_baseline", "scanned": result.scanned,
-                "matched": result.matched_icp, "fresh": result.fresh,
-                "skipped_seen": result.skipped_already_contacted, "partial": result.partial,
-                "config_version": version,
-            })
-        except Exception:  # noqa: BLE001
-            logger.exception("[outbound] automatic pull delivery failed")
+    held = outbound_memory.load_leads(engine, limit=2000) if engine is not None else []
+    ready = [
+        lead for lead in held
+        if str(lead.get("amazon_checked_at") or "").strip()
+        and not str(lead.get("amazon_skipped_reason") or "").strip()
+        and str(lead.get("amz_situation") or "").strip()
+    ]
+    ready.sort(key=lambda lead: -int(lead.get("score") or 0))
+    ready = ready[: max(1, min(int(max_new or 200), 2000))]
 
     return Response(
-        content=_op.leads_to_csv(result.leads),
+        content=_op.leads_to_csv(ready),
         media_type="text/csv",
-        headers={"Content-Disposition": 'attachment; filename="anata_clay_brands.csv"'},
+        headers={"Content-Disposition": 'attachment; filename="anata_brands_ready_for_clay.csv"'},
     )
-
 
 _LEADOPS_CSS = """
   .lo-h { font-size:13px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:#6b7280; margin:22px 0 8px; }
@@ -766,7 +699,7 @@ def outbound_lead_ops(request: Request) -> Response:
     else:
         clay_strip = ("<b>Clay: not connected.</b> Add the webhook address on Render as "
                       "CLAY_WEBHOOK_URL and the Send to Clay buttons switch on. "
-                      "Pull now and the file download work either way.")
+                      "The brand download works either way.")
 
     if plan["recipes"]:
         today_line = (
@@ -789,8 +722,8 @@ def outbound_lead_ops(request: Request) -> Response:
             f"<td><b>{html.escape(r.label)}</b><br>"
             f"<span style='color:rgba(43,54,68,.6)'>{html.escape(r.reason_for(tunables))}</span></td>"
             f"<td>{html.escape(due)}</td><td>{cap_now}</td>"
-            f"<td><a class='lo-btn' download='anata-{r.key}-leads.csv' href='/admin/api/outbound/brands.csv?recipe={r.key}'>Pull now</a>"
-            + (f" <button class='lo-btn lo-push' data-recipe='{r.key}' type='button'>Send to Clay</button>"
+            f"<td>"
+            + (f"<button class='lo-btn lo-push' data-recipe='{r.key}' type='button'>Send to Clay</button>"
                if _clay_url else "")
             + "</td></tr>"
         )
@@ -838,7 +771,7 @@ def outbound_lead_ops(request: Request) -> Response:
             for x in runs
         )
     else:
-        run_rows = "<tr><td colspan='11'>No pulls yet. Use a Pull now button above.</td></tr>"
+        run_rows = "<tr><td colspan='11'>No pulls yet. The morning job records one each weekday.</td></tr>"
 
     history_items = "".join(
         f"<li>{html.escape(str(item['exported_at'])[:16])} · {item['unique_companies']} companies · {html.escape(item['actor'] or 'operator')}</li>"
