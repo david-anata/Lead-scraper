@@ -96,18 +96,11 @@ def contract_readiness(
 
     inquiry_id = str(inquiry.id)
 
-    if inquiry.kind != "event":
-        kind = str(inquiry.kind or "enquiry").replace("_", " ")
-        return ContractReadiness(
-            ready=False,
-            reason="not_an_event",
-            message=(
-                f"This lead is recorded as a {kind}, not an event. Contracts "
-                "attach to an event date."
-            ),
-            fix_url=f"{_lead_url(inquiry_id)}#lead-summary",
-            fix_label="Change this lead to an event",
-        )
+    # How intake happened to label a lead is not a reason to refuse a contract.
+    # Arena enquiries arrive from Eventective filed as workspace requests, with
+    # an event date and Arena pricing already on them, and refusing those left
+    # the operator with a correct message and no way to do their job. Pressing
+    # the button is a deliberate act, and it can be undone.
 
     reservation = active_reservation_for(session, inquiry_id)
 
