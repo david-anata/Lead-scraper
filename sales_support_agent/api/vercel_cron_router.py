@@ -67,6 +67,7 @@ _WRITE_SCHEDULES = (
     "hr-reminders",
     "building-operations",
     "outbound-morning",
+    "finance-sync",
 )
 
 
@@ -441,3 +442,125 @@ async def building_operations_cron(
             details={"error": str(exc)[:500]},
         )
         raise
+
+
+def _finance_settings(request: Request):
+    """Finance integrations read the modular agent settings, not the legacy ones."""
+
+    return getattr(request.app.state, "agent_settings", None) or request.app.state.settings
+
+
+def _finance_step(steps: dict, name: str, run) -> None:
+    """Run one step and record its outcome without letting it end the run.
+
+    Each step reports separately because they fail for unrelated reasons: an
+    expired QuickBooks token must not stop the schedule being rolled forward,
+    and a bank feed that is down must not hide that the rest worked.
+    """
+
+    try:
+        steps[name] = {"status": "succeeded", "result": run()}
+    except Exception as exc:  # noqa: BLE001 - one bad feed must not stop the rest
+        steps[name] = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+@router.get("/finance-sync")
+def finance_sync_cron(
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Keep the Finance pages current without a long-lived process.
+
+    On Render this work ran in a two-hourly background loop started at boot.
+    Serverless has no process to hold that loop, so the same steps run here on
+    a schedule instead. Every step reads from a bank or accounting feed and
+    writes only to this application's own schedule; none of them move money.
+    """
+
+    if response := _authorize(authorization, "finance-sync"):
+        return response
+
+    engine = request.app.state.session_factory.kw.get("bind")
+    local_now = datetime.now(_DENVER)
+    lease = claim_scheduled_job(
+        engine,
+        job_key="vercel-finance-sync",
+        run_key=local_now.strftime("%Y-%m-%dT%H"),
+        lease_minutes=55,
+    )
+    if lease is None:
+        return {"status": "skipped", "message": "Finance sync already ran this hour."}
+
+    settings = _finance_settings(request)
+    steps: dict[str, dict] = {}
+    try:
+        # Money that has actually moved comes in first, so the plan below is
+        # built against settled reality rather than last night's picture.
+        def _plaid() -> dict:
+            from sales_support_agent.services.cashflow.plaid import (
+                stale_connected_item_ids,
+                sync_connected_items,
+            )
+
+            item_ids = stale_connected_item_ids(settings=settings, max_age_hours=6)
+            if not item_ids:
+                return {"refreshed_items": 0}
+            sync_connected_items(settings=settings, item_ids=item_ids)
+            return {"refreshed_items": len(item_ids)}
+
+        _finance_step(steps, "plaid", _plaid)
+
+        def _invoices() -> dict:
+            from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
+
+            return dict(sync_qbo_invoices(settings) or {})
+
+        _finance_step(steps, "qbo_invoices", _invoices)
+
+        def _bank() -> dict:
+            from sales_support_agent.services.cashflow.qbo_bank_sync import (
+                sync_qbo_bank_transactions,
+            )
+
+            return dict(sync_qbo_bank_transactions(settings, lookback_days=365) or {})
+
+        _finance_step(steps, "qbo_bank", _bank)
+
+        def _expand() -> dict:
+            from sales_support_agent.services.cashflow.obligations import (
+                generate_upcoming_from_templates,
+            )
+
+            created = generate_upcoming_from_templates(
+                horizon_days=120, advance_template=True
+            )
+            return {"created": len(created)}
+
+        _finance_step(steps, "expand_schedule", _expand)
+
+        # Last, so it judges the schedule the step above has just completed. A
+        # dated plan that passed unpaid while a later one exists is residue, and
+        # leaving it in place is what silently inflates what looks owed.
+        def _roll_forward() -> dict:
+            from sales_support_agent.services.cashflow.obligations import (
+                supersede_stale_template_occurrences,
+            )
+
+            return {"superseded": len(supersede_stale_template_occurrences())}
+
+        _finance_step(steps, "roll_forward", _roll_forward)
+    except Exception as exc:
+        finish_scheduled_job(
+            engine, lease, status="failed", details={"error": str(exc)[:500]}
+        )
+        raise
+
+    failed = sorted(name for name, step in steps.items() if step["status"] == "failed")
+    status = "succeeded" if not failed else "degraded"
+    finish_scheduled_job(
+        engine, lease, status="succeeded" if not failed else "failed", details=steps
+    )
+    from sales_support_agent.api.cashflow_router import clear_finance_brief_cache
+
+    clear_finance_brief_cache(request.app)
+    return {"status": status, "failed_steps": failed, "steps": steps}

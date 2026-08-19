@@ -17,6 +17,10 @@ EXPECTED_SCHEDULES = {
     "/api/vercel-cron/durable-tasks": "*/5 * * * *",
     "/api/vercel-cron/daily-digest": "0 16 * * 1-5",
     "/api/vercel-cron/building-operations": "20 * * * *",
+    # Replaces the two-hourly background loop that Render held open at boot and
+    # serverless cannot. Offset off the hour so it does not contend with the
+    # other schedules for the same cold start.
+    "/api/vercel-cron/finance-sync": "10 */2 * * *",
     "/api/jobs/outbound-morning/run": "0 13,14 * * *",
 }
 
