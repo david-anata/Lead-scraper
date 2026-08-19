@@ -7,9 +7,11 @@ import binascii
 import hashlib
 import hmac
 import json
+import logging
+import re
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Sequence
 
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
@@ -28,6 +30,7 @@ from sales_support_agent.models.entities import (
 )
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/integrations/resend", tags=["resend-webhook"])
 SUPPORTED_EVENTS = {
     "email.delivered",
@@ -53,16 +56,30 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _webhook_secret(request: Request) -> str:
-    secret = str(
+def _webhook_secrets(request: Request) -> tuple[str, ...]:
+    """Every signing secret this endpoint will accept.
+
+    Resend signs with a secret that belongs to the endpoint, not to the
+    account, so one URL reachable from two configured endpoints needs both
+    secrets. That is the ordinary state of affairs twice over: while a signing
+    secret is being rotated, and after a move to new hosting when the old
+    endpoint has not been deleted yet. Accepting a list means neither of those
+    silently throws delivery feedback away.
+
+    RESEND_WEBHOOK_SECRET may therefore hold several secrets separated by
+    commas or whitespace.
+    """
+
+    configured = str(
         getattr(request.app.state.settings, "resend_webhook_secret", "") or ""
-    ).strip()
-    if not secret:
+    )
+    secrets = tuple(part for part in re.split(r"[,\s]+", configured) if part)
+    if not secrets:
         raise HTTPException(
             status_code=503,
             detail="Resend webhook verification is not configured.",
         )
-    return secret
+    return secrets
 
 
 def _secret_bytes(secret: str) -> bytes:
@@ -73,39 +90,88 @@ def _secret_bytes(secret: str) -> bytes:
         return secret.encode()
 
 
+def _reject(reason: str, *, event_id: str, detail: str) -> HTTPException:
+    """Refuse the delivery and say why in the log.
+
+    Every rejection here used to be an indistinguishable 401. A wrong signing
+    secret, a replayed delivery and a genuinely forged one produced the same
+    silent line, so a misconfigured endpoint could throw away delivery feedback
+    for weeks and look exactly like background noise. The event ID is Resend's
+    own identifier for the delivery; the signature and the secret are never
+    written down.
+    """
+
+    logger.warning(
+        "resend_webhook_rejected reason=%s event_id=%s", reason, event_id or "missing"
+    )
+    return HTTPException(status_code=401, detail=detail)
+
+
 def verify_resend_webhook(
     *,
     raw_body: bytes,
     event_id: str,
     timestamp: str,
     signature_header: str,
-    secret: str,
+    secret: str | Sequence[str],
     now_seconds: int | None = None,
 ) -> None:
-    """Verify the exact Svix-signed body and reject stale replay attempts."""
+    """Verify the exact Svix-signed body and reject stale replay attempts.
 
+    ``secret`` accepts several signing secrets, because one URL can be served
+    by more than one configured Resend endpoint and each signs with its own.
+    """
+
+    secrets = (secret,) if isinstance(secret, str) else tuple(secret)
+    secrets = tuple(candidate for candidate in secrets if candidate)
+    if not secrets:
+        raise HTTPException(
+            status_code=503,
+            detail="Resend webhook verification is not configured.",
+        )
     if not event_id or not timestamp or not signature_header:
-        raise HTTPException(status_code=401, detail="Missing Resend webhook signature.")
+        raise _reject(
+            "missing_signature_headers",
+            event_id=event_id,
+            detail="Missing Resend webhook signature.",
+        )
     try:
         timestamp_seconds = int(timestamp)
     except ValueError as exc:
-        raise HTTPException(status_code=401, detail="Invalid Resend webhook timestamp.") from exc
+        raise _reject(
+            "unreadable_timestamp",
+            event_id=event_id,
+            detail="Invalid Resend webhook timestamp.",
+        ) from exc
     current = int(time.time() if now_seconds is None else now_seconds)
     if abs(current - timestamp_seconds) > 300:
-        raise HTTPException(status_code=401, detail="Resend webhook is outside the five-minute window.")
+        # Usually a retry of a delivery that was already refused for another
+        # reason, so the log says how stale it is: a steady stream of these
+        # means something rejected the first attempt, not that Resend is late.
+        raise _reject(
+            f"outside_five_minute_window skew_seconds={current - timestamp_seconds}",
+            event_id=event_id,
+            detail="Resend webhook is outside the five-minute window.",
+        )
     signed = b".".join(
         (event_id.encode(), timestamp.encode(), raw_body)
     )
-    expected = base64.b64encode(
-        hmac.new(_secret_bytes(secret), signed, hashlib.sha256).digest()
-    ).decode()
     signatures = {
         value.split(",", 1)[1]
         for value in signature_header.split()
         if value.startswith("v1,") and "," in value
     }
-    if not any(hmac.compare_digest(expected, candidate) for candidate in signatures):
-        raise HTTPException(status_code=401, detail="Invalid Resend webhook signature.")
+    for candidate in secrets:
+        expected = base64.b64encode(
+            hmac.new(_secret_bytes(candidate), signed, hashlib.sha256).digest()
+        ).decode()
+        if any(hmac.compare_digest(expected, offered) for offered in signatures):
+            return
+    raise _reject(
+        f"no_configured_secret_matched secrets_tried={len(secrets)}",
+        event_id=event_id,
+        detail="Invalid Resend webhook signature.",
+    )
 
 
 def _email_from_payload(data: dict[str, Any]) -> str:
@@ -126,7 +192,7 @@ async def ingest_resend_webhook(request: Request) -> dict[str, Any]:
         event_id=event_id,
         timestamp=timestamp,
         signature_header=signature,
-        secret=_webhook_secret(request),
+        secret=_webhook_secrets(request),
     )
     if len(event_id) > 255:
         raise HTTPException(status_code=400, detail="Resend event ID is too long.")
