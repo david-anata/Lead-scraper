@@ -11,7 +11,9 @@ from sales_support_agent.services.admin_nav import (
     render_agent_nav,
     render_agent_nav_styles,
 )
-from sales_support_agent.services.hr.store import HR_ROLES, EMPLOYEE_TYPES
+from sales_support_agent.services.hr.store import (
+    HR_ROLES, EMPLOYEE_TYPES, cents_to_dollars,
+)
 from sales_support_agent.services.hr.security import csrf_token
 
 
@@ -61,6 +63,9 @@ _HR_STYLES = """
   .hr-soon { background: #fff; border: 1px dashed rgba(43,54,68,0.25); border-radius: 14px; padding: 48px; text-align: center; color: rgba(43,54,68,0.6); }
   .hr-callout { background:#f3f8fb; border:1px solid #b8dce8; border-radius:14px; padding:18px 20px; margin-bottom:20px; }
   .hr-callout.warn { background:#fff8e8; border-color:#e6bd62; }
+  .hr-gate { color:#8a6116; background:#fff8e8; font-style:italic; white-space:nowrap; }
+  .hr-row-gated td { background:#fffdf6; }
+  .hr-row-note td { background:#fff8e8; color:#5c4408; font-size:13px; padding:10px 14px; }
   .hr-kicker { font:700 11px Montserrat,Inter,sans-serif; letter-spacing:.06em; text-transform:uppercase; color:#52606d; }
   .hr-stack { display:grid; gap:14px; }
   .hr-inline { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
@@ -1582,6 +1587,142 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <li>Printed/manual checks at launch. Each check number, void, and reissue is recorded.</li></ul></div>
     """
     return hr_shell("Payroll", "payroll", body, user=user)
+
+
+def _money_cell(cents) -> str:
+    """Render a money cell, or an explicit gate when the figure does not exist.
+
+    Never falls back to 0.00 for a missing value: a blank-looking zero in a
+    money column reads as a measurement and this page must not do that.
+    """
+    if cents is None:
+        return '<td class="hr-gate">not available</td>'
+    return f"<td>{_esc(cents_to_dollars(cents))}</td>"
+
+
+def render_hr_payroll_preview(preview: dict, *, user, flash=None) -> str:
+    """Show the full calculation for a period without preparing anything."""
+    period = preview["period"]
+    totals = preview["totals"]
+    rows = preview["rows"]
+    readiness = preview["readiness"]
+
+    employee_rows = ""
+    for row in rows:
+        results = row["results"]
+        hours = ""
+        if row["pay_basis"] != "fixed_semimonthly":
+            hours = (
+                f"{_esc(row['regular_hours'])} reg"
+                f" · {_esc(row['overtime_hours'])} OT"
+                f" · {_esc(row['holiday_hours'])} hol"
+                f" · {_esc(row['pto_hours'])} PTO"
+            )
+        else:
+            hours = "Fixed semimonthly"
+        flag = "" if row["complete"] else ' class="hr-row-gated"'
+        employee_rows += (
+            f"<tr{flag}><td><strong>{_esc(row['employee_name'])}</strong>"
+            f"<br><span class='hr-sub'>{_esc(hours)}</span></td>"
+            f"<td>{_esc(cents_to_dollars(results['taxable_gross_cents']))}</td>"
+            + _money_cell(results["federal_cents"])
+            + _money_cell(results["utah_cents"])
+            + f"<td>{_esc(cents_to_dollars(results['social_security_cents']))}</td>"
+            + f"<td>{_esc(cents_to_dollars(results['medicare_cents']))}</td>"
+            + f"<td>{_esc(cents_to_dollars(results['deductions_cents']))}</td>"
+            + _money_cell(results["net_cents"])
+            + _money_cell(results["employer_taxes_cents"])
+            + "</tr>"
+        )
+        for item in row["unavailable"]:
+            employee_rows += (
+                f'<tr class="hr-row-note"><td colspan="9">'
+                f"<strong>{_esc(row['employee_name'])}: {_esc(item['line'])} "
+                f"cannot be calculated.</strong> {_esc(item['reason'])}. "
+                f"{_esc(item['detail'])}</td></tr>"
+            )
+
+    seen_caveats: list[str] = []
+    caveat_items = ""
+    for item in preview["caveats"]:
+        key = f"{item['line']}|{item['reason']}"
+        if key in seen_caveats:
+            continue
+        seen_caveats.append(key)
+        caveat_items += (
+            f"<li><strong>{_esc(item['line'])}:</strong> {_esc(item['reason'])}. "
+            f"{_esc(item['detail'])}</li>"
+        )
+    caveat_block = (
+        f'<div class="hr-callout warn"><div class="hr-kicker">Assumptions in these numbers</div>'
+        f"<ul>{caveat_items}</ul></div>" if caveat_items else ""
+    )
+
+    missing = preview["missing_counts"]
+    people = preview["employee_count"]
+    if preview["totals_are_partial"]:
+        gaps = ", ".join(
+            f"{label} excludes {missing[key]}"
+            for key, label in (
+                ("net_cents", "take-home"),
+                ("employee_taxes_cents", "employee tax"),
+                ("employer_taxes_cents", "employer tax"),
+                ("total_employer_cost_cents", "total cost"),
+            ) if missing.get(key)
+        )
+        totals_note = (
+            f"Each total covers only the employees whose figure could be "
+            f"calculated, out of {people}: {gaps}. Gross covers all {people}."
+        )
+    else:
+        totals_note = f"Totals cover all {people} employees."
+
+    blocker_count = len(readiness["blockers"])
+    gate_line = (
+        f"{blocker_count} item(s) still block a real payroll run. This preview does "
+        "not clear them and does not prepare anything."
+        if blocker_count else
+        "Nothing blocks a real run. Prepare it from the payroll control room."
+    )
+
+    body = f"""
+    {_flash(flash)}
+    <h1 class="hr-h1">Payroll preview</h1>
+    <p class="hr-sub">Period {_esc(period.start_date)}–{_esc(period.end_date)}, payable {_esc(period.pay_date)}.</p>
+    <form class="hr-inline" method="get" action="/admin/hr/payroll/preview">
+      <label for="preview-date">Choose a date inside the pay period</label>
+      <input id="preview-date" type="date" name="period_date" value="{_esc(period.start_date)}">
+      <button class="hr-btn hr-btn-light" type="submit">Open period</button>
+    </form>
+    <div class="hr-callout"><div class="hr-kicker">What this page is</div>
+      <p>This runs the same calculation preparation uses, against live records, and
+      saves nothing. No payroll version is created, no money moves, no tax is paid
+      or filed, and no record changes.</p>
+      <p>{_esc(gate_line)}</p>
+      <p><strong>Calculation authority:</strong> these are Anata planning estimates.
+      No payroll provider is connected and no qualified professional has signed off
+      on the 2026 rule package yet. Do not pay anyone from these figures until both
+      are done.</p></div>
+    {caveat_block}
+    <div class="hr-cards">
+      <div class="hr-card"><div class="n">{_esc(cents_to_dollars(totals['gross_cents']))}</div><div class="l">Gross</div></div>
+      <div class="hr-card"><div class="n">{_esc(cents_to_dollars(totals['net_cents']))}</div><div class="l">Employee take-home</div></div>
+      <div class="hr-card"><div class="n">{_esc(cents_to_dollars(totals['employer_taxes_cents']))}</div><div class="l">Employer tax</div></div>
+      <div class="hr-card"><div class="n">{_esc(cents_to_dollars(totals['employer_cost_cents']))}</div><div class="l">Total employer cost</div></div>
+    </div>
+    <p class="hr-sub">{_esc(totals_note)}</p>
+    <h2>Per employee</h2>
+    <table class="hr-tbl"><thead><tr>
+      <th>Employee</th><th>Gross</th><th>Federal</th><th>Utah</th>
+      <th>Social Security</th><th>Medicare</th><th>Deductions</th>
+      <th>Net pay</th><th>Employer tax</th>
+    </tr></thead><tbody>{employee_rows}</tbody></table>
+    <p class="hr-sub">Federal withholding follows IRS Pub. 15-T Worksheet 1A.
+    Utah follows Pub. 14 Schedule 3. Overtime uses Sunday–Saturday workweeks at
+    1.5x, and holiday and PTO hours never count toward overtime.</p>
+    <p><a class="hr-btn hr-btn-light" href="/admin/hr/payroll">Back to the payroll control room</a></p>
+    """
+    return hr_shell("Payroll preview", "payroll_preview", body, user=user)
 
 
 def render_hr_payroll_approval(run: dict, *, user, flash=None) -> str:
