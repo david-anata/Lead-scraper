@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -95,6 +96,14 @@ def test_production_mode_skips_schema_and_backfill_during_app_construction(
     init.assert_not_called()
     backfill.assert_not_called()
     app.state.session_factory.kw["bind"].dispose()
+
+
+def test_vercel_defaults_to_no_request_time_schema_maintenance() -> None:
+    from sales_support_agent import main as agent_main
+
+    with patch.dict("os.environ", {"VERCEL": "1"}, clear=False):
+        os.environ.pop("AGENT_PREPARE_DATABASE_ON_STARTUP", None)
+        assert agent_main._startup_database_prep_enabled() is False
 
 
 def test_liveness_and_readiness_have_distinct_failure_contracts(

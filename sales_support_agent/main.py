@@ -68,9 +68,10 @@ def _log_sales_snapshot_prewarm(future) -> None:
 
 
 def _startup_database_prep_enabled() -> bool:
-    """Keep local SQLite convenient while Render uses the pre-deploy command."""
+    """Keep local SQLite convenient without running DDL in Vercel requests."""
 
-    return os.getenv("AGENT_PREPARE_DATABASE_ON_STARTUP", "true").strip().lower() in {
+    default = "false" if os.getenv("VERCEL") else "true"
+    return os.getenv("AGENT_PREPARE_DATABASE_ON_STARTUP", default).strip().lower() in {
         "1",
         "true",
         "yes",
