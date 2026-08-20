@@ -12,6 +12,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +58,31 @@ def _normalize_db_url(url: str) -> str:
     return url
 
 
+def _engine_options(database_url: str) -> dict[str, Any]:
+    """Use request-scoped connections in Vercel's serverless runtime.
+
+    QueuePool keeps several session-pooler connections alive per warm Lambda.
+    A handful of concurrent Lambdas can therefore exhaust Supabase's entire
+    session-mode allowance before handling a request. NullPool closes each
+    connection when its session ends and prevents those idle clients from
+    accumulating across instances.
+    """
+
+    if os.getenv("VERCEL") and database_url.startswith("postgresql"):
+        return {"poolclass": NullPool}
+    return {}
+
+
 def create_session_factory(database_url: str) -> sessionmaker[Session]:
     global engine
     database_url = _normalize_db_url(database_url)
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-    engine = create_engine(database_url, future=True, connect_args=connect_args)
+    engine = create_engine(
+        database_url,
+        future=True,
+        connect_args=connect_args,
+        **_engine_options(database_url),
+    )
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, expire_on_commit=False)
 
 
@@ -71,7 +92,12 @@ def init_cashflow_db(db_url: str) -> None:
     global engine
     db_url = _normalize_db_url(db_url)
     connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
-    engine = create_engine(db_url, future=True, connect_args=connect_args)
+    engine = create_engine(
+        db_url,
+        future=True,
+        connect_args=connect_args,
+        **_engine_options(db_url),
+    )
     logger.info("Cashflow DB initialized: %s", db_url.split("@")[-1][:40] if "@" in db_url else db_url[:40])
 
 

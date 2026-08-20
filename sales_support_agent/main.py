@@ -133,15 +133,20 @@ def create_app() -> FastAPI:
         )
 
         if database_mirror_enabled():
-            storage_stats = synchronize_website_ops_cache(
-                settings,
-                session_factory.kw["bind"],
-            )
-            logger.info(
-                "lifecycle milestone=website_ops_storage_ready files=%s bytes=%s",
-                storage_stats["files"],
-                storage_stats["bytes"],
-            )
+            try:
+                storage_stats = synchronize_website_ops_cache(
+                    settings,
+                    session_factory.kw["bind"],
+                )
+                logger.info(
+                    "lifecycle milestone=website_ops_storage_ready files=%s bytes=%s",
+                    storage_stats["files"],
+                    storage_stats["bytes"],
+                )
+            except Exception:  # A cache restore must not crash the whole Lambda.
+                logger.exception(
+                    "lifecycle milestone=website_ops_storage_restore_deferred"
+                )
         install_embedded_website_ops_scheduler(app)
         app.state.ready = True
         logger.info(
