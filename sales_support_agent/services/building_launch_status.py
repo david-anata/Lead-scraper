@@ -247,16 +247,9 @@ def build_arena_launch_status(
     ))
 
     # QuickBooks is the rail Anata actually bills on: it issues the Arena
-    # invoice and holds the payment of record. Stripe exists only as a webhook
-    # that hears about a payment automatically. Requiring Stripe made this row
-    # ask for a provider the business does not use, so either rail satisfies it
-    # and the wording says which one is connected.
+    # invoice and holds the payment of record.
     quickbooks_billing = bool(provider_readiness.get("quickbooks_connected"))
-    stripe_confirmation = bool(
-        provider_readiness.get("payment_credentials")
-        and provider_readiness.get("payment_webhook")
-    )
-    payment_ready = quickbooks_billing or stripe_confirmation
+    payment_ready = quickbooks_billing
     items.append(_item(
         key="payment",
         label="Customer payments",
@@ -264,17 +257,13 @@ def build_arena_launch_status(
         summary=(
             "QuickBooks issues the invoice and holds the payment of record. "
             "A cleared payment is recorded on the booking by hand."
-            if quickbooks_billing and not stripe_confirmation
-            else "The payment account and confirmation webhook are configured."
-            if payment_ready
+            if quickbooks_billing
             else "Payment requests can be prepared, but no billing account is connected."
         ),
         next_action=(
             "Nothing to connect. Record each cleared payment on its booking."
-            if quickbooks_billing and not stripe_confirmation
-            else "Complete a controlled provider verification before accepting a live booking."
-            if payment_ready
-            else "Connect QuickBooks, or authorize a payment account and its confirmation webhook."
+            if quickbooks_billing
+            else "Connect QuickBooks before accepting a live booking."
         ),
         owner="Finance and platform administrator",
         href="/admin/building/billing",

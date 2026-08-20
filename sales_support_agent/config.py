@@ -136,9 +136,6 @@ class Settings:
     use_due_date_for_follow_up: bool
     openai_api_key: str
     openai_model: str
-    instantly_webhook_secret: str
-    instantly_webhook_secret_header: str
-    instantly_webhook_allowed_event_types: tuple[str, ...]
     google_sheets_api_base_url: str
     google_sheets_spreadsheet_id: str
     google_sheets_sales_range: str
@@ -179,6 +176,8 @@ class Settings:
     building_response_sla_hours: int = 4
     building_campaign_token_secret: str = ""
     resend_webhook_secret: str = ""
+    # Legacy schema/test compatibility only. The Agent runtime does not mount
+    # Stripe; website checkout owns that integration.
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_api_base_url: str = "https://api.stripe.com"
@@ -577,22 +576,6 @@ def load_settings() -> Settings:
         use_due_date_for_follow_up=_parse_bool(os.getenv("CLICKUP_USE_DUE_DATE_FOR_FOLLOW_UP", "")),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
-        instantly_webhook_secret=os.getenv("INSTANTLY_WEBHOOK_SECRET", "").strip(),
-        instantly_webhook_secret_header=(
-            os.getenv("INSTANTLY_WEBHOOK_SECRET_HEADER", "X-Instantly-Webhook-Secret").strip()
-            or "X-Instantly-Webhook-Secret"
-        ),
-        instantly_webhook_allowed_event_types=tuple(
-            event_type.strip()
-            for event_type in (
-                os.getenv(
-                    "INSTANTLY_WEBHOOK_ALLOWED_EVENT_TYPES",
-                    "email_sent,reply_received,lead_meeting_booked,lead_meeting_completed,lead_interested,lead_not_interested,lead_neutral",
-                )
-                or ""
-            ).split(",")
-            if event_type.strip()
-        ),
         google_sheets_api_base_url=(
             os.getenv("GOOGLE_SHEETS_API_BASE_URL", "https://sheets.googleapis.com/v4").strip()
             or "https://sheets.googleapis.com/v4"

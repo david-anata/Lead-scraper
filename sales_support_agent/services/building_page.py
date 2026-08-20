@@ -885,7 +885,7 @@ def render_building_page(
                 <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
                 <label>Deposit<select name="status"><option value="due">Due</option><option value="pending">Pending</option><option value="paid">Paid</option><option value="refunded">Refunded</option><option value="waived">Waived</option></select></label>
                 <label>Amount<input name="amount" inputmode="decimal" placeholder="500.00"></label>
-                <label>Provider<input name="provider" placeholder="Stripe, check"></label>
+                <label>Provider<input name="provider" placeholder="QuickBooks, check"></label>
                 <label>Evidence reference<input name="provider_reference" placeholder="Required when paid/refunded"></label>
                 <button class="secondary secondary--small" type="submit">Record deposit</button>
               </form>
@@ -961,7 +961,7 @@ def render_building_page(
               <label>Next follow-up (Mountain time)<input name="next_action_at" type="datetime-local" required></label>
               <label>Confirmation<input name="confirmation" required placeholder="REMIND {_esc(item.get("id"))}"></label>
               <button class="primary secondary--small" type="submit" {'disabled' if not item.get("hosted_invoice_url") or item.get("status") in {"resolved", "waived"} else ''}>Send invoice reminder</button>
-              <span class="sub">Sends only to the billing email with the secure Stripe invoice link.</span>
+              <span class="sub">Sends only to the billing email with the secure QuickBooks invoice link.</span>
             </form>
           </details></td>
         </tr>"""

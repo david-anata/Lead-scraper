@@ -1,9 +1,9 @@
 """Outbound pages for the sales-support-agent app (agent.anatainc.com).
 
-The outbound scoreboard and the StoreLeads brand-list download, rendered inside
+The StoreLeads and Clay lead-operations tools, rendered inside
 the standard admin shell (top nav + Outbound section) and gated by the app's own
 access control via the `outbound.scoreboard` tool (see services/access/catalog).
-The engine lives in the repo-root modules (outbound_pipeline, outbound_scoreboard);
+The engine lives in the repo-root outbound modules;
 this router just exposes them. Read-only and dry-run: nothing sends, nothing pushes.
 """
 
@@ -114,55 +114,6 @@ _NURTURE_HTML = """
 """
 
 
-@router.get("/admin/outbound/scoreboard", response_class=HTMLResponse)
-def outbound_scoreboard(request: Request) -> Response:
-    import outbound_scoreboard as _sb
-    import outbound_bottlenecks as _bn
-    import outbound_efficacy as _ef
-    import outbound_compliance as _cp
-
-    board = _sb.get_scoreboard(_sb.load_instantly_key())
-
-    # Guardrails from the outbound briefs: what is provably OK, broken, or still
-    # needs a one-time human confirmation in Instantly/Clay.
-    checks = _cp.compute_compliance(
-        positive_rate=board.positive_rate,
-        bounce_rate=board.bounce_rate,
-        connected=board.connected,
-    )
-
-    # Capacity + bottlenecks (from env inputs + the live reply rate).
-    bottlenecks = _bn.get_bottlenecks(
-        reply_rate_pct=board.reply_rate if board.connected else None,
-        emails_per_booked_call=board.emails_per_booked_call if board.connected else None,
-    )
-
-    # By-signal efficacy (counts from what we've pushed; rates once outcomes exist).
-    try:
-        from sales_support_agent.models.database import get_engine
-        from sales_support_agent.services import outbound_memory
-        pushed = outbound_memory.load_pushed(get_engine())
-    except Exception:  # noqa: BLE001
-        pushed = []
-    efficacy = _ef.compute_signal_efficacy(pushed, outcomes={})
-
-    body = f"""
-        <h1>Outbound scoreboard</h1>
-        <p class="sub">Your machine, and how it is performing. Reads live from Instantly.</p>
-        {_sb.render_scoreboard_body(board)}
-        {_cp.render_compliance_html(checks)}
-        {_bn.render_bottlenecks_html(bottlenecks)}
-        {_ef.render_efficacy_html(efficacy)}
-        {_NURTURE_HTML}
-    """
-    extra_css = (_sb.SCOREBOARD_CSS + _cp.COMPLIANCE_CSS + _bn.BOTTLENECK_CSS
-                 + _ef.EFFICACY_CSS + _NURTURE_CSS)
-    return HTMLResponse(_shell_page(
-        request, active="outbound_scoreboard", title="Outbound Scoreboard",
-        extra_css=extra_css, body=body,
-    ))
-
-
 _BRANDS_CSS = """
   .steps{margin:8px 0 0;padding:0;list-style:none;counter-reset:step;}
   .steps li{position:relative;padding:14px 0 14px 44px;border-top:1px solid rgba(43,54,68,0.08);}
@@ -183,8 +134,7 @@ _BRANDS_CSS = """
 
 @router.get("/admin/outbound/brands", response_class=HTMLResponse)
 def outbound_brands_page(request: Request) -> Response:
-    """Landing page: download the ICP-matched brand list, then the steps to load
-    it into Clay and Instantly. The download itself is the CSV endpoint below."""
+    """Download the ICP-matched brand list for enrichment in Clay."""
     import outbound_pipeline as _op
 
     api_key, _clay = _op.load_config_from_env()
@@ -210,8 +160,8 @@ def outbound_brands_page(request: Request) -> Response:
           <li><b>Download</b> the CSV above. Each brand is ranked Tier A, B, or C with the reason it was picked (hottest first), fits our ICP, and has a contact route Clay can work from.</li>
           <li><b>Import into Clay</b> (Add data &rarr; Import CSV) into your enrichment table. Clay finds the decision-maker and a verified email.</li>
           <li><b>Let the two prompts run</b> in Clay: the Sales Fit column qualifies, the Personalization column writes the opener.</li>
-          <li><b>Push qualified rows to Instantly</b> from Clay, into your warmed campaign.</li>
-          <li><b>Review before send:</b> approve the copy and eyeball a small test batch. Only then turn the campaign on.</li>
+          <li><b>Review the qualified rows</b> in Clay and approve the enriched contact data and copy.</li>
+          <li><b>Hand approved contacts to the current sales workflow.</b> Agent does not send email or require a separate sending platform.</li>
         </ol>
         {key_note}
         <div class="note">Never email a brand twice: every brand you download here is
@@ -1001,7 +951,7 @@ _LEADS_CSS = """
 
 @router.get("/admin/outbound/leads", response_class=HTMLResponse)
 def outbound_leads(request: Request) -> Response:
-    """Our own record of every brand sourced. Clay and Instantly process these;
+    """Our own record of every brand sourced. Clay enriches these;
     the leads themselves live here, so losing a tool never loses the leads."""
     from sales_support_agent.services import outbound_memory
 
@@ -1049,9 +999,8 @@ def outbound_leads(request: Request) -> Response:
 
     body = f"""
         <h1>Leads</h1>
-        <p class="sub">Our own record of every brand we have sourced. Clay enriches these and
-        Instantly sends to them, but the leads themselves live here, so losing access to
-        either tool never loses the leads.</p>
+        <p class="sub">Our own record of every brand we have sourced. Clay enriches the
+        contact data, while Agent keeps the durable lead record.</p>
 
         <div style="margin:0 0 18px">
           <span class="ld-stat"><b>{len(leads):,}</b> leads held</span>

@@ -96,7 +96,6 @@ from sales_support_agent.services.fulfillment_dashboard import (
 )
 from sales_support_agent.services.fulfillment_deck.wms_client import wms_runtime_diagnostics
 from sales_support_agent.services.gmail_drafts import create_bulk_draft_payloads
-from sales_support_agent.services.instantly_webhooks import InstantlyWebhookService
 from sales_support_agent.services.sync import ClickUpSyncService
 from sales_support_agent.services.website_ops import (
     execute_approved_website_ops_actions,
@@ -374,22 +373,6 @@ def _start_dashboard_sync(request: Request, *, trigger: str, force: bool) -> dic
     details["status"] = status
     details["message"] = message
     return details
-
-
-def _enforce_instantly_webhook_auth(request: Request) -> None:
-    settings = request.app.state.settings
-    if settings.instantly_webhook_secret:
-        header_name = settings.instantly_webhook_secret_header
-        provided = request.headers.get(header_name) or request.query_params.get("token") or ""
-        if provided != settings.instantly_webhook_secret:
-            raise HTTPException(status_code=401, detail="Invalid Instantly webhook secret.")
-        return
-
-    configured = settings.internal_api_key
-    if configured:
-        provided = request.headers.get("X-Internal-Api-Key") or request.query_params.get("token") or ""
-        if provided != configured:
-            raise HTTPException(status_code=401, detail="Invalid internal API key.")
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -3119,14 +3102,3 @@ def ingest_communication_event(
         result = CommunicationService(settings, ClickUpClient(settings), SlackClient(settings), session).process_event(payload)
     return ApiMessage(status="ok", message="Communication event processed.", details=result)
 
-
-@router.post("/api/integrations/instantly/webhook", response_model=ApiMessage)
-async def ingest_instantly_webhook(request: Request) -> ApiMessage:
-    _enforce_instantly_webhook_auth(request)
-    _validate_runtime(request)
-    payload = await request.json()
-    settings = request.app.state.settings
-    with session_scope(request.app.state.session_factory) as session:
-        result = InstantlyWebhookService(settings, ClickUpClient(settings), SlackClient(settings), session).process_webhook(payload)
-    message = "Instantly webhook processed." if result.get("status") == "processed" else "Instantly webhook ignored."
-    return ApiMessage(status="ok", message=message, details=result)

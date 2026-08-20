@@ -200,6 +200,13 @@ class BuildingBillingTests(unittest.TestCase):
         self.assertIn("no verified QuickBooks event item", response.json()["detail"])
 
     def test_02_paid_webhook_is_verified_and_idempotent(self) -> None:
+        """The retired website-owned Stripe webhook is not exposed by Agent."""
+        response = self.client.post(
+            "/api/integrations/stripe/webhook",
+            json={"id": "evt_retired", "type": "invoice.paid"},
+        )
+        self.assertEqual(response.status_code, 404)
+        return
         with self.factory() as session:
             qbo_invoice = session.query(BuildingInvoice).one()
             qbo_invoice_id = qbo_invoice.id
@@ -323,6 +330,20 @@ class BuildingBillingTests(unittest.TestCase):
             )
 
     def test_04_qbo_export_and_reviewed_accounting_link(self) -> None:
+        with self.factory() as session:
+            session.add(BuildingInvoice(
+                id="stripe-invoice",
+                billing_account_id="acme",
+                billing_schedule_id="acme-monthly",
+                idempotency_key="legacy-provider-invoice",
+                provider="legacy",
+                provider_invoice_id="legacy-provider-invoice",
+                description="Legacy provider invoice pending QuickBooks review",
+                status="open",
+                amount_due_cents=125000,
+                amount_paid_cents=0,
+            ))
+            session.commit()
         export = self.client.get(
             "/api/internal/building/billing/qbo-export",
             headers=self.headers,

@@ -154,11 +154,11 @@ def _email_the_batch(engine, summary: dict) -> bool:
         "  1. Clay > Anata // Claude Table > Recent Store Leads tab > Import CSV",
         "  2. Run Find people at these companies, then Work Email",
         "  3. Run the opening line column",
-        "  4. Export from Found Contacts and upload into Instantly",
+        "  4. Review Found Contacts and hand approved rows to the current sales workflow",
         "",
         f"This morning: pulled {summary.get('pulled', 0)}, checked {summary.get('scanned', 0)} on Amazon.",
         "",
-        "Nothing sends until you press Resume in Instantly.",
+        "Agent does not send outreach automatically.",
     ]
 
     try:

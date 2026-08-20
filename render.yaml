@@ -39,12 +39,6 @@ services:
         sync: false
       - key: SLACK_AE_MAP_JSON
         sync: false
-      - key: INSTANTLY_WEBHOOK_SECRET
-        sync: false
-      - key: INSTANTLY_WEBHOOK_SECRET_HEADER
-        value: X-Instantly-Webhook-Secret
-      - key: INSTANTLY_WEBHOOK_ALLOWED_EVENT_TYPES
-        value: email_sent,reply_received,lead_meeting_booked,lead_meeting_completed,lead_interested,lead_not_interested,lead_neutral
       - key: CLICKUP_DISCOVERY_SAMPLE_SIZE
         value: "10"
       - key: CLICKUP_DISCOVERY_SNAPSHOT_PATH
@@ -95,12 +89,6 @@ services:
         sync: false
       - key: HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON
         sync: false
-      - key: STRIPE_SECRET_KEY
-        sync: false
-      - key: STRIPE_WEBHOOK_SECRET
-        sync: false
-      - key: STRIPE_API_BASE_URL
-        value: https://api.stripe.com
       - key: GOOGLE_SHEETS_SPREADSHEET_ID
         sync: false
       - key: GOOGLE_SHEETS_SALES_RANGE

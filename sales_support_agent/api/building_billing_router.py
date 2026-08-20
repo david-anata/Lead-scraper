@@ -1,4 +1,4 @@
-"""Native building billing schedules with Stripe collection evidence."""
+"""Native building billing schedules backed by QuickBooks."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ from sales_support_agent.services.building_transactional_messages import (
 
 
 internal_router = APIRouter(prefix="/api/internal/building/billing", tags=["building-billing"])
-webhook_router = APIRouter(prefix="/api/integrations/stripe", tags=["stripe-webhook"])
+webhook_router = APIRouter(prefix="/api/integrations/stripe", tags=["legacy-stripe-webhook"])
 
 SCHEDULE_TYPES = {
     "one_time",
@@ -348,7 +348,6 @@ def upsert_billing_account(
                 "id": row.id,
                 "account_name": row.account_name,
                 "billing_email": row.billing_email,
-                "stripe_customer_id": row.stripe_customer_id,
                 "qbo_customer_id": row.qbo_customer_id,
             },
         }
