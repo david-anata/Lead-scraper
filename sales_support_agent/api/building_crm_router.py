@@ -4689,6 +4689,27 @@ def retry_campaign_failures_from_control_room(
     )
 
 
+def _has_verified_esign_artifact(session) -> bool:
+    """Return durable provider evidence, independent of a customer's hold state."""
+
+    current = session.execute(
+        select(BuildingAgreement.id).where(
+            BuildingAgreement.preparation_status == "approved",
+            BuildingAgreement.document_url != "",
+            BuildingAgreement.package_checksum != "",
+        ).limit(1)
+    ).scalars().first()
+    if current:
+        return True
+    historical = session.execute(
+        select(BuildingAuditEvent.id).where(
+            BuildingAuditEvent.entity_type == "agreement",
+            BuildingAuditEvent.action == "contract_google_doc_drafted",
+        ).limit(1)
+    ).scalars().first()
+    return bool(historical)
+
+
 @admin_router.get("/settings", response_class=HTMLResponse)
 @admin_router.get("/catalog", response_class=HTMLResponse)
 @admin_router.get("/contacts", response_class=HTMLResponse)
@@ -4747,15 +4768,10 @@ def building_control_room(
             )
         ).scalars().all()
         # A saved provider choice is configuration, not proof that its API can
-        # create the signing artifact. At least one approved, frozen package
-        # with a provider document is the functional production evidence.
-        verified_signing_copy = session.execute(
-            select(BuildingAgreement.id).where(
-                BuildingAgreement.preparation_status == "approved",
-                BuildingAgreement.document_url != "",
-                BuildingAgreement.package_checksum != "",
-            ).limit(1)
-        ).scalars().first()
+        # create the signing artifact. A successful, audited Google Doc draft
+        # remains provider evidence even after that particular customer hold
+        # later expires; expiration must not erase a verified integration.
+        verified_signing_artifact = _has_verified_esign_artifact(session)
         contact_rows = session.execute(
             select(BuildingContact).order_by(BuildingContact.full_name, BuildingContact.email)
         ).scalars().all()
@@ -5193,7 +5209,7 @@ def building_control_room(
                     item.decision_key == "agreement_template"
                     and item.status == "approved_reference"
                     for item in launch_decision_rows
-                ) and bool(verified_signing_copy),
+                ) and verified_signing_artifact,
                 # The rail Anata bills on. Stripe below is only the optional
                 # automatic-confirmation path.
                 "quickbooks_connected": BuildingQuickBooksClient().is_configured,
