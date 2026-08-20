@@ -1013,6 +1013,102 @@ def save_w4(employee_email: str, *, ssn: str, filing_status: str, two_jobs: bool
         return True, "w4_saved"
 
 
+def record_prior_w4(
+    employee_email: str, *, effective_date: date, filing_status: str,
+    two_jobs: bool, dependents_credit: str, other_income: str,
+    deductions: str, extra_withholding: str, exempt: bool,
+    source_reference: str, attested: bool, actor: str,
+) -> tuple[bool, str]:
+    """Transcribe an existing signed W-4 without collecting the SSN again.
+
+    This is an employer migration path, not a way to choose elections for an
+    employee. The manager must copy every value from a prior signed form and
+    identify the source. The source and actor are preserved in the audit log.
+    """
+    email = (employee_email or "").strip().lower()
+    source = (source_reference or "").strip()
+    actor_email = (actor or "").strip().lower()
+    if (
+        filing_status not in {"single", "married_joint", "head_household"}
+        or effective_date > date.today()
+        or not source
+        or not attested
+        or not actor_email
+    ):
+        return False, "prior_w4_invalid"
+    try:
+        dependents_credit_cents = strict_dollars_to_cents(dependents_credit)
+        other_income_cents = strict_dollars_to_cents(other_income)
+        deductions_cents = strict_dollars_to_cents(deductions)
+        extra_withholding_cents = strict_dollars_to_cents(extra_withholding)
+    except ValueError:
+        return False, "invalid_w4_amount"
+    payload = {
+        "employee_email": email,
+        "effective_date": effective_date.isoformat(),
+        "filing_status": filing_status,
+        "two_jobs": bool(two_jobs),
+        "exempt_from_federal_withholding": bool(exempt),
+        "dependents_credit_cents": dependents_credit_cents,
+        "other_income_cents": other_income_cents,
+        "deductions_cents": deductions_cents,
+        "extra_withholding_cents": extra_withholding_cents,
+        "migration_source": source,
+    }
+    snapshot_hash = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    with _session() as session:
+        if not session.query(HREmployee).filter_by(email=email).first():
+            return False, "employee_not_found"
+        existing = session.query(HRTaxElection).filter_by(
+            snapshot_hash=snapshot_hash
+        ).first()
+        if existing and existing.employee_email == email:
+            return True, "prior_w4_recorded"
+        now = datetime.now(timezone.utc)
+        for row in session.query(HRTaxElection).filter_by(
+            employee_email=email, superseded_at=None
+        ).all():
+            row.superseded_at = now
+        election = HRTaxElection(
+            employee_email=email,
+            effective_date=effective_date,
+            filing_status=filing_status,
+            two_jobs=bool(two_jobs),
+            exempt_from_federal_withholding=bool(exempt),
+            dependents_credit_cents=dependents_credit_cents,
+            other_income_cents=other_income_cents,
+            deductions_cents=deductions_cents,
+            extra_withholding_cents=extra_withholding_cents,
+            sealed_ssn="",
+            ssn_last4="",
+            attested_by=f"prior-record:{actor_email}",
+            attested_at=now,
+            snapshot_hash=snapshot_hash,
+        )
+        session.add(election)
+        onboarding = session.query(HREmployeeOnboarding).filter_by(
+            employee_email=email
+        ).first()
+        if not onboarding:
+            onboarding = HREmployeeOnboarding(employee_email=email)
+            session.add(onboarding)
+        onboarding.w4_complete = True
+        onboarding.updated_at = now
+        session.flush()
+        _supersede_open_payrolls(
+            session, actor=actor_email, effective_start=effective_date,
+            reason="prior signed W-4 migrated",
+        )
+        _audit(session, actor_email, "onboarding.w4_prior_recorded", "employee", email, {
+            "effective_date": effective_date.isoformat(),
+            "source_reference": source,
+            "filing_status": filing_status,
+        })
+        return True, "prior_w4_recorded"
+
+
 def save_employee_attestations(employee_email: str, *, i9_attested: bool,
                                policies_attested: bool, actor: str) -> tuple[bool, str]:
     email = (employee_email or "").strip().lower()
@@ -1529,6 +1625,88 @@ def submit_timesheet(
             "period_start": str(period_start), "period_end": str(period_end),
         })
         return True, "timesheet_submitted"
+
+
+def approve_timesheet_as_manager(
+    employee_email: str, *, period_start: date, period_end: date,
+    review_note: str, attested: bool, actor: str,
+) -> tuple[bool, str]:
+    """Approve the current closed time directly from the payroll review.
+
+    Anata's small-team workflow makes the manager responsible for checking the
+    time record. The source hash still makes the approval stale whenever a
+    punch changes after approval.
+    """
+    email = (employee_email or "").strip().lower()
+    actor_email = (actor or "").strip().lower()
+    note = (review_note or "").strip()
+    if (
+        not attested or not note or period_end < period_start
+        or not actor_email or actor_email == email
+    ):
+        return False, "timesheet_manager_review_invalid"
+    with _session() as session:
+        employee = session.query(HREmployee).filter_by(email=email).first()
+        if not employee:
+            return False, "employee_not_found"
+        if session.query(HRTimeEntry).filter(
+            HRTimeEntry.employee_email == email,
+            HRTimeEntry.date >= period_start,
+            HRTimeEntry.date <= period_end,
+            HRTimeEntry.stop_time == "",
+        ).first():
+            return False, "timesheet_open_punch"
+        pending = session.query(HRTimeCorrection).filter(
+            HRTimeCorrection.employee_email == email,
+            HRTimeCorrection.status == "requested",
+        ).all()
+        for correction in pending:
+            raw_date = (correction.proposed_json or {}).get("date")
+            try:
+                correction_date = date.fromisoformat(str(raw_date or ""))
+            except ValueError:
+                continue
+            if period_start <= correction_date <= period_end:
+                return False, "timesheet_correction_pending"
+        closed_count = session.query(func.count(HRTimeEntry.id)).filter(
+            HRTimeEntry.employee_email == email,
+            HRTimeEntry.date >= period_start,
+            HRTimeEntry.date <= period_end,
+            HRTimeEntry.stop_time != "",
+        ).scalar() or 0
+        if not closed_count:
+            return False, "timesheet_empty"
+        source_hash = _timesheet_source_hash(
+            session, email, period_start, period_end
+        )
+        row = session.query(HRTimesheetApproval).filter_by(
+            employee_email=email, period_start=period_start, period_end=period_end
+        ).first()
+        if not row:
+            row = HRTimesheetApproval(
+                employee_email=email,
+                period_start=period_start,
+                period_end=period_end,
+            )
+            session.add(row)
+        elif row.status == "approved" and row.source_hash == source_hash:
+            return True, "timesheet_already_approved"
+        now = datetime.now(timezone.utc)
+        row.source_hash = source_hash
+        row.status = "approved"
+        row.submitted_by = f"manager-review:{actor_email}"
+        row.submitted_at = now
+        row.reviewed_by = actor_email
+        row.review_note = note
+        row.reviewed_at = now
+        session.flush()
+        _audit(session, actor_email, "timesheet.manager_approved", "timesheet_approval", row.id, {
+            "employee_email": email,
+            "period_start": str(period_start),
+            "period_end": str(period_end),
+            "review_note": note,
+        })
+        return True, "timesheet_manager_approved"
 
 
 def decide_timesheet(

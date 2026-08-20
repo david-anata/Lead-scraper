@@ -144,7 +144,7 @@ class HRSectionTests(unittest.TestCase):
         )
         self.assertEqual(
             _default_payroll_date(date(2026, 8, 20)),
-            date(2026, 8, 20),
+            date(2026, 8, 1),
         )
         # The default period follows the clock once the first live date passes,
         # so derive the expected period instead of pinning one that expires.

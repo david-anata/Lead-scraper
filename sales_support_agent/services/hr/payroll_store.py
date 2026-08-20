@@ -47,6 +47,7 @@ from sales_support_agent.services.hr.payroll import (
 )
 from sales_support_agent.services.hr.store import (
     cents_to_dollars,
+    get_current_tax_election,
     holiday_pay_proposals,
     list_employees,
     list_timesheet_approvals,
@@ -715,11 +716,6 @@ def _period_context(containing: date) -> tuple:
         for item in list_timesheet_approvals(period.start_date, period.end_date)
         if item["status"] == "approved"
     }
-    if not settings["opening_balances_confirmed"]:
-        readiness["blockers"].append({
-            "kind": "opening_balances", "severity": "blocker",
-            "message": "Opening payroll year-to-date balances are not confirmed",
-        })
     if not company_profile.get("legal_name") or not company_profile.get("ein_last4"):
         readiness["blockers"].append({
             "kind": "company_profile", "severity": "blocker",
@@ -775,10 +771,10 @@ def _period_context(containing: date) -> tuple:
             })
     readiness["ready"] = not readiness["blockers"]
     owner_map = {
-        "w4": ("Employee · Val follows up", "/admin/hr/employees", "Open employee record"),
+        "w4": ("David or Val", f"/admin/hr/payroll?period_date={period.start_date}#employee-tax-records", "Record prior W-4"),
         "time_missing": ("Employee", f"/admin/hr/time?period_date={period.start_date}", "Complete time"),
-        "timesheet_approval": ("Employee and reviewer", f"/admin/hr/time?period_date={period.start_date}", "Review timesheet"),
-        "opening_balance": ("Val and independent reviewer", "/admin/hr/settings", "Review opening balance"),
+        "timesheet_approval": ("Manager", f"/admin/hr/payroll?period_date={period.start_date}#time-review", "Review hours"),
+        "opening_balance": ("David or authorized reviewer", f"/admin/hr/payroll?period_date={period.start_date}#opening-balances", "Review opening balance"),
         "opening_balances": ("Val and independent reviewer", "/admin/hr/settings", "Confirm opening balances"),
         "final_approver": ("David or Val", "/admin/hr/settings", "Select final approver"),
         "company_profile": ("David or Val", "/admin/hr/settings", "Complete employer profile"),
@@ -848,6 +844,16 @@ def _period_source_hash(session: Session, period, employees: list[dict],
 
 def control_room(containing: date) -> dict:
     period, settings, employees, inputs, readiness = _period_context(containing)
+    approval_rows = list_timesheet_approvals(period.start_date, period.end_date)
+    approval_by_email = {
+        item["employee_email"]: item for item in approval_rows
+    }
+    blocked_time_by_email: dict[str, list[str]] = {}
+    for blocker in readiness["blockers"]:
+        if blocker.get("kind") in {"open_time", "time_correction", "time_missing"}:
+            blocked_time_by_email.setdefault(
+                blocker.get("employee_email", ""), []
+            ).append(blocker.get("message", ""))
     with _session() as session:
         runs = session.query(HRPayrollRun).filter_by(
             pay_period_start=period.start_date, pay_period_end=period.end_date
@@ -896,10 +902,38 @@ def control_room(containing: date) -> dict:
             "paid": bool(row.paid_at), "filed": bool(row.filed_at),
             "evidence_note": row.evidence_note,
         } for row in liabilities]
+        timesheet_rows = []
+        for employee in employees:
+            employment = employee.get("employment") or {}
+            if employment.get("pay_basis") != "hourly":
+                continue
+            hours = session.query(func.coalesce(func.sum(HRTimeEntry.hours), 0)).filter(
+                HRTimeEntry.employee_email == employee["email"],
+                HRTimeEntry.date >= period.start_date,
+                HRTimeEntry.date <= period.end_date,
+                HRTimeEntry.stop_time != "",
+            ).scalar() or 0
+            approval = approval_by_email.get(employee["email"]) or {}
+            issues = blocked_time_by_email.get(employee["email"], [])
+            timesheet_rows.append({
+                "employee_email": employee["email"],
+                "employee_name": employee.get("full_name") or employee["email"],
+                "hours": f"{Decimal(str(hours)):.2f}",
+                "status": approval.get("status") or "needs_manager_review",
+                "reviewed_by": approval.get("reviewed_by") or "",
+                "review_note": approval.get("review_note") or "",
+                "can_approve": not issues and Decimal(str(hours)) > 0,
+                "issues": issues,
+            })
     return {
         "period": period, "settings": settings, "employees": employees,
         "inputs": inputs, "readiness": readiness, "runs": run_rows,
         "opening_balances": list_opening_balances(period.end_date.year),
+        "tax_elections": {
+            employee["email"]: get_current_tax_election(employee["email"])
+            for employee in employees
+        },
+        "timesheets": timesheet_rows,
         "liabilities": liability_rows,
     }
 

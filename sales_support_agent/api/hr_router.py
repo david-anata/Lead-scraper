@@ -34,6 +34,7 @@ from sales_support_agent.services.hr import payroll_store
 from sales_support_agent.services.hr import legacy_import
 from sales_support_agent.services.hr import workforce
 from sales_support_agent.services.hr import pto_workflow
+from sales_support_agent.services.hr.payroll import periods_for_year
 
 
 def _correction_duration(payload: dict) -> float:
@@ -276,8 +277,12 @@ FIRST_LIVE_PAYROLL_DATE = date(2026, 8, 1)
 
 
 def _default_payroll_date(today: date | None = None) -> date:
-    """Keep pre-launch views on the approved first live payroll period."""
+    """Open the period being paid today; otherwise open the current period."""
     current = today or date.today()
+    for year in (current.year - 1, current.year):
+        for period in periods_for_year(year):
+            if period.pay_date == current:
+                return max(period.start_date, FIRST_LIVE_PAYROLL_DATE)
     return max(current, FIRST_LIVE_PAYROLL_DATE)
 
 
@@ -1518,6 +1523,103 @@ async def hr_payroll_input_decision(
     )
     return RedirectResponse(
         f"/admin/hr/payroll?period_date={period_date}&{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
+
+
+@router.post("/payroll/timesheets/approve")
+async def hr_payroll_manager_timesheet_approve(
+    employee_email: str = Form(""), period_start: date = Form(...),
+    period_end: date = Form(...), review_note: str = Form(""),
+    attested: bool = Form(False), user: dict = Depends(_pay_prepare_guard),
+):
+    ok, message = store.approve_timesheet_as_manager(
+        employee_email,
+        period_start=period_start,
+        period_end=period_end,
+        review_note=review_note,
+        attested=attested,
+        actor=user.get("email", ""),
+    )
+    return RedirectResponse(
+        f"/admin/hr/payroll?period_date={period_start}&"
+        f"{'ok' if ok else 'err'}={message}#time-review",
+        status_code=303,
+    )
+
+
+@router.post("/payroll/prior-w4")
+async def hr_payroll_prior_w4(
+    employee_email: str = Form(""), period_date: date = Form(...),
+    effective_date: date = Form(...), filing_status: str = Form(""),
+    two_jobs: bool = Form(False), dependents_credit: str = Form("0"),
+    other_income: str = Form("0"), deductions: str = Form("0"),
+    extra_withholding: str = Form("0"), exempt: bool = Form(False),
+    source_reference: str = Form(""), attested: bool = Form(False),
+    user: dict = Depends(_recent_settings_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
+):
+    ok, message = store.record_prior_w4(
+        employee_email,
+        effective_date=effective_date,
+        filing_status=filing_status,
+        two_jobs=two_jobs,
+        dependents_credit=dependents_credit,
+        other_income=other_income,
+        deductions=deductions,
+        extra_withholding=extra_withholding,
+        exempt=exempt,
+        source_reference=source_reference,
+        attested=attested,
+        actor=user.get("email", ""),
+    )
+    return RedirectResponse(
+        f"/admin/hr/payroll?period_date={period_date}&"
+        f"{'ok' if ok else 'err'}={message}#employee-tax-records",
+        status_code=303,
+    )
+
+
+@router.post("/payroll/opening-balances/{balance_id}/decision")
+async def hr_payroll_opening_balance_decision(
+    balance_id: int, period_date: date = Form(...),
+    decision: str = Form(""), review_note: str = Form(""),
+    user: dict = Depends(_recent_settings_guard),
+):
+    ok, message = payroll_store.decide_opening_balance(
+        balance_id,
+        decision=decision,
+        review_note=review_note,
+        actor=user.get("email", ""),
+    )
+    return RedirectResponse(
+        f"/admin/hr/payroll?period_date={period_date}&"
+        f"{'ok' if ok else 'err'}={message}#opening-balances",
+        status_code=303,
+    )
+
+
+@router.post("/payroll/qualified-review")
+async def hr_payroll_qualified_review_save(
+    period_date: date = Form(...), tax_year: int = Form(2026),
+    reviewer_name: str = Form(""), reviewer_email: str = Form(""),
+    reviewed_on: date = Form(...), evidence_reference: str = Form(""),
+    review_note: str = Form(""), attested: bool = Form(False),
+    user: dict = Depends(_recent_settings_guard),
+):
+    ok, message = payroll_store.save_payroll_review(
+        tax_year=tax_year,
+        reviewer_name=reviewer_name,
+        reviewer_email=reviewer_email,
+        reviewed_on=reviewed_on,
+        evidence_reference=evidence_reference,
+        review_note=review_note,
+        attested=attested,
+        actor=user.get("email", ""),
+    )
+    return RedirectResponse(
+        f"/admin/hr/payroll?period_date={period_date}&"
+        f"{'ok' if ok else 'err'}={message}#calculation-review",
         status_code=303,
     )
 

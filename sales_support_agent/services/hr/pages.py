@@ -459,29 +459,29 @@ def render_hr_setup(control: dict, company_profile: dict, calendar: dict,
                 "re-enter values that already match the source."
             ),
             "ready": opening_ready, "owner": "Val prepares · David reviews",
-            "href": "/admin/hr/settings", "action": "Review opening balances",
+            "href": f"/admin/hr/payroll{period_query}#opening-balances", "action": "Review opening balances",
         },
         {
-            "title": "Collect current employee W-4s",
+            "title": "Confirm employee W-4 elections",
             "description": (
-                "Every active W-2 employee has a current signed W-4."
+                "Every active W-2 employee has current elections on file."
                 if w4_ready else
-                "Send secure onboarding invitations to the employees identified in the "
-                "payroll blocker list. Employees must make and sign their own elections."
+                "Transcribe the elections from each employee's existing signed W-4. "
+                "Do not make the employee complete the same form again and do not infer choices."
             ),
-            "ready": w4_ready, "owner": "Employees · Val follows up",
-            "href": "/admin/hr/employees", "action": "Open employee records",
+            "ready": w4_ready, "owner": "David or Val",
+            "href": f"/admin/hr/payroll{period_query}#employee-tax-records", "action": "Review tax records",
         },
         {
             "title": "Close and approve current time",
             "description": (
                 "Current hourly time, corrections, and payroll inputs are independently reviewed."
                 if time_ready else
-                "Resolve open punches and corrections, then have each hourly employee submit "
-                "and another authorized person approve the unchanged timesheet."
+                "Resolve open punches and corrections, then have the manager approve the "
+                "exact recorded hours during payroll. Employees do not submit timesheets."
             ),
-            "ready": time_ready, "owner": "Employees and Val",
-            "href": f"/admin/hr/time{period_query}", "action": "Review time and PTO",
+            "ready": time_ready, "owner": "Manager",
+            "href": f"/admin/hr/payroll{period_query}#time-review", "action": "Review hours",
         },
         {
             "title": "Resolve older time corrections",
@@ -504,7 +504,7 @@ def render_hr_setup(control: dict, company_profile: dict, calendar: dict,
                 "and opening setup. Record their real evidence; do not self-certify."
             ),
             "ready": review_ready, "owner": "Qualified reviewer",
-            "href": "/admin/hr/settings", "action": "Record review evidence",
+            "href": f"/admin/hr/payroll{period_query}#calculation-review", "action": "Record review evidence",
         },
         {
             "title": "Prepare the controlled payroll version",
@@ -595,6 +595,8 @@ def _flash(flash: Optional[str]) -> str:
         "hr_login_email_invalid": "Use a valid email address.",
         "hr_login_email_in_use": "That HR sign-in email is already assigned to another employee.",
         "w4_saved": "W-4 elections securely saved.",
+        "prior_w4_recorded": "Existing signed W-4 elections recorded for payroll.",
+        "prior_w4_invalid": "Choose the prior W-4 filing status, date, source, and confirmation. Nothing was saved.",
         "attestations_saved": "Employee attestations saved.",
         "onboarding_complete": "Onboarding approved and activated.",
         "onboarding_incomplete": "Employer review saved; other onboarding steps remain.",
@@ -606,6 +608,8 @@ def _flash(flash: Optional[str]) -> str:
         "timesheet_submitted": "Timesheet submitted for independent review.",
         "timesheet_already_approved": "This unchanged timesheet is already approved.",
         "timesheet_approved": "Timesheet independently approved for payroll.",
+        "timesheet_manager_approved": "Manager reviewed and approved the recorded hours for payroll.",
+        "timesheet_manager_review_invalid": "A different manager must add a review note and confirm the recorded hours.",
         "timesheet_rejected": "Timesheet returned to the employee for correction.",
         "timesheet_attestation_required": "Confirm that the timesheet is complete and accurate.",
         "timesheet_open_punch": "Clock out before submitting this timesheet.",
@@ -1303,13 +1307,8 @@ def render_hr_time(
       <div class="hr-actions"><button class="hr-btn hr-btn-light" type="submit">Request missed-day review</button></div>
     </form>
     <h2 style="margin-top:28px">Timesheet approval</h2>
-    <p class="hr-sub">Period {_esc(period.start_date)}–{_esc(period.end_date)}. Hourly payroll remains blocked until the employee submits and another authorized person approves an unchanged timesheet.</p>
-    <form class="hr-form" method="post" action="/admin/hr/time/timesheets/submit">
-      <input type="hidden" name="period_start" value="{_esc(period.start_date)}">
-      <input type="hidden" name="period_end" value="{_esc(period.end_date)}">
-      <label><input type="checkbox" name="attested" value="true" required style="width:auto"> I confirm my time for this period is complete and accurate.</label>
-      <div class="hr-actions"><button class="hr-btn" type="submit">Submit my timesheet</button></div>
-    </form>
+    <p class="hr-sub">Period {_esc(period.start_date)}–{_esc(period.end_date)}. Employees only clock in, clock out, and request corrections. A manager reviews and approves the exact recorded punches during payroll.</p>
+    {f'<p><a class="hr-btn" href="/admin/hr/payroll?period_date={_esc(period.start_date)}#time-review">Review hours in Payroll</a></p>' if can_review else '<div class="hr-callout"><strong>No submission needed.</strong><p>Your manager will review these punches during payroll. Use Correct above if anything is wrong.</p></div>'}
     <table class="hr-tbl" style="margin-top:18px"><thead><tr><th>Employee</th><th>Period</th><th>Status</th><th>Reviewer</th><th>Decision / note</th></tr></thead><tbody>{timesheet_rows}</tbody></table>
     <h2 style="margin-top:28px">Request PTO</h2>
     <div class="hr-callout"><div class="hr-kicker">How approval works</div><p>Your assigned manager receives an email with a secure link to review this request. The email itself cannot approve anything. After approval, Anata adds the dates to the shared OOO calendar and emails you the decision.</p></div>
@@ -1456,6 +1455,109 @@ def render_hr_onboarding(
 def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     period = control["period"]
     readiness = control["readiness"]
+    actor_email = (user.get("email") or "").strip().lower()
+    tax_elections = control.get("tax_elections") or {}
+    employee_setup_rows = ""
+    prior_w4_forms = ""
+    for employee in control["employees"]:
+        employment = employee.get("employment") or {}
+        pay_basis = employment.get("pay_basis")
+        if pay_basis == "fixed_semimonthly":
+            pay_label = f'${_esc(employment.get("fixed_pay_per_period") or "0.00")} per check'
+        else:
+            pay_label = f'${_esc(employee.get("hourly_rate") or "0.00")}/hour'
+        election = tax_elections.get(employee["email"])
+        tax_label = (
+            f'On file · {_esc(election.get("filing_status", "").replace("_", " ").title())}'
+            if election else "Prior W-4 details needed"
+        )
+        employee_setup_rows += f"""<tr>
+          <td>{_esc(employee.get('full_name') or employee['email'])}<br><span class="hr-sub">{_esc(employee['email'])}</span></td>
+          <td>{pay_label}</td><td>{tax_label}</td>
+          <td><a class="hr-btn hr-btn-light" href="/admin/hr/employees/{_esc(employee.get('id'))}">Change pay</a></td>
+        </tr>"""
+        if not election:
+            prior_w4_forms += f"""
+            <details class="hr-card" style="margin-top:12px">
+              <summary><strong>Record {_esc(employee.get('full_name') or employee['email'])}'s prior signed W-4</strong></summary>
+              <p class="hr-help">Copy these choices from the signed W-4 in the previous payroll system. Do not infer them from an old paycheck. The employee does not need to complete a new form.</p>
+              <form class="hr-form" method="post" action="/admin/hr/payroll/prior-w4">
+                <input type="hidden" name="employee_email" value="{_esc(employee['email'])}">
+                <input type="hidden" name="period_date" value="{_esc(period.start_date)}">
+                <label>Original W-4 effective date</label><input type="date" name="effective_date" max="{_esc(period.end_date)}" required>
+                <label>Federal filing status</label><select name="filing_status" required>
+                  <option value="">Choose from the signed form</option><option value="single">Single or married filing separately</option>
+                  <option value="married_joint">Married filing jointly</option><option value="head_household">Head of household</option>
+                </select>
+                <label><input type="checkbox" name="two_jobs" value="true" style="width:auto"> Step 2: multiple jobs or spouse works</label>
+                <div class="hr-grid2"><div><label>Step 3 dependent credit ($)</label><input name="dependents_credit" value="0.00" inputmode="decimal"></div><div><label>Step 4(a) other income ($)</label><input name="other_income" value="0.00" inputmode="decimal"></div></div>
+                <div class="hr-grid2"><div><label>Step 4(b) deductions ($)</label><input name="deductions" value="0.00" inputmode="decimal"></div><div><label>Step 4(c) extra withholding per check ($)</label><input name="extra_withholding" value="0.00" inputmode="decimal"></div></div>
+                <label><input type="checkbox" name="exempt" value="true" style="width:auto"> Employee claimed exemption on the signed form</label>
+                <label>Where you verified the signed form</label><input name="source_reference" required maxlength="255" placeholder="Example: QuickBooks employee tax setup reviewed 2026-08-20">
+                <label><input type="checkbox" name="attested" value="true" required style="width:auto"> I copied these elections exactly from this employee's existing signed W-4 and did not choose them for the employee.</label>
+                <div class="hr-actions"><button class="hr-btn" type="submit">Save prior W-4 record</button></div>
+              </form>
+            </details>"""
+    timesheet_rows = ""
+    for item in control.get("timesheets") or []:
+        status = item.get("status") or "needs_manager_review"
+        issue_text = "; ".join(item.get("issues") or [])
+        if status == "approved":
+            action = f'Approved by {_esc(item.get("reviewed_by") or "reviewer")}<br><span class="hr-sub">{_esc(item.get("review_note") or "")}</span>'
+        elif actor_email == item.get("employee_email", "").strip().lower():
+            action = "A different manager must approve your time."
+        elif item.get("can_approve"):
+            action = f"""<form class="hr-form" method="post" action="/admin/hr/payroll/timesheets/approve">
+              <input type="hidden" name="employee_email" value="{_esc(item['employee_email'])}">
+              <input type="hidden" name="period_start" value="{_esc(period.start_date)}"><input type="hidden" name="period_end" value="{_esc(period.end_date)}">
+              <label>Manager review note</label><input name="review_note" required maxlength="500" placeholder="What you checked">
+              <label><input type="checkbox" name="attested" value="true" required style="width:auto"> I reviewed every punch and confirm these hours are complete for payroll.</label>
+              <button class="hr-btn" type="submit">Approve these hours</button>
+            </form>"""
+        else:
+            action = _esc(issue_text or "Time cannot be approved yet.")
+        timesheet_rows += f"""<tr><td>{_esc(item.get('employee_name'))}<br><span class="hr-sub">{_esc(item.get('employee_email'))}</span></td>
+          <td>{_esc(item.get('hours'))}</td><td>{_esc(status.replace('_', ' ').title())}</td><td>{action}</td></tr>"""
+    timesheet_rows = timesheet_rows or '<tr><td colspan="4" class="hr-empty">No hourly employees are included in this period.</td></tr>'
+    opening_by_email = {
+        item.get("employee_email"): item for item in control.get("opening_balances") or []
+    }
+    opening_rows = ""
+    for employee in control["employees"]:
+        balance = opening_by_email.get(employee["email"])
+        if not balance:
+            opening_rows += f"""<tr><td>{_esc(employee.get('full_name') or employee['email'])}</td><td colspan="5">No opening balance recorded. <a href="/admin/hr/settings#opening-balances">Enter figures</a>.</td></tr>"""
+            continue
+        status = balance.get("approval_status") or "unreviewed"
+        if status == "approved":
+            action = f'Approved by {_esc(balance.get("reviewed_by") or "reviewer")}'
+        elif (balance.get("confirmed_by") or "").strip().lower() == actor_email:
+            action = "A different authorized person must review figures you entered."
+        else:
+            action = f"""<form class="hr-form" method="post" action="/admin/hr/payroll/opening-balances/{_esc(balance.get('id'))}/decision">
+              <input type="hidden" name="period_date" value="{_esc(period.start_date)}">
+              <label>Review note</label><input name="review_note" required maxlength="500" placeholder="Source and totals checked">
+              <div class="hr-inline"><button class="hr-btn" name="decision" value="approved">Approve balance</button><button class="hr-btn hr-btn-light" name="decision" value="rejected">Return for correction</button></div>
+            </form>"""
+        opening_rows += f"""<tr><td>{_esc(employee.get('full_name') or employee['email'])}</td>
+          <td>${_esc(balance.get('gross_wages'))}</td><td>${_esc(balance.get('federal_withheld'))}</td><td>${_esc(balance.get('utah_withheld'))}</td>
+          <td>{_esc(status.title())}<br><span class="hr-sub">{_esc(balance.get('source_note') or 'No source note')}</span></td><td>{action}</td></tr>"""
+    qualified_review = control.get("settings", {}).get("qualified_review")
+    if qualified_review:
+        qualified_review_panel = f"""<div class="hr-callout ok" id="calculation-review"><div class="hr-kicker">Calculation review</div>
+          <h2 style="margin:6px 0">Recorded for {_esc(qualified_review.get('tax_year'))}</h2>
+          <p>{_esc(qualified_review.get('reviewer_name'))} reviewed the calculation package on {_esc(qualified_review.get('reviewed_on'))}. Evidence: {_esc(qualified_review.get('evidence_reference'))}.</p></div>"""
+    else:
+        qualified_review_panel = f"""<section class="hr-card" id="calculation-review"><div class="hr-kicker">Calculation review</div>
+          <h2>Record the review you already completed</h2><p class="hr-help">Record facts only. The named reviewer must be qualified to review payroll calculations and must have checked this 2026 rule package.</p>
+          <form class="hr-form" method="post" action="/admin/hr/payroll/qualified-review">
+            <input type="hidden" name="period_date" value="{_esc(period.start_date)}"><input type="hidden" name="tax_year" value="{_esc(period.end_date.year)}">
+            <div class="hr-grid2"><div><label>Reviewer name</label><input name="reviewer_name" required></div><div><label>Reviewer email</label><input type="email" name="reviewer_email" required></div></div>
+            <div class="hr-grid2"><div><label>Date reviewed</label><input type="date" name="reviewed_on" required></div><div><label>Evidence or workpaper reference</label><input name="evidence_reference" required></div></div>
+            <label>What was checked?</label><textarea name="review_note" required></textarea>
+            <label><input type="checkbox" name="attested" value="true" required style="width:auto"> I confirm the named qualified person completed this review.</label>
+            <button class="hr-btn" type="submit">Record completed review</button>
+          </form></section>"""
     blocker_rows = "".join(
         f"""<tr><td>{_esc(item.get('owner') or 'David or Val')}</td>
         <td>{_esc(item.get('employee_email') or 'Company setup')}</td>
@@ -1546,6 +1648,29 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <input id="period-date" type="date" name="period_date" value="{_esc(period.start_date)}">
       <button class="hr-btn hr-btn-light" type="submit">Open period</button>
     </form>
+    <section class="hr-callout" aria-labelledby="payroll-process-heading" style="margin-top:18px">
+      <div class="hr-kicker">Today's process</div><h2 id="payroll-process-heading" style="margin:6px 0">Review first, freeze second, approve last</h2>
+      <ol><li>Confirm each employee's pay and existing W-4 elections.</li>
+      <li>Review and approve hourly punches below. Employees do not submit timesheets.</li>
+      <li>Review the imported year-to-date balances and record the completed calculation review.</li>
+      <li>Resolve the remaining company access checks, then prepare an immutable version. Preparation moves no money.</li>
+      <li>A different authorized person reviews the frozen version. David gives final approval.</li>
+      <li>Issue each approved check, complete tax payments and filings in the official portals, and record every confirmation in Agent.</li></ol>
+    </section>
+    <section id="employee-tax-records" style="margin-top:24px"><div class="hr-row-head"><div><div class="hr-kicker">Step 1</div><h2 style="margin:4px 0">Employee pay and tax records</h2></div></div>
+      <p class="hr-sub">Change pay from the employee record so the effective date, reason, and prior amount stay in the audit history. A prior signed W-4 can be transcribed here without asking the employee to complete it again.</p>
+      <table class="hr-tbl"><thead><tr><th>Employee</th><th>Current pay</th><th>W-4 election</th><th>Pay action</th></tr></thead><tbody>{employee_setup_rows}</tbody></table>
+      {prior_w4_forms}
+    </section>
+    <section id="time-review" style="margin-top:28px"><div class="hr-kicker">Step 2</div><h2 style="margin:4px 0">Manager time approval</h2>
+      <p class="hr-sub">The manager reviews the recorded punches here. Approval is tied to the exact time data; any later correction automatically makes it stale.</p>
+      <table class="hr-tbl"><thead><tr><th>Employee</th><th>Hours</th><th>Status</th><th>Manager decision</th></tr></thead><tbody>{timesheet_rows}</tbody></table>
+    </section>
+    <section id="opening-balances" style="margin-top:28px"><div class="hr-kicker">Step 3</div><h2 style="margin:4px 0">2026 opening balances</h2>
+      <p class="hr-sub">These totals came from payroll before Agent. Review the source and totals here. If a figure is wrong, edit it in <a href="/admin/hr/settings#opening-balances">Payroll settings</a>; any edit automatically invalidates the old approval.</p>
+      <table class="hr-tbl"><thead><tr><th>Employee</th><th>Prior gross</th><th>Federal withheld</th><th>Utah withheld</th><th>Source / status</th><th>Decision</th></tr></thead><tbody>{opening_rows}</tbody></table>
+    </section>
+    <div style="margin-top:28px">{qualified_review_panel}</div>
     <div class="hr-callout {'ok' if readiness['ready'] else 'warn'}"><div class="hr-kicker">Payroll readiness</div>
       <h2 style="margin:6px 0">{status_label}</h2>
       <p>Each blocker names who owns the next step. Opening this list never changes payroll.</p>
