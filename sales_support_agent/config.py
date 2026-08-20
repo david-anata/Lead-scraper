@@ -567,8 +567,11 @@ def load_settings() -> Settings:
             or "runtime/fulfillment_cs_reports"
         ),
         website_ops_root=Path(
-            os.getenv("WEBSITE_OPS_ROOT", "runtime/website_ops").strip()
-            or "runtime/website_ops"
+            os.getenv(
+                "WEBSITE_OPS_ROOT",
+                "/tmp/website_ops" if os.getenv("VERCEL") else "runtime/website_ops",
+            ).strip()
+            or ("/tmp/website_ops" if os.getenv("VERCEL") else "runtime/website_ops")
         ),
         website_ops_site_urls=_parse_csv_tuple(
             os.getenv(
