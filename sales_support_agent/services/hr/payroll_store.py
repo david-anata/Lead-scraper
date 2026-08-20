@@ -855,6 +855,7 @@ def control_room(containing: date) -> dict:
                 blocker.get("employee_email", ""), []
             ).append(blocker.get("message", ""))
     with _session() as session:
+        company = session.query(HRCompanyProfile).first()
         runs = session.query(HRPayrollRun).filter_by(
             pay_period_start=period.start_date, pay_period_end=period.end_date
         ).order_by(HRPayrollRun.id.desc()).all()
@@ -927,6 +928,7 @@ def control_room(containing: date) -> dict:
             })
     return {
         "period": period, "settings": settings, "employees": employees,
+        "final_approver_email": company.final_approver_email if company else "",
         "inputs": inputs, "readiness": readiness, "runs": run_rows,
         "opening_balances": list_opening_balances(period.end_date.year),
         "tax_elections": {

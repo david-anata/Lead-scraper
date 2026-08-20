@@ -82,6 +82,7 @@ def test_control_room_links_to_confirmation_instead_of_inline_approval():
             "gross_change_percent": None,
         }],
         "liabilities": [],
+        "final_approver_email": "david@anatainc.com",
     }
 
     html = render_hr_payroll_control(
@@ -93,6 +94,34 @@ def test_control_room_links_to_confirmation_instead_of_inline_approval():
         in html
     )
     assert 'action="/admin/hr/payroll/payroll-version-123/approve"' not in html
+    assert "Review and approve payroll" in html
+
+
+def test_final_approver_who_prepared_version_gets_exact_val_handoff():
+    run = _run(prepared_by="david@anatainc.com")
+    control = {
+        "period": SemimonthlyPeriod(
+            start_date=date(2026, 8, 1), end_date=date(2026, 8, 15),
+            pay_date=date(2026, 8, 20),
+        ),
+        "readiness": {"ready": True, "blockers": []},
+        "employees": [], "inputs": [], "liabilities": [],
+        "opening_balances": [], "timesheets": [], "settings": {},
+        "final_approver_email": "david@anatainc.com",
+        "runs": [{
+            **run, "employee_count": 3,
+            "initiated_by": "david@anatainc.com",
+            "gross_change_percent": None,
+        }],
+    }
+
+    html = render_hr_payroll_control(
+        control, user={"email": "david@anatainc.com"}
+    )
+
+    assert "You prepared this version, so you cannot approve it" in html
+    assert "Val must sign in" in html
+    assert "Prepare immutable payroll version" not in html
 
 
 def test_settings_lists_authorized_owner_without_employee_record():

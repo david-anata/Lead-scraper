@@ -1581,11 +1581,19 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
             href = "#calculation-review"
             action_label = "Complete calculation review"
         urgent_items += f'''<li class="hr-blocker-item"><div><div class="hr-blocker-label">Blocked — action required</div><strong>{_esc(item.get("employee_email") or "Company setup")}</strong><p>{_esc(message)}<br><strong>Owner:</strong> {_esc(owner)}</p></div><a class="hr-btn" href="{_esc(href)}">{_esc(action_label)}</a></li>'''
-    urgent_panel = (
-        f'''<section class="hr-callout blocked" aria-labelledby="urgent-payroll-heading" style="margin-top:18px"><div class="hr-kicker">Action required</div><h2 id="urgent-payroll-heading" style="margin:6px 0">Payroll cannot be prepared — {len(readiness["blockers"])} task{'s' if len(readiness["blockers"]) != 1 else ''} remaining</h2><p>Resolve each item below. Every button goes to the section where the work is completed.</p><ul class="hr-blocker-list">{urgent_items}</ul></section>'''
-        if readiness["blockers"] else
-        '''<section class="hr-saved" style="margin-top:18px"><strong>Ready to prepare.</strong> All required setup and reviews are complete.</section>'''
-    )
+    prepared_runs = [run for run in control.get("runs", []) if run.get("status") == "prepared"]
+    prepared_run = prepared_runs[0] if prepared_runs else None
+    final_approver_email = (control.get("final_approver_email") or "").strip().lower()
+    if readiness["blockers"]:
+        urgent_panel = f'''<section class="hr-callout blocked" aria-labelledby="urgent-payroll-heading" style="margin-top:18px"><div class="hr-kicker">Action required</div><h2 id="urgent-payroll-heading" style="margin:6px 0">Payroll cannot be prepared — {len(readiness["blockers"])} task{'s' if len(readiness["blockers"]) != 1 else ''} remaining</h2><p>Resolve each item below. Every button goes to the section where the work is completed.</p><ul class="hr-blocker-list">{urgent_items}</ul></section>'''
+    elif prepared_run and (prepared_run.get("initiated_by") or "").strip().lower() == actor_email:
+        urgent_panel = f'''<section class="hr-callout blocked" style="margin-top:18px"><div class="hr-kicker">Approval handoff required</div><h2 style="margin:6px 0">You prepared this version, so you cannot approve it</h2><p>Val must sign in with her own authorized account and click <strong>Prepare payroll for David</strong>. David can then review and give final approval to Val's frozen version.</p><a class="hr-btn hr-btn-light" href="/admin/hr/payroll/runs/{_esc(prepared_run['id'])}">Review the version you prepared</a></section>'''
+    elif prepared_run and actor_email == final_approver_email:
+        urgent_panel = f'''<section class="hr-saved" style="margin-top:18px"><div class="hr-kicker">Ready for your approval</div><h2 style="margin:6px 0">Review the prepared payroll</h2><p>{_esc(prepared_run.get('initiated_by'))} prepared this frozen version. Review every employee and total before approving.</p><a class="hr-btn" href="/admin/hr/payroll/runs/{_esc(prepared_run['id'])}/approve">Review and approve payroll</a></section>'''
+    elif actor_email != final_approver_email:
+        urgent_panel = f'''<section class="hr-saved" style="margin-top:18px"><div class="hr-kicker">Your next step</div><h2 style="margin:6px 0">Prepare payroll for David's approval</h2><p>This freezes the current hours, pay inputs, and calculations. It does not move money.</p><form method="post" action="/admin/hr/payroll/prepare"><input type="hidden" name="period_date" value="{_esc(period.start_date)}"><button class="hr-btn" type="submit">Prepare payroll for David</button></form></section>'''
+    else:
+        urgent_panel = '''<section class="hr-callout warn" style="margin-top:18px"><div class="hr-kicker">Handoff required</div><h2 style="margin:6px 0">Val must prepare payroll first</h2><p>David is the final approver, so he cannot also prepare the version he signs. Val should sign in and use the preparation button shown here.</p></section>'''
     outside_corrections = readiness.get("outside_period_corrections") or []
     outside_correction_notice = ""
     if outside_corrections:
@@ -1717,10 +1725,6 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <label>Receipt, order, or evidence reference</label><input name="source_reference" maxlength="255" placeholder="Required for reimbursements">
       <label><input type="checkbox" name="recurring" value="true" style="width:auto"> Carry forward for review each period (deductions and garnishments only)</label>
       <button class="hr-btn" type="submit">Add for review</button>
-    </form>
-    <form method="post" action="/admin/hr/payroll/prepare" style="margin:24px 0">
-      <input type="hidden" name="period_date" value="{period.start_date}">
-      <button class="hr-btn" type="submit"{'' if readiness['ready'] else ' disabled'}>Prepare immutable payroll version</button>
     </form>
     <h2>Prepared and approved versions</h2>
     <table class="hr-tbl"><thead><tr><th>Version ID</th><th>Status</th><th>Estimated gross</th><th>Estimated tax liability</th><th>Deduction liability</th><th>Estimated employee check cash</th><th>Estimated employer cost</th><th>People</th><th>Prepared by</th><th>Approval</th></tr></thead><tbody>{run_rows}</tbody></table>
