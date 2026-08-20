@@ -115,6 +115,9 @@ def test_settings_lists_authorized_owner_without_employee_record():
     assert "They do not need to be a W-2 employee" in html
     assert "David Narayan — david@anatainc.com" in html
     assert "Choose an authorized payroll approver" in html
+    assert 'id="qualified-review" class="hr-callout blocked"' in html
+    assert "This is the only item still blocking payroll" in html
+    assert "Do not change the employer profile" in html
 
 
 def _blocked_control(*, confirmed_by: str = "david@anatainc.com") -> dict:

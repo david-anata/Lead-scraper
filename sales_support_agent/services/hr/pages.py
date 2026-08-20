@@ -2570,9 +2570,12 @@ def render_hr_settings(
       <label>Opening-balance source / review note</label><textarea name="opening_balance_note" required>{_esc(settings.get('opening_balance_note'))}</textarea>
       <button class="hr-btn" type="submit">Save payroll setup</button>
     </form>
-    <form class="hr-form" method="post" action="/admin/hr/settings/qualified-review" style="margin-top:18px">
-      <div class="hr-kicker">Independent payroll calculation review</div>
-      <p>{'Recorded for 2026 by ' + _esc(review.get('reviewer_name')) + ' on ' + _esc(review.get('reviewed_on')) + '.' if review else 'No qualified 2026 review evidence is recorded. Payroll remains blocked.'}</p>
+    <section id="qualified-review" class="hr-callout {'ok' if review else 'blocked'}" style="margin-top:18px" aria-labelledby="qualified-review-heading">
+      <div class="hr-kicker">{'Completed' if review else 'Blocked — action required'}</div>
+      <h2 id="qualified-review-heading" style="margin:6px 0">Independent payroll calculation review</h2>
+      <p>{'Recorded for 2026 by ' + _esc(review.get('reviewer_name')) + ' on ' + _esc(review.get('reviewed_on')) + '.' if review else 'This is the only item still blocking payroll. Do not change the employer profile or payroll-setup checkboxes above.'}</p>
+      {'' if review else '<p><strong>What you need:</strong> Ask the accountant or payroll professional who checked the 2026 calculations and imported year-to-date totals for their name, email, review date, and the name of the workpaper or comparison they used. Enter those facts below. If nobody completed that review, stop here—this form cannot truthfully be completed yet.</p>'}
+      <form class="hr-form" method="post" action="/admin/hr/settings/qualified-review" style="margin-top:12px">
       <input type="hidden" name="tax_year" value="2026">
       <div class="hr-grid2"><div><label>Reviewer name</label><input name="reviewer_name" value="{_esc(review.get('reviewer_name'))}" required></div>
       <div><label>Reviewer email</label><input type="email" name="reviewer_email" value="{_esc(review.get('reviewer_email'))}" required></div></div>
@@ -2581,7 +2584,9 @@ def render_hr_settings(
       <label>What was independently checked?</label><textarea name="review_note" required>{_esc(review.get('review_note'))}</textarea>
       <label><input type="checkbox" name="attested" value="true" required style="width:auto"> I confirm the named qualified professional actually reviewed the 2026 calculations and opening setup.</label>
       <button class="hr-btn" type="submit">Record qualified review evidence</button>
-    </form>
+      </form>
+      <p class="hr-help"><a href="/admin/hr/payroll">Return to Payroll</a> after this saves. The red blocker will disappear automatically.</p>
+    </section>
     <h2>2026 employee opening balances</h2>
     <p class="hr-sub">Enter totals from prior payroll records. Zero is valid only when the source confirms zero.</p>
     {balance_forms or '<div class="hr-empty">Add W-2 employees before entering balances.</div>'}

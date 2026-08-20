@@ -784,8 +784,8 @@ def _period_context(containing: date) -> tuple:
         "open_time": ("Employee", f"/admin/hr/time?period_date={period.start_date}", "Clock out"),
         "time_correction": ("Independent time reviewer", f"/admin/hr/time?period_date={period.start_date}", "Review correction"),
         "payroll_input": ("Independent payroll reviewer", f"/admin/hr/payroll?period_date={period.start_date}", "Review payroll input"),
-        "tax_engine": ("Qualified payroll reviewer", "/admin/hr/settings", "Record qualified review"),
-        "tax_setup": ("David, Val, or qualified reviewer", "/admin/hr/settings", "Review payroll setup"),
+        "tax_engine": ("Qualified payroll reviewer", "/admin/hr/settings#qualified-review", "Record qualified review"),
+        "tax_setup": ("David, Val, or qualified reviewer", "/admin/hr/settings#qualified-review", "Complete calculation review"),
         "eftps": ("David or Val", "/admin/hr/settings", "Confirm EFTPS access"),
         "utah_tax": ("David or Val", "/admin/hr/settings", "Confirm Utah access"),
     }
