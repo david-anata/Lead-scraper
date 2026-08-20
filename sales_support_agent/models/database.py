@@ -1261,20 +1261,29 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
     if "hr_employment_profiles" in existing_tables:
+        existing_columns = {
+            column["name"] for column in inspector.get_columns("hr_employment_profiles")
+        }
+        existing_indexes = {
+            index["name"] for index in inspector.get_indexes("hr_employment_profiles")
+        }
         with engine.begin() as connection:
-            connection.execute(text(
-                "ALTER TABLE hr_employment_profiles "
-                "ADD COLUMN IF NOT EXISTS payroll_eligible BOOLEAN NOT NULL DEFAULT TRUE"
-            ))
-            connection.execute(text(
-                "ALTER TABLE hr_employment_profiles "
-                "ADD COLUMN IF NOT EXISTS standard_workdays VARCHAR(32) "
-                "NOT NULL DEFAULT '0,1,2,3,4'"
-            ))
-            connection.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_hr_employment_profiles_payroll_eligible "
-                "ON hr_employment_profiles (payroll_eligible)"
-            ))
+            if "payroll_eligible" not in existing_columns:
+                connection.execute(text(
+                    "ALTER TABLE hr_employment_profiles "
+                    "ADD COLUMN payroll_eligible BOOLEAN NOT NULL DEFAULT TRUE"
+                ))
+            if "standard_workdays" not in existing_columns:
+                connection.execute(text(
+                    "ALTER TABLE hr_employment_profiles "
+                    "ADD COLUMN standard_workdays VARCHAR(32) "
+                    "NOT NULL DEFAULT '0,1,2,3,4'"
+                ))
+            if "ix_hr_employment_profiles_payroll_eligible" not in existing_indexes:
+                connection.execute(text(
+                    "CREATE INDEX ix_hr_employment_profiles_payroll_eligible "
+                    "ON hr_employment_profiles (payroll_eligible)"
+                ))
     if "lead_mirrors" not in existing_tables:
         return
 
