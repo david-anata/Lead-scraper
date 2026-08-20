@@ -1976,6 +1976,15 @@ def render_building_page(
         </form>
         </details>
       </section>
+      <section class="panel building-view view-sales" id="clear-test-leads">
+        <div class="panel-head"><div><h2>Clear test leads</h2><p>Removes the internal QA records left behind by testing. Real prospects are never matched by this.</p></div></div>
+        <details class="task-creator"><summary>Remove every test lead</summary>
+        <form class="form-grid" method="post" action="/admin/building/test-leads/remove">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="form-actions"><span class="form-note">A test lead with no booking or contract is deleted for good. One that has work attached is taken off the list instead, so nothing that reads it breaks.</span><button class="secondary" type="submit">Remove every test lead</button></div>
+        </form>
+        </details>
+      </section>
       <section class="panel panel--wide building-view view-sales" id="add-assisted-lead">
         <div class="panel-head"><div><h2>Quick staff inquiry</h2><p>Add a prospect with only the information you have. You can complete event details later in the customer workspace.</p></div></div>
         <details class="task-creator" open><summary>Create an inquiry</summary>

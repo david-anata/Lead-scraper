@@ -91,6 +91,7 @@ from sales_support_agent.services.building_arena_rate_plan_seed import (
     build_arena_commercial_draft,
 )
 from sales_support_agent.services.building_page import render_building_page
+from sales_support_agent.services.building_lead_removal import is_archived
 from sales_support_agent.services.building_inquiry_workspace import is_test_inquiry
 from sales_support_agent.services.building_launch_readiness import (
     ARENA_LAUNCH_DECISIONS,
@@ -4819,6 +4820,9 @@ def building_control_room(
             .order_by(BuildingInquiry.created_at.desc())
             .limit(200)
         ).scalars().all()
+        # A removed lead is off the board everywhere, not just where it was
+        # removed from. Its page still opens, so it can be put back.
+        inquiry_rows = [row for row in inquiry_rows if not is_archived(row)]
 
         valid_statuses = {"open", "all", "new", "responded", "qualified", "closed_won", "closed_lost"}
         valid_scopes = {"live", "test", "all"}

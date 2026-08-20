@@ -1081,6 +1081,34 @@ def render_inquiry_workspace(
         {response_form}
       </section>"""
 
+    # Removing a lead is one press, and it says which of the two things it will
+    # do before you press it, because "delete" that quietly archives is a lie
+    # and "delete" that quietly destroys a signed contract is worse.
+    if data.get("is_archived"):
+        remove_control = (
+            '<form class="lead-remove" method="post" '
+            f'action="/admin/building/inquiries/{_esc(data.get("id"))}/restore">'
+            f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+            '<button class="lead-button" type="submit">Put back on the list</button>'
+            "</form>"
+        )
+    else:
+        attached = list(data.get("attachments") or [])
+        warning = (
+            f" It keeps its {' and '.join(attached)}."
+            if attached
+            else " Nothing is attached to it, so it is deleted for good."
+        )
+        remove_control = (
+            '<form class="lead-remove" method="post" '
+            f'action="/admin/building/inquiries/{_esc(data.get("id"))}/remove">'
+            f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+            '<button class="lead-button lead-button--danger" type="submit">'
+            "Remove this lead</button>"
+            f'<span class="lead-remove__note">{_esc(warning.strip())}</span>'
+            "</form>"
+        )
+
     body = f"""
       <header class="app-page-header lead-header">
         <div>
@@ -1089,7 +1117,7 @@ def render_inquiry_workspace(
           <h1>{_esc(data.get('name') or data.get('email'))}</h1>
           <p>{_esc(data.get('kind', 'Lead').title())} request · received {_esc(_when(data.get('created_at')))}</p>
         </div>
-        <div class="lead-header__states">{_status(stage)}{_status('test record') if data.get('is_test') else ''}</div>
+        <div class="lead-header__states">{_status(stage)}{_status('test record') if data.get('is_test') else ''}{_status('removed') if data.get('is_archived') else ''}{remove_control}</div>
       </header>
       {messages}{next_section}
       <section class="lead-layout">
@@ -1236,7 +1264,7 @@ def render_inquiry_workspace(
     styles = """
     <style>
       .building-inquiry-workspace .app-page{display:grid;gap:20px;padding-block:28px 64px}.building-inquiry-workspace .app-eyebrow{margin:0;color:var(--agent-ink-muted);font:700 .75rem/1.3 "Montserrat",sans-serif;letter-spacing:.06em;text-transform:uppercase}
-      .lead-header{align-items:flex-start;margin:0}.lead-back{display:inline-flex;margin-bottom:18px;color:var(--agent-blue-strong);font-weight:700}.lead-header__states{display:flex;flex-wrap:wrap;gap:8px}
+      .lead-remove{display:grid;gap:4px;justify-items:end}.lead-remove__note{color:var(--agent-ink-muted);font-size:11px;max-width:240px;text-align:right}.lead-button--danger{border-color:#d9a49e;color:#8c2f22}.lead-header{align-items:flex-start;margin:0}.lead-back{display:inline-flex;margin-bottom:18px;color:var(--agent-blue-strong);font-weight:700}.lead-header__states{display:flex;flex-wrap:wrap;gap:8px}
       .lead-next{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,.7fr);gap:24px;align-items:start;padding:24px 26px;border:1px solid rgba(94,159,196,.35);border-radius:var(--agent-radius-panel);background:linear-gradient(135deg,#fff,#f1f8fb)}.lead-next h2{margin:3px 0 7px}.lead-next p{margin:0;color:var(--agent-ink-muted)}
       .lead-next__contact{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:14px;font-weight:700}.lead-next__contact a,.lead-next__contact span{overflow-wrap:anywhere}
       .lead-response{display:grid;gap:10px}.lead-response label{display:grid;gap:5px;font-weight:700}.lead-response textarea{min-height:86px}.lead-button{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:9px 14px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);font:700 .8rem/1.2 "Montserrat",sans-serif;text-decoration:none;cursor:pointer}.lead-button--primary{border-color:var(--agent-blue-strong);background:var(--agent-blue-strong);color:#fff}.lead-button:disabled{opacity:.45;cursor:not-allowed}.lead-button--danger{border-color:#a3372f;background:#a3372f;color:#fff}
