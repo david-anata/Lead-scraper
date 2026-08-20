@@ -38,6 +38,13 @@ from sales_support_agent.services.building_inquiry_workspace import (
     is_test_inquiry,
     render_inquiry_workspace,
 )
+from sales_support_agent.services.building_lead_removal import (
+    is_archived,
+    lead_attachments,
+    remove_lead,
+    remove_test_leads,
+    restore_lead,
+)
 from sales_support_agent.services.building_calendar import (
     queue_calendar_projection,
 )
@@ -468,6 +475,8 @@ def inquiry_workspace(
                 }
                 for row in rate_plan_rows
             ],
+            "is_archived": is_archived(inquiry),
+            "attachments": lead_attachments(session, inquiry.id),
             "is_test": is_test_inquiry(
                 name=inquiry.name,
                 email=inquiry.email,
@@ -878,6 +887,57 @@ async def undo_contract_from_lead(
     return RedirectResponse(
         f"{target}?notice=Undone.+The+date+is+free+again+and+the+contract+is"
         "+cancelled.",
+        status_code=303,
+    )
+
+
+@router.post("/{inquiry_id}/remove", dependencies=FORM_DEPS)
+def remove_lead_from_board(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Take a lead off the list. Deletes it outright when nothing hangs off it."""
+
+    actor = str(user.get("email") or "building-operator")
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        outcome = remove_lead(session, inquiry, actor=actor)
+    if outcome.action == "refused":
+        return RedirectResponse(
+            f"/admin/building/inquiries/{inquiry_id}"
+            f"?error={quote_plus(outcome.message)}",
+            status_code=303,
+        )
+    # A deleted lead has no page left to return to.
+    target = (
+        "/admin/building/sales"
+        if outcome.action == "deleted"
+        else f"/admin/building/inquiries/{inquiry_id}"
+    )
+    return RedirectResponse(
+        f"{target}?notice={quote_plus(outcome.message)}", status_code=303
+    )
+
+
+@router.post("/{inquiry_id}/restore", dependencies=FORM_DEPS)
+def restore_lead_to_board(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    actor = str(user.get("email") or "building-operator")
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        outcome = restore_lead(session, inquiry, actor=actor)
+    key = "error" if outcome.action == "refused" else "notice"
+    return RedirectResponse(
+        f"/admin/building/inquiries/{inquiry_id}"
+        f"?{key}={quote_plus(outcome.message)}",
         status_code=303,
     )
 

@@ -106,6 +106,7 @@ from sales_support_agent.services.building_lead_intake import (
     notify_new_building_lead,
 )
 from sales_support_agent.services.building_inquiry_receipt import attempt_inquiry_receipt
+from sales_support_agent.services.building_lead_removal import remove_test_leads
 from sales_support_agent.services.building_page import (
     render_customer_status_link_result,
 )
@@ -198,6 +199,30 @@ def _run_form_action(
     except HTTPException as exc:
         return _redirect(error=str(exc.detail), target=success_target)
     return _redirect(notice=success, target=success_target)
+
+
+@router.post("/test-leads/remove", dependencies=FORM_DEPS)
+def remove_all_test_leads(
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Clear every internal QA record left behind by testing.
+
+    Scoped by the same rule the lists already use to mark a record as a test,
+    so a real prospect cannot be swept up by it.
+    """
+
+    actor = _actor(user)
+    with session_scope(request.app.state.session_factory) as session:
+        result = remove_test_leads(session, actor=actor)
+    if not result["total"]:
+        return _redirect(notice="There were no test leads to remove.")
+    parts = []
+    if result["deleted"]:
+        parts.append(f"{result['deleted']} deleted")
+    if result["archived"]:
+        parts.append(f"{result['archived']} archived because work hangs off them")
+    return _redirect(notice="Test leads cleared: " + ", ".join(parts) + ".")
 
 
 @router.post("/inquiries", dependencies=FORM_DEPS)
