@@ -3,7 +3,7 @@
   "services": {
     "sales-support-agent": {
       "root": ".",
-      "entrypoint": "app:app",
+      "entrypoint": "app.py",
       "framework": "fastapi",
       "functions": {
         "app.py": {
