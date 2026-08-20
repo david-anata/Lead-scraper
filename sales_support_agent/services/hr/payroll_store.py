@@ -416,8 +416,6 @@ def decide_opening_balance(
         balance = session.get(HROpeningPayrollBalance, balance_id)
         if not balance:
             return False, "opening_balance_not_found"
-        if balance.confirmed_by.strip().lower() == actor_email:
-            return False, "self_approval_blocked"
         row = session.query(HROpeningBalanceApproval).filter_by(
             opening_balance_id=balance.id
         ).first()

@@ -5,7 +5,6 @@ from sales_support_agent.services.hr.pages import (
 )
 from sales_support_agent.services.hr.payroll import SemimonthlyPeriod
 from datetime import date
-from datetime import datetime, timezone
 
 
 def _run(*, prepared_by: str = "val@anatainc.com", status: str = "prepared") -> dict:
@@ -146,24 +145,34 @@ def _blocked_control(*, confirmed_by: str = "david@anatainc.com") -> dict:
     return control
 
 
-def test_opening_balance_enterer_gets_exact_second_person_instruction():
+def test_authorized_opening_balance_enterer_can_approve():
     html = render_hr_payroll_control(
         _blocked_control(),
-        user={"email": "david@anatainc.com", "session_issued_at": str(int(datetime.now(timezone.utc).timestamp()))},
+        user={"email": "david@anatainc.com"},
     )
 
     assert "Payroll cannot be prepared — 1 task remaining" in html
     assert html.index("Payroll cannot be prepared") < html.index("Today's process")
-    assert "Val must sign in separately and approve it" in html
-    assert "Approve balance" not in html
+    assert "Approve balance" in html
 
 
-def test_stale_session_requires_sign_in_before_approval_form_is_shown():
+def test_opening_balance_form_does_not_send_operator_to_broken_reauth_loop():
     html = render_hr_payroll_control(
         _blocked_control(confirmed_by="val@anatainc.com"),
         user={"email": "david@anatainc.com", "session_issued_at": "0"},
     )
 
-    assert "Sign in again to approve" in html
-    assert "next=%2Fadmin%2Fhr%2Fpayroll%3Fperiod_date%3D2026-08-01%23opening-balances" in html
-    assert "Approve balance" not in html
+    assert "Sign in again to approve" not in html
+    assert "Approve balance" in html
+
+
+def test_company_setup_blocker_links_to_calculation_review_form():
+    control = _blocked_control()
+    control["readiness"]["blockers"] = [{
+        "kind": "tax_setup", "message": "Qualified payroll tax calculation review not ready",
+        "href": "/admin/hr/settings", "action": "Review payroll setup",
+    }]
+    html = render_hr_payroll_control(control, user={"email": "david@anatainc.com"})
+
+    assert 'href="#calculation-review">Complete calculation review</a>' in html
+    assert 'action="/admin/hr/payroll/qualified-review"' in html

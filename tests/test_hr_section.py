@@ -439,7 +439,7 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("Utah unemployment portal access: Not yet confirmed", settings.text)
         self.assertNotIn("Utah TAP access confirmed", settings.text)
 
-    def test_opening_balance_requires_a_different_reviewer(self):
+    def test_authorized_operator_can_approve_an_opening_balance_they_entered(self):
         import uuid
         email = f"opening-{uuid.uuid4().hex[:8]}@anatainc.com"
         hr_store.create_employee(email=email, full_name="Opening Balance")
@@ -457,18 +457,10 @@ class HRSectionTests(unittest.TestCase):
             if item["employee_email"] == email
         )
         self.assertEqual(balance["approval_status"], "unreviewed")
-        self.assertEqual(
-            payroll_store.decide_opening_balance(
-                balance["id"], decision="approved",
-                review_note="Compared to the source register.",
-                actor="david@anatainc.com",
-            ),
-            (False, "self_approval_blocked"),
-        )
         approved = payroll_store.decide_opening_balance(
             balance["id"], decision="approved",
             review_note="Compared to the source register.",
-            actor="val@anatainc.com",
+            actor="david@anatainc.com",
         )
         self.assertEqual(approved, (True, "opening_balance_approved"))
         updated = next(

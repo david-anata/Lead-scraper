@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import html
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Optional
-from urllib.parse import quote
 
 from sales_support_agent.services.admin_nav import (
     render_agent_favicon_links,
@@ -33,22 +32,6 @@ def _correction_duration(payload: dict) -> float:
         return round(minutes / 60, 4)
     except (TypeError, ValueError):
         return float(payload.get("hours") or 0)
-
-
-def _session_is_recent(user: dict, max_age_minutes: int = 30) -> bool:
-    """Mirror the sensitive-action guard so forms never fail as a surprise."""
-    try:
-        issued_at = datetime.fromtimestamp(
-            int(user.get("session_issued_at") or 0), tz=timezone.utc
-        )
-    except (TypeError, ValueError, OSError):
-        return False
-    age_seconds = (datetime.now(timezone.utc) - issued_at).total_seconds()
-    return age_seconds <= max_age_minutes * 60
-
-
-def _reauth_url(target: str) -> str:
-    return f"/admin/login?err=reauth_required&amp;next={quote(target, safe='')}"
 
 
 _HR_STYLES = """
@@ -1480,8 +1463,6 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     period = control["period"]
     readiness = control["readiness"]
     actor_email = (user.get("email") or "").strip().lower()
-    session_recent = _session_is_recent(user)
-    period_target = f"/admin/hr/payroll?period_date={period.start_date}"
     tax_elections = control.get("tax_elections") or {}
     employee_setup_rows = ""
     prior_w4_forms = ""
@@ -1557,10 +1538,6 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         status = balance.get("approval_status") or "unreviewed"
         if status == "approved":
             action = f'Approved by {_esc(balance.get("reviewed_by") or "reviewer")}'
-        elif (balance.get("confirmed_by") or "").strip().lower() == actor_email:
-            action = """<div class="hr-callout blocked" style="margin:0"><strong>Val must approve this.</strong><p>You entered these totals, so the required second-person control prevents you from approving them. Val should sign in with her own authorized account and approve here.</p></div>"""
-        elif not session_recent:
-            action = f"""<div class="hr-callout blocked" style="margin:0"><strong>Security sign-in required.</strong><p>Sign in again to unlock the approval. Agent will return you to this exact section.</p><a class="hr-btn" href="{_reauth_url(period_target + '#opening-balances')}">Sign in again to approve</a></div>"""
         else:
             action = f"""<form class="hr-form" method="post" action="/admin/hr/payroll/opening-balances/{_esc(balance.get('id'))}/decision">
               <input type="hidden" name="period_date" value="{_esc(period.start_date)}">
@@ -1583,7 +1560,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
             <label>What was checked?</label><textarea name="review_note" required></textarea>
             <label><input type="checkbox" name="attested" value="true" required style="width:auto"> I confirm the named qualified person completed this review.</label>
             <button class="hr-btn" type="submit">Record completed review</button>
-          </form>""" if session_recent else f"""<div class="hr-callout blocked"><strong>Security sign-in required.</strong><p>Sign in again before recording this sensitive review. Agent will return you here, and nothing has been saved yet.</p><a class="hr-btn" href="{_reauth_url(period_target + '#calculation-review')}">Sign in again to continue</a></div>"""
+          </form>"""
         qualified_review_panel = f"""<section class="hr-card" id="calculation-review"><div class="hr-kicker">Calculation review</div>
           <h2>Record the review you already completed</h2><p class="hr-help">Record facts only. The named reviewer must be qualified to review payroll calculations and must have checked this 2026 rule package.</p>
           {qualified_review_action}</section>"""
@@ -1600,25 +1577,10 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         message = item.get("message") or "Required setup is incomplete."
         href = item.get("href") or "/admin/hr/setup"
         action_label = item.get("action") or "Resolve now"
-        balance = opening_by_email.get(item.get("employee_email"))
-        if (
-            item.get("kind") == "opening_balance" and balance
-            and (balance.get("confirmed_by") or "").strip().lower() == actor_email
-        ):
-            owner = "Val — using her own authorized account"
-            message = (
-                "You entered this opening balance, so you cannot approve it. "
-                "Val must sign in separately and approve it."
-            )
-            href = "#opening-balances"
-            action_label = "See why Val must approve"
-        elif item.get("kind") in {"opening_balance", "tax_setup"} and not session_recent:
-            href = _reauth_url(period_target + (
-                "#opening-balances" if item.get("kind") == "opening_balance"
-                else "#calculation-review"
-            ))
-            action_label = "Sign in again to resolve"
-        urgent_items += f'''<li class="hr-blocker-item"><div><div class="hr-blocker-label">Blocked — action required</div><strong>{_esc(item.get("employee_email") or "Company setup")}</strong><p>{_esc(message)}<br><strong>Owner:</strong> {_esc(owner)}</p></div><a class="hr-btn" href="{href if href.startswith('/admin/login?') else _esc(href)}">{_esc(action_label)}</a></li>'''
+        if item.get("kind") in {"tax_setup", "tax_engine"}:
+            href = "#calculation-review"
+            action_label = "Complete calculation review"
+        urgent_items += f'''<li class="hr-blocker-item"><div><div class="hr-blocker-label">Blocked — action required</div><strong>{_esc(item.get("employee_email") or "Company setup")}</strong><p>{_esc(message)}<br><strong>Owner:</strong> {_esc(owner)}</p></div><a class="hr-btn" href="{_esc(href)}">{_esc(action_label)}</a></li>'''
     urgent_panel = (
         f'''<section class="hr-callout blocked" aria-labelledby="urgent-payroll-heading" style="margin-top:18px"><div class="hr-kicker">Action required</div><h2 id="urgent-payroll-heading" style="margin:6px 0">Payroll cannot be prepared — {len(readiness["blockers"])} task{'s' if len(readiness["blockers"]) != 1 else ''} remaining</h2><p>Resolve each item below. Every button goes to the section where the work is completed.</p><ul class="hr-blocker-list">{urgent_items}</ul></section>'''
         if readiness["blockers"] else

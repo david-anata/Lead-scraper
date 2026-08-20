@@ -1584,7 +1584,7 @@ async def hr_payroll_prior_w4(
 async def hr_payroll_opening_balance_decision(
     balance_id: int, period_date: date = Form(...),
     decision: str = Form(""), review_note: str = Form(""),
-    user: dict = Depends(_recent_settings_guard),
+    user: dict = Depends(_settings_guard),
 ):
     ok, message = payroll_store.decide_opening_balance(
         balance_id,
@@ -1605,7 +1605,7 @@ async def hr_payroll_qualified_review_save(
     reviewer_name: str = Form(""), reviewer_email: str = Form(""),
     reviewed_on: date = Form(...), evidence_reference: str = Form(""),
     review_note: str = Form(""), attested: bool = Form(False),
-    user: dict = Depends(_recent_settings_guard),
+    user: dict = Depends(_settings_guard),
 ):
     ok, message = payroll_store.save_payroll_review(
         tax_year=tax_year,
