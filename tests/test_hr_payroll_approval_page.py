@@ -5,6 +5,7 @@ from sales_support_agent.services.hr.pages import (
 )
 from sales_support_agent.services.hr.payroll import SemimonthlyPeriod
 from datetime import date
+from datetime import datetime, timezone
 
 
 def _run(*, prepared_by: str = "val@anatainc.com", status: str = "prepared") -> dict:
@@ -115,3 +116,54 @@ def test_settings_lists_authorized_owner_without_employee_record():
     assert "They do not need to be a W-2 employee" in html
     assert "David Narayan — david@anatainc.com" in html
     assert "Choose an authorized payroll approver" in html
+
+
+def _blocked_control(*, confirmed_by: str = "david@anatainc.com") -> dict:
+    control = {
+        "period": SemimonthlyPeriod(
+            start_date=date(2026, 8, 1), end_date=date(2026, 8, 15),
+            pay_date=date(2026, 8, 20),
+        ),
+        "readiness": {"ready": False, "blockers": [{
+            "kind": "opening_balance", "employee_email": "val@anatainc.com",
+            "message": "Opening balance still needs independent approval",
+            "href": "/admin/hr/payroll?period_date=2026-08-01#opening-balances",
+            "action": "Review opening balance",
+        }]},
+        "employees": [{
+            "id": 1, "email": "val@anatainc.com", "full_name": "Val",
+            "hourly_rate": "20.00", "employment": {"pay_basis": "hourly"},
+        }],
+        "opening_balances": [{
+            "id": 7, "employee_email": "val@anatainc.com",
+            "gross_wages": "100.00", "federal_withheld": "10.00",
+            "utah_withheld": "5.00", "source_note": "Prior system",
+            "approval_status": "unreviewed", "confirmed_by": confirmed_by,
+        }],
+        "inputs": [], "runs": [], "liabilities": [], "timesheets": [],
+        "settings": {}, "tax_elections": {},
+    }
+    return control
+
+
+def test_opening_balance_enterer_gets_exact_second_person_instruction():
+    html = render_hr_payroll_control(
+        _blocked_control(),
+        user={"email": "david@anatainc.com", "session_issued_at": str(int(datetime.now(timezone.utc).timestamp()))},
+    )
+
+    assert "Payroll cannot be prepared — 1 task remaining" in html
+    assert html.index("Payroll cannot be prepared") < html.index("Today's process")
+    assert "Val must sign in separately and approve it" in html
+    assert "Approve balance" not in html
+
+
+def test_stale_session_requires_sign_in_before_approval_form_is_shown():
+    html = render_hr_payroll_control(
+        _blocked_control(confirmed_by="val@anatainc.com"),
+        user={"email": "david@anatainc.com", "session_issued_at": "0"},
+    )
+
+    assert "Sign in again to approve" in html
+    assert "next=%2Fadmin%2Fhr%2Fpayroll%3Fperiod_date%3D2026-08-01%23opening-balances" in html
+    assert "Approve balance" not in html

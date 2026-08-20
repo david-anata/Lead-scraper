@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import html
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Optional
+from urllib.parse import quote
 
 from sales_support_agent.services.admin_nav import (
     render_agent_favicon_links,
@@ -32,6 +33,22 @@ def _correction_duration(payload: dict) -> float:
         return round(minutes / 60, 4)
     except (TypeError, ValueError):
         return float(payload.get("hours") or 0)
+
+
+def _session_is_recent(user: dict, max_age_minutes: int = 30) -> bool:
+    """Mirror the sensitive-action guard so forms never fail as a surprise."""
+    try:
+        issued_at = datetime.fromtimestamp(
+            int(user.get("session_issued_at") or 0), tz=timezone.utc
+        )
+    except (TypeError, ValueError, OSError):
+        return False
+    age_seconds = (datetime.now(timezone.utc) - issued_at).total_seconds()
+    return age_seconds <= max_age_minutes * 60
+
+
+def _reauth_url(target: str) -> str:
+    return f"/admin/login?err=reauth_required&amp;next={quote(target, safe='')}"
 
 
 _HR_STYLES = """
@@ -63,6 +80,11 @@ _HR_STYLES = """
   .hr-soon { background: #fff; border: 1px dashed rgba(43,54,68,0.25); border-radius: 14px; padding: 48px; text-align: center; color: rgba(43,54,68,0.6); }
   .hr-callout { background:#f3f8fb; border:1px solid #b8dce8; border-radius:14px; padding:18px 20px; margin-bottom:20px; }
   .hr-callout.warn { background:#fff8e8; border-color:#e6bd62; }
+  .hr-callout.blocked { background:#fff4f2; border:2px solid var(--agent-danger); color:#542a25; }
+  .hr-blocker-list { display:grid; gap:10px; margin:14px 0 0; padding:0; list-style:none; }
+  .hr-blocker-item { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:16px; align-items:center; background:#fff; border:1px solid color-mix(in srgb,var(--agent-danger) 45%,transparent); border-left:5px solid var(--agent-danger); border-radius:10px; padding:14px; }
+  .hr-blocker-item p { margin:4px 0 0; color:#5f4a47; }
+  .hr-blocker-label { color:var(--agent-danger); font-weight:800; font-size:12px; letter-spacing:.04em; text-transform:uppercase; }
   .hr-gate { color:#8a6116; background:#fff8e8; font-style:italic; white-space:nowrap; }
   .hr-row-gated td { background:#fffdf6; }
   .hr-row-note td { background:#fff8e8; color:#5c4408; font-size:13px; padding:10px 14px; }
@@ -141,6 +163,8 @@ _HR_STYLES = """
     .hr-actions .hr-btn { width:100%; text-align:center; box-sizing:border-box; min-height:44px; }
     .hr-actions { flex-direction:column; }
     .hr-dashboard-action { align-items:stretch; flex-direction:column; }
+    .hr-blocker-item { grid-template-columns:1fr; align-items:stretch; }
+    .hr-blocker-item .hr-btn { width:100%; min-height:44px; text-align:center; box-sizing:border-box; }
     .hr-dashboard-action .hr-btn { min-height:44px; text-align:center; }
     .hr-setup-summary { grid-template-columns:1fr; align-items:stretch; }
     .hr-setup-summary .hr-btn { width:100%; min-height:44px; text-align:center; box-sizing:border-box; }
@@ -717,10 +741,10 @@ def _flash(flash: Optional[str]) -> str:
         "compliance_evidence_required": "Add a note describing the evidence reviewed.",
         "compliance_confirmation_required": "Enter the outside confirmation reference.",
         "compliance_task_not_found": "That compliance task was not found.",
-        "qualified_review_saved": "Qualified payroll review evidence recorded.",
-        "qualified_review_invalid": "Complete the reviewer, date, evidence, note, and attestation.",
-        "opening_balance_approved": "Opening balance independently approved.",
-        "opening_balance_rejected": "Opening balance returned for correction.",
+        "qualified_review_saved": "Qualified calculation review saved. Payroll readiness has been updated.",
+        "qualified_review_invalid": "The calculation review was not saved. Complete every field and confirm the attestation.",
+        "opening_balance_approved": "Opening balance approved. The saved approval is now shown below.",
+        "opening_balance_rejected": "Opening balance returned for correction. The reason remains in the audit history.",
         "opening_review_invalid": "Add a review note and choose approve or reject.",
         "opening_balance_not_found": "That opening balance was not found.",
     }
@@ -1456,6 +1480,8 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     period = control["period"]
     readiness = control["readiness"]
     actor_email = (user.get("email") or "").strip().lower()
+    session_recent = _session_is_recent(user)
+    period_target = f"/admin/hr/payroll?period_date={period.start_date}"
     tax_elections = control.get("tax_elections") or {}
     employee_setup_rows = ""
     prior_w4_forms = ""
@@ -1532,7 +1558,9 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         if status == "approved":
             action = f'Approved by {_esc(balance.get("reviewed_by") or "reviewer")}'
         elif (balance.get("confirmed_by") or "").strip().lower() == actor_email:
-            action = "A different authorized person must review figures you entered."
+            action = """<div class="hr-callout blocked" style="margin:0"><strong>Val must approve this.</strong><p>You entered these totals, so the required second-person control prevents you from approving them. Val should sign in with her own authorized account and approve here.</p></div>"""
+        elif not session_recent:
+            action = f"""<div class="hr-callout blocked" style="margin:0"><strong>Security sign-in required.</strong><p>Sign in again to unlock the approval. Agent will return you to this exact section.</p><a class="hr-btn" href="{_reauth_url(period_target + '#opening-balances')}">Sign in again to approve</a></div>"""
         else:
             action = f"""<form class="hr-form" method="post" action="/admin/hr/payroll/opening-balances/{_esc(balance.get('id'))}/decision">
               <input type="hidden" name="period_date" value="{_esc(period.start_date)}">
@@ -1548,16 +1576,17 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
           <h2 style="margin:6px 0">Recorded for {_esc(qualified_review.get('tax_year'))}</h2>
           <p>{_esc(qualified_review.get('reviewer_name'))} reviewed the calculation package on {_esc(qualified_review.get('reviewed_on'))}. Evidence: {_esc(qualified_review.get('evidence_reference'))}.</p></div>"""
     else:
-        qualified_review_panel = f"""<section class="hr-card" id="calculation-review"><div class="hr-kicker">Calculation review</div>
-          <h2>Record the review you already completed</h2><p class="hr-help">Record facts only. The named reviewer must be qualified to review payroll calculations and must have checked this 2026 rule package.</p>
-          <form class="hr-form" method="post" action="/admin/hr/payroll/qualified-review">
+        qualified_review_action = f"""<form class="hr-form" method="post" action="/admin/hr/payroll/qualified-review">
             <input type="hidden" name="period_date" value="{_esc(period.start_date)}"><input type="hidden" name="tax_year" value="{_esc(period.end_date.year)}">
             <div class="hr-grid2"><div><label>Reviewer name</label><input name="reviewer_name" required></div><div><label>Reviewer email</label><input type="email" name="reviewer_email" required></div></div>
             <div class="hr-grid2"><div><label>Date reviewed</label><input type="date" name="reviewed_on" required></div><div><label>Evidence or workpaper reference</label><input name="evidence_reference" required></div></div>
             <label>What was checked?</label><textarea name="review_note" required></textarea>
             <label><input type="checkbox" name="attested" value="true" required style="width:auto"> I confirm the named qualified person completed this review.</label>
             <button class="hr-btn" type="submit">Record completed review</button>
-          </form></section>"""
+          </form>""" if session_recent else f"""<div class="hr-callout blocked"><strong>Security sign-in required.</strong><p>Sign in again before recording this sensitive review. Agent will return you here, and nothing has been saved yet.</p><a class="hr-btn" href="{_reauth_url(period_target + '#calculation-review')}">Sign in again to continue</a></div>"""
+        qualified_review_panel = f"""<section class="hr-card" id="calculation-review"><div class="hr-kicker">Calculation review</div>
+          <h2>Record the review you already completed</h2><p class="hr-help">Record facts only. The named reviewer must be qualified to review payroll calculations and must have checked this 2026 rule package.</p>
+          {qualified_review_action}</section>"""
     blocker_rows = "".join(
         f"""<tr><td>{_esc(item.get('owner') or 'David or Val')}</td>
         <td>{_esc(item.get('employee_email') or 'Company setup')}</td>
@@ -1565,6 +1594,36 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         <td><a class="hr-btn hr-btn-light" href="{_esc(item.get('href') or '/admin/hr/setup')}">{_esc(item.get('action') or 'Review setup')}</a></td></tr>"""
         for item in readiness["blockers"]
     ) or '<tr><td colspan="4" class="hr-empty">No blockers remain. This period can be prepared.</td></tr>'
+    urgent_items = ""
+    for item in readiness["blockers"]:
+        owner = item.get("owner") or "David or Val"
+        message = item.get("message") or "Required setup is incomplete."
+        href = item.get("href") or "/admin/hr/setup"
+        action_label = item.get("action") or "Resolve now"
+        balance = opening_by_email.get(item.get("employee_email"))
+        if (
+            item.get("kind") == "opening_balance" and balance
+            and (balance.get("confirmed_by") or "").strip().lower() == actor_email
+        ):
+            owner = "Val — using her own authorized account"
+            message = (
+                "You entered this opening balance, so you cannot approve it. "
+                "Val must sign in separately and approve it."
+            )
+            href = "#opening-balances"
+            action_label = "See why Val must approve"
+        elif item.get("kind") in {"opening_balance", "tax_setup"} and not session_recent:
+            href = _reauth_url(period_target + (
+                "#opening-balances" if item.get("kind") == "opening_balance"
+                else "#calculation-review"
+            ))
+            action_label = "Sign in again to resolve"
+        urgent_items += f'''<li class="hr-blocker-item"><div><div class="hr-blocker-label">Blocked — action required</div><strong>{_esc(item.get("employee_email") or "Company setup")}</strong><p>{_esc(message)}<br><strong>Owner:</strong> {_esc(owner)}</p></div><a class="hr-btn" href="{href if href.startswith('/admin/login?') else _esc(href)}">{_esc(action_label)}</a></li>'''
+    urgent_panel = (
+        f'''<section class="hr-callout blocked" aria-labelledby="urgent-payroll-heading" style="margin-top:18px"><div class="hr-kicker">Action required</div><h2 id="urgent-payroll-heading" style="margin:6px 0">Payroll cannot be prepared — {len(readiness["blockers"])} task{'s' if len(readiness["blockers"]) != 1 else ''} remaining</h2><p>Resolve each item below. Every button goes to the section where the work is completed.</p><ul class="hr-blocker-list">{urgent_items}</ul></section>'''
+        if readiness["blockers"] else
+        '''<section class="hr-saved" style="margin-top:18px"><strong>Ready to prepare.</strong> All required setup and reviews are complete.</section>'''
+    )
     outside_corrections = readiness.get("outside_period_corrections") or []
     outside_correction_notice = ""
     if outside_corrections:
@@ -1648,6 +1707,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <input id="period-date" type="date" name="period_date" value="{_esc(period.start_date)}">
       <button class="hr-btn hr-btn-light" type="submit">Open period</button>
     </form>
+    {urgent_panel}
     <section class="hr-callout" aria-labelledby="payroll-process-heading" style="margin-top:18px">
       <div class="hr-kicker">Today's process</div><h2 id="payroll-process-heading" style="margin:6px 0">Review first, freeze second, approve last</h2>
       <ol><li>Confirm each employee's pay and existing W-4 elections.</li>
