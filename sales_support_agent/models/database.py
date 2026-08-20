@@ -106,8 +106,15 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
     inspector = inspect(engine)
-    if not inspector.get_table_names():
+    existing_postgres_tables = inspector.get_table_names()
+    if not existing_postgres_tables:
         Base.metadata.create_all(bind=engine)
+    elif os.getenv("VERCEL"):
+        # Vercel's runtime credential is intentionally a data-access role, not
+        # the schema owner. The persistent database is migrated separately;
+        # attempting even no-op DDL here makes every serverless request crash.
+        logger.info("Skipping Postgres schema migrations in Vercel runtime")
+        return
     _apply_postgres_compat_migrations(engine)
     _ensure_building_tables(engine)
     _ensure_building_columns(engine)
