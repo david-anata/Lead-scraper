@@ -3,10 +3,10 @@
   "services": {
     "sales-support-agent": {
       "root": ".",
-      "entrypoint": "app.py",
+      "entrypoint": "api/index.py",
       "framework": "fastapi",
       "functions": {
-        "app.py": {
+        "api/index.py": {
           "maxDuration": 800,
           "memory": 2048,
           "regions": ["pdx1"]
