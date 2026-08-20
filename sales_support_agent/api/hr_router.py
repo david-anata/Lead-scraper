@@ -2097,7 +2097,7 @@ async def hr_qualified_review_save(
         attested=attested, actor=user.get("email", ""),
     )
     return RedirectResponse(
-        f"/admin/hr/settings?{'ok' if ok else 'err'}={message}",
+        f"/admin/hr/settings?{'ok' if ok else 'err'}={message}#qualified-review",
         status_code=303,
     )
 

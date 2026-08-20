@@ -416,6 +416,7 @@ class HRSectionTests(unittest.TestCase):
             "attested": "true",
         }, self.sa)
         self.assertIn("ok=qualified_review_saved", saved.headers["location"])
+        self.assertTrue(saved.headers["location"].endswith("#qualified-review"))
         settings = self._get("/admin/hr/settings", self.sa)
         self.assertIn("Payroll Reviewer", settings.text)
         self.assertIn("Parallel payroll workpaper", settings.text)
