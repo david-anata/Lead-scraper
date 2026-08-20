@@ -116,6 +116,27 @@ class BuildingAdminOperationsTests(unittest.TestCase):
         self.assertIn("unsent QuickBooks invoice for staff review", page.text)
         self.assertNotIn("create Stripe invoices", page.text)
 
+    def test_00_expired_hold_does_not_erase_verified_esign_provider_evidence(self) -> None:
+        from sales_support_agent.api.building_crm_router import (
+            _has_verified_esign_artifact,
+        )
+
+        with self.factory.begin() as session:
+            session.add(
+                BuildingAuditEvent(
+                    entity_type="agreement",
+                    entity_id="expired-provider-check",
+                    action="contract_google_doc_drafted",
+                    actor="david@anatainc.com",
+                    after_json={
+                        "document_id": "verified-google-doc",
+                        "sent": False,
+                    },
+                )
+            )
+        with self.factory() as session:
+            self.assertTrue(_has_verified_esign_artifact(session))
+
     def _post(self, path: str, data: dict) -> object:
         response = self.client.post(
             path,
