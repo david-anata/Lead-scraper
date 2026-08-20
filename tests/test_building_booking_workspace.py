@@ -246,6 +246,14 @@ class BuildingBookingWorkspaceTests(unittest.TestCase):
             self.assertEqual(page.status_code, 200, page.text)
             self.assertIn("Quote history is read-only", page.text)
             self.assertIn('class="booking-quote-fields" disabled', page.text)
+            self.assertIn("Release date from Anata Events", page.text)
+            self.assertIn(
+                'action="/admin/building/inquiries/guided-inquiry/calendar-sync"',
+                page.text,
+            )
+            self.assertIn(
+                'name="confirmation" value="SYNC guided-event"', page.text
+            )
         finally:
             with self.factory() as session:
                 reservation = session.get(BuildingReservation, "guided-event")

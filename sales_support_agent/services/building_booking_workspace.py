@@ -275,6 +275,20 @@ def render_booking_workspace(
       <div><span>Calendar</span>{_status(calendar.get("status") or "not_started")}<small>{"Projected to the configured calendar" if calendar.get("status") == "synced" else "Agent remains authoritative"}</small></div>
       <div><span>Operations</span>{_status(checklist.get("status") or "not_started")}<small>{_esc(checklist.get("summary") or "No event-day checklist yet")}</small></div>
     """
+    calendar_cleanup = ""
+    if (
+        reservation.get("status") in {"cancelled", "expired"}
+        and calendar.get("status") in {"pending", "error", "claimed"}
+        and reservation.get("inquiry_id")
+    ):
+        calendar_cleanup = f'''
+          <form class="booking-calendar-cleanup" method="post" action="/admin/building/inquiries/{_esc(reservation.get("inquiry_id"))}/calendar-sync">
+            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+            <input type="hidden" name="confirmation" value="SYNC {_esc(reservation.get("id"))}">
+            <button class="booking-button booking-button--primary" type="submit">Release date from Anata Events</button>
+            <small>The Agent booking is already closed. This deletes only its remaining event from the dedicated calendar.</small>
+          </form>
+        '''
     quote_versions = list(data.get("quote_versions") or [])
     approved_rate_plans = list(data.get("approved_rate_plans") or [])
     quote_snapshot = dict(proposal.get("rate_plan_snapshot") or {})
@@ -439,6 +453,7 @@ def render_booking_workspace(
       <section class="booking-workspace">
         <div class="booking-workspace__header"><div><h2>Authoritative evidence</h2><p>Prepared, sent, signed, paid, and confirmed are never treated as the same state.</p></div></div>
         <div class="booking-evidence">{evidence_rows}</div>
+        {calendar_cleanup}
       </section>
       {quote_section}
       {billing_section}
@@ -486,6 +501,7 @@ def render_booking_workspace(
       .booking-phase--waiting{opacity:.7}.booking-phase--blocked .booking-phase__number{background:#fff0ed;color:#8b2f23}
       .booking-summary dl{margin:0}.booking-summary dt,.booking-summary dd{margin:0;padding:12px 18px;border-top:1px solid var(--agent-border)}.booking-summary dt{padding-bottom:0;color:var(--agent-ink-muted);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}.booking-summary dd{padding-top:4px}.booking-summary dd span{display:block;margin-top:3px;color:var(--agent-ink-muted);font-size:12px}
       .booking-evidence{display:grid;grid-template-columns:repeat(5,minmax(0,1fr))}.booking-evidence>div{min-width:0;padding:18px;border-top:1px solid var(--agent-border);border-right:1px solid var(--agent-border)}.booking-evidence>div:last-child{border-right:0}.booking-evidence>div>span,.booking-evidence small{display:block}.booking-evidence>div>span{margin-bottom:8px;color:var(--agent-ink-muted);font-size:11px;font-weight:800;text-transform:uppercase}.booking-evidence small{margin-top:8px;color:var(--agent-ink-muted);line-height:1.4}
+      .booking-calendar-cleanup{display:flex;align-items:center;gap:12px;padding:0 18px 18px}.booking-calendar-cleanup small{color:var(--agent-ink-muted)}
       .booking-quote-layout{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(280px,.65fr);gap:20px;padding:0 20px 20px}.booking-quote-layout form{display:grid;gap:12px}.booking-quote-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0;padding:0;border:0}.booking-quote-layout label{display:grid;gap:5px;font-weight:700}.booking-quote-layout textarea{min-height:92px}.booking-quote-wide{grid-column:1/-1}.booking-quote-submit{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.booking-quote-submit small{color:var(--agent-ink-muted)}.booking-customer-preview{padding:18px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-control);background:var(--agent-surface-soft)}.booking-customer-preview h3{margin:4px 0 14px}.booking-customer-preview ul{display:grid;gap:7px;margin:0;padding:0;list-style:none}.booking-customer-preview li{display:flex;justify-content:space-between;gap:12px}.booking-customer-preview small{color:var(--agent-ink-muted)}.booking-versions{padding:0 20px 20px}.booking-version-table{overflow-x:auto}.booking-version-table table{width:100%;border-collapse:collapse}.booking-version-table th,.booking-version-table td{padding:10px;border-top:1px solid var(--agent-border);text-align:left;white-space:nowrap}
       .booking-actions{display:grid;grid-template-columns:minmax(220px,.7fr) minmax(0,1.3fr);gap:20px;padding:22px;border:1px solid var(--agent-border);border-radius:var(--agent-radius-panel);background:var(--agent-surface)}.booking-actions h2{margin:0}.booking-actions p{margin:6px 0 0;color:var(--agent-ink-muted)}.booking-actions>div:nth-child(2){display:flex;justify-content:flex-end;align-items:start;flex-wrap:wrap;gap:8px}.booking-actions form{grid-column:1/-1;display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding-top:16px;border-top:1px solid var(--agent-border)}.booking-actions input{width:76px}.booking-actions small{color:var(--agent-ink-muted)}
       .booking-technical{padding:14px 18px;border:1px dashed var(--agent-border);border-radius:var(--agent-radius-control)}.booking-technical summary{cursor:pointer;font-weight:700;color:var(--agent-ink-muted)}
