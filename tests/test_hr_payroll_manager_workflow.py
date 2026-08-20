@@ -10,12 +10,13 @@ from sqlalchemy.orm import Session
 from sales_support_agent.models.database import Base
 from sales_support_agent.models.hr import (
     HREmployee,
+    HREmploymentProfile,
     HREmployeeOnboarding,
     HRTaxElection,
     HRTimeEntry,
     HRTimesheetApproval,
 )
-from sales_support_agent.services.hr import store
+from sales_support_agent.services.hr import payroll_store, store
 
 
 @contextmanager
@@ -133,4 +134,31 @@ def test_manager_cannot_approve_their_own_time(monkeypatch):
             actor="worker@anatainc.com",
         )
         assert (ok, message) == (False, "timesheet_manager_review_invalid")
+
+
+def test_w4_signed_on_payday_is_available_to_that_paycheck(monkeypatch):
+    with _test_database(monkeypatch) as engine:
+        _seed_employee(engine)
+        with Session(engine) as session:
+            session.add(HREmploymentProfile(
+                employee_email="worker@anatainc.com",
+                pay_basis="fixed_semimonthly",
+                fixed_pay_per_period_cents=125000,
+                payroll_eligible=True,
+            ))
+            session.add(HRTaxElection(
+                employee_email="worker@anatainc.com",
+                effective_date=date(2026, 8, 20),
+                filing_status="single",
+                snapshot_hash="payday-w4",
+            ))
+            session.commit()
+        monkeypatch.setattr(payroll_store, "get_engine", lambda: engine)
+
+        room = payroll_store.control_room(date(2026, 8, 1))
+
+        assert not any(
+            blocker.get("kind") == "w4"
+            for blocker in room["readiness"]["blockers"]
+        )
 

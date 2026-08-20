@@ -687,7 +687,9 @@ def _period_context(containing: date) -> tuple:
         )
         w4_emails = {
             row[0] for row in session.query(HRTaxElection.employee_email).filter(
-                HRTaxElection.effective_date <= period.end_date,
+                # A W-4 governs the paycheck, so eligibility is based on the
+                # payment date rather than the final day work was performed.
+                HRTaxElection.effective_date <= period.pay_date,
                 HRTaxElection.superseded_at.is_(None),
             ).all()
         }
@@ -816,7 +818,7 @@ def _period_source_hash(session: Session, period, employees: list[dict],
     ).order_by(HRPTORequest.id).all()
     elections = session.query(HRTaxElection).filter(
         HRTaxElection.employee_email.in_(emails),
-        HRTaxElection.effective_date <= period.end_date,
+        HRTaxElection.effective_date <= period.pay_date,
         HRTaxElection.superseded_at.is_(None),
     ).order_by(HRTaxElection.employee_email, HRTaxElection.id).all()
     openings = session.query(HROpeningPayrollBalance).filter(
@@ -1075,7 +1077,7 @@ def _calculate_employee_period(
 
     election = session.query(HRTaxElection).filter(
         HRTaxElection.employee_email == email,
-        HRTaxElection.effective_date <= period.end_date,
+        HRTaxElection.effective_date <= period.pay_date,
         HRTaxElection.superseded_at.is_(None),
     ).order_by(HRTaxElection.effective_date.desc()).first()
     if election is None:
