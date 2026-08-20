@@ -1,0 +1,83 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "sales-support-agent": {
+      "root": ".",
+      "entrypoint": "app.py",
+      "framework": "fastapi",
+      "functions": {
+        "app.py": {
+          "maxDuration": 800,
+          "memory": 2048,
+          "regions": ["pdx1"]
+        }
+      }
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/:path*/",
+      "destination": {
+        "service": "sales-support-agent",
+        "path": "/:path*/"
+      }
+    },
+    {
+      "source": "/:path*",
+      "destination": {
+        "service": "sales-support-agent",
+        "path": "/:path*"
+      }
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/vercel-cron/synthetic-health",
+      "schedule": "30 * * * *"
+    },
+    {
+      "path": "/api/vercel-cron/website-ops",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/vercel-cron/content",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/vercel-cron/stale-leads",
+      "schedule": "0 15 * * 1-5"
+    },
+    {
+      "path": "/api/vercel-cron/gmail-sync",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/vercel-cron/sales-operator",
+      "schedule": "5 * * * *"
+    },
+    {
+      "path": "/api/vercel-cron/hr-reminders",
+      "schedule": "5 * * * *"
+    },
+    {
+      "path": "/api/vercel-cron/durable-tasks",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/vercel-cron/daily-digest",
+      "schedule": "0 16 * * 1-5"
+    },
+    {
+      "path": "/api/vercel-cron/building-operations",
+      "schedule": "20 * * * *"
+    },
+    {
+      "path": "/api/vercel-cron/finance-sync",
+      "schedule": "10 */2 * * *"
+    },
+    {
+      "path": "/api/jobs/outbound-morning/run",
+      "schedule": "0 13,14 * * *"
+    }
+  ]
+}
