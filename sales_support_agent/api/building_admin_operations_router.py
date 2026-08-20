@@ -255,6 +255,10 @@ def create_assisted_inquiry_from_control_room(
 
     def action() -> None:
         request.state.building_inquiry_actor = _actor(user)
+        # Staff intake is record creation, not customer outreach. The operator
+        # can review the lead and deliberately use the workspace communication
+        # actions afterward.
+        request.state.building_inquiry_suppress_initial_delivery = True
         create_inquiry(
             InquiryInput(
                 kind=kind,
@@ -687,12 +691,53 @@ def transition_reservation_from_control_room(
         transition_reservation(
             reservation_id, payload, request, _internal_key(request)
         )
+        if target_status in {"cancelled", "expired"}:
+            try:
+                result = sync_calendar_projections(
+                    CalendarSyncInput(
+                        execute=True,
+                        dry_run=False,
+                        max_items=1,
+                        reservation_id=reservation_id,
+                        actor=_actor(user),
+                    ),
+                    request,
+                    _internal_key(request),
+                )
+                if int(result.get("failed_count") or 0):
+                    request.state.building_calendar_cleanup_error = (
+                        "Google did not release the date; use the calendar retry action."
+                    )
+                else:
+                    request.state.building_calendar_cleanup_completed = True
+            except Exception as exc:  # The saved cancellation must remain authoritative.
+                request.state.building_calendar_cleanup_error = str(exc)[:500]
 
-    return _run_form_action(
+    response = _run_form_action(
         action,
         f"Booking moved to {target_status.replace('_', ' ')}.",
         success_target=_form_target(return_to),
     )
+    calendar_error = str(
+        getattr(request.state, "building_calendar_cleanup_error", "") or ""
+    ).strip()
+    if calendar_error:
+        return _redirect(
+            error=(
+                f"Booking moved to {target_status.replace('_', ' ')}, but the Anata "
+                f"Events date still needs cleanup: {calendar_error}"
+            ),
+            target=_form_target(return_to),
+        )
+    if getattr(request.state, "building_calendar_cleanup_completed", False):
+        return _redirect(
+            notice=(
+                f"Booking moved to {target_status.replace('_', ' ')} and the Anata "
+                "Events date was released."
+            ),
+            target=_form_target(return_to),
+        )
+    return response
 
 
 @router.post(

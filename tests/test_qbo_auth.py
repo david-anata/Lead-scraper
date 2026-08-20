@@ -265,6 +265,63 @@ class TestQBOAuthRoutes(unittest.TestCase):
             ).fetchall()
         self.assertEqual(len(rows), 0, "Tokens must be cleared even when Intuit revoke fails")
 
+    def test_access_token_bootstraps_from_authorized_environment_refresh_token(self):
+        """A deployed runtime can recover its persisted OAuth row without reconnecting."""
+        from sales_support_agent.api import qbo_auth_router
+
+        with (
+            patch.object(qbo_auth_router, "_load_tokens", return_value=None),
+            patch.object(qbo_auth_router, "_store_tokens") as store_tokens,
+            patch.dict(
+                os.environ,
+                {
+                    "QBO_REFRESH_TOKEN": "authorized-refresh",
+                    "QBO_REALM_ID": "realm123",
+                },
+                clear=False,
+            ),
+            patch.object(qbo_auth_router.requests, "post") as post,
+        ):
+            response = MagicMock()
+            response.raise_for_status.return_value = None
+            response.json.return_value = {
+                "access_token": "fresh-access",
+                "refresh_token": "rotated-refresh",
+                "expires_in": 3600,
+            }
+            post.return_value = response
+
+            self.assertEqual(qbo_auth_router.get_valid_access_token(), "fresh-access")
+
+        post.assert_called_once()
+        self.assertEqual(
+            post.call_args.kwargs["data"],
+            {
+                "grant_type": "refresh_token",
+                "refresh_token": "authorized-refresh",
+            },
+        )
+        self.assertEqual(store_tokens.call_args.kwargs["realm_id"], "realm123")
+        self.assertEqual(
+            store_tokens.call_args.kwargs["refresh_token"], "rotated-refresh"
+        )
+
+    def test_access_token_does_not_bootstrap_without_complete_environment_evidence(self):
+        from sales_support_agent.api import qbo_auth_router
+
+        with (
+            patch.object(qbo_auth_router, "_load_tokens", return_value=None),
+            patch.dict(
+                os.environ,
+                {"QBO_REFRESH_TOKEN": "", "QBO_REALM_ID": "realm123"},
+                clear=False,
+            ),
+            patch.object(qbo_auth_router.requests, "post") as post,
+        ):
+            self.assertIsNone(qbo_auth_router.get_valid_access_token())
+
+        post.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

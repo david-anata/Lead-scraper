@@ -238,21 +238,39 @@ def get_valid_access_token() -> str | None:
     from datetime import datetime, timezone, timedelta
 
     token_row = _load_tokens()
-    if not token_row or not token_row.get("access_token"):
-        return None
+    if not token_row:
+        # Production may already have an Intuit refresh token from the
+        # controlled provider setup even when the database token row has not
+        # been created in this runtime yet. Bootstrap the encrypted database
+        # row through the normal refresh flow instead of falsely reporting
+        # QuickBooks as disconnected and asking the owner to authorize again.
+        refresh_token = os.getenv("QBO_REFRESH_TOKEN", "").strip()
+        realm_id = os.getenv("QBO_REALM_ID", "").strip()
+        if not refresh_token or not realm_id:
+            return None
+        token_row = {
+            "access_token": "",
+            "refresh_token": refresh_token,
+            "realm_id": realm_id,
+            "expires_at": "",
+        }
 
     # Check expiry — refresh proactively if within 5 minutes of expiry
+    access_token = str(token_row.get("access_token") or "")
     expires_at_str = token_row.get("expires_at") or ""
-    try:
-        exp = datetime.fromisoformat(expires_at_str)
-        if exp.tzinfo is None:
-            exp = exp.replace(tzinfo=timezone.utc)
-        needs_refresh = (exp - datetime.now(timezone.utc)) < timedelta(minutes=5)
-    except (ValueError, TypeError):
-        needs_refresh = True  # Unknown expiry → attempt refresh defensively
+    if not access_token:
+        needs_refresh = True
+    else:
+        try:
+            exp = datetime.fromisoformat(expires_at_str)
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            needs_refresh = (exp - datetime.now(timezone.utc)) < timedelta(minutes=5)
+        except (ValueError, TypeError):
+            needs_refresh = True  # Unknown expiry → attempt refresh defensively
 
     if not needs_refresh:
-        return token_row["access_token"]
+        return access_token
 
     # Attempt token refresh using the stored refresh_token
     refresh_token = token_row.get("refresh_token", "")

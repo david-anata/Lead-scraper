@@ -909,14 +909,24 @@ def create_inquiry(
             },
         ))
 
-        try:
-            notification = notify_new_building_lead(request.app.state.settings, inquiry)
-        except Exception as exc:  # Lead intake must survive a provider outage.
+        suppress_initial_delivery = bool(
+            getattr(request.state, "building_inquiry_suppress_initial_delivery", False)
+        )
+        if suppress_initial_delivery:
             notification = {
-                "status": "failed",
+                "status": "not_sent",
                 "provider": "slack",
-                "reason": str(exc)[:500],
+                "reason": "Staff-created inquiry; no automatic delivery was requested.",
             }
+        else:
+            try:
+                notification = notify_new_building_lead(request.app.state.settings, inquiry)
+            except Exception as exc:  # Lead intake must survive a provider outage.
+                notification = {
+                    "status": "failed",
+                    "provider": "slack",
+                    "reason": str(exc)[:500],
+                }
         inquiry_payload = dict(inquiry.payload_json or {})
         inquiry_payload["_lead_notification"] = {
             **notification,
@@ -933,7 +943,7 @@ def create_inquiry(
         ))
 
         customer_receipt: dict[str, Any] = {}
-        if inquiry.kind == "event":
+        if inquiry.kind == "event" and not suppress_initial_delivery:
             customer_receipt = attempt_inquiry_receipt(
                 session,
                 settings=request.app.state.settings,

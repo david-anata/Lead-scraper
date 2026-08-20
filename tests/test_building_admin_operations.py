@@ -258,8 +258,18 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             "details": "Company gathering for 40 people.",
             "consent_to_contact": "true",
         }
-        first = self._post("/admin/building/inquiries", payload)
-        second = self._post("/admin/building/inquiries", payload)
+        with (
+            patch(
+                "sales_support_agent.api.building_router.notify_new_building_lead"
+            ) as notify,
+            patch(
+                "sales_support_agent.api.building_router.attempt_inquiry_receipt"
+            ) as receipt,
+        ):
+            first = self._post("/admin/building/inquiries", payload)
+            second = self._post("/admin/building/inquiries", payload)
+        notify.assert_not_called()
+        receipt.assert_not_called()
         self._assert_notice(first)
         self._assert_notice(second)
         with self.factory() as session:
@@ -273,12 +283,65 @@ class BuildingAdminOperationsTests(unittest.TestCase):
                 "eventective-lead-123",
             )
             self.assertFalse(inquiries[0].consent_to_marketing)
+            self.assertEqual(
+                inquiries[0].payload_json["_lead_notification"]["status"],
+                "not_sent",
+            )
+            self.assertNotIn("_customer_receipt", inquiries[0].payload_json)
             audit = session.query(BuildingAuditEvent).filter(
                 BuildingAuditEvent.entity_type == "inquiry",
                 BuildingAuditEvent.entity_id == inquiries[0].id,
                 BuildingAuditEvent.action == "created",
             ).one()
             self.assertEqual(audit.actor, "david@anatainc.com")
+
+    def test_00a_cancelling_booking_releases_anata_events_date(self) -> None:
+        with (
+            patch(
+                "sales_support_agent.api.building_admin_operations_router.transition_reservation"
+            ) as transition,
+            patch(
+                "sales_support_agent.api.building_admin_operations_router.sync_calendar_projections",
+                return_value={"synced_count": 1, "failed_count": 0},
+            ) as sync,
+        ):
+            response = self._post(
+                "/admin/building/reservations/reservation-qa/transition",
+                {
+                    "target_status": "cancelled",
+                    "reason": "Client cancelled the event.",
+                },
+            )
+
+        self._assert_notice(response)
+        self.assertIn("Anata+Events+date+was+released", response.headers["location"])
+        transition.assert_called_once()
+        sync.assert_called_once()
+        payload = sync.call_args.args[0]
+        self.assertTrue(payload.execute)
+        self.assertFalse(payload.dry_run)
+        self.assertEqual(payload.reservation_id, "reservation-qa")
+
+    def test_00a_calendar_cleanup_failure_is_visible_after_cancellation(self) -> None:
+        with (
+            patch(
+                "sales_support_agent.api.building_admin_operations_router.transition_reservation"
+            ),
+            patch(
+                "sales_support_agent.api.building_admin_operations_router.sync_calendar_projections",
+                return_value={"synced_count": 0, "failed_count": 1},
+            ),
+        ):
+            response = self._post(
+                "/admin/building/reservations/reservation-qa/transition",
+                {
+                    "target_status": "cancelled",
+                    "reason": "Client cancelled the event.",
+                },
+            )
+
+        self.assertIn("error=", response.headers["location"])
+        self.assertIn("still+needs+cleanup", response.headers["location"])
 
     def test_00b_operator_owns_and_resolves_urgent_service_work(self) -> None:
         missing_owner = self._post(
