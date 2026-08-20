@@ -1,0 +1,9 @@
+.git
+.codex-artifacts
+.worktrees
+.pytest_cache
+.venv
+__pycache__
+runtime
+*.log
+*.sqlite3
