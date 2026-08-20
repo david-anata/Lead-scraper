@@ -17,3 +17,5 @@ runtime/
 # failing on main, which made every test run red and meaningless.
 * 2.py
 * 2.zip
+.vercel
+.env*
