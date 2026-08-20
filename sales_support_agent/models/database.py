@@ -1287,18 +1287,24 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
     if "lead_mirrors" not in existing_tables:
         return
 
+    lead_columns = {
+        column["name"] for column in inspector.get_columns("lead_mirrors")
+    }
+    lead_indexes = {
+        index["name"] for index in inspector.get_indexes("lead_mirrors")
+    }
     with engine.begin() as connection:
-        connection.execute(
-            text(
-                """
-                ALTER TABLE lead_mirrors
-                ADD COLUMN IF NOT EXISTS status_key VARCHAR(128) NOT NULL DEFAULT '',
-                ADD COLUMN IF NOT EXISTS is_closed BOOLEAN NOT NULL DEFAULT FALSE,
-                ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT FALSE,
-                ADD COLUMN IF NOT EXISTS task_updated_at TIMESTAMPTZ NULL
-                """
-            )
-        )
+        lead_column_ddl = {
+            "status_key": "VARCHAR(128) NOT NULL DEFAULT ''",
+            "is_closed": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "is_active": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "task_updated_at": "TIMESTAMPTZ NULL",
+        }
+        for column_name, column_type in lead_column_ddl.items():
+            if column_name not in lead_columns:
+                connection.execute(text(
+                    f"ALTER TABLE lead_mirrors ADD COLUMN {column_name} {column_type}"
+                ))
         connection.execute(
             text(
                 """
@@ -1366,10 +1372,22 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                 """
             )
         )
-        connection.execute(text("CREATE INDEX IF NOT EXISTS lead_mirrors_status_key_idx ON lead_mirrors (status_key)"))
-        connection.execute(text("CREATE INDEX IF NOT EXISTS lead_mirrors_is_closed_idx ON lead_mirrors (is_closed)"))
-        connection.execute(text("CREATE INDEX IF NOT EXISTS lead_mirrors_is_active_idx ON lead_mirrors (is_active)"))
-        connection.execute(text("CREATE INDEX IF NOT EXISTS lead_mirrors_task_updated_at_idx ON lead_mirrors (task_updated_at)"))
+        if "lead_mirrors_status_key_idx" not in lead_indexes:
+            connection.execute(text(
+                "CREATE INDEX lead_mirrors_status_key_idx ON lead_mirrors (status_key)"
+            ))
+        if "lead_mirrors_is_closed_idx" not in lead_indexes:
+            connection.execute(text(
+                "CREATE INDEX lead_mirrors_is_closed_idx ON lead_mirrors (is_closed)"
+            ))
+        if "lead_mirrors_is_active_idx" not in lead_indexes:
+            connection.execute(text(
+                "CREATE INDEX lead_mirrors_is_active_idx ON lead_mirrors (is_active)"
+            ))
+        if "lead_mirrors_task_updated_at_idx" not in lead_indexes:
+            connection.execute(text(
+                "CREATE INDEX lead_mirrors_task_updated_at_idx ON lead_mirrors (task_updated_at)"
+            ))
 
     # PR54: deck-analytics tables — added after the initial bootstrap, so
     # existing Postgres deployments need an explicit CREATE TABLE IF NOT
