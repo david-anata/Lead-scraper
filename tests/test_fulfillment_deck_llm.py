@@ -109,10 +109,15 @@ class IntakeTests(unittest.TestCase):
         )
         fake_resp = mock.Mock()
         fake_resp.text = html
-        with mock.patch("requests.get", return_value=fake_resp) as get:
+        fake_resp.status_code = 200
+        fake_resp.headers = {"Content-Type": "text/html"}
+        with mock.patch("requests.get", return_value=fake_resp) as get, mock.patch(
+            "sales_support_agent.services.fulfillment_deck.intake.public_http_url",
+            side_effect=lambda value: value,
+        ):
             context, attachments, warnings = build_extraction_context("", [], "https://acme.example")
-        get.assert_called_once()
-        self.assertEqual(get.call_args.kwargs.get("timeout"), 10)
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(get.call_args_list[0].kwargs.get("timeout"), 10)
         self.assertIn("=== WEBSITE: https://acme.example ===", context)
         self.assertIn("Acme Goods", context)
         self.assertIn("We ship serums nationwide", context)  # whitespace collapsed
@@ -120,6 +125,34 @@ class IntakeTests(unittest.TestCase):
         self.assertNotIn("color:red", context)
         self.assertNotIn("<h1>", context)
         self.assertEqual(attachments, [])
+        self.assertEqual(warnings, [])
+
+    def test_shopify_catalog_is_added_as_bounded_product_lines(self):
+        page = mock.Mock(status_code=200, text="<html><body>Ocean Rx</body></html>", headers={"Content-Type": "text/html"})
+        catalog = mock.Mock(
+            status_code=200,
+            headers={"Content-Type": "application/json"},
+        )
+        catalog.json.return_value = {
+            "products": [
+                {
+                    "title": "Pure Blue Spirulina",
+                    "product_type": "Supplement",
+                    "body_html": "<p>A once-daily powder.</p>",
+                }
+            ]
+        }
+        with mock.patch("requests.get", side_effect=[page, catalog]), mock.patch(
+            "sales_support_agent.services.fulfillment_deck.intake.public_http_url",
+            side_effect=lambda value: value,
+        ):
+            context, _attachments, warnings = build_extraction_context(
+                "", [], "https://oceanrx.example"
+            )
+        self.assertIn("=== STOREFRONT CATALOG: https://oceanrx.example ===", context)
+        self.assertIn("SHOPIFY PRODUCT: Pure Blue Spirulina", context)
+        self.assertIn("TYPE: Supplement", context)
+        self.assertNotIn("<p>", context)
         self.assertEqual(warnings, [])
 
     def test_website_fetch_failure_warns_not_raises(self):
@@ -334,6 +367,22 @@ class LlmExtractionTests(unittest.TestCase):
         self.assertEqual(product.height_in, 6.0)
         self.assertEqual(product.weight_lb, 1.2)
         self.assertEqual(product.monthly_units, 3000)
+
+    def test_fallback_rates_shopify_products_when_llm_is_unavailable(self):
+        context = (
+            "=== STOREFRONT CATALOG: https://oceanrx.example ===\n"
+            "SHOPIFY PRODUCT: Pure Blue Spirulina | TYPE: Supplement | "
+            "DESCRIPTION: A once-daily powder.\n"
+        )
+        with mock.patch.dict("os.environ", _NO_KEY_ENV):
+            profile, meta = extract_prospect_profile(context)
+        self.assertEqual(len(profile.products), 1)
+        product = profile.products[0]
+        self.assertEqual(product.name, "Pure Blue Spirulina")
+        self.assertEqual(product.product_category, "supplements")
+        self.assertTrue(product.dims_estimated)
+        self.assertTrue(product.has_full_package_spec)
+        self.assertTrue(any("Estimated package specs" in warning for warning in meta.warnings))
 
     def test_fallback_regex_parses_cost_per_parcel(self):
         context = "=== SALES NOTES ===\nCompany: Acme\nCurrently paying $9.80/parcel with UPS\n"

@@ -153,6 +153,21 @@ _COST_PER_PARCEL_RE = re.compile(
     r"\$\s*(\d+(?:\.\d+)?)\s*(?:/|per)\s*(?:parcel|label|order|package|shipment)",
     re.IGNORECASE,
 )
+_SHOPIFY_PRODUCT_RE = re.compile(r"^SHOPIFY PRODUCT:\s*(?P<name>[^|]+)(?P<details>.*)$", re.IGNORECASE)
+
+
+def _estimated_storefront_package(text: str) -> tuple[float, float, float, float, str]:
+    """Conservative shipped-package estimate for a recognizable store item."""
+    value = (text or "").lower()
+    if any(word in value for word in ("supplement", "capsule", "powder", "vitamin", "spirulina")):
+        return 6.0, 4.0, 4.0, 1.0, "supplements"
+    if any(word in value for word in ("serum", "cream", "lotion", "skin", "beauty", "cosmetic")):
+        return 6.0, 4.0, 3.0, 0.75, "beauty"
+    if any(word in value for word in ("shirt", "hoodie", "apparel", "clothing", "hat")):
+        return 12.0, 9.0, 2.0, 1.0, "apparel"
+    if any(word in value for word in ("food", "snack", "coffee", "tea", "candy")):
+        return 8.0, 6.0, 4.0, 1.5, "food"
+    return 8.0, 6.0, 4.0, 2.0, "other"
 
 
 def _fallback_profile(context: str) -> ProspectProfile:
@@ -163,6 +178,25 @@ def _fallback_profile(context: str) -> ProspectProfile:
     for line in (context or "").splitlines():
         line = line.strip()
         if not line or line.startswith("==="):
+            continue
+
+        storefront = _SHOPIFY_PRODUCT_RE.match(line)
+        if storefront:
+            name = storefront.group("name").strip()
+            details = storefront.group("details") or ""
+            length, width, height, weight, category = _estimated_storefront_package(
+                f"{name} {details}"
+            )
+            products.append({
+                "name": name,
+                "length_in": length,
+                "width_in": width,
+                "height_in": height,
+                "weight_lb": weight,
+                "dims_estimated": True,
+                "product_category": category,
+                "notes": "Package dimensions estimated from the public storefront product type.",
+            })
             continue
 
         m = _KV_RE.match(line)

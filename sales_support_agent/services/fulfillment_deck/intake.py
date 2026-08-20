@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import base64
 import csv
+import html as html_lib
 import io
+import json
 import logging
 import re
 from urllib.parse import urljoin, urlparse
@@ -116,6 +118,7 @@ def _read_file(filename: str, data: bytes, warnings: list) -> str:
 
 
 _MAX_WEBSITE_REDIRECTS = 5
+_SHOPIFY_PRODUCT_CAP = 12
 
 
 def _fetch_website(url: str, warnings: list) -> str:
@@ -163,6 +166,60 @@ def _fetch_website(url: str, warnings: list) -> str:
     except Exception as exc:  # noqa: BLE001 — never raise on a flaky prospect site
         logger.warning("[fulfillment_deck] website fetch failed for %s", url, exc_info=True)
         warnings.append(f"Could not fetch website {url}: {exc.__class__.__name__}")
+        return ""
+
+
+def _fetch_shopify_catalog(url: str) -> str:
+    """Return a bounded, product-per-line Shopify catalog when available.
+
+    Shopify exposes a public ``products.json`` feed on ordinary storefronts.
+    This gives the deterministic extractor useful product names and categories
+    when the optional LLM is unavailable, without scraping private APIs or
+    weakening the public-URL guard.
+    """
+    try:
+        import requests
+
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+        catalog_url = public_http_url(
+            f"{parsed.scheme or 'https'}://{parsed.netloc or parsed.path}/products.json?limit={_SHOPIFY_PRODUCT_CAP}"
+        )
+        if not catalog_url:
+            return ""
+        response = requests.get(
+            catalog_url,
+            timeout=6,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; AnataRateSheet/1.0)"},
+            allow_redirects=False,
+        )
+        if response.status_code != 200 or "json" not in str(response.headers.get("Content-Type") or "").lower():
+            return ""
+        payload = response.json()
+        products = payload.get("products") if isinstance(payload, dict) else None
+        if not isinstance(products, list):
+            return ""
+        lines: list[str] = []
+        for product in products[:_SHOPIFY_PRODUCT_CAP]:
+            if not isinstance(product, dict):
+                continue
+            title = _WS_RE.sub(" ", str(product.get("title") or "")).strip()[:160]
+            if not title:
+                continue
+            product_type = _WS_RE.sub(" ", str(product.get("product_type") or "")).strip()[:80]
+            description_html = str(product.get("body_html") or "")
+            description = _WS_RE.sub(
+                " ", html_lib.unescape(_TAG_RE.sub(" ", description_html))
+            ).strip()[:240]
+            lines.append(
+                "SHOPIFY PRODUCT: " + title
+                + (f" | TYPE: {product_type}" if product_type else "")
+                + (f" | DESCRIPTION: {description}" if description else "")
+            )
+        return "\n".join(lines)
+    except (ValueError, json.JSONDecodeError, TypeError):
+        return ""
+    except Exception:  # noqa: BLE001 — catalog enrichment is optional
+        logger.info("[fulfillment_deck] Shopify catalog unavailable for %s", url)
         return ""
 
 
@@ -370,6 +427,9 @@ def build_extraction_context(
         body = _fetch_website(url, warnings)
         if body:
             sections.append(_section(f"WEBSITE: {url}", body))
+        shopify_catalog = _fetch_shopify_catalog(url)
+        if shopify_catalog:
+            sections.append(_section(f"STOREFRONT CATALOG: {url}", shopify_catalog))
 
     context = "\n".join(sections)
     if len(context) > _TOTAL_CAP:
