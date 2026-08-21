@@ -164,7 +164,11 @@ class OutboundPagesStillRenderTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("Download selected CSV", r.text)
         self.assertIn('id="download-export" aria-disabled="true" download="anata-selected-pulls.csv"', r.text)
-        self.assertIn("download='anata-new_growth_app-leads.csv'", r.text)
+        # The per-recipe raw pull download is gone on purpose. It handed out
+        # brands that had never been through the Amazon check, so every column
+        # the send gate reads came out blank. One download, one meaning.
+        self.assertNotIn("anata-new_growth_app-leads.csv", r.text)
+        self.assertNotIn("Pull now", r.text)
         self.assertIn("function downloadUrl()", r.text)
         self.assertNotIn("location.href='/admin/api/outbound/pulls.csv", r.text)
         self.assertIn("Delivery settings", r.text)
