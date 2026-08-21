@@ -238,6 +238,7 @@ def outbound_brands_page(request: Request) -> Response:
 
 
 @router.get("/admin/api/outbound/brands.csv", response_class=Response)
+@router.post("/admin/api/outbound/brands.csv", response_class=Response)
 def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "",
                         scanned: int = 0) -> Response:
     """Brands as a CSV to import into Clay. Sends nothing.
@@ -373,6 +374,7 @@ _LEADOPS_CSS = """
     font-family:"Montserrat",sans-serif; font-weight:800; font-size:12px; text-decoration:none; white-space:nowrap; }
   .lo-btn:hover { background:#1f2833; color:#fff; }
   .lo-disabled,.lo-disabled:hover { background:#9aa3ad; color:#fff; cursor:not-allowed; }
+  .lo-pull-form { display:inline; margin:0; }
   .lo-note { margin:10px 0 0; font-size:14px; color:rgba(43,54,68,.7); }
   .lo-form { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin:8px 0 0; }
   .lo-field { display:flex; flex-direction:column; gap:4px; }
@@ -804,7 +806,8 @@ def outbound_lead_ops(request: Request) -> Response:
         due = "Today" if r.key in todays_keys else ("Tue / Wed" if r.cadence == "weekly" else "Weekdays")
         cap_now = r.cap(tunables)
         pull_action = (
-            f"<a class='lo-btn' download='anata-{r.key}-leads.csv' href='/admin/api/outbound/brands.csv?recipe={r.key}'>Pull now</a>"
+            f"<form class='lo-pull-form' method='post' action='/admin/api/outbound/brands.csv?recipe={r.key}'>"
+            f"<button class='lo-btn' type='submit'>Pull now</button></form>"
             if persistence["ready"] else
             "<span class='lo-btn lo-disabled' aria-disabled='true'>Pull unavailable</span>"
         )
