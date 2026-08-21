@@ -277,6 +277,109 @@ class LeadToContractTests(unittest.TestCase):
             "a lead that cannot contract must not offer the press",
         )
 
+    def test_03d_staff_can_correct_a_workspace_lead_into_an_event(self) -> None:
+        """A marketplace classification mistake must not strand a contract."""
+
+        event_day = (datetime.now(MOUNTAIN) + timedelta(days=280)).date()
+        with self.factory() as session:
+            session.add(BuildingContact(
+                id="c-elisa", email="elisa@example.com",
+                full_name="Elisa Edwards", status="active",
+            ))
+            session.add(BuildingInquiry(
+                id="lead-elisa", idempotency_key="lead-elisa-key",
+                kind="workspace", name="Elisa Edwards",
+                email="elisa@example.com", source="eventective",
+                payload_json={
+                    "eventType": "Original marketplace wording",
+                    "_lifecycle": {"stage": "qualified"},
+                },
+            ))
+            session.add(BuildingRelationship(
+                id="rel-elisa", contact_id="c-elisa",
+                relationship_type="prospect", status="active",
+                source_reference="inquiry:lead-elisa",
+            ))
+            session.commit()
+
+        corrected = self.client.post(
+            "/admin/building/inquiries/lead-elisa/details",
+            headers=self.headers,
+            follow_redirects=False,
+            data={
+                "_csrf_token": self._csrf("lead-elisa"),
+                "kind": "event",
+                "offering_id": "off",
+                "name": "Elisa Edwards",
+                "email": "elisa@example.com",
+                "phone": "801-555-0100",
+                "preferred_date": event_day.isoformat(),
+                "event_type": "Wedding reception",
+                "guest_start_time": "17:00",
+                "guest_end_time": "22:00",
+            },
+        )
+        self.assertEqual(corrected.status_code, 303, corrected.text)
+        self.assertIn("Lead+details+updated", corrected.headers["location"])
+        with self.factory() as session:
+            lead = session.get(BuildingInquiry, "lead-elisa")
+            self.assertEqual(lead.kind, "event")
+            self.assertEqual(lead.offering_id, "off")
+            self.assertEqual(lead.preferred_date, event_day)
+            self.assertEqual(
+                lead.payload_json["eventType"],
+                "Original marketplace wording",
+                "the customer's original submission must stay intact",
+            )
+            self.assertEqual(
+                lead.payload_json["_lead_corrections"]["event_type"],
+                "Wedding reception",
+            )
+
+        page = self.client.get("/admin/building/inquiries/lead-elisa")
+        self.assertIn("Event request", page.text)
+        self.assertIn("Event interview", page.text)
+        self.assertIn("Pick the date", page.text)
+        self.assertIn(">Create the contract</button>", page.text)
+        self.assertIn("Original marketplace wording", page.text)
+
+        created = self.client.post(
+            "/admin/building/inquiries/lead-elisa/contract",
+            headers=self.headers,
+            follow_redirects=False,
+            data={"_csrf_token": self._csrf("lead-elisa")},
+        )
+        self.assertIn("notice=", created.headers["location"])
+        with self.factory() as session:
+            reservation = session.query(BuildingReservation).filter_by(
+                inquiry_id="lead-elisa"
+            ).one()
+            agreement = session.query(BuildingAgreement).filter_by(
+                reservation_id=reservation.id
+            ).one()
+            self.assertTrue(agreement.package_checksum)
+
+    def test_03e_invalid_lead_correction_changes_nothing(self) -> None:
+        with self.factory() as session:
+            before = session.get(BuildingInquiry, "lead-elisa")
+            before_kind = before.kind
+        refused = self.client.post(
+            "/admin/building/inquiries/lead-elisa/details",
+            headers=self.headers,
+            follow_redirects=False,
+            data={
+                "_csrf_token": self._csrf("lead-elisa"),
+                "kind": "not-a-journey",
+                "name": "Elisa Edwards",
+                "email": "elisa@example.com",
+            },
+        )
+        self.assertIn("error=", refused.headers["location"])
+        with self.factory() as session:
+            self.assertEqual(
+                session.get(BuildingInquiry, "lead-elisa").kind, before_kind
+            )
+
     def test_02b_the_lead_and_its_contract_link_to_each_other(self) -> None:
         """A contract is an output of a lead. Reaching one from the other should
         not mean going out to a separate section and searching."""
