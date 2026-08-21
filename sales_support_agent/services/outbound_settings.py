@@ -63,7 +63,9 @@ def _is_pg(engine) -> bool:
     return "postgres" in str(getattr(engine, "url", "")).lower()
 
 
-def ensure_tables(engine) -> None:
+def ensure_tables(engine, *, force: bool = False) -> None:
+    if _is_pg(engine) and not force:
+        return
     with engine.begin() as conn:
         conn.execute(text(_CREATE_SETTINGS))
         conn.execute(text(_CREATE_CHANGES_PG if _is_pg(engine) else _CREATE_CHANGES))

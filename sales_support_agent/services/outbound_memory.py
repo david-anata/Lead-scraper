@@ -295,8 +295,10 @@ def _amazon_values(lead: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def ensure_runs_table(engine) -> None:
+def ensure_runs_table(engine, *, force: bool = False) -> None:
     is_pg = "postgres" in str(getattr(engine, "url", "")).lower()
+    if is_pg and not force:
+        return
     sql = _CREATE_RUNS_SQL_PG if is_pg else _CREATE_RUNS_SQL
     with engine.begin() as conn:
         conn.execute(text(sql))
@@ -317,8 +319,8 @@ def ensure_outbound_schema(engine) -> None:
     """Create or upgrade every table required by the outbound workflow."""
     if engine is None:
         raise OutboundPersistenceError("Database engine is unavailable.")
-    ensure_table(engine)
-    ensure_runs_table(engine)
+    ensure_table(engine, force=True)
+    ensure_runs_table(engine, force=True)
 
 
 def persistence_health(engine, *, require_runs: bool = True) -> dict[str, Any]:
@@ -611,7 +613,9 @@ def load_delivery_history(engine, limit: int = 8) -> list[dict[str, Any]]:
                  "status": r[3], "attempted_at": r[4]} for r in rows[:limit]]
     except Exception:  # noqa: BLE001
         return []
-def ensure_table(engine) -> None:
+def ensure_table(engine, *, force: bool = False) -> None:
+    if "postgres" in str(getattr(engine, "url", "")).lower() and not force:
+        return
     with engine.begin() as conn:
         conn.execute(text(_CREATE_SQL))
     for stmt in _ALTERS:
