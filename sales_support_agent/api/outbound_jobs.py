@@ -215,6 +215,10 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
     if not api_key:
         out["reason"] = "STORELEADS_API_KEY is not set"
         return out
+    health = outbound_memory.persistence_health(engine)
+    if not health["ready"]:
+        out["reason"] = "outbound persistence is unavailable; no StoreLeads pull started"
+        return out
 
     from sales_support_agent.services import outbound_settings as _st
     tunables = _st.effective(engine, _rx.DEFAULT_SETTINGS) if engine is not None else _rx.DEFAULT_SETTINGS
@@ -245,19 +249,20 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
         already |= {str(l.get("domain") or "") for l in result.leads}
 
         if engine is not None:
-            if result.leads:
-                outbound_memory.record_leads(engine, result.leads,
-                                             source=result.recipe or "scheduled",
-                                             config_version=version)
-            run_id = outbound_memory.record_run(
-                engine, recipe=result.recipe or recipe.key, scanned=result.scanned,
-                matched=result.matched_icp, fresh=len(result.leads),
-                skipped_seen=result.skipped_already_contacted,
-                partial=bool(getattr(result, "partial", False)),
-                config_version=version, delivery="scheduled",
-                delivered=len(result.leads), note="automatic morning run",
-            )
-            outbound_memory.record_run_leads(engine, run_id, result.leads)
+            try:
+                persisted = outbound_memory.persist_pull(
+                    engine, leads=result.leads, recipe=result.recipe or recipe.key,
+                    scanned=result.scanned, matched=result.matched_icp,
+                    fresh=len(result.leads), skipped_seen=result.skipped_already_contacted,
+                    partial=bool(getattr(result, "partial", False)), config_version=version,
+                    delivery="scheduled", delivered=len(result.leads),
+                    note="automatic morning run",
+                )
+                run_id = persisted.run_id
+            except outbound_memory.OutboundPersistenceError:
+                logger.exception("[outbound-jobs] pull persistence failed for %s", recipe.key)
+                out["reason"] = f"persistence failed for {recipe.key}"
+                break
             try:
                 from sales_support_agent.services.outbound_delivery import deliver_completed_pull
                 deliver_completed_pull(engine, {

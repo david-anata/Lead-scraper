@@ -226,6 +226,25 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `GET /api/internal/building/bookings`
 - `POST /api/internal/building/bookings`
 
+### Outbound pull persistence
+
+Outbound lead pulls are saved before a CSV is returned or a delivery is sent.
+Each successful pull writes the run record, company-library rows, and the exact
+run membership in one database transaction. If persistence is unavailable, the
+pull stops before StoreLeads is called and the operator sees an unavailable
+state instead of an empty history.
+
+- `GET /admin/api/outbound/health` reports whether outbound persistence is
+  ready and includes the saved run and company counts.
+- `GET /admin/outbound/lead-ops` shows pull history and supports re-downloading
+  the saved artifact without calling StoreLeads again.
+- `GET /admin/outbound/leads` provides the persistent company library and bulk
+  CSV export.
+
+Database schema setup runs through `init_database`, including the deployment
+pre-start migration. A successful pull response includes `X-Outbound-Run-Id`
+and `X-Correlation-Id` headers for operational tracing.
+
 ### Review-gated Building catalog import
 
 The Canva-derived draft catalog lives at

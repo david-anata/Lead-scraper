@@ -108,6 +108,58 @@ class RunTrackingTests(unittest.TestCase):
                                       fresh=0, skipped_seen=0))
         self.assertEqual(m.load_runs(object()), [])
 
+
+class AtomicPullPersistenceTests(unittest.TestCase):
+    def _engine(self):
+        engine = create_engine("sqlite://", future=True)
+        m.ensure_outbound_schema(engine)
+        return engine
+
+    @staticmethod
+    def _lead(domain: str = "example.com") -> dict:
+        return {
+            "domain": domain, "brand": "Example", "tier": "A",
+            "niche": "beauty_wellness", "country": "US", "score": 12,
+            "reason": "They fit our ideal customer profile",
+            "recipe": "icp_baseline", "estimated_sales_yearly_cents": 150000000,
+        }
+
+    def test_schema_health_distinguishes_missing_from_ready(self):
+        engine = create_engine("sqlite://", future=True)
+        self.assertFalse(m.persistence_health(engine)["ready"])
+        m.ensure_outbound_schema(engine)
+        self.assertTrue(m.persistence_health(engine)["ready"])
+
+    def test_persists_run_library_and_exact_membership_atomically(self):
+        engine = self._engine()
+        result = m.persist_pull(
+            engine, leads=[self._lead()], recipe="icp_baseline", scanned=25,
+            matched=1, fresh=1, skipped_seen=0, config_version=3,
+        )
+        self.assertGreater(result.run_id, 0)
+        self.assertEqual(result.company_count, 1)
+        self.assertEqual(result.membership_count, 1)
+        self.assertEqual(m.load_runs(engine)[0]["fresh"], 1)
+        self.assertEqual(m.load_leads(engine)[0]["domain"], "example.com")
+        self.assertEqual(m.load_run_leads(engine, [result.run_id])[0]["domain"], "example.com")
+
+    def test_count_mismatch_writes_nothing(self):
+        engine = self._engine()
+        with self.assertRaises(m.OutboundPersistenceError):
+            m.persist_pull(
+                engine, leads=[self._lead()], recipe="icp_baseline", scanned=25,
+                matched=1, fresh=2, skipped_seen=0,
+            )
+        self.assertEqual(m.load_runs(engine), [])
+        self.assertEqual(m.load_leads(engine), [])
+
+    def test_unavailable_engine_raises_instead_of_claiming_success(self):
+        with self.assertRaises(m.OutboundPersistenceError):
+            m.persist_pull(
+                None, leads=[self._lead()], recipe="icp_baseline", scanned=1,
+                matched=1, fresh=1, skipped_seen=0,
+            )
+
     def test_exact_pull_membership_is_exportable_without_changing_contact_memory(self):
         e = self._engine()
         run_id = m.record_run(e, recipe="social_surge", scanned=20, matched=3,
@@ -280,6 +332,7 @@ class FullLeadRecordTests(unittest.TestCase):
         self.assertIn("rho.com", body)
 
         empty = self._e()
+        m.ensure_outbound_schema(empty)
         with (
             patch("sales_support_agent.models.database.get_engine", return_value=empty),
             patch("sales_support_agent.api.outbound_router.get_current_user", return_value={}),

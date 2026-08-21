@@ -13,12 +13,24 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
+
+
+class OutboundPersistenceError(RuntimeError):
+    """A pull could not be durably recorded and must not be reported complete."""
+
+
+@dataclass(frozen=True)
+class PersistedPull:
+    run_id: int
+    company_count: int
+    membership_count: int
 
 _TABLE = "outbound_contacted_domains"
 
@@ -301,6 +313,30 @@ def ensure_runs_table(engine) -> None:
         conn.execute(text(_CREATE_DELIVERY_HISTORY_SQL_PG if is_pg else _CREATE_DELIVERY_HISTORY_SQL))
 
 
+def ensure_outbound_schema(engine) -> None:
+    """Create or upgrade every table required by the outbound workflow."""
+    if engine is None:
+        raise OutboundPersistenceError("Database engine is unavailable.")
+    ensure_table(engine)
+    ensure_runs_table(engine)
+
+
+def persistence_health(engine, *, require_runs: bool = True) -> dict[str, Any]:
+    """Return truthful outbound database readiness without mutating schema."""
+    if engine is None:
+        return {"ready": False, "code": "engine_unavailable", "detail": "Database engine is unavailable."}
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(f"SELECT COUNT(*) FROM {_TABLE}"))
+            if require_runs:
+                conn.execute(text(f"SELECT COUNT(*) FROM {_RUNS_TABLE}"))
+                conn.execute(text(f"SELECT COUNT(*) FROM {_RUN_LEADS_TABLE}"))
+        return {"ready": True, "code": "ready", "detail": "Outbound persistence is ready."}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[outbound-memory] persistence health check failed")
+        return {"ready": False, "code": "schema_unavailable", "detail": exc.__class__.__name__}
+
+
 def record_run(engine, *, recipe: str, scanned: int, matched: int, fresh: int,
                skipped_seen: int, partial: bool = False, note: str = "",
                config_version: int = 0, delivery: str = "file",
@@ -347,7 +383,6 @@ def load_runs(engine, limit: int = 30) -> list[dict[str, Any]]:
     if engine is None:
         return []
     try:
-        ensure_runs_table(engine)
         with engine.connect() as conn:
             rows = conn.execute(text(_SELECT_RUNS_SQL)).fetchall()
         out = []
@@ -401,7 +436,6 @@ def load_run_leads(engine, run_ids: Iterable[int]) -> list[dict[str, Any]]:
     if engine is None or not wanted:
         return []
     try:
-        ensure_runs_table(engine)
         placeholders = ",".join(f":r{i}" for i in range(len(wanted)))
         params = {f"r{i}": value for i, value in enumerate(wanted)}
         with engine.connect() as conn:
@@ -429,7 +463,6 @@ def run_lead_counts(engine, run_ids: Iterable[int]) -> dict[int, int]:
     if engine is None or not wanted:
         return {}
     try:
-        ensure_runs_table(engine)
         placeholders = ",".join(f":r{i}" for i in range(len(wanted)))
         params = {f"r{i}": value for i, value in enumerate(wanted)}
         with engine.connect() as conn:
@@ -594,7 +627,6 @@ def load_contacted(engine) -> set[str]:
     if engine is None:
         return set()
     try:
-        ensure_table(engine)
         with engine.connect() as conn:
             rows = conn.execute(text(_SELECT_SQL)).fetchall()
         return {_norm(r[0]) for r in rows if r and r[0]}
@@ -673,18 +705,9 @@ def _read_leads(engine) -> tuple[list[Any], tuple[str, ...]]:
             return conn.execute(text(_SELECT_LEADS_CORE_SQL)).fetchall(), _CORE_LEAD_COLS
 
 
-def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_export",
-                 config_version: int = 0) -> int:
-    """Store the FULL sourced lead, not just the domain.
-
-    This table is our own record of every brand we have sourced: what it is, why
-    we picked it, which recipe found it and under which settings. Clay and
-    Instantly process these leads, but the record of them lives here, so losing
-    access to either tool never loses the leads. The Amazon check rides along
-    with the time it was made, so a stale finding is never read as a fresh one.
-
-    De-dupes by domain within the batch; existing domains are left as-is.
-    Best-effort: returns 0 on error rather than raising."""
+def _lead_payload(leads: Iterable[dict[str, Any]], *, source: str,
+                  config_version: int) -> list[dict[str, Any]]:
+    """Normalize a lead batch once for both legacy and atomic write paths."""
     seen: dict[str, dict[str, Any]] = {}
     for lead in leads:
         dom = _norm(lead.get("domain"))
@@ -702,22 +725,102 @@ def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_
         except (TypeError, ValueError):
             revenue = 0
         seen[dom] = {
-            "domain": dom,
-            "source": source,
-            "tier": lead.get("tier"),
-            "signals": json.dumps(lead.get("signals") or []),
-            "brand": lead.get("brand"),
-            "niche": lead.get("niche"),
-            "country": lead.get("country"),
-            "score": score,
-            "reason": lead.get("reason"),
-            "recipe": lead.get("recipe"),
-            "revenue_cents": revenue,
-            "categories": cats,
-            "config_version": int(config_version or 0),
-            **_amazon_values(lead),
+            "domain": dom, "source": source, "tier": lead.get("tier"),
+            "signals": json.dumps(lead.get("signals") or []), "brand": lead.get("brand"),
+            "niche": lead.get("niche"), "country": lead.get("country"), "score": score,
+            "reason": lead.get("reason"), "recipe": lead.get("recipe"),
+            "revenue_cents": revenue, "categories": cats,
+            "config_version": int(config_version or 0), **_amazon_values(lead),
         }
-    payload = list(seen.values())
+    return list(seen.values())
+
+
+def persist_pull(engine, *, leads: Iterable[dict[str, Any]], recipe: str,
+                 scanned: int, matched: int, fresh: int, skipped_seen: int,
+                 partial: bool = False, note: str = "", config_version: int = 0,
+                 delivery: str = "file", delivered: int = 0,
+                 library_leads: Iterable[dict[str, Any]] | None = None) -> PersistedPull:
+    """Atomically store a run, its companies, and exact membership."""
+    if engine is None:
+        raise OutboundPersistenceError("Database engine is unavailable.")
+    lead_list = list(leads)
+    membership_by_domain = {
+        _norm(lead.get("domain")): lead for lead in lead_list if _norm(lead.get("domain"))
+    }
+    library_list = lead_list if library_leads is None else list(library_leads)
+    company_payload = _lead_payload(
+        library_list, source=recipe or "csv_export", config_version=config_version,
+    )
+    expected_memberships = len(membership_by_domain)
+    expected_companies = len(company_payload)
+    if int(fresh or 0) != expected_memberships:
+        raise OutboundPersistenceError(
+            f"Fresh count mismatch: result={int(fresh or 0)} unique_companies={expected_memberships}."
+        )
+    is_pg = "postgres" in str(getattr(engine, "url", "")).lower()
+    try:
+        with engine.begin() as conn:
+            run_result = conn.execute(
+                text(_INSERT_RUN_SQL + (" RETURNING id" if is_pg else "")),
+                {"recipe": recipe or "", "scanned": int(scanned), "matched": int(matched),
+                 "fresh": expected_memberships, "skipped_seen": int(skipped_seen),
+                 "partial": 1 if partial else 0, "note": note or "",
+                 "config_version": int(config_version or 0), "delivery": delivery or "file",
+                 "delivered": int(delivered or 0)},
+            )
+            run_id = run_result.scalar_one() if is_pg else getattr(run_result, "lastrowid", None)
+            run_id = int(run_id or 0)
+            if not run_id:
+                raise OutboundPersistenceError("Run insert did not return an id.")
+            if company_payload:
+                conn.execute(text(_INSERT_LEAD_SQL), company_payload)
+            memberships = [
+                {"run_id": run_id, "domain": domain,
+                 "lead_json": json.dumps(lead, default=str)}
+                for domain, lead in membership_by_domain.items()
+            ]
+            if memberships:
+                conn.execute(text(
+                    f"INSERT INTO {_RUN_LEADS_TABLE} (run_id, domain, lead_json) "
+                    "VALUES (:run_id, :domain, :lead_json)"
+                ), memberships)
+            membership_count = int(conn.execute(text(
+                f"SELECT COUNT(*) FROM {_RUN_LEADS_TABLE} WHERE run_id=:run_id"
+            ), {"run_id": run_id}).scalar_one() or 0)
+            library_count = 0
+            if expected_companies:
+                placeholders = ",".join(f":d{i}" for i in range(expected_companies))
+                library_count = int(conn.execute(text(
+                    f"SELECT COUNT(*) FROM {_TABLE} WHERE domain IN ({placeholders})"
+                ), {f"d{i}": row["domain"] for i, row in enumerate(company_payload)}).scalar_one() or 0)
+            if membership_count != expected_memberships or library_count != expected_companies:
+                raise OutboundPersistenceError(
+                    "Persistence invariant failed: "
+                    f"expected_memberships={expected_memberships} membership={membership_count} "
+                    f"expected_companies={expected_companies} library={library_count}."
+                )
+        return PersistedPull(run_id=run_id, company_count=library_count,
+                             membership_count=membership_count)
+    except OutboundPersistenceError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[outbound-memory] atomic pull persistence failed")
+        raise OutboundPersistenceError("Atomic pull persistence failed.") from exc
+
+
+def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_export",
+                 config_version: int = 0) -> int:
+    """Store the FULL sourced lead, not just the domain.
+
+    This table is our own record of every brand we have sourced: what it is, why
+    we picked it, which recipe found it and under which settings. Clay and
+    Instantly process these leads, but the record of them lives here, so losing
+    access to either tool never loses the leads. The Amazon check rides along
+    with the time it was made, so a stale finding is never read as a fresh one.
+
+    De-dupes by domain within the batch; existing domains are left as-is.
+    Best-effort: returns 0 on error rather than raising."""
+    payload = _lead_payload(leads, source=source, config_version=config_version)
     if not payload:
         return 0
     try:
@@ -738,7 +841,6 @@ def load_leads(engine, limit: int | None = 500) -> list[dict[str, Any]]:
     if engine is None:
         return []
     try:
-        ensure_table(engine)
         rows, cols = _read_leads(engine)
         out = []
         selected_rows = rows if limit is None else rows[:max(0, int(limit))]

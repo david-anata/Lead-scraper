@@ -102,6 +102,7 @@ def init_cashflow_db(db_url: str) -> None:
 
 
 def init_database(session_factory: sessionmaker[Session]) -> None:
+    from sales_support_agent.services.outbound_memory import ensure_outbound_schema
     from sales_support_agent.services.job_lease import ensure_job_lease_schema
     from sales_support_agent.services.website_ops_storage import (
         ensure_website_ops_storage_schema,
@@ -122,6 +123,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
         _repair_legacy_building_event_inquiries(session_factory)
         ensure_job_lease_schema(engine)
         ensure_website_ops_storage_schema(engine)
+        ensure_outbound_schema(engine)
         return
 
     # Production deployments use a persistent Postgres database. Running
@@ -155,6 +157,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     _repair_legacy_building_event_inquiries(session_factory)
     ensure_job_lease_schema(engine)
     ensure_website_ops_storage_schema(engine)
+    ensure_outbound_schema(engine)
 
 
 def _ensure_content_tables(engine: Any) -> None:

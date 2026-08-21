@@ -16,6 +16,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -289,12 +290,26 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "",
     if not api_key:
         return JSONResponse(status_code=400, content={"detail": "STORELEADS_API_KEY is not set on this service."})
 
-    # Never-email-twice: skip brands already exported, then remember the new ones.
+    # Never-email-twice depends on durable storage. Refuse an untracked pull
+    # before spending a StoreLeads request or generating a misleading file.
+    correlation_id = uuid4().hex[:12]
     try:
         engine = get_engine()
-    except Exception:  # noqa: BLE001 — dedup is best-effort; build anyway
-        engine = None
-    already = outbound_memory.load_contacted(engine) if engine is not None else set()
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound] persistence engine unavailable correlation_id=%s", correlation_id)
+        return JSONResponse(status_code=503, content={
+            "detail": "Lead persistence is unavailable, so no StoreLeads pull was started.",
+            "correlation_id": correlation_id,
+        })
+    health = outbound_memory.persistence_health(engine)
+    if not health["ready"]:
+        logger.error("[outbound] persistence preflight failed correlation_id=%s code=%s",
+                     correlation_id, health["code"])
+        return JSONResponse(status_code=503, content={
+            "detail": "Lead persistence is unavailable, so no StoreLeads pull was started.",
+            "correlation_id": correlation_id,
+        })
+    already = outbound_memory.load_contacted(engine)
 
     from sales_support_agent.services import outbound_settings as _st
     tunables = _st.effective(engine, _rx.DEFAULT_SETTINGS) if engine is not None else _rx.DEFAULT_SETTINGS
@@ -314,34 +329,36 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "",
         logger.exception("[outbound] StoreLeads CSV build failed")
         return JSONResponse(status_code=502, content={"detail": f"StoreLeads fetch failed: {exc}"})
 
-    if engine is not None:
-        if result.leads:
-            # Record full leads (domain + tier + signals) for dedup AND efficacy.
-            outbound_memory.record_leads(engine, result.leads, source=result.recipe or "csv_export", config_version=version)
-        # Log the pull itself, so Lead Ops shows what we pulled and when.
-        run_id = outbound_memory.record_run(
-            engine, recipe=result.recipe or "icp_baseline", scanned=result.scanned,
-            matched=result.matched_icp, fresh=result.fresh,
+    try:
+        persisted = outbound_memory.persist_pull(
+            engine, leads=result.leads, recipe=result.recipe or "icp_baseline",
+            scanned=result.scanned, matched=result.matched_icp, fresh=result.fresh,
             skipped_seen=result.skipped_already_contacted, partial=result.partial,
             config_version=version, delivery="file",
         )
-        outbound_memory.record_run_leads(engine, run_id, result.leads)
-        try:
-            from sales_support_agent.services.outbound_delivery import deliver_completed_pull
-            deliver_completed_pull(engine, {
-                "id": run_id,
-                "recipe": result.recipe or "icp_baseline", "scanned": result.scanned,
-                "matched": result.matched_icp, "fresh": result.fresh,
-                "skipped_seen": result.skipped_already_contacted, "partial": result.partial,
-                "config_version": version,
-            })
-        except Exception:  # noqa: BLE001
-            logger.exception("[outbound] automatic pull delivery failed")
+    except outbound_memory.OutboundPersistenceError:
+        logger.exception("[outbound] pull persistence failed correlation_id=%s", correlation_id)
+        return JSONResponse(status_code=503, content={
+            "detail": "StoreLeads returned results, but they could not be saved. No file was issued; retry after persistence is healthy.",
+            "correlation_id": correlation_id,
+        })
+    run_id = persisted.run_id
+    try:
+        from sales_support_agent.services.outbound_delivery import deliver_completed_pull
+        deliver_completed_pull(engine, {
+            "id": run_id, "recipe": result.recipe or "icp_baseline", "scanned": result.scanned,
+            "matched": result.matched_icp, "fresh": result.fresh,
+            "skipped_seen": result.skipped_already_contacted, "partial": result.partial,
+            "config_version": version,
+        })
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound] automatic pull delivery failed")
 
     return Response(
         content=_op.leads_to_csv(result.leads),
         media_type="text/csv",
-        headers={"Content-Disposition": 'attachment; filename="anata_clay_brands.csv"'},
+        headers={"Content-Disposition": 'attachment; filename="anata_clay_brands.csv"',
+                 "X-Outbound-Run-Id": str(run_id), "X-Correlation-Id": correlation_id},
     )
 
 
@@ -355,6 +372,7 @@ _LEADOPS_CSS = """
   .lo-btn { display:inline-block; padding:7px 14px; border-radius:9px; background:#2B3644; color:#fff;
     font-family:"Montserrat",sans-serif; font-weight:800; font-size:12px; text-decoration:none; white-space:nowrap; }
   .lo-btn:hover { background:#1f2833; color:#fff; }
+  .lo-disabled,.lo-disabled:hover { background:#9aa3ad; color:#fff; cursor:not-allowed; }
   .lo-note { margin:10px 0 0; font-size:14px; color:rgba(43,54,68,.7); }
   .lo-form { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin:8px 0 0; }
   .lo-field { display:flex; flex-direction:column; gap:4px; }
@@ -748,6 +766,8 @@ def outbound_lead_ops(request: Request) -> Response:
         _eng = get_engine()
     except Exception:  # noqa: BLE001
         _eng = None
+    from sales_support_agent.services import outbound_memory as _mem
+    persistence = _mem.persistence_health(_eng)
     tunables = _st.effective(_eng, _rx.DEFAULT_SETTINGS)
     version = _st.config_version(_eng)
 
@@ -756,7 +776,6 @@ def outbound_lead_ops(request: Request) -> Response:
 
     _clay_url, _ = _cl.load_clay_config()
     try:
-        from sales_support_agent.services import outbound_memory as _mem
         _used = _mem.total_delivered(_eng)
     except Exception:  # noqa: BLE001
         _used = 0
@@ -784,12 +803,17 @@ def outbound_lead_ops(request: Request) -> Response:
     for r in _rx.RECIPES:
         due = "Today" if r.key in todays_keys else ("Tue / Wed" if r.cadence == "weekly" else "Weekdays")
         cap_now = r.cap(tunables)
+        pull_action = (
+            f"<a class='lo-btn' download='anata-{r.key}-leads.csv' href='/admin/api/outbound/brands.csv?recipe={r.key}'>Pull now</a>"
+            if persistence["ready"] else
+            "<span class='lo-btn lo-disabled' aria-disabled='true'>Pull unavailable</span>"
+        )
         rows.append(
             f"<tr><td class='lo-tier lo-{r.tier}'>{r.tier}</td>"
             f"<td><b>{html.escape(r.label)}</b><br>"
             f"<span style='color:rgba(43,54,68,.6)'>{html.escape(r.reason_for(tunables))}</span></td>"
             f"<td>{html.escape(due)}</td><td>{cap_now}</td>"
-            f"<td><a class='lo-btn' download='anata-{r.key}-leads.csv' href='/admin/api/outbound/brands.csv?recipe={r.key}'>Pull now</a>"
+            f"<td>{pull_action}"
             + (f" <button class='lo-btn lo-push' data-recipe='{r.key}' type='button'>Send to Clay</button>"
                if _clay_url else "")
             + "</td></tr>"
@@ -798,7 +822,7 @@ def outbound_lead_ops(request: Request) -> Response:
     # Past pulls, so we can see what each recipe actually returns over time.
     try:
         from sales_support_agent.services import outbound_memory
-        runs = outbound_memory.load_runs(_eng, limit=50)
+        runs = outbound_memory.load_runs(_eng, limit=50) if persistence["ready"] else []
         outbound_memory.backfill_legacy_run_leads(_eng)
         run_lead_counts = outbound_memory.run_lead_counts(_eng, [r["id"] for r in runs])
         delivery_prefs = outbound_memory.load_delivery_settings(_eng)
@@ -837,6 +861,8 @@ def outbound_lead_ops(request: Request) -> Response:
             + "</tr>"
             for x in runs
         )
+    elif not persistence["ready"]:
+        run_rows = "<tr><td colspan='11'>History unavailable. Lead persistence must be repaired before pulling.</td></tr>"
     else:
         run_rows = "<tr><td colspan='11'>No pulls yet. Use a Pull now button above.</td></tr>"
 
@@ -881,6 +907,12 @@ def outbound_lead_ops(request: Request) -> Response:
     else:
         change_rows = "<tr><td colspan='6'>No changes yet. Settings are at their defaults.</td></tr>"
 
+    persistence_copy = (
+        "Pulls will be saved to Recent pulls and Company Library."
+        if persistence["ready"] else
+        "No StoreLeads pull will start until the database and outbound schema are ready."
+    )
+
     body = f"""
         <h1>Lead ops</h1>
         <p class="sub">What we pull from StoreLeads, what makes it fire, and what every
@@ -888,6 +920,8 @@ def outbound_lead_ops(request: Request) -> Response:
         settings only notify your own team.</p>
 
         <div class="lo-today">{html.escape(today_line)}</div>
+        <div class="lo-clay" role="status"><b>Persistence: {'ready' if persistence['ready'] else 'unavailable'}.</b>
+        {html.escape(persistence_copy)}</div>
         <div class="lo-clay">{clay_strip}</div>
 
         <p class="lo-msg" id="push-msg"></p>
@@ -1072,6 +1106,23 @@ def outbound_lead_ops(request: Request) -> Response:
     ))
 
 
+@router.get("/admin/api/outbound/health", response_class=JSONResponse)
+def outbound_persistence_health(request: Request) -> Response:
+    """Authenticated readiness for pull history, library, and saved downloads."""
+    from sales_support_agent.services import outbound_memory
+    try:
+        from sales_support_agent.models.database import get_engine
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        engine = None
+    health = outbound_memory.persistence_health(engine)
+    payload: dict[str, Any] = {"ready": bool(health["ready"]), "code": health["code"]}
+    if health["ready"]:
+        payload["runs"] = len(outbound_memory.load_runs(engine, limit=500))
+        payload["companies"] = len(outbound_memory.load_leads(engine, limit=None))
+    return JSONResponse(status_code=200 if health["ready"] else 503, content=payload)
+
+
 def _run_ids(raw: str) -> list[int]:
     ids: list[int] = []
     for value in str(raw or "").split(","):
@@ -1193,6 +1244,13 @@ async def outbound_push_to_clay(request: Request) -> Response:
     except Exception:  # noqa: BLE001
         engine = None
 
+    health = outbound_memory.persistence_health(engine)
+    if not health["ready"]:
+        return JSONResponse(status_code=503, content={
+            "ok": False,
+            "reason": "Lead persistence is unavailable, so no StoreLeads pull or Clay delivery was started.",
+        })
+
     tunables = _st.effective(engine, _rx.DEFAULT_SETTINGS) if engine is not None else _rx.DEFAULT_SETTINGS
     version = _st.config_version(engine) if engine is not None else 0
     already = outbound_memory.load_contacted(engine)
@@ -1211,21 +1269,25 @@ async def outbound_push_to_clay(request: Request) -> Response:
     pushed = _cl.push_leads(webhook_url, result.leads, token=token, config_version=version,
                             used_submissions=used)
 
-    # ONLY what Clay accepted counts as contacted.
-    if engine is not None:
-        accepted = {d for d in pushed.accepted_domains if d}
-        if accepted:
-            outbound_memory.record_leads(
-                engine, [l for l in result.leads if l.get("domain") in accepted],
-                source=result.recipe or "clay_push", config_version=version)
-        run_id = outbound_memory.record_run(
-            engine, recipe=result.recipe or "icp_baseline", scanned=result.scanned,
+    # ONLY what Clay accepted enters suppression, while exact membership keeps
+    # every attempted row available for audit and retry diagnosis.
+    accepted = {d for d in pushed.accepted_domains if d}
+    accepted_leads = [l for l in result.leads if l.get("domain") in accepted]
+    try:
+        outbound_memory.persist_pull(
+            engine, leads=result.leads, library_leads=accepted_leads,
+            recipe=result.recipe or "icp_baseline", scanned=result.scanned,
             matched=result.matched_icp, fresh=result.fresh,
             skipped_seen=result.skipped_already_contacted, partial=result.partial,
             config_version=version, delivery="clay", delivered=pushed.accepted,
             note=pushed.reason[:200],
         )
-        outbound_memory.record_run_leads(engine, run_id, result.leads)
+    except outbound_memory.OutboundPersistenceError:
+        logger.exception("[outbound] Clay result persistence failed")
+        return JSONResponse(status_code=503, content={
+            "ok": False,
+            "reason": "Clay received the request, but the run could not be saved. Stop and reconcile before retrying.",
+        })
 
     return JSONResponse(content={
         "ok": pushed.rejected == 0,
@@ -1276,7 +1338,8 @@ def outbound_leads(request: Request) -> Response:
         engine = get_engine()
     except Exception:  # noqa: BLE001
         engine = None
-    leads = outbound_memory.load_leads(engine, limit=500)
+    persistence = outbound_memory.persistence_health(engine, require_runs=False)
+    leads = outbound_memory.load_leads(engine, limit=500) if persistence["ready"] else []
 
     tiers: dict[str, int] = {}
     niches: dict[str, int] = {}
@@ -1310,6 +1373,11 @@ def outbound_leads(request: Request) -> Response:
             f"{html.escape(str(l.get('domain') or ''))}'>Leak report</a></td></tr>"
             for l in leads
         )
+    elif not persistence["ready"]:
+        rows = (
+            "<tr><td colspan='14'>Company Library unavailable. "
+            "The outbound database or schema must be repaired before records can be trusted.</td></tr>"
+        )
     else:
         rows = (
             "<tr><td colspan='14'>No companies stored yet. "
@@ -1335,6 +1403,9 @@ def outbound_leads(request: Request) -> Response:
             <a class="lo-btn" href="/admin/outbound/brands">Find fresh companies</a>
           </div>
         </header>
+
+        <p class="ld-note" role="status"><b>Persistence: {'ready' if persistence['ready'] else 'unavailable'}.</b>
+        {'Company records are loaded from durable storage.' if persistence['ready'] else 'Zero is not being reported because storage could not be verified.'}</p>
 
         <div class="ld-summary" aria-label="Company library summary">
           <span class="ld-stat"><b>{len(leads):,}</b>Companies held</span>
@@ -1406,6 +1477,11 @@ def outbound_leads_csv(request: Request) -> Response:
         engine = get_engine()
     except Exception:  # noqa: BLE001
         engine = None
+    health = outbound_memory.persistence_health(engine, require_runs=False)
+    if not health["ready"]:
+        return JSONResponse(status_code=503, content={
+            "detail": "Company Library is unavailable because outbound persistence is not ready."
+        })
     leads = outbound_memory.load_leads(engine, limit=None)
     return Response(
         content=_op.leads_to_csv(leads),
