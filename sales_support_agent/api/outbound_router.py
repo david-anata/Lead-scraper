@@ -193,7 +193,12 @@ def outbound_daily_batch_schema_once(request: Request) -> Response:
     """One-release migration bridge; removed immediately after production migration."""
     from sales_support_agent.models.database import get_engine
     from sales_support_agent.services import outbound_batches
-    outbound_batches.ensure_tables(get_engine(), force=True)
+    try:
+        outbound_batches.ensure_tables(get_engine(), force=True)
+    except Exception as exc:  # noqa: BLE001 — temporary migration diagnostics
+        logger.exception("[outbound] one-release batch migration failed")
+        return JSONResponse(status_code=500, content={"ok": False, "error": type(exc).__name__,
+                                                      "detail": str(exc)[:300]})
     return JSONResponse(content={"ok": True})
 
 
