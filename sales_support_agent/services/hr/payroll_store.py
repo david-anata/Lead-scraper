@@ -147,7 +147,12 @@ def get_payroll_settings(tax_year: int | None = None) -> dict:
         review = session.query(HRPayrollReview).filter_by(
             tax_year=tax_year or date.today().year, status="approved"
         ).first()
-        result["qualified_tax_review"] = bool(review)
+        review_is_complete = bool(
+            review
+            and _meaningful_review_text(review.evidence_reference)
+            and _meaningful_review_text(review.review_note)
+        )
+        result["qualified_tax_review"] = review_is_complete
         result["qualified_review"] = ({
             "tax_year": review.tax_year, "reviewer_name": review.reviewer_name,
             "reviewer_email": review.reviewer_email,
@@ -155,7 +160,8 @@ def get_payroll_settings(tax_year: int | None = None) -> dict:
             "evidence_reference": review.evidence_reference,
             "review_note": review.review_note,
             "recorded_by": review.recorded_by,
-        } if review else None)
+        } if review_is_complete else None)
+        result["incomplete_review_record"] = bool(review and not review_is_complete)
         return result
 
 
@@ -178,7 +184,8 @@ def save_payroll_review(
     if (
         tax_year < 2026 or tax_year > date.today().year + 1
         or not reviewer_name.strip() or "@" not in reviewer_email
-        or not evidence_reference.strip() or not review_note.strip() or not attested
+        or not _meaningful_review_text(evidence_reference)
+        or not _meaningful_review_text(review_note) or not attested
     ):
         return False, "qualified_review_invalid"
     with _session() as session:
@@ -199,6 +206,12 @@ def save_payroll_review(
                    "tax_year": tax_year, "reviewer_email": row.reviewer_email,
                })
         return True, "qualified_review_saved"
+
+
+def _meaningful_review_text(value: str | None) -> bool:
+    """Reject placeholders that cannot substantiate a qualified review."""
+    normalized = " ".join(str(value or "").strip().lower().split())
+    return normalized not in {"", "n/a", "na", "none", "not applicable", "tbd", "unknown"}
 
 
 def get_company_profile() -> dict:
@@ -1304,6 +1317,11 @@ def preview_payroll(containing: date) -> dict:
 
 
 def prepare_payroll(containing: date, *, actor: str) -> tuple[bool, str]:
+    final_approver = (
+        get_company_profile().get("final_approver_email") or ""
+    ).strip().lower()
+    if final_approver and actor.strip().lower() == final_approver:
+        return False, "final_approver_cannot_freeze"
     period, settings, employees, inputs, readiness = _period_context(containing)
     if not readiness["ready"]:
         return False, "payroll_blocked"

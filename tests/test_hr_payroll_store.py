@@ -470,6 +470,19 @@ def test_reimbursement_evidence_and_recurring_deduction_controls():
     assert len(repeated) == 1
 
 
+def test_configured_final_approver_cannot_freeze_payroll():
+    with mock.patch.object(
+        payroll_store,
+        "get_company_profile",
+        return_value={"final_approver_email": "david@anatainc.com"},
+    ):
+        result = payroll_store.prepare_payroll(
+            date(2026, 8, 1), actor="DAVID@anatainc.com"
+        )
+
+    assert result == (False, "final_approver_cannot_freeze")
+
+
 def test_opening_balance_rejects_invalid_money_instead_of_saving_zero():
     engine = _engine()
     with Session(engine) as session:

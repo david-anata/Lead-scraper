@@ -154,7 +154,7 @@ class HRSectionTests(unittest.TestCase):
         page = self._get("/admin/hr/payroll", self.sa)
         self.assertEqual(page.status_code, 200)
         self.assertIn(
-            f"Prepare {expected.start_date}–{expected.end_date}", page.text,
+            f"Review and freeze {expected.start_date}–{expected.end_date}", page.text,
         )
 
     def test_create_and_list_employee(self):
@@ -407,6 +407,14 @@ class HRSectionTests(unittest.TestCase):
             "attested": "true",
         }, self.sa)
         self.assertIn("err=qualified_review_invalid", invalid.headers["location"])
+
+        placeholder = self._post("/admin/hr/settings/qualified-review", {
+            "tax_year": "2026", "reviewer_name": "Payroll Reviewer",
+            "reviewer_email": "reviewer@example.com", "reviewed_on": "2026-07-23",
+            "evidence_reference": "n/a", "review_note": "N/A",
+            "attested": "true",
+        }, self.sa)
+        self.assertIn("err=qualified_review_invalid", placeholder.headers["location"])
 
         saved = self._post("/admin/hr/settings/qualified-review", {
             "tax_year": "2026", "reviewer_name": "Payroll Reviewer",
@@ -1579,6 +1587,17 @@ class HRSectionTests(unittest.TestCase):
             _cookie(email),
         )
         self.assertEqual(blocked.status_code, 403)
+
+    def test_payroll_freeze_requires_deliberate_confirmation(self):
+        blocked = self._post(
+            "/admin/hr/payroll/prepare",
+            {"period_date": "2026-08-01"},
+            self.sa,
+        )
+
+        self.assertEqual(blocked.status_code, 303)
+        self.assertIn("/admin/hr/payroll/freeze", blocked.headers["location"])
+        self.assertIn("freeze_confirmation_required", blocked.headers["location"])
 
     def test_people_and_compensation_manager_can_open_employee_setup(self):
         import uuid

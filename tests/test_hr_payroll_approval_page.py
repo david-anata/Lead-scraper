@@ -1,6 +1,7 @@
 from sales_support_agent.services.hr.pages import (
     render_hr_payroll_approval,
     render_hr_payroll_control,
+    render_hr_payroll_freeze,
     render_hr_payroll_run,
     render_hr_settings,
 )
@@ -98,6 +99,60 @@ def test_control_room_links_to_confirmation_instead_of_inline_approval():
     assert "Review and approve payroll" in html
 
 
+def test_ready_preparer_gets_deliberate_freeze_confirmation_link():
+    control = {
+        "period": SemimonthlyPeriod(
+            start_date=date(2026, 8, 1), end_date=date(2026, 8, 15),
+            pay_date=date(2026, 8, 20),
+        ),
+        "readiness": {"ready": True, "blockers": []},
+        "employees": [], "inputs": [], "liabilities": [], "runs": [],
+        "opening_balances": [], "timesheets": [], "settings": {},
+        "final_approver_email": "david@anatainc.com",
+    }
+    html = render_hr_payroll_control(control, user={"email": "val@anatainc.com"})
+
+    assert "Freeze payroll for David" in html
+    assert 'href="/admin/hr/payroll/freeze?period_date=2026-08-01"' in html
+    assert 'action="/admin/hr/payroll/prepare"' not in html
+
+
+def test_freeze_confirmation_names_lock_and_requires_exact_attestation():
+    preview = {
+        "period": SemimonthlyPeriod(
+            start_date=date(2026, 8, 1), end_date=date(2026, 8, 15),
+            pay_date=date(2026, 8, 20),
+        ),
+        "readiness": {"ready": True, "blockers": []},
+        "rows": [{
+            "employee_name": "Courtney Tanner", "regular_hours": "32.0300",
+            "overtime_hours": "0E-27", "holiday_hours": "0", "pto_hours": "4",
+            "results": {"taxable_gross_cents": 100000, "net_cents": 80000},
+        }],
+        "totals": {
+            "gross_cents": 100000, "net_cents": 80000,
+            "employee_taxes_cents": 15000, "employer_taxes_cents": 5000,
+            "employer_cost_cents": 105000,
+        },
+        "totals_are_partial": False,
+        "final_approver_email": "david@anatainc.com",
+    }
+
+    html = render_hr_payroll_freeze(preview, user={"email": "val@anatainc.com"})
+
+    assert "FREEZE PAYROLL" in html
+    assert "Later changes require" in html
+    assert "32.03" in html
+    assert "0E-27" not in html
+    assert 'name="confirmed"' in html
+
+    david_html = render_hr_payroll_freeze(
+        preview, user={"email": "david@anatainc.com"}
+    )
+    assert "Val must sign in and freeze this version" in david_html
+    assert 'name="freeze_text"' not in david_html
+
+
 def test_final_approver_who_prepared_version_gets_exact_val_handoff():
     run = _run(prepared_by="david@anatainc.com")
     control = {
@@ -120,8 +175,8 @@ def test_final_approver_who_prepared_version_gets_exact_val_handoff():
         control, user={"email": "david@anatainc.com"}
     )
 
-    assert "You prepared this version, so you cannot approve it" in html
-    assert "Val must sign in" in html
+    assert "You froze this version, so you cannot approve it" in html
+    assert "Val must correct the inputs if needed and freeze a replacement" in html
     assert "Prepare immutable payroll version" not in html
     assert (
         'href="/admin/hr/payroll/runs/payroll-version-123/approve"'

@@ -95,6 +95,7 @@ _NAV_SECTIONS = [
         _NavSubpage("hr.payroll", "Payroll", "/admin/hr/payroll", "payroll"),
         _NavSubpage("hr.payroll", "Preview", "/admin/hr/payroll/preview", "payroll_preview"),
         _NavSubpage("hr.payroll", "Compliance", "/admin/hr/compliance", "compliance"),
+        _NavSubpage("hr.payroll", "Setup", "/admin/hr/setup", "setup"),
         _NavSubpage("hr.payroll", "Manage", "/admin/hr/settings", "settings"),
     ]),
     # Access/Team management is intentionally NOT a primary nav section — it lives

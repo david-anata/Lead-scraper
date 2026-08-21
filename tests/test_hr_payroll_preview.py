@@ -329,7 +329,7 @@ class PreviewRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.text
-        self.assertIn("Payroll preview", body)
+        self.assertIn("Live draft preview — not frozen", body)
         self.assertIn("saves nothing", body)
         self.assertIn("Per employee", body)
         # A bare install has no Utah rate, so the gate must be visible, not a zero.

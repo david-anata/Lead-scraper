@@ -1472,6 +1472,11 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     readiness = control["readiness"]
     actor_email = (user.get("email") or "").strip().lower()
     tax_elections = control.get("tax_elections") or {}
+    prepared_runs = [
+        run for run in control.get("runs", []) if run.get("status") == "prepared"
+    ]
+    prepared_run = prepared_runs[0] if prepared_runs else None
+    period_frozen = prepared_run is not None
     employee_setup_rows = ""
     prior_w4_forms = ""
     for employee in control["employees"]:
@@ -1489,9 +1494,9 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         employee_setup_rows += f"""<tr>
           <td>{_esc(employee.get('full_name') or employee['email'])}<br><span class="hr-sub">{_esc(employee['email'])}</span></td>
           <td>{pay_label}</td><td>{tax_label}</td>
-          <td><a class="hr-btn hr-btn-light" href="/admin/hr/employees/{_esc(employee.get('id'))}">Change pay</a></td>
+          <td>{'<span class="hr-sub">Frozen for this period</span>' if period_frozen else f'<a class="hr-btn hr-btn-light" href="/admin/hr/employees/{_esc(employee.get("id"))}">Change pay</a>'}</td>
         </tr>"""
-        if not election:
+        if not election and not period_frozen:
             prior_w4_forms += f"""
             <details class="hr-card" style="margin-top:12px">
               <summary><strong>Record {_esc(employee.get('full_name') or employee['email'])}'s prior signed W-4</strong></summary>
@@ -1521,6 +1526,8 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
             action = f'Approved by {_esc(item.get("reviewed_by") or "reviewer")}<br><span class="hr-sub">{_esc(item.get("review_note") or "")}</span>'
         elif actor_email == item.get("employee_email", "").strip().lower():
             action = "A different manager must approve your time."
+        elif period_frozen:
+            action = "Frozen for this period. Start a correction instead of changing approved inputs."
         elif item.get("can_approve"):
             action = f"""<form class="hr-form" method="post" action="/admin/hr/payroll/timesheets/approve">
               <input type="hidden" name="employee_email" value="{_esc(item['employee_email'])}">
@@ -1546,6 +1553,8 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         status = balance.get("approval_status") or "unreviewed"
         if status == "approved":
             action = f'Approved by {_esc(balance.get("reviewed_by") or "reviewer")}'
+        elif period_frozen:
+            action = "Frozen for this period"
         else:
             action = f"""<form class="hr-form" method="post" action="/admin/hr/payroll/opening-balances/{_esc(balance.get('id'))}/decision">
               <input type="hidden" name="period_date" value="{_esc(period.start_date)}">
@@ -1589,17 +1598,15 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
             href = "#calculation-review"
             action_label = "Complete calculation review"
         urgent_items += f'''<li class="hr-blocker-item"><div><div class="hr-blocker-label">Blocked — action required</div><strong>{_esc(item.get("employee_email") or "Company setup")}</strong><p>{_esc(message)}<br><strong>Owner:</strong> {_esc(owner)}</p></div><a class="hr-btn" href="{_esc(href)}">{_esc(action_label)}</a></li>'''
-    prepared_runs = [run for run in control.get("runs", []) if run.get("status") == "prepared"]
-    prepared_run = prepared_runs[0] if prepared_runs else None
     final_approver_email = (control.get("final_approver_email") or "").strip().lower()
     if readiness["blockers"]:
         urgent_panel = f'''<section class="hr-callout blocked" aria-labelledby="urgent-payroll-heading" style="margin-top:18px"><div class="hr-kicker">Action required</div><h2 id="urgent-payroll-heading" style="margin:6px 0">Payroll cannot be prepared — {len(readiness["blockers"])} task{'s' if len(readiness["blockers"]) != 1 else ''} remaining</h2><p>Resolve each item below. Every button goes to the section where the work is completed.</p><ul class="hr-blocker-list">{urgent_items}</ul></section>'''
     elif prepared_run and (prepared_run.get("initiated_by") or "").strip().lower() == actor_email:
-        urgent_panel = f'''<section class="hr-callout blocked" style="margin-top:18px"><div class="hr-kicker">Approval handoff required</div><h2 style="margin:6px 0">You prepared this version, so you cannot approve it</h2><p>Val must sign in with her own authorized account and click <strong>Prepare payroll for David</strong>. David can then review and give final approval to Val's frozen version.</p><a class="hr-btn hr-btn-light" href="/admin/hr/payroll/runs/{_esc(prepared_run['id'])}">Review the version you prepared</a></section>'''
+        urgent_panel = f'''<section class="hr-callout blocked" style="margin-top:18px"><div class="hr-kicker">Frozen — approval handoff required</div><h2 style="margin:6px 0">You froze this version, so you cannot approve it</h2><p>This exact version is locked. Because David froze it, Val must correct the inputs if needed and freeze a replacement; David can only approve a version frozen by someone else.</p><a class="hr-btn hr-btn-light" href="/admin/hr/payroll/runs/{_esc(prepared_run['id'])}">Review the frozen version</a></section>'''
     elif prepared_run and actor_email == final_approver_email:
-        urgent_panel = f'''<section class="hr-saved" style="margin-top:18px"><div class="hr-kicker">Ready for your approval</div><h2 style="margin:6px 0">Review the prepared payroll</h2><p>{_esc(prepared_run.get('initiated_by'))} prepared this frozen version. Review every employee and total before approving.</p><a class="hr-btn" href="/admin/hr/payroll/runs/{_esc(prepared_run['id'])}/approve">Review and approve payroll</a></section>'''
+        urgent_panel = f'''<section class="hr-saved" style="margin-top:18px"><div class="hr-kicker">Frozen — awaiting your approval</div><h2 style="margin:6px 0">Review the frozen payroll</h2><p>{_esc(prepared_run.get('initiated_by'))} froze this exact version. Later source changes cannot alter it; corrections require a replacement version.</p><a class="hr-btn" href="/admin/hr/payroll/runs/{_esc(prepared_run['id'])}/approve">Review and approve payroll</a></section>'''
     elif actor_email != final_approver_email:
-        urgent_panel = f'''<section class="hr-saved" style="margin-top:18px"><div class="hr-kicker">Your next step</div><h2 style="margin:6px 0">Prepare payroll for David's approval</h2><p>This freezes the current hours, pay inputs, and calculations. It does not move money.</p><form method="post" action="/admin/hr/payroll/prepare"><input type="hidden" name="period_date" value="{_esc(period.start_date)}"><button class="hr-btn" type="submit">Prepare payroll for David</button></form></section>'''
+        urgent_panel = f'''<section class="hr-saved" style="margin-top:18px"><div class="hr-kicker">Ready to freeze</div><h2 style="margin:6px 0">Freeze payroll for David</h2><p>Review the final totals on a confirmation page before locking the hours, inputs, and calculations. Freezing does not move money.</p><a class="hr-btn" href="/admin/hr/payroll/freeze?period_date={_esc(period.start_date)}">Review and freeze payroll</a></section>'''
     else:
         urgent_panel = '''<section class="hr-callout warn" style="margin-top:18px"><div class="hr-kicker">Handoff required</div><h2 style="margin:6px 0">Val must prepare payroll first</h2><p>David is the final approver, so he cannot also prepare the version he signs. Val should sign in and use the preparation button shown here.</p></section>'''
     outside_corrections = readiness.get("outside_period_corrections") or []
@@ -1649,7 +1656,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         <td>${_esc(item['amount'])}</td><td>{'Taxable' if item['taxable'] else 'Non-taxable'}</td>
         <td>{_esc(item['status'])}{' · Review unusual change' if item.get('unusual_change') else ''}</td>
         <td>{_esc(item['description'] or '—')}<br><span class="hr-sub">{_esc(item.get('source_reference') or 'No separate evidence reference')}{' · recurring' if item.get('recurring') else ''}</span></td>
-        <td>{f'<form class="hr-inline" method="post" action="/admin/hr/payroll/inputs/{item["id"]}/decision"><input type="hidden" name="period_date" value="{period.start_date}"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="rejected">Reject</button></form>' if item["status"] == "pending" else '—'}</td></tr>"""
+        <td>{f'<form class="hr-inline" method="post" action="/admin/hr/payroll/inputs/{item["id"]}/decision"><input type="hidden" name="period_date" value="{period.start_date}"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="rejected">Reject</button></form>' if item["status"] == "pending" and not period_frozen else ('Frozen for this period' if period_frozen else '—')}</td></tr>"""
         for item in control["inputs"]
     ) or '<tr><td colspan="7" class="hr-empty">No bonus, commission, reimbursement, deduction, or fee inputs.</td></tr>'
     run_rows = "".join(
@@ -1675,11 +1682,11 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         <button class="hr-btn hr-btn-light" name="action" value="reconciled">Reconcile</button></div>
         </form></td></tr>""" for item in control["liabilities"]
     ) or '<tr><td colspan="6" class="hr-empty">Liabilities appear only after a different person approves the prepared payroll.</td></tr>'
-    status_label = "Ready to prepare" if readiness["ready"] else "Blocked"
+    status_label = "Frozen — awaiting approval" if period_frozen else ("Ready to freeze" if readiness["ready"] else "Blocked")
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">Payroll control room</h1>
-    <p class="hr-sub">Prepare {_esc(period.start_date)}–{_esc(period.end_date)} for payment on {_esc(period.pay_date)}.</p>
+    <p class="hr-sub">Review and freeze {_esc(period.start_date)}–{_esc(period.end_date)} for payment on {_esc(period.pay_date)}.</p>
     <form class="hr-inline" method="get" action="/admin/hr/payroll">
       <label for="period-date">Choose a date inside the pay period</label>
       <input id="period-date" type="date" name="period_date" value="{_esc(period.start_date)}">
@@ -1691,7 +1698,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <ol><li>Confirm each employee's pay and existing W-4 elections.</li>
       <li>Review and approve hourly punches below. Employees do not submit timesheets.</li>
       <li>Review the imported year-to-date balances and record the completed calculation review.</li>
-      <li>Resolve the remaining company access checks, then prepare an immutable version. Preparation moves no money.</li>
+      <li>Resolve the remaining company access checks, then freeze an immutable version. Freezing moves no money.</li>
       <li>A different authorized person reviews the frozen version. David gives final approval.</li>
       <li>Issue each approved check, complete tax payments and filings in the official portals, and record every confirmation in Agent.</li></ol>
     </section>
@@ -1723,7 +1730,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     </div>
     <h2>Other payroll inputs</h2>
     <table class="hr-tbl"><thead><tr><th>Employee</th><th>Type</th><th>Amount</th><th>Tax</th><th>Status</th><th>Description</th><th>Review</th></tr></thead><tbody>{input_rows}</tbody></table>
-    <form class="hr-form" method="post" action="/admin/hr/payroll/inputs">
+    {'' if period_frozen else f'''<form class="hr-form" method="post" action="/admin/hr/payroll/inputs">
       <input type="hidden" name="period_date" value="{period.start_date}">
       <div class="hr-grid2"><div><label>Employee</label><select name="employee_email" required>{employee_options}</select></div>
       <div><label>Type</label><select name="input_type"><option value="bonus">Bonus</option><option value="commission">Commission</option><option value="reimbursement">Accountable reimbursement</option><option value="deduction">Voluntary/standard deduction</option><option value="garnishment">Mandatory garnishment</option><option value="holiday_adjustment">Holiday adjustment</option><option value="manual_correction">Manual pay correction</option></select></div></div>
@@ -1733,7 +1740,8 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <label>Receipt, order, or evidence reference</label><input name="source_reference" maxlength="255" placeholder="Required for reimbursements">
       <label><input type="checkbox" name="recurring" value="true" style="width:auto"> Carry forward for review each period (deductions and garnishments only)</label>
       <button class="hr-btn" type="submit">Add for review</button>
-    </form>
+    </form>'''}
+    {f'<div class="hr-callout warn"><strong>This period is frozen.</strong><p>Ordinary payroll inputs are read-only. Reject the frozen version or use the controlled correction workflow before replacing it.</p></div>' if period_frozen else ''}
     <h2>Prepared and approved versions</h2>
     <table class="hr-tbl"><thead><tr><th>Version ID</th><th>Status</th><th>Estimated gross</th><th>Estimated tax liability</th><th>Deduction liability</th><th>Estimated employee check cash</th><th>Estimated employer cost</th><th>People</th><th>Prepared by</th><th>Approval</th></tr></thead><tbody>{run_rows}</tbody></table>
     <h2>Tax payment and filing reconciliation</h2>
@@ -1759,6 +1767,71 @@ def _money_cell(cents) -> str:
     return f"<td>{_esc(cents_to_dollars(cents))}</td>"
 
 
+def render_hr_payroll_freeze(preview: dict, *, user, flash=None) -> str:
+    """Render the deliberate confirmation before creating an immutable version."""
+    period = preview["period"]
+    totals = preview["totals"]
+    readiness = preview["readiness"]
+    rows = preview["rows"]
+    employee_rows = "".join(
+        f"<tr><td>{_esc(row['employee_name'])}</td>"
+        f"<td>{_hours(row['regular_hours'])}</td>"
+        f"<td>{_hours(row['overtime_hours'])}</td>"
+        f"<td>{_hours(row['holiday_hours'])}</td>"
+        f"<td>{_hours(row['pto_hours'])}</td>"
+        f"<td>${_esc(cents_to_dollars(row['results']['taxable_gross_cents']))}</td>"
+        f"<td>{'$' + _esc(cents_to_dollars(row['results']['net_cents'])) if row['results']['net_cents'] is not None else 'Not available'}</td></tr>"
+        for row in rows
+    )
+    blocker_rows = "".join(
+        f"<li><strong>{_esc(item.get('owner') or 'David or Val')}:</strong> "
+        f"{_esc(item.get('message') or 'Required setup is incomplete.')}</li>"
+        for item in readiness.get("blockers") or []
+    )
+    actor_email = (user.get("email") or "").strip().lower()
+    final_approver = (preview.get("final_approver_email") or "").strip().lower()
+    separation_blocked = bool(final_approver and actor_email == final_approver)
+    can_freeze = (
+        bool(readiness.get("ready"))
+        and not preview.get("totals_are_partial")
+        and not separation_blocked
+    )
+    blocker_rows += (
+        "<li><strong>Val:</strong> David is the required final approver. "
+        "Val must sign in and freeze this version so David can approve it.</li>"
+        if separation_blocked else ""
+    )
+    body = f"""
+    {_flash(flash)}
+    <h1 class="hr-h1">Freeze payroll for David</h1>
+    <p class="hr-sub">Final confirmation for {_esc(period.start_date)}–{_esc(period.end_date)}, payable {_esc(period.pay_date)}.</p>
+    <div class="hr-callout {'ok' if can_freeze else 'blocked'}">
+      <div class="hr-kicker">{'Ready to freeze' if can_freeze else 'Freeze blocked'}</div>
+      <h2>{'Review the exact totals below' if can_freeze else 'Resolve every blocker before freezing'}</h2>
+      <p>Freezing creates one immutable version for David's approval. It moves no money, issues no check, and files no tax. Later changes require a rejected replacement or controlled payroll correction; they never rewrite this version.</p>
+      {f'<ul>{blocker_rows}</ul>' if blocker_rows else ''}
+    </div>
+    <div class="hr-cards">
+      <div class="hr-card"><div class="n">${_esc(cents_to_dollars(totals['gross_cents']))}</div><div class="l">Estimated gross</div></div>
+      <div class="hr-card"><div class="n">${_esc(cents_to_dollars(totals['net_cents']))}</div><div class="l">Estimated check cash</div></div>
+      <div class="hr-card"><div class="n">${_esc(cents_to_dollars(totals['employee_taxes_cents'] + totals['employer_taxes_cents']))}</div><div class="l">Estimated tax liability</div></div>
+      <div class="hr-card"><div class="n">${_esc(cents_to_dollars(totals['employer_cost_cents']))}</div><div class="l">Estimated employer cost</div></div>
+    </div>
+    <section class="hr-card"><div class="hr-kicker">Employees included</div>
+      <div style="overflow-x:auto"><table class="hr-tbl"><thead><tr><th>Employee</th><th>Regular</th><th>OT</th><th>Holiday</th><th>PTO</th><th>Gross</th><th>Net</th></tr></thead><tbody>{employee_rows}</tbody></table></div>
+    </section>
+    <div class="hr-actions"><a class="hr-btn hr-btn-light" href="/admin/hr/payroll?period_date={_esc(period.start_date)}">Cancel and return</a></div>
+    {f'''<form class="hr-form" method="post" action="/admin/hr/payroll/prepare">
+      <input type="hidden" name="period_date" value="{_esc(period.start_date)}">
+      <label><input type="checkbox" name="confirmed" value="true" required style="width:auto"> I reviewed every employee, hour, input, total, and the {_esc(period.pay_date)} pay date.</label>
+      <label for="freeze-text">Type exactly: <strong>FREEZE PAYROLL</strong></label>
+      <input id="freeze-text" name="freeze_text" required autocomplete="off" spellcheck="false">
+      <button class="hr-btn" type="submit">Freeze payroll for David</button>
+    </form>''' if can_freeze else ''}
+    """
+    return hr_shell("Freeze payroll", "payroll", body, user=user)
+
+
 def render_hr_payroll_preview(preview: dict, *, user, flash=None) -> str:
     """Show the full calculation for a period without preparing anything."""
     period = preview["period"]
@@ -1772,10 +1845,10 @@ def render_hr_payroll_preview(preview: dict, *, user, flash=None) -> str:
         hours = ""
         if row["pay_basis"] != "fixed_semimonthly":
             hours = (
-                f"{_esc(row['regular_hours'])} reg"
-                f" · {_esc(row['overtime_hours'])} OT"
-                f" · {_esc(row['holiday_hours'])} hol"
-                f" · {_esc(row['pto_hours'])} PTO"
+                f"{_hours(row['regular_hours'])} reg"
+                f" · {_hours(row['overtime_hours'])} OT"
+                f" · {_hours(row['holiday_hours'])} hol"
+                f" · {_hours(row['pto_hours'])} PTO"
             )
         else:
             hours = "Fixed semimonthly"
@@ -1841,12 +1914,25 @@ def render_hr_payroll_preview(preview: dict, *, user, flash=None) -> str:
         f"{blocker_count} item(s) still block a real payroll run. This preview does "
         "not clear them and does not prepare anything."
         if blocker_count else
-        "Nothing blocks a real run. Prepare it from the payroll control room."
+        "No readiness blockers remain. Review the freeze confirmation from the payroll control room."
     )
+    qualified_review = (preview.get("settings") or {}).get("qualified_review")
+    if qualified_review:
+        authority_line = (
+            f"The {_esc(qualified_review.get('tax_year'))} calculation review is recorded "
+            f"for {_esc(qualified_review.get('reviewer_name'))}, reviewed "
+            f"{_esc(qualified_review.get('reviewed_on'))}. These remain Anata planning "
+            "estimates until the exact frozen run is independently compared."
+        )
+    else:
+        authority_line = (
+            "No qualified calculation review is recorded for this rule package. "
+            "Do not issue checks from these figures."
+        )
 
     body = f"""
     {_flash(flash)}
-    <h1 class="hr-h1">Payroll preview</h1>
+    <h1 class="hr-h1">Live draft preview — not frozen</h1>
     <p class="hr-sub">Period {_esc(period.start_date)}–{_esc(period.end_date)}, payable {_esc(period.pay_date)}.</p>
     <form class="hr-inline" method="get" action="/admin/hr/payroll/preview">
       <label for="preview-date">Choose a date inside the pay period</label>
@@ -1858,10 +1944,7 @@ def render_hr_payroll_preview(preview: dict, *, user, flash=None) -> str:
       saves nothing. No payroll version is created, no money moves, no tax is paid
       or filed, and no record changes.</p>
       <p>{_esc(gate_line)}</p>
-      <p><strong>Calculation authority:</strong> these are Anata planning estimates.
-      No payroll provider is connected and no qualified professional has signed off
-      on the 2026 rule package yet. Do not pay anyone from these figures until both
-      are done.</p></div>
+      <p><strong>Calculation authority:</strong> {authority_line}</p></div>
     {caveat_block}
     <div class="hr-cards">
       <div class="hr-card"><div class="n">{_esc(cents_to_dollars(totals['gross_cents']))}</div><div class="l">Gross</div></div>

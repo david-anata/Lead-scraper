@@ -59,6 +59,7 @@ from sales_support_agent.services.hr.pages import (
     render_hr_onboarding,
     render_hr_employee_record_missing,
     render_hr_payroll_control,
+    render_hr_payroll_freeze,
     render_hr_payroll_approval,
     render_hr_payroll_preview,
     render_hr_payroll_run,
@@ -1624,9 +1625,32 @@ async def hr_payroll_qualified_review_save(
     )
 
 
+@router.get("/payroll/freeze", response_class=HTMLResponse)
+async def hr_payroll_freeze_review(
+    period_date: date, request: Request,
+    user: dict = Depends(_pay_prepare_guard),
+):
+    preview = payroll_store.preview_payroll(period_date)
+    preview["final_approver_email"] = (
+        payroll_store.get_company_profile().get("final_approver_email") or ""
+    )
+    return HTMLResponse(
+        render_hr_payroll_freeze(preview, user=user, flash=_flash(request))
+    )
+
+
 @router.post("/payroll/prepare")
-async def hr_payroll_prepare(period_date: date = Form(...),
-                             user: dict = Depends(_pay_prepare_guard)):
+async def hr_payroll_prepare(
+    period_date: date = Form(...), freeze_text: str = Form(""),
+    confirmed: bool = Form(False),
+    user: dict = Depends(_pay_prepare_guard),
+):
+    if not confirmed or freeze_text.strip() != "FREEZE PAYROLL":
+        return RedirectResponse(
+            f"/admin/hr/payroll/freeze?period_date={period_date}"
+            "&err=freeze_confirmation_required",
+            status_code=303,
+        )
     ok, message = payroll_store.prepare_payroll(
         period_date, actor=user.get("email", "")
     )
