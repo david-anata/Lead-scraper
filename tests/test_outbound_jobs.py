@@ -90,6 +90,9 @@ class MorningRoutineTests(unittest.TestCase):
     def test_it_runs_before_the_working_day(self):
         self.assertLess(jobs._RUN_HOUR, 9)
 
+    def test_one_daily_sheet_has_a_controlled_company_ceiling(self):
+        self.assertEqual(jobs._DAILY_COMPANY_CAP, 150)
+
 
 if __name__ == "__main__":
     unittest.main()

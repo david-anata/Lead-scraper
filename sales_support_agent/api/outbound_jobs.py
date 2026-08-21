@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+from uuid import uuid4
 from datetime import datetime
 from threading import Event, Thread
 from zoneinfo import ZoneInfo
@@ -38,6 +39,7 @@ _TZ = "America/Denver"
 _MARKER = "__morning_run__"             # recipe name used purely as a daily marker
 _RUN_HOUR = 7                           # before the working day, so it is ready
 _SCAN_PER_DAY = 12                      # ~30 min of Amazon checks, then it stops
+_DAILY_COMPANY_CAP = 150                # one controlled morning sheet, across all recipes
 
 
 def _today(now: datetime) -> str:
@@ -200,7 +202,7 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
     import outbound_pipeline as _op
     import outbound_recipes as _rx
 
-    from sales_support_agent.services import outbound_memory
+    from sales_support_agent.services import outbound_batches, outbound_memory
 
     now = now or datetime.now(ZoneInfo(_TZ))
     out: dict = {"ran": False, "recipes": [], "pulled": 0, "scanned": 0, "reason": ""}
@@ -224,29 +226,53 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
     tunables = _st.effective(engine, _rx.DEFAULT_SETTINGS) if engine is not None else _rx.DEFAULT_SETTINGS
     version = _st.config_version(engine) if engine is not None else 0
 
-    due = _rx.recipes_for_day(now.weekday(), tunables)
+    outbound_batches.ensure_tables(engine)
+    due = outbound_batches.materialize_recipes(engine, now.weekday(), tunables)
     if not due:
         out["reason"] = "nothing scheduled today"
         return out
 
+    batch_id, created = outbound_batches.create_batch(
+        engine, business_date=_today(now), trigger="scheduled",
+        recipe_count=len(due), correlation_id=str(uuid4()),
+    )
+    if not created:
+        out["reason"] = "today's daily batch already exists"
+        out["batch_id"] = batch_id
+        return out
+
     already = outbound_memory.load_contacted(engine) if engine is not None else set()
+    all_leads: list[dict] = []
+    recipe_runs: list[dict] = []
+    daily_remaining = _DAILY_COMPANY_CAP
 
     # 1. Pull. Fast and free; the Amazon work is deliberately not inline here,
     #    because at minutes per brand it would never finish inside one request.
     for recipe in due:
+        requested = min(recipe.cap(tunables), daily_remaining)
+        if requested <= 0:
+            recipe_runs.append({"recipe_key": recipe.key, "recipe_label": recipe.label,
+                                "status": "complete", "fresh": 0})
+            continue
         try:
             result = _op.run_storeleads_to_clay(
                 api_key=api_key, clay_webhook_url="", processed_domains=already,
-                max_new=recipe.cap(tunables), dry_run=True,
+                max_new=requested, dry_run=True,
                 recipe=recipe, settings=tunables,
             )
         except Exception:  # noqa: BLE001
             logger.exception("[outbound-jobs] pull failed for %s", recipe.key)
+            recipe_runs.append({"recipe_key": recipe.key, "recipe_label": recipe.label,
+                                "status": "failed", "error": "StoreLeads pull failed"})
             continue
 
         out["recipes"].append(recipe.key)
         out["pulled"] += len(result.leads)
         already |= {str(l.get("domain") or "") for l in result.leads}
+        for lead in result.leads:
+            lead.setdefault("recipe", recipe.key)
+        all_leads.extend(result.leads)
+        daily_remaining = max(0, daily_remaining - len(result.leads))
 
         if engine is not None:
             try:
@@ -262,18 +288,31 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
             except outbound_memory.OutboundPersistenceError:
                 logger.exception("[outbound-jobs] pull persistence failed for %s", recipe.key)
                 out["reason"] = f"persistence failed for {recipe.key}"
+                recipe_runs.append({"recipe_key": recipe.key, "recipe_label": recipe.label,
+                                    "status": "failed", "error": out["reason"]})
                 break
-            try:
-                from sales_support_agent.services.outbound_delivery import deliver_completed_pull
-                deliver_completed_pull(engine, {
-                    "id": run_id,
-                    "recipe": result.recipe or recipe.key, "scanned": result.scanned,
-                    "matched": result.matched_icp, "fresh": len(result.leads),
-                    "skipped_seen": result.skipped_already_contacted,
-                    "partial": bool(getattr(result, "partial", False)), "config_version": version,
-                })
-            except Exception:  # noqa: BLE001
-                logger.exception("[outbound-jobs] automatic pull delivery failed")
+            recipe_runs.append({
+                "run_id": run_id, "recipe_key": recipe.key, "recipe_label": recipe.label,
+                "status": "partial" if bool(getattr(result, "partial", False)) else "complete",
+                "fresh": len(result.leads), "scanned": result.scanned,
+                "matched": result.matched_icp,
+                "skipped_seen": result.skipped_already_contacted,
+            })
+
+    batch = outbound_batches.finalize_batch(
+        engine, batch_id=batch_id, recipe_runs=recipe_runs, leads=all_leads,
+        filename=f"anata-daily-leads-{_today(now)}.csv",
+    )
+    try:
+        from sales_support_agent.services.outbound_delivery import deliver_daily_batch
+        delivery = deliver_daily_batch(engine, batch, outbound_batches.load_batch_leads(engine, [batch_id]))
+        outbound_batches.update_delivery(
+            engine, batch_id, email_status=delivery["email"], slack_status=delivery["slack"])
+        out["delivery"] = delivery
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-jobs] daily batch delivery failed")
+    out["batch_id"] = batch_id
+    out["unique_companies"] = batch.unique_companies
 
     # 2. Check the best of them on Amazon, so the opening lines exist before
     #    anyone opens the page. Bounded, because each brand costs minutes.
@@ -297,7 +336,5 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
                     logger.exception("[outbound-jobs] amazon check failed for %s", domain)
 
     out["ran"] = True
-    if engine is not None:
-        out["emailed"] = _email_the_batch(engine, out)
     logger.info("[outbound-jobs] morning run: %s", out)
     return out

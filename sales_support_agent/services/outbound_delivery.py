@@ -82,3 +82,68 @@ def deliver_completed_pull(engine, run: dict[str, Any], *, force: bool = False,
                 recipe=str(run.get("recipe") or ""), destination="slack", status="failed",
                 detail="Slack delivery raised an error")
     return result
+
+
+def deliver_daily_batch(engine, batch: Any, leads: list[dict[str, Any]], *,
+                        force: bool = False, test: bool = False) -> dict[str, Any]:
+    """Deliver the exact stored daily artifact once to each enabled destination."""
+    from sales_support_agent.config import load_settings
+    from sales_support_agent.integrations.slack import SlackClient
+    from sales_support_agent.services import outbound_memory
+    from sales_support_agent.services.access import notify
+
+    prefs = outbound_memory.load_delivery_settings(engine)
+    result: dict[str, Any] = {"email": "not_requested", "slack": "not_requested"}
+    if not force and not prefs["enabled"]:
+        return result
+    settings = load_settings()
+    prefix = "TEST — " if test else ""
+    text = (
+        f"{prefix}Daily Leads for {batch.business_date}\n"
+        f"Unique companies: {batch.unique_companies:,}\n"
+        f"Recipes completed: {batch.completed_count}/{batch.recipe_count}\n"
+        f"Duplicates removed: {batch.duplicates_removed:,}\n"
+        f"Status: {batch.status.replace('_', ' ')}\n\n"
+        "Review and download: https://agent.anatainc.com/admin/outbound/daily"
+    )
+    filename = f"anata-daily-leads-{batch.business_date}.csv"
+    attachments = _csv_attachment(leads, filename)
+    if not attachments:
+        import outbound_pipeline
+        attachments = [{"filename": filename,
+                        "content": outbound_pipeline.leads_to_csv([]).encode("utf-8"),
+                        "content_type": "text/csv"}]
+    if prefs["email_enabled"]:
+        recipients = [value.strip() for value in prefs["email_recipients"].replace(";", ",").split(",") if value.strip()]
+        sent = 0
+        for recipient in recipients:
+            ok = notify._send(
+                settings, to_email=recipient,
+                subject=f"{prefix}Daily Leads: {batch.unique_companies} companies — {batch.business_date}",
+                text=text, attachments=attachments,
+            )
+            sent += 1 if ok else 0
+            outbound_memory.record_delivery_attempt(
+                engine, recipe="daily_batch", destination="email", target=recipient,
+                status="sent" if ok else "failed", detail=f"Batch {batch.id}; CSV rows {len(leads)}",
+            )
+        result["email"] = "delivered" if recipients and sent == len(recipients) else "failed"
+    if prefs["slack_enabled"]:
+        channel = prefs.get("slack_channel") or str(getattr(settings, "slack_channel_id", "") or "")
+        try:
+            client = SlackClient(settings)
+            response = client.upload_file(
+                content=attachments[0]["content"],
+                filename=filename, title=f"Daily Leads — {batch.business_date}",
+                initial_comment=text, channel=channel,
+            )
+            result["slack"] = "delivered" if response.get("ok") else "failed"
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-delivery] daily Slack delivery failed")
+            result["slack"] = "failed"
+        outbound_memory.record_delivery_attempt(
+            engine, recipe="daily_batch", destination="slack", target=channel,
+            status="sent" if result["slack"] == "delivered" else "failed",
+            detail=f"Batch {batch.id}; CSV rows {len(leads)}",
+        )
+    return result

@@ -180,8 +180,9 @@ CREATE TABLE IF NOT EXISTS {_DELIVERY_TABLE} (
     enabled INTEGER NOT NULL DEFAULT 0,
     email_enabled INTEGER NOT NULL DEFAULT 0,
     slack_enabled INTEGER NOT NULL DEFAULT 0,
-    frequency TEXT NOT NULL DEFAULT 'every_pull',
+    frequency TEXT NOT NULL DEFAULT 'daily',
     email_recipients TEXT NOT NULL DEFAULT '',
+    slack_channel TEXT NOT NULL DEFAULT '',
     content_mode TEXT NOT NULL DEFAULT 'link',
     updated_by TEXT NOT NULL DEFAULT '',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -313,6 +314,11 @@ def ensure_runs_table(engine, *, force: bool = False) -> None:
         conn.execute(text(_CREATE_DELIVERY_SQL))
         conn.execute(text(_CREATE_EXPORTS_SQL_PG if is_pg else _CREATE_EXPORTS_SQL))
         conn.execute(text(_CREATE_DELIVERY_HISTORY_SQL_PG if is_pg else _CREATE_DELIVERY_HISTORY_SQL))
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {_DELIVERY_TABLE} ADD COLUMN slack_channel TEXT NOT NULL DEFAULT ''"))
+    except Exception:  # noqa: BLE001 — additive column already exists
+        pass
 
 
 def ensure_outbound_schema(engine) -> None:
@@ -510,19 +516,20 @@ def backfill_legacy_run_leads(engine) -> int:
 
 def load_delivery_settings(engine) -> dict[str, Any]:
     defaults = {"enabled": False, "email_enabled": False, "slack_enabled": False,
-                "frequency": "every_pull", "email_recipients": "",
+                "frequency": "daily", "email_recipients": "", "slack_channel": "",
                 "content_mode": "link", "updated_by": "", "updated_at": ""}
     if engine is None:
         return defaults
     try:
         ensure_runs_table(engine)
         with engine.connect() as conn:
-            row = conn.execute(text(f"SELECT enabled,email_enabled,slack_enabled,frequency,email_recipients,content_mode,updated_by,updated_at FROM {_DELIVERY_TABLE} WHERE id=1")).fetchone()
+            row = conn.execute(text(f"SELECT enabled,email_enabled,slack_enabled,frequency,email_recipients,slack_channel,content_mode,updated_by,updated_at FROM {_DELIVERY_TABLE} WHERE id=1")).fetchone()
         if not row:
             return defaults
         return {"enabled": bool(row[0]), "email_enabled": bool(row[1]), "slack_enabled": bool(row[2]),
-                "frequency": row[3] or "every_pull", "email_recipients": row[4] or "",
-                "content_mode": row[5] or "link", "updated_by": row[6] or "", "updated_at": str(row[7] or "")}
+                "frequency": row[3] or "daily", "email_recipients": row[4] or "",
+                "slack_channel": row[5] or "", "content_mode": row[6] or "link",
+                "updated_by": row[7] or "", "updated_at": str(row[8] or "")}
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-memory] load_delivery_settings failed")
         return defaults
@@ -535,16 +542,17 @@ def save_delivery_settings(engine, values: dict[str, Any], *, actor: str = "") -
         ensure_runs_table(engine)
         payload = {"enabled": _flag(values.get("enabled")), "email_enabled": _flag(values.get("email_enabled")),
                    "slack_enabled": _flag(values.get("slack_enabled")),
-                   "frequency": values.get("frequency") if values.get("frequency") in {"every_pull", "daily"} else "every_pull",
+                   "frequency": str(values.get("frequency") or "daily") if str(values.get("frequency") or "daily") in {"daily", "every_pull"} else "daily",
                    "email_recipients": _text(values.get("email_recipients")),
+                   "slack_channel": _text(values.get("slack_channel")),
                    "content_mode": values.get("content_mode") if values.get("content_mode") in {"link", "summary"} else "link",
                    "updated_by": _text(actor)}
         with engine.begin() as conn:
             conn.execute(text(f"""INSERT INTO {_DELIVERY_TABLE}
-                (id,enabled,email_enabled,slack_enabled,frequency,email_recipients,content_mode,updated_by,updated_at)
-                VALUES (1,:enabled,:email_enabled,:slack_enabled,:frequency,:email_recipients,:content_mode,:updated_by,CURRENT_TIMESTAMP)
+                (id,enabled,email_enabled,slack_enabled,frequency,email_recipients,slack_channel,content_mode,updated_by,updated_at)
+                VALUES (1,:enabled,:email_enabled,:slack_enabled,:frequency,:email_recipients,:slack_channel,:content_mode,:updated_by,CURRENT_TIMESTAMP)
                 ON CONFLICT (id) DO UPDATE SET enabled=:enabled,email_enabled=:email_enabled,slack_enabled=:slack_enabled,
-                frequency=:frequency,email_recipients=:email_recipients,content_mode=:content_mode,
+                frequency=:frequency,email_recipients=:email_recipients,slack_channel=:slack_channel,content_mode=:content_mode,
                 updated_by=:updated_by,updated_at=CURRENT_TIMESTAMP"""), payload)
         return True
     except Exception:  # noqa: BLE001

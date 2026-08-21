@@ -51,8 +51,10 @@ _NAV_SECTIONS = [
         _NavSubpage("sales.deals", "Sales Overview", "/admin/sales", "sales_operator"),
         _NavSubpage("sales.deals", "Pipeline", "/admin/sales/deals", "sales_deals"),
         _NavSubpage("sales.deals", "Rep Accountability", "/admin/sales/reps", "sales_reps"),
-        _NavSubpage("outbound.scoreboard", "Prospecting Performance", "/admin/outbound/scoreboard", "outbound_scoreboard"),
+        _NavSubpage("outbound.scoreboard", "Daily Leads", "/admin/outbound/daily", "outbound_daily"),
         _NavSubpage("outbound.scoreboard", "Company Library", "/admin/outbound/leads", "outbound_leads"),
+        _NavSubpage("outbound.scoreboard", "Recipes & ICP", "/admin/outbound/recipes", "outbound_recipes"),
+        _NavSubpage("outbound.scoreboard", "Outbound Performance", "/admin/outbound/performance", "outbound_performance"),
         _NavSubpage("sales.priorities", "HubSpot Fixes", "/admin/sales/fix-queue", "sales"),
         _NavSubpage("sales.decks", "Sales Assets", "/admin/sales-decks", "sales_decks"),
     ]),
@@ -658,7 +660,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
     if active in {"advertising", "advertising_audit", "advertising_clients", "advertising_profit_calculator", "advertising_bulk_profitability"}:
         primary_active = "advertising"
     # Outbound pages highlight the Sales tab (Outbound is a Sales sub-page).
-    if active in {"outbound", "outbound_scoreboard", "outbound_brands", "outbound_leadops", "outbound_leads"}:
+    if active in {"outbound", "outbound_scoreboard", "outbound_brands", "outbound_leadops", "outbound_leads", "outbound_daily", "outbound_recipes", "outbound_performance"}:
         primary_active = "sales"
     if active in {"executive", "brand_analysis"}:
         primary_active = "executive"

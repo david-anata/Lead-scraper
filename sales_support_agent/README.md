@@ -236,7 +236,16 @@ state instead of an empty history.
 
 - `GET /admin/api/outbound/health` reports whether outbound persistence is
   ready and includes the saved run and company counts.
-- `GET /admin/outbound/lead-ops` shows pull history and supports re-downloading
+- `GET /admin/outbound/daily` is the operator home for the exact, consolidated weekday CSV
+- `GET /admin/outbound/leads` is the deduplicated company library
+- `GET /admin/outbound/recipes` manages approved signal recipes, ICP tuning, and delivery destinations
+- `GET /admin/outbound/performance` shows post-sourcing Instantly performance
+
+The 7:00 AM America/Denver weekday job runs all active recipes, persists every
+recipe run, deduplicates companies by domain into one immutable daily batch, and
+then delivers that exact CSV as an email attachment and Slack file. Re-running
+the scheduled trigger for the same business date is idempotent. Legacy outbound
+page URLs redirect to the appropriate new workspace.
   the saved artifact without calling StoreLeads again.
 - `GET /admin/outbound/leads` provides the persistent company library and bulk
   CSV export.

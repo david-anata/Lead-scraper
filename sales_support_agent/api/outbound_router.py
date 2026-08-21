@@ -19,7 +19,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from sales_support_agent.services.auth_deps import get_current_user
 
@@ -117,7 +117,86 @@ _NURTURE_HTML = """
 """
 
 
-@router.get("/admin/outbound/scoreboard", response_class=HTMLResponse)
+_DAILY_CSS = """
+  .daily-head{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:24px}
+  .daily-status{padding:9px 12px;border-radius:999px;background:#edf7f0;color:#205c37;font-weight:700;font-size:13px}
+  .daily-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:20px 0 28px}
+  .daily-card{border:1px solid var(--border);border-radius:14px;padding:16px;background:#fff}
+  .daily-card span{display:block;color:#66717d;font-size:12px;margin-bottom:6px}.daily-card b{font:800 22px Montserrat,sans-serif}
+  .daily-callout{background:#f4f8fb;border:1px solid #dce9f1;border-radius:14px;padding:16px 18px;margin:0 0 24px}
+  .daily-table-wrap{overflow:auto}.daily-table{width:100%;border-collapse:collapse;font-size:13px}.daily-table th{text-align:left;color:#68727d;font-size:11px;text-transform:uppercase;letter-spacing:.04em}.daily-table th,.daily-table td{padding:12px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
+  .daily-btn{display:inline-flex;padding:9px 13px;border-radius:10px;background:#2b3644;color:#fff;text-decoration:none;font-weight:700}.daily-link{font-weight:700}
+  .daily-pager{display:flex;justify-content:space-between;align-items:center;margin-top:16px}.daily-muted{color:#68727d;font-size:13px}
+  @media(max-width:760px){.daily-grid{grid-template-columns:repeat(2,1fr)}.daily-head{display:block}.daily-status{display:inline-block;margin-top:12px}}
+"""
+
+
+@router.get("/admin/outbound/daily", response_class=HTMLResponse)
+def outbound_daily(request: Request, page: int = 1) -> Response:
+    """The operator home: one durable file per business day."""
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_batches, outbound_memory
+
+    engine = get_engine()
+    batches, total = outbound_batches.load_batches(engine, page=page, per_page=10)
+    prefs = outbound_memory.load_delivery_settings(engine)
+    today = batches[0] if batches else None
+    rows = "".join(
+        f"<tr><td><input class='batch-check' type='checkbox' value='{batch.id}' aria-label='Select {html.escape(batch.business_date)}'></td>"
+        f"<td><b>{html.escape(batch.business_date)}</b></td><td>{html.escape(batch.status.replace('_',' ').title())}</td>"
+        f"<td>{batch.completed_count}/{batch.recipe_count}</td><td>{batch.unique_companies:,}</td><td>{batch.duplicates_removed:,}</td>"
+        f"<td>{html.escape(batch.email_status)} / {html.escape(batch.slack_status)}</td>"
+        f"<td><a class='daily-link' href='/admin/api/outbound/daily-batches/{batch.id}/csv' download>Download CSV</a></td></tr>"
+        for batch in batches
+    ) or "<tr><td colspan='8'>No daily batches yet. The next weekday run will create the first exact, downloadable file.</td></tr>"
+    selected = today or type("Empty", (), {"unique_companies": 0, "recipe_count": 0, "completed_count": 0,
+                                             "duplicates_removed": 0, "status": "waiting"})()
+    channel = prefs.get("slack_channel") or "workspace default"
+    pages = max(1, (total + 9) // 10)
+    body = f"""
+      <div class='daily-head'><div><h1>Daily Leads</h1><p class='sub'>Your morning company file—pulled automatically, deduplicated once, and ready for Clay.</p></div><span class='daily-status'>Weekdays · 7:00 AM Denver</span></div>
+      <div class='daily-callout'><b>How this works:</b> active recipes run each weekday, duplicate domains collapse into one row, and the exact stored CSV is emailed and uploaded to Slack. Nothing here contacts a lead.</div>
+      <div class='daily-grid'><div class='daily-card'><span>Latest companies</span><b>{selected.unique_companies:,}</b></div><div class='daily-card'><span>Recipes complete</span><b>{selected.completed_count}/{selected.recipe_count}</b></div><div class='daily-card'><span>Duplicates removed</span><b>{selected.duplicates_removed:,}</b></div><div class='daily-card'><span>Batch status</span><b style='font-size:16px'>{html.escape(selected.status.replace('_',' ').title())}</b></div></div>
+      <div class='daily-callout'><b>Delivery:</b> Email {'on' if prefs['email_enabled'] else 'off'} to {html.escape(prefs['email_recipients'] or 'no recipients')} · Slack {'on' if prefs['slack_enabled'] else 'off'} to {html.escape(channel)}. <a href='/admin/outbound/recipes'>Manage delivery and recipes</a>.</div>
+      <div class='daily-table-wrap'><table class='daily-table'><thead><tr><th></th><th>Date</th><th>Status</th><th>Recipes</th><th>Companies</th><th>Duplicates</th><th>Email / Slack</th><th>File</th></tr></thead><tbody>{rows}</tbody></table></div>
+      <div class='daily-pager'><span class='daily-muted'>Page {max(1,page)} of {pages} · {total} daily batches</span><span>{f"<a href='/admin/outbound/daily?page={page-1}'>Previous</a>" if page > 1 else ''} {f"<a href='/admin/outbound/daily?page={page+1}'>Next</a>" if page < pages else ''}</span></div>
+      <p class='daily-muted'>Need several days in one sheet? Select the batch rows, then <a id='combine' class='daily-link' href='#'>download one combined CSV</a>.</p>
+      <script>(function(){{var a=document.getElementById('combine');function sync(){{var ids=[].slice.call(document.querySelectorAll('.batch-check:checked')).map(function(x){{return x.value}});a.href=ids.length?'/admin/api/outbound/daily-batches.csv?batch_ids='+ids.join(','):'#';a.setAttribute('download','anata-selected-daily-leads.csv')}}document.querySelectorAll('.batch-check').forEach(function(x){{x.addEventListener('change',sync)}});sync()}})();</script>
+    """
+    return HTMLResponse(_shell_page(request, active="outbound_daily", title="Daily Leads", extra_css=_DAILY_CSS, body=body))
+
+
+@router.get("/admin/outbound/lead-ops", response_class=RedirectResponse)
+def outbound_lead_ops_redirect() -> Response:
+    return RedirectResponse("/admin/outbound/daily", status_code=307)
+
+
+@router.get("/admin/outbound/scoreboard", response_class=RedirectResponse)
+def outbound_scoreboard_redirect() -> Response:
+    return RedirectResponse("/admin/outbound/performance", status_code=307)
+
+
+@router.get("/admin/api/outbound/daily-batches/{batch_id}/csv", response_class=Response)
+def outbound_daily_batch_csv(request: Request, batch_id: int) -> Response:
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_batches
+    try:
+        filename, content = outbound_batches.batch_artifact(get_engine(), batch_id)
+    except LookupError:
+        return Response("Daily batch not found", status_code=404)
+    return Response(content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@router.get("/admin/api/outbound/daily-batches.csv", response_class=Response)
+def outbound_daily_batches_csv(request: Request, batch_ids: str = "") -> Response:
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_batches
+    leads = outbound_batches.load_batch_leads(get_engine(), _run_ids(batch_ids))
+    selected, _duplicates = _dedupe_pull_leads(leads)
+    return Response(_pulls_csv(selected), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="anata-selected-daily-leads.csv"'})
+
+
+@router.get("/admin/outbound/performance", response_class=HTMLResponse)
 def outbound_scoreboard(request: Request) -> Response:
     import outbound_scoreboard as _sb
     import outbound_bottlenecks as _bn
@@ -150,8 +229,8 @@ def outbound_scoreboard(request: Request) -> Response:
     efficacy = _ef.compute_signal_efficacy(pushed, outcomes={})
 
     body = f"""
-        <h1>Outbound scoreboard</h1>
-        <p class="sub">Your machine, and how it is performing. Reads live from Instantly.</p>
+        <h1>Outbound performance</h1>
+        <p class="sub">What happened after companies entered outreach. Reads live from Instantly.</p>
         {_sb.render_scoreboard_body(board)}
         {_cp.render_compliance_html(checks)}
         {_bn.render_bottlenecks_html(bottlenecks)}
@@ -161,7 +240,7 @@ def outbound_scoreboard(request: Request) -> Response:
     extra_css = (_sb.SCOREBOARD_CSS + _cp.COMPLIANCE_CSS + _bn.BOTTLENECK_CSS
                  + _ef.EFFICACY_CSS + _NURTURE_CSS)
     return HTMLResponse(_shell_page(
-        request, active="outbound_scoreboard", title="Outbound Scoreboard",
+        request, active="outbound_performance", title="Outbound Performance",
         extra_css=extra_css, body=body,
     ))
 
@@ -184,10 +263,15 @@ _BRANDS_CSS = """
 """
 
 
-@router.get("/admin/outbound/brands", response_class=HTMLResponse)
+@router.get("/admin/outbound/brands", response_class=RedirectResponse)
 def outbound_brands_page(request: Request) -> Response:
     """Landing page: download the ICP-matched brand list, then the steps to load
     it into Clay and Instantly. The download itself is the CSV endpoint below."""
+    return RedirectResponse("/admin/outbound/daily", status_code=307)
+
+
+@router.get("/admin/outbound/legacy-brands", response_class=HTMLResponse, include_in_schema=False)
+def outbound_legacy_brands_page(request: Request) -> Response:
     import outbound_pipeline as _op
 
     api_key, _clay = _op.load_config_from_env()
@@ -756,7 +840,7 @@ def _opening_line_cell(lead: dict) -> str:
     return html.escape(reason)
 
 
-@router.get("/admin/outbound/lead-ops", response_class=HTMLResponse)
+@router.get("/admin/outbound/recipes", response_class=HTMLResponse)
 def outbound_lead_ops(request: Request) -> Response:
     """What we pull, when it fires, and what every past pull returned."""
     import outbound_recipes as _rx
@@ -772,6 +856,15 @@ def outbound_lead_ops(request: Request) -> Response:
     persistence = _mem.persistence_health(_eng)
     tunables = _st.effective(_eng, _rx.DEFAULT_SETTINGS)
     version = _st.config_version(_eng)
+    from sales_support_agent.services import outbound_batches as _batches
+    recipe_definitions = _batches.load_recipe_definitions(_eng)
+    recipe_definition_rows = "".join(
+        f"<tr><td><b>{html.escape(item['label'])}</b><br><small>{html.escape(item['key'])}</small></td>"
+        f"<td>{html.escape(item['tier'])}</td><td>{html.escape(item['weekdays'])}</td><td>{item['cap']}</td>"
+        f"<td>{'Active' if item['active'] and item['include_in_daily'] else 'Paused'}</td><td>v{item['version']}</td>"
+        f"<td><button class='lo-save recipe-edit' type='button' data-recipe='{html.escape(json.dumps(item), quote=True)}'>Edit</button></td></tr>"
+        for item in recipe_definitions
+    ) or "<tr><td colspan='7'>No recipe definitions are available.</td></tr>"
 
     plan = _rx.daily_plan(settings=tunables)
     todays_keys = {r["key"] for r in plan["recipes"]}
@@ -835,7 +928,7 @@ def outbound_lead_ops(request: Request) -> Response:
     except Exception:  # noqa: BLE001
         runs, changes, export_history, delivery_history, run_lead_counts = [], [], [], [], {}
         delivery_prefs = {"enabled": False, "email_enabled": False, "slack_enabled": False,
-                          "frequency": "every_pull", "email_recipients": "", "content_mode": "link"}
+                          "frequency": "daily", "email_recipients": "", "slack_channel": "", "content_mode": "link"}
     try:
         from sales_support_agent.config import load_settings
         from sales_support_agent.integrations.slack import SlackClient
@@ -917,7 +1010,7 @@ def outbound_lead_ops(request: Request) -> Response:
     )
 
     body = f"""
-        <h1>Lead ops</h1>
+        <h1>Recipes &amp; ICP</h1>
         <p class="sub">What we pull from StoreLeads, what makes it fire, and what every
         pull returned. Pulling and downloading never contacts a company; optional delivery
         settings only notify your own team.</p>
@@ -928,6 +1021,23 @@ def outbound_lead_ops(request: Request) -> Response:
         <div class="lo-clay">{clay_strip}</div>
 
         <p class="lo-msg" id="push-msg"></p>
+
+        <p class="lo-h">Daily pull list</p>
+        <div class="lo-clay"><b>{sum(1 for item in recipe_definitions if item['active'] and item['include_in_daily'])} active recipes</b> feed the one morning CSV. Each recipe is based on an approved StoreLeads signal template; daily caps cannot exceed 150.</div>
+        <div class="lo-table-wrap"><table class="lo-table"><thead><tr><th>Recipe</th><th>Tier</th><th>Weekdays</th><th>Cap</th><th>Status</th><th>Version</th><th></th></tr></thead><tbody>{recipe_definition_rows}</tbody></table></div>
+        <form class="lo-form" id="recipe-form">
+          <div class="lo-field"><label>Recipe key</label><input name="key" placeholder="new_signal" required></div>
+          <div class="lo-field"><label>Name</label><input name="label" placeholder="New growth signal" required></div>
+          <div class="lo-field"><label>Signal template</label><select name="template_key">{''.join(f'<option value="{r.key}">{html.escape(r.label)}</option>' for r in _rx.RECIPES)}</select></div>
+          <div class="lo-field"><label>Tier</label><select name="tier"><option>A</option><option>B</option><option selected>C</option></select></div>
+          <div class="lo-field"><label>Weekdays</label><input name="weekdays" value="0,1,2,3,4" aria-describedby="weekday-help"></div>
+          <div class="lo-field"><label>Daily cap</label><input name="cap" type="number" min="1" max="150" value="25"></div>
+          <div class="lo-field wide"><label>Why now</label><input name="reason" placeholder="The observable signal that makes this timely" required></div>
+          <div class="lo-field"><label><input name="active" type="checkbox" value="1" checked> Active in daily pull</label></div>
+          <input name="priority" type="hidden" value="100"><input name="include_in_daily" type="hidden" value="1">
+          <button class="lo-save" type="submit">Save recipe</button>
+        </form>
+        <p class="lo-note" id="weekday-help">Weekdays use 0–4 for Monday–Friday, comma separated. New recipes are active immediately after saving.</p><p class="lo-msg" id="recipe-msg"></p>
 
         <p class="lo-h">Pull recipes</p>
         <table class="lo-table">
@@ -969,8 +1079,9 @@ def outbound_lead_ops(request: Request) -> Response:
             <label><input id="delivery-enabled" type="checkbox" {'checked' if delivery_prefs['enabled'] else ''}> Automatically deliver results</label>
             <label><input id="delivery-email" type="checkbox" {'checked' if delivery_prefs['email_enabled'] else ''}> Email</label>
             <label><input id="delivery-slack" type="checkbox" {'checked' if delivery_prefs['slack_enabled'] else ''}> Slack</label>
-            <label>Frequency <select id="delivery-frequency"><option value="every_pull" {'selected' if delivery_prefs['frequency']=='every_pull' else ''}>After every pull</option><option value="daily" {'selected' if delivery_prefs['frequency']=='daily' else ''}>Daily digest</option></select></label>
+            <label>Delivery cadence<input id="delivery-frequency" value="One consolidated file each weekday" disabled></label>
             <label class="wide">Email recipients<input id="delivery-recipients" type="text" value="{html.escape(delivery_prefs['email_recipients'])}" placeholder="david@anatainc.com"></label>
+            <label class="wide">Slack channel ID<input id="delivery-slack-channel" type="text" value="{html.escape(delivery_prefs.get('slack_channel') or '')}" placeholder="C0123456789"></label>
             <label>Contents <select id="delivery-content"><option value="link" {'selected' if delivery_prefs['content_mode']=='link' else ''}>CSV attachment + summary + secure link</option><option value="summary" {'selected' if delivery_prefs['content_mode']=='summary' else ''}>CSV attachment + summary</option></select></label>
           </div>
           <div style="margin-top:12px"><button class="lo-save" id="delivery-save" type="button">Save delivery settings</button> <button class="lo-save" id="delivery-test" type="button">Send test</button></div>
@@ -1020,6 +1131,9 @@ def outbound_lead_ops(request: Request) -> Response:
         </details>
         <script>
           (function(){{
+            var recipeForm=document.getElementById('recipe-form'),recipeMsg=document.getElementById('recipe-msg');
+            document.querySelectorAll('.recipe-edit').forEach(function(button){{button.addEventListener('click',function(){{var d=JSON.parse(button.dataset.recipe);['key','label','template_key','tier','weekdays','cap','reason','priority'].forEach(function(k){{if(recipeForm.elements[k])recipeForm.elements[k].value=d[k]}});recipeForm.elements.active.checked=!!d.active;recipeForm.scrollIntoView({{behavior:'smooth',block:'center'}})}})}});
+            if(recipeForm)recipeForm.addEventListener('submit',function(e){{e.preventDefault();recipeMsg.textContent='Saving…';fetch('/admin/api/outbound/recipes',{{method:'POST',body:new FormData(recipeForm)}}).then(function(r){{return r.json().then(function(d){{return [r,d]}})}}).then(function(x){{recipeMsg.textContent=x[1].reason||'Saved.';if(x[0].ok)setTimeout(function(){{location.reload()}},500)}}).catch(function(){{recipeMsg.textContent='Could not reach the server.'}})}});
             var checks=[].slice.call(document.querySelectorAll('.run-check'));
             var bar=document.getElementById('selection-bar'), summary=document.getElementById('selection-summary');
             var detail=document.getElementById('selection-detail'), preview=document.getElementById('export-preview');
@@ -1039,7 +1153,7 @@ def outbound_lead_ops(request: Request) -> Response:
               .then(function(r){{return r.json();}}).then(function(d){{var names=(d.sample||[]).map(function(x){{return x.brand||x.domain;}}).filter(Boolean).join(', ');preview.innerHTML='<b>'+d.exported_companies+' companies in this file</b> from '+d.selected_pulls+' pulls · '+d.source_rows+' source rows · '+d.duplicates_removed+' duplicates removed'+(d.unavailable_pulls?' · '+d.unavailable_pulls+' older pulls unavailable':'')+(names?'<br><small>Sample: '+esc(names)+'</small>':'')+'.';detail.textContent=d.exported_companies+' companies · '+d.duplicates_removed+' duplicates removed';}})
               .catch(function(){{preview.textContent='Preview could not be prepared. Your selection is still here.';}});}});
             document.getElementById('include-duplicates').addEventListener('change',sync);
-            function deliveryData(){{var f=new FormData();['enabled','email','slack'].forEach(function(k){{f.append(k,document.getElementById('delivery-'+k).checked?'1':'0');}});f.append('frequency',document.getElementById('delivery-frequency').value);f.append('email_recipients',document.getElementById('delivery-recipients').value);f.append('content_mode',document.getElementById('delivery-content').value);return f;}}
+            function deliveryData(){{var f=new FormData();['enabled','email','slack'].forEach(function(k){{f.append(k,document.getElementById('delivery-'+k).checked?'1':'0');}});f.append('frequency','daily');f.append('email_recipients',document.getElementById('delivery-recipients').value);f.append('slack_channel',document.getElementById('delivery-slack-channel').value);f.append('content_mode',document.getElementById('delivery-content').value);return f;}}
             function save(test){{var m=document.getElementById('delivery-message');m.textContent=test?'Sending a clearly labeled test...':'Saving...';fetch(test?'/admin/api/outbound/delivery/test':'/admin/api/outbound/delivery/settings',{{method:'POST',body:deliveryData()}}).then(function(r){{return r.json();}}).then(function(d){{m.textContent=d.reason||'Saved.';}}).catch(function(){{m.textContent='Could not reach the server.';}});}}
             document.getElementById('delivery-save').addEventListener('click',function(){{save(false);}});document.getElementById('delivery-test').addEventListener('click',function(){{save(true);}});
           }})();
@@ -1104,7 +1218,7 @@ def outbound_lead_ops(request: Request) -> Response:
         </script>
     """
     return HTMLResponse(_shell_page(
-        request, active="outbound_leadops", title="Outbound Lead Ops",
+        request, active="outbound_recipes", title="Recipes & ICP",
         extra_css=_LEADOPS_CSS + _AMAZON_CSS, body=body,
     ))
 
@@ -1192,9 +1306,22 @@ async def outbound_delivery_settings(request: Request) -> Response:
     saved = outbound_memory.save_delivery_settings(get_engine(), {
         "enabled": form.get("enabled"), "email_enabled": form.get("email"),
         "slack_enabled": form.get("slack"), "frequency": form.get("frequency"),
-        "email_recipients": recipients, "content_mode": form.get("content_mode"),
+        "email_recipients": recipients, "slack_channel": form.get("slack_channel"),
+        "content_mode": form.get("content_mode"),
     }, actor=str(user.get("email") or user.get("name") or "operator"))
     return JSONResponse(status_code=200 if saved else 500, content={"ok": saved, "reason": "Delivery settings saved." if saved else "Delivery settings could not be saved."})
+
+
+@router.post("/admin/api/outbound/recipes", response_class=JSONResponse)
+async def outbound_recipe_save(request: Request) -> Response:
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_batches
+    form = await request.form()
+    user = get_current_user(request) or {}
+    result = outbound_batches.save_recipe(
+        get_engine(), dict(form), actor=str(user.get("email") or user.get("name") or "operator"))
+    result.setdefault("reason", "Recipe saved and added to the daily pull list." if result.get("ok") else "Recipe could not be saved.")
+    return JSONResponse(status_code=200 if result.get("ok") else 400, content=result)
 
 
 @router.post("/admin/api/outbound/delivery/test", response_class=JSONResponse)
@@ -1403,7 +1530,7 @@ def outbound_leads(request: Request) -> Response:
           </div>
           <div class="ld-actions" aria-label="Company library actions">
             <a class="lo-btn ld-primary" href="/admin/api/outbound/leads.csv">Download all for Clay</a>
-            <a class="lo-btn" href="/admin/outbound/brands">Find fresh companies</a>
+            <a class="lo-btn" href="/admin/outbound/daily">Open daily leads</a>
           </div>
         </header>
 
@@ -1418,8 +1545,8 @@ def outbound_leads(request: Request) -> Response:
         <p class="ld-note" style="margin:0 0 14px">Top niches: {html.escape(top_niches)}</p>
 
         <nav class="ld-actions" aria-label="Prospecting workspace" style="justify-content:flex-start;margin-bottom:14px">
-          <a class="lo-btn" href="/admin/outbound/lead-ops">Manage sourcing</a>
-          <a class="lo-btn" href="/admin/outbound/scoreboard">View prospecting performance</a>
+          <a class="lo-btn" href="/admin/outbound/recipes">Manage recipes &amp; ICP</a>
+          <a class="lo-btn" href="/admin/outbound/performance">View outbound performance</a>
         </nav>
 
         <div class="ld-command" aria-label="Filter company library">
