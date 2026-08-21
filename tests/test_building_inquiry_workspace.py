@@ -356,6 +356,59 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
         self.assertIn(denied.status_code, {302, 303})
         self.assertEqual(denied.headers["location"], "/admin/login")
 
+    def test_contract_confirmation_collects_a_number_for_legacy_attendance(self) -> None:
+        from sales_support_agent.services.building_inquiry_workspace import (
+            _confirm_contract_panel,
+        )
+
+        html = _confirm_contract_panel(
+            {
+                "id": "jordan-inquiry",
+                "confirm_contract": {
+                    "ready": True,
+                    "date": "2027-06-17",
+                    "label": "Thursday, June 17, 2027",
+                    "setup": "6:00 AM",
+                    "teardown": "6:00 PM",
+                    "guests": "9:00 AM to 3:00 PM",
+                    "guest_start": "09:00",
+                    "guest_end": "15:00",
+                    "clash": "",
+                },
+            },
+            interview={"attendance": "Event"},
+            csrf_token="token",
+            blockers=[],
+        )
+        self.assertIn('name="attendance"', html)
+        self.assertIn('type="number"', html)
+        self.assertIn("Expected attendance", html)
+        self.assertIn("Enter the best current estimate", html)
+
+    def test_event_correction_prefers_canonical_arena_offering(self) -> None:
+        from sales_support_agent.api.building_inquiry_workspace_router import (
+            _event_offering,
+        )
+
+        with self.factory() as session:
+            session.add_all([
+                BuildingOffering(
+                    id="arena-event", slug="arena-event", name="The Arena event booking",
+                    offering_type="event", space_id="sp",
+                ),
+                BuildingOffering(
+                    id="arena-events", slug="arena-events", name="The Arena event booking",
+                    offering_type="event", space_id="sp",
+                ),
+            ])
+            session.commit()
+            selected = _event_offering(session, "arena-event")
+            self.assertIsNotNone(selected)
+            self.assertEqual(selected.id, "arena-events")
+            session.delete(session.get(BuildingOffering, "arena-event"))
+            session.delete(session.get(BuildingOffering, "arena-events"))
+            session.commit()
+
 
 if __name__ == "__main__":
     unittest.main()

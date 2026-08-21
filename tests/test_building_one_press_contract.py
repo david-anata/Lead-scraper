@@ -262,7 +262,7 @@ class OnePressContractTests(unittest.TestCase):
             page = self.client.get(location.split("#", 1)[0])
             self.assertIn(f'id="{anchor}"', page.text)
 
-    def test_06b_text_in_attendance_returns_a_correction_not_a_500(self) -> None:
+    def test_06b_text_in_attendance_moves_correction_into_contract_confirmation(self) -> None:
         """Regression for Elisa's production answer, which began with Event."""
 
         self._lead("press-attendance-text")
@@ -272,10 +272,14 @@ class OnePressContractTests(unittest.TestCase):
             payload["_event_interview"] = {"attendance": "Event reception"}
             lead.payload_json = payload
             session.commit()
-        refused = self._press("press-attendance-text")
-        self.assertEqual(refused.status_code, 303, refused.text)
-        self.assertIn("error=", refused.headers["location"])
-        self.assertIn("attendance+needs+a+number", refused.headers["location"])
+        correction = self._press("press-attendance-text")
+        self.assertEqual(correction.status_code, 303, correction.text)
+        self.assertIn("confirm=contract", correction.headers["location"])
+        self.assertNotIn("error=", correction.headers["location"])
+        page = self.client.get(correction.headers["location"].split("#")[0])
+        self.assertIn("Expected attendance", page.text)
+        self.assertIn('name="attendance"', page.text)
+        self.assertIn('type="number"', page.text)
         with self.factory() as session:
             self.assertEqual(
                 session.query(BuildingReservation).filter_by(

@@ -91,6 +91,22 @@ from sales_support_agent.services.building_security import (
 
 
 MOUNTAIN = ZoneInfo("America/Denver")
+CANONICAL_ARENA_OFFERING_ID = "arena-events"
+
+
+def _event_offering(session: Any, requested_id: str = "") -> BuildingOffering | None:
+    """Resolve event work to the governed Arena offering whenever it exists."""
+
+    requested = session.get(BuildingOffering, requested_id) if requested_id else None
+    canonical = session.get(BuildingOffering, CANONICAL_ARENA_OFFERING_ID)
+    for offering in (canonical, requested):
+        if offering is not None and offering.offering_type == "event":
+            return offering
+    return session.execute(
+        select(BuildingOffering)
+        .where(BuildingOffering.offering_type == "event")
+        .order_by(BuildingOffering.name, BuildingOffering.id)
+    ).scalars().first()
 FORM_DEPS = [Depends(require_building_form_security)]
 router = APIRouter(
     prefix="/admin/building/inquiries",
@@ -126,11 +142,7 @@ def _calendar_view(
     confirms a date rather than retyping one that is already on the page.
     """
 
-    offering = session.execute(
-        select(BuildingOffering)
-        .where(BuildingOffering.offering_type == "event")
-        .order_by(BuildingOffering.name)
-    ).scalars().first()
+    offering = _event_offering(session, str(inquiry.offering_id or ""))
     if offering is None:
         return {}
 
@@ -638,12 +650,8 @@ async def update_lead_details(
                 f"{target}?error={quote_plus('Choose an event offering for an event lead.')}",
                 status_code=303,
             )
-        if kind == "event" and offering is None:
-            offering = session.execute(
-                select(BuildingOffering)
-                .where(BuildingOffering.offering_type == "event")
-                .order_by(BuildingOffering.name)
-            ).scalars().first()
+        if kind == "event":
+            offering = _event_offering(session, offering_id)
         before = {
             "kind": inquiry.kind,
             "name": inquiry.name,
@@ -866,7 +874,7 @@ async def create_contract_from_lead(
         # One press does the job. The single exception is a date already taken:
         # there is one Arena, so double-booking it is a decision somebody makes
         # looking at what they would be booking over.
-        if plan.get("clash") and not override:
+        if (plan.get("clash") or plan.get("needs_attendance")) and not override:
             return RedirectResponse(
                 f"{target}?confirm=contract#date-review", status_code=303
             )
@@ -1154,12 +1162,9 @@ def _auto_hold_plan(
 
     raw_attendance = carried["attendance"] or interview.get("attendance") or ""
     attendance = attendance_guess({"attendance": raw_attendance})
-    if str(raw_attendance).strip() and not attendance:
-        return {}, (
-            "Expected attendance needs a number before this date can be held. "
-            "Correct Attendance in the event interview, then create the contract again."
-        )
-    attendance = attendance or "1"
+    needs_attendance = bool(str(raw_attendance).strip()) and not bool(attendance)
+    if not str(raw_attendance).strip():
+        attendance = "1"
 
     cell = next(
         (
@@ -1182,6 +1187,7 @@ def _auto_hold_plan(
             "attendance": attendance,
         },
         "clash": clash,
+        "needs_attendance": needs_attendance,
         "label": str(view.get("selected_label") or event_date),
     }, ""
 
@@ -1217,11 +1223,7 @@ def _take_the_date(
         if relationship is None:
             return "", "Link or create the customer on this lead first."
         contact_id = relationship.contact_id
-        offering = session.execute(
-            select(BuildingOffering)
-            .where(BuildingOffering.offering_type == "event")
-            .order_by(BuildingOffering.name)
-        ).scalars().first()
+        offering = _event_offering(session, str(inquiry.offering_id or ""))
         if offering is None:
             return "", "No event offering exists to book against."
         offering_id, space_id = offering.id, offering.space_id

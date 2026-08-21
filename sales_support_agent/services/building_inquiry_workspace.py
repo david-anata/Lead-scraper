@@ -384,6 +384,15 @@ def _confirm_contract_panel(
         if clash else ""
     )
     label = "Double-book it and create the contract" if clash else "Yes, hold it and create the contract"
+    attendance = attendance_guess(interview)
+    attendance_field = (
+        f'<input type="hidden" name="attendance" value="{_esc(attendance)}">'
+        if attendance
+        else '<label>Expected attendance<input type="number" name="attendance" '
+        'min="1" required inputmode="numeric" autocomplete="off"></label>'
+        '<p class="field-help">Enter the best current estimate. This checks venue capacity; '
+        'you can update the interview later.</p>'
+    )
     return f'''<div class="lead-cal__confirm">
             <h3>Hold {_esc(confirm.get("label"))} and create the contract?</h3>
             <p>In the building <strong>{_esc(confirm.get("setup"))}</strong> to
@@ -396,7 +405,7 @@ def _confirm_contract_panel(
               <input type="hidden" name="event_date" value="{_esc(confirm.get("date"))}">
               <input type="hidden" name="guest_start_time" value="{_esc(confirm.get("guest_start"))}">
               <input type="hidden" name="guest_end_time" value="{_esc(confirm.get("guest_end"))}">
-              <input type="hidden" name="attendance" value="{_esc(attendance_guess(interview))}">
+              {attendance_field}
               {'<input type="hidden" name="override_conflicts" value="yes">' if clash else ''}
               <div class="lead-interview__save">
                 <button class="lead-button {'lead-button--danger' if clash else 'lead-button--primary'}" type="submit">{_esc(label)}</button>
