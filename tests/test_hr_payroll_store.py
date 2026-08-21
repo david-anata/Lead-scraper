@@ -341,11 +341,20 @@ def test_reissue_is_atomic_and_preserves_original_evidence():
     engine = _engine()
     with Session(engine) as session:
         session.add(_run())
+        session.add(HRCompanyProfile(
+            legal_name="Anata LLC",
+            final_approver_email="david@anatainc.com",
+        ))
         session.add(_check("pay_test", "1001"))
         session.add(_check("other_run", "2001", "other@anatainc.com"))
         session.commit()
 
     with mock.patch.object(payroll_store, "get_engine", return_value=engine):
+        assert payroll_store.void_and_reissue_check(
+            "pay_test", employee_email="employee@anatainc.com",
+            reason="Damaged check", new_check_number="1002",
+            actor="val@anatainc.com",
+        ) == (False, "final_approver_required")
         assert payroll_store.void_and_reissue_check(
             "pay_test", employee_email="employee@anatainc.com",
             reason="Damaged check", new_check_number="2001",

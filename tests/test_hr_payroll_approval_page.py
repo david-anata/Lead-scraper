@@ -1,6 +1,7 @@
 from sales_support_agent.services.hr.pages import (
     render_hr_payroll_approval,
     render_hr_payroll_control,
+    render_hr_payroll_run,
     render_hr_settings,
 )
 from sales_support_agent.services.hr.payroll import SemimonthlyPeriod
@@ -122,6 +123,36 @@ def test_final_approver_who_prepared_version_gets_exact_val_handoff():
     assert "You prepared this version, so you cannot approve it" in html
     assert "Val must sign in" in html
     assert "Prepare immutable payroll version" not in html
+    assert (
+        'href="/admin/hr/payroll/runs/payroll-version-123/approve"'
+        not in html
+    )
+    assert "first live run remains blocked" not in html
+
+
+def test_payroll_run_formats_exact_hours_for_people():
+    run = _run(status="prepared")
+    run["calculations"] = [{
+        "employee_email": "hourly@anatainc.com",
+        "inputs": {
+            "regular_hours": "32.03055555555555555555555555",
+            "overtime_hours": "0E-27",
+            "holiday_hours": "0",
+            "pto_hours": "4",
+        },
+        "results": {},
+        "check_number": "",
+    }]
+
+    html = render_hr_payroll_run(
+        run, user={"email": "david@anatainc.com"}
+    )
+
+    assert "32.03" in html
+    assert "0.00" in html
+    assert "4.00" in html
+    assert "32.03055555555555555555555555" not in html
+    assert "0E-27" not in html
 
 
 def test_settings_lists_authorized_owner_without_employee_record():

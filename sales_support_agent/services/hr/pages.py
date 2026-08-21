@@ -21,6 +21,14 @@ def _esc(v) -> str:
     return html.escape("" if v is None else str(v))
 
 
+def _hours(value) -> str:
+    """Format stored exact-hour values for calm, human-readable payroll review."""
+    try:
+        return f"{float(value or 0):.2f}"
+    except (TypeError, ValueError):
+        return "0.00"
+
+
 def _correction_duration(payload: dict) -> float:
     """Derive duration from visible times instead of untrusted legacy totals."""
     try:
@@ -1650,7 +1658,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         <td>${_esc(run['taxes'])}</td><td>${_esc(run.get('deductions'))}</td><td>${_esc(run['net'])}</td><td>${_esc(run['cash_impact'])}</td>
         <td>{run['employee_count']}</td><td>{_esc(run['initiated_by'])}</td>
         <td><a href="/admin/hr/payroll/runs/{_esc(run['id'])}">Review details</a>
-        {f'<br><a class="hr-btn" href="/admin/hr/payroll/runs/{_esc(run["id"])}/approve">Review and approve</a>' if run["status"] == "prepared" else ''}</td></tr>"""
+        {f'<br><a class="hr-btn" href="/admin/hr/payroll/runs/{_esc(run["id"])}/approve">Review and approve</a>' if run["status"] == "prepared" and actor_email == final_approver_email and actor_email != (run.get("initiated_by") or "").strip().lower() else ''}</td></tr>"""
         for run in control["runs"]
     ) or '<tr><td colspan="10" class="hr-empty">No prepared versions for this period.</td></tr>'
     liability_rows = "".join(
@@ -1706,7 +1714,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <p>Each blocker names who owns the next step. Opening this list never changes payroll.</p>
       <div style="overflow-x:auto"><table class="hr-tbl"><thead><tr><th>Owner</th><th>Person or company</th><th>Requirement</th><th>Next action</th></tr></thead><tbody>{blocker_rows}</tbody></table></div>
       <p>No bank transfer, check, tax payment, or filing occurs from preparation.</p>
-      <p><strong>Calculation authority:</strong> gross, withholding, net pay, and employer cost shown here are Anata planning estimates. No payroll provider is connected. The first live run remains blocked until a qualified professional reviews the rule package and the exact run is independently compared.</p></div>
+      <p><strong>Calculation authority:</strong> gross, withholding, net pay, and employer cost shown here are Anata planning estimates. No payroll provider is connected. Use the recorded calculation review and independently compare the exact run before completing payments or filings in the official portals.</p></div>
     {outside_correction_notice}
     <div class="hr-cards">
       <div class="hr-card"><div class="n">{_esc(period.pay_date)}</div><div class="l">Payday</div></div>
@@ -1999,8 +2007,8 @@ def render_hr_payroll_run(run: dict, *, user, employee_view=False, flash=None) -
                 <label>Check number</label><input name="check_number" required>
                 <button class="hr-btn" type="submit">Record issued check</button></form>'''
         rows += f"""<tr><td>{_esc(calculation['employee_email'])}</td>
-        <td>{_esc(inputs.get('regular_hours','0'))}</td><td>{_esc(inputs.get('overtime_hours','0'))}</td>
-        <td>{_esc(inputs.get('holiday_hours','0'))}</td><td>{_esc(inputs.get('pto_hours','0'))}</td>
+        <td>{_hours(inputs.get('regular_hours'))}</td><td>{_hours(inputs.get('overtime_hours'))}</td>
+        <td>{_hours(inputs.get('holiday_hours'))}</td><td>{_hours(inputs.get('pto_hours'))}</td>
         <td>${money(results.get('taxable_gross_cents'))}</td>
         <td>${money(results.get('federal_cents'))}</td><td>${money(results.get('utah_cents'))}</td>
         <td>${money(results.get('social_security_cents'))}</td><td>${money(results.get('medicare_cents'))}</td>

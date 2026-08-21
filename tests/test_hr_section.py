@@ -477,7 +477,7 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("Payroll readiness", page.text)
         self.assertIn("Anata planning estimates", page.text)
         self.assertIn("No payroll provider is connected", page.text)
-        self.assertIn("qualified professional reviews", page.text)
+        self.assertIn("independently compare the exact run", page.text)
         self.assertIn("Estimated tax liability", page.text)
         self.assertNotIn("compute gross/taxes/net and pay employees", page.text)
 

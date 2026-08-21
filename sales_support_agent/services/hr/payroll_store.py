@@ -1866,6 +1866,14 @@ def void_and_reissue_check(
         return False, "void_reason_required"
     with _session() as session:
         run = session.query(HRPayrollRun).filter_by(base44_id=run_id).first()
+        company = session.query(HRCompanyProfile).first()
+        required_approver = (
+            company.final_approver_email.strip().lower() if company else ""
+        )
+        if not required_approver:
+            return False, "final_approver_not_configured"
+        if actor.strip().lower() != required_approver:
+            return False, "final_approver_required"
         old = session.query(HRPrintedCheck).filter(
             HRPrintedCheck.payroll_run_id == run_id,
             HRPrintedCheck.employee_email == email,
