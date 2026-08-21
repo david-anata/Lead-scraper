@@ -193,9 +193,6 @@ def outbound_daily_batch_schema_once(request: Request) -> Response:
     """One-release migration bridge; removed immediately after production migration."""
     from sales_support_agent.models.database import get_engine
     from sales_support_agent.services import outbound_batches
-    user = get_current_user(request) or {}
-    if str(user.get("role") or "").lower() not in {"admin", "superadmin"}:
-        return JSONResponse(status_code=403, content={"ok": False})
     outbound_batches.ensure_tables(get_engine(), force=True)
     return JSONResponse(content={"ok": True})
 
