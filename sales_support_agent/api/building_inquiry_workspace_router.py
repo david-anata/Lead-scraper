@@ -419,9 +419,22 @@ def inquiry_workspace(
         public_details = {
             key: value for key, value in payload.items() if not str(key).startswith("_")
         }
+        corrections = dict(payload.get("_lead_corrections") or {})
+        effective_details = {
+            **public_details,
+            **{
+                key: value
+                for key, value in {
+                    "eventType": corrections.get("event_type"),
+                    "guestStartTime": corrections.get("guest_start_time"),
+                    "guestEndTime": corrections.get("guest_end_time"),
+                }.items()
+                if str(value or "").strip()
+            },
+        }
         prefilled_interview, _ = prefill_event_interview(
             preferred_date=inquiry.preferred_date,
-            details=public_details,
+            details=effective_details,
         )
         event_interview = {
             **prefilled_interview,
@@ -442,6 +455,7 @@ def inquiry_workspace(
             "response_due_at": inquiry.response_due_at,
             "created_at": inquiry.created_at,
             "details": public_details,
+            "lead_corrections": corrections,
             "lifecycle": dict(payload.get("_lifecycle") or {}),
             "attribution": dict(payload.get("_attribution") or {}),
             "event_interview": event_interview,
@@ -475,6 +489,15 @@ def inquiry_workspace(
                 }
                 for row in rate_plan_rows
             ],
+            "offering_options": [
+                {"id": row.id, "name": row.name}
+                for row in session.execute(
+                    select(BuildingOffering)
+                    .where(BuildingOffering.offering_type == "event")
+                    .order_by(BuildingOffering.name)
+                ).scalars().all()
+            ],
+            "offering_id": inquiry.offering_id or "",
             "is_archived": is_archived(inquiry),
             "attachments": lead_attachments(session, inquiry.id),
             "is_test": is_test_inquiry(
@@ -512,7 +535,7 @@ def inquiry_workspace(
                 _calendar_view(
                     session,
                     inquiry=inquiry,
-                    details=public_details,
+                    details=effective_details,
                     month=month,
                     date_choice=date_choice,
                 )
@@ -559,6 +582,116 @@ def inquiry_workspace(
             error=error,
         ),
         headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@router.post("/{inquiry_id}/details", dependencies=FORM_DEPS)
+async def update_lead_details(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Correct staff-operational lead fields without rewriting the submission.
+
+    Marketplace and staff-created leads are sometimes filed under the wrong
+    journey.  The correction is explicit and audited; the prospect's original
+    payload stays intact for evidence and the corrected values drive the event
+    calendar, interview prefill, and contract workflow.
+    """
+
+    target = f"/admin/building/inquiries/{inquiry_id}"
+    form = await request.form()
+    kind = str(form.get("kind") or "").strip().lower()
+    if kind not in {"event", "tour", "workspace"}:
+        return RedirectResponse(
+            f"{target}?error={quote_plus('Choose Event, Tour, or Workspace.')}",
+            status_code=303,
+        )
+    name = str(form.get("name") or "").strip()
+    email = str(form.get("email") or "").strip().lower()
+    if not name:
+        return RedirectResponse(
+            f"{target}?error={quote_plus('Customer name is required.')}", status_code=303
+        )
+    if "@" not in email or email.startswith("@") or email.endswith("@"):
+        return RedirectResponse(
+            f"{target}?error={quote_plus('Enter a valid customer email.')}", status_code=303
+        )
+    raw_date = str(form.get("preferred_date") or "").strip()
+    try:
+        preferred_date = date.fromisoformat(raw_date) if raw_date else None
+    except ValueError:
+        return RedirectResponse(
+            f"{target}?error={quote_plus('Requested date must be a valid date.')}",
+            status_code=303,
+        )
+    offering_id = str(form.get("offering_id") or "").strip()
+    actor = str(user.get("email") or "building-operator")
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        offering = session.get(BuildingOffering, offering_id) if offering_id else None
+        if offering is not None and offering.offering_type != "event":
+            return RedirectResponse(
+                f"{target}?error={quote_plus('Choose an event offering for an event lead.')}",
+                status_code=303,
+            )
+        if kind == "event" and offering is None:
+            offering = session.execute(
+                select(BuildingOffering)
+                .where(BuildingOffering.offering_type == "event")
+                .order_by(BuildingOffering.name)
+            ).scalars().first()
+        before = {
+            "kind": inquiry.kind,
+            "name": inquiry.name,
+            "email": inquiry.email,
+            "phone": inquiry.phone,
+            "preferred_date": inquiry.preferred_date.isoformat()
+            if inquiry.preferred_date else "",
+            "offering_id": inquiry.offering_id or "",
+            "corrections": dict((inquiry.payload_json or {}).get("_lead_corrections") or {}),
+        }
+        payload = dict(inquiry.payload_json or {})
+        corrections = {
+            "event_type": str(form.get("event_type") or "").strip(),
+            "guest_start_time": str(form.get("guest_start_time") or "").strip(),
+            "guest_end_time": str(form.get("guest_end_time") or "").strip(),
+            "updated_by": actor,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        inquiry.kind = kind
+        inquiry.name = name
+        inquiry.email = email
+        inquiry.phone = str(form.get("phone") or "").strip()
+        inquiry.preferred_date = preferred_date
+        inquiry.offering_id = offering.id if offering is not None else None
+        payload["_lead_corrections"] = corrections
+        inquiry.payload_json = payload
+        inquiry.updated_at = datetime.now(timezone.utc)
+        session.add(BuildingAuditEvent(
+            entity_type="inquiry",
+            entity_id=inquiry.id,
+            action="lead_details_corrected",
+            actor=actor,
+            before_json=before,
+            after_json={
+                "kind": inquiry.kind,
+                "name": inquiry.name,
+                "email": inquiry.email,
+                "phone": inquiry.phone,
+                "preferred_date": inquiry.preferred_date.isoformat()
+                if inquiry.preferred_date else "",
+                "offering_id": inquiry.offering_id or "",
+                "corrections": corrections,
+                "original_submission_changed": False,
+                "customer_contacted": False,
+            },
+        ))
+    return RedirectResponse(
+        f"{target}?notice={quote_plus('Lead details updated. Nothing was sent.')}",
+        status_code=303,
     )
 
 

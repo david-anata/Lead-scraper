@@ -110,6 +110,20 @@ def _when(value: datetime | None) -> str:
     return local.astimezone(MOUNTAIN).strftime("%b %d, %Y · %I:%M %p MT")
 
 
+def _clock_value(raw: Any) -> str:
+    """Normalize stored customer time text for a native time input."""
+
+    text = str(raw or "").strip().upper().replace(".", "")
+    if not text:
+        return ""
+    for pattern in ("%I:%M %p", "%I %p", "%H:%M", "%H"):
+        try:
+            return datetime.strptime(text, pattern).strftime("%H:%M")
+        except ValueError:
+            continue
+    return ""
+
+
 def is_test_inquiry(*, name: str, email: str, source: str) -> bool:
     """Identify deterministic internal QA records without hiding prospects."""
 
@@ -857,6 +871,37 @@ def render_inquiry_workspace(
     else:
         link_existing_block = ""
     contact = dict(data.get("contact") or {})
+    corrections = dict(data.get("lead_corrections") or {})
+    offering_options = "".join(
+        f'<option value="{_esc(item.get("id"))}"'
+        f'{" selected" if str(item.get("id")) == str(data.get("offering_id") or "") else ""}>'
+        f'{_esc(item.get("name"))}</option>'
+        for item in data.get("offering_options") or []
+    )
+    kind_options = "".join(
+        f'<option value="{value}"{" selected" if data.get("kind") == value else ""}>{label}</option>'
+        for value, label in (("event", "Event"), ("tour", "Tour"), ("workspace", "Workspace"))
+    )
+    lead_setup_section = (
+        '<section class="lead-panel" id="lead-setup"><div class="lead-panel__head"><div>'
+        '<h2>Lead setup</h2><p>Correct how staff should work this lead. The original '
+        'submission below stays unchanged.</p></div></div>'
+        f'<form class="lead-interview" method="post" action="/admin/building/inquiries/{_esc(data.get("id"))}/details">'
+        f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+        '<div class="lead-interview__grid" style="padding:0 20px">'
+        f'<label>Journey<select name="kind" required>{kind_options}</select></label>'
+        f'<label>Event offering<select name="offering_id"><option value="">Use the Arena default</option>{offering_options}</select></label>'
+        f'<label>Customer name<input name="name" required value="{_esc(data.get("name"))}"></label>'
+        f'<label>Email<input type="email" name="email" required value="{_esc(data.get("email"))}"></label>'
+        f'<label>Phone<input name="phone" value="{_esc(data.get("phone"))}"></label>'
+        f'<label>Requested date<input type="date" name="preferred_date" value="{_esc(data.get("preferred_date"))}"></label>'
+        f'<label>Event type<input name="event_type" value="{_esc(corrections.get("event_type") or details.get("eventType") or "")}" placeholder="Reception, workshop, company event…"></label>'
+        f'<label>Guest start<input type="time" name="guest_start_time" value="{_esc(_clock_value(corrections.get("guest_start_time") or details.get("guestStartTime")))}"></label>'
+        f'<label>Guest end<input type="time" name="guest_end_time" value="{_esc(_clock_value(corrections.get("guest_end_time") or details.get("guestEndTime")))}"></label>'
+        '</div><div class="lead-interview__save" style="padding:0 20px 20px">'
+        '<button class="lead-button lead-button--primary" type="submit">Save lead setup</button>'
+        '<span>Updates Agent only. No customer message is sent.</span></div></form></section>'
+    )
     if contact:
         customer_section = (
             '<section class="lead-panel"><div class="lead-panel__head"><div>'
@@ -1122,6 +1167,7 @@ def render_inquiry_workspace(
       {messages}{next_section}
       <section class="lead-layout">
         <div class="lead-stack">
+          {lead_setup_section}
           <section class="lead-panel"><div class="lead-panel__head"><div><h2>Original website submission</h2><p>The prospect's words, preserved under plain-language labels.</p></div></div><dl class="lead-details">{submitted_rows}</dl></section>
           {customer_section}
           {interview_section}
