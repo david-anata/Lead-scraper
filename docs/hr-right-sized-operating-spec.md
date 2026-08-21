@@ -1453,3 +1453,235 @@ For Anata, right-sized HR parity is achieved when:
 > version, issue checks, and prove every required payment and filing outcome. Contractors
 > remain separate, and every correction is understandable after the fact.
 
+## 27. Production front-end validation and payroll freeze correction
+
+**Validated:** August 20–21, 2026, read-only in authenticated production Chrome.
+**Scope:** HR home and setup, people, onboarding, time/PTO, payroll preview,
+payroll control, prepared-version review, employee statements, compliance,
+settings, reports, policies, contractors, offboarding, and an employee record.
+**Safety:** no form was submitted and no employee, payroll, check, tax, filing,
+permission, or Finance record was changed.
+
+### 27.1 Validated strengths
+
+- The shell, headings, labels, skip link, focus treatment, and primary navigation are
+  consistent across the reviewed pages.
+- Employee onboarding explains personal-email separation, W-4 replacement, I-9
+  handling, and identity-document safety in plain language.
+- Time corrections preserve the original and proposed values, require another person's
+  decision, and show estimated gross impact.
+- Payroll blockers generally name the affected person, owner, reason, and a route to
+  resolution.
+- The prepared payroll version is an immutable calculation snapshot and sensitive
+  reads are audited.
+- Employee statement lookup is scoped to the signed-in employee.
+- Compliance, check, liability, contractor, and provider copy correctly distinguishes
+  an Agent record from an outside payment, filing, transfer, or government submission.
+- No browser console errors appeared on the reviewed production pages.
+
+### 27.2 P0 — freeze, issuance, and correction states are not operable enough
+
+Production evidence:
+
+- The August control room says `Prepare`, `prepared`, `immutable`, and `frozen` for the
+  same transition. The operator reasonably cannot identify which action freezes the
+  payroll.
+- The prepared version remains labelled `prepared` after checks were cut outside Agent.
+  Agent therefore has no approved/check-issued evidence and cannot present the real
+  operational state.
+- The page continues to expose ordinary pay, time, opening-balance, and variable-input
+  entry points while a prepared version exists. Even when those edits cannot mutate the
+  saved snapshot, the UI makes it look as though the same payroll can still be edited.
+- Pay statements remain empty because checks cut outside Agent were not recorded through
+  the approved-run workflow.
+
+Required state vocabulary:
+
+`Collecting inputs` → `Ready to freeze` → `Frozen — awaiting David` →
+`Approved — ready to issue` → `Checks issued — reconciliation required` →
+`Payments and filings open` → `Reconciled and closed`
+
+Exception states:
+
+`Blocked`, `Returned for correction`, `Correction review required`, `Superseded`,
+`Partially reconciled`, and `Void/reissue required`.
+
+Required behavior:
+
+1. Rename the operator action to **Freeze payroll for David**. Do not use `Prepare` as
+   the primary user-facing state word.
+2. Before freezing, show a confirmation page with the period, pay date, employees,
+   hours, variable items, gross, estimated tax, check cash, employer cost, preparer,
+   and a direct statement that later changes require a correction workflow.
+3. On confirmation, create one immutable version/hash and record who froze it and when.
+   The success state must say **Frozen — awaiting David's approval**.
+4. Once frozen, replace ordinary edit controls for that period with read-only values and
+   one explicit **Start payroll correction** action. Links may explain where source data
+   originated but may not imply that editing it silently changes the frozen payroll.
+5. David's approval screen must identify the frozen version and preparer. Approval cannot
+   be available to the preparer or anyone except the configured final approver.
+6. After approval, the primary action becomes **Record issued checks**. The operator
+   records the already-approved amount, check number, issue date, issuer, delivery state,
+   and optional memo. Recording is evidence; Agent does not print or move money.
+7. After all checks are recorded, lock the ordinary period workflow. Display
+   **Checks issued — corrections require review** with check and reconciliation status.
+8. A post-freeze correction requires owner, reason, affected employee/input, before and
+   after values, gross/net/tax impact, whether a check was delivered or cleared, and a
+   second authorized review.
+9. A correction never rewrites the original calculation, approval, check, statement, or
+   liability. It creates a linked correction version and, when applicable, a void/reissue
+   or supplemental-check record.
+10. Historic employee compensation, W-4, opening-balance, time, PTO, and payroll-input
+    changes must either take effect prospectively or enter this correction review. They
+    may not silently change an approved or check-issued period.
+11. Provide a controlled retrospective reconciliation path for payroll completed outside
+    Agent. It must capture the source, actual approver, check numbers/dates, amounts,
+    available clearing evidence, reason for late entry, and reviewer. It must never ask
+    the operator to cut checks again.
+
+Acceptance conditions:
+
+- A nontechnical operator can answer “Is this payroll frozen?” and “What happens if I
+  change something?” from the first viewport.
+- A frozen, approved, check-issued, or closed period exposes no ordinary mutation control.
+- Direct POST attempts receive the same server-side lock as the UI.
+- Every correction links to the original version and shows its financial consequence.
+- The current August payroll can be reconciled retrospectively without misrepresenting
+  when approval, issuance, payment, or filing occurred.
+
+### 27.3 P0 — calculation-review truth conflicts across pages
+
+Production evidence:
+
+- Payroll control and settings say the 2026 calculation review is completed.
+- Payroll Preview says no qualified professional has signed off and instructs the user
+  not to pay from the figures.
+- The recorded review currently uses `n/a` for both evidence and what was independently
+  checked. That is not sufficient evidence for a qualified-review claim.
+
+Required behavior:
+
+- Use one calculation-authority component and one source record on Preview, Payroll,
+  Approval, Settings, Setup, and run detail.
+- Distinguish `Not reviewed`, `Review recorded — evidence incomplete`, `Qualified review
+  confirmed`, and `Exact run independently compared`.
+- A review cannot become `Qualified review confirmed` with placeholder or empty evidence,
+  scope, reviewer qualification, or review date.
+- Never show `Ready`, `Completed`, or `Confirmed` on one page when another page blocks the
+  same run for that fact.
+
+### 27.4 P1 — Payroll Preview is not decision-safe
+
+Production evidence:
+
+- Preview still displays exact Decimal strings and scientific-notation zeroes for hours,
+  while frozen-run detail correctly uses two decimals.
+- Preview says “Nothing blocks a real run,” even when the control room may have critical
+  readiness blockers.
+- Preview has no visible difference summary between live inputs and the latest frozen
+  version.
+
+Required behavior:
+
+- Format all hour types to two decimals and all money to currency consistently.
+- Show the same readiness blockers and calculation-authority state as Payroll.
+- Label the page **Live draft preview — not frozen**.
+- If a frozen version exists, show what changed since that version and require the
+  correction workflow rather than inviting another ordinary freeze.
+
+### 27.5 P1 — setup and compliance queues mix evidence with noise
+
+Production evidence:
+
+- Setup says all three active opening balances are independently approved but still marks
+  opening-balance reconciliation as needing action because a separate company checkbox is
+  unset. The missing fact is not explained in the task row.
+- Compliance presents current, future, and many historical overdue tasks in one long
+  table, each with a full evidence form. This makes the next operational action hard to
+  find and may overstate risk for recovered historical records.
+
+Required behavior:
+
+- Setup tasks must name the exact remaining fact. For example: “Employee balances are
+  approved; company opening-balance reconciliation confirmation is still missing.”
+- Compliance defaults to `Needs action`, groups by filing/new-hire responsibility, and
+  separates current obligations from recovered historical exceptions and future tasks.
+- Add filters, result count, row limits/pagination, and one disclosed evidence form per
+  selected item.
+- Every overdue item names owner, consequence, official resolution location, and next
+  action. Recovered history must not be represented as a current legal failure without
+  validated source evidence.
+
+### 27.6 P1 — operator navigation hides important payroll workstreams
+
+Production evidence:
+
+- Primary HR navigation exposes Today, People, Time & Leave, Payroll, Preview,
+  Compliance, and Manage.
+- Reports, setup, contractors, offboarding, policies, statements, and audit are reachable
+  only through secondary links or direct URLs.
+- HR home reports counts but does not present the current payroll state, frozen version,
+  check reconciliation, tax due date, or one dominant next payroll action.
+
+Required behavior:
+
+- HR Today becomes the role-aware command center: employee self-service for employees;
+  payroll and compliance next actions for David/Val.
+- Keep the primary navigation small, but add a labelled `More` destination containing
+  Setup, Reports & audit, Contractors, Offboarding, Policies, and employee Statements.
+- Surface the current payroll period, state, owner, deadline, and next action on Today.
+
+### 27.7 P1 — employee and compensation records expose implementation data
+
+Production evidence:
+
+- Compensation history renders raw dictionary payloads instead of human-readable prior
+  and new pay terms.
+- Employee-list status uses emoji plus raw role/type values, which is harder to scan than
+  the shared status vocabulary.
+- Active people who are not on payroll and inactive historical W-2 records appear in the
+  same dense roster without a default operational filter.
+
+Required behavior:
+
+- Render compensation history as effective date, old pay, new pay, reason, and actor.
+- Use human labels such as `Hourly`, `Fixed per check`, `Included in payroll`, and
+  `Not on payroll`; do not expose enum formatting.
+- Default the roster to active people and provide explicit filters for active, inactive,
+  W-2, contractor, payroll-included, and access-needed states.
+
+### 27.8 P2 — employee self-service needs progressive disclosure
+
+- Time & PTO combines clock, punch history, correction history, missed-day request,
+  timesheet status, PTO request, and PTO history in one long page. Preserve a large,
+  immediate clock action but collapse historical and exception sections behind clear
+  task headings.
+- Onboarding correctly protects identity data, but completed sections remain editable in
+  the same long view. Show a completion summary first and require an explicit
+  `Review or replace` action for signed/effective records.
+- Pay statements need an empty state that explains why no statement is available and who
+  owns the next action, especially when checks were issued outside Agent.
+
+### 27.9 Responsive and accessibility validation
+
+- Desktop Chrome showed consistent headings, semantic controls, labels, tables, skip
+  navigation, and no console errors.
+- Wide payroll/compliance tables use contained horizontal overflow, but the complete
+  phone layout could not be visually validated because the connected Chrome session did
+  not apply its requested viewport override.
+- Before implementation is accepted, repeat production visual QA at 390×844 and 320px,
+  including employee onboarding, clock, PTO, payroll freeze confirmation, approval,
+  correction review, check recording, compliance filtering, and statements.
+- At phone widths, primary actions must remain visible without horizontal page scroll;
+  tables must become labelled rows/cards or use an obvious contained scroller.
+
+### 27.10 Prioritized implementation sequence
+
+1. Freeze-state vocabulary, explicit confirmation, locked-period UI/server rules, and
+   retrospective check reconciliation.
+2. One calculation-review truth source and corrected Preview behavior/formatting.
+3. Post-freeze correction, void/reissue, and supplemental-pay workflow.
+4. Current-action compliance queue and exact setup blocker language.
+5. HR Today/navigation and employee/compensation readability.
+6. Progressive disclosure and full authenticated employee/Val mobile verification.
+
