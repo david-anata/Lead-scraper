@@ -187,6 +187,19 @@ def outbound_daily_batch_csv(request: Request, batch_id: int) -> Response:
     return Response(content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
+@router.get("/admin/api/outbound/daily-batches-schema-20260821", response_class=JSONResponse,
+            include_in_schema=False)
+def outbound_daily_batch_schema_once(request: Request) -> Response:
+    """One-release migration bridge; removed immediately after production migration."""
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_batches
+    user = get_current_user(request) or {}
+    if str(user.get("role") or "").lower() not in {"admin", "superadmin"}:
+        return JSONResponse(status_code=403, content={"ok": False})
+    outbound_batches.ensure_tables(get_engine(), force=True)
+    return JSONResponse(content={"ok": True})
+
+
 @router.get("/admin/api/outbound/daily-batches.csv", response_class=Response)
 def outbound_daily_batches_csv(request: Request, batch_ids: str = "") -> Response:
     from sales_support_agent.models.database import get_engine
