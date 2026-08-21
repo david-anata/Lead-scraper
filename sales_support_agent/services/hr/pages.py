@@ -1587,7 +1587,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         <td>{_esc(item.get('message'))}</td>
         <td><a class="hr-btn hr-btn-light" href="{_esc(item.get('href') or '/admin/hr/setup')}">{_esc(item.get('action') or 'Review setup')}</a></td></tr>"""
         for item in readiness["blockers"]
-    ) or '<tr><td colspan="4" class="hr-empty">No blockers remain. This period can be prepared.</td></tr>'
+    ) or '<tr><td colspan="4" class="hr-empty">No blockers remain. This period is ready to freeze.</td></tr>'
     urgent_items = ""
     for item in readiness["blockers"]:
         owner = item.get("owner") or "David or Val"
@@ -1600,7 +1600,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         urgent_items += f'''<li class="hr-blocker-item"><div><div class="hr-blocker-label">Blocked — action required</div><strong>{_esc(item.get("employee_email") or "Company setup")}</strong><p>{_esc(message)}<br><strong>Owner:</strong> {_esc(owner)}</p></div><a class="hr-btn" href="{_esc(href)}">{_esc(action_label)}</a></li>'''
     final_approver_email = (control.get("final_approver_email") or "").strip().lower()
     if readiness["blockers"]:
-        urgent_panel = f'''<section class="hr-callout blocked" aria-labelledby="urgent-payroll-heading" style="margin-top:18px"><div class="hr-kicker">Action required</div><h2 id="urgent-payroll-heading" style="margin:6px 0">Payroll cannot be prepared — {len(readiness["blockers"])} task{'s' if len(readiness["blockers"]) != 1 else ''} remaining</h2><p>Resolve each item below. Every button goes to the section where the work is completed.</p><ul class="hr-blocker-list">{urgent_items}</ul></section>'''
+        urgent_panel = f'''<section class="hr-callout blocked" aria-labelledby="urgent-payroll-heading" style="margin-top:18px"><div class="hr-kicker">Action required</div><h2 id="urgent-payroll-heading" style="margin:6px 0">Payroll cannot be frozen — {len(readiness["blockers"])} task{'s' if len(readiness["blockers"]) != 1 else ''} remaining</h2><p>Resolve each item below. Every button goes to the section where the work is completed.</p><ul class="hr-blocker-list">{urgent_items}</ul></section>'''
     elif prepared_run and (prepared_run.get("initiated_by") or "").strip().lower() == actor_email:
         urgent_panel = f'''<section class="hr-callout blocked" style="margin-top:18px"><div class="hr-kicker">Frozen — approval handoff required</div><h2 style="margin:6px 0">You froze this version, so you cannot approve it</h2><p>This exact version is locked. Because David froze it, Val must correct the inputs if needed and freeze a replacement; David can only approve a version frozen by someone else.</p><a class="hr-btn hr-btn-light" href="/admin/hr/payroll/runs/{_esc(prepared_run['id'])}">Review the frozen version</a></section>'''
     elif prepared_run and actor_email == final_approver_email:
@@ -1660,14 +1660,14 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         for item in control["inputs"]
     ) or '<tr><td colspan="7" class="hr-empty">No bonus, commission, reimbursement, deduction, or fee inputs.</td></tr>'
     run_rows = "".join(
-        f"""<tr><td>{_esc(run['id'])}</td><td>{_esc(run['status'])}</td>
+        f"""<tr><td>{_esc(run['id'])}</td><td>{_esc('Frozen — awaiting approval' if run['status'] == 'prepared' else run['status'].replace('_', ' ').title())}</td>
         <td>${_esc(run['gross'])}{f'<br><span class="hr-sub">{run["gross_change_percent"]:+.1f}% vs prior</span>' if run.get("gross_change_percent") is not None else ''}</td>
         <td>${_esc(run['taxes'])}</td><td>${_esc(run.get('deductions'))}</td><td>${_esc(run['net'])}</td><td>${_esc(run['cash_impact'])}</td>
         <td>{run['employee_count']}</td><td>{_esc(run['initiated_by'])}</td>
         <td><a href="/admin/hr/payroll/runs/{_esc(run['id'])}">Review details</a>
         {f'<br><a class="hr-btn" href="/admin/hr/payroll/runs/{_esc(run["id"])}/approve">Review and approve</a>' if run["status"] == "prepared" and actor_email == final_approver_email and actor_email != (run.get("initiated_by") or "").strip().lower() else ''}</td></tr>"""
         for run in control["runs"]
-    ) or '<tr><td colspan="10" class="hr-empty">No prepared versions for this period.</td></tr>'
+    ) or '<tr><td colspan="10" class="hr-empty">No frozen versions for this period.</td></tr>'
     liability_rows = "".join(
         f"""<tr><td>{_esc(item['agency'])}</td><td>{_esc(item['liability_type'])}</td>
         <td>${_esc(item['amount'])}</td><td>{_esc(item['due_date'])}</td><td>{_esc(item['status'])}</td>
@@ -1720,13 +1720,13 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <h2 style="margin:6px 0">{status_label}</h2>
       <p>Each blocker names who owns the next step. Opening this list never changes payroll.</p>
       <div style="overflow-x:auto"><table class="hr-tbl"><thead><tr><th>Owner</th><th>Person or company</th><th>Requirement</th><th>Next action</th></tr></thead><tbody>{blocker_rows}</tbody></table></div>
-      <p>No bank transfer, check, tax payment, or filing occurs from preparation.</p>
+      <p>No bank transfer, check, tax payment, or filing occurs from freezing.</p>
       <p><strong>Calculation authority:</strong> gross, withholding, net pay, and employer cost shown here are Anata planning estimates. No payroll provider is connected. Use the recorded calculation review and independently compare the exact run before completing payments or filings in the official portals.</p></div>
     {outside_correction_notice}
     <div class="hr-cards">
       <div class="hr-card"><div class="n">{_esc(period.pay_date)}</div><div class="l">Payday</div></div>
       <div class="hr-card"><div class="n">{len(control['employees'])}</div><div class="l">W-2 employees</div></div>
-      <div class="hr-card"><div class="n">{status_label}</div><div class="l">Preparation readiness</div></div>
+      <div class="hr-card"><div class="n">{status_label}</div><div class="l">Freeze readiness</div></div>
     </div>
     <h2>Other payroll inputs</h2>
     <table class="hr-tbl"><thead><tr><th>Employee</th><th>Type</th><th>Amount</th><th>Tax</th><th>Status</th><th>Description</th><th>Review</th></tr></thead><tbody>{input_rows}</tbody></table>
@@ -1742,7 +1742,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <button class="hr-btn" type="submit">Add for review</button>
     </form>'''}
     {f'<div class="hr-callout warn"><strong>This period is frozen.</strong><p>Ordinary payroll inputs are read-only. Reject the frozen version or use the controlled correction workflow before replacing it.</p></div>' if period_frozen else ''}
-    <h2>Prepared and approved versions</h2>
+    <h2>Frozen and approved versions</h2>
     <table class="hr-tbl"><thead><tr><th>Version ID</th><th>Status</th><th>Estimated gross</th><th>Estimated tax liability</th><th>Deduction liability</th><th>Estimated employee check cash</th><th>Estimated employer cost</th><th>People</th><th>Prepared by</th><th>Approval</th></tr></thead><tbody>{run_rows}</tbody></table>
     <h2>Tax payment and filing reconciliation</h2>
     <p class="hr-sub">Anata creates planning liability estimates after approval. Use the independently reviewed calculation and official government portal amounts before recording payments and filings. If a future payroll service is connected, reconcile its totals here too. Paid and filed are separate facts.</p>

@@ -269,8 +269,8 @@ def test_authorized_opening_balance_enterer_can_approve():
         user={"email": "david@anatainc.com"},
     )
 
-    assert "Payroll cannot be prepared — 1 task remaining" in html
-    assert html.index("Payroll cannot be prepared") < html.index("Today's process")
+    assert "Payroll cannot be frozen — 1 task remaining" in html
+    assert html.index("Payroll cannot be frozen") < html.index("Today's process")
     assert "Approve balance" in html
 
 
