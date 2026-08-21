@@ -55,15 +55,14 @@ def test_preparer_cannot_approve_own_version():
     assert "Approve this exact payroll version" not in html
 
 
-def test_only_configured_final_approver_sees_approval_form():
+def test_other_authorized_operator_can_approve():
     html = render_hr_payroll_approval(
-        _run(),
+        _run(prepared_by="david@anatainc.com"),
         user={"name": "Val", "email": "val@anatainc.com"},
     )
 
-    assert "Only the configured final approver" in html
-    assert "david@anatainc.com" in html
-    assert "Approve this exact payroll version" not in html
+    assert "other authorized payroll operator" in html
+    assert "Approve this exact payroll version" in html
 
 
 def test_control_room_links_to_confirmation_instead_of_inline_approval():
@@ -88,7 +87,7 @@ def test_control_room_links_to_confirmation_instead_of_inline_approval():
     }
 
     html = render_hr_payroll_control(
-        control, user={"email": "david@anatainc.com"}
+        control, user={"email": "david@anatainc.com", "is_superadmin": True}
     )
 
     assert (
@@ -110,9 +109,12 @@ def test_ready_preparer_gets_deliberate_freeze_confirmation_link():
         "opening_balances": [], "timesheets": [], "settings": {},
         "final_approver_email": "david@anatainc.com",
     }
-    html = render_hr_payroll_control(control, user={"email": "val@anatainc.com"})
+    html = render_hr_payroll_control(
+        control,
+        user={"email": "val@anatainc.com", "permissions": {"hr.payroll"}},
+    )
 
-    assert "Freeze payroll for David" in html
+    assert "Freeze payroll for review" in html
     assert 'href="/admin/hr/payroll/freeze?period_date=2026-08-01"' in html
     assert 'action="/admin/hr/payroll/prepare"' not in html
 
@@ -149,8 +151,7 @@ def test_freeze_confirmation_names_lock_and_requires_exact_attestation():
     david_html = render_hr_payroll_freeze(
         preview, user={"email": "david@anatainc.com"}
     )
-    assert "Val must sign in and freeze this version" in david_html
-    assert 'name="freeze_text"' not in david_html
+    assert 'name="freeze_text"' in david_html
 
 
 def test_final_approver_who_prepared_version_gets_exact_val_handoff():
@@ -172,11 +173,11 @@ def test_final_approver_who_prepared_version_gets_exact_val_handoff():
     }
 
     html = render_hr_payroll_control(
-        control, user={"email": "david@anatainc.com"}
+        control, user={"email": "david@anatainc.com", "is_superadmin": True}
     )
 
     assert "You froze this version, so you cannot approve it" in html
-    assert "Val must correct the inputs if needed and freeze a replacement" in html
+    assert "other authorized payroll operator must review and approve" in html
     assert "Prepare immutable payroll version" not in html
     assert (
         'href="/admin/hr/payroll/runs/payroll-version-123/approve"'
@@ -230,9 +231,9 @@ def test_settings_lists_authorized_owner_without_employee_record():
     assert "They do not need to be a W-2 employee" in html
     assert "David Narayan — david@anatainc.com" in html
     assert "Choose an authorized payroll approver" in html
-    assert 'id="qualified-review" class="hr-callout blocked"' in html
-    assert "This is the only item still blocking payroll" in html
-    assert "Do not change the employer profile" in html
+    assert 'id="qualified-review" class="hr-callout warn"' in html
+    assert "Optional safeguard — not a blocker" in html
+    assert "Payroll can proceed without this record" in html
 
 
 def _blocked_control(*, confirmed_by: str = "david@anatainc.com") -> dict:

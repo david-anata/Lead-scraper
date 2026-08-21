@@ -511,26 +511,26 @@ def render_hr_setup(control: dict, company_profile: dict, calendar: dict,
             "href": f"/admin/hr/time{period_query}", "action": "Review older correction",
         },
         {
-            "title": "Record the qualified calculation review",
+            "title": "Optional independent calculation review",
             "description": (
                 "A qualified professional’s 2026 calculation review is recorded with evidence."
                 if review_ready else
-                "A qualified accountant or payroll professional must review the 2026 rules "
-                "and opening setup. Record their real evidence; do not self-certify."
+                "No independent review is recorded. This does not block payroll; use it "
+                "after material rule changes or when deeper review is needed."
             ),
-            "ready": review_ready, "owner": "Qualified reviewer",
+            "ready": True, "owner": "David or Val",
             "href": f"/admin/hr/payroll{period_query}#calculation-review", "action": "Record review evidence",
         },
         {
             "title": "Prepare the controlled payroll version",
             "description": (
-                "All preparation gates are clear. Val can prepare the immutable version for "
-                "David’s separate approval."
+                "All freeze gates are clear. Val or David can freeze the immutable version; "
+                "the other authorized operator approves it."
                 if readiness.get("ready") else
                 f"{len(blockers)} blocking item(s) remain. Payroll preparation stays disabled "
                 "until every critical item is resolved."
             ),
-            "ready": bool(readiness.get("ready")), "owner": "Val prepares · David approves",
+            "ready": bool(readiness.get("ready")), "owner": "Val or David · two-person approval",
             "href": f"/admin/hr/payroll{period_query}", "action": "Open payroll control room",
         },
     ]
@@ -1578,8 +1578,8 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
             <label><input type="checkbox" name="attested" value="true" required style="width:auto"> I confirm the named qualified person completed this review.</label>
             <button class="hr-btn" type="submit">Record completed review</button>
           </form>"""
-        qualified_review_panel = f"""<section class="hr-card" id="calculation-review"><div class="hr-kicker">Calculation review</div>
-          <h2>Record the review you already completed</h2><p class="hr-help">Record facts only. The named reviewer must be qualified to review payroll calculations and must have checked this 2026 rule package.</p>
+        qualified_review_panel = f"""<section class="hr-callout warn" id="calculation-review"><div class="hr-kicker">Optional safeguard — not a blocker</div>
+          <h2>No independent calculation review recorded</h2><p class="hr-help">Payroll may proceed with two-person freeze and approval. Record this only when a qualified reviewer actually checks the calculation package, such as after a material rule change or unusual result.</p>
           {qualified_review_action}</section>"""
     blocker_rows = "".join(
         f"""<tr><td>{_esc(item.get('owner') or 'David or Val')}</td>
@@ -1598,17 +1598,19 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
             href = "#calculation-review"
             action_label = "Complete calculation review"
         urgent_items += f'''<li class="hr-blocker-item"><div><div class="hr-blocker-label">Blocked — action required</div><strong>{_esc(item.get("employee_email") or "Company setup")}</strong><p>{_esc(message)}<br><strong>Owner:</strong> {_esc(owner)}</p></div><a class="hr-btn" href="{_esc(href)}">{_esc(action_label)}</a></li>'''
-    final_approver_email = (control.get("final_approver_email") or "").strip().lower()
+    permissions = set(user.get("permissions") or [])
+    can_approve_payroll = bool(
+        user.get("is_superadmin")
+        or {"hr.payroll", "hr.payroll.approve"}.intersection(permissions)
+    )
     if readiness["blockers"]:
         urgent_panel = f'''<section class="hr-callout blocked" aria-labelledby="urgent-payroll-heading" style="margin-top:18px"><div class="hr-kicker">Action required</div><h2 id="urgent-payroll-heading" style="margin:6px 0">Payroll cannot be frozen — {len(readiness["blockers"])} task{'s' if len(readiness["blockers"]) != 1 else ''} remaining</h2><p>Resolve each item below. Every button goes to the section where the work is completed.</p><ul class="hr-blocker-list">{urgent_items}</ul></section>'''
     elif prepared_run and (prepared_run.get("initiated_by") or "").strip().lower() == actor_email:
-        urgent_panel = f'''<section class="hr-callout blocked" style="margin-top:18px"><div class="hr-kicker">Frozen — approval handoff required</div><h2 style="margin:6px 0">You froze this version, so you cannot approve it</h2><p>This exact version is locked. Because David froze it, Val must correct the inputs if needed and freeze a replacement; David can only approve a version frozen by someone else.</p><a class="hr-btn hr-btn-light" href="/admin/hr/payroll/runs/{_esc(prepared_run['id'])}">Review the frozen version</a></section>'''
-    elif prepared_run and actor_email == final_approver_email:
+        urgent_panel = f'''<section class="hr-callout warn" style="margin-top:18px"><div class="hr-kicker">Frozen — approval handoff required</div><h2 style="margin:6px 0">You froze this version, so you cannot approve it</h2><p>This exact version is locked. The other authorized payroll operator must review and approve it.</p><a class="hr-btn hr-btn-light" href="/admin/hr/payroll/runs/{_esc(prepared_run['id'])}">Review the frozen version</a></section>'''
+    elif prepared_run and can_approve_payroll:
         urgent_panel = f'''<section class="hr-saved" style="margin-top:18px"><div class="hr-kicker">Frozen — awaiting your approval</div><h2 style="margin:6px 0">Review the frozen payroll</h2><p>{_esc(prepared_run.get('initiated_by'))} froze this exact version. Later source changes cannot alter it; corrections require a replacement version.</p><a class="hr-btn" href="/admin/hr/payroll/runs/{_esc(prepared_run['id'])}/approve">Review and approve payroll</a></section>'''
-    elif actor_email != final_approver_email:
-        urgent_panel = f'''<section class="hr-saved" style="margin-top:18px"><div class="hr-kicker">Ready to freeze</div><h2 style="margin:6px 0">Freeze payroll for David</h2><p>Review the final totals on a confirmation page before locking the hours, inputs, and calculations. Freezing does not move money.</p><a class="hr-btn" href="/admin/hr/payroll/freeze?period_date={_esc(period.start_date)}">Review and freeze payroll</a></section>'''
     else:
-        urgent_panel = '''<section class="hr-callout warn" style="margin-top:18px"><div class="hr-kicker">Handoff required</div><h2 style="margin:6px 0">Val must prepare payroll first</h2><p>David is the final approver, so he cannot also prepare the version he signs. Val should sign in and use the preparation button shown here.</p></section>'''
+        urgent_panel = f'''<section class="hr-saved" style="margin-top:18px"><div class="hr-kicker">Ready to freeze</div><h2 style="margin:6px 0">Freeze payroll for review</h2><p>Val or David may freeze this version. The other authorized operator must approve it. Freezing does not move money.</p><a class="hr-btn" href="/admin/hr/payroll/freeze?period_date={_esc(period.start_date)}">Review and freeze payroll</a></section>'''
     outside_corrections = readiness.get("outside_period_corrections") or []
     outside_correction_notice = ""
     if outside_corrections:
@@ -1665,7 +1667,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
         <td>${_esc(run['taxes'])}</td><td>${_esc(run.get('deductions'))}</td><td>${_esc(run['net'])}</td><td>${_esc(run['cash_impact'])}</td>
         <td>{run['employee_count']}</td><td>{_esc(run['initiated_by'])}</td>
         <td><a href="/admin/hr/payroll/runs/{_esc(run['id'])}">Review details</a>
-        {f'<br><a class="hr-btn" href="/admin/hr/payroll/runs/{_esc(run["id"])}/approve">Review and approve</a>' if run["status"] == "prepared" and actor_email == final_approver_email and actor_email != (run.get("initiated_by") or "").strip().lower() else ''}</td></tr>"""
+        {f'<br><a class="hr-btn" href="/admin/hr/payroll/runs/{_esc(run["id"])}/approve">Review and approve</a>' if run["status"] == "prepared" and can_approve_payroll and actor_email != (run.get("initiated_by") or "").strip().lower() else ''}</td></tr>"""
         for run in control["runs"]
     ) or '<tr><td colspan="10" class="hr-empty">No frozen versions for this period.</td></tr>'
     liability_rows = "".join(
@@ -1697,7 +1699,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <div class="hr-kicker">Today's process</div><h2 id="payroll-process-heading" style="margin:6px 0">Review first, freeze second, approve last</h2>
       <ol><li>Confirm each employee's pay and existing W-4 elections.</li>
       <li>Review and approve hourly punches below. Employees do not submit timesheets.</li>
-      <li>Review the imported year-to-date balances and record the completed calculation review.</li>
+      <li>Review the imported year-to-date balances. An independent calculation review is optional unless an exception requires it.</li>
       <li>Resolve the remaining company access checks, then freeze an immutable version. Freezing moves no money.</li>
       <li>A different authorized person reviews the frozen version. David gives final approval.</li>
       <li>Issue each approved check, complete tax payments and filings in the official portals, and record every confirmation in Agent.</li></ol>
@@ -1789,18 +1791,7 @@ def render_hr_payroll_freeze(preview: dict, *, user, flash=None) -> str:
         for item in readiness.get("blockers") or []
     )
     actor_email = (user.get("email") or "").strip().lower()
-    final_approver = (preview.get("final_approver_email") or "").strip().lower()
-    separation_blocked = bool(final_approver and actor_email == final_approver)
-    can_freeze = (
-        bool(readiness.get("ready"))
-        and not preview.get("totals_are_partial")
-        and not separation_blocked
-    )
-    blocker_rows += (
-        "<li><strong>Val:</strong> David is the required final approver. "
-        "Val must sign in and freeze this version so David can approve it.</li>"
-        if separation_blocked else ""
-    )
+    can_freeze = bool(readiness.get("ready")) and not preview.get("totals_are_partial")
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">Freeze payroll for David</h1>
@@ -1926,8 +1917,8 @@ def render_hr_payroll_preview(preview: dict, *, user, flash=None) -> str:
         )
     else:
         authority_line = (
-            "No qualified calculation review is recorded for this rule package. "
-            "Do not issue checks from these figures."
+            "No independent calculation review is recorded. This does not block payroll; "
+            "the other authorized operator must review the exact frozen totals before approval."
         )
 
     body = f"""
@@ -1975,28 +1966,18 @@ def render_hr_payroll_approval(run: dict, *, user, flash=None) -> str:
     approver = user.get("name") or user.get("email") or "Signed-in approver"
     approver_email = user.get("email") or ""
     prepared_by = run.get("prepared_by") or "Unknown"
-    required_approver = (run.get("required_approver_email") or "").strip().lower()
     independently_reviewed = (
         bool(approver_email)
         and approver_email.strip().lower() != str(prepared_by).strip().lower()
     )
-    is_required_approver = (
-        bool(required_approver)
-        and approver_email.strip().lower() == required_approver
-    )
     can_approve = (
         run.get("status") == "prepared"
         and independently_reviewed
-        and is_required_approver
     )
-    if not required_approver:
-        warning = "Final approval is blocked until the required approver is selected in HR settings."
-    elif not is_required_approver:
-        warning = f"Only the configured final approver ({required_approver}) may approve this payroll."
-    elif not independently_reviewed:
+    if not independently_reviewed:
         warning = "The person who prepared this payroll cannot approve the same version."
     else:
-        warning = "This version is ready for the configured final approver."
+        warning = "This version is ready for the other authorized payroll operator."
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">Confirm payroll approval</h1>
@@ -2015,7 +1996,7 @@ def render_hr_payroll_approval(run: dict, *, user, flash=None) -> str:
         <div><strong>Employees included</strong><p>{employee_count}</p></div>
         <div><strong>Prepared by</strong><p>{_esc(prepared_by)}</p></div>
         <div><strong>Approver signing now</strong><p>{_esc(approver)}{f'<br><span class="hr-sub">{_esc(approver_email)}</span>' if approver_email and approver_email != approver else ''}</p></div>
-        <div><strong>Required final approver</strong><p>{_esc(required_approver or 'Not configured')}</p></div>
+        <div><strong>Approval control</strong><p>A different authorized payroll operator</p></div>
         <div><strong>Calculation/provider status</strong><p>Anata estimate<br><span class="hr-sub">{_esc(provider_name)}</span></p></div>
       </div>
     </section>
@@ -2665,11 +2646,11 @@ def render_hr_settings(
       <label>Opening-balance source / review note</label><textarea name="opening_balance_note" required>{_esc(settings.get('opening_balance_note'))}</textarea>
       <button class="hr-btn" type="submit">Save payroll setup</button>
     </form>
-    <section id="qualified-review" class="hr-callout {'ok' if review else 'blocked'}" style="margin-top:18px" aria-labelledby="qualified-review-heading">
-      <div class="hr-kicker">{'Completed' if review else 'Blocked — action required'}</div>
+    <section id="qualified-review" class="hr-callout {'ok' if review else 'warn'}" style="margin-top:18px" aria-labelledby="qualified-review-heading">
+      <div class="hr-kicker">{'Completed' if review else 'Optional safeguard — not a blocker'}</div>
       <h2 id="qualified-review-heading" style="margin:6px 0">Independent payroll calculation review</h2>
-      <p>{'Recorded for 2026 by ' + _esc(review.get('reviewer_name')) + ' on ' + _esc(review.get('reviewed_on')) + '.' if review else 'This is the only item still blocking payroll. Do not change the employer profile or payroll-setup checkboxes above.'}</p>
-      {'' if review else '<p><strong>What you need:</strong> Ask the accountant or payroll professional who checked the 2026 calculations and imported year-to-date totals for their name, email, review date, and the name of the workpaper or comparison they used. Enter those facts below. If nobody completed that review, stop here—this form cannot truthfully be completed yet.</p>'}
+      <p>{'Recorded for 2026 by ' + _esc(review.get('reviewer_name')) + ' on ' + _esc(review.get('reviewed_on')) + '.' if review else 'Payroll can proceed without this record. Use two-person freeze and approval, and record a qualified review after material calculation changes or unusual results.'}</p>
+      {'' if review else '<p>Complete this form only when a qualified person actually performed the review. Placeholder evidence is not accepted.</p>'}
       <form class="hr-form" method="post" action="/admin/hr/settings/qualified-review" style="margin-top:12px">
       <input type="hidden" name="tax_year" value="2026">
       <div class="hr-grid2"><div><label>Reviewer name</label><input name="reviewer_name" value="{_esc(review.get('reviewer_name'))}" required></div>
@@ -2680,7 +2661,7 @@ def render_hr_settings(
       <label><input type="checkbox" name="attested" value="true" required style="width:auto"> I confirm the named qualified professional actually reviewed the 2026 calculations and opening setup.</label>
       <button class="hr-btn" type="submit">Record qualified review evidence</button>
       </form>
-      <p class="hr-help"><a href="/admin/hr/payroll">Return to Payroll</a> after this saves. The red blocker will disappear automatically.</p>
+      <p class="hr-help"><a href="/admin/hr/payroll">Return to Payroll</a>. Saving this optional evidence is not required for an ordinary run.</p>
     </section>
     <h2>2026 employee opening balances</h2>
     <p class="hr-sub">Enter totals from prior payroll records. Zero is valid only when the source confirms zero.</p>

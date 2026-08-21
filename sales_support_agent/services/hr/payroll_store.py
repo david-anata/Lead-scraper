@@ -719,7 +719,10 @@ def _period_context(containing: date) -> tuple:
         employees=employees, open_time_entries=open_entries,
         pending_corrections=corrections,
         pending_inputs=[item for item in inputs if item["status"] == "pending"],
-        tax_engine_configured=settings["qualified_tax_review"],
+        # Anata operates manual controlled payroll. Independent calculation
+        # review is advisory for ordinary runs; exact-run two-person approval
+        # remains mandatory.
+        tax_engine_configured=True,
         eftps_ready=settings["eftps_ready"],
         utah_tax_ready=settings["utah_tap_ready"] and settings["utah_ui_ready"],
     )
@@ -734,10 +737,13 @@ def _period_context(containing: date) -> tuple:
             "kind": "company_profile", "severity": "blocker",
             "message": "Employer legal profile is incomplete",
         })
-    if not company_profile.get("final_approver_email"):
-        readiness["blockers"].append({
-            "kind": "final_approver", "severity": "blocker",
-            "message": "The required final payroll approver is not configured",
+    if not settings.get("qualified_tax_review"):
+        readiness.setdefault("warnings", []).append({
+            "kind": "calculation_review", "severity": "warning",
+            "message": (
+                "No independent calculation review is recorded. Review the "
+                "exact frozen totals before approval."
+            ),
         })
     if settings.get("federal_deposit_schedule") not in {"monthly", "semiweekly"}:
         readiness["blockers"].append({
@@ -1317,11 +1323,6 @@ def preview_payroll(containing: date) -> dict:
 
 
 def prepare_payroll(containing: date, *, actor: str) -> tuple[bool, str]:
-    final_approver = (
-        get_company_profile().get("final_approver_email") or ""
-    ).strip().lower()
-    if final_approver and actor.strip().lower() == final_approver:
-        return False, "final_approver_cannot_freeze"
     period, settings, employees, inputs, readiness = _period_context(containing)
     if not readiness["ready"]:
         return False, "payroll_blocked"
@@ -1422,14 +1423,6 @@ def approve_payroll(run_id: str, *, actor: str, approval_text: str) -> tuple[boo
             return True, "payroll_already_approved"
         if run.status != "prepared":
             return False, "run_not_prepared"
-        company = session.query(HRCompanyProfile).first()
-        required_approver = (
-            company.final_approver_email.strip().lower() if company else ""
-        )
-        if not required_approver:
-            return False, "final_approver_not_configured"
-        if actor.strip().lower() != required_approver:
-            return False, "final_approver_required"
         if run.initiated_by.strip().lower() == actor.strip().lower():
             return False, "self_approval_blocked"
         period, settings, employees, inputs, readiness = _period_context(run.pay_period_start)
@@ -1440,13 +1433,41 @@ def approve_payroll(run_id: str, *, actor: str, approval_text: str) -> tuple[boo
         except json.JSONDecodeError:
             prepared_meta = {}
         current_hash = _period_source_hash(session, period, employees, inputs, settings)
-        if prepared_meta.get("source_hash") != current_hash:
-            run.status = "superseded"
-            _audit(session, actor, "payroll.source_changed", "payroll_run", run_id)
-            return False, "payroll_inputs_changed"
         calculations = session.query(HRPayrollCalculation).filter_by(
             payroll_run_id=run_id, version=1
         ).order_by(HRPayrollCalculation.employee_email).all()
+        if prepared_meta.get("source_hash") != current_hash:
+            # Older versions included advisory readiness metadata in the source
+            # hash. Recalculate every employee and allow approval only when the
+            # immutable calculation payloads still match exactly.
+            current_snapshots: dict[str, str] = {}
+            for employee in employees:
+                calc = _calculate_employee_period(
+                    session, employee=employee, period=period,
+                    settings=settings, inputs=inputs, strict=True,
+                )
+                payload = json.dumps(
+                    {
+                        "inputs": calc["inputs"], "results": calc["results"],
+                        "trace": calc["trace"],
+                    },
+                    sort_keys=True, default=str, separators=(",", ":"),
+                )
+                current_snapshots[employee["email"]] = hashlib.sha256(
+                    payload.encode()
+                ).hexdigest()
+            frozen_snapshots = {
+                row.employee_email: row.snapshot_hash for row in calculations
+            }
+            if current_snapshots != frozen_snapshots:
+                run.status = "superseded"
+                _audit(session, actor, "payroll.source_changed", "payroll_run", run_id)
+                return False, "payroll_inputs_changed"
+            _audit(
+                session, actor, "payroll.advisory_metadata_changed",
+                "payroll_run", run_id,
+                {"calculation_snapshots_unchanged": True},
+            )
         combined_hash = hashlib.sha256(
             "|".join(row.snapshot_hash for row in calculations).encode()
         ).hexdigest()
@@ -1539,15 +1560,7 @@ def reject_payroll(run_id: str, *, actor: str, reason: str) -> tuple[bool, str]:
         run = session.query(HRPayrollRun).filter_by(base44_id=run_id).first()
         if not run or run.status != "prepared":
             return False, "run_not_prepared"
-        company = session.query(HRCompanyProfile).first()
-        required_approver = (
-            company.final_approver_email.strip().lower() if company else ""
-        )
-        if not required_approver:
-            return False, "final_approver_not_configured"
         actor_email = actor.strip().lower()
-        if actor_email != required_approver:
-            return False, "final_approver_required"
         if run.initiated_by.strip().lower() == actor_email:
             return False, "self_approval_blocked"
         run.status = "rejected"

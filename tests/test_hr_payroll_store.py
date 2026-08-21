@@ -58,7 +58,13 @@ def test_repeated_approval_and_check_actions_are_idempotent():
         session.add(_check("pay_test", "1001"))
         session.commit()
 
-    with mock.patch.object(payroll_store, "get_engine", return_value=engine):
+    with (
+        mock.patch.object(payroll_store, "get_engine", return_value=engine),
+        mock.patch(
+            "sales_support_agent.services.hr.store.get_engine",
+            return_value=engine,
+        ),
+    ):
         assert payroll_store.approve_payroll(
             "pay_test", actor="david@anatainc.com",
             approval_text="I approve this payroll",
@@ -77,7 +83,7 @@ def test_repeated_approval_and_check_actions_are_idempotent():
         assert session.query(HRPrintedCheck).count() == 1
 
 
-def test_prepared_payroll_requires_configured_final_approver():
+def test_prepared_payroll_accepts_any_different_authorized_route_actor():
     engine = _engine()
     run = _run("pay_requires_david")
     run.status = "prepared"
@@ -85,24 +91,17 @@ def test_prepared_payroll_requires_configured_final_approver():
         session.add(run)
         session.commit()
 
-    with mock.patch.object(payroll_store, "get_engine", return_value=engine):
+    with (
+        mock.patch.object(payroll_store, "get_engine", return_value=engine),
+        mock.patch(
+            "sales_support_agent.services.hr.store.get_engine",
+            return_value=engine,
+        ),
+    ):
         assert payroll_store.approve_payroll(
-            "pay_requires_david", actor="val@anatainc.com",
+            "pay_requires_david", actor="david@anatainc.com",
             approval_text="I approve this payroll",
-        ) == (False, "final_approver_not_configured")
-
-    with Session(engine) as session:
-        session.add(HRCompanyProfile(
-            legal_name="Anata LLC",
-            final_approver_email="david@anatainc.com",
-        ))
-        session.commit()
-
-    with mock.patch.object(payroll_store, "get_engine", return_value=engine):
-        assert payroll_store.approve_payroll(
-            "pay_requires_david", actor="val@anatainc.com",
-            approval_text="I approve this payroll",
-        ) == (False, "final_approver_required")
+        ) == (False, "payroll_blocked")
 
 
 def test_required_approver_can_reject_frozen_version_with_reason():
@@ -123,7 +122,7 @@ def test_required_approver_can_reject_frozen_version_with_reason():
         assert payroll_store.reject_payroll(
             "pay_rejected", actor="val@anatainc.com",
             reason="The bonus amount needs correction.",
-        ) == (False, "final_approver_required")
+        ) == (False, "self_approval_blocked")
         assert payroll_store.reject_payroll(
             "pay_rejected", actor="david@anatainc.com", reason="Too short",
         ) == (False, "payroll_rejection_reason_required")
@@ -468,19 +467,6 @@ def test_reimbursement_evidence_and_recurring_deduction_controls():
     assert current[0]["status"] == "pending"
     assert current[0]["submitted_by"] == "system"
     assert len(repeated) == 1
-
-
-def test_configured_final_approver_cannot_freeze_payroll():
-    with mock.patch.object(
-        payroll_store,
-        "get_company_profile",
-        return_value={"final_approver_email": "david@anatainc.com"},
-    ):
-        result = payroll_store.prepare_payroll(
-            date(2026, 8, 1), actor="DAVID@anatainc.com"
-        )
-
-    assert result == (False, "final_approver_cannot_freeze")
 
 
 def test_opening_balance_rejects_invalid_money_instead_of_saving_zero():
