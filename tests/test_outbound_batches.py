@@ -77,3 +77,28 @@ def test_daily_delivery_uses_one_exact_csv_for_email_and_slack():
     assert b"exact.com" in send.call_args.kwargs["attachments"][0]["content"]
     assert slack.upload_file.call_args.kwargs["channel"] == "CQA"
     assert b"exact.com" in slack.upload_file.call_args.kwargs["content"]
+
+
+def test_existing_pull_tables_are_a_complete_no_ddl_fallback():
+    value = create_engine("sqlite://", future=True)
+    outbound_memory.ensure_runs_table(value)
+    from sales_support_agent.services import outbound_settings
+    outbound_settings.ensure_tables(value)
+    with patch("sales_support_agent.services.outbound_batches._tables_available", return_value=False):
+        assert batches.save_recipe(value, {
+            "key": "fallback_signal", "label": "Fallback", "template_key": "icp_baseline",
+            "reason": "Stored in the existing settings table", "tier": "B", "priority": "3",
+            "weekdays": "0,1", "cap": "20", "active": "1", "include_in_daily": "1",
+        }, actor="qa@example.com")["ok"]
+        assert any(item["key"] == "fallback_signal" for item in batches.load_recipe_definitions(value))
+        batch_id, created = batches.create_batch(value, business_date="2026-08-21", trigger="scheduled",
+                                                 recipe_count=1, correlation_id="fallback")
+        assert created
+        batch = batches.finalize_batch(value, batch_id=batch_id,
+            recipe_runs=[{"recipe_key": "fallback_signal", "recipe_label": "Fallback", "status": "complete", "fresh": 1}],
+            leads=[{"domain": "fallback.com", "brand": "Fallback", "recipe": "fallback_signal"}],
+            filename="anata-daily-leads-2026-08-21.csv")
+        assert batch.unique_companies == 1
+        assert "fallback.com" in batches.batch_artifact(value, batch_id)[1]
+        history, total = batches.load_batches(value)
+        assert total == 1 and history[0].id == batch_id

@@ -36,6 +36,16 @@ _BATCHES = "outbound_daily_batches"
 _BATCH_RUNS = "outbound_daily_batch_runs"
 _BATCH_COMPANIES = "outbound_daily_batch_companies"
 _RECIPES = "outbound_recipe_definitions"
+_FALLBACK_PREFIX = "__daily_batch__:"
+
+
+def _tables_available(engine: Any) -> bool:
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(f"SELECT 1 FROM {_BATCHES} LIMIT 1"))
+        return True
+    except Exception:
+        return False
 
 
 def _is_pg(engine: Any) -> bool:
@@ -126,7 +136,26 @@ def load_recipe_definitions(engine: Any) -> list[dict[str, Any]]:
             for r in rows
         ]
     except Exception:
-        return []
+        import outbound_recipes as source
+        weekdays = {"daily": "0,1,2,3,4", "weekly": "1,2"}
+        defaults = [{"key": recipe.key, "label": recipe.label, "template_key": recipe.key,
+                 "reason": recipe.reason, "tier": recipe.tier, "priority": index + 1,
+                 "weekdays": weekdays[recipe.cadence], "cap": recipe.max_per_run,
+                 "active": True, "include_in_daily": True, "version": 1,
+                 "updated_by": "system", "updated_at": ""}
+                for index, recipe in enumerate(source.RECIPES)]
+        from sales_support_agent.services import outbound_settings
+        saved = outbound_settings.load_settings(engine)
+        by_key = {item["key"]: item for item in defaults}
+        for setting_key, raw in saved.items():
+            if not str(setting_key).startswith("recipe."):
+                continue
+            try:
+                definition = json.loads(raw)
+                by_key[str(definition["key"])] = definition
+            except (TypeError, ValueError, KeyError):
+                continue
+        return sorted(by_key.values(), key=lambda item: (not item.get("active", True), int(item.get("priority") or 100), item["key"]))
 
 
 def save_recipe(engine: Any, values: dict[str, Any], *, actor: str) -> dict[str, Any]:
@@ -161,6 +190,20 @@ def save_recipe(engine: Any, values: dict[str, Any], *, actor: str) -> dict[str,
         "include": 1 if str(values.get("include_in_daily", "1")).lower() in {"1", "true", "on"} else 0,
         "actor": actor or "unknown",
     }
+    if not _tables_available(engine):
+        from sales_support_agent.services import outbound_settings
+        current = next((item for item in load_recipe_definitions(engine) if item["key"] == key), None)
+        definition = {"key": key, "label": label, "template_key": template_key,
+                      "reason": reason, "tier": tier, "priority": priority,
+                      "weekdays": payload["weekdays"], "cap": cap,
+                      "active": bool(payload["active"]), "include_in_daily": bool(payload["include"]),
+                      "version": int((current or {}).get("version") or 0) + 1,
+                      "updated_by": actor or "unknown", "updated_at": ""}
+        result = outbound_settings.apply_changes(
+            engine, {f"recipe.{key}": json.dumps(definition)}, note=f"Recipe {key} saved",
+            changed_by=actor or "unknown")
+        return {"ok": bool(result.get("ok")), "key": key,
+                "reason": result.get("reason", "Recipe saved.")}
     with engine.begin() as conn:
         conn.execute(text(f"""INSERT INTO {_RECIPES}
             (recipe_key,label,template_key,reason,tier,priority,weekdays,cap,active,include_in_daily,updated_by)
@@ -195,6 +238,24 @@ def materialize_recipes(engine: Any, weekday: int, settings: dict[str, Any]) -> 
 def create_batch(engine: Any, *, business_date: str, trigger: str,
                  recipe_count: int, correlation_id: str) -> tuple[int, bool]:
     """Create a batch idempotently and return (id, created_now)."""
+    if not _tables_available(engine):
+        from sales_support_agent.services import outbound_memory
+        marker = f"{_FALLBACK_PREFIX}{trigger}"
+        for run in outbound_memory.load_runs(engine, limit=1000):
+            if run.get("recipe") == marker:
+                try:
+                    data = json.loads(run.get("note") or "{}")
+                except (TypeError, ValueError):
+                    data = {}
+                if data.get("business_date") == business_date:
+                    return int(run["id"]), False
+        note = json.dumps({"business_date": business_date, "status": "running",
+                           "trigger": trigger, "recipe_count": recipe_count,
+                           "correlation_id": correlation_id})
+        run_id = outbound_memory.record_run(engine, recipe=marker, scanned=0, matched=0,
+                                             fresh=0, skipped_seen=0, note=note,
+                                             delivery="daily_batch", delivered=0)
+        return run_id, bool(run_id)
     with engine.begin() as conn:
         result = conn.execute(text(f"""INSERT INTO {_BATCHES}
             (business_date,status,trigger,recipe_count,correlation_id)
@@ -233,6 +294,26 @@ def finalize_batch(engine: Any, *, batch_id: int, recipe_runs: list[dict[str, An
     partial = any(run.get("status") == "partial" for run in recipe_runs)
     status = "needs_review" if failed or partial else "ready"
     error = "; ".join(str(run.get("error") or "") for run in recipe_runs if run.get("error"))[:500]
+    if not _tables_available(engine):
+        from sales_support_agent.services import outbound_memory
+        outbound_memory.record_run_leads(engine, batch_id, ordered)
+        current = _fallback_batch(engine, batch_id)
+        meta = {"business_date": current.business_date, "status": status,
+                "trigger": current.trigger, "recipe_count": current.recipe_count,
+                "completed_count": completed, "failed_count": failed,
+                "scanned": sum(int(run.get("scanned") or 0) for run in recipe_runs),
+                "matched": sum(int(run.get("matched") or 0) for run in recipe_runs),
+                "skipped_seen": sum(int(run.get("skipped_seen") or 0) for run in recipe_runs),
+                "unique_companies": len(by_domain),
+                "duplicates_removed": max(0, total_recipe_rows - len(by_domain)),
+                "artifact_filename": filename, "artifact_sha256": checksum,
+                "email_status": "not_requested", "slack_status": "not_requested", "error": error}
+        with engine.begin() as conn:
+            conn.execute(text("""UPDATE outbound_pull_runs SET scanned=:scanned,matched=:matched,
+                fresh=:fresh,skipped_seen=:skipped,note=:note WHERE id=:id"""),
+                {"scanned": meta["scanned"], "matched": meta["matched"], "fresh": len(by_domain),
+                 "skipped": meta["skipped_seen"], "note": json.dumps(meta), "id": batch_id})
+        return _fallback_batch(engine, batch_id)
     with engine.begin() as conn:
         conn.execute(text(f"DELETE FROM {_BATCH_RUNS} WHERE batch_id=:id"), {"id": batch_id})
         conn.execute(text(f"DELETE FROM {_BATCH_COMPANIES} WHERE batch_id=:id"), {"id": batch_id})
@@ -271,6 +352,18 @@ def finalize_batch(engine: Any, *, batch_id: int, recipe_runs: list[dict[str, An
 
 
 def update_delivery(engine: Any, batch_id: int, *, email_status: str, slack_status: str) -> None:
+    if not _tables_available(engine):
+        batch = _fallback_batch(engine, batch_id)
+        with engine.connect() as conn:
+            raw = conn.execute(text("SELECT note FROM outbound_pull_runs WHERE id=:id"), {"id": batch_id}).scalar_one()
+        meta = json.loads(raw or "{}")
+        meta.update({"email_status": email_status, "slack_status": slack_status})
+        if "delivered" in {email_status, slack_status}:
+            meta["status"] = "delivered"
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE outbound_pull_runs SET note=:note WHERE id=:id"),
+                         {"note": json.dumps(meta), "id": batch_id})
+        return
     status = "delivered" if "delivered" in {email_status, slack_status} else None
     with engine.begin() as conn:
         conn.execute(text(f"""UPDATE {_BATCHES} SET email_status=:email,slack_status=:slack,
@@ -279,6 +372,8 @@ def update_delivery(engine: Any, batch_id: int, *, email_status: str, slack_stat
 
 
 def get_batch(engine: Any, batch_id: int) -> DailyBatch:
+    if not _tables_available(engine):
+        return _fallback_batch(engine, batch_id)
     with engine.connect() as conn:
         row = conn.execute(text(f"""SELECT id,business_date,status,trigger,recipe_count,
             completed_count,failed_count,scanned,matched,skipped_seen,unique_companies,
@@ -292,6 +387,12 @@ def get_batch(engine: Any, batch_id: int) -> DailyBatch:
 
 def load_batches(engine: Any, *, page: int = 1, per_page: int = 10) -> tuple[list[DailyBatch], int]:
     page = max(1, int(page)); per_page = max(1, min(int(per_page), 50))
+    if not _tables_available(engine):
+        from sales_support_agent.services import outbound_memory
+        ids = [int(run["id"]) for run in outbound_memory.load_runs(engine, limit=1000)
+               if str(run.get("recipe") or "").startswith(_FALLBACK_PREFIX)]
+        total = len(ids); chosen = ids[(page - 1) * per_page:page * per_page]
+        return [_fallback_batch(engine, batch_id) for batch_id in chosen], total
     with engine.connect() as conn:
         total = int(conn.execute(text(f"SELECT COUNT(*) FROM {_BATCHES}")).scalar_one() or 0)
         ids = [int(row[0]) for row in conn.execute(text(f"""SELECT id FROM {_BATCHES}
@@ -304,6 +405,9 @@ def load_batch_leads(engine: Any, batch_ids: Iterable[int]) -> list[dict[str, An
     wanted = sorted({int(value) for value in batch_ids if int(value) > 0})
     if not wanted:
         return []
+    if not _tables_available(engine):
+        from sales_support_agent.services import outbound_memory
+        return outbound_memory.load_run_leads(engine, wanted)
     params = {f"id{i}": value for i, value in enumerate(wanted)}
     placeholders = ",".join(f":id{i}" for i in range(len(wanted)))
     with engine.connect() as conn:
@@ -319,6 +423,11 @@ def load_batch_leads(engine: Any, batch_ids: Iterable[int]) -> list[dict[str, An
 
 
 def batch_artifact(engine: Any, batch_id: int) -> tuple[str, str]:
+    if not _tables_available(engine):
+        import outbound_pipeline
+        batch = _fallback_batch(engine, batch_id)
+        return (f"anata-daily-leads-{batch.business_date}.csv",
+                outbound_pipeline.leads_to_csv(load_batch_leads(engine, [batch_id])))
     with engine.connect() as conn:
         row = conn.execute(text(f"SELECT artifact_filename,artifact_csv FROM {_BATCHES} WHERE id=:id"),
                            {"id": batch_id}).fetchone()
@@ -328,8 +437,36 @@ def batch_artifact(engine: Any, batch_id: int) -> tuple[str, str]:
 
 
 def batch_runs(engine: Any, batch_id: int) -> list[dict[str, Any]]:
+    if not _tables_available(engine):
+        return []
     with engine.connect() as conn:
         rows = conn.execute(text(f"""SELECT recipe_key,recipe_label,status,fresh,error,run_id
             FROM {_BATCH_RUNS} WHERE batch_id=:id ORDER BY recipe_key"""), {"id": batch_id}).fetchall()
     return [{"recipe_key": r[0], "recipe_label": r[1], "status": r[2], "fresh": int(r[3]),
              "error": r[4], "run_id": int(r[5])} for r in rows]
+
+
+def _fallback_batch(engine: Any, batch_id: int) -> DailyBatch:
+    with engine.connect() as conn:
+        row = conn.execute(text("""SELECT id,recipe,note,ran_at FROM outbound_pull_runs
+            WHERE id=:id"""), {"id": batch_id}).fetchone()
+    if not row or not str(row[1] or "").startswith(_FALLBACK_PREFIX):
+        raise LookupError("Daily batch not found")
+    try:
+        meta = json.loads(row[2] or "{}")
+    except (TypeError, ValueError):
+        meta = {}
+    return DailyBatch(
+        id=int(row[0]), business_date=str(meta.get("business_date") or str(row[3] or "")[:10]),
+        status=str(meta.get("status") or "running"),
+        trigger=str(meta.get("trigger") or str(row[1]).split(":")[-1]),
+        recipe_count=int(meta.get("recipe_count") or 0), completed_count=int(meta.get("completed_count") or 0),
+        failed_count=int(meta.get("failed_count") or 0), scanned=int(meta.get("scanned") or 0),
+        matched=int(meta.get("matched") or 0), skipped_seen=int(meta.get("skipped_seen") or 0),
+        unique_companies=int(meta.get("unique_companies") or 0),
+        duplicates_removed=int(meta.get("duplicates_removed") or 0),
+        artifact_sha256=str(meta.get("artifact_sha256") or ""),
+        email_status=str(meta.get("email_status") or "not_requested"),
+        slack_status=str(meta.get("slack_status") or "not_requested"), error=str(meta.get("error") or ""),
+        started_at=str(row[3] or ""), completed_at=str(meta.get("completed_at") or row[3] or ""),
+    )
