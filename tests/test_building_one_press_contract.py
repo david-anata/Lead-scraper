@@ -262,6 +262,71 @@ class OnePressContractTests(unittest.TestCase):
             page = self.client.get(location.split("#", 1)[0])
             self.assertIn(f'id="{anchor}"', page.text)
 
+    def test_06b_text_in_attendance_returns_a_correction_not_a_500(self) -> None:
+        """Regression for Elisa's production answer, which began with Event."""
+
+        self._lead("press-attendance-text")
+        with self.factory() as session:
+            lead = session.get(BuildingInquiry, "press-attendance-text")
+            payload = dict(lead.payload_json or {})
+            payload["_event_interview"] = {"attendance": "Event reception"}
+            lead.payload_json = payload
+            session.commit()
+        refused = self._press("press-attendance-text")
+        self.assertEqual(refused.status_code, 303, refused.text)
+        self.assertIn("error=", refused.headers["location"])
+        self.assertIn("attendance+needs+a+number", refused.headers["location"])
+        with self.factory() as session:
+            self.assertEqual(
+                session.query(BuildingReservation).filter_by(
+                    inquiry_id="press-attendance-text"
+                ).count(),
+                0,
+            )
+
+    def test_06c_human_attendance_text_can_still_create_the_contract(self) -> None:
+        self._lead("press-attendance-number")
+        with self.factory() as session:
+            lead = session.get(BuildingInquiry, "press-attendance-number")
+            payload = dict(lead.payload_json or {})
+            payload["_event_interview"] = {
+                "attendance": "Event reception: 80 expected, 100 maximum"
+            }
+            lead.payload_json = payload
+            session.commit()
+        created = self._press("press-attendance-number")
+        self.assertEqual(created.status_code, 303, created.text)
+        self.assertNotIn("error=", created.headers["location"])
+        with self.factory() as session:
+            reservation = session.query(BuildingReservation).filter_by(
+                inquiry_id="press-attendance-number"
+            ).one()
+            self.assertEqual(reservation.attendance, 80)
+
+    def test_06d_holding_a_date_with_bad_saved_attendance_never_500s(self) -> None:
+        self._lead("hold-attendance-text", days_out=380)
+        with self.factory() as session:
+            lead = session.get(BuildingInquiry, "hold-attendance-text")
+            payload = dict(lead.payload_json or {})
+            payload["_event_interview"] = {"attendance": "Event reception"}
+            lead.payload_json = payload
+            session.commit()
+        held = self.client.post(
+            "/admin/building/inquiries/hold-attendance-text/hold-date",
+            headers=self.headers,
+            follow_redirects=False,
+            data={
+                "_csrf_token": self._csrf("hold-attendance-text"),
+                "event_date": (date.today() + timedelta(days=380)).isoformat(),
+                "guest_start_time": "16:00",
+                "guest_end_time": "21:00",
+                "attendance": "",
+            },
+        )
+        self.assertEqual(held.status_code, 303, held.text)
+        self.assertIn("error=", held.headers["location"])
+        self.assertIn("attendance+needs+a+number", held.headers["location"])
+
     # ---- the clash, the one place it still asks ------------------------
 
     def test_07_a_taken_date_stops_and_asks_before_double_booking(self) -> None:

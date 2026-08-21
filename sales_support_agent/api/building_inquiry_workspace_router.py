@@ -35,6 +35,7 @@ from sales_support_agent.services.building_event_calendar import (
     month_availability,
 )
 from sales_support_agent.services.building_inquiry_workspace import (
+    attendance_guess,
     is_test_inquiry,
     render_inquiry_workspace,
 )
@@ -1151,9 +1152,14 @@ def _auto_hold_plan(
             "the hours to the lead, then create the contract."
         )
 
-    attendance = carried["attendance"]
-    if not attendance:
-        attendance = str(interview.get("attendance") or "").split(" ")[0] or "0"
+    raw_attendance = carried["attendance"] or interview.get("attendance") or ""
+    attendance = attendance_guess({"attendance": raw_attendance})
+    if str(raw_attendance).strip() and not attendance:
+        return {}, (
+            "Expected attendance needs a number before this date can be held. "
+            "Correct Attendance in the event interview, then create the contract again."
+        )
+    attendance = attendance or "1"
 
     cell = next(
         (
@@ -1243,12 +1249,14 @@ def _take_the_date(
         event_day, clock[0], clock[1]
     )
 
-    try:
-        attendance = int(str(form.get("attendance") or "0").strip() or 0)
-    except ValueError:
-        return "", "Attendance must be a whole number."
-    if attendance < 1:
-        attendance = int(str(interview.get("attendance") or "0").split()[0] or 0) or 1
+    raw_attendance = form.get("attendance") or interview.get("attendance") or ""
+    attendance_text = attendance_guess({"attendance": raw_attendance})
+    if str(raw_attendance).strip() and not attendance_text:
+        return "", (
+            "Expected attendance needs a number. Correct Attendance in the "
+            "event interview, then try again."
+        )
+    attendance = int(attendance_text or "1")
 
     reservation_id = f"event-{uuid4().hex[:12]}"
     hours = max(1, int(pricing.get("hours") or 1))

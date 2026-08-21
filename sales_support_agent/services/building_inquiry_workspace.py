@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import re
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -395,7 +396,7 @@ def _confirm_contract_panel(
               <input type="hidden" name="event_date" value="{_esc(confirm.get("date"))}">
               <input type="hidden" name="guest_start_time" value="{_esc(confirm.get("guest_start"))}">
               <input type="hidden" name="guest_end_time" value="{_esc(confirm.get("guest_end"))}">
-              <input type="hidden" name="attendance" value="{_esc(_attendance_guess(interview))}">
+              <input type="hidden" name="attendance" value="{_esc(attendance_guess(interview))}">
               {'<input type="hidden" name="override_conflicts" value="yes">' if clash else ''}
               <div class="lead-interview__save">
                 <button class="lead-button {'lead-button--danger' if clash else 'lead-button--primary'}" type="submit">{_esc(label)}</button>
@@ -480,7 +481,7 @@ def _time_picker(
             <div class="lead-availability__times">
               {select("guest_start_time", guest_start, "Guests arrive")}
               {select("guest_end_time", guest_end, "Guests leave")}
-              <label>Attendance<input type="number" name="attendance" min="1" value="{_esc(_attendance_guess(interview))}"></label>
+              <label>Attendance<input type="number" name="attendance" min="1" value="{_esc(attendance_guess(interview))}"></label>
             </div>{summary}
             {control}
           </form>'''
@@ -566,13 +567,11 @@ def _next_action(data: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _attendance_guess(interview: dict[str, Any]) -> str:
+def attendance_guess(interview: dict[str, Any]) -> str:
     """Pull a number out of a free-text attendance answer, if there is one."""
 
-    for token in str(interview.get("attendance") or "").replace(",", " ").split():
-        if token.isdigit():
-            return token
-    return ""
+    match = re.search(r"(?<!\d)(\d[\d,]*)", str(interview.get("attendance") or ""))
+    return match.group(1).replace(",", "") if match else ""
 
 
 def _deposit_label(plan: dict[str, Any]) -> str:
