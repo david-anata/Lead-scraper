@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
+import re
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 from urllib.parse import quote_plus
@@ -118,6 +119,7 @@ def _clock_value(raw: Any) -> str:
     """Read a stored time as a whole-hour option value, or return empty."""
 
     text = str(raw or "").strip().upper().replace(".", "")
+    text = re.sub(r"(?<=\d)(AM|PM)$", r" \1", text)
     if not text:
         return ""
     for pattern in ("%I:%M %p", "%I %p", "%H:%M", "%H"):
@@ -126,6 +128,41 @@ def _clock_value(raw: Any) -> str:
         except ValueError:
             continue
     return ""
+
+
+def _guest_schedule_window(raw: Any) -> tuple[str, str]:
+    """Return an unambiguous whole-hour range from the saved interview.
+
+    Staff may write ``Guests 09:00–15:00`` or ``5pm to 10pm`` in the event
+    interview. Exactly two recognizable times are required; prose containing
+    fewer or additional times is left for the operator instead of guessed.
+    """
+
+    matches = re.findall(
+        r"(?<!\d)(?:[01]?\d|2[0-3])(?::[0-5]\d)?\s*(?:a\.?m\.?|p\.?m\.?)?(?!\d)",
+        str(raw or ""),
+        flags=re.IGNORECASE,
+    )
+    if len(matches) != 2:
+        return "", ""
+    start, end = (_clock_value(value) for value in matches)
+    if not start or not end or start == end:
+        return "", ""
+    return start, end
+
+
+def _details_with_interview_hours(
+    details: dict[str, Any], interview: dict[str, Any]
+) -> dict[str, Any]:
+    """Fill missing structured hours from the operator-validated interview."""
+
+    effective = dict(details)
+    start, end = _guest_schedule_window(interview.get("guest_schedule"))
+    if start and not _clock_value(effective.get("guestStartTime")):
+        effective["guestStartTime"] = start
+    if end and not _clock_value(effective.get("guestEndTime")):
+        effective["guestEndTime"] = end
+    return effective
 
 
 def _calendar_view(
@@ -453,6 +490,9 @@ def inquiry_workspace(
             **prefilled_interview,
             **dict(payload.get("_event_interview") or {}),
         }
+        effective_details = _details_with_interview_hours(
+            effective_details, event_interview
+        )
         data = {
             "id": inquiry.id,
             "name": inquiry.name,
@@ -1135,6 +1175,17 @@ def _auto_hold_plan(
         details = {
             key: value for key, value in payload.items() if not str(key).startswith("_")
         }
+        corrections = dict(payload.get("_lead_corrections") or {})
+        details.update({
+            key: value
+            for key, value in {
+                "guestStartTime": corrections.get("guest_start_time"),
+                "guestEndTime": corrections.get("guest_end_time"),
+            }.items()
+            if str(value or "").strip()
+        })
+        interview = dict(payload.get("_event_interview") or {})
+        details = _details_with_interview_hours(details, interview)
         view = _calendar_view(
             session,
             inquiry=inquiry,
@@ -1142,7 +1193,6 @@ def _auto_hold_plan(
             month="",
             date_choice=carried["event_date"],
         )
-        interview = dict(payload.get("_event_interview") or {})
     if not view:
         return {}, "No event offering is set up to book against."
 
