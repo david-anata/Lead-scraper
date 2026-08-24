@@ -434,8 +434,8 @@ class LeadToContractTests(unittest.TestCase):
         )
         self.assertEqual(page.status_code, 200, page.text)
         self.assertIn("and create the contract?", page.text)
-        self.assertIn("2:00 PM", page.text)      # setup, three hours before 5pm
-        self.assertIn("1:00 AM", page.text)      # teardown, three hours after 10pm
+        self.assertIn("3:00 PM", page.text)      # setup, two hours before 5pm
+        self.assertIn("12:00 AM", page.text)     # teardown, two hours after 10pm
         self.assertIn("Pick a different date", page.text)
 
     def test_03b_a_clash_is_refused_unless_the_owner_authorises_it(self) -> None:
@@ -608,14 +608,14 @@ class LeadToContractTests(unittest.TestCase):
             session.query(BuildingProposal).filter_by(
                 reservation_id=reservation.id
             ).one()
-            # Setup and teardown are the owner's three-hour buffers, derived
-            # rather than retyped, so guests at 5pm means doors open at 2pm.
+            # Setup and teardown are the approved two-hour buffers, derived
+            # rather than retyped, so guests at 5pm means doors open at 3pm.
             local_setup = _mountain(reservation.starts_at)
             local_guests = _mountain(reservation.guest_starts_at)
             local_end = _mountain(reservation.ends_at)
             self.assertEqual(local_guests.hour, 17)
-            self.assertEqual(local_setup.hour, 14)
-            self.assertEqual(local_end.hour, 1)
+            self.assertEqual(local_setup.hour, 15)
+            self.assertEqual(local_end.hour, 0)
             self.assertEqual(local_setup.date(), event_day)
 
     def test_05_an_out_of_order_window_is_refused(self) -> None:
@@ -690,7 +690,7 @@ class LeadToContractTests(unittest.TestCase):
                 _mountain(reservation.guest_ends_at).date(),
                 event_day + timedelta(days=1),
             )
-            self.assertEqual(_mountain(reservation.ends_at).hour, 4)
+            self.assertEqual(_mountain(reservation.ends_at).hour, 3)
 
     def test_06_an_unqualified_lead_can_still_take_its_date(self) -> None:
         """The date panel used to render only for qualified leads, so the one

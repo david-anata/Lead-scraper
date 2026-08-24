@@ -1282,7 +1282,7 @@ def _take_the_date(
         assigned_owner = str(inquiry.assigned_owner or "").strip()
 
     # The operator picks a day and the guest hours; setup and teardown are the
-    # owner-set three-hour buffers, so there is nothing to retype and nothing to
+    # approved two-hour buffers, so there is nothing to retype and nothing to
     # put out of order.
     try:
         event_day = date.fromisoformat(str(form.get("event_date") or "").strip())

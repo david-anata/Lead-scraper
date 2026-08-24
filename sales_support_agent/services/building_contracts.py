@@ -77,14 +77,32 @@ def _discount_terms(quote: BuildingProposal) -> dict[str, Any]:
 
     discount_cents = 0
     reason = ""
+    taxable_lines_cents = 0
+    has_tax_line = False
     for item in quote.line_items_json or []:
-        if not isinstance(item, dict) or item.get("type") != "discount":
+        if not isinstance(item, dict):
             continue
-        discount_cents += abs(int(item.get("amount_cents") or 0))
-        if not reason:
-            reason = str(item.get("description") or "").strip()
+        item_type = str(item.get("type") or "")
+        amount_cents = int(item.get("amount_cents") or 0)
+        if item_type == "tax":
+            has_tax_line = True
+            continue
+        if item_type == "discount":
+            discount_cents += abs(amount_cents)
+            if not reason:
+                reason = str(item.get("description") or "").strip()
+            continue
+        if amount_cents > 0:
+            taxable_lines_cents += amount_cents
+    # Current event quotes itemize tax. Older and non-taxable quotes do not, so
+    # retain their established total-plus-discount reconciliation as a fallback.
+    subtotal_cents = (
+        taxable_lines_cents
+        if has_tax_line and taxable_lines_cents
+        else quote.amount_cents + discount_cents
+    )
     return {
-        "subtotal_before_discount": quote.amount_cents + discount_cents,
+        "subtotal_before_discount": subtotal_cents,
         "discount_amount": discount_cents,
         "discount_reason": reason,
     }

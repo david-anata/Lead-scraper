@@ -461,7 +461,7 @@ def _time_picker(
             f'<strong>{_esc(window.get("setup"))}</strong> to '
             f'<strong>{_esc(window.get("teardown"))}</strong>, '
             f'guests {_esc(window.get("guests"))}. '
-            'Setup and teardown are three hours either side.</p>'
+            'Setup and teardown are two hours either side.</p>'
         )
     # An occupied day can still be taken. It says so plainly, carries the
     # override, and the button stops pretending this is an ordinary hold.
