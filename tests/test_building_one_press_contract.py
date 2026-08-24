@@ -15,6 +15,7 @@ import tempfile
 import unittest
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 os.environ.setdefault(
     "SALES_AGENT_DB_URL",
@@ -117,7 +118,8 @@ class OnePressContractTests(unittest.TestCase):
         kind: str = "event",
         with_customer: bool = True,
         days_out: int = 0,
-        hours: tuple[str, str] = ("16:00", "21:00"),
+        hours: tuple[str, str] | None = ("16:00", "21:00"),
+        interview_schedule: str = "",
     ) -> None:
         """A lead shaped the way the website form leaves one."""
 
@@ -131,15 +133,24 @@ class OnePressContractTests(unittest.TestCase):
                     id="c1", email="rosa@example.com", full_name="Rosa Delgado",
                     status="active",
                 ))
+            payload = {
+                "_lifecycle": {"stage": "qualified"},
+            }
+            if hours is not None:
+                payload.update({
+                    "guestStartTime": hours[0],
+                    "guestEndTime": hours[1],
+                })
+            if interview_schedule:
+                payload["_event_interview"] = {
+                    "guest_schedule": interview_schedule,
+                    "attendance": "80 expected",
+                }
             session.add(BuildingInquiry(
                 id=lead_id, idempotency_key=f"{lead_id}-key", kind=kind,
                 name="Rosa Delgado", email="rosa@example.com",
                 preferred_date=date.today() + timedelta(days=days_out),
-                payload_json={
-                    "guestStartTime": hours[0],
-                    "guestEndTime": hours[1],
-                    "_lifecycle": {"stage": "qualified"},
-                },
+                payload_json=payload,
             ))
             if with_customer:
                 session.add(BuildingRelationship(
@@ -194,6 +205,54 @@ class OnePressContractTests(unittest.TestCase):
         self.assertIn(f"Holds {target}", page.text)
         self.assertIn("guests", page.text)
         self.assertIn(">Create the contract</button>", page.text)
+
+    def test_02b_saved_interview_hours_drive_preview_and_contract(self) -> None:
+        """The validated interview must not be replaced by all-day defaults."""
+
+        self._lead(
+            "press-interview-hours",
+            days_out=246,
+            hours=None,
+            interview_schedule="Guests 09:00–15:00",
+        )
+        page = self.client.get("/admin/building/inquiries/press-interview-hours")
+        self.assertIn("guests 9:00 AM to 3:00 PM", page.text)
+
+        pressed = self._press("press-interview-hours")
+        self.assertEqual(pressed.status_code, 303, pressed.text)
+        self.assertNotIn("error=", pressed.headers["location"])
+        with self.factory() as session:
+            reservation = session.query(BuildingReservation).filter_by(
+                inquiry_id="press-interview-hours"
+            ).one()
+            starts = reservation.guest_starts_at.replace(
+                tzinfo=timezone.utc
+            ).astimezone(ZoneInfo("America/Denver"))
+            ends = reservation.guest_ends_at.replace(
+                tzinfo=timezone.utc
+            ).astimezone(ZoneInfo("America/Denver"))
+            self.assertEqual(starts.hour, 9)
+            self.assertEqual(ends.hour, 15)
+
+    def test_02c_structured_hours_override_interview_prose(self) -> None:
+        self._lead(
+            "press-structured-hours",
+            days_out=247,
+            hours=("10:00", "14:00"),
+            interview_schedule="Guests 09:00–15:00",
+        )
+        page = self.client.get("/admin/building/inquiries/press-structured-hours")
+        self.assertIn("guests 10:00 AM to 2:00 PM", page.text)
+
+    def test_02d_ambiguous_interview_hours_are_not_guessed(self) -> None:
+        from sales_support_agent.api.building_inquiry_workspace_router import (
+            _guest_schedule_window,
+        )
+
+        self.assertEqual(
+            _guest_schedule_window("Doors at 9, lunch at 12, finish at 3"),
+            ("", ""),
+        )
 
     def test_03_pressing_twice_does_not_make_two_contracts(self) -> None:
         self._lead("press-3")
