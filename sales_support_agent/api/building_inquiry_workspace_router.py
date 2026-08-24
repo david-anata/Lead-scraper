@@ -1011,6 +1011,8 @@ async def undo_contract_from_lead(
     target = f"/admin/building/inquiries/{inquiry_id}"
     actor = str(user.get("email") or "building-operator")
     now = datetime.now(timezone.utc)
+    calendar_delete_required = False
+    reservation_id = ""
     with session_scope(request.app.state.session_factory) as session:
         inquiry = session.get(BuildingInquiry, inquiry_id)
         if inquiry is None:
@@ -1037,6 +1039,16 @@ async def undo_contract_from_lead(
             "agreement_version": agreement.version,
             "agreement_status": agreement.preparation_status,
         }
+        projection = session.execute(
+            select(BuildingCalendarProjection).where(
+                BuildingCalendarProjection.reservation_id == reservation.id
+            )
+        ).scalar_one_or_none()
+        calendar_delete_required = bool(
+            (projection and projection.provider_event_id)
+            or reservation.calendar_event_id
+        )
+        reservation_id = reservation.id
         session.execute(
             delete(BuildingAvailabilityBlock).where(
                 BuildingAvailabilityBlock.source_reference
@@ -1066,6 +1078,38 @@ async def undo_contract_from_lead(
                 "customer_contacted": False,
             },
         ))
+    if calendar_delete_required:
+        try:
+            result = sync_calendar_projections(
+                CalendarSyncInput(
+                    execute=True,
+                    dry_run=False,
+                    max_items=1,
+                    reservation_id=reservation_id,
+                    actor=actor,
+                ),
+                request,
+                _internal_api_key(request),
+            )
+        except HTTPException as exc:
+            message = (
+                "The Agent hold and contract were cancelled, but Anata Events "
+                f"still needs cleanup: {exc.detail}"
+            )
+            return RedirectResponse(
+                f"{target}?error={quote_plus(message)}#confirmation",
+                status_code=303,
+            )
+        if int(result.get("synced_count") or 0) != 1:
+            message = (
+                "The Agent hold and contract were cancelled, but Anata Events "
+                "did not confirm the deletion. Open the cancelled booking and "
+                "release the date from there."
+            )
+            return RedirectResponse(
+                f"{target}?error={quote_plus(message)}#confirmation",
+                status_code=303,
+            )
     return RedirectResponse(
         f"{target}?notice=Undone.+The+date+is+free+again+and+the+contract+is"
         "+cancelled.",

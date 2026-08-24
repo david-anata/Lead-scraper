@@ -14,6 +14,7 @@ import re
 import tempfile
 import unittest
 import uuid
+from unittest import mock
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -31,6 +32,7 @@ from sales_support_agent.models.entities import (
     BuildingAgreement,
     BuildingAgreementTemplate,
     BuildingAvailabilityBlock,
+    BuildingCalendarProjection,
     BuildingContact,
     BuildingInquiry,
     BuildingOffering,
@@ -468,6 +470,58 @@ class OnePressContractTests(unittest.TestCase):
             self.assertEqual(agreement.preparation_status, "cancelled")
             # Cancelled, never deleted: billing reads these rows.
             self.assertNotEqual(agreement.package_checksum, "")
+
+    def test_09b_undo_delivers_a_live_calendar_deletion(self) -> None:
+        self._lead("undo-calendar", days_out=248)
+        self.assertEqual(self._press("undo-calendar").status_code, 303)
+        with self.factory() as session:
+            reservation = session.query(BuildingReservation).filter_by(
+                inquiry_id="undo-calendar"
+            ).one()
+            reservation_id = reservation.id
+            projection = session.query(BuildingCalendarProjection).filter_by(
+                reservation_id=reservation.id
+            ).one()
+            projection.provider_event_id = "google-event-1"
+            projection.status = "synced"
+            reservation.calendar_event_id = "google-event-1"
+            session.commit()
+
+        with mock.patch(
+            "sales_support_agent.api.building_inquiry_workspace_router.sync_calendar_projections",
+            return_value={"synced_count": 1, "failed_count": 0},
+        ) as delivered:
+            undone = self._undo("undo-calendar")
+
+        self.assertNotIn("error=", undone.headers["location"])
+        delivered.assert_called_once()
+        sync_input = delivered.call_args.args[0]
+        self.assertTrue(sync_input.execute)
+        self.assertFalse(sync_input.dry_run)
+        self.assertEqual(sync_input.reservation_id, reservation_id)
+
+    def test_09c_undo_reports_when_google_does_not_confirm_deletion(self) -> None:
+        self._lead("undo-calendar-fail", days_out=249)
+        self.assertEqual(self._press("undo-calendar-fail").status_code, 303)
+        with self.factory() as session:
+            reservation = session.query(BuildingReservation).filter_by(
+                inquiry_id="undo-calendar-fail"
+            ).one()
+            projection = session.query(BuildingCalendarProjection).filter_by(
+                reservation_id=reservation.id
+            ).one()
+            projection.provider_event_id = "google-event-2"
+            projection.status = "synced"
+            session.commit()
+
+        with mock.patch(
+            "sales_support_agent.api.building_inquiry_workspace_router.sync_calendar_projections",
+            return_value={"synced_count": 0, "failed_count": 1},
+        ):
+            undone = self._undo("undo-calendar-fail")
+
+        self.assertIn("error=", undone.headers["location"])
+        self.assertIn("did+not+confirm+the+deletion", undone.headers["location"])
 
     def test_10_undo_is_offered_then_withdrawn(self) -> None:
         self._lead("undo-2")
