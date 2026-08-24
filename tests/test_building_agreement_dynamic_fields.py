@@ -220,6 +220,21 @@ class DiscountResolverTests(unittest.TestCase):
         self.assertEqual(terms["discount_amount"], 0)
         self.assertEqual(terms["discount_reason"], "")
 
+    def test_sales_tax_is_not_mislabeled_as_pre_discount_subtotal(self) -> None:
+        from sales_support_agent.services.building_contracts import _discount_terms
+
+        terms = _discount_terms(
+            self._Quote(
+                139685,
+                [
+                    {"type": "base", "amount_cents": 105000},
+                    {"type": "fee", "amount_cents": 25000},
+                    {"type": "tax", "amount_cents": 9685},
+                ],
+            )
+        )
+        self.assertEqual(terms["subtotal_before_discount"], 130000)
+
     def test_the_subtotal_always_reconciles(self) -> None:
         """subtotal - discount must equal the quote total, or the contract lies."""
         from sales_support_agent.services.building_contracts import _discount_terms

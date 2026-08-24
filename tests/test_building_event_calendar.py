@@ -38,15 +38,15 @@ def _cell(view: dict, day: date) -> dict:
 
 
 class AccessWindowTests(unittest.TestCase):
-    def test_setup_and_teardown_are_three_hours_either_side(self) -> None:
+    def test_setup_and_teardown_are_two_hours_either_side(self) -> None:
         day = date(2026, 9, 28)
         setup, guests_in, guests_out, teardown = access_window(
             day, time(17), time(22)
         )
-        self.assertEqual(setup.hour, 14)
+        self.assertEqual(setup.hour, 15)
         self.assertEqual(guests_in.hour, 17)
         self.assertEqual(guests_out.hour, 22)
-        self.assertEqual(teardown.hour, 1)
+        self.assertEqual(teardown.hour, 0)
         self.assertEqual(setup.date(), day)
         self.assertEqual(teardown.date(), day + timedelta(days=1))
 
@@ -152,7 +152,7 @@ class MonthAvailabilityTests(unittest.TestCase):
     def test_a_full_day_warns_its_neighbours_without_closing_them(self) -> None:
         """The owner chose a warning, not a wall: the day stays sellable."""
         day = self.month.replace(day=15)
-        # Guests 09:00 to 18:00 plus three-hour buffers is fifteen hours in the
+        # Guests 09:00 to 18:00 plus two-hour buffers is thirteen hours in the
         # building, and it starts and ends on the one day.
         self._reserve(day=day, status="confirmed", guests=(9, 18))
         view = self._view()

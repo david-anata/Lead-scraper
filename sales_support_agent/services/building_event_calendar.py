@@ -28,9 +28,9 @@ from sales_support_agent.models.entities import BuildingReservation
 MOUNTAIN = ZoneInfo("America/Denver")
 
 #: Hours of building time added before guests arrive and after they leave.
-#: Owner-set: an event needs a real staging window on both sides.
-SETUP_BUFFER_HOURS = 3
-TEARDOWN_BUFFER_HOURS = 3
+#: Approved Arena commercial terms include two self-service hours on each side.
+SETUP_BUFFER_HOURS = 2
+TEARDOWN_BUFFER_HOURS = 2
 
 #: Setup through teardown at or beyond this length is a full day, and a full day
 #: makes its neighbours a judgement call rather than a free date.
