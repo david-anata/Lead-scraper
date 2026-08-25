@@ -163,6 +163,12 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
     def test_sales_defaults_to_prospects_and_supports_search_and_test_scope(self) -> None:
         default = self.client.get("/admin/building/sales")
         self.assertEqual(default.status_code, 200, default.text)
+        self.assertIn("Lead queue", default.text)
+        self.assertIn("Website inquiries and staff-added leads", default.text)
+        self.assertIn("Add a lead", default.text)
+        self.assertIn("Adds the lead to the queue below", default.text)
+        self.assertNotIn("Quick staff inquiry", default.text)
+        self.assertNotIn("Start a booking workflow", default.text)
         self.assertIn("Jordan Rivera", default.text)
         self.assertNotIn("Production QA Test", default.text)
         self.assertIn('href="/admin/building/inquiries/jordan-inquiry"', default.text)

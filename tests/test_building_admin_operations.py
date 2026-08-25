@@ -443,7 +443,7 @@ class BuildingAdminOperationsTests(unittest.TestCase):
         self.assertIn("/admin/building/contracts", page.text)
         sales_page = self.client.get("/admin/building/sales")
         self.assertEqual(sales_page.status_code, 200, sales_page.text)
-        self.assertIn("Agent owns each lead", sales_page.text)
+        self.assertIn("Website inquiries and staff-added leads", sales_page.text)
         self.assertNotIn("HubSpot", sales_page.text)
         self.assertNotIn("CRM recovery", sales_page.text)
         contacts_page = self.client.get("/admin/building/contacts")
