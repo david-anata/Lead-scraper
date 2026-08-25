@@ -295,11 +295,19 @@ def _contract_link(data: dict[str, Any], *, csrf_token: str) -> str:
         if data.get("contract_undoable"):
             undo = (
                 '<form class="lead-price__contract" method="post" '
-                f'action="/admin/building/inquiries/{_esc(data.get("id"))}/contract/undo">'
+                f'action="/admin/building/inquiries/{_esc(data.get("id"))}/contract/undo?intent=change_date">'
                 f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
-                '<button class="lead-button" type="submit">Undo</button>'
-                "<span>Releases the date, cancels the contract, and puts this "
-                "lead back. Available until the contract is sent.</span></form>"
+                '<button class="lead-button" type="submit">Change date</button>'
+                "<span>Releases the old date and draft contract, keeps this "
+                "customer, interview, and pricing, then returns to date review. "
+                "Nothing is sent.</span></form>"
+            )
+        elif data.get("change_date_refusal"):
+            undo = (
+                '<div class="lead-price__contract lead-price__contract--blocked">'
+                '<strong>Need to change the date?</strong>'
+                f'<span>{_esc(data.get("change_date_refusal"))} Open the contract '
+                'to manage the customer-facing revision first.</span></div>'
             )
         return (
             '<div class="lead-price__contract">'

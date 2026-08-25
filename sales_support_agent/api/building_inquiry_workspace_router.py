@@ -623,9 +623,9 @@ def inquiry_workspace(
                 .where(BuildingAgreement.reservation_id == reservation.id)
                 .order_by(BuildingAgreement.version.desc())
             ).scalars().first()
-            data["contract_undoable"] = not undo_refusal(
-                session, agreement_row, reservation
-            )
+            change_date_refusal = undo_refusal(session, agreement_row, reservation)
+            data["contract_undoable"] = not change_date_refusal
+            data["change_date_refusal"] = change_date_refusal
     return HTMLResponse(
         render_inquiry_workspace(
             navigation=render_agent_nav("building", user=user),
@@ -998,6 +998,7 @@ async def create_contract_from_lead(
 async def undo_contract_from_lead(
     inquiry_id: str,
     request: Request,
+    intent: str = Query(""),
     user: dict = Depends(require_tool("building.agreements.prepare")),
 ) -> RedirectResponse:
     """Put the lead back the way it was before the contract was created.
@@ -1065,10 +1066,11 @@ async def undo_contract_from_lead(
             session, reservation, terminal_status="cancelled", actor=actor
         )
         queue_calendar_projection(session, reservation)
+        changing_date = intent.strip().lower() == "change_date"
         session.add(BuildingAuditEvent(
             entity_type="inquiry",
             entity_id=inquiry.id,
-            action="lead_contract_undone",
+            action=("lead_date_change_started" if changing_date else "lead_contract_undone"),
             actor=actor,
             before_json=before,
             after_json={
@@ -1076,6 +1078,7 @@ async def undo_contract_from_lead(
                 "availability_released": True,
                 "undone_at": now.isoformat(),
                 "customer_contacted": False,
+                "intent": "change_date" if changing_date else "undo",
             },
         ))
     if calendar_delete_required:
@@ -1110,10 +1113,15 @@ async def undo_contract_from_lead(
                 f"{target}?error={quote_plus(message)}#confirmation",
                 status_code=303,
             )
+    if intent.strip().lower() == "change_date":
+        return RedirectResponse(
+            f"{target}?notice=Old+date+released.+Choose+the+new+date+below."
+            "#date-review",
+            status_code=303,
+        )
     return RedirectResponse(
         f"{target}?notice=Undone.+The+date+is+free+again+and+the+contract+is"
-        "+cancelled.",
-        status_code=303,
+        "+cancelled.", status_code=303,
     )
 
 
