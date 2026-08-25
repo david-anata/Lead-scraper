@@ -1637,7 +1637,7 @@ def render_building_page(
     body.view-catalog .view-catalog,
     body.view-settings .view-settings{{display:block;}}
     body:not(.view-today) .today-only{{display:none;}}
-    body.view-sales #incoming-inquiries{{order:1;}} body.view-sales #add-assisted-lead{{order:2;}} body.view-sales #start-booking-workflow{{order:3;}} body.view-sales #building-tours{{order:4;}}
+    body.view-sales #incoming-inquiries{{order:1;}} body.view-sales #add-assisted-lead{{order:2;}} body.view-sales #building-tours{{order:3;}}
     body.view-bookings #bookings-and-holds{{order:1;}} body.view-bookings #review-event-date{{order:2;}}
     .flash{{margin:0 0 18px;padding:14px 16px;border-radius:10px;font-weight:700;}} .flash--ok{{background:#e4f4f1;color:#11665f;border:1px solid #acd8d2;}} .flash--error{{background:#fff0ed;color:#8b2f23;border:1px solid #e4b3aa;}}
     .grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px;}}
@@ -1986,8 +1986,8 @@ def render_building_page(
         </details>
       </section>
       <section class="panel panel--wide building-view view-sales" id="add-assisted-lead">
-        <div class="panel-head"><div><h2>Quick staff inquiry</h2><p>Add a prospect with only the information you have. You can complete event details later in the customer workspace.</p></div></div>
-        <details class="task-creator" open><summary>Create an inquiry</summary>
+        <div class="panel-head"><div><h2>Add a lead</h2><p>Use this when a prospect contacts staff directly. The lead joins the same queue as website inquiries, and you can complete event details later.</p></div></div>
+        <details class="task-creator"><summary>Add a lead</summary>
         <form class="form-grid" method="post" action="/admin/building/inquiries">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
           <input type="hidden" name="kind" value="event">
@@ -1999,29 +1999,9 @@ def render_building_page(
           <div class="field"><label for="lead-date">Preferred date</label><input id="lead-date" name="preferred_date" type="date"></div>
           <div class="field field--wide"><label for="lead-details">What do you know?</label><textarea id="lead-details" name="details" placeholder="Other possible dates, guest count, event type, budget, or anything discussed."></textarea></div>
           <div class="form-actions">
-            <span class="form-note">Creates an inquiry only. It does not hold a date, send an email, or subscribe the person to marketing.</span>
-            <button class="primary" type="submit">Create staff inquiry</button>
+            <span class="form-note">Adds the lead to the queue below. It does not hold a date, send an email, or subscribe the person to marketing.</span>
+            <button class="primary" type="submit">Add lead</button>
           </div>
-        </form>
-        </details>
-      </section>
-      <section class="panel panel--wide building-view view-sales" id="start-booking-workflow">
-        <div class="panel-head"><div><h2>Start a booking workflow</h2><p>Create an event or workspace inquiry. This does not hold or confirm inventory.</p></div></div>
-        <details class="task-creator"><summary>Start a booking inquiry</summary>
-        <form class="form-grid" method="post" action="/admin/building/reservations">
-          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
-          <div class="field"><label for="reservation-kind">Journey</label><select id="reservation-kind" name="kind"><option value="workspace">Workspace</option><option value="event">Event</option></select></div>
-          <div class="field"><label for="reservation-space">Space</label><select id="reservation-space" name="space_id" required><option value="">Choose a reviewed space</option>{linked_space_options}</select></div>
-          <div class="field"><label for="reservation-offering">Offering</label><select id="reservation-offering" name="offering_id"><option value="">No linked offering</option>{offering_options}</select></div>
-          <div class="field"><label for="reservation-contact">Contact</label><select id="reservation-contact" name="contact_id"><option value="">No linked contact</option>{contact_options}</select></div>
-          <div class="field"><label for="reservation-start">Starts (Mountain time)</label><input id="reservation-start" name="starts_at" type="datetime-local" required></div>
-          <div class="field"><label for="reservation-end">Ends (Mountain time)</label><input id="reservation-end" name="ends_at" type="datetime-local" required></div>
-          <div class="field"><label for="reservation-attendance">People</label><input id="reservation-attendance" name="attendance" type="number" min="0" value="0"></div>
-          <div class="field"><label for="reservation-owner">Assigned owner</label><input id="reservation-owner" name="assigned_owner" value="{_esc(user.get("email"))}"></div>
-          <div class="field"><label for="reservation-source">Lead source</label><select id="reservation-source" name="source"><option value="control_room">Direct/manual</option><option value="website">Building website</option><option value="facebook_marketplace">Facebook Marketplace</option><option value="eventective">Eventective</option><option value="referral">Referral</option></select></div>
-          <div class="field"><label for="reservation-reference">Source reference</label><input id="reservation-reference" name="source_reference" placeholder="Listing, message, or inquiry ID"></div>
-          <div class="field field--wide"><label for="reservation-requirements">Requirements and operator notes</label><textarea id="reservation-requirements" name="requirements"></textarea></div>
-          <div class="form-actions"><label class="check"><input type="checkbox" name="deposit_required" value="true" checked> Deposit required before confirmation</label><button class="primary" type="submit">Create booking inquiry</button></div>
         </form>
         </details>
       </section>
@@ -2104,7 +2084,7 @@ def render_building_page(
         </form>
         </details>
       </section>
-      <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>Agent owns each lead through response and qualification. Open a customer to see the complete original submission and one next action.</p></div><span class="count">{len(inquiries)} shown</span></div>
+      <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Lead queue</h2><p>Website inquiries and staff-added leads are managed together here. Open a customer to see the complete original submission and one next action.</p></div><span class="count">{len(inquiries)} shown</span></div>
         <form class="lead-filters" method="get" action="/admin/building/sales">
           <label>Search<input type="search" name="q" value="{_esc(inquiry_filters.get('q'))}" placeholder="Name, email, phone, date, or event"></label>
           <label>Lifecycle<select name="lead_status"><option value="open"{' selected' if inquiry_filters.get('status') == 'open' else ''}>Open leads</option><option value="new"{' selected' if inquiry_filters.get('status') == 'new' else ''}>New</option><option value="responded"{' selected' if inquiry_filters.get('status') == 'responded' else ''}>Responded</option><option value="qualified"{' selected' if inquiry_filters.get('status') == 'qualified' else ''}>Qualified</option><option value="closed_won"{' selected' if inquiry_filters.get('status') == 'closed_won' else ''}>Closed won</option><option value="closed_lost"{' selected' if inquiry_filters.get('status') == 'closed_lost' else ''}>Closed lost</option><option value="all"{' selected' if inquiry_filters.get('status') == 'all' else ''}>All stages</option></select></label>
