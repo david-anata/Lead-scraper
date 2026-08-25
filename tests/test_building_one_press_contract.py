@@ -217,6 +217,14 @@ class OnePressContractTests(unittest.TestCase):
             hours=None,
             interview_schedule="Guests 09:00–15:00",
         )
+
+    def _change_date(self, lead: str):
+        return self.client.post(
+            f"/admin/building/inquiries/{lead}/contract/undo?intent=change_date",
+            headers=self.headers,
+            data={"_csrf_token": self._csrf(lead)},
+            follow_redirects=False,
+        )
         page = self.client.get("/admin/building/inquiries/press-interview-hours")
         self.assertIn("guests 9:00 AM to 3:00 PM", page.text)
 
@@ -527,11 +535,59 @@ class OnePressContractTests(unittest.TestCase):
         self._lead("undo-2")
         self._press("undo-2")
         offered = self.client.get("/admin/building/inquiries/undo-2")
-        self.assertIn("/contract/undo", offered.text)
-        self.assertIn(">Undo</button>", offered.text)
+        self.assertIn("/contract/undo?intent=change_date", offered.text)
+        self.assertIn(">Change date</button>", offered.text)
         self._undo("undo-2")
         after = self.client.get("/admin/building/inquiries/undo-2")
-        self.assertNotIn(">Undo</button>", after.text)
+        self.assertNotIn(">Change date</button>", after.text)
+
+    def test_10b_change_date_returns_to_review_without_losing_lead_work(self) -> None:
+        self._lead("change-date", days_out=250)
+        self.assertEqual(self._press("change-date").status_code, 303)
+        with self.factory() as session:
+            inquiry = session.get(BuildingInquiry, "change-date")
+            payload = dict(inquiry.payload_json or {})
+            payload["_event_interview"] = {
+                "guest_schedule": "9:00 AM to 3:00 PM",
+                "attendance": "80",
+            }
+            payload["_pricing"] = {"hourly_rate_cents": 17500, "hours": 6}
+            inquiry.payload_json = payload
+            session.commit()
+
+        changed = self._change_date("change-date")
+
+        self.assertNotIn("error=", changed.headers["location"])
+        self.assertIn("Old+date+released", changed.headers["location"])
+        self.assertTrue(changed.headers["location"].endswith("#date-review"))
+        with self.factory() as session:
+            inquiry = session.get(BuildingInquiry, "change-date")
+            payload = dict(inquiry.payload_json or {})
+            self.assertEqual(payload["_event_interview"]["attendance"], "80")
+            self.assertEqual(payload["_pricing"]["hourly_rate_cents"], 17500)
+            reservation = session.query(BuildingReservation).filter_by(
+                inquiry_id="change-date"
+            ).one()
+            self.assertEqual(reservation.status, "cancelled")
+
+    def test_10c_sent_contract_keeps_date_change_guidance_visible(self) -> None:
+        self._lead("change-date-sent", days_out=251)
+        self._press("change-date-sent")
+        with self.factory() as session:
+            reservation = session.query(BuildingReservation).filter_by(
+                inquiry_id="change-date-sent"
+            ).one()
+            agreement = session.query(BuildingAgreement).filter_by(
+                reservation_id=reservation.id
+            ).one()
+            agreement.sent_at = datetime.now(timezone.utc)
+            session.commit()
+
+        page = self.client.get("/admin/building/inquiries/change-date-sent")
+
+        self.assertIn("Need to change the date?", page.text)
+        self.assertIn("already gone to the customer", page.text)
+        self.assertNotIn(">Change date</button>", page.text)
 
     def test_11_undoing_twice_is_refused_the_second_time(self) -> None:
         self._lead("undo-3")
