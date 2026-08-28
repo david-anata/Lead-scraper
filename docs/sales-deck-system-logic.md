@@ -143,9 +143,9 @@ The session gap is allocated across five demand channels:
 
 | Channel | Default share | Primary role |
 | --- | ---: | --- |
-| Organic | 25% | Improve indexing, conversion content, and durable non-paid demand |
+| Organic | 30% | Improve indexing, conversion content, and durable non-paid demand |
 | On-channel paid | 25% | Capture existing Amazon purchase intent and defend search presence |
-| Off-channel paid | 25% | Create incremental traffic and external-demand signals through Meta and TikTok |
+| Off-channel paid | 20% | Create incremental traffic and external-demand signals through Meta and TikTok |
 | Affiliate and creators | 15% | Build trust and shoppable demand through creator distribution |
 | Retargeting and LTV | 10% | Convert accumulated audiences and past purchasers more efficiently |
 

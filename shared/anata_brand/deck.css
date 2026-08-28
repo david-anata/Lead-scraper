@@ -290,7 +290,7 @@ a { color: inherit; }
 /* ============================================ */
 .content {
   padding: 28px 36px 80px;
-  max-width: none;
+  max-width: var(--content-max);
   margin: 0 auto;
   width: 100%;
 }

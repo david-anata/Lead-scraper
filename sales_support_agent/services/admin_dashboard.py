@@ -5831,9 +5831,9 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
                 </div>
                 <p style="margin-top: 12px; font-weight: 600;">Channel mix (must sum to 100)</p>
                 <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;">
-                  <label>Organic % <input type="number" name="growth_mix_organic" value="25" step="1" min="0" max="100" /></label>
+                  <label>Organic % <input type="number" name="growth_mix_organic" value="30" step="1" min="0" max="100" /></label>
                   <label>On-channel % <input type="number" name="growth_mix_on_channel_paid" value="25" step="1" min="0" max="100" /></label>
-                  <label>Off-channel % <input type="number" name="growth_mix_off_channel_paid" value="25" step="1" min="0" max="100" /></label>
+                  <label>Off-channel % <input type="number" name="growth_mix_off_channel_paid" value="20" step="1" min="0" max="100" /></label>
                   <label>Affiliate % <input type="number" name="growth_mix_affiliate" value="15" step="1" min="0" max="100" /></label>
                   <label>Retargeting % <input type="number" name="growth_mix_retargeting" value="10" step="1" min="0" max="100" /></label>
                 </div>
@@ -6020,9 +6020,9 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
                 </div>
                 <p style="margin-top: 12px; font-weight: 600;">Channel mix (must sum to 100)</p>
                 <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;">
-                  <label>Organic % <input type="number" name="growth_mix_organic" value="25" step="1" min="0" max="100" /></label>
+                  <label>Organic % <input type="number" name="growth_mix_organic" value="30" step="1" min="0" max="100" /></label>
                   <label>On-channel % <input type="number" name="growth_mix_on_channel_paid" value="25" step="1" min="0" max="100" /></label>
-                  <label>Off-channel % <input type="number" name="growth_mix_off_channel_paid" value="25" step="1" min="0" max="100" /></label>
+                  <label>Off-channel % <input type="number" name="growth_mix_off_channel_paid" value="20" step="1" min="0" max="100" /></label>
                   <label>Affiliate % <input type="number" name="growth_mix_affiliate" value="15" step="1" min="0" max="100" /></label>
                   <label>Retargeting % <input type="number" name="growth_mix_retargeting" value="10" step="1" min="0" max="100" /></label>
                 </div>

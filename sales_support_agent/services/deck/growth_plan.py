@@ -33,9 +33,9 @@ DEFAULT_GOAL_MULTIPLIER: float = 3.0  # if user doesn't set a goal, multiply cur
 # Channel mix defaults (must sum to 100). Mirrors the napkin-math the user
 # walks through with prospects today.
 DEFAULT_MIX = {
-    "organic": 25.0,
+    "organic": 30.0,
     "on_channel_paid": 25.0,
-    "off_channel_paid": 25.0,
+    "off_channel_paid": 20.0,
     "affiliate": 15.0,
     "retargeting": 10.0,
 }
@@ -452,7 +452,7 @@ def _build_organic_channel(inputs: GrowthPlanInputs, delta: int) -> GrowthChanne
         # P2 (M3-6): external traffic begins reinforcing organic → 25%
         # P3 (M6-9): SEO matures, compounds with off-channel → 60%
         # P4 (M9-12): full equity, top-of-fold rankings → 100%
-        ramp_pct_by_phase=(0.05, 0.25, 0.60, 1.00),
+        ramp_pct_by_phase=(0.06, 0.28, 0.65, 1.00),
     )
 
 
@@ -487,7 +487,7 @@ def _build_on_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> Grow
         # PR48: on-channel paid is fastest to stabilize but still needs
         # bid optimization across multiple search-volume cycles. P1 hits
         # 30% (initial campaigns running), P2 60%, P3 85%, full at P4.
-        ramp_pct_by_phase=(0.30, 0.60, 0.85, 1.00),
+        ramp_pct_by_phase=(0.35, 0.72, 0.92, 1.00),
     )
 
 
@@ -524,7 +524,7 @@ def _build_off_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> Gro
         # Source: Amazon Attribution guide; Digital Applied 2026.
         # PR48: off-channel paid (Meta/TikTok Ads) launches in P2, ramps
         # through P3 as creative testing matures, full at P4.
-        ramp_pct_by_phase=(0.0, 0.30, 0.75, 1.00),
+        ramp_pct_by_phase=(0.0, 0.25, 0.72, 1.00),
     )
 
 
@@ -600,7 +600,7 @@ def _build_affiliate_channel(
         # first videos go live mid-P2 (M4-5), roster scales through P3,
         # mature program by P4. Even at P3 only 30% of steady-state
         # because creator-driven sessions take time to compound.
-        ramp_pct_by_phase=(0.0, 0.05, 0.30, 1.00),
+        ramp_pct_by_phase=(0.0, 0.06, 0.38, 1.00),
     )
 
 
@@ -806,13 +806,13 @@ def _render_phase_execution(plan: GrowthPlan) -> str:
             f"<div class='phase-new'>New emphasis: {html.escape(newly_active or 'Optimization')}</div>"
             "<h5>Actions</h5>"
             f"<ul class='phase-actions'>{actions}</ul>"
-            "<h5>Traffic needed by channel at phase end</h5>"
+            "<h5>End-of-phase monthly run rate by channel</h5>"
             f"<ul class='phase-traffic'>{''.join(traffic_rows)}</ul>"
             "</article>"
         )
     return (
         "<h3 class='gp-section-h'>Phase execution — actions and traffic targets"
-        "<span class='desc'>Up to 24 months · monthly session run rate</span></h3>"
+        "<span class='desc'>Up to 24 months · channel-specific maturity curves</span></h3>"
         f"<div class='phase-plan-grid'>{''.join(panels)}</div>"
     )
 

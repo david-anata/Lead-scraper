@@ -533,8 +533,8 @@ class GrowthPlanTests(unittest.TestCase):
         )
         organic = next(c for c in plan.channels if c.key == "organic")
         on_paid = next(c for c in plan.channels if c.key == "on_channel_paid")
-        # PR48: stretched timeline + slower ramp curves. Organic P1 = 5%
-        # (was 10%), on-channel paid P1 = 30% (was 50%). Step-function
+        # The two channels have deliberately different maturity curves.
+        # Step-function
         # would still give us full at-goal — assert ramp is below that.
         step_function_total = organic.sessions + on_paid.sessions
         ramp_p1_total = cumulative_sessions_at_phase(plan.channels, 1)
@@ -543,8 +543,32 @@ class GrowthPlanTests(unittest.TestCase):
             step_function_total,
             "Phase 1 must reflect ramp, not deliver full at-goal allocation immediately",
         )
-        expected_p1 = int(round(organic.sessions * 0.05 + on_paid.sessions * 0.30))
+        expected_p1 = int(round(organic.sessions * 0.06 + on_paid.sessions * 0.35))
         self.assertEqual(ramp_p1_total, expected_p1)
+
+    def test_default_channel_targets_and_phase_run_rates_are_distinct(self) -> None:
+        """Default planning values should read as channel-specific targets,
+        not repeated placeholder math across channels or phases."""
+        from sales_support_agent.services.deck.growth_plan import GrowthPlanInputs, build_growth_plan
+
+        plan = build_growth_plan(
+            inputs=GrowthPlanInputs(
+                conversion_rate_pct=15.0,
+                goal_monthly_sessions=250_000,
+                average_order_value=28.50,
+                cogs_per_unit=4.5,
+                shipping_per_unit=2.5,
+            ),
+            target_units=2_250,
+        )
+        final_targets = [channel.sessions for channel in plan.channels]
+        self.assertEqual(len(final_targets), len(set(final_targets)))
+
+        organic = next(channel for channel in plan.channels if channel.key == "organic")
+        on_paid = next(channel for channel in plan.channels if channel.key == "on_channel_paid")
+        organic_phase_3 = round(organic.sessions * organic.ramp_pct_by_phase[2])
+        on_paid_phase_2 = round(on_paid.sessions * on_paid.ramp_pct_by_phase[1])
+        self.assertNotEqual(organic_phase_3, on_paid_phase_2)
 
     def test_growth_ramp_phase4_equals_steady_state(self) -> None:
         """PR29: by the end of Phase 4 every channel runs at 100% of its
@@ -687,7 +711,7 @@ class GrowthPlanTests(unittest.TestCase):
         # the ramp tiles above so each card shows WHEN it turns on.
         self.assertNotIn("Activates:", html)
         self.assertIn("Months 16–24", html)
-        self.assertIn("Traffic needed by channel at phase end", html)
+        self.assertIn("End-of-phase monthly run rate by channel", html)
         # PR55: spend-summary tiles show ABSOLUTE steady-state, not just the
         # incremental delta. The label change + the math change go together:
         # "Steady-state monthly sessions" should be a number ≥ current_sessions,
