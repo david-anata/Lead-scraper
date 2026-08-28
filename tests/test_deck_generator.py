@@ -660,6 +660,8 @@ class GrowthPlanTests(unittest.TestCase):
 
         self.assertIn("Closing the gap", html)
         self.assertIn("growth-plan-slide", html)
+        self.assertIn("Sessions · 24mo", html)
+        self.assertNotIn("Sessions · 12mo", html)
         # PR32: methodology label became "Sources & methodology" per the design.
         self.assertIn("Sources", html)
         self.assertIn("methodology", html)

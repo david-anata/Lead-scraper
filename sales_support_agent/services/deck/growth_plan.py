@@ -445,7 +445,7 @@ def _build_organic_channel(inputs: GrowthPlanInputs, delta: int) -> GrowthChanne
         expected_revenue=revenue,
         # 60–90 day ramp; compounds with external traffic from Phase 2.
         # Source: Helium 10 listing-optimization guide; BeBold PPC ramp-up.
-        # PR48: stretched curves to match the 12-month phase timeline
+        # Curves are stretched to match the 24-month phase timeline.
         # (was 4-month). Organic SEO compounds across 6–12 mo for
         # category-leader scale, not a 4-month sprint.
         # P1 (M1-3): listing optimization + initial indexing → 5%
@@ -843,7 +843,7 @@ def render_growth_plan_section(
     # (sand-tinted tiles; the delta tile gets a sky-tinted variant).
     # PR55: clarity pass — "Sessions delta" → "Sessions to add" (no
     # engineering jargon for prospects), the goal subtitle drops
-    # "phase-4 steady state" for "end-state · month 12" (timeline is
+    # "phase-4 steady state" for "end-state · month 24" (timeline is
     # now in the headline, not buried in the ramp section below).
     kpi_strip = (
         "<div class='gp-kpis'>"

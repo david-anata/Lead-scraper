@@ -1340,7 +1340,7 @@ class DeckGenerationService:
             or ""
         )
 
-        # Exec tiles — last tile becomes "Sessions · 12mo" (PR48: was 4mo) if growth plan present,
+        # Exec tiles — last tile becomes the month-24 session target when a growth plan is present,
         # otherwise "Avg price" as a soft fallback.
         _avg_price = (
             float(getattr(xray_report, "average_price", 0) or 0)
@@ -1375,7 +1375,7 @@ class DeckGenerationService:
                 f'<p class="delta">est. monthly · target</p>'
                 f'</div>'
                 f'<div class="exec-tile is-primary">'
-                f'<p class="lab">Sessions · 12mo</p>'
+                f'<p class="lab">Sessions · 24mo</p>'
                 f'<p class="val">{_count_short(_goal_sessions)}</p>'
                 f'<p class="delta">target · 5-channel ramp</p>'
                 f'</div>'
