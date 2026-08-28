@@ -497,12 +497,38 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
             r'<meta\s+property="og:image"\s+content="([^"]+)"',
         )
     image_url = (image_url or "").replace("\\u0026", "&").replace("\\/", "/")
-    price = _extract_first(
+    # Scope price extraction to Amazon's buy-box total. A global
+    # ``a-offscreen`` match can be a multipack's per-count value; that made a
+    # $28.50 three-pack appear as a $9.50 product and polluted AOV/margin math.
+    buy_box = _extract_first(
         content,
-        r'<span class="a-offscreen">\s*([$][^<]+)\s*</span>',
-        r'"priceAmount":"([^"]+)"',
-        r'"priceAmount":\s*([0-9]+(?:\.[0-9]+)?)',
+        r'<div[^>]+id="corePrice[^\"]*"[^>]*>(.*?)</div>\s*</div>',
+        r'<div[^>]+id="apex_desktop"[^>]*>(.*?)</div>\s*</div>',
+        r'<div[^>]+id="buybox"[^>]*>(.*?)</div>\s*</div>',
+    )
+    price = _extract_first(
+        buy_box,
+        r'<span[^>]+class="[^"]*a-price[^"]*"[^>]*>.*?<span class="a-offscreen">\s*([$][0-9,]+(?:\.[0-9]{2})?)\s*</span>',
+        r'<span class="a-offscreen">\s*([$][0-9,]+(?:\.[0-9]{2})?)\s*</span>',
     ).strip()
+    if not price:
+        price = _extract_first(
+            content,
+            r'"priceToPay"\s*:\s*\{[^{}]*"priceAmount"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?',
+            r'"buyingPrice"\s*:\s*"?([$]?[0-9,]+(?:\.[0-9]{2})?)"?',
+            r'"priceAmount":"([^"]+)"',
+            r'"priceAmount":\s*([0-9]+(?:\.[0-9]+)?)',
+        ).strip()
+    if not price:
+        # Legacy/minimal pages may expose only one unscoped price. Accept it
+        # only when the document has no per-count language; multipacks must
+        # never fall back to the ambiguous global value.
+        global_prices = re.findall(
+            r'<span class="a-offscreen">\s*([$][0-9,]+(?:\.[0-9]{2})?)\s*</span>',
+            content,
+        )
+        if len(global_prices) == 1 and not re.search(r"per\s+(?:count|item|unit)|/\s*(?:count|item|unit)", content, flags=re.IGNORECASE):
+            price = global_prices[0]
     if price and not price.startswith("$") and re.fullmatch(r"\d+(\.\d+)?", price):
         price = f"${price}"
     feature_bullets = _clean_scraped_text(

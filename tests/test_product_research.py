@@ -43,7 +43,7 @@ class ProductResearchTests(unittest.TestCase):
         """
 
         fake_response = SimpleNamespace(text=html, content=html.encode("utf-8"), raise_for_status=lambda: None)
-        with mock.patch("sales_support_agent.services.product_research.requests.get", return_value=fake_response):
+        with mock.patch("requests.sessions.Session.get", return_value=fake_response):
             payload = _fetch_amazon_page_data("https://www.amazon.com/dp/B0TEST123")
 
         self.assertEqual(payload["title"], "Golf Hydration Lemon Lime Electrolyte Powder")
@@ -52,6 +52,21 @@ class ProductResearchTests(unittest.TestCase):
         self.assertIn("Fast-mixing lemon lime formula.", payload["description"])
         self.assertIn("Built for golfers who need clean electrolyte support and steady energy.", payload["description"])
         self.assertIn("Meta description fallback.", payload["description"])
+
+    def test_fetch_amazon_page_data_prefers_buy_box_total_over_unit_price(self) -> None:
+        html = """
+        <html><head><meta property="og:title" content="Three pack" /></head><body>
+          <span id="productTitle">Three pack</span>
+          <div id="corePriceDisplay_desktop_feature_div">
+            <span class="a-price"><span class="a-offscreen">$28.50</span></span>
+          </div></div>
+          <span class="a-offscreen">$9.50</span><span>$9.50 per count</span>
+        </body></html>
+        """
+        fake_response = SimpleNamespace(text=html, content=html.encode("utf-8"), raise_for_status=lambda: None)
+        with mock.patch("requests.sessions.Session.get", return_value=fake_response):
+            payload = _fetch_amazon_page_data("https://www.amazon.com/dp/B0TEST123")
+        self.assertEqual(payload["price"], "$28.50")
 
 
 if __name__ == "__main__":

@@ -229,11 +229,23 @@ def _render_revenue_bar(product: XrayProduct, total_revenue: float) -> str:
         f"<div class='revenue-track'><div class='revenue-fill' style='width:{width}%'></div></div>"
         "</article>"
     )
+def _estimated_sessions(product: XrayProduct, conversion_rate: float = 0.15) -> int | None:
+    """Estimate monthly PDP sessions from the strongest available demand fact."""
+    if conversion_rate <= 0:
+        return None
+    if product.units_sold and product.units_sold > 0:
+        return int(round(product.units_sold / conversion_rate))
+    if product.revenue and product.price and product.price > 0:
+        return int(round((product.revenue / product.price) / conversion_rate))
+    return None
+
+
 def _render_niche_summary_row(product: XrayProduct, total_revenue: float) -> str:
     """PR34: emit the redesign's `.row-product` / `.thumb` / `.product-name`
     markup — 36×36 thumb keeps the table compact and matches the design.
     Real Amazon image goes inside the thumb box (object-fit: contain)."""
     share = 0.0 if total_revenue <= 0 else ((product.revenue or 0.0) / total_revenue) * 100
+    sessions = _estimated_sessions(product)
     image_html = (
         f"<img src='{html.escape(product.image_url)}' alt='{html.escape(product.title)}' />"
         if product.image_url
@@ -252,6 +264,7 @@ def _render_niche_summary_row(product: XrayProduct, total_revenue: float) -> str
         "</td>"
         f"<td class='num-col'>{html.escape(product.price_label)}</td>"
         f"<td class='num-col'>{html.escape(product.revenue_label)}</td>"
+        f"<td class='num-col'>{f'{sessions:,}' if sessions is not None else '—'}</td>"
         f"<td class='num-col'>{share:.1f}%</td>"
         "</tr>"
     )
@@ -318,6 +331,7 @@ def _render_niche_summary_brand_row(
         "</td>"
         f"<td class='num-col'>—</td>"
         f"<td class='num-col'>{html.escape(revenue_label)}</td>"
+        f"<td class='num-col'>—</td>"
         f"<td class='num-col'>{share:.1f}%</td>"
         "</tr>"
     )
@@ -487,6 +501,7 @@ def _render_competitor_landscape_table(products: list[XrayProduct], total_revenu
         units_label = (
             f"{int(round(product.units_sold)):,}" if product.units_sold else ""
         )
+        sessions = _estimated_sessions(product)
         rows.append(
             "<tr>"
             "<td>"
@@ -501,6 +516,7 @@ def _render_competitor_landscape_table(products: list[XrayProduct], total_revenu
             f"<td class='num-col'>{html.escape(product.price_label)}</td>"
             f"<td class='num-col'>{html.escape(product.revenue_label)}</td>"
             f"<td class='num-col'>{html.escape(units_label)}</td>"
+            f"<td class='num-col'>{f'{sessions:,}' if sessions is not None else '—'}</td>"
             f"<td class='num-col'>{html.escape(_label_share(product.revenue, total_revenue))}</td>"
             f"<td class='num-col'>{html.escape(product.bsr_label)}</td>"
             f"<td class='num-col'>{html.escape(product.rating_label)}</td>"
@@ -510,10 +526,11 @@ def _render_competitor_landscape_table(products: list[XrayProduct], total_revenu
     return (
         "<table class='tbl'>"
         "<thead><tr>"
-        "<th style='width:34%'>Product</th>"
+        "<th style='width:26%'>Product</th>"
         "<th class='num-col'>Price</th>"
         "<th class='num-col'>Revenue</th>"
         "<th class='num-col'>Brand units</th>"
+        "<th class='num-col'>Est. sessions</th>"
         "<th class='num-col'>Share</th>"
         "<th class='num-col'>BSR</th>"
         "<th class='num-col'>★</th>"
@@ -567,7 +584,11 @@ def _render_donut(slices: list[DistributionSlice]) -> str:
         f"-webkit-mask:radial-gradient(circle, transparent 28%, black 30%);"
         f"mask:radial-gradient(circle, transparent 28%, black 30%);\"></div>"
     )
-def _render_offering_tabs(sections: list[dict[str, Any]]) -> str:
+def _render_offering_tabs(
+    sections: list[dict[str, Any]],
+    *,
+    icon_html_by_key: dict[str, str] | None = None,
+) -> str:
     """PR33: emits the design's class names (`.off-tabs`/`.off-pane`/
     `.off-grid`/`.off-block`) — `deck.css` only styles those, not the old
     `.offering-*` set. Cap blocks per pane at 4 so the Amazon section
@@ -575,6 +596,7 @@ def _render_offering_tabs(sections: list[dict[str, Any]]) -> str:
     """
     if not sections:
         return ""
+    icons = icon_html_by_key or {}
     tabs = []
     panes = []
     for index, section in enumerate(sections):
@@ -582,8 +604,10 @@ def _render_offering_tabs(sections: list[dict[str, Any]]) -> str:
         hidden_attr = "" if index == 0 else " hidden"
         key = html.escape(str(section.get("active_key", "")))
         label = html.escape(_format_channel_label(str(section.get("active_key", ""))))
+        icon_html = icons.get(str(section.get("active_key", "")), "")
         tabs.append(
-            f'<button{active_attr} type="button" data-off="{key}">{label}</button>'
+            f'<button{active_attr} type="button" data-off="{key}">'
+            f'<span class="off-tab-icon" aria-hidden="true">{icon_html}</span>{label}</button>'
         )
         # Cap at 4 blocks so every pane reads as a clean 2×2 grid.
         items_html = "".join(

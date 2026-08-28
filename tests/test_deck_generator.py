@@ -569,8 +569,8 @@ class GrowthPlanTests(unittest.TestCase):
         # the end, total_sessions_delivered sums int channel.sessions directly.
         self.assertAlmostEqual(ramp_p4_total, plan.total_sessions_delivered, delta=2)
 
-    def test_growth_phases_span_twelve_months(self) -> None:
-        """PR48: phase windows now stretch across 12 months, not 4. Verify
+    def test_growth_phases_span_twenty_four_months(self) -> None:
+        """Phase windows now stretch across up to 24 months. Verify
         the labels reflect the longer timeline and the ramp curves yield
         non-mature numbers at intermediate phases (50% by P2, ~75% by P3)."""
         from sales_support_agent.services.deck.growth_plan import (
@@ -582,9 +582,9 @@ class GrowthPlanTests(unittest.TestCase):
         # All four phase windows mention months, not days/weeks.
         labels = [p.window_label for p in PHASES]
         self.assertEqual(labels[0], "Months 1–3")
-        self.assertEqual(labels[1], "Months 3–6")
-        self.assertEqual(labels[2], "Months 6–9")
-        self.assertEqual(labels[3], "Months 9–12")
+        self.assertEqual(labels[1], "Months 4–8")
+        self.assertEqual(labels[2], "Months 9–15")
+        self.assertEqual(labels[3], "Months 16–24")
 
         # And the ramp curves actually compound — P2 should be ≤55% of
         # total, P3 ≤80%, so a $4M/m goal looks like a 12-month plan
@@ -680,9 +680,12 @@ class GrowthPlanTests(unittest.TestCase):
         # misleading "from delta" that just restated the cumulative number.
         self.assertIn("this phase", html)
         self.assertNotIn("from delta", html)
-        # PR55: per-channel "Activates: <window>" badge — cross-references
+        # Per-channel phase window cross-references the ramp without the
+        # redundant "Activates:" prefix.
         # the ramp tiles above so each card shows WHEN it turns on.
-        self.assertIn("Activates:", html)
+        self.assertNotIn("Activates:", html)
+        self.assertIn("Months 16–24", html)
+        self.assertIn("Traffic needed by channel at phase end", html)
         # PR55: spend-summary tiles show ABSOLUTE steady-state, not just the
         # incremental delta. The label change + the math change go together:
         # "Steady-state monthly sessions" should be a number ≥ current_sessions,
@@ -692,8 +695,8 @@ class GrowthPlanTests(unittest.TestCase):
         self.assertNotIn("Total monthly sessions", html)
         # PR55: KPI strip rename and subtitle clarity.
         self.assertIn("Sessions to add", html)
-        self.assertIn("over 12 months", html)
-        self.assertIn("end-state · month 12", html)
+        self.assertIn("over up to 24 months", html)
+        self.assertIn("competitor benchmark · by month 24", html)
         self.assertNotIn("Sessions delta", html)
         self.assertNotIn("phase-4 steady state", html)
         # PR32: ramp now puts the steady-state framing in the section

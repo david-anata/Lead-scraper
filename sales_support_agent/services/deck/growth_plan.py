@@ -199,15 +199,10 @@ class GrowthPhase:
     milestones: list[str] = field(default_factory=list)  # week-by-week tasks
 
 
-# PR48: stretched the phase windows from a 4-month finish line out to a
-# 12-month plan. The previous timeline (P1=D0-14, P4=M4+) implied that a
-# brand could go from $0 → $4M/m monthly demand in 4 months — defensible
-# only for tiny niches, not a credible plan for category-leader scale.
-# The new windows align with realistic compounding timelines for organic
-# SEO (6–12 mo to mature), affiliate creator programs (3–6 mo to scale),
-# and DSP retargeting (requires ≥3-month upstream traffic to build
-# audience pools above BTP's 1,000-customer floor). Setup work still
-# happens early — only the revenue-achievement curve stretches.
+# The roadmap spans up to 24 months. Setup still happens early, but category-
+# benchmark traffic is an operating target, not a promised 12-month outcome.
+# Later phases leave room for creative iteration, inventory, creator
+# recruitment, audience formation, and repeat-purchase evidence.
 PHASES: list[GrowthPhase] = [
     GrowthPhase(
         id=1,
@@ -228,43 +223,42 @@ PHASES: list[GrowthPhase] = [
         id=2,
         key="acceleration",
         label="Acceleration",
-        window_label="Months 3–6",
+        window_label="Months 4–8",
         summary="Defend brand search + open the external-traffic flywheel; first creator wave goes live.",
         channels_added=["off_channel_paid"],
         milestones=[
-            "Mo 3: Sponsored Brands live on the brand search term (requires Brand Registry + active Storefront as landing page).",
-            "Mo 3–4: Generate Amazon Attribution tags; launch Meta + TikTok Ads pointing to Storefront / PDP. 14-day last-touch attribution window.",
-            "Mo 3: Submit TikTok Shop seller application (1–3 business days approval); first creator outreach wave.",
-            "Mo 4–5: Creator videos go live (4–6 weeks after first outreach); first attribution read on external-traffic to PDP CVR.",
-            "Mo 5–6: Reallocate Meta/TikTok budget to top-converting creatives; organic compounds further from the external-traffic signal.",
+            "Mo 4: Launch Sponsored Brands on defended brand and proven category terms.",
+            "Mo 4–5: Generate Amazon Attribution tags; test Meta and TikTok traffic to Storefront/PDP.",
+            "Mo 4: Submit TikTok Shop seller application and begin the first creator outreach wave.",
+            "Mo 5–7: Release creator pilots; compare qualified-session and PDP-engagement rates by creative.",
+            "Mo 7–8: Reallocate only to traffic sources that clear conversion and inventory gates.",
         ],
     ),
     GrowthPhase(
         id=3,
         key="scale",
         label="Scale",
-        window_label="Months 6–9",
+        window_label="Months 9–15",
         summary="Layer DSP cold prospecting + scale the creator roster; organic SEO matures.",
         channels_added=["affiliate"],
         milestones=[
-            "Mo 6: DSP onboarding — agency self-service path (~$10K/mo practical floor) or Amazon-managed ($50K/mo minimum).",
-            "Mo 6–7: Launch DSP cold prospecting against in-market + lifestyle audiences. Build 30-day audience windows.",
-            "Mo 7–8: Scale TikTok Shop creator roster from pilot (~8 creators) to 15–30 creators; layer commission tiers.",
-            "Mo 8–9: First read on DSP-assisted new-to-brand rate vs SP/SB-only baseline; organic SEO at ~75% of mature potential.",
+            "Mo 9–10: Choose a DSP path only after PPC and PDP conversion clear their gates.",
+            "Mo 10–12: Launch controlled prospecting and build durable audience windows.",
+            "Mo 11–14: Scale creators from pilot to repeatable cohorts; introduce performance tiers.",
+            "Mo 14–15: Compare assisted new-to-brand traffic with the paid-search baseline before expanding spend.",
         ],
     ),
     GrowthPhase(
         id=4,
         key="ltv",
         label="LTV",
-        window_label="Months 9–12",
-        summary="Compound past-viewer + past-purchaser audiences; full mix at steady state.",
+        window_label="Months 16–24",
+        summary="Compound past-viewer and past-purchaser audiences; approach the competitor benchmark at a sustainable run rate.",
         channels_added=["retargeting"],
         milestones=[
-            "Mo 9: Brand-Tailored Promotion audience pools cross ≥ 1,000 customers (BTP eligibility floor — requires ≥6 mo of upstream traffic).",
-            "Mo 9–10: First BTP coupon to repeat-buyer audience. Featured Offer status required for badge display.",
-            "Mo 10: DSP retargeting layered on top of cold prospecting using PDP-viewer + cart-abandon audiences.",
-            "Mo 11–12: Quarterly creator refresh; DSP audience expansion; Premium A+ Content evaluation; organic SEO at full maturity.",
+            "Mo 16–18: Validate repeat-buyer and high-intent audience pools before tailored promotions.",
+            "Mo 18–21: Layer retargeting across PDP viewers, cart abandoners, and qualified category audiences.",
+            "Mo 21–24: Refresh creators and creative, expand profitable audiences, and set the next benchmark.",
         ],
     ),
 ]
@@ -779,6 +773,50 @@ def _render_growth_ramp(plan: GrowthPlan) -> str:
     )
 
 
+def _render_phase_execution(plan: GrowthPlan) -> str:
+    """Show the actions and per-channel traffic target for every phase."""
+    channel_by_key = {channel.key: channel for channel in plan.channels}
+    panels: list[str] = []
+    for phase in PHASES:
+        idx = phase.id - 1
+        traffic_rows: list[str] = []
+        for channel in plan.channels:
+            ramp = channel.ramp_pct_by_phase[idx]
+            sessions = int(round(channel.sessions * ramp))
+            if sessions <= 0:
+                continue
+            traffic_rows.append(
+                "<li>"
+                f"<span>{html.escape(channel.label)}</span>"
+                f"<strong>{sessions:,} sessions/mo</strong>"
+                "</li>"
+            )
+        actions = "".join(
+            f"<li>{html.escape(action)}</li>" for action in phase.milestones
+        )
+        newly_active = ", ".join(
+            channel_by_key[key].label for key in phase.channels_added if key in channel_by_key
+        )
+        panels.append(
+            "<article class='phase-plan'>"
+            f"<div class='phase-plan-head'><div><span>Phase {phase.id}</span>"
+            f"<h4>{html.escape(phase.label)}</h4></div>"
+            f"<strong>{html.escape(phase.window_label)}</strong></div>"
+            f"<p>{html.escape(phase.summary)}</p>"
+            f"<div class='phase-new'>New emphasis: {html.escape(newly_active or 'Optimization')}</div>"
+            "<h5>Actions</h5>"
+            f"<ul class='phase-actions'>{actions}</ul>"
+            "<h5>Traffic needed by channel at phase end</h5>"
+            f"<ul class='phase-traffic'>{''.join(traffic_rows)}</ul>"
+            "</article>"
+        )
+    return (
+        "<h3 class='gp-section-h'>Phase execution — actions and traffic targets"
+        "<span class='desc'>Up to 24 months · monthly session run rate</span></h3>"
+        f"<div class='phase-plan-grid'>{''.join(panels)}</div>"
+    )
+
+
 def render_growth_plan_section(
     plan: GrowthPlan,
     *,
@@ -798,7 +836,7 @@ def render_growth_plan_section(
     else:
         gap_caption = (
             f"{html.escape(target_brand)} needs +{plan.delta_sessions:,} monthly sessions "
-            f"across 12 months and 5 channels to reach niche-leader scale."
+            f"across up to 24 months and 5 channels to reach the competitor benchmark."
         )
 
     # PR32: KPI strip uses the redesign's `.gp-kpis` / `.gp-kpi` classes
@@ -817,12 +855,12 @@ def render_growth_plan_section(
         "<div class='gp-kpi'>"
         "<p class='lab'>Goal sessions</p>"
         f"<p class='val'>{plan.goal_sessions:,}</p>"
-        "<p class='sub'>end-state · month 12</p>"
+        "<p class='sub'>competitor benchmark · by month 24</p>"
         "</div>"
         "<div class='gp-kpi delta'>"
         "<p class='lab'>Sessions to add</p>"
         f"<p class='val'>+{plan.delta_sessions:,}</p>"
-        "<p class='sub'>over 12 months · 5 channels</p>"
+        "<p class='sub'>over up to 24 months · 5 channels</p>"
         "</div>"
         "</div>"
     )
@@ -863,6 +901,7 @@ def render_growth_plan_section(
     # the orphaned `_render_funnel_*` helpers entirely (see git history
     # if you ever want them back).
     ramp_html = _render_growth_ramp(plan)
+    phase_execution_html = _render_phase_execution(plan)
 
     # PR32: spend-summary strip at the bottom — replaces the simpler
     # `growth-summary` row with a 4-tile gradient strip per the design.
@@ -894,6 +933,7 @@ def render_growth_plan_section(
       </header>
       {kpi_strip}
       {ramp_html}
+      {phase_execution_html}
       <h3 class="gp-section-h">Channel mix — what gets activated, when
         <span class="desc">5 channels · color-coded by phase</span>
       </h3>
@@ -970,7 +1010,7 @@ def _render_channel_card(channel: GrowthChannel, *, activation_window: str = "")
     # part of the channel identity, not a stray label. Hidden when no
     # window is available (e.g. caller passed empty string).
     activation_badge = (
-        f"<div class='activation'>Activates: {html.escape(activation_window)}</div>"
+        f"<div class='activation'>{html.escape(activation_window)}</div>"
         if activation_window
         else ""
     )

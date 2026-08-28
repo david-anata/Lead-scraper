@@ -191,8 +191,9 @@ def _section_growth_plan(plan: GrowthPlan, target_aov: float) -> str:
         "Each phase brings a new channel online. Numbers reflect "
         "**end-of-phase steady state** — actual delivery within each phase "
         "ramps from the prior phase's end-state to the next. SEO compounds "
-        "across 60–90 days; SP/SB stabilize in 2–4 weeks; affiliate creators "
-        "take 4–6 weeks to first videos. We don't reach the full goal on day one.",
+        "across repeated optimization cycles; SP/SB establish signal first; "
+        "affiliate and retargeting scale only after traffic-quality gates. "
+        "The roadmap allows up to 24 months to approach the benchmark.",
         "",
     ]
 
@@ -284,7 +285,7 @@ def _section_roadmap(plan: GrowthPlan) -> str:
     parts = [
         "## Implementation roadmap",
         "",
-        "_4-phase rollout from launch to LTV. Each milestone cited below; "
+        "_4-phase rollout across up to 24 months, from foundation to LTV. Each milestone cited below; "
         "see Sources at the bottom of this story for the full list._",
         "",
     ]

@@ -290,10 +290,64 @@ a { color: inherit; }
 /* ============================================ */
 .content {
   padding: 28px 36px 80px;
-  max-width: calc(var(--content-max) + 72px);
+  max-width: none;
   margin: 0 auto;
   width: 100%;
 }
+
+.market-takeaway { margin-bottom: 18px; }
+.market-table-full { width: 100%; }
+
+/* Phase operating plan: actions and the monthly traffic each channel must
+   contribute by the end of the phase. */
+.phase-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin: 14px 0 24px;
+}
+.phase-plan {
+  position: relative;
+  overflow: hidden;
+  background: white;
+  border: 1px solid var(--anata-line);
+  border-radius: var(--radius-card);
+  padding: 18px;
+}
+.phase-plan-head { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
+.phase-plan-head span, .phase-plan h5 {
+  color: var(--anata-muted); font-size: 9px; font-weight: 800;
+  letter-spacing: .14em; text-transform: uppercase;
+}
+.phase-plan-head h4 { margin:2px 0 0; font-size:16px; }
+.phase-plan-head > strong { font-size:11px; color:var(--anata-sky-deep); }
+.phase-plan > p { color:var(--anata-ink-soft); font-size:12px; line-height:1.5; }
+.phase-new { font-size:11px; font-weight:700; color:var(--anata-ink); margin:10px 0 14px; }
+.phase-plan h5 { margin:14px 0 7px; }
+.phase-actions { margin:0; padding-left:18px; color:var(--anata-ink-soft); font-size:11px; line-height:1.45; }
+.phase-actions li + li { margin-top:5px; }
+.phase-traffic { list-style:none; padding:0; margin:0; }
+.phase-traffic li { display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-top:1px solid var(--anata-line); font-size:11px; }
+.phase-traffic strong { font-variant-numeric:tabular-nums; }
+
+/* Faithful CSS adaptation of the 21st.dev spotlight treatment. It adds no
+   dependency and remains fully usable without hover or JavaScript. */
+.spotlight-card::after {
+  content:""; position:absolute; inset:0; pointer-events:none; opacity:0;
+  border-radius:inherit;
+  background:radial-gradient(220px circle at var(--spot-x, 50%) var(--spot-y, 50%), rgba(133,187,218,.20), transparent 68%);
+  transition:opacity 180ms ease-out;
+}
+.spotlight-card { position:relative; overflow:hidden; }
+.spotlight-card:hover::after, .spotlight-card:focus-within::after { opacity:1; }
+
+.deck-expandable-image { cursor:zoom-in; }
+.deck-expandable-image:focus-visible { outline:3px solid var(--anata-sky-deep); outline-offset:3px; }
+.deck-lightbox { width:min(92vw, 980px); max-height:90vh; padding:46px 24px 20px; border:1px solid var(--anata-line-strong); border-radius:var(--radius-slide); background:var(--anata-paper); }
+.deck-lightbox::backdrop { background:rgba(16,35,61,.78); backdrop-filter:blur(4px); }
+.deck-lightbox img { display:block; width:100%; max-height:72vh; object-fit:contain; background:white; border-radius:var(--radius-card); }
+.deck-lightbox p { margin:12px 0 0; color:var(--anata-ink-soft); text-align:center; }
+.deck-lightbox-close { position:absolute; top:10px; right:12px; width:34px; height:34px; border:1px solid var(--anata-line); border-radius:999px; background:white; color:var(--anata-ink); font-size:24px; cursor:pointer; }
 
 /* ---- Slide ---- */
 .slide {
@@ -1556,7 +1610,12 @@ h2.slide-title {
   color: var(--anata-ink-soft);
   border-radius: 999px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
 }
+.off-tab-icon { width:18px; height:18px; display:inline-grid; place-items:center; flex:0 0 auto; }
+.off-tab-icon img, .off-tab-icon svg { width:100%; height:100%; object-fit:contain; display:block; }
 .off-tabs button.active {
   background: white;
   border-color: var(--anata-line-strong);
@@ -1868,7 +1927,12 @@ h2.slide-title {
   .exec-grid { grid-template-columns: 1fr; }
   .channel-grid { grid-template-columns: repeat(2, 1fr); }
   .ramp { grid-template-columns: repeat(2, 1fr); }
+  .phase-plan-grid { grid-template-columns: 1fr; }
   .metric-grid.cols-6 { grid-template-columns: repeat(3, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spotlight-card::after { transition:none; }
 }
 
 /* ============================================ */

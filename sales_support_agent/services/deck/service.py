@@ -7,6 +7,7 @@ import csv
 import html
 import io
 import json
+import math
 import mimetypes
 import re
 import secrets
@@ -920,12 +921,20 @@ class DeckGenerationService:
                 target_row=target_row,
                 hero_product=hero_product,
             )
-            top3_avg_sessions = None
-            if xray_report.products:
-                top3 = xray_report.products[:3]
+            competitor_benchmark_sessions = None
+            if primary_competitors:
+                # Use the top-quartile comparable listing rather than the
+                # average of the first three rows. The former is ambitious
+                # but less vulnerable to a single Hanes-scale outlier.
                 cvr_decimal = max(inputs_obj.conversion_rate_pct / 100.0, 0.001)
-                top3_avg_units = sum(p.units_sold or 0.0 for p in top3) / len(top3)
-                top3_avg_sessions = int(round(top3_avg_units / cvr_decimal))
+                session_estimates = sorted(
+                    int(round(float(product.units_sold) / cvr_decimal))
+                    for product in primary_competitors
+                    if product.units_sold and product.units_sold > 0
+                )
+                if session_estimates:
+                    index = max(0, min(len(session_estimates) - 1, math.ceil(len(session_estimates) * 0.75) - 1))
+                    competitor_benchmark_sessions = session_estimates[index]
             if inputs_obj.average_order_value is None:
                 # Fall back to target's price as AOV proxy.
                 price_str = str(target_price_label or "").lstrip("$").replace(",", "")
@@ -940,7 +949,7 @@ class DeckGenerationService:
             growth_plan = build_growth_plan(
                 inputs=inputs_obj,
                 target_units=target_units_int,
-                top3_competitor_avg_sessions=top3_avg_sessions,
+                top3_competitor_avg_sessions=competitor_benchmark_sessions,
             )
             # Stash the resolved AOV (user override OR target-price fallback)
             # so the funnel renderer can use it for projected-revenue math.
@@ -1137,6 +1146,7 @@ class DeckGenerationService:
             else ""
         )
         monogram = self._load_brand_asset("assets/monogram.png")
+        shipping_os_icon = self._load_brand_asset("assets/shipping-os-icon.png")
         no_product_image = self._load_brand_asset("assets/no-product-image-available.png")
         stylesheet = self._load_brand_stylesheet()
         favicon_link = load_brand_favicon_link(self.settings)
@@ -1144,7 +1154,18 @@ class DeckGenerationService:
         if not isinstance(keyword_table_rows, list):
             keyword_table_rows = []
         revenue_bars = "".join(_render_revenue_bar(product, xray_report.total_revenue) for product in xray_report.products[:8])
-        offering_html = _render_offering_tabs(offering_sections)
+        offering_html = _render_offering_tabs(
+            offering_sections,
+            icon_html_by_key={
+                # Simple Icons publishes the verified platform marks. The
+                # Anata-owned services use repository brand assets only.
+                "amazon": '<img src="https://cdn.simpleicons.org/amazon/111827" alt="" />',
+                "tiktok_shop": '<img src="https://cdn.simpleicons.org/tiktok/111827" alt="" />',
+                "shopify": '<img src="https://cdn.simpleicons.org/shopify/7AB55C" alt="" />',
+                "3pl": monogram,
+                "shipping_os": shipping_os_icon,
+            },
+        )
         gallery_items = [target] + [_product_to_gallery_item(product) for product in primary_competitors[:4]]
         gallery_html = "".join(_render_gallery_card(item) for item in gallery_items if item)
         market_summary_html = "".join(_render_metric_card(card) for card in market_cards)
@@ -1490,13 +1511,13 @@ class DeckGenerationService:
         if _has_growth:
             _delta = max(0, _goal_sessions - _current_sessions)
             _multiplier = (_goal_sessions / max(_current_sessions, 1)) if _current_sessions > 0 else 0
-            _multi_text = f"{_multiplier:.0f}× sessions in 12 months" if _multiplier >= 2 else f"+{_count_short(_delta)} sessions in 12 months"
+            _multi_text = f"{_multiplier:.0f}× sessions in up to 24 months" if _multiplier >= 2 else f"+{_count_short(_delta)} sessions in up to 24 months"
             _findings_html_parts.append(
                 _finding_card(
                     "③",
                     "The opportunity",
                     _multi_text,
-                    f"5-channel ramp closes the gap from {_count_short(_current_sessions)} → {_count_short(_goal_sessions)} monthly sessions, anchored on industry-published timelines.",
+                    f"5-channel roadmap closes the gap from {_count_short(_current_sessions)} → {_count_short(_goal_sessions)} monthly sessions over up to 24 months.",
                 )
             )
         else:
@@ -1591,9 +1612,9 @@ class DeckGenerationService:
         )
         _div_growth = _section_divider(
             "sec-05", "05", "Section · Growth plan · Optional",
-            "Closing the gap — 4 phases, 5 channels",
-            "How sessions ramp from today to goal, anchored on industry-published timelines, with each channel's role and cost.",
-            ["4-phase ramp", "Funnel by phase", "5 channel cards"],
+            "Closing the gap — 4 phases across 24 months",
+            "The actions activated in each phase and the monthly traffic each channel must contribute toward the competitor benchmark.",
+            ["4-phase roadmap", "Traffic by channel", "Competitor benchmark"],
         ) if _has_growth else ""
         _div_conversion = _section_divider(
             "sec-06", "06", "Section · Conversion & PDP",
@@ -1715,13 +1736,12 @@ class DeckGenerationService:
 
       <div class="metric-grid cols-6" style="margin-bottom:22px">{market_summary_html}</div>
 
-      <div class="two-col">
-        <div class="takeaway">
+      <div class="takeaway market-takeaway">
           <p class="lab">What this means</p>
           <p class="h">Where the category sits today.</p>
           <p>{html.escape(dataset.text_fields.get("advertising_summary") or dataset.text_fields.get("market_summary") or "Pulled from Helium 10 Xray over the visible market set.")}</p>
-        </div>
-        <div>
+      </div>
+      <div class="market-table-full">
           <div class="card-h">
             <h3>Competitor revenue breakdown</h3>
             <div class="seg niche-toggle" role="tablist" aria-label="Competitor breakdown view">
@@ -1736,13 +1756,13 @@ class DeckGenerationService:
                 <th data-brand-only hidden>Brand</th>
                 <th class="num-col">Price</th>
                 <th class="num-col">Revenue</th>
+                <th class="num-col">Est. sessions</th>
                 <th class="num-col">Share</th>
               </tr>
             </thead>
             <tbody data-view="asin">{niche_table_rows}</tbody>
             <tbody data-view="brand" hidden>{niche_table_brand_rows}</tbody>
           </table>
-        </div>
       </div>
 
       {distribution_block}
@@ -1883,6 +1903,12 @@ class DeckGenerationService:
 
   </main>
 </div>
+
+  <dialog class="deck-lightbox" id="deck-lightbox" aria-label="Expanded image">
+    <button type="button" class="deck-lightbox-close" aria-label="Close expanded image">×</button>
+    <img alt="" />
+    <p></p>
+  </dialog>
 
   <script>
     // ---- Rail active-section + progress on scroll ----
@@ -2061,6 +2087,47 @@ class DeckGenerationService:
         }});
       }});
     }});
+
+    // ---- Presentation spotlight cards ----
+    (function() {{
+      const cards = document.querySelectorAll('.metric, .channel-card, .off-block, .gallery-item, .phase-plan');
+      cards.forEach((card) => {{
+        card.classList.add('spotlight-card');
+        card.addEventListener('pointermove', (event) => {{
+          const rect = card.getBoundingClientRect();
+          card.style.setProperty('--spot-x', (event.clientX - rect.left) + 'px');
+          card.style.setProperty('--spot-y', (event.clientY - rect.top) + 'px');
+        }});
+      }});
+    }})();
+
+    // ---- Accessible image lightbox for every deck image ----
+    (function() {{
+      const dialog = document.getElementById('deck-lightbox');
+      const expanded = dialog?.querySelector('img');
+      const caption = dialog?.querySelector('p');
+      const close = dialog?.querySelector('.deck-lightbox-close');
+      if (!dialog || !expanded || !caption || !close) return;
+      document.querySelectorAll('#deck-content img').forEach((image) => {{
+        image.classList.add('deck-expandable-image');
+        image.setAttribute('tabindex', '0');
+        image.setAttribute('role', 'button');
+        image.setAttribute('aria-label', 'Expand image: ' + (image.alt || 'product image'));
+        const open = () => {{
+          expanded.src = image.currentSrc || image.src;
+          expanded.alt = image.alt || 'Expanded product image';
+          caption.textContent = image.alt || '';
+          dialog.showModal();
+          close.focus();
+        }};
+        image.addEventListener('click', open);
+        image.addEventListener('keydown', (event) => {{
+          if (event.key === 'Enter' || event.key === ' ') {{ event.preventDefault(); open(); }}
+        }});
+      }});
+      close.addEventListener('click', () => dialog.close());
+      dialog.addEventListener('click', (event) => {{ if (event.target === dialog) dialog.close(); }});
+    }})();
   </script>
   <script>
     // PR54: deck-engagement instrumentation.
