@@ -644,7 +644,7 @@ h2.slide-title {
 @media (max-width: 760px) {
   .app { display: block; }
   .rail { display: none; }
-  .content { padding: 12px 10px 48px; min-width: 0; }
+  .content { padding: 12px 10px 48px; min-width: 0; overflow-x: hidden; }
   .slide { padding: 22px 16px; border-radius: 16px; min-width: 0; overflow: hidden; }
   .exec-header,
   .exec-stats,
