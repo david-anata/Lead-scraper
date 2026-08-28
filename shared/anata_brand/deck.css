@@ -642,7 +642,23 @@ h2.slide-title {
   letter-spacing: 0.04em;
 }
 @media (max-width: 760px) {
-  .exec-header { grid-template-columns: 1fr; }
+  .app { display: block; }
+  .rail { display: none; }
+  .content { padding: 12px 10px 48px; min-width: 0; }
+  .slide { padding: 22px 16px; border-radius: 16px; min-width: 0; overflow: hidden; }
+  .exec-header,
+  .exec-stats,
+  .exec-grid,
+  .metric-grid,
+  .metric-grid.cols-4,
+  .metric-grid.cols-6,
+  .channel-grid,
+  .phase-plan-grid,
+  .two-col,
+  .two-col.flip,
+  .two-col.even { grid-template-columns: 1fr; }
+  .ramp { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 }
 .exec-pills {
   display: flex;
