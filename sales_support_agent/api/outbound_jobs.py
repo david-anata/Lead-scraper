@@ -338,3 +338,97 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
     out["ran"] = True
     logger.info("[outbound-jobs] morning run: %s", out)
     return out
+
+
+def _require_scheduler_auth(request: Request) -> None:
+    """Accept Vercel Cron auth or the existing internal scheduler key."""
+
+    cron_secret = os.getenv("CRON_SECRET", "").strip()
+    authorization = request.headers.get("Authorization", "").strip()
+    if cron_secret and secrets.compare_digest(
+        authorization,
+        f"Bearer {cron_secret}",
+    ):
+        return
+
+    internal_key = str(
+        getattr(request.app.state.settings, "internal_api_key", "") or ""
+    ).strip()
+    supplied_internal_key = request.headers.get("X-Internal-Api-Key", "").strip()
+    if internal_key and secrets.compare_digest(supplied_internal_key, internal_key):
+        return
+
+    raise HTTPException(status_code=401, detail="Invalid scheduler credentials.")
+
+
+@router.api_route("/run", methods=["GET", "POST"])
+def run_scheduled_outbound(request: Request) -> dict:
+    """Run the daily outbound batch from Vercel Cron or an internal operator."""
+
+    _require_scheduler_auth(request)
+    now = datetime.now(ZoneInfo(_TZ))
+    if now.hour != _RUN_HOUR:
+        return {
+            "status": "skipped",
+            "message": "Outbound morning routine is waiting for 7:00 AM America/Denver.",
+            "local_time": now.isoformat(),
+        }
+
+    from sales_support_agent.models.database import get_engine
+
+    engine = get_engine()
+    run_key = _today(now)
+    lease = claim_scheduled_job(
+        engine,
+        job_key="outbound_morning",
+        run_key=run_key,
+        lease_minutes=240,
+    )
+    if lease is None:
+        return {
+            "status": "skipped",
+            "message": "Today's outbound routine is already running or complete.",
+            "run_key": run_key,
+        }
+
+    try:
+        if _already_ran_today(engine, now):
+            result = {"ran": False, "reason": "daily marker already exists"}
+        else:
+            result = run_morning_routine(now=now)
+
+        reason = str(result.get("reason") or "")
+        expected_skip = reason in {
+            "nothing scheduled today",
+            "today's daily batch already exists",
+            "daily marker already exists",
+        }
+        if not result.get("ran") and not expected_skip:
+            finish_scheduled_job(engine, lease, status="failed", details=result)
+            raise HTTPException(
+                status_code=503,
+                detail=reason or "Outbound morning routine did not complete.",
+            )
+
+        if result.get("ran"):
+            _mark_ran(engine, now)
+        finish_scheduled_job(engine, lease, status="succeeded", details=result)
+        return {
+            "status": "skipped" if expected_skip else "ok",
+            "details": result,
+            "run_key": run_key,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        finish_scheduled_job(
+            engine,
+            lease,
+            status="failed",
+            details={"error": str(exc)},
+        )
+        logger.exception("[outbound-jobs] scheduled run failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Outbound morning routine failed.",
+        ) from exc

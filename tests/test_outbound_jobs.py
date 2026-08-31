@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 
 from sales_support_agent.api import outbound_jobs as jobs
@@ -92,6 +95,46 @@ class MorningRoutineTests(unittest.TestCase):
 
     def test_one_daily_sheet_has_a_controlled_company_ceiling(self):
         self.assertEqual(jobs._DAILY_COMPANY_CAP, 150)
+
+
+class ScheduledRouteTests(unittest.TestCase):
+    def setUp(self):
+        app = FastAPI()
+        app.state.settings = SimpleNamespace(internal_api_key="internal-test-key")
+        app.include_router(jobs.router)
+        self.client = TestClient(app)
+
+    def test_vercel_cron_can_reach_the_route_with_get(self):
+        response = self.client.get("/api/jobs/outbound-morning/run")
+        self.assertEqual(response.status_code, 401)
+        self.assertNotEqual(response.status_code, 404)
+
+    def test_internal_scheduler_can_reach_the_route_with_post(self):
+        response = self.client.post(
+            "/api/jobs/outbound-morning/run",
+            headers={"X-Internal-Api-Key": "wrong-key"},
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertNotEqual(response.status_code, 405)
+
+    def test_cron_bearer_secret_is_accepted(self):
+        import os
+        from unittest.mock import patch
+
+        class NoonDatetime:
+            @classmethod
+            def now(cls, tz):
+                return datetime(2026, 8, 31, 12, tzinfo=tz)
+
+        with patch.dict(os.environ, {"CRON_SECRET": "cron-test-key"}), patch.object(
+            jobs, "datetime", NoonDatetime
+        ):
+            response = self.client.get(
+                "/api/jobs/outbound-morning/run",
+                headers={"Authorization": "Bearer cron-test-key"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "skipped")
 
 
 if __name__ == "__main__":
