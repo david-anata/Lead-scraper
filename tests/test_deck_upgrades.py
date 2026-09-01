@@ -22,7 +22,10 @@ try:
     from sales_support_agent.models.database import create_session_factory, init_database, session_scope
     from sales_support_agent.models.entities import AutomationRun
     from sales_support_agent.services.deck.service import DeckGenerationService
-    from sales_support_agent.services.deck.dataset import _build_margin_snapshot_html
+    from sales_support_agent.services.deck.dataset import (
+        _build_margin_snapshot_html,
+        _label_compact_money_value,
+    )
     from sales_support_agent.services.product_research import EnrichedHeroProduct
 
     DEPS = True
@@ -35,6 +38,14 @@ except ModuleNotFoundError as exc:
 class _FakeAmazonClient:
     def is_configured(self) -> bool:
         return False
+
+
+@unittest.skipUnless(DEPS, "Deck dependencies are not installed")
+class DeckMetricFormattingTests(unittest.TestCase):
+    def test_large_revenue_values_are_compact_enough_for_metric_cards(self) -> None:
+        self.assertEqual(_label_compact_money_value(7_089_670.81), "$7.09M")
+        self.assertEqual(_label_compact_money_value(589_500), "$590K")
+        self.assertEqual(_label_compact_money_value(73_089.39), "$73,089.39")
 
 
 class _FakeProductResearch:

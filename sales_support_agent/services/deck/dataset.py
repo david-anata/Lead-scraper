@@ -282,7 +282,7 @@ def _build_market_metric_cards(
     return [
         {
             "label": "30-day revenue",
-            "value": _label_money_value(xray_report.total_revenue),
+            "value": _label_compact_money_value(xray_report.total_revenue),
             "meta": f"Avg per listing { _label_money_value(average_revenue_per_listing) }",
         },
         {
@@ -299,6 +299,19 @@ def _build_market_metric_cards(
             "meta": f"{xray_report.revenue_over_5000_count} listings clear $5k revenue while {xray_report.under_75_reviews_count} stay under 75 reviews.",
         },
     ]
+
+
+def _label_compact_money_value(value: float | None) -> str:
+    """Format large summary values so they remain readable in compact metric strips."""
+    amount = float(value or 0.0)
+    absolute_amount = abs(amount)
+    if absolute_amount >= 1_000_000:
+        return f"${amount / 1_000_000:,.2f}M"
+    if absolute_amount >= 100_000:
+        return f"${amount / 1_000:,.0f}K"
+    return _label_money_value(amount)
+
+
 def _build_keyword_metric_cards(keyword_report: Helium10KeywordReport | None) -> list[dict[str, str]]:
     if keyword_report is None:
         return []
