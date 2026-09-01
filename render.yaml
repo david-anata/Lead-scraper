@@ -171,6 +171,18 @@ services:
         value: "false"
       - key: CONTENT_INSTAGRAM_AUTO_PUBLISH_ENABLED
         value: "false"
+      - key: CONTENT_TIKTOK_CONNECTOR_URL
+        sync: false
+      - key: CONTENT_TIKTOK_CONNECTOR_KEY
+        sync: false
+      - key: CONTENT_TIKTOK_CONNECTOR_VERIFIED
+        value: "false"
+      - key: CONTENT_TIKTOK_ACCOUNT_ID
+        sync: false
+      - key: CONTENT_TIKTOK_LIVE_APPROVED
+        value: "false"
+      - key: CONTENT_TIKTOK_AUTO_PUBLISH_ENABLED
+        value: "false"
       - key: CONTENT_COPY_AI_ENABLED
         value: "true"
       - key: CONTENT_COPY_MODEL

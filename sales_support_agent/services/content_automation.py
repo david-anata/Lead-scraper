@@ -229,6 +229,27 @@ DEFAULT_PLAYBOOKS: tuple[dict[str, Any], ...] = (
         },
     },
     {
+        "channel": "tiktok",
+        "version": "v2",
+        "priority": "vertical_discovery",
+        "cadence": {"max_per_week": 7, "minimum_spacing_hours": 24},
+        "format": {
+            "treatment": "native_vertical_video",
+            "requires_visual_action": True,
+            "cross_post_copy": False,
+            "cta": "follow_for_next_lesson",
+        },
+        "quality": {
+            "requires_source_lineage": True,
+            "requires_native_caption": True,
+            "prohibits_em_dash": True,
+        },
+        "metrics": {
+            "primary": ["watch_percent", "shares", "saves", "qualified_actions"],
+            "minimum_sample": 3,
+        },
+    },
+    {
         "channel": "x",
         "version": "v2",
         "priority": "staging_only",
@@ -635,8 +656,8 @@ def stage_native_candidates(
                 )
             )
         )
-        if len(existing_channels) == 6:
-            existing += 6
+        if len(existing_channels) == 7:
+            existing += 7
             continue
         bundle = generate_native_bundle(
             title=source.title or "Anata operator lesson",
@@ -658,6 +679,7 @@ def stage_native_candidates(
             "google_business",
             "youtube",
             "instagram",
+            "tiktok",
             "x",
         ):
             body = bundle[channel]

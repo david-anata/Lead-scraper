@@ -136,7 +136,7 @@ def test_riverside_to_native_copy_to_verified_daily_publication(
         now=now,
     )
     assert harvested["details"]["episode_harvest"]["staged_candidates"] == {
-            "created": 6,
+        "created": 7,
         "existing": 0,
         "rejected": 0,
     }
@@ -148,17 +148,17 @@ def test_riverside_to_native_copy_to_verified_daily_publication(
         now=now,
     )
     portfolio = distributed["details"]["daily_distribution"]["daily_portfolio"]
-    assert portfolio["linkedin_personal"]["status"] == "delivered"
     assert portfolio["youtube"]["status"] == "delivered"
+    assert "linkedin_personal" not in portfolio
 
     with session_scope(factory) as session:
         assert session.scalar(select(func.count()).select_from(ContentSourceAsset)) == 2
         artifacts = list(session.scalars(select(ContentArtifact)))
-        assert len(artifacts) == 6
-        assert len({item.body for item in artifacts}) == 6
+        assert len(artifacts) == 7
+        assert len({item.body for item in artifacts}) == 7
         assert all(item.quality_gate_json["passed"] for item in artifacts)
         publications = list(session.scalars(select(ContentPublication)))
-        assert len(publications) == 2
+        assert len(publications) == 1
         assert all(item.provider_receipt for item in publications)
         assert all(item.public_url for item in publications)
         assert not any(item.channel == "x" for item in publications)

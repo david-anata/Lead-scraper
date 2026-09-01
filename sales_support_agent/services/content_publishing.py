@@ -71,24 +71,33 @@ CHANNEL_CONFIG: dict[str, dict[str, str]] = {
         "activation": "CONTENT_INSTAGRAM_LIVE_APPROVED",
         "auto": "CONTENT_INSTAGRAM_AUTO_PUBLISH_ENABLED",
     },
+    "tiktok": {
+        "action": ALLOWED_ACTIONS["tiktok_video"],
+        "url": "CONTENT_TIKTOK_CONNECTOR_URL",
+        "key": "CONTENT_TIKTOK_CONNECTOR_KEY",
+        "verified": "CONTENT_TIKTOK_CONNECTOR_VERIFIED",
+        "destination": "CONTENT_TIKTOK_ACCOUNT_ID",
+        "activation": "CONTENT_TIKTOK_LIVE_APPROVED",
+        "auto": "CONTENT_TIKTOK_AUTO_PUBLISH_ENABLED",
+    },
 }
 
 WEEKLY_CAPS = {
     "linkedin_personal": 3,
     "linkedin_company": 7,
     "google_business": 7,
-    "youtube": 4,
-    "instagram": 3,
+    "youtube": 7,
+    "instagram": 7,
+    "tiktok": 7,
 }
-DAILY_PORTFOLIO = {
-    0: ("linkedin_personal", "linkedin_company", "google_business", "youtube"),
-    1: ("linkedin_company", "google_business", "instagram"),
-    2: ("linkedin_personal", "linkedin_company", "google_business", "youtube"),
-    3: ("linkedin_company", "google_business", "instagram"),
-    4: ("linkedin_personal", "linkedin_company", "google_business", "youtube"),
-    5: ("linkedin_company", "google_business", "instagram"),
-    6: ("linkedin_company", "google_business", "youtube"),
-}
+VERTICAL_SYNDICATION_CHANNELS = (
+    "tiktok",
+    "instagram",
+    "youtube",
+    "linkedin_company",
+    "google_business",
+)
+DAILY_PORTFOLIO = {day: VERTICAL_SYNDICATION_CHANNELS for day in range(7)}
 
 
 def _enabled(name: str) -> bool:
@@ -249,10 +258,11 @@ def publish_daily_portfolio(
     actor: str,
     now: datetime | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Attempt today's destinations independently so one failure cannot fan out."""
+    """Publish one native vertical-content set across every available destination."""
 
     current = now or datetime.now(timezone.utc)
     results: dict[str, dict[str, Any]] = {}
+    eligible_channels: list[str] = []
     for channel in DAILY_PORTFOLIO[current.weekday()]:
         readiness = channel_publish_readiness(channel)
         if not readiness["ready"]:
@@ -261,25 +271,70 @@ def publish_daily_portfolio(
                 "message": readiness["message"],
             }
             continue
+        config = CHANNEL_CONFIG[channel]
+        if not _enabled(config["auto"]):
+            results[channel] = {
+                "status": "not_enabled",
+                "message": "This ready destination is not enabled for automatic publishing.",
+            }
+            continue
+        if _weekly_verified_count(session, channel=channel, now=current) >= WEEKLY_CAPS[channel]:
+            results[channel] = {
+                "status": "not_eligible",
+                "message": "This destination has reached its weekly cadence cap.",
+            }
+            continue
+        eligible_channels.append(channel)
+
+    candidates_by_source: dict[str, dict[str, tuple[ContentArtifact, float]]] = {}
+    for channel in eligible_channels:
+        for artifact, score in rank_publishable_artifacts(
+            session, channel=channel, now=current
+        ):
+            candidates_by_source.setdefault(artifact.source_asset_id, {})[channel] = (
+                artifact,
+                score,
+            )
+    complete_sets = [
+        rows
+        for rows in candidates_by_source.values()
+        if all(channel in rows for channel in eligible_channels)
+    ]
+    selected = max(
+        complete_sets,
+        key=lambda rows: sum(rows[channel][1] for channel in eligible_channels),
+        default=None,
+    )
+    if selected is None:
+        for channel in eligible_channels:
+            results[channel] = {
+                "status": "not_eligible",
+                "message": "No complete native syndication set is ready for every available destination.",
+            }
+        return results
+
+    for channel in eligible_channels:
         try:
-            publication = publish_best_candidate(
-                session,
-                channel=channel,
-                actor=actor,
-                now=current,
+            artifact, score = selected[channel]
+            artifact.status = "approved"
+            gate = dict(artifact.quality_gate_json or {})
+            gate["selection"] = {
+                "score": score,
+                "policy": "daily_vertical_syndication_set_v1",
+                "selected_at": current.isoformat(),
+                "source_asset_id": artifact.source_asset_id,
+            }
+            artifact.quality_gate_json = gate
+            session.commit()
+            publication = publish_artifact(
+                session, artifact_id=artifact.id, actor=actor, confirmed=True
             )
-            results[channel] = (
-                {
-                    "status": publication.status,
-                    "publication_id": publication.id,
-                    "public_url": publication.public_url,
-                }
-                if publication is not None
-                else {
-                    "status": "not_eligible",
-                    "message": "No eligible candidate or channel cadence is at cap.",
-                }
-            )
+            results[channel] = {
+                "status": publication.status,
+                "publication_id": publication.id,
+                "public_url": publication.public_url,
+                "source_asset_id": artifact.source_asset_id,
+            }
         except Exception as exc:
             session.rollback()
             session.add(
@@ -372,14 +427,21 @@ def publish_artifact(
     media_assets = list((artifact.lineage_json or {}).get("media_assets") or [])
     media_url = ""
     if media_assets:
-        stable_media_url = str(media_assets[0].get("source_url") or "")
+        vertical_media = sorted(
+            media_assets,
+            key=lambda item: (
+                {"clip": 0, "video": 1}.get(str(item.get("asset_type") or ""), 2),
+                str(item.get("source_asset_id") or ""),
+            ),
+        )[0]
+        stable_media_url = str(vertical_media.get("source_url") or "")
         if stable_media_url and os.getenv("RIVERSIDE_API_KEY", "").strip():
             from sales_support_agent.integrations.riverside import RiversideClient
 
             media_url = RiversideClient(
                 api_key=os.environ["RIVERSIDE_API_KEY"]
             ).resolve_download_url(stable_media_url)
-    if artifact.channel in {"youtube", "instagram"} and not media_url:
+    if artifact.channel in {"youtube", "instagram", "tiktok"} and not media_url:
         raise RuntimeError(
             "This video destination needs a retrievable Riverside media asset."
         )

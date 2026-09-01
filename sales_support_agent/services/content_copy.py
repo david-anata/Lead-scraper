@@ -14,6 +14,7 @@ CHANNELS = (
     "google_business",
     "youtube",
     "instagram",
+    "tiktok",
     "x",
 )
 CTA_BY_CHANNEL = {
@@ -22,6 +23,7 @@ CTA_BY_CHANNEL = {
     "google_business": "Follow Anata for practical ecommerce operating guidance.",
     "youtube": "Subscribe for more practical ecommerce operating systems.",
     "instagram": "Save this and share it with the operator who owns the next step.",
+    "tiktok": "Follow Anata for the next practical ecommerce operating lesson.",
     "x": "What are you seeing in your operation?",
 }
 
@@ -89,6 +91,13 @@ def deterministic_native_bundle(*, title: str, transcript: str) -> dict[str, str
             f"{CTA_BY_CHANNEL['instagram']}\n\n"
             "#ecommerce #operations #leadership"
         ),
+        "tiktok": (
+            f"{lead}\n\n"
+            f"Here is the operator move: {detail}\n\n"
+            f"Make it visible. Give it one owner. Check the result.\n\n"
+            f"{CTA_BY_CHANNEL['tiktok']}\n\n"
+            "#ecommerce #operations #businesstok"
+        ),
         "x": (
             f"{lead}\n\n{detail}\n\n{CTA_BY_CHANNEL['x']}"
         ),
@@ -113,7 +122,7 @@ def _ai_native_bundle(*, title: str, transcript: str) -> dict[str, str] | None:
             system=(
                 "You create source-grounded Anata channel-native copy. Return only "
                 "valid JSON with exactly these keys: linkedin_personal, "
-                "linkedin_company, google_business, youtube, instagram, x. Never invent a fact, "
+                "linkedin_company, google_business, youtube, instagram, tiktok, x. Never invent a fact, "
                 "quote, result, client, or story. Use no em dash. Apply the Six C's: "
                 "native Channel behavior, earned Credibility, clear ecommerce "
                 "operations Category, useful Content, measurable Calibration intent, "

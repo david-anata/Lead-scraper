@@ -22,6 +22,7 @@ ALLOWED_ACTIONS = {
     "google_business": "google_business_create_post",
     "instagram_video": "instagram_for_business_publish_video",
     "instagram_photo": "instagram_for_business_publish_photo_s",
+    "tiktok_video": "tiktok_publish_video",
     "youtube_upload": "youtube_upload_video",
     "youtube_report": "youtube_get_report",
 }

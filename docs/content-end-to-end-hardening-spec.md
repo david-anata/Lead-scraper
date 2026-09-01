@@ -15,15 +15,18 @@ eligible destination without loss.
 1. Riverside is polled through the supported Business API v3 with complete
    pagination. Every ready recording and transcript is ingested idempotently.
 2. Every transcript-backed episode produces original, publishable treatments
-   for personal LinkedIn, company LinkedIn, YouTube, Instagram, and staging-only
-   X. Prompts and writing instructions are not artifacts.
+   for personal LinkedIn, company LinkedIn, Google Business, YouTube Shorts,
+   Instagram Reels, TikTok, and staging-only X. Prompts and writing
+   instructions are not artifacts.
 3. Every treatment applies the Six C's:
    Channel-native structure, source-backed Credibility, approved Category,
    substantive Content, measurable Calibration metadata, and an appropriate
    Collection CTA.
-4. The portfolio has a publication opportunity every day. David's personal
-   LinkedIn remains limited to 2–3 verified posts weekly. Other destinations use
-   their approved native cadence; X never publishes.
+4. The portfolio has a publication opportunity every day. Each selected
+   vertical source is syndicated with native copy to every ready, enabled
+   TikTok, Instagram Reels, YouTube Shorts, LinkedIn company, and Google
+   Business destination. David's personal LinkedIn remains manual at 2–3
+   evidence-led drafts weekly; X never publishes.
 5. The strongest eligible source is selected using comparable observed
    performance, Six C quality, freshness, fatigue, and delivery history.
 6. One disconnected or failing channel cannot stop ingestion, transformation,
@@ -77,17 +80,18 @@ receipt and public URL → ingest analytics → rank future source patterns`
 
 1. A paginated two-page Riverside fixture ingests every ready recording once,
    ignores processing recordings, and never persists bearer credentials.
-2. Two newly ingested episodes in one run each create five distinct artifacts.
+2. Two newly ingested episodes in one run each create seven distinct artifacts.
 3. Generated bodies contain publishable copy, not imperative writing
    instructions; all bodies retain transcript lineage.
-4. LinkedIn personal, LinkedIn company, YouTube, Instagram, and X bodies are
-   structurally different and each contains its approved CTA behavior.
+4. LinkedIn personal, LinkedIn company, Google Business, YouTube, Instagram,
+   TikTok, and X bodies are structurally different and each contains its
+   approved CTA behavior.
 5. Six C quality fails closed when source credibility, category, native
    structure, or CTA is absent.
 6. A daily scheduler run creates or advances the portfolio calendar without
    exceeding channel cadence or publishing X.
-7. A failed Instagram connector does not prevent an eligible LinkedIn or
-   YouTube attempt in the same daily cycle.
+7. A failed Instagram connector does not prevent an eligible TikTok, LinkedIn,
+   Google Business, or YouTube attempt in the same daily cycle.
 8. Every external attempt records actor, idempotency, attempts, safe failure,
    receipt, public URL, and verification state.
 9. The Control Room shows episode coverage, daily backlog, David's weekly
