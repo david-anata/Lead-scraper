@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 from typing import Any, Literal
 
@@ -139,6 +140,14 @@ class DailyBriefInput(BaseModel):
 
 
 def _require_internal_key(request: Request) -> None:
+    cron_secret = os.getenv("CRON_SECRET", "").strip()
+    authorization = request.headers.get("Authorization", "").strip()
+    if cron_secret and secrets.compare_digest(
+        authorization,
+        f"Bearer {cron_secret}",
+    ):
+        return
+
     expected = str(
         getattr(request.app.state.settings, "internal_api_key", "") or ""
     ).strip()
@@ -336,6 +345,19 @@ def content_run(
         request.app.state.settings,
         mode=payload.mode,
         force=payload.force,
+    )
+
+
+@router.get("/api/jobs/content/run")
+def scheduled_content_run(request: Request) -> dict[str, Any]:
+    """Run the due content jobs from Vercel Cron."""
+
+    _require_internal_key(request)
+    return run_content_cycle(
+        request.app.state.session_factory,
+        request.app.state.settings,
+        mode="scheduled",
+        force=False,
     )
 
 
