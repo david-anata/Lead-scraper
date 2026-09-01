@@ -44,8 +44,9 @@ class _FakeAmazonClient:
 class DeckMetricFormattingTests(unittest.TestCase):
     def test_large_revenue_values_are_compact_enough_for_metric_cards(self) -> None:
         self.assertEqual(_label_compact_money_value(7_089_670.81), "$7.09M")
-        self.assertEqual(_label_compact_money_value(589_500), "$590K")
-        self.assertEqual(_label_compact_money_value(73_089.39), "$73,089.39")
+        self.assertEqual(_label_compact_money_value(589_500), "$589.5K")
+        self.assertEqual(_label_compact_money_value(73_089.39), "$73.1K")
+        self.assertEqual(_label_compact_money_value(9_999.99), "$9,999.99")
 
 
 class _FakeProductResearch:

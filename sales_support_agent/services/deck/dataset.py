@@ -307,8 +307,8 @@ def _label_compact_money_value(value: float | None) -> str:
     absolute_amount = abs(amount)
     if absolute_amount >= 1_000_000:
         return f"${amount / 1_000_000:,.2f}M"
-    if absolute_amount >= 100_000:
-        return f"${amount / 1_000:,.0f}K"
+    if absolute_amount >= 10_000:
+        return f"${amount / 1_000:,.1f}K"
     return _label_money_value(amount)
 
 
