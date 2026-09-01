@@ -36,11 +36,11 @@
       "schedule": "30 * * * *"
     },
     {
-      "path": "/api/vercel-cron/website-ops",
+      "path": "/api/jobs/website-ops/run",
       "schedule": "0 * * * *"
     },
     {
-      "path": "/api/vercel-cron/content",
+      "path": "/api/jobs/content/run",
       "schedule": "0 * * * *"
     },
     {

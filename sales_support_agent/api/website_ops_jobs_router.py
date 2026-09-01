@@ -233,6 +233,14 @@ def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
 
 
 def _require_internal_key(request: Request) -> None:
+    cron_secret = os.getenv("CRON_SECRET", "").strip()
+    authorization = request.headers.get("Authorization", "").strip()
+    if cron_secret and secrets.compare_digest(
+        authorization,
+        f"Bearer {cron_secret}",
+    ):
+        return
+
     expected = str(getattr(request.app.state.settings, "internal_api_key", "") or "").strip()
     supplied = request.headers.get("X-Internal-Api-Key", "").strip()
     if not expected or not secrets.compare_digest(supplied, expected):
@@ -607,7 +615,7 @@ def website_ops_runtime_health(request: Request) -> dict:
     }
 
 
-@router.post("/run")
+@router.api_route("/run", methods=["GET", "POST"])
 async def run_scheduled_website_ops(request: Request) -> dict:
     _require_internal_key(request)
     try:
