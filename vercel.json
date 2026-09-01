@@ -1,35 +1,14 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "services": {
+  "experimentalServices": {
     "sales-support-agent": {
-      "root": ".",
       "entrypoint": "api/index.py",
+      "routePrefix": "/",
       "framework": "fastapi",
-      "functions": {
-        "api/index.py": {
-          "maxDuration": 800,
-          "memory": 2048,
-          "regions": ["pdx1"]
-        }
-      }
+      "maxDuration": 800,
+      "memory": 2048
     }
   },
-  "rewrites": [
-    {
-      "source": "/:path*/",
-      "destination": {
-        "service": "sales-support-agent",
-        "path": "/:path*/"
-      }
-    },
-    {
-      "source": "/:path*",
-      "destination": {
-        "service": "sales-support-agent",
-        "path": "/:path*"
-      }
-    }
-  ],
   "crons": [
     {
       "path": "/api/vercel-cron/synthetic-health",
