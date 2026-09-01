@@ -62,6 +62,14 @@ _HR_STYLES = """
   .hr-form label { display: block; font-size: 13px; font-weight: 600; color: rgba(43,54,68,0.7); margin: 14px 0 6px; }
   .hr-form input, .hr-form select, .hr-form textarea { width: 100%; padding: 10px 12px; border: 1px solid rgba(43,54,68,0.2); border-radius: 10px; font-size: 16px; font-family: inherit; box-sizing: border-box; }
   .hr-form textarea { min-height:92px; resize:vertical; }
+  .hr-main code { overflow-wrap:anywhere; word-break:break-word; }
+  .hr-command-bar { display:flex; flex-wrap:wrap; align-items:end; gap:12px; margin:0 0 18px; padding:14px; background:#fff; border:1px solid rgba(43,54,68,.1); border-radius:14px; }
+  .hr-command-bar label { display:grid; gap:5px; margin:0; font-size:12px; font-weight:700; color:#52606d; }
+  .hr-command-bar select { min-height:42px; padding:8px 10px; border:1px solid rgba(43,54,68,.2); border-radius:10px; background:#fff; font:inherit; }
+  .hr-filter-tabs { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 18px; }
+  .hr-filter-tabs a { padding:9px 12px; border:1px solid rgba(43,54,68,.18); border-radius:999px; color:#2b3644; text-decoration:none; font-weight:700; font-size:13px; }
+  .hr-filter-tabs a[aria-current="page"] { background:#e8f3f7; border-color:#79b8d1; }
+  .hr-priority { border-left:5px solid var(--agent-danger); }
   .hr-btn:focus-visible, .hr-form input:focus-visible, .hr-form select:focus-visible, .hr-form textarea:focus-visible, .hr-tbl a:focus-visible { outline:3px solid #79b8d1; outline-offset:2px; }
   .hr-btn:disabled { opacity:.5; cursor:not-allowed; }
   .hr-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -385,9 +393,7 @@ def render_hr_setup(control: dict, company_profile: dict, calendar: dict,
         "monthly", "semiweekly"
     }
     opening_ready = bool(
-        active_emails
-        and approved_openings == len(active_emails)
-        and settings.get("opening_balances_confirmed")
+        active_emails and approved_openings == len(active_emails)
     )
     w4_ready = "w4" not in blocker_kinds
     time_kinds = {
@@ -749,6 +755,36 @@ def render_hr_dashboard(stats: dict, *, user, flash=None, manager_view=True) -> 
         f'<li><a href="{_esc(item["url"])}">{item["count"]} {_esc(item["label"])}</a></li>'
         for item in stats.get("attention", [])
     ) or "<li>No HR items currently need attention.</li>"
+    payroll = stats.get("payroll") or {}
+    payroll_blockers = int(payroll.get("blockers") or 0)
+    if payroll and payroll_blockers:
+        priority_panel = f"""<section class="hr-callout blocked hr-priority" aria-labelledby="hr-next-action">
+          <div class="hr-kicker">Next HR action · payroll</div>
+          <h2 id="hr-next-action">Resolve {payroll_blockers} payroll blocker{'s' if payroll_blockers != 1 else ''}</h2>
+          <p>The {_esc(payroll.get('period_start'))}–{_esc(payroll.get('period_end'))} payroll is due {_esc(payroll.get('pay_date'))}. Unresolved items prevent the exact version from being frozen.</p>
+          <a class="hr-btn" href="/admin/hr/payroll?period_date={_esc(payroll.get('period_start'))}">Open payroll blockers</a>
+        </section>"""
+    elif payroll:
+        priority_panel = f"""<section class="hr-callout ok" aria-labelledby="hr-next-action">
+          <div class="hr-kicker">Next HR action · payroll</div>
+          <h2 id="hr-next-action">Payroll is ready for its next controlled step</h2>
+          <p>The {_esc(payroll.get('period_start'))}–{_esc(payroll.get('period_end'))} period is payable {_esc(payroll.get('pay_date'))}.</p>
+          <a class="hr-btn" href="/admin/hr/payroll?period_date={_esc(payroll.get('period_start'))}">Open payroll</a>
+        </section>"""
+    else:
+        priority_panel = ""
+    setup_notices = []
+    if not stats.get("calendar_ready", True):
+        setup_notices.append('<a href="/admin/hr/setup">OOO calendar setup needs David or Val</a>')
+    if stats.get("compliance_due"):
+        setup_notices.append(f'<a href="/admin/hr/compliance">{int(stats["compliance_due"])} current compliance item(s) are due</a>')
+    if stats.get("compliance_reconciliation"):
+        setup_notices.append(f'<a href="/admin/hr/compliance?status=reconciliation">{int(stats["compliance_reconciliation"])} historical compliance item(s) need reconciliation</a>')
+    setup_panel = (
+        '<section class="hr-callout warn"><div class="hr-kicker">Setup and compliance</div><ul>'
+        + ''.join(f'<li>{item}</li>' for item in setup_notices) + '</ul></section>'
+        if setup_notices else ""
+    )
     manager_cards = f"""
     <div class="hr-cards">
       <div class="hr-card"><div class="n">{stats.get('active_employees',0)}</div><div class="l">Active employees</div></div>
@@ -756,6 +792,8 @@ def render_hr_dashboard(stats: dict, *, user, flash=None, manager_view=True) -> 
       <div class="hr-card"><div class="n">{stats.get('onboarding_incomplete',0)}</div><div class="l">Onboarding pending</div></div>
       <div class="hr-card"><div class="n">{stats.get('total_employees',0)}</div><div class="l">Total records</div></div>
     </div>
+    {priority_panel}
+    {setup_panel}
     <section class="hr-dashboard-action" aria-label="HR next action">
       <p class="hr-sub">Add an employee record, or review people, time, payroll readiness, and reporting.</p>
       <a class="hr-btn" href="/admin/hr/employees/new">+ Add employee</a>
@@ -857,7 +895,13 @@ def _role_badge(role: str) -> str:
     return f'<span class="hr-badge" style="background:{bg};color:{fg};border-color:{fg}33">{_esc(role)}</span>'
 
 
-def render_hr_employees(employees: list, *, user, flash=None) -> str:
+def render_hr_employees(
+    employees: list, *, user, flash=None, filters: dict | None = None,
+    total_count: int | None = None,
+) -> str:
+    filters = filters or {
+        "status": "all", "payroll": "all", "onboarding": "all", "access": "all"
+    }
     permissions = (user or {}).get("permissions") or set()
     can_manage_people = bool(
         (user or {}).get("is_superadmin")
@@ -870,10 +914,16 @@ def render_hr_employees(employees: list, *, user, flash=None) -> str:
         pay = "Restricted"
         if "hourly_rate" in e:
             pay = (
-            f"${employment.get('fixed_pay_per_period', '0.00')}/check"
+            (
+                "Not paid through Anata"
+                if not employment.get("payroll_eligible", True)
+                else f"${employment.get('fixed_pay_per_period', '0.00')}/check"
+            )
             if employment.get("pay_basis") == "fixed_semimonthly"
             else f"${e.get('hourly_rate', '0.00')}/hr"
             )
+            if not employment.get("payroll_eligible", True):
+                pay = "Not paid through Anata"
         payroll_state = (
             "Contractor workflow" if e.get("employee_type") == "contractor" else
             "Included in W-2 payroll" if employment.get("payroll_eligible", True) else
@@ -899,15 +949,29 @@ def render_hr_employees(employees: list, *, user, flash=None) -> str:
         </tr>"""
     if not rows:
         rows = '<tr><td colspan="8" class="hr-empty">No employees yet. Add your first one.</td></tr>'
+    def filter_options(values: tuple[tuple[str, str], ...], selected: str) -> str:
+        return "".join(
+            f'<option value="{_esc(value)}"{" selected" if value == selected else ""}>{_esc(label)}</option>'
+            for value, label in values
+        )
+
+    visible_count = len(employees)
     body = f"""
     {_flash(flash)}
     <div class="hr-row-head">
-      <div><h1 class="hr-h1">Employees</h1><p class="hr-sub" style="margin:0">{len(employees)} record(s)</p></div>
+      <div><h1 class="hr-h1">Employees</h1><p class="hr-sub" style="margin:0">Showing {visible_count} of {total_count if total_count is not None else visible_count} record(s)</p></div>
       <div class="hr-inline">
         <a class="hr-btn hr-btn-light" href="/admin/hr/access-training">How to give access</a>
         <a class="hr-btn" href="/admin/hr/employees/new">+ Add employee</a>
       </div>
     </div>
+    <form class="hr-command-bar" method="get" action="/admin/hr/employees" aria-label="Filter employee records">
+      <label>Status<select name="status">{filter_options((("active","Active"),("inactive","Inactive"),("all","All")), filters['status'])}</select></label>
+      <label>Payroll<select name="payroll">{filter_options((("all","All"),("w2","W-2 payroll"),("not_on_payroll","Not on payroll"),("contractor","Contractor")), filters['payroll'])}</select></label>
+      <label>Onboarding<select name="onboarding">{filter_options((("all","All"),("incomplete","Incomplete"),("complete","Complete")), filters['onboarding'])}</select></label>
+      <label>Employee access<select name="access">{filter_options((("all","All"),("ready","Personal login set"),("missing","Needs personal login")), filters['access'])}</select></label>
+      <button class="hr-btn hr-btn-light" type="submit">Apply filters</button>
+    </form>
     <table class="hr-tbl">
       <thead><tr><th>Name</th><th>Record email</th><th>Employee app access</th><th>Role</th><th>Type</th><th>Payroll relationship</th><th>Pay</th><th>Status</th></tr></thead>
       <tbody>{rows}</tbody>
@@ -1189,6 +1253,7 @@ def render_hr_time(
     entry_total: int = 0, entry_page: int = 1, entry_page_size: int = 10,
     entry_page_count: int = 1,
     clock_summary: Optional[dict] = None,
+    review_mode: bool = False, can_review: bool | None = None,
     *, user, flash=None
 ) -> str:
     clock_summary = clock_summary or {}
@@ -1196,8 +1261,10 @@ def render_hr_time(
     punch_label = "Clock out" if current else "Clock in"
     review_permissions = (user or {}).get("permissions") or set()
     can_review = bool(
-        (user or {}).get("is_superadmin")
-        or {"hr.payroll", "hr.time.approve_team"}.intersection(review_permissions)
+        can_review if can_review is not None else (
+            (user or {}).get("is_superadmin")
+            or {"hr.payroll", "hr.time.approve_team"}.intersection(review_permissions)
+        )
     )
     rows = "".join(f"""<tr><td>{_esc(r['date'])}</td><td>{_esc(r['start_time'] or '—')}</td>
       <td>{_esc(r['stop_time'] or 'Open')}</td><td>{r['hours']:.2f}</td><td>{_esc(r['employee_email'])}</td>
@@ -1268,18 +1335,28 @@ def render_hr_time(
         ) + "</tbody></table></div>"
     ) if review_flags else ""
     previous_link = (
-        f'<a class="hr-btn hr-btn-light" href="/admin/hr/time?period_date={_esc(period.start_date)}&page={entry_page - 1}&page_size={entry_page_size}">Previous</a>'
+        f'<a class="hr-btn hr-btn-light" href="/admin/hr/time?period_date={_esc(period.start_date)}&page={entry_page - 1}&page_size={entry_page_size}{"&view=mine" if not review_mode and can_review else ""}">Previous</a>'
         if entry_page > 1 else ""
     )
     next_link = (
-        f'<a class="hr-btn hr-btn-light" href="/admin/hr/time?period_date={_esc(period.start_date)}&page={entry_page + 1}&page_size={entry_page_size}">Next</a>'
+        f'<a class="hr-btn hr-btn-light" href="/admin/hr/time?period_date={_esc(period.start_date)}&page={entry_page + 1}&page_size={entry_page_size}{"&view=mine" if not review_mode and can_review else ""}">Next</a>'
         if entry_page < entry_page_count else ""
     )
+    mode_tabs = (
+        f'''<nav class="hr-filter-tabs" aria-label="Time workspace">
+          <a href="/admin/hr/time?period_date={_esc(period.start_date)}&amp;view=team"{' aria-current="page"' if review_mode else ''}>Team time review</a>
+          <a href="/admin/hr/time?period_date={_esc(period.start_date)}&amp;view=mine"{' aria-current="page"' if not review_mode else ''}>My time &amp; PTO</a>
+        </nav>'''
+        if can_review else ""
+    )
+    personal_hidden = " hidden" if review_mode else ""
     body = f"""
     {_flash(flash)}
-    <h1 class="hr-h1">Time & PTO</h1>
-    <p class="hr-sub">Employees see only their own punches and requests. Authorized HR and time reviewers see the employees assigned to them.</p>
+    <h1 class="hr-h1">{'Team time review' if review_mode else 'My time & PTO'}</h1>
+    <p class="hr-sub">{'Review only the employees assigned to you. Decisions remain tied to the exact time records.' if review_mode else 'Clock your work, correct your own punches, and manage your PTO.'}</p>
+    {mode_tabs}
     <form class="hr-inline" method="get" action="/admin/hr/time">
+      {f'<input type="hidden" name="view" value="{"team" if review_mode else "mine"}">' if can_review else ''}
       <label for="time-period">Choose a date inside the pay period</label>
       <input id="time-period" type="date" name="period_date" value="{_esc(period.start_date)}">
       <button class="hr-btn hr-btn-light" type="submit">View pay period</button>
@@ -1287,6 +1364,7 @@ def render_hr_time(
     <div class="hr-callout"><div class="hr-kicker">Pay period in view</div>
       <p><strong>{_esc(period.start_date)} through {_esc(period.end_date)}</strong>. Choosing a date changes the punches, timesheet, and review period shown below; it does not open or alter payroll.</p>
     </div>
+    <section{personal_hidden} aria-label="My current time and PTO">
     <div class="hr-callout"><div class="hr-kicker">Your time clock</div>
       <p><strong>{_esc(clock_summary.get('local_now'))}</strong></p>
       <p>{'Clocked in. Your time is running.' if current else 'You are currently clocked out.'}
@@ -1305,14 +1383,15 @@ def render_hr_time(
       <div class="hr-card"><div class="n">{pto.get('used',0):.2f}</div><div class="l">PTO hours used</div></div>
     </div>
     <p class="hr-sub">{'PTO is available for requests.' if pto.get('eligible') else f'PTO becomes usable on {_esc(pto.get("eligible_date") or "the configured eligibility date")}.'}</p>
+    </section>
     <div class="hr-row-head"><div><h2>Recent punches</h2><p class="hr-sub" style="margin:0">Showing {len(entries)} of {entry_total} visible punch(es)</p></div>
-      <form class="hr-inline" method="get" action="/admin/hr/time"><input type="hidden" name="period_date" value="{_esc(period.start_date)}"><label for="punch-page-size">Rows</label><select id="punch-page-size" name="page_size"><option value="10"{' selected' if entry_page_size == 10 else ''}>10</option><option value="25"{' selected' if entry_page_size == 25 else ''}>25</option></select><button class="hr-btn hr-btn-light" type="submit">Apply</button></form></div>
+      <form class="hr-inline" method="get" action="/admin/hr/time"><input type="hidden" name="period_date" value="{_esc(period.start_date)}">{f'<input type="hidden" name="view" value="{"team" if review_mode else "mine"}">' if can_review else ''}<label for="punch-page-size">Rows</label><select id="punch-page-size" name="page_size"><option value="10"{' selected' if entry_page_size == 10 else ''}>10</option><option value="25"{' selected' if entry_page_size == 25 else ''}>25</option></select><button class="hr-btn hr-btn-light" type="submit">Apply</button></form></div>
     <table class="hr-tbl"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Employee</th><th>Correction</th></tr></thead><tbody>{rows}</tbody></table>
     <div class="hr-pagination"><span>Page {entry_page} of {entry_page_count}</span><div class="hr-inline">{previous_link}{next_link}</div></div>
     <h2 style="margin-top:28px">Time corrections</h2>
     <p class="hr-sub">A request changes recorded hours only after a different authorized person approves it. Estimated gross impact excludes taxes and employer costs.</p>
     <table class="hr-tbl"><thead><tr><th>Record</th><th>Work date</th><th>Employee</th><th>Current</th><th>Proposed</th><th>Change</th><th>Reason</th><th>Status</th><th>Decision</th></tr></thead><tbody>{correction_rows}</tbody></table>
-    <h2 style="margin-top:28px">Missed an entire workday?</h2>
+    <section{personal_hidden}><h2 style="margin-top:28px">Missed an entire workday?</h2>
     <p class="hr-sub">Use this only when no punch exists for the date. Nothing is added to paid time until another authorized person reviews and approves it.</p>
     <form class="hr-form" method="post" action="/admin/hr/time/missed-punch">
       <label for="missed-date">Work date</label><input id="missed-date" type="date" name="work_date" required>
@@ -1320,12 +1399,12 @@ def render_hr_time(
       <div><label for="missed-stop">Requested end</label><input id="missed-stop" type="time" name="proposed_stop" required></div></div>
       <label for="missed-reason">What happened?</label><textarea id="missed-reason" name="reason" required maxlength="500" placeholder="For example: I forgot to clock in and out."></textarea>
       <div class="hr-actions"><button class="hr-btn hr-btn-light" type="submit">Request missed-day review</button></div>
-    </form>
+    </form></section>
     <h2 style="margin-top:28px">Timesheet approval</h2>
     <p class="hr-sub">Period {_esc(period.start_date)}–{_esc(period.end_date)}. Employees only clock in, clock out, and request corrections. A manager reviews and approves the exact recorded punches during payroll.</p>
     {f'<p><a class="hr-btn" href="/admin/hr/payroll?period_date={_esc(period.start_date)}#time-review">Review hours in Payroll</a></p>' if can_review else '<div class="hr-callout"><strong>No submission needed.</strong><p>Your manager will review these punches during payroll. Use Correct above if anything is wrong.</p></div>'}
     <table class="hr-tbl" style="margin-top:18px"><thead><tr><th>Employee</th><th>Period</th><th>Status</th><th>Reviewer</th><th>Decision / note</th></tr></thead><tbody>{timesheet_rows}</tbody></table>
-    <h2 style="margin-top:28px">Request PTO</h2>
+    <section{personal_hidden}><h2 style="margin-top:28px">Request PTO</h2>
     <div class="hr-callout"><div class="hr-kicker">How approval works</div><p>Your assigned manager receives an email with a secure link to review this request. The email itself cannot approve anything. After approval, Anata adds the dates to the shared OOO calendar and emails you the decision.</p></div>
     <form class="hr-form" method="post" action="/admin/hr/time/pto">
       <div class="hr-grid2"><div><label for="pto-start">Start date</label><input id="pto-start" type="date" name="start_date" required></div>
@@ -1334,7 +1413,8 @@ def render_hr_time(
       <label for="pto-reason">Note (optional)</label><input id="pto-reason" name="reason" maxlength="500">
       <p class="hr-help">Start and end on scheduled weekdays. Weekends and observed paid holidays inside a longer range are automatically ignored and do not use PTO. The system also blocks overlaps, unavailable hours, and requests that cross a payroll boundary.</p>
       <div class="hr-actions"><button class="hr-btn" type="submit">Send request</button></div></form>
-    <h2 style="margin-top:28px">PTO requests</h2><table class="hr-tbl"><thead><tr><th>Employee</th><th>Dates</th><th>Hours</th><th>Status</th><th>Note</th><th>Decision</th></tr></thead><tbody>{requests}</tbody></table>
+    </section>
+    <h2 style="margin-top:28px">{'Team PTO requests' if review_mode else 'PTO requests'}</h2><table class="hr-tbl"><thead><tr><th>Employee</th><th>Dates</th><th>Hours</th><th>Status</th><th>Note</th><th>Decision</th></tr></thead><tbody>{requests}</tbody></table>
     """
     return hr_shell("Time & PTO", "time", body, user=user)
 
@@ -1401,6 +1481,7 @@ def render_hr_onboarding(
       <div class="hr-card"><div class="n">{'Done' if onboarding.get('w4_complete') else 'Needed'}</div><div class="l">Federal W-4</div></div>
       <div class="hr-card"><div class="n">{'Done' if onboarding.get('i9_employee_complete') else 'Needed'}</div><div class="l">I-9 employee step</div></div>
       <div class="hr-card"><div class="n">{'Done' if onboarding.get('policies_complete') else 'Needed'}</div><div class="l">Policies</div></div>
+      <div class="hr-card"><div class="n">{'Done' if onboarding.get('i9_employer_complete') else 'Waiting'}</div><div class="l">David or Val employer review</div></div>
     </div>
     <form class="hr-form" method="post" action="/admin/hr/onboarding/profile" id="personal-contact">
       <div class="hr-kicker">Personal and emergency information</div>
@@ -1565,6 +1646,10 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
           <td>${_esc(balance.get('gross_wages'))}</td><td>${_esc(balance.get('federal_withheld'))}</td><td>${_esc(balance.get('utah_withheld'))}</td>
           <td>{_esc(status.title())}<br><span class="hr-sub">{_esc(balance.get('source_note') or 'No source note')}</span></td><td>{action}</td></tr>"""
     qualified_review = control.get("settings", {}).get("qualified_review")
+    opening_balances_confirmed = bool(opening_by_email) and all(
+        (opening_by_email.get(employee["email"]) or {}).get("approval_status") == "approved"
+        for employee in control["employees"]
+    )
     if qualified_review:
         qualified_review_panel = f"""<div class="hr-callout ok" id="calculation-review"><div class="hr-kicker">Calculation review</div>
           <h2 style="margin:6px 0">Recorded for {_esc(qualified_review.get('tax_year'))}</h2>
@@ -1701,7 +1786,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <li>Review and approve hourly punches below. Employees do not submit timesheets.</li>
       <li>Review the imported year-to-date balances. An independent calculation review is optional unless an exception requires it.</li>
       <li>Resolve the remaining company access checks, then freeze an immutable version. Freezing moves no money.</li>
-      <li>A different authorized person reviews the frozen version. David gives final approval.</li>
+      <li>A different authorized person reviews the frozen version. The configured final approver gives final approval.</li>
       <li>Issue each approved check, complete tax payments and filings in the official portals, and record every confirmation in Agent.</li></ol>
     </section>
     <section id="employee-tax-records" style="margin-top:24px"><div class="hr-row-head"><div><div class="hr-kicker">Step 1</div><h2 style="margin:4px 0">Employee pay and tax records</h2></div></div>
@@ -1713,11 +1798,14 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <p class="hr-sub">The manager reviews the recorded punches here. Approval is tied to the exact time data; any later correction automatically makes it stale.</p>
       <table class="hr-tbl"><thead><tr><th>Employee</th><th>Hours</th><th>Status</th><th>Manager decision</th></tr></thead><tbody>{timesheet_rows}</tbody></table>
     </section>
-    <section id="opening-balances" style="margin-top:28px"><div class="hr-kicker">Step 3</div><h2 style="margin:4px 0">2026 opening balances</h2>
+    <details id="opening-balances" class="hr-callout" style="margin-top:28px"{' open' if not opening_balances_confirmed else ''}>
+      <summary><strong>Step 3 · 2026 opening balances · {'Confirmed' if opening_balances_confirmed else 'Needs review'}</strong></summary>
       <p class="hr-sub">These totals came from payroll before Agent. Review the source and totals here. If a figure is wrong, edit it in <a href="/admin/hr/settings#opening-balances">Payroll settings</a>; any edit automatically invalidates the old approval.</p>
       <table class="hr-tbl"><thead><tr><th>Employee</th><th>Prior gross</th><th>Federal withheld</th><th>Utah withheld</th><th>Source / status</th><th>Decision</th></tr></thead><tbody>{opening_rows}</tbody></table>
-    </section>
-    <div style="margin-top:28px">{qualified_review_panel}</div>
+    </details>
+    <details style="margin-top:18px"><summary><strong>Optional deeper calculation review · {'Recorded' if qualified_review else 'Not recorded'}</strong></summary>
+      <div style="margin-top:12px">{qualified_review_panel}</div>
+    </details>
     <div class="hr-callout {'ok' if readiness['ready'] else 'warn'}"><div class="hr-kicker">Payroll readiness</div>
       <h2 style="margin:6px 0">{status_label}</h2>
       <p>Each blocker names who owns the next step. Opening this list never changes payroll.</p>
@@ -2141,7 +2229,8 @@ def render_hr_pay_statements(runs: list, *, user) -> str:
         for run in runs
     ) or '<tr><td colspan="6" class="hr-empty">No issued pay statements yet.</td></tr>'
     body = f"""<h1 class="hr-h1">Your pay statements</h1>
-    <p class="hr-sub">Only your own issued payroll records appear here.</p>
+    <p class="hr-sub">Only your own issued payroll records appear here. A statement becomes available after payroll is approved and your check is recorded as issued.</p>
+    <div class="hr-callout"><strong>Expected a statement?</strong><p>If your payday has arrived and nothing appears here, contact David or Val. Do not send tax or bank information by email.</p></div>
     <table class="hr-tbl"><thead><tr><th>Payday</th><th>Period</th><th>Status</th><th>Gross</th><th>Net</th><th>Statement</th></tr></thead><tbody>{rows}</tbody></table>"""
     return hr_shell("Pay statements", "pay_statements", body, user=user)
 
@@ -2390,7 +2479,8 @@ def render_hr_legacy_import(*, user, preview: dict | None = None,
 
 
 def render_hr_compliance(
-    tasks: list, calendar_rows: list, *, year: int, user, flash=None
+    tasks: list, calendar_rows: list, *, year: int,
+    status_filter: str = "needs_action", user, flash=None,
 ) -> str:
     def compliance_label(task_type: str) -> str:
         if task_type == "utah_new_hire_report":
@@ -2409,20 +2499,54 @@ def render_hr_compliance(
                 return f"{label} · {suffix}"
         return task_type
 
-    task_rows = "".join(
-        f"""<tr><td>{_esc(item['employee_email'] or 'Anata LLC')}</td>
-        <td>{_esc(compliance_label(item['task_type']))}</td>
-        <td>{_esc(item['due_date'])}{' · OVERDUE' if item.get('overdue') else ''}</td>
-        <td>{_esc(item['status'])}</td>
-        <td>{_esc(item.get('confirmation_reference') or '—')}<br><span class="hr-sub">{_esc(item.get('evidence_note') or 'No evidence recorded')}</span></td>
-        <td><form class="hr-form" method="post" action="/admin/hr/compliance/{item['id']}">
-          <label>Outside confirmation/reference</label><input name="confirmation_reference" value="{_esc(item.get('confirmation_reference'))}">
-          <label>Evidence note</label><input name="evidence_note" required maxlength="500" value="{_esc(item.get('evidence_note'))}">
-          <div class="hr-inline"><button class="hr-btn" name="action" value="confirmed">Record confirmed</button>
-          <button class="hr-btn hr-btn-light" name="action" value="reopened">Reopen</button></div>
-        </form></td></tr>"""
-        for item in tasks
-    ) or '<tr><td colspan="6" class="hr-empty">No compliance tasks have been generated.</td></tr>'
+    launch_date = date(2026, 8, 1)
+    today = date.today()
+    prepared_tasks = []
+    counts = {"needs_action": 0, "reconciliation": 0, "confirmed": 0}
+    for source in tasks:
+        item = dict(source)
+        if item.get("status") == "confirmed":
+            state = "confirmed"
+        elif item.get("due_date") < launch_date:
+            state = "reconciliation"
+        else:
+            state = "needs_action"
+        item["queue_state"] = state
+        counts[state] += 1
+        if status_filter == "all" or status_filter == state:
+            prepared_tasks.append(item)
+
+    task_rows = ""
+    for item in prepared_tasks:
+        state = item["queue_state"]
+        due_label = (
+            "OVERDUE" if state == "needs_action" and item.get("due_date") < today
+            else "UPCOMING" if state == "needs_action"
+            else "NEEDS RECONCILIATION" if state == "reconciliation"
+            else "CONFIRMED"
+        )
+        if state == "confirmed":
+            action = f"""<details><summary class="hr-btn hr-btn-light">View or reopen</summary>
+              <form class="hr-form" method="post" action="/admin/hr/compliance/{item['id']}" style="margin-top:10px">
+                <p class="hr-help">Reopening preserves the prior confirmation in the audit history.</p>
+                <label>Why is this being reopened?</label><input name="evidence_note" required maxlength="500">
+                <input type="hidden" name="confirmation_reference" value="">
+                <button class="hr-btn hr-btn-light" name="action" value="reopened">Reopen task</button>
+              </form></details>"""
+        else:
+            action = f"""<details><summary class="hr-btn">Record outside completion</summary>
+              <form class="hr-form" method="post" action="/admin/hr/compliance/{item['id']}" style="margin-top:10px">
+                <p class="hr-help">Use the confirmation from the official agency portal. Agent does not submit this task.</p>
+                <label>Outside confirmation/reference</label><input name="confirmation_reference" required>
+                <label>What evidence did you verify?</label><input name="evidence_note" required maxlength="500">
+                <button class="hr-btn" name="action" value="confirmed">Record confirmed</button>
+              </form></details>"""
+        task_rows += f"""<tr><td>{_esc(item['employee_email'] or 'Anata LLC')}</td>
+          <td>{_esc(compliance_label(item['task_type']))}</td>
+          <td>{_esc(item['due_date'])}</td><td><strong>{due_label}</strong></td>
+          <td>{_esc(item.get('confirmation_reference') or '—')}<br><span class="hr-sub">{_esc(item.get('evidence_note') or 'No evidence recorded')}</span></td>
+          <td>{action}</td></tr>"""
+    task_rows = task_rows or '<tr><td colspan="6" class="hr-empty">No tasks match this view.</td></tr>'
     calendar_html = "".join(
         f"""<tr><td>{row['period_number']}</td><td>{_esc(row['start_date'])}</td>
         <td>{_esc(row['end_date'])}</td><td>{_esc(row['pay_date'])}</td></tr>"""
@@ -2433,8 +2557,14 @@ def render_hr_compliance(
     <h1 class="hr-h1">Payroll & hiring compliance</h1>
     <p class="hr-sub">Track employer submissions separately from the employee’s onboarding. Recording a task never submits it to an agency.</p>
     <div class="hr-callout warn"><div class="hr-kicker">Outside action required</div>
-      <p>Utah new hires must be reported outside Anata. Enter the agency confirmation only after the submission succeeds.</p></div>
-    <h2>Employer compliance tasks</h2>
+      <p>Complete payments and filings in the official agency portals. Enter a confirmation here only after the outside submission succeeds.</p></div>
+    <nav class="hr-filter-tabs" aria-label="Compliance task views">
+      <a href="/admin/hr/compliance?year={year}&amp;status=needs_action"{' aria-current="page"' if status_filter == 'needs_action' else ''}>Needs action · {counts['needs_action']}</a>
+      <a href="/admin/hr/compliance?year={year}&amp;status=reconciliation"{' aria-current="page"' if status_filter == 'reconciliation' else ''}>Historical reconciliation · {counts['reconciliation']}</a>
+      <a href="/admin/hr/compliance?year={year}&amp;status=confirmed"{' aria-current="page"' if status_filter == 'confirmed' else ''}>Confirmed · {counts['confirmed']}</a>
+      <a href="/admin/hr/compliance?year={year}&amp;status=all"{' aria-current="page"' if status_filter == 'all' else ''}>All · {len(tasks)}</a>
+    </nav>
+    <h2>{'Current tasks requiring action' if status_filter == 'needs_action' else 'Historical items to reconcile' if status_filter == 'reconciliation' else 'Confirmed tasks' if status_filter == 'confirmed' else 'All compliance tasks'}</h2>
     <table class="hr-tbl"><thead><tr><th>Employee</th><th>Task</th><th>Due</th><th>Status</th><th>Evidence</th><th>Action</th></tr></thead><tbody>{task_rows}</tbody></table>
     <div class="hr-row-head" style="margin-top:30px"><div><h2 style="margin:0">{year} payroll calendar</h2>
       <p class="hr-sub" style="margin:4px 0 0">Authoritative semimonthly schedule: 24 periods.</p></div>
@@ -2562,10 +2692,13 @@ def render_hr_settings(
       <h2>Manual controlled payroll · no automatic provider submission</h2>
       <p><strong>Anata prepares:</strong> time, pay inputs, calculation estimates,
       cash impact, the frozen approval packet, checks, statements, and evidence.</p>
-      <p><strong>People complete:</strong> David gives final approval; David or Val
-      issues the approved checks and completes government payments and filings in the
-      official portals. A qualified payroll professional must independently review the
-      calculation package before the first live run.</p>
+      <p><strong>People complete:</strong> the configured final approver reviews the
+      version frozen by the other authorized operator. David or Val then issues the
+      approved checks and completes government payments and filings in the official
+      portals.</p>
+      <p><strong>Optional deeper review:</strong> an independent calculation review is
+      not required for an ordinary run. Record one after a material calculation-rule
+      change, unusual result, correction, void or reissue, or tax discrepancy.</p>
       <p><strong>Not enabled:</strong> Square, bank transfer, automatic tax filing, and
       automatic money movement. A future internal service cannot claim any of those
       outcomes until it passes the published authority and security contract.</p>

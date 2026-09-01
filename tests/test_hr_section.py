@@ -87,6 +87,8 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("field.labels && field.labels.length", r.text)
         self.assertIn("candidate.htmlFor = field.id", r.text)
         self.assertIn(".top-actions .top-link", r.text)
+        self.assertIn("Next HR action · payroll", r.text)
+        self.assertIn("Setup and compliance", r.text)
 
     def test_setup_checklist_uses_live_readiness_and_is_payroll_private(self):
         page = self._get("/admin/hr/setup", self.sa)
@@ -145,6 +147,10 @@ class HRSectionTests(unittest.TestCase):
         self.assertEqual(
             _default_payroll_date(date(2026, 8, 20)),
             date(2026, 8, 1),
+        )
+        self.assertEqual(
+            _default_payroll_date(date(2026, 9, 1)),
+            date(2026, 8, 16),
         )
         # The default period follows the clock once the first live date passes,
         # so derive the expected period instead of pinning one that expires.
@@ -391,6 +397,13 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("Federal Form 941", page.text)
         self.assertIn("Utah TC-941E", page.text)
         self.assertIn("Federal W-2/W-3", page.text)
+        self.assertIn("Historical reconciliation", page.text)
+        self.assertIn("Record outside completion", page.text)
+        historical = self._get(
+            "/admin/hr/compliance?year=2026&status=reconciliation", self.sa
+        )
+        self.assertIn("Historical items to reconcile", historical.text)
+        self.assertIn("NEEDS RECONCILIATION", historical.text)
         tasks = hr_store.list_compliance_tasks()
         annual = [item for item in tasks if "2026" in item["task_type"]]
         self.assertEqual(len(annual), 15)
@@ -447,6 +460,26 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("EFTPS access: Not yet confirmed", settings.text)
         self.assertIn("Utah unemployment portal access: Not yet confirmed", settings.text)
         self.assertNotIn("Utah TAP access confirmed", settings.text)
+        self.assertIn("Optional deeper review", settings.text)
+        self.assertNotIn(
+            "must independently review the calculation package before the first live run",
+            settings.text,
+        )
+
+    def test_employee_directory_filters_active_and_inactive_records(self):
+        import uuid
+
+        suffix = uuid.uuid4().hex[:8]
+        inactive_email = f"inactive-filter-{suffix}@anatainc.com"
+        hr_store.create_employee(
+            email=inactive_email, full_name="Inactive Filter", status="inactive"
+        )
+        default_page = self._get("/admin/hr/employees", self.sa)
+        self.assertNotIn(inactive_email, default_page.text)
+        self.assertIn("Apply filters", default_page.text)
+        inactive_page = self._get("/admin/hr/employees?status=inactive", self.sa)
+        self.assertIn(inactive_email, inactive_page.text)
+        self.assertIn("Showing", inactive_page.text)
 
     def test_authorized_operator_can_approve_an_opening_balance_they_entered(self):
         import uuid
@@ -996,7 +1029,8 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("View pay period", page.text)
         self.assertIn("does not open or alter payroll", page.text)
         self.assertIn("Page 1 of", page.text)
-        self.assertIn("Employees see only their own punches", page.text)
+        self.assertIn("Team time review", page.text)
+        self.assertIn("My time &amp; PTO", page.text)
         self.assertIn("Hours this Sunday–Saturday workweek", page.text)
         self.assertIn("Request missed-day review", page.text)
 

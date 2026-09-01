@@ -278,12 +278,25 @@ FIRST_LIVE_PAYROLL_DATE = date(2026, 8, 1)
 
 
 def _default_payroll_date(today: date | None = None) -> date:
-    """Open the period being paid today; otherwise open the current period."""
+    """Open the period awaiting payday; otherwise open the current period."""
     current = today or date.today()
-    for year in (current.year - 1, current.year):
-        for period in periods_for_year(year):
-            if period.pay_date == current:
-                return max(period.start_date, FIRST_LIVE_PAYROLL_DATE)
+    periods = [
+        period
+        for year in (current.year - 1, current.year)
+        for period in periods_for_year(year)
+    ]
+    for period in periods:
+        if period.pay_date == current:
+            return max(period.start_date, FIRST_LIVE_PAYROLL_DATE)
+    awaiting_payday = [
+        period for period in periods
+        if period.end_date < current < period.pay_date
+    ]
+    if awaiting_payday:
+        return max(
+            max(awaiting_payday, key=lambda item: item.end_date).start_date,
+            FIRST_LIVE_PAYROLL_DATE,
+        )
     return max(current, FIRST_LIVE_PAYROLL_DATE)
 
 
@@ -304,12 +317,36 @@ def _ooo_calendar_readiness() -> dict:
 
 @router.get("", response_class=HTMLResponse)
 async def hr_dashboard(request: Request, user: dict = Depends(_guard)):
+    manager_view = _can_manage(user)
     stats = (
-        store.dashboard_stats() if _can_manage(user)
+        store.dashboard_stats() if manager_view
         else store.employee_dashboard_stats(_employee_record_email(user))
     )
+    if manager_view:
+        control = payroll_store.control_room(_default_payroll_date())
+        period = control.get("period")
+        readiness = control.get("readiness") or {}
+        stats["payroll"] = {
+            "blockers": len(readiness.get("blockers") or []),
+            "ready": bool(readiness.get("ready")),
+            "period_start": getattr(period, "start_date", ""),
+            "period_end": getattr(period, "end_date", ""),
+            "pay_date": getattr(period, "pay_date", ""),
+        }
+        compliance = store.list_compliance_tasks()
+        stats["compliance_reconciliation"] = sum(
+            1 for item in compliance
+            if item.get("status") != "confirmed"
+            and item.get("due_date") < FIRST_LIVE_PAYROLL_DATE
+        )
+        stats["compliance_due"] = sum(
+            1 for item in compliance
+            if item.get("status") != "confirmed"
+            and FIRST_LIVE_PAYROLL_DATE <= item.get("due_date") <= date.today()
+        )
+        stats["calendar_ready"] = bool(_ooo_calendar_readiness().get("verified"))
     return HTMLResponse(render_hr_dashboard(
-        stats, user=user, flash=_flash(request), manager_view=_can_manage(user)
+        stats, user=user, flash=_flash(request), manager_view=manager_view
     ))
 
 
@@ -328,7 +365,11 @@ async def hr_setup(request: Request, user: dict = Depends(_pay_view_guard)):
 # --- employees -------------------------------------------------------------
 
 @router.get("/employees", response_class=HTMLResponse)
-async def employees_list(request: Request, user: dict = Depends(_guard)):
+async def employees_list(
+    request: Request, status: str = "active", payroll: str = "all",
+    onboarding: str = "all", access: str = "all",
+    user: dict = Depends(_guard),
+):
     if not _can_manage(user):
         return RedirectResponse("/admin/hr/onboarding", status_code=303)
     employees = store.list_employees() if _can_manage(user) else [
@@ -342,7 +383,33 @@ async def employees_list(request: Request, user: dict = Depends(_guard)):
             user.get("email", ""), scope="compensation_directory",
             purpose="employee list",
         )
-    return HTMLResponse(render_hr_employees(employees, user=user, flash=_flash(request)))
+    filters = {
+        "status": status if status in {"active", "inactive", "all"} else "active",
+        "payroll": payroll if payroll in {"w2", "not_on_payroll", "contractor", "all"} else "all",
+        "onboarding": onboarding if onboarding in {"complete", "incomplete", "all"} else "all",
+        "access": access if access in {"ready", "missing", "all"} else "all",
+    }
+    filtered = []
+    for employee in employees:
+        employment = employee.get("employment") or {}
+        relationship = (
+            "contractor" if employee.get("employee_type") == "contractor"
+            else "w2" if employment.get("payroll_eligible", True)
+            else "not_on_payroll"
+        )
+        if filters["status"] != "all" and employee.get("status") != filters["status"]:
+            continue
+        if filters["payroll"] != "all" and relationship != filters["payroll"]:
+            continue
+        if filters["onboarding"] != "all" and bool(employee.get("onboarding_complete")) != (filters["onboarding"] == "complete"):
+            continue
+        if filters["access"] != "all" and bool(employee.get("hr_login_email")) != (filters["access"] == "ready"):
+            continue
+        filtered.append(employee)
+    return HTMLResponse(render_hr_employees(
+        filtered, user=user, flash=_flash(request), filters=filters,
+        total_count=len(employees),
+    ))
 
 
 @router.get("/employees/new", response_class=HTMLResponse)
@@ -976,7 +1043,7 @@ async def team_member_update(
 @router.get("/time", response_class=HTMLResponse)
 async def hr_time(
     request: Request, period_date: date | None = None, page: int = 1,
-    page_size: int = 10, user: dict = Depends(_guard)
+    page_size: int = 10, view: str = "", user: dict = Depends(_guard)
 ):
     email = _employee_record_email(user)
     can_review = bool(
@@ -986,7 +1053,8 @@ async def hr_time(
         )
     )
     period = payroll_store.semimonthly_period(period_date or date.today())
-    managed = _managed_employee_emails(user) if can_review else {email}
+    review_mode = can_review and view != "mine"
+    managed = _managed_employee_emails(user) if review_mode else {email}
 
     def scoped(items: list[dict]) -> list[dict]:
         return [
@@ -1030,6 +1098,7 @@ async def hr_time(
         period, clock_summary=store.time_clock_summary(email),
         entry_total=len(scoped_entries), entry_page=page,
         entry_page_size=page_size, entry_page_count=page_count,
+        review_mode=review_mode, can_review=can_review,
         user=user, flash=_flash(request)))
 
 
@@ -1307,7 +1376,7 @@ async def hr_backup_zip(
 
 @router.get("/compliance", response_class=HTMLResponse)
 async def hr_compliance(
-    request: Request, year: int = date.today().year,
+    request: Request, year: int = date.today().year, status: str = "needs_action",
     user: dict = Depends(_pay_view_guard),
 ):
     safe_year = min(max(year, 2026), date.today().year + 2)
@@ -1315,7 +1384,11 @@ async def hr_compliance(
     return HTMLResponse(render_hr_compliance(
         store.list_compliance_tasks(),
         payroll_store.annual_payroll_calendar(safe_year),
-        year=safe_year, user=user, flash=_flash(request),
+        year=safe_year,
+        status_filter=status if status in {
+            "needs_action", "reconciliation", "confirmed", "all"
+        } else "needs_action",
+        user=user, flash=_flash(request),
     ))
 
 
