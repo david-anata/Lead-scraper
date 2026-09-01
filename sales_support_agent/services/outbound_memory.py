@@ -520,33 +520,46 @@ def load_delivery_settings(engine) -> dict[str, Any]:
                 "content_mode": "link", "updated_by": "", "updated_at": ""}
     if engine is None:
         return defaults
+    ensure_runs_table(engine)
     try:
-        ensure_runs_table(engine)
         with engine.connect() as conn:
             row = conn.execute(text(f"SELECT enabled,email_enabled,slack_enabled,frequency,email_recipients,slack_channel,content_mode,updated_by,updated_at FROM {_DELIVERY_TABLE} WHERE id=1")).fetchone()
-        if not row:
-            return defaults
-        return {"enabled": bool(row[0]), "email_enabled": bool(row[1]), "slack_enabled": bool(row[2]),
-                "frequency": row[3] or "daily", "email_recipients": row[4] or "",
-                "slack_channel": row[5] or "", "content_mode": row[6] or "link",
-                "updated_by": row[7] or "", "updated_at": str(row[8] or "")}
     except Exception:  # noqa: BLE001
-        logger.exception("[outbound-memory] load_delivery_settings failed")
+        # The production table predates slack_channel and the Vercel database
+        # role cannot ALTER it during a request. Keep delivery operational on
+        # that additive schema version until the owner migration runs.
+        try:
+            with engine.connect() as conn:
+                row = conn.execute(text(f"SELECT enabled,email_enabled,slack_enabled,frequency,email_recipients,content_mode,updated_by,updated_at FROM {_DELIVERY_TABLE} WHERE id=1")).fetchone()
+            if not row:
+                return defaults
+            return {"enabled": bool(row[0]), "email_enabled": bool(row[1]), "slack_enabled": bool(row[2]),
+                    "frequency": row[3] or "daily", "email_recipients": row[4] or "",
+                    "slack_channel": "", "content_mode": row[5] or "link",
+                    "updated_by": row[6] or "", "updated_at": str(row[7] or "")}
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-memory] load_delivery_settings failed")
+            return defaults
+    if not row:
         return defaults
+    return {"enabled": bool(row[0]), "email_enabled": bool(row[1]), "slack_enabled": bool(row[2]),
+            "frequency": row[3] or "daily", "email_recipients": row[4] or "",
+            "slack_channel": row[5] or "", "content_mode": row[6] or "link",
+            "updated_by": row[7] or "", "updated_at": str(row[8] or "")}
 
 
 def save_delivery_settings(engine, values: dict[str, Any], *, actor: str = "") -> bool:
     if engine is None:
         return False
+    ensure_runs_table(engine)
+    payload = {"enabled": _flag(values.get("enabled")), "email_enabled": _flag(values.get("email_enabled")),
+               "slack_enabled": _flag(values.get("slack_enabled")),
+               "frequency": str(values.get("frequency") or "daily") if str(values.get("frequency") or "daily") in {"daily", "every_pull"} else "daily",
+               "email_recipients": _text(values.get("email_recipients")),
+               "slack_channel": _text(values.get("slack_channel")),
+               "content_mode": values.get("content_mode") if values.get("content_mode") in {"link", "summary"} else "link",
+               "updated_by": _text(actor)}
     try:
-        ensure_runs_table(engine)
-        payload = {"enabled": _flag(values.get("enabled")), "email_enabled": _flag(values.get("email_enabled")),
-                   "slack_enabled": _flag(values.get("slack_enabled")),
-                   "frequency": str(values.get("frequency") or "daily") if str(values.get("frequency") or "daily") in {"daily", "every_pull"} else "daily",
-                   "email_recipients": _text(values.get("email_recipients")),
-                   "slack_channel": _text(values.get("slack_channel")),
-                   "content_mode": values.get("content_mode") if values.get("content_mode") in {"link", "summary"} else "link",
-                   "updated_by": _text(actor)}
         with engine.begin() as conn:
             conn.execute(text(f"""INSERT INTO {_DELIVERY_TABLE}
                 (id,enabled,email_enabled,slack_enabled,frequency,email_recipients,slack_channel,content_mode,updated_by,updated_at)
@@ -556,8 +569,18 @@ def save_delivery_settings(engine, values: dict[str, Any], *, actor: str = "") -
                 updated_by=:updated_by,updated_at=CURRENT_TIMESTAMP"""), payload)
         return True
     except Exception:  # noqa: BLE001
-        logger.exception("[outbound-memory] save_delivery_settings failed")
-        return False
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"""INSERT INTO {_DELIVERY_TABLE}
+                    (id,enabled,email_enabled,slack_enabled,frequency,email_recipients,content_mode,updated_by,updated_at)
+                    VALUES (1,:enabled,:email_enabled,:slack_enabled,:frequency,:email_recipients,:content_mode,:updated_by,CURRENT_TIMESTAMP)
+                    ON CONFLICT (id) DO UPDATE SET enabled=:enabled,email_enabled=:email_enabled,slack_enabled=:slack_enabled,
+                    frequency=:frequency,email_recipients=:email_recipients,content_mode=:content_mode,
+                    updated_by=:updated_by,updated_at=CURRENT_TIMESTAMP"""), payload)
+            return True
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-memory] save_delivery_settings failed")
+            return False
 
 
 def record_export(engine, *, actor: str, run_ids: Iterable[int], source_rows: int,

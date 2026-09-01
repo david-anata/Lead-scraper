@@ -186,6 +186,23 @@ class AtomicPullPersistenceTests(unittest.TestCase):
         self.assertFalse(prefs["slack_enabled"])
         self.assertEqual(prefs["email_recipients"], "david@anatainc.com")
 
+    def test_delivery_settings_support_legacy_table_without_slack_channel(self):
+        e = self._engine()
+        m.ensure_runs_table(e)
+        with e.begin() as conn:
+            conn.execute(__import__("sqlalchemy").text(
+                "ALTER TABLE outbound_delivery_settings DROP COLUMN slack_channel"
+            ))
+        self.assertTrue(m.save_delivery_settings(e, {
+            "enabled": "1", "email_enabled": "1", "slack_enabled": "0",
+            "frequency": "daily", "email_recipients": "david@anatainc.com",
+            "content_mode": "link",
+        }, actor="david@anatainc.com"))
+        prefs = m.load_delivery_settings(e)
+        self.assertTrue(prefs["enabled"])
+        self.assertEqual(prefs["email_recipients"], "david@anatainc.com")
+        self.assertEqual(prefs["slack_channel"], "")
+
     def test_export_history_records_only_metadata(self):
         e = self._engine()
         self.assertTrue(m.record_export(e, actor="david@anatainc.com", run_ids=[1, 2],
