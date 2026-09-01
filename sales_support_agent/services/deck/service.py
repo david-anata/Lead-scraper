@@ -1157,9 +1157,20 @@ class DeckGenerationService:
         offering_html = _render_offering_tabs(
             offering_sections,
             icon_html_by_key={
-                # Simple Icons publishes the verified platform marks. The
-                # Anata-owned services use repository brand assets only.
-                "amazon": '<img src="https://cdn.simpleicons.org/amazon/111827" alt="" />',
+                # Keep Amazon inline because its former Simple Icons CDN URL
+                # now returns 404. Platform logos must not depend on a brittle
+                # third-party request in a client-facing deck.
+                "amazon": (
+                    '<svg viewBox="0 0 84 32" role="img" aria-label="Amazon" '
+                    'xmlns="http://www.w3.org/2000/svg">'
+                    '<text x="5" y="20" font-family="Arial, sans-serif" font-size="18" '
+                    'font-weight="700" fill="#111827">amazon</text>'
+                    '<path d="M19 24c13 6 34 6 48-1" fill="none" stroke="#ff9900" '
+                    'stroke-width="2.4" stroke-linecap="round"/>'
+                    '<path d="m62 22 6 1-3 5" fill="none" stroke="#ff9900" '
+                    'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>'
+                    '</svg>'
+                ),
                 "tiktok_shop": '<img src="https://cdn.simpleicons.org/tiktok/111827" alt="" />',
                 "shopify": '<img src="https://cdn.simpleicons.org/shopify/7AB55C" alt="" />',
                 "3pl": monogram,

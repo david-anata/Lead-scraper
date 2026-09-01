@@ -161,6 +161,8 @@ class DeckUpgradeTests(unittest.TestCase):
         self.assertIn("Closing the gap", html)
         self.assertIn("Phase 1", html)
         self.assertIn("Phase 4", html)
+        self.assertIn('aria-label="Amazon"', html)
+        self.assertNotIn("cdn.simpleicons.org/amazon", html)
 
     def test_growth_plan_absent_when_inputs_none(self) -> None:
         """Guard: with growth_plan_inputs=None (the old prospect behavior) the
