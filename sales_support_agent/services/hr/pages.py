@@ -2568,7 +2568,7 @@ def render_hr_compliance(
     <table class="hr-tbl"><thead><tr><th>Employee</th><th>Task</th><th>Due</th><th>Status</th><th>Evidence</th><th>Action</th></tr></thead><tbody>{task_rows}</tbody></table>
     <div class="hr-row-head" style="margin-top:30px"><div><h2 style="margin:0">{year} payroll calendar</h2>
       <p class="hr-sub" style="margin:4px 0 0">Authoritative semimonthly schedule: 24 periods.</p></div>
-      <form class="hr-inline" method="get" action="/admin/hr/compliance"><input type="number" name="year" min="2026" max="{date.today().year + 2}" value="{year}"><button class="hr-btn hr-btn-light">Open year</button></form>
+      <form class="hr-inline" method="get" action="/admin/hr/compliance"><label for="compliance-year">Tax year</label><input id="compliance-year" type="number" name="year" min="2026" max="{date.today().year + 2}" value="{year}"><input type="hidden" name="status" value="{_esc(status_filter)}"><button class="hr-btn hr-btn-light">Open year</button></form>
     </div>
     <table class="hr-tbl"><thead><tr><th>Period</th><th>Starts</th><th>Ends</th><th>Payday</th></tr></thead><tbody>{calendar_html}</tbody></table>
     """
