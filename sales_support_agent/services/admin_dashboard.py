@@ -5826,7 +5826,8 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
                 <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 16px; margin-top: 12px;">
                   <label>Conversion rate (%) <input type="number" name="growth_cvr_pct" value="15" step="0.1" min="0.1" max="100" /></label>
                   <label>Goal monthly sessions <input type="number" name="growth_goal_sessions" placeholder="auto from top-3 avg" min="0" /></label>
-                  <label>Average order value ($) <input type="number" name="growth_aov" placeholder="defaults to target price" step="0.01" min="0" /></label>
+                  <label>Verified target price / AOV ($) <input type="number" name="growth_aov" placeholder="overrides scraped target price" step="0.01" min="0" /></label>
+                  <label>Target TACOS (%) <input type="number" name="growth_tacos_target_pct" value="15" step="0.1" min="0.1" max="100" /></label>
                   <label>Goal multiplier <input type="number" name="growth_goal_multiplier" value="3" step="0.1" min="1" /></label>
                 </div>
                 <p style="margin-top: 12px; font-weight: 600;">Channel mix (must sum to 100)</p>
@@ -6015,7 +6016,8 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
                 <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 16px; margin-top: 12px;">
                   <label>Conversion rate (%) <input type="number" name="growth_cvr_pct" value="15" step="0.1" min="0.1" max="100" /></label>
                   <label>Goal monthly sessions <input type="number" name="growth_goal_sessions" placeholder="auto from top-3 avg" min="0" /></label>
-                  <label>Average order value ($) <input type="number" name="growth_aov" placeholder="defaults to target price" step="0.01" min="0" /></label>
+                  <label>Verified target price / AOV ($) <input type="number" name="growth_aov" placeholder="overrides scraped target price" step="0.01" min="0" /></label>
+                  <label>Target TACOS (%) <input type="number" name="growth_tacos_target_pct" value="15" step="0.1" min="0.1" max="100" /></label>
                   <label>Goal multiplier (if no goal set) <input type="number" name="growth_goal_multiplier" value="3" step="0.1" min="1" /></label>
                 </div>
                 <p style="margin-top: 12px; font-weight: 600;">Channel mix (must sum to 100)</p>

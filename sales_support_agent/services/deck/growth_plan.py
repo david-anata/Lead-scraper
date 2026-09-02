@@ -69,6 +69,7 @@ DEFAULT_AUDIENCE_WINDOW_DAYS: int = 60
 DEFAULT_FREQUENCY_CAP: int = 4
 DEFAULT_REPEAT_CVR_MULTIPLIER: float = 2.5  # directional
 DEFAULT_BTP_REDEMPTION_PCT: float = 5.0  # directional
+DEFAULT_TACOS_TARGET_PCT: float = 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +87,7 @@ class GrowthPlanInputs:
     goal_monthly_sessions: int | None = None  # None → derive from goal_multiplier or top-3 avg
     goal_multiplier: float = DEFAULT_GOAL_MULTIPLIER
     average_order_value: float | None = None  # None → use target listing price
+    tacos_target_pct: float = DEFAULT_TACOS_TARGET_PCT
 
     # Channel mix (percentages, must sum to 100)
     mix_organic: float = DEFAULT_MIX["organic"]
@@ -134,6 +136,8 @@ class GrowthPlanInputs:
         errors: list[str] = []
         if not (0 < self.conversion_rate_pct <= 100):
             errors.append("Conversion rate must be between 0 and 100 (exclusive of 0).")
+        if not (0 < self.tacos_target_pct <= 100):
+            errors.append("TACOS target must be between 0 and 100 (exclusive of 0).")
         total = self.mix_total_pct()
         if abs(total - 100.0) > 0.01:
             errors.append(f"Channel mix percentages must sum to 100; got {total:.1f}.")
@@ -326,6 +330,7 @@ class GrowthPlan:
     delta_sessions: int
     target_units: int
     cvr_pct: float
+    tacos_target_pct: float
     channels: list[GrowthChannel]
     total_monthly_spend: float
     total_sessions_delivered: int
@@ -397,6 +402,7 @@ def build_growth_plan(
         delta_sessions=delta_sessions,
         target_units=target_units,
         cvr_pct=inputs.conversion_rate_pct,
+        tacos_target_pct=inputs.tacos_target_pct,
         channels=channels,
         total_monthly_spend=total_monthly_spend,
         total_sessions_delivered=total_sessions_delivered,
@@ -879,7 +885,12 @@ def render_growth_plan_section(
         for ch in plan.channels
     )
 
-    daily_spend = plan.total_monthly_spend / 30.0
+    paid_media_spend = sum(
+        channel.monthly_cost
+        for channel in plan.channels
+        if channel.key in {"on_channel_paid", "off_channel_paid", "retargeting"}
+    )
+    non_media_cost = max(0.0, plan.total_monthly_spend - paid_media_spend)
     if plan.shortfall_sessions > 0:
         shortfall_html = (
             f"<div class='growth-shortfall'>Channel mix delivers "
@@ -913,13 +924,32 @@ def render_growth_plan_section(
     steady_state_sessions = plan.current_sessions + plan.total_sessions_delivered
     expected_units_steady = int(round(steady_state_sessions * (plan.cvr_pct / 100.0)))
     expected_revenue_steady = expected_units_steady * max(target_aov, 0.0)
+    tacos_target_pct = plan.tacos_target_pct
+    supported_media_budget = expected_revenue_steady * tacos_target_pct / 100.0
+    implied_tacos_pct = (
+        paid_media_spend / expected_revenue_steady * 100.0
+        if expected_revenue_steady > 0
+        else 0.0
+    )
+    economics_warning = ""
+    if paid_media_spend > supported_media_budget and expected_revenue_steady > 0:
+        economics_warning = (
+            "<div class='growth-shortfall'><strong>Economics check:</strong> "
+            f"the full traffic plan requires {_money(paid_media_spend)} in paid media, "
+            f"or {implied_tacos_pct:.1f}% of modeled revenue. At a {tacos_target_pct:.0f}% TACOS "
+            f"target, the supportable media budget is {_money(supported_media_budget)}. "
+            "Treat the session goal as the benchmark gap—not an approved spend plan—until "
+            "price, conversion rate, and channel CPCs produce supportable economics.</div>"
+        )
     spend_summary = (
         "<div class='spend-summary'>"
-        f"<div class='item'><div class='lab'>Monthly paid spend</div><div class='val'>{_money(plan.total_monthly_spend)}</div></div>"
-        f"<div class='item'><div class='lab'>Steady-state monthly sessions</div><div class='val'>{steady_state_sessions:,}</div></div>"
+        f"<div class='item'><div class='lab'>Paid media needed for full traffic gap</div><div class='val'>{_money(paid_media_spend)}</div></div>"
         f"<div class='item'><div class='lab'>Steady-state monthly revenue</div><div class='val'>{_money(expected_revenue_steady)}</div></div>"
-        f"<div class='item'><div class='lab'>Daily spend</div><div class='val'>{_money(daily_spend)}</div></div>"
+        f"<div class='item'><div class='lab'>Implied TACOS</div><div class='val'>{implied_tacos_pct:.1f}%</div></div>"
+        f"<div class='item'><div class='lab'>{tacos_target_pct:.0f}% TACOS media budget</div><div class='val'>{_money(supported_media_budget)}</div></div>"
         "</div>"
+        f"<p class='caption' style='margin-top:8px'>Steady-state monthly sessions: {steady_state_sessions:,}.</p>"
+        + (f"<p class='caption' style='margin-top:8px'>Affiliate fulfillment and commission costs ({_money(non_media_cost)}) are tracked separately and are not included in TACOS.</p>" if non_media_cost > 0 else "")
     )
 
     return f"""
@@ -939,6 +969,7 @@ def render_growth_plan_section(
       </h3>
       <div class="channel-grid">{cards_html}</div>
       {spend_summary}
+      {economics_warning}
       {shortfall_html}
       <details class="methodology">
         <summary>Sources &amp; methodology</summary>
@@ -1082,6 +1113,7 @@ def parse_growth_plan_inputs(form: dict[str, Any]) -> GrowthPlanInputs:
         goal_monthly_sessions=_i_or_none("growth_goal_sessions"),
         goal_multiplier=_f("growth_goal_multiplier", DEFAULT_GOAL_MULTIPLIER),
         average_order_value=_f_or_none("growth_aov"),
+        tacos_target_pct=_f("growth_tacos_target_pct", DEFAULT_TACOS_TARGET_PCT),
         mix_organic=_f("growth_mix_organic", DEFAULT_MIX["organic"]),
         mix_on_channel_paid=_f("growth_mix_on_channel_paid", DEFAULT_MIX["on_channel_paid"]),
         mix_off_channel_paid=_f("growth_mix_off_channel_paid", DEFAULT_MIX["off_channel_paid"]),

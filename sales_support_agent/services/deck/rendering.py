@@ -289,10 +289,20 @@ def _aggregate_brands(products: list[Any]) -> list[dict[str, Any]]:
                 "image_url": "",
                 "top_title": "",
                 "top_revenue": 0.0,
+                "price_total": 0.0,
+                "price_count": 0,
+                "estimated_sessions": 0,
             },
         )
         bucket["listing_count"] += 1
         bucket["total_revenue"] += revenue
+        price = getattr(product, "price", None)
+        if price is not None and price > 0:
+            bucket["price_total"] += price
+            bucket["price_count"] += 1
+        sessions = _estimated_sessions(product)
+        if sessions is not None:
+            bucket["estimated_sessions"] += sessions
         if bsr is not None and (bucket["best_bsr"] is None or bsr < bucket["best_bsr"]):
             bucket["best_bsr"] = bsr
         # Track the brand's top listing for the thumbnail/title preview.
@@ -316,6 +326,14 @@ def _render_niche_summary_brand_row(
     revenue_label = (
         f"${bucket['total_revenue']:,.2f}" if bucket["total_revenue"] >= 1 else "n/a"
     )
+    average_price_label = (
+        f"${bucket['price_total'] / bucket['price_count']:,.2f}"
+        if bucket["price_count"]
+        else "—"
+    )
+    sessions_label = (
+        f"{bucket['estimated_sessions']:,}" if bucket["estimated_sessions"] > 0 else "—"
+    )
     bsr_label = f"BSR {int(bucket['best_bsr']):,}" if bucket["best_bsr"] is not None else ""
     return (
         "<tr>"
@@ -329,9 +347,9 @@ def _render_niche_summary_brand_row(
         "</div>"
         "</div>"
         "</td>"
-        f"<td class='num-col'>—</td>"
+        f"<td class='num-col'>{html.escape(average_price_label)}</td>"
         f"<td class='num-col'>{html.escape(revenue_label)}</td>"
-        f"<td class='num-col'>—</td>"
+        f"<td class='num-col'>{html.escape(sessions_label)}</td>"
         f"<td class='num-col'>{share:.1f}%</td>"
         "</tr>"
     )

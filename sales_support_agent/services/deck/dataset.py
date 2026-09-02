@@ -385,6 +385,54 @@ def _build_keyword_rows(
                 ]
             )
     return rows
+
+
+def _build_observed_marketplace_keyword_rows(products: list[XrayProduct]) -> list[list[str]]:
+    """Build an honest automated search-language fallback from listing titles.
+
+    Rainforest does not provide Helium 10-style search volume. Automated decks
+    therefore report repeated marketplace language instead of leaving the
+    section blank or fabricating volume.
+    """
+    stop_words = {
+        "and", "for", "the", "with", "from", "your", "this", "that", "our",
+        "pack", "ounce", "ounces", "oz", "fl", "in", "of", "to", "a", "an",
+    }
+    title_tokens: list[list[str]] = []
+    for product in products:
+        tokens = [
+            token.lower()
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9'-]+", product.title or "")
+            if token.lower() not in stop_words and len(token) > 2
+        ]
+        if tokens:
+            title_tokens.append(tokens)
+    if not title_tokens:
+        return []
+
+    phrase_titles: dict[str, set[int]] = {}
+    for title_index, tokens in enumerate(title_tokens):
+        phrases = set(tokens)
+        phrases.update(" ".join(tokens[index:index + 2]) for index in range(len(tokens) - 1))
+        for phrase in phrases:
+            phrase_titles.setdefault(phrase, set()).add(title_index)
+
+    ranked = sorted(
+        phrase_titles.items(),
+        key=lambda item: (-len(item[1]), -len(item[0].split()), item[0]),
+    )[:10]
+    total_titles = len(title_tokens)
+    rows = [["Observed buyer term", "Listings using term", "Title coverage", "Source", "Use"]]
+    for phrase, matches in ranked:
+        count = len(matches)
+        rows.append([
+            phrase,
+            f"{count} of {total_titles}",
+            f"{count / total_titles * 100:.0f}%",
+            "Competitor titles",
+            "Validate in Helium 10 before forecasting volume",
+        ])
+    return rows
 def _build_seo_recommendations(
     keyword_report: Helium10KeywordReport | None,
     cerebro_report: Helium10CerebroReport | None,

@@ -761,10 +761,31 @@ class DeckGenerationService:
             )
 
         keyword_rows = _build_keyword_rows(keyword_report, cerebro_report)
+        if len(keyword_rows) <= 1:
+            from sales_support_agent.services.deck.dataset import _build_observed_marketplace_keyword_rows
+            keyword_rows = _build_observed_marketplace_keyword_rows(xray_report.products[:12])
+            observed_terms = [row[0] for row in keyword_rows[1:] if row]
+            target_title_lower = display_title.lower()
+            target_copy_lower = (hero_product.description or "").lower()
+            search_insights = {
+                "title_hits": [term for term in observed_terms if term.lower() in target_title_lower],
+                "title_misses": [term for term in observed_terms if term.lower() not in target_title_lower],
+                "copy_hits": [term for term in observed_terms if term.lower() in target_copy_lower],
+                "copy_misses": [term for term in observed_terms if term.lower() not in target_copy_lower],
+            }
 
         target_image_url = (hero_product.image_url or (target_row.image_url if target_row else "")).strip()
+        verified_price = ""
+        if growth_plan_inputs:
+            try:
+                verified_price_value = float(growth_plan_inputs.get("growth_aov") or 0)
+                if verified_price_value > 0:
+                    verified_price = f"${verified_price_value:,.2f}"
+            except (TypeError, ValueError):
+                verified_price = ""
         target_price_label = (
-            hero_product.price
+            verified_price
+            or hero_product.price
             or (target_row.price_label if target_row else "")
             or "Unavailable"
         ).strip()
@@ -1209,7 +1230,12 @@ class DeckGenerationService:
         # to niche_keyword for back-compat with payloads built before PR47.
         category_label = str(payload.get("category_label") or niche_keyword or "this category").strip()
         keyword_table_html = _render_keyword_table(keyword_table_rows)
-        keyword_table_caption = "Top keyword opportunities from the Cerebro rank set" if cerebro_report else "Highest search volume from the current keyword dataset"
+        if cerebro_report:
+            keyword_table_caption = "Top keyword opportunities from the Cerebro rank set"
+        elif keyword_report:
+            keyword_table_caption = "Highest search volume from the current keyword dataset"
+        else:
+            keyword_table_caption = "Observed language across automated competitor results; validate search volume before forecasting"
         keyword_rank_summary_html = _render_cerebro_rank_summary(cerebro_report)
         keyword_bubble_html = _render_word_frequency_bubbles(payload.get("word_frequency_report"))
         niche_table_rows = "".join(
@@ -1623,7 +1649,7 @@ class DeckGenerationService:
         )
         _div_growth = _section_divider(
             "sec-05", "05", "Section · Growth plan · Optional",
-            "Closing the gap — 4 phases across 24 months",
+            "24-month growth plan",
             "The actions activated in each phase and the monthly traffic each channel must contribute toward the competitor benchmark.",
             ["4-phase roadmap", "Traffic by channel", "Competitor benchmark"],
         ) if _has_growth else ""

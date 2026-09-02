@@ -26,6 +26,7 @@ try:
         _build_margin_snapshot_html,
         _label_compact_money_value,
     )
+    from sales_support_agent.services.deck.rendering import _aggregate_brands
     from sales_support_agent.services.product_research import EnrichedHeroProduct
 
     DEPS = True
@@ -47,6 +48,15 @@ class DeckMetricFormattingTests(unittest.TestCase):
         self.assertEqual(_label_compact_money_value(589_500), "$589.5K")
         self.assertEqual(_label_compact_money_value(73_089.39), "$73.1K")
         self.assertEqual(_label_compact_money_value(9_999.99), "$9,999.99")
+
+    def test_brand_aggregation_averages_price_and_sums_sessions(self) -> None:
+        products = [
+            SimpleNamespace(brand="Rival", revenue=300.0, price=30.0, units_sold=10, bsr=9, image_url="", title="One"),
+            SimpleNamespace(brand="Rival", revenue=200.0, price=20.0, units_sold=20, bsr=8, image_url="", title="Two"),
+        ]
+        bucket = _aggregate_brands(products)[0]
+        self.assertEqual(bucket["price_total"] / bucket["price_count"], 25.0)
+        self.assertEqual(bucket["estimated_sessions"], 200)
 
 
 class _FakeProductResearch:
@@ -139,6 +149,26 @@ def _deck_html(session_factory) -> str:
 
 @unittest.skipUnless(DEPS, "sqlalchemy is required for deck upgrade tests")
 class DeckUpgradeTests(unittest.TestCase):
+    def test_automated_deck_uses_verified_price_and_observed_search_terms(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        with session_scope(session_factory) as session:
+            service = DeckGenerationService(_build_settings(), session, amazon_client=_FakeAmazonClient())
+            service.product_research = _FakeProductResearch()
+            service.generate_deck(
+                competitor_xray_csv_bytes=_xray_csv(),
+                competitor_xray_filename="xray.csv",
+                target_product_input="B0TARGET01",
+                growth_plan_inputs={"growth_aov": "31.25", "growth_tacos_target_pct": "15"},
+            )
+        html = _deck_html(session_factory)
+        self.assertIn("$31.25", html)
+        self.assertIn("Observed buyer term", html)
+        self.assertIn("Competitor titles", html)
+        self.assertIn("15% TACOS media budget", html)
+        self.assertIn("Implied TACOS", html)
+        self.assertIn("24-month growth plan", html)
+
     # -- Task 1: growth plan renders for a prospect deck ------------------
     def test_growth_plan_renders_for_prospect_deck(self) -> None:
         """The marketing prospect flow now passes growth_plan_inputs={} (an

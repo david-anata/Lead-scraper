@@ -2331,7 +2331,7 @@ def deck_story_download(request: Request, deck_slug: str, run_id: int, token: st
 
 
 _GROWTH_PLAN_FORM_KEYS = {
-    "growth_cvr_pct", "growth_goal_sessions", "growth_goal_multiplier", "growth_aov",
+    "growth_cvr_pct", "growth_goal_sessions", "growth_goal_multiplier", "growth_aov", "growth_tacos_target_pct",
     "growth_mix_organic", "growth_mix_on_channel_paid", "growth_mix_off_channel_paid",
     "growth_mix_affiliate", "growth_mix_retargeting",
     "growth_on_channel_cpc", "growth_off_channel_cpc",
