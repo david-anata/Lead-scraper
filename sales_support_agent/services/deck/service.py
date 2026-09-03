@@ -375,6 +375,12 @@ class DeckGenerationService:
                             ("last_viewed_at", ""),
                             ("story_markdown", ""),
                             ("share_preview", {}),
+                            ("deck_evidence_version", 1),
+                            ("evidence_status", "ready"),
+                            ("market_evidence_sufficient", True),
+                            ("market_evidence_reason", ""),
+                            ("discovery_query", ""),
+                            ("comparison_audit", []),
                         )
                     },
                 },
@@ -500,6 +506,15 @@ class DeckGenerationService:
             "story_markdown": story_markdown,
             "share_preview": share_preview,
             "renderer_version": PUBLIC_REPORT_DESIGN_VERSION,
+            "deck_evidence_version": int(dataset.deck_payload.get("deck_evidence_version", 1) or 1),
+            "evidence_status": str(dataset.deck_payload.get("evidence_status", "ready") or "ready"),
+            "market_evidence_sufficient": bool(dataset.deck_payload.get("market_evidence_sufficient", True)),
+            "market_evidence_reason": str(dataset.deck_payload.get("market_evidence_reason", "") or ""),
+            "discovery_query": str(dataset.deck_payload.get("discovery_query", "") or ""),
+            "comparison_audit": list(dataset.deck_payload.get("comparison_audit", []) or []),
+            "qualified_count": dataset.deck_payload.get("qualified_count"),
+            "candidate_count": dataset.deck_payload.get("candidate_count"),
+            "median_relevance": dataset.deck_payload.get("median_relevance"),
         }
         self.session.add(run)
         self.session.flush()
@@ -516,6 +531,9 @@ class DeckGenerationService:
             sales_row_count=dataset.sales_row_count,
             competitor_row_count=dataset.competitor_row_count,
             template_fields=0,
+            evidence_status=str(dataset.deck_payload.get("evidence_status", "ready") or "ready"),
+            market_evidence_sufficient=bool(dataset.deck_payload.get("market_evidence_sufficient", True)),
+            market_evidence_reason=str(dataset.deck_payload.get("market_evidence_reason", "") or ""),
         )
 
     def _build_amazon_first_dataset(
@@ -547,6 +565,7 @@ class DeckGenerationService:
             rf = RainforestClient()
             xray_report, rainforest_target_raw = rf.build_xray_report(
                 rainforest_asin,
+                category_label=category_label.strip(),
             )
             # If no explicit target_product_input supplied, use the ASIN
             if not target_product_input.strip():
@@ -665,6 +684,10 @@ class DeckGenerationService:
             if (not resolved_target_asin or product.asin.upper() != resolved_target_asin.upper())
             and (not target_row or product.asin.upper() != target_row.asin.upper())
         ][:10]
+        if not xray_report.market_evidence_sufficient:
+            # Keep candidates in comparison_audit for operator recovery, but
+            # do not let a thin/invalid set influence client-facing advice.
+            primary_competitors = []
         market_cards = _build_market_metric_cards(xray_report, keyword_report)
         keyword_cards = _build_keyword_metric_cards(keyword_report)
         keyword_cards.extend(_build_cerebro_metric_cards(cerebro_report, word_frequency_report))
@@ -761,7 +784,7 @@ class DeckGenerationService:
             )
 
         keyword_rows = _build_keyword_rows(keyword_report, cerebro_report)
-        if len(keyword_rows) <= 1:
+        if len(keyword_rows) <= 1 and xray_report.market_evidence_sufficient:
             from sales_support_agent.services.deck.dataset import _build_observed_marketplace_keyword_rows
             keyword_rows = _build_observed_marketplace_keyword_rows(xray_report.products[:12])
             observed_terms = [row[0] for row in keyword_rows[1:] if row]
@@ -943,7 +966,7 @@ class DeckGenerationService:
                 hero_product=hero_product,
             )
             competitor_benchmark_sessions = None
-            if primary_competitors:
+            if primary_competitors and xray_report.market_evidence_sufficient:
                 # Use the top-quartile comparable listing rather than the
                 # average of the first three rows. The former is ambitious
                 # but less vulnerable to a single Hanes-scale outlier.
@@ -967,11 +990,20 @@ class DeckGenerationService:
                     inputs_obj = type(inputs_obj)(
                         **{**inputs_obj.__dict__, "average_order_value": aov_fallback}
                     )
-            growth_plan = build_growth_plan(
-                inputs=inputs_obj,
-                target_units=target_units_int,
-                top3_competitor_avg_sessions=competitor_benchmark_sessions,
+            explicit_goal_supplied = bool(
+                str(growth_plan_inputs.get("growth_goal_sessions") or "").strip()
             )
+            if xray_report.market_evidence_sufficient or explicit_goal_supplied:
+                growth_plan = build_growth_plan(
+                    inputs=inputs_obj,
+                    target_units=target_units_int,
+                    top3_competitor_avg_sessions=competitor_benchmark_sessions,
+                )
+            else:
+                warnings.append(
+                    "Growth forecast withheld until at least 3 relevant competitors "
+                    "are qualified or an explicit session goal is supplied."
+                )
             # Stash the resolved AOV (user override OR target-price fallback)
             # so the funnel renderer can use it for projected-revenue math.
             self._growth_plan_aov = float(inputs_obj.average_order_value or 0.0)
@@ -1009,6 +1041,15 @@ class DeckGenerationService:
                 "market_cards": market_cards,
                 "keyword_cards": keyword_cards,
                 "xray_report": xray_report,
+                "deck_evidence_version": xray_report.evidence_version,
+                "evidence_status": xray_report.evidence_status,
+                "market_evidence_sufficient": xray_report.market_evidence_sufficient,
+                "market_evidence_reason": xray_report.market_evidence_reason,
+                "discovery_query": xray_report.discovery_query,
+                "comparison_audit": list(xray_report.comparison_audit),
+                "qualified_count": xray_report.qualified_count,
+                "candidate_count": xray_report.candidate_count,
+                "median_relevance": xray_report.median_relevance,
                 "keyword_report": keyword_report,
                 "cerebro_report": cerebro_report,
                 "word_frequency_report": word_frequency_report,
@@ -1174,7 +1215,31 @@ class DeckGenerationService:
         keyword_table_rows = payload.get("keyword_table_rows") or []
         if not isinstance(keyword_table_rows, list):
             keyword_table_rows = []
-        revenue_bars = "".join(_render_revenue_bar(product, xray_report.total_revenue) for product in xray_report.products[:8])
+        market_ready = bool(getattr(xray_report, "market_evidence_sufficient", True))
+        evidence_status = str(getattr(xray_report, "evidence_status", "ready") or "ready")
+        evidence_reason = str(getattr(xray_report, "market_evidence_reason", "") or "")
+        _evidence_labels = {
+            "ready": ("Ready", "Comparison set verified"),
+            "directional": ("Directional", "Use as a planning benchmark"),
+            "blocked": ("Needs review", "Market claims withheld"),
+        }
+        _evidence_label, _evidence_hint = _evidence_labels.get(
+            evidence_status, ("Needs review", "Market claims withheld")
+        )
+        _evidence_banner = (
+            f'<div class="takeaway market-takeaway" role="status" '
+            f'data-evidence-status="{html.escape(evidence_status)}">'
+            f'<p class="lab">Evidence status · {html.escape(_evidence_label)}</p>'
+            f'<p class="h">{html.escape(_evidence_hint)}</p>'
+            f'<p>{html.escape(evidence_reason or (str(getattr(xray_report, "qualified_count", "")) + " relevant listings were verified." if getattr(xray_report, "qualified_count", None) is not None else "The comparison set passed automated relevance checks."))}</p>'
+            f'</div>'
+        )
+        comparison_total = xray_report.total_revenue if market_ready else 0.0
+        revenue_bars = (
+            "".join(_render_revenue_bar(product, comparison_total) for product in xray_report.products[:8])
+            if market_ready
+            else ""
+        )
         offering_html = _render_offering_tabs(
             offering_sections,
             icon_html_by_key={
@@ -1238,9 +1303,13 @@ class DeckGenerationService:
             keyword_table_caption = "Observed language across automated competitor results; validate search volume before forecasting"
         keyword_rank_summary_html = _render_cerebro_rank_summary(cerebro_report)
         keyword_bubble_html = _render_word_frequency_bubbles(payload.get("word_frequency_report"))
-        niche_table_rows = "".join(
-            _render_niche_summary_row(product, xray_report.total_revenue)
-            for product in xray_report.products[:10]
+        niche_table_rows = (
+            "".join(
+                _render_niche_summary_row(product, comparison_total)
+                for product in xray_report.products[:10]
+            )
+            if market_ready
+            else ""
         )
         # Audit item 3: brand-aggregated view of the same data, toggled by a
         # button group above the table.
@@ -1249,18 +1318,25 @@ class DeckGenerationService:
             _render_niche_summary_brand_row,
         )
         brand_buckets = _aggregate_brands(xray_report.products)[:10]
-        niche_table_brand_rows = "".join(
-            _render_niche_summary_brand_row(b, xray_report.total_revenue, i + 1)
-            for i, b in enumerate(brand_buckets)
+        niche_table_brand_rows = (
+            "".join(
+                _render_niche_summary_brand_row(b, comparison_total, i + 1)
+                for i, b in enumerate(brand_buckets)
+            )
+            if market_ready
+            else ""
         )
         search_title_html = _render_signal_list("Title coverage", search_insights.get("title_hits", []), search_insights.get("title_misses", []), "Missing title targets")
         search_copy_html = _render_signal_list("Bullet / copy coverage", search_insights.get("copy_hits", []), search_insights.get("copy_misses", []), "Missing copy targets")
         target_strength_html = "".join(_render_action_item(item) for item in target_strengths)
         target_gap_html = "".join(_render_action_item(item) for item in target_gaps)
-        best_seller = xray_report.products[0] if xray_report.products else None
+        best_seller = xray_report.products[0] if market_ready and xray_report.products else None
         comparison_mode = str(target.get("comparison_mode", "") or "")
         launch_mode = comparison_mode == "concept_only"
-        competitor_landscape_table = _render_competitor_landscape_table(xray_report.products[:10], xray_report.total_revenue)
+        competitor_landscape_table = _render_competitor_landscape_table(
+            xray_report.products[:10] if market_ready else [],
+            comparison_total,
+        )
         comparison_table_html = _render_target_comparison_table(target, best_seller, no_product_image)
         target_identifier = str(target.get("asin") or "").strip()
         resolved_target_title = _clean_listing_title(str(target.get("title", "") or ""))
@@ -1366,10 +1442,15 @@ class DeckGenerationService:
         # — using it in the title makes the deck look like it's pitching the
         # wrong category.
         _niche_label = category_label or "this category"
-        _exec_headline = (
-            f"A {_money_short(_niche_revenue)} monthly opportunity"
-            + (f" in the &ldquo;{html.escape(_niche_label)}&rdquo; category." if _niche_label else ".")
-        )
+        if evidence_status == "ready":
+            _exec_headline = (
+                f"A {_money_short(_niche_revenue)} monthly category benchmark"
+                + (f" for &ldquo;{html.escape(_niche_label)}.&rdquo;" if _niche_label else ".")
+            )
+        elif evidence_status == "directional":
+            _exec_headline = f"A directional benchmark for &ldquo;{html.escape(_niche_label)}.&rdquo;"
+        else:
+            _exec_headline = "The product opportunity is clear. The market comparison needs review."
 
         _exec_sub_text = (
             dataset.text_fields.get("executive_summary")
@@ -1403,13 +1484,19 @@ class DeckGenerationService:
             f'<p class="val">{_count_short(_niche_units)}</p>'
             f'<p class="delta">monthly · category-wide</p>'
             f'</div>'
+        ) if market_ready else (
+            f'<div class="exec-tile is-primary"><p class="lab">Target price</p>'
+            f'<p class="val">{html.escape(str(target.get("price") or "Unknown"))}</p>'
+            f'<p class="delta">observed or client-provided</p></div>'
+            f'<div class="exec-tile"><p class="lab">Comparison set</p>'
+            f'<p class="val">Needs review</p><p class="delta">irrelevant products excluded</p></div>'
         )
-        if _has_growth:
+        if _has_growth and market_ready:
             _exec_tiles_html += (
                 f'<div class="exec-tile">'
                 f'<p class="lab">Sessions today</p>'
-                f'<p class="val">{_count_short(_current_sessions)}</p>'
-                f'<p class="delta">est. monthly · target</p>'
+                f'<p class="val">{_count_short(_current_sessions) if getattr(growth_plan_obj, "current_sessions_known", False) else "Unknown"}</p>'
+                f'<p class="delta">{"estimated monthly · target" if getattr(growth_plan_obj, "current_sessions_known", False) else "Seller Central baseline required"}</p>'
                 f'</div>'
                 f'<div class="exec-tile is-primary">'
                 f'<p class="lab">Sessions · 24mo</p>'
@@ -1417,7 +1504,7 @@ class DeckGenerationService:
                 f'<p class="delta">target · 5-channel ramp</p>'
                 f'</div>'
             )
-        else:
+        elif market_ready:
             _avg_listing_revenue = (
                 float(getattr(xray_report, "average_revenue", 0) or 0)
                 if hasattr(xray_report, "average_revenue")
@@ -1474,6 +1561,38 @@ class DeckGenerationService:
             f'</div>'
             f'</div>'
         )
+
+        if keyword_table_rows:
+            _search_evidence_html = f"""
+      <div class="search-grid">
+        <div class="card">
+          <div class="card-h">
+            <h3>Top keyword opportunities</h3>
+            <span class="meta">{html.escape(keyword_table_caption)}</span>
+          </div>
+          <div class="table-wrap"><table class="tbl">{keyword_table_html}</table></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div class="card">{search_title_html}</div>
+          <div class="card">{search_copy_html}</div>
+          {keyword_bubble_html if keyword_bubble_html else ""}
+        </div>
+      </div>"""
+            _search_takeaway_html = f"""
+      <div class="takeaway" style="margin-top:20px">
+        <p class="lab">What this means</p>
+        <p class="h">Search coverage creates the next testable opportunity.</p>
+        <p>{html.escape((seo_recommendations[0] if seo_recommendations else "Prioritize verified, high-intent terms in the title and bullets, then measure rank and conversion changes.")[:280])}</p>
+      </div>"""
+        else:
+            _search_evidence_html = (
+                '<div class="takeaway market-takeaway" role="status">'
+                '<p class="lab">Search evidence · Needs review</p>'
+                '<p class="h">No reliable search-volume dataset is available yet.</p>'
+                '<p>Connect Helium 10 or validate the automated product-type query before using keyword demand in a client forecast.</p>'
+                '</div>'
+            )
+            _search_takeaway_html = ""
 
         # Pills below the exec headline — derived from data with safe fallbacks.
         _pills: list[str] = []
@@ -1748,6 +1867,7 @@ class DeckGenerationService:
         <div class="exec-tiles">{_exec_tiles_html}</div>
       </div>
       <div class="exec-pills">{_pills_html}</div>
+      {_evidence_banner}
       <div class="exec-cta-row">
         <span class="next">Start here</span>
         <span class="target">Walk through the category →</span>
@@ -1771,13 +1891,27 @@ class DeckGenerationService:
         <p class="caption">{html.escape(dataset.text_fields.get("market_summary") or "")}</p>
       </header>
 
-      <div class="metric-grid cols-6" style="margin-bottom:22px">{market_summary_html}</div>
+      {f'<div class="metric-grid cols-6" style="margin-bottom:22px">{market_summary_html}</div>' if market_ready else ''}
 
       <div class="takeaway market-takeaway">
           <p class="lab">What this means</p>
           <p class="h">Where the category sits today.</p>
           <p>{html.escape(dataset.text_fields.get("advertising_summary") or dataset.text_fields.get("market_summary") or "Pulled from Helium 10 Xray over the visible market set.")}</p>
       </div>
+      {('<div class="market-table-full">'
+        '<div class="card-h">'
+          '<h3>Competitor revenue breakdown</h3>'
+          '<div class="seg niche-toggle" role="tablist" aria-label="Competitor breakdown view">'
+            '<button type="button" class="niche-toggle-btn active" data-niche-view="asin" aria-pressed="true">By ASIN</button>'
+            '<button type="button" class="niche-toggle-btn" data-niche-view="brand" aria-pressed="false">By Brand</button>'
+          '</div>'
+        '</div>'
+        '<table class="tbl niche-table" data-niche-view-target>'
+          '<thead><tr><th data-asin-only>Product</th><th data-brand-only hidden>Brand</th><th class="num-col">Price</th><th class="num-col">Revenue</th><th class="num-col">Est. sessions</th><th class="num-col">Share</th></tr></thead>'
+          f'<tbody data-view="asin">{niche_table_rows}</tbody><tbody data-view="brand" hidden>{niche_table_brand_rows}</tbody>'
+        '</table></div>' if market_ready else _evidence_banner)}
+      <!-- legacy table template intentionally removed when evidence is blocked -->
+      <template data-legacy-market-table>
       <div class="market-table-full">
           <div class="card-h">
             <h3>Competitor revenue breakdown</h3>
@@ -1801,6 +1935,7 @@ class DeckGenerationService:
             <tbody data-view="brand" hidden>{niche_table_brand_rows}</tbody>
           </table>
       </div>
+      </template>
 
       {distribution_block}
     </section>
@@ -1840,9 +1975,9 @@ class DeckGenerationService:
           <p class="eyebrow">Competitor landscape</p>
           <h2 class="slide-title">Who owns the page-one real estate</h2>
         </div>
-        <p class="caption">Top brands by 30-day revenue. The brands above you compete on review momentum and creative depth — not price.</p>
+        <p class="caption">{html.escape('Top qualified brands by modeled 30-day revenue.' if market_ready else 'Competitor claims are withheld until a relevant comparison set is verified.')}</p>
       </header>
-      <div class="table-wrap">{competitor_landscape_table}</div>
+      {f'<div class="table-wrap">{competitor_landscape_table}</div>' if market_ready else _evidence_banner}
     </section>
 
     <!-- ===== 04 SEARCH BEHAVIOR ===== -->
@@ -1856,28 +1991,10 @@ class DeckGenerationService:
         <p class="caption">{html.escape(dataset.text_fields.get("seo_summary") or "")}</p>
       </header>
 
-      <div class="metric-grid cols-4" style="margin-bottom:22px">{keyword_summary_html}</div>
+      {f'<div class="metric-grid cols-4" style="margin-bottom:22px">{keyword_summary_html}</div>' if keyword_table_rows else ''}
 
-      <div class="search-grid">
-        <div class="card">
-          <div class="card-h">
-            <h3>Top keyword opportunities</h3>
-            <span class="meta">{html.escape(keyword_table_caption)}</span>
-          </div>
-          <div class="table-wrap"><table class="tbl">{keyword_table_html}</table></div>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:14px">
-          <div class="card">{search_title_html}</div>
-          <div class="card">{search_copy_html}</div>
-          {keyword_bubble_html if keyword_bubble_html else ""}
-        </div>
-      </div>
-
-      <div class="takeaway" style="margin-top:20px">
-        <p class="lab">What this means</p>
-        <p class="h">Most of the gap is coverage, not search volume.</p>
-        <p>{html.escape((seo_recommendations[0] if seo_recommendations else "Title rewrites and bullet additions on missing high-intent terms unlock the unranked search volume your listing isn't currently positioned for.")[:280] if isinstance(seo_recommendations[0] if seo_recommendations else "", str) else "Title rewrites and bullet additions on missing high-intent terms unlock the unranked search volume your listing isn't currently positioned for.")}</p>
-      </div>
+      {_search_evidence_html}
+      {_search_takeaway_html}
 
       {f'<div style="margin-top:24px">{keyword_rank_summary_html}</div>' if keyword_rank_summary_html else ""}
     </section>

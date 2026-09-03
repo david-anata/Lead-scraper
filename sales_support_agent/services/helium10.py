@@ -75,6 +75,17 @@ class Helium10XrayReport:
     # PR45: distinct brand count after parent-listing dedupe.
     # search_results_count is row count (every variant), this is brand count.
     distinct_brand_count: int = 0
+    # Automated-deck evidence metadata. Defaults preserve the manual Helium 10
+    # path, whose comparison set was explicitly supplied by an operator.
+    evidence_status: str = "ready"
+    market_evidence_sufficient: bool = True
+    market_evidence_reason: str = ""
+    discovery_query: str = ""
+    comparison_audit: tuple[dict[str, object], ...] = ()
+    evidence_version: int = 2
+    qualified_count: int | None = None
+    candidate_count: int | None = None
+    median_relevance: float | None = None
 
     def find_by_asin(self, asin: str) -> XrayProduct | None:
         normalized = _extract_asin(asin)

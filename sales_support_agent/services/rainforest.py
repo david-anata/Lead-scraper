@@ -207,23 +207,31 @@ class RainforestClient:
         target_asin: str,
         *,
         limit: int,
+        search_term: str = "",
     ) -> list[str]:
-        """Fallback: derive competitors from a keyword search on the product title."""
-        title = target_product.get("title", "")
-        brand_words = {
-            word.lower()
-            for word in re.sub(r"[^a-zA-Z0-9 ]", " ", str(target_product.get("brand", ""))).split()
-            if word
-        }
-        # Strip size/count/flavor modifiers — keep 3-5 meaningful nouns
-        words = [
-            word
-            for word in re.sub(r"[^a-zA-Z0-9 ]", " ", title).split()
-            if len(word) > 3 and word.lower() not in brand_words
-        ][:5]
-        if not words:
+        """Fallback to a product-type query, not a brand-heavy title prefix."""
+        if not search_term.strip():
+            from sales_support_agent.services.deck.competitor_relevance import (
+                build_discovery_query,
+            )
+
+            ranks = target_product.get("bestsellers_rank") or []
+            category = next(
+                (
+                    str(entry.get("category") or "").strip()
+                    for entry in reversed(ranks)
+                    if str(entry.get("category") or "").strip()
+                ),
+                "",
+            )
+            search_term = build_discovery_query(
+                title=str(target_product.get("title") or ""),
+                brand=str(target_product.get("brand") or ""),
+                category=category,
+                operator_label="",
+            )
+        if not search_term.strip():
             return []
-        search_term = " ".join(words)
         asins: list[str] = []
         try:
             for page in (1, 2):
@@ -322,6 +330,7 @@ class RainforestClient:
         *,
         competitor_limit: int = _DEFAULT_COMPETITOR_LIMIT,
         minimum_distinct_brands: int = 0,
+        category_label: str = "",
     ) -> tuple[Helium10XrayReport, dict[str, Any]]:
         """
         Core Digital Shelf builder.
@@ -346,6 +355,21 @@ class RainforestClient:
         # 1. Target product
         target_data = self.get_product(target_asin)
         target_product = target_data.get("product") or {}
+        target_xray = self._product_to_xray(target_data, display_order=0)
+        if target_xray is None or not target_xray.title or not target_xray.asin:
+            raise RuntimeError("Amazon did not return enough target identity data to build a deck.")
+
+        from sales_support_agent.services.deck.competitor_relevance import (
+            build_discovery_query,
+            qualify_competitors,
+        )
+
+        discovery_query = build_discovery_query(
+            title=target_xray.title,
+            brand=target_xray.brand,
+            category=target_xray.category,
+            operator_label=category_label,
+        )
 
         # 2. Discover competitor ASINs
         # A category bestseller list can be dominated by one brand. Always blend it
@@ -356,16 +380,24 @@ class RainforestClient:
             target_product, target_asin, limit=candidate_limit
         )
         search_asins = self._competitor_asins_from_search(
-            target_product, target_asin, limit=candidate_limit
+            target_product,
+            target_asin,
+            limit=candidate_limit,
+            search_term=discovery_query,
         )
-        competitor_asins = []
+        competitor_asins: list[str] = []
+        discovery_sources: dict[str, str] = {}
         for index in range(max(len(bestseller_asins), len(search_asins))):
-            for source in (bestseller_asins, search_asins):
+            for source_name, source in (
+                ("amazon_bestsellers", bestseller_asins),
+                ("amazon_search", search_asins),
+            ):
                 if index >= len(source):
                     continue
                 asin = source[index]
                 if asin not in competitor_asins:
                     competitor_asins.append(asin)
+                    discovery_sources[asin.upper()] = source_name
                 if len(competitor_asins) >= candidate_limit:
                     break
             if len(competitor_asins) >= candidate_limit:
@@ -409,13 +441,21 @@ class RainforestClient:
                 break
 
         # 4. Convert to XrayProduct
-        products: list[XrayProduct] = []
+        discovered_products: list[XrayProduct] = []
         for i, raw in enumerate(competitor_raw):
             xp = self._product_to_xray(raw, display_order=i + 1)
             if xp:
-                products.append(xp)
+                discovered_products.append(xp)
 
-        # Sort by BSR ascending (better rank = higher on list)
+        # Qualify before aggregation. Raw candidates remain in comparison_audit
+        # but cannot influence market, keyword, benchmark, or growth claims.
+        products, decisions, evidence = qualify_competitors(
+            target=target_xray,
+            candidates=discovered_products,
+            operator_category_label=category_label,
+            discovery_sources=discovery_sources,
+            limit=competitor_limit,
+        )
         products.sort(key=lambda p: (p.bsr or 999_999, p.display_order))
         products = [
             dataclasses.replace(p, display_order=i + 1)
@@ -453,7 +493,14 @@ class RainforestClient:
         # Honest sourcing note: how many listings carried Amazon's real
         # "bought in past month" badge vs. fell back to a BSR estimate.
         real_units_count = sum(1 for product in products if product.units_label.endswith("+"))
-        if real_units_count and real_units_count == len(products):
+        if evidence.status == "blocked":
+            _sales_warning = evidence.reason
+        elif evidence.status == "directional":
+            _sales_warning = (
+                f"{evidence.reason} Unit/revenue values are directional, use BSR-based estimates "
+                "where Amazon does not expose recent sales, and require review."
+            )
+        elif real_units_count and real_units_count == len(products):
             _sales_warning = (
                 "Unit/revenue figures use Amazon's real \"bought in past month\" "
                 "data for every listing (a reported floor)."
@@ -485,6 +532,15 @@ class RainforestClient:
             fulfillment_distribution=fulfillment_dist,
             warnings=[_sales_warning],
             distinct_brand_count=distinct_brands,
+            evidence_status=evidence.status,
+            market_evidence_sufficient=evidence.market_evidence_sufficient,
+            market_evidence_reason=evidence.reason,
+            discovery_query=discovery_query,
+            comparison_audit=tuple(decision.to_dict() for decision in decisions),
+            evidence_version=2,
+            qualified_count=evidence.qualified_count,
+            candidate_count=evidence.candidate_count,
+            median_relevance=evidence.median_relevance,
         )
 
         return xray_report, target_data

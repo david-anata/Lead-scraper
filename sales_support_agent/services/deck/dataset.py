@@ -84,6 +84,9 @@ class DeckGenerationResult:
     sales_row_count: int
     competitor_row_count: int
     template_fields: int
+    evidence_status: str = "ready"
+    market_evidence_sufficient: bool = True
+    market_evidence_reason: str = ""
 @dataclass(frozen=True)
 class TargetRowMatch:
     product: XrayProduct | None
@@ -219,6 +222,11 @@ def _build_market_summary(
     xray_report: Helium10XrayReport,
     keyword_report: Helium10KeywordReport | None,
 ) -> str:
+    if not xray_report.market_evidence_sufficient:
+        return (
+            xray_report.market_evidence_reason
+            or "The comparison set needs review before market claims can be shown."
+        )
     lead_keyword = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else "the niche"
     search_volume = keyword_report.top_search_volume if keyword_report and keyword_report.top_search_volume else None
     search_text = f" The leading search term in the current dataset is {lead_keyword} with {search_volume:,} monthly searches." if search_volume else ""
@@ -236,12 +244,23 @@ def _build_executive_summary(
     keyword_text = ""
     if keyword_report and keyword_report.keywords:
         keyword_text = f" The leading search objective in the dataset is {keyword_report.keywords[0].phrase}."
+    if not xray_report.market_evidence_sufficient:
+        return (
+            f"This analysis confirms {_brand_product_reference(brand_name)} and outlines the "
+            "first listing and measurement actions. Market-size and competitor-benchmark "
+            "claims are withheld until enough relevant products are verified."
+        )
     return (
         f"This deck benchmarks {_brand_product_reference(brand_name)} against the live market set and translates the data into an offer, PDP, SEO, and service plan for {brand_name}."
         f"{keyword_text}"
     )
 def _build_advertising_summary(xray_report: Helium10XrayReport, keyword_report: Helium10KeywordReport | None) -> str:
     top_keyword = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else "the primary search terms"
+    if not xray_report.market_evidence_sufficient:
+        return (
+            "Advertising should follow listing cleanup and measurement setup. "
+            "Validate category terms against qualified competitors or Helium 10 data before scaling spend."
+        )
     return (
         f"Advertising should follow listing cleanup. Once the PDP is aligned, lean into {top_keyword} and the adjacent high-volume terms while exploiting low-review competitors in the category."
     )
@@ -257,6 +276,8 @@ def _build_plan_summary(offer_cards: list[dict[str, str]], channels: list[str]) 
         services.append("package the TikTok Shop offer and creative")
     return "Phase 1: " + "; ".join(services[:3]) + ". Phase 2: launch the first measurement sprint and tune against live market response."
 def _build_expected_impact_summary(xray_report: Helium10XrayReport) -> str:
+    if not xray_report.market_evidence_sufficient:
+        return "The first priority is validating the comparison set and baseline before forecasting growth."
     return (
         f"The niche is large enough to justify a tighter positioning and conversion sprint. {xray_report.under_75_reviews_count} listings are still competing with under 75 reviews, which leaves room for differentiated creative and offer design."
     )
@@ -277,6 +298,8 @@ def _build_market_metric_cards(
     xray_report: Helium10XrayReport,
     keyword_report: Helium10KeywordReport | None,
 ) -> list[dict[str, str]]:
+    if not xray_report.market_evidence_sufficient:
+        return []
     average_revenue_per_listing = (xray_report.total_revenue / xray_report.search_results_count) if xray_report.search_results_count else 0.0
     average_units_per_listing = (xray_report.total_units_sold / xray_report.search_results_count) if xray_report.search_results_count else 0.0
     return [

@@ -201,6 +201,7 @@ class GrowthPhase:
     summary: str  # one-line summary of phase intent
     channels_added: list[str]  # channel keys that come online THIS phase
     milestones: list[str] = field(default_factory=list)  # week-by-week tasks
+    success_gate: str = ""
 
 
 # The roadmap spans up to 24 months. Setup still happens early, but category-
@@ -222,6 +223,7 @@ PHASES: list[GrowthPhase] = [
             "Wk 2: Sponsored Display Views retargeting on (no minimum spend; uses 30-day view audience).",
             "Mo 2–3: Organic ranking begins to index off the optimized listing + paid traffic signal — first measurable lift in non-brand impressions by week 8.",
         ],
+        success_gate="Verified PDP conversion, attribution, and inventory readiness before accelerating spend.",
     ),
     GrowthPhase(
         id=2,
@@ -237,6 +239,7 @@ PHASES: list[GrowthPhase] = [
             "Mo 5–7: Release creator pilots; compare qualified-session and PDP-engagement rates by creative.",
             "Mo 7–8: Reallocate only to traffic sources that clear conversion and inventory gates.",
         ],
+        success_gate="Qualified paid traffic meets the 15% TACOS guardrail or has a documented path to it.",
     ),
     GrowthPhase(
         id=3,
@@ -251,6 +254,7 @@ PHASES: list[GrowthPhase] = [
             "Mo 11–14: Scale creators from pilot to repeatable cohorts; introduce performance tiers.",
             "Mo 14–15: Compare assisted new-to-brand traffic with the paid-search baseline before expanding spend.",
         ],
+        success_gate="Creator and prospecting cohorts show repeatable contribution, not impressions alone.",
     ),
     GrowthPhase(
         id=4,
@@ -264,6 +268,7 @@ PHASES: list[GrowthPhase] = [
             "Mo 18–21: Layer retargeting across PDP viewers, cart abandoners, and qualified category audiences.",
             "Mo 21–24: Refresh creators and creative, expand profitable audiences, and set the next benchmark.",
         ],
+        success_gate="Repeat purchase and retargeting economics support the next growth benchmark.",
     ),
 ]
 
@@ -326,6 +331,7 @@ def cumulative_sessions_at_phase(
 @dataclass(frozen=True)
 class GrowthPlan:
     current_sessions: int
+    current_sessions_known: bool
     goal_sessions: int
     delta_sessions: int
     target_units: int
@@ -398,6 +404,7 @@ def build_growth_plan(
 
     return GrowthPlan(
         current_sessions=current_sessions,
+        current_sessions_known=target_units > 0,
         goal_sessions=goal_sessions,
         delta_sessions=delta_sessions,
         target_units=target_units,
@@ -727,16 +734,22 @@ def _render_growth_ramp(plan: GrowthPlan) -> str:
     # (`.ramp` / `.ramp-step` / `.bar`) so the deck.css styles apply directly.
     # Starting point is the "Today" tile — current sessions, 0% added.
     steps_html: list[str] = []
-    today_pct = int(round(min(100.0, (current / goal) * 100.0))) if goal else 0
+    today_pct = (
+        int(round(min(100.0, (current / goal) * 100.0)))
+        if goal and plan.current_sessions_known
+        else 0
+    )
+    today_value = f"{current:,}" if plan.current_sessions_known else "Unknown"
+    today_delta = "starting point" if plan.current_sessions_known else "Seller Central data needed"
     steps_html.append(
         "<li class='ramp-step is-today'>"
         "<span class='num'>Today</span>"
         "<span class='name'>Baseline</span>"
         "<span class='window'>Current state</span>"
-        f"<span class='sessions'>{current:,}</span>"
-        "<span class='delta'>starting point</span>"
+        f"<span class='sessions'>{today_value}</span>"
+        f"<span class='delta'>{today_delta}</span>"
         f"<div class='bar'><span style='width:{today_pct}%'></span></div>"
-        f"<span class='pct'>{today_pct}% of goal</span>"
+        f"<span class='pct'>{f'{today_pct}% of goal' if plan.current_sessions_known else 'baseline not verified'}</span>"
         "</li>"
     )
 
@@ -814,6 +827,7 @@ def _render_phase_execution(plan: GrowthPlan) -> str:
             f"<ul class='phase-actions'>{actions}</ul>"
             "<h5>End-of-phase monthly run rate by channel</h5>"
             f"<ul class='phase-traffic'>{''.join(traffic_rows)}</ul>"
+            f"<div class='phase-new'><strong>Advance when:</strong> {html.escape(phase.success_gate)}</div>"
             "</article>"
         )
     return (
@@ -834,15 +848,20 @@ def render_growth_plan_section(
     # derivation, market benchmark source, channel routing) into one
     # sentence and prospects had to parse it twice. The KPI strip below
     # already shows the math chain, so the caption just states the goal.
-    if plan.delta_sessions <= 0:
+    if plan.delta_sessions <= 0 and plan.current_sessions_known:
         gap_caption = (
             f"{html.escape(target_brand)} is already at or above the goal "
             f"({plan.current_sessions:,} sessions vs goal of {plan.goal_sessions:,})."
         )
-    else:
+    elif plan.current_sessions_known:
         gap_caption = (
             f"{html.escape(target_brand)} needs +{plan.delta_sessions:,} monthly sessions "
             f"across up to 24 months and 5 channels to reach the competitor benchmark."
+        )
+    else:
+        gap_caption = (
+            f"The current session baseline for {html.escape(target_brand)} is unknown. "
+            "The plan below is a scenario target; confirm Seller Central sessions before approving spend."
         )
 
     # PR32: KPI strip uses the redesign's `.gp-kpis` / `.gp-kpi` classes
@@ -851,12 +870,17 @@ def render_growth_plan_section(
     # engineering jargon for prospects), the goal subtitle drops
     # "phase-4 steady state" for "end-state · month 24" (timeline is
     # now in the headline, not buried in the ramp section below).
+    current_sessions_card = (
+        f"<p class='val'>{plan.current_sessions:,}</p>"
+        f"<p class='sub'>= {plan.target_units:,} units ÷ {plan.cvr_pct:.1f}% CVR</p>"
+        if plan.current_sessions_known
+        else "<p class='val'>Unknown</p><p class='sub'>Seller Central sessions or verified units required</p>"
+    )
     kpi_strip = (
         "<div class='gp-kpis'>"
         "<div class='gp-kpi'>"
         "<p class='lab'>Current sessions</p>"
-        f"<p class='val'>{plan.current_sessions:,}</p>"
-        f"<p class='sub'>= {plan.target_units:,} units ÷ {plan.cvr_pct:.1f}% CVR</p>"
+        f"{current_sessions_card}"
         "</div>"
         "<div class='gp-kpi'>"
         "<p class='lab'>Goal sessions</p>"
