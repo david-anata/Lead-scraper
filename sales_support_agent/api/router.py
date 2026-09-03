@@ -524,6 +524,8 @@ def health_live(request: Request) -> JSONResponse:
                 "render_git_commit",
                 "unknown",
             ),
+            "deployment_git_commit": getattr(request.app.state, "render_git_commit", "unknown"),
+            "deployment_provider": getattr(request.app.state, "deployment_provider", "unknown"),
         }
     )
 
@@ -538,6 +540,8 @@ def health_ready(request: Request) -> JSONResponse:
             {
                 "status": "not_ready",
                 "render_git_commit": commit,
+                "deployment_git_commit": commit,
+                "deployment_provider": getattr(request.app.state, "deployment_provider", "unknown"),
                 "reason": "application_initializing",
             },
             status_code=503,
@@ -554,6 +558,8 @@ def health_ready(request: Request) -> JSONResponse:
             {
                 "status": "not_ready",
                 "render_git_commit": commit,
+                "deployment_git_commit": commit,
+                "deployment_provider": getattr(request.app.state, "deployment_provider", "unknown"),
                 "reason": "database_unavailable",
             },
             status_code=503,
@@ -562,6 +568,8 @@ def health_ready(request: Request) -> JSONResponse:
         {
             "status": "ready",
             "render_git_commit": commit,
+            "deployment_git_commit": commit,
+            "deployment_provider": getattr(request.app.state, "deployment_provider", "unknown"),
         }
     )
 

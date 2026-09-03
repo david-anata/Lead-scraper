@@ -108,7 +108,16 @@ def _prepare_database(settings, session_factory) -> None:
 def create_app() -> FastAPI:
     logging.basicConfig(level=logging.INFO)
     process_started = perf_counter()
-    commit = os.getenv("RENDER_GIT_COMMIT", "").strip() or "local"
+    commit = (
+        os.getenv("VERCEL_GIT_COMMIT_SHA", "").strip()
+        or os.getenv("RENDER_GIT_COMMIT", "").strip()
+        or "local"
+    )
+    deployment_provider = (
+        "vercel" if os.getenv("VERCEL", "").strip()
+        else "render" if os.getenv("RENDER", "").strip() or os.getenv("RENDER_GIT_COMMIT", "").strip()
+        else "local"
+    )
     logger.info("lifecycle milestone=process_started commit=%s", commit)
     settings = load_settings()
     session_factory = create_session_factory(settings.sales_agent_db_url)
@@ -232,6 +241,7 @@ def create_app() -> FastAPI:
     app.state.session_factory = session_factory
     app.state.ready = False
     app.state.render_git_commit = commit
+    app.state.deployment_provider = deployment_provider
     app.state.dashboard_sync_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dashboard-sync")
     app.state.dashboard_sync_lock = Lock()
     app.state.dashboard_sync_future = None
