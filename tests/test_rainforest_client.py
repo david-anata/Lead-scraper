@@ -191,9 +191,18 @@ class TestRainforestBuildXrayReport(unittest.TestCase):
         category_url = "https://www.amazon.com/Best-Sellers/zgbs/hpc/1/"
 
         # get_product: first call = target, subsequent calls = competitors
-        target_raw = _mock_product(target_asin, bsr=2000, price=49.99, category_url=category_url)
+        target_raw = _mock_product(
+            target_asin, title="Daily Vitamin Supplement Capsules", brand="Target",
+            bsr=2000, price=49.99, category_url=category_url,
+        )
         comp_raws = {
-            asin: _mock_product(asin, bsr=3000 + i * 500, price=39.99)
+            asin: _mock_product(
+                asin,
+                title=f"Vitamin Supplement Capsules {i}",
+                brand=f"Competitor {i}",
+                bsr=3000 + i * 500,
+                price=39.99,
+            )
             for i, asin in enumerate(competitor_asins)
         }
 
@@ -263,12 +272,13 @@ class TestRainforestWarnings(unittest.TestCase):
         target_asin = "B09AAAAAAA"
         category_url = "https://www.amazon.com/Best-Sellers/zgbs/hpc/1/"
         mock_get_product.return_value = _mock_product(target_asin, bsr=5000, category_url=category_url)
-        mock_bestsellers.return_value = _mock_bestsellers(["B09BB00001"])
+        competitor_asins = ["B09BB00001", "B09BB00002", "B09BB00003"]
+        mock_bestsellers.return_value = _mock_bestsellers(competitor_asins)
         mock_search.return_value = {"search_results": []}
         mock_get_product.side_effect = lambda a: (
-            _mock_product(target_asin, bsr=5000, category_url=category_url)
+            _mock_product(target_asin, title="Daily Vitamin Supplement Capsules", brand="Target", bsr=5000, category_url=category_url)
             if a == target_asin
-            else _mock_product(a, bsr=6000)
+            else _mock_product(a, title="Vitamin Supplement Capsules", brand=f"Competitor {a[-1]}", bsr=6000)
         )
 
         client = RainforestClient(api_key="key")
@@ -323,7 +333,7 @@ class TestCompetitorSearchBreadth(unittest.TestCase):
         )
 
         self.assertEqual(asins, ["B000000001", "B000000002"])
-        self.assertEqual(client.search.call_args_list[0].args[0], "Wash Scent Booster Beads Fresh")
+        self.assertEqual(client.search.call_args_list[0].args[0], "beads booster essence fresh scent wash")
         self.assertEqual(client.search.call_args_list[1].kwargs["page"], 2)
 
 

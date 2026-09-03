@@ -1968,8 +1968,18 @@ def _render_deck_export(request: Request, run_id: int, token: str) -> Response:
                 render_public_recovery_page(report_kind="sales deck"),
                 status_code=404,
             )
-        now_iso = datetime.now(timezone.utc).isoformat()
         viewer_type = "internal" if str(request.query_params.get("viewer") or "").strip().lower() == "internal" else "external"
+        if viewer_type == "external" and not bool(summary.get("market_evidence_sufficient", True)):
+            reason = escape(str(summary.get("market_evidence_reason") or "The market comparison needs an internal review."))
+            return HTMLResponse(
+                "<!doctype html><html lang='en'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Deck under review</title><body style='font-family:system-ui;margin:0;background:#f4f1e8;color:#13271d'>"
+                "<main style='max-width:680px;margin:10vh auto;padding:32px'><p style='font-weight:700'>anata.</p>"
+                "<h1>This deck is still under review.</h1>"
+                f"<p>{reason}</p><p>Please ask your Anata contact for the approved version.</p></main></body></html>",
+                status_code=409,
+            )
+        now_iso = datetime.now(timezone.utc).isoformat()
         view_events = list(summary.get("view_events", []) or [])
         view_events.append(
             {
@@ -2826,6 +2836,9 @@ async def _run_generate_deck(
             "sales_row_count": result.sales_row_count,
             "competitor_row_count": result.competitor_row_count,
             "template_fields": result.template_fields,
+            "evidence_status": result.evidence_status,
+            "market_evidence_sufficient": result.market_evidence_sufficient,
+            "market_evidence_reason": result.market_evidence_reason,
             "attachment_status": attachment_details.get("attachment_status", ""),
             "attached_deal_id": attachment_details.get("attached_deal_id", ""),
             "deal_match_audit": attachment_details.get("deal_match_audit", []),
