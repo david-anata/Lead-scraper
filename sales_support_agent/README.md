@@ -1,5 +1,7 @@
 # Sales Support Agent
 
+Sales deck intake defaults to DFY (agency service) and DYI (platform with Anata onboarding). Both Manual and Digital Shelf use the same editable offers. DYI subscription and onboarding fees remain "To confirm"; its contact action discusses signup until a platform URL is supplied. Existing saved offers are not migrated.
+
 ## Video resources for the SEO routine
 
 The content scheduler checks Anata's public YouTube channel feed each day and

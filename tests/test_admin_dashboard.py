@@ -217,6 +217,12 @@ class AdminDashboardTests(unittest.TestCase):
 
         html = render_sales_deck_page(dashboard)
         self.assertIn("deck-generator-form", html)
+        self.assertIn('class="offer-title" value="DFY"', html)
+        self.assertIn('class="offer-title" value="DYI"', html)
+        self.assertIn('data-term="To confirm"', html)
+        self.assertIn('editor.dataset.term', html)
+        self.assertIn('dsOfferList.innerHTML = _manualOfferListForSeed.innerHTML', html)
+        self.assertNotIn('Commission Model + Shipping OS', html)
         self.assertIn("/admin/api/generate-deck", html)
         self.assertIn("Sales assets", html)
         self.assertIn("Product URL or ASIN", html)

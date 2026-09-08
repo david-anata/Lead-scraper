@@ -4017,6 +4017,8 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
           baseline: editor.querySelector(".offer-baseline")?.value || "",
           baseline_label: editor.querySelector(".offer-baseline-label")?.value || "",
           bonus: editor.querySelector(".offer-bonus")?.value || "",
+          ...(editor.dataset.term ? {{ term: editor.dataset.term }} : {{}}),
+          ...(editor.dataset.ctaText ? {{ cta_text: editor.dataset.ctaText }} : {{}}),
         }}));
       }}
 
@@ -5910,20 +5912,20 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
                 </div>
                 <input type="hidden" name="offer_payload_json" id="deck-offer-payload-json" value="" />
                 <div class="offer-editor-list" id="deck-offer-list">
-                  <div class="offer-editor" data-offer-index="0">
+                  <div class="offer-editor" data-offer-index="0" data-cta-text="Schedule kickoff">
                     <div class="offer-editor-top">
-                      <button type="button" class="offer-editor-toggle" aria-expanded="false">Channel management</button>
+                      <button type="button" class="offer-editor-toggle" aria-expanded="false">DFY</button>
                       <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
                     </div>
                     <div class="offer-editor-body" hidden>
                       <div class="offer-editor-grid">
                         <label class="full-width">
                           Offer title
-                          <input type="text" class="offer-title" value="Channel management" />
+                          <input type="text" class="offer-title" value="DFY" />
                         </label>
                         <label class="full-width">
                           Description
-                          <textarea class="offer-description">Full-service Amazon marketing and operations support, including graphic designers, advertising management, and more.</textarea>
+                          <textarea class="offer-description">Our full agency service. Anata manages your Amazon marketing and operations, including creative, listing support, and advertising management.</textarea>
                         </label>
                         <label>
                           Price
@@ -5956,48 +5958,48 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
                       </div>
                     </div>
                   </div>
-                  <div class="offer-editor" data-offer-index="1">
+                  <div class="offer-editor" data-offer-index="1" data-term="To confirm" data-cta-text="Discuss platform signup">
                     <div class="offer-editor-top">
-                      <button type="button" class="offer-editor-toggle" aria-expanded="false">Commission Model + Shipping OS</button>
+                      <button type="button" class="offer-editor-toggle" aria-expanded="false">DYI</button>
                       <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
                     </div>
                     <div class="offer-editor-body" hidden>
                       <div class="offer-editor-grid">
                         <label class="full-width">
                           Offer title
-                          <input type="text" class="offer-title" value="Commission Model + Shipping OS" />
+                          <input type="text" class="offer-title" value="DYI" />
                         </label>
                         <label class="full-width">
                           Description
-                          <textarea class="offer-description">A performance-based growth model that aligns marketing, inventory, and fulfillment under one operating system - ensuring every dollar of demand can be fulfilled profitably.</textarea>
+                          <textarea class="offer-description">Use the platform we use to manage your marketing and operations. Anata onboards your team, then you manage day-to-day execution yourself.</textarea>
                         </label>
                         <label>
-                          Price
-                          <input type="text" class="offer-price" value="$0" />
+                          Subscription price
+                          <input type="text" class="offer-price" value="To confirm" />
                         </label>
                         <label>
                           Price label
-                          <input type="text" class="offer-price-label" value="Monthly retainer fee" />
+                          <input type="text" class="offer-price-label" value="Platform subscription" />
                         </label>
                         <label>
-                          Commission
-                          <input type="text" class="offer-commission" value="10%" />
+                          Onboarding fee
+                          <input type="text" class="offer-commission" value="To confirm" />
                         </label>
                         <label>
-                          Commission label
-                          <input type="text" class="offer-commission-label" value="Commission over baseline" />
+                          Onboarding fee label
+                          <input type="text" class="offer-commission-label" value="Onboarding fee" />
                         </label>
                         <label>
-                          Baseline
-                          <input type="text" class="offer-baseline" value="$TBD" />
+                          Execution owner
+                          <input type="text" class="offer-baseline" value="Your team" />
                         </label>
                         <label>
-                          Baseline label
-                          <input type="text" class="offer-baseline-label" value="Commission baseline" />
+                          Execution owner label
+                          <input type="text" class="offer-baseline-label" value="Execution owner" />
                         </label>
                         <label class="full-width">
                           Bonus / note
-                          <input type="text" class="offer-bonus" value="Shipping OS | Required (* Order Min.)" />
+                          <input type="text" class="offer-bonus" value="Anata-led onboarding" />
                         </label>
                       </div>
                     </div>
@@ -6618,6 +6620,8 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
           baseline: editor.querySelector(".offer-baseline")?.value || "",
           baseline_label: editor.querySelector(".offer-baseline-label")?.value || "",
           bonus: editor.querySelector(".offer-bonus")?.value || "",
+          ...(editor.dataset.term ? {{ term: editor.dataset.term }} : {{}}),
+          ...(editor.dataset.ctaText ? {{ cta_text: editor.dataset.ctaText }} : {{}}),
         }}));
       }}
 

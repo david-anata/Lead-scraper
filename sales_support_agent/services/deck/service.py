@@ -1359,7 +1359,6 @@ class DeckGenerationService:
             # eyebrow-subtle / h3 / p) with the design's `.next-steps` 3-tile
             # horizontal grid (Step 1 = sky-deep CTA tile + 2 plain tiles).
             _impact = html.escape(dataset.text_fields.get("expected_impact_summary") or "")
-            _next_step = html.escape(dataset.text_fields.get("why_anata_summary") or "")
             recommended_plan_html = f"""
     <section class="slide slide-offers" data-screen-label="08 Proposed offers">
       <header class="slide-head">
@@ -1367,15 +1366,15 @@ class DeckGenerationService:
           <p class="eyebrow">Proposed offers and next step</p>
           <h2 class="slide-title">Choose your engagement</h2>
         </div>
-        <p class="caption">Choose the operating model, then move directly into the first growth sprint with clear ownership and the next action already mapped.</p>
+        <p class="caption">Choose full agency support with DFY, or platform access with Anata onboarding through DYI.</p>
       </header>
       {f'<div class="offer-grid">{offer_html}</div>' if offer_html else ""}
       <div class="next-steps">
         <div class="next-step cta">
           <span class="num">Step 1</span>
           <h4>Pick your engagement</h4>
-          <p>Confirm which offer fits your stage. We can also tailor scope if neither matches exactly.</p>
-          <a class="link" href="https://anatainc.com/contact" target="_blank" rel="noreferrer">Schedule kickoff →</a>
+          <p>Choose DFY for Anata-managed execution or DYI to run the platform yourself with our onboarding.</p>
+          <a class="link" href="https://anatainc.com/contact" target="_blank" rel="noreferrer">Discuss your engagement →</a>
         </div>
         <div class="next-step">
           <span class="num">Step 2</span>
@@ -1385,7 +1384,7 @@ class DeckGenerationService:
         <div class="next-step">
           <span class="num">Step 3</span>
           <h4>What happens next</h4>
-          <p>{_next_step or "Within 5 business days: kickoff call, audit access, first listing rewrite drafted. First paid campaigns live in week 2."}</p>
+          <p>DFY: align scope and schedule kickoff. DYI: confirm your platform subscription and schedule onboarding, then your team takes over execution.</p>
         </div>
       </div>
     </section>"""
