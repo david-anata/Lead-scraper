@@ -46,26 +46,29 @@ from sales_support_agent.services.product_research import EnrichedHeroProduct, P
 
 DEFAULT_CUSTOM_OFFERS: tuple[dict[str, str], ...] = (
     {
-        "title": "Channel management",
-        "description": "Full-service Amazon marketing and operations support, including graphic designers, advertising management, and more.",
+        "title": "DFY",
+        "description": "Our full agency service. Anata manages your Amazon marketing and operations, including creative, listing support, and advertising management.",
         "price": "$3,000",
         "price_label": "Monthly retainer fee",
         "commission": "5%",
         "commission_label": "Commission on growth",
         "baseline": "$10,000",
         "baseline_label": "Commission baseline",
-        "bonus": "+TikTok Shop Support",
+        "bonus": "TikTok Shop Support",
+        "cta_text": "Schedule kickoff",
     },
     {
-        "title": "Commission Model + Shipping OS",
-        "description": "A performance-based growth model that aligns marketing, inventory, and fulfillment under one operating system - ensuring every dollar of demand can be fulfilled profitably.",
-        "price": "$0",
-        "price_label": "Monthly retainer fee",
-        "commission": "10%",
-        "commission_label": "Commission over baseline",
-        "baseline": "$TBD",
-        "baseline_label": "Commission baseline",
-        "bonus": "Shipping OS | Required (* Order Min.)",
+        "title": "DYI",
+        "description": "Use the platform we use to manage your marketing and operations. Anata onboards your team, then you manage day-to-day execution yourself.",
+        "price": "To confirm",
+        "price_label": "Platform subscription",
+        "commission": "To confirm",
+        "commission_label": "Onboarding fee",
+        "baseline": "Your team",
+        "baseline_label": "Execution owner",
+        "bonus": "Anata-led onboarding",
+        "term": "To confirm",
+        "cta_text": "Discuss platform signup",
     },
 )
 DEFAULT_CASE_STUDY_URL = (
@@ -456,6 +459,7 @@ def _normalize_custom_offer_cards(*, offer_payload_json: str, offers: list[str])
                     "baseline": _normalize_offer_text(raw_card.get("baseline"), "TBD"),
                     "baseline_label": _normalize_offer_text(raw_card.get("baseline_label"), "Baseline"),
                     "bonus": _normalize_offer_text(raw_card.get("bonus")),
+                    **{key: _normalize_offer_text(raw_card[key]) for key in ("term", "cta_text") if raw_card.get(key)},
                 }
             )
         if cards:

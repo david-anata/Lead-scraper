@@ -328,7 +328,7 @@ def _section_offers(payload: dict[str, Any], plan_summary: str = "") -> str:
         "",
         text_fields.get("recommended_plan_summary")
             or plan_summary
-            or "Choose the operating model, then move directly into the first growth sprint with clear ownership.",
+            or "Choose full agency support with DFY, or platform access with Anata onboarding through DYI.",
         "",
     ]
     if offer_cards:
@@ -363,15 +363,14 @@ def _section_offers(payload: dict[str, Any], plan_summary: str = "") -> str:
 
     parts.append("---")
     parts.append("")
-    parts.append("**Next action:** schedule a meeting to align on the operating "
-                 "model, the first growth sprint, and the next execution window.")
+    parts.append("**Next action:** discuss your engagement: Anata-managed execution with DFY or platform access and onboarding with DYI.")
     parts.append("")
     parts.append(
         f"**Why now:** {text_fields.get('expected_impact_summary', '')}".strip()
     )
     parts.append("")
     parts.append(
-        f"**Recommended next step:** {text_fields.get('why_anata_summary', '')}".strip()
+        "**Recommended next step:** DFY: align scope and schedule kickoff. DYI: confirm your platform subscription and schedule onboarding, then your team takes over execution."
     )
     parts.append("")
     return "\n".join(parts)
