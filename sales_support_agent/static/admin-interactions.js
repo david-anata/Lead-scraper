@@ -28,7 +28,7 @@
     renderPeople();
   }
 
-  document.querySelectorAll(".topbar-section-row").forEach(row => {
+  document.querySelectorAll(".top-actions--secondary").forEach(row => {
     const updateEdges = () => {
       row.classList.toggle("has-more-left", row.scrollLeft > 1);
       row.classList.toggle("has-more-right", row.scrollWidth - row.clientWidth - row.scrollLeft > 1);
