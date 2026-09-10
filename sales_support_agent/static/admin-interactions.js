@@ -1,6 +1,45 @@
 (() => {
   "use strict";
 
+  const peopleInput = document.getElementById("people-search");
+  if (peopleInput) {
+    const rows = Array.from(document.querySelectorAll("#people-rows > tr"))
+      .filter(row => row.cells.length === 6);
+    const empty = document.getElementById("people-empty");
+    const count = document.getElementById("people-count");
+    const renderPeople = () => {
+      const query = peopleInput.value.trim().toLocaleLowerCase();
+      let visible = 0;
+      rows.forEach(row => {
+        const nameAndEmail = `${row.cells[0].textContent} ${row.cells[1].textContent}`.toLocaleLowerCase();
+        row.hidden = !nameAndEmail.includes(query);
+        if (!row.hidden) visible += 1;
+      });
+      empty.hidden = !rows.length || visible > 0;
+      count.textContent = `${visible} of ${rows.length} people`;
+    };
+    document.querySelector("[data-people-controls]").hidden = false;
+    peopleInput.addEventListener("input", renderPeople);
+    document.getElementById("people-clear").addEventListener("click", () => {
+      peopleInput.value = "";
+      renderPeople();
+      peopleInput.focus();
+    });
+    renderPeople();
+  }
+
+  document.querySelectorAll(".topbar-section-row").forEach(row => {
+    const updateEdges = () => {
+      row.classList.toggle("has-more-left", row.scrollLeft > 1);
+      row.classList.toggle("has-more-right", row.scrollWidth - row.clientWidth - row.scrollLeft > 1);
+    };
+    row.addEventListener("scroll", updateEdges, {passive: true});
+    window.addEventListener("resize", updateEdges);
+    if (typeof ResizeObserver !== "undefined") new ResizeObserver(updateEdges).observe(row);
+    if (document.fonts) document.fonts.ready.then(updateEdges);
+    updateEdges();
+  });
+
   const announce = (message) => {
     let region = document.querySelector(".app-live-region");
     if (!region) {

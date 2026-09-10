@@ -1685,8 +1685,7 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
                 placeholder="you@example.com" required />
               <button type="submit">Email me a one-time link</button>
               <p class="fallback-note" style="margin-top:14px">
-                Works with Gmail, Yahoo, Outlook, iCloud, and other email providers.
-                No new password is required.
+                No password needed.
               </p>
             </form>"""
         if show_email_form
@@ -1695,11 +1694,6 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
     google_divider_html = (
         '<div class="login-divider"><span>Or use Google</span></div>'
         if (show_email_form and show_google_button)
-        else ""
-    )
-    fallback_divider_html = (
-        '<div class="login-divider"><span>Admin fallback</span></div>'
-        if ((show_google_button or show_email_form) and show_password_form)
         else ""
     )
     password_form_html = (
@@ -1712,271 +1706,47 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
         if show_password_form
         else ""
     )
-    return f"""<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>anata | Agent Admin</title>
-    {render_agent_favicon_links()}
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/admin.css?v=2">
-    <style>
-      :root {{
-        --dark-blue: #2B3644;
-        --alt-dark-blue: #33445C;
-        --light-blue: #85BBDA;
-        --brown: #BFA889;
-        --light-brown: #F9F7F3;
-        --white: #FFFFFF;
-        --text: #2B3644;
-        --shadow: rgba(43, 54, 68, 0.10);
-        --danger: #8b4c42;
-      }}
-      * {{ box-sizing: border-box; }}
-      body {{
-        margin: 0;
-        min-height: 100vh;
-        background: var(--light-brown);
-        color: var(--text);
-        font-family: "Inter", "Segoe UI", sans-serif;
-        display: flex;
-        flex-direction: column;
-      }}
-      .shell {{
-        max-width: 1320px;
-        margin: 0 auto;
-        padding: 32px 24px 48px;
-        width: 100%;
-        flex: 1 0 auto;
-        display: grid;
-        align-items: center;
-      }}
-      .workspace {{
-        background: var(--white);
-        border: 1px solid rgba(43, 54, 68, 0.10);
-        border-radius: 28px;
-        box-shadow: 0 18px 40px var(--shadow);
-        padding: 34px;
-        min-height: calc(100vh - 98px);
-        display: grid;
-        align-content: center;
-      }}
-      .split {{
-        display: grid;
-        grid-template-columns: 1.05fr .95fr;
-        gap: 40px;
-        align-items: start;
-      }}
-      .eyebrow {{
-        display: inline-block;
-        padding: 14px 22px;
-        border-radius: 6px;
-        background: var(--dark-blue);
-        color: var(--white);
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 16px;
-        line-height: 1;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        margin-bottom: 24px;
-      }}
-      h1 {{
-        margin: 0;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 800;
-        font-size: 58px;
-        line-height: 0.96;
-        letter-spacing: -0.05em;
-        color: var(--dark-blue);
-      }}
-      .highlight {{
-        color: var(--light-blue);
-      }}
-      .copy {{
-        font-family: "Inter", "Segoe UI", sans-serif;
-        font-weight: 300;
-        font-size: 18px;
-        line-height: 1.5;
-        color: var(--dark-blue);
-      }}
-      .copy p {{
-        margin: 0 0 22px;
-      }}
-      .login-card {{
-        margin-top: 16px;
-        padding-top: 18px;
-        border-top: 2px solid rgba(43, 54, 68, 0.12);
-      }}
-      .login-card h2 {{
-        margin: 0 0 14px;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 36px;
-        line-height: 1;
-        color: var(--dark-blue);
-      }}
-      .login-card p {{
-        margin: 0 0 26px;
-        font-family: "Inter", "Segoe UI", sans-serif;
-        font-weight: 300;
-        font-size: 18px;
-        line-height: 1.5;
-        color: var(--dark-blue);
-      }}
-      .login-card .fallback-note {{
-        margin: 0 0 18px;
-        font-size: 14px;
-        color: rgba(43,54,68,0.64);
-      }}
-      label {{
-        display: block;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 16px;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        margin-bottom: 12px;
-      }}
-      input {{
-        width: 100%;
-        padding: 18px 20px;
-        border-radius: 10px;
-        border: 2px solid rgba(43, 54, 68, 0.16);
-        background: var(--white);
-        font-family: "Inter", "Segoe UI", sans-serif;
-        font-weight: 300;
-        font-size: 18px;
-        margin-bottom: 22px;
-        color: var(--dark-blue);
-      }}
-      button {{
-        width: auto;
-        border: 0;
-        border-radius: 999px;
-        padding: 16px 28px;
-        background: var(--light-blue);
-        color: var(--white);
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 18px;
-        cursor: pointer;
-        box-shadow: 0 18px 34px var(--shadow);
-      }}
-      .notice {{
-        border-radius: 10px;
-        padding: 16px 18px;
-        margin-bottom: 20px;
-        font-family: "Inter", "Segoe UI", sans-serif;
-        font-weight: 300;
-        font-size: 16px;
-      }}
-      .error {{
-        background: rgba(138,63,47,.08);
-        color: var(--danger);
-        border: 1px solid rgba(138,63,47,.18);
-      }}
-      .footer-bar {{
-        height: 18px;
-        background: var(--alt-dark-blue);
-        margin-top: 0;
-      }}
-      .google-btn {{
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 10px;
-        width: 100%;
-        padding: 16px 24px;
-        border-radius: 999px;
-        border: 2px solid rgba(43, 54, 68, 0.16);
-        background: var(--white);
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 16px;
-        color: var(--dark-blue);
-        text-decoration: none;
-        cursor: pointer;
-        transition: border-color 120ms ease, box-shadow 120ms ease;
-        margin-bottom: 22px;
-      }}
-      .google-btn:hover {{
-        border-color: rgba(43, 54, 68, 0.3);
-        box-shadow: 0 6px 18px rgba(43,54,68,0.10);
-      }}
-      .login-divider {{
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        margin-bottom: 22px;
-        color: rgba(43,54,68,0.36);
-        font-size: 13px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-      }}
-      .login-divider::before, .login-divider::after {{
-        content: "";
-        flex: 1;
-        height: 1px;
-        background: rgba(43,54,68,0.12);
-      }}
-      @media (max-width: 1200px) {{
-        .shell {{
-          padding: 24px 20px 36px;
-        }}
-        .split {{
-          grid-template-columns: 1fr;
-          gap: 28px;
-        }}
-        h1 {{
-          font-size: clamp(40px, 10vw, 58px);
-        }}
-      }}
-      @media (max-width: 920px) {{
-        .workspace {{
-          min-height: auto;
-        }}
-        .copy,
-        .login-card p,
-        input,
-        label,
-        button {{
-          font-size: 16px;
-        }}
-      }}
-    </style>
-  </head>
-  <body class="app app--transition">
-    <main id="agent-main-content" class="shell app-container app-page">
-      <div class="workspace">
-      <div class="split">
-        <section>
-          <div class="eyebrow">Agent admin</div>
-          <h1>Access your <span class="highlight">Agent</span> workspace.</h1>
-        </section>
-        <section class="copy">
-          <p>Agent gives each person only the approved work and employee tools connected to their account.</p>
-          <div class="login-card">
-            <h2>Sign in securely.</h2>
-            <p>Use the email address approved for your account. Employees can use any email provider.</p>
-            {error_html}
-            {email_form_html}
-            {google_divider_html}
-            {google_button_html}
-            {fallback_divider_html}
-            {password_form_html}
-          </div>
-        </section>
-      </div>
-      </div>
-    </main>
-    <div class="footer-bar" aria-hidden="true"></div>
-  </body>
-</html>"""
+    from sales_support_agent.services.ui_shell import render_transition_document
+
+    recovery = password_form_html
+    if show_password_form and (show_email_form or show_google_button):
+        recovery = (
+            '<details class="login-recovery"><summary>Administrator recovery</summary>'
+            + password_form_html + '</details>'
+        )
+    return render_transition_document(
+        title="agent | Sign in",
+        body=f"""<section class="agent-login">
+          <a class="brandmark" href="/admin">agent<span class="dot">.</span></a>
+          <h1>Sign in to Agent</h1>
+          <p>Use the email address approved for your account.</p>
+          {error_html}
+          {email_form_html}
+          {google_divider_html}
+          {google_button_html}
+          {recovery}
+        </section>""",
+        extra_head="""<style>
+          *, *::before, *::after { box-sizing:border-box; }
+          body { margin:0; background:var(--agent-page); color:var(--agent-ink); font-family:Inter,"Segoe UI",sans-serif; }
+          .agent-login { max-width:440px; margin:8vh auto; }
+          .agent-login h1 { margin:24px 0 12px; font:800 30px/1.2 Montserrat,sans-serif; }
+          .agent-login .brandmark { font:800 24px Montserrat,sans-serif; color:var(--agent-ink); text-decoration:none; }
+          .agent-login .dot { color:var(--agent-good); }
+          .agent-login p { line-height:1.5; color:var(--agent-ink-muted); }
+          .agent-login form { display:grid; gap:12px; margin:24px 0; }
+          .agent-login input { box-sizing:border-box; width:100%; min-width:0; min-height:44px; padding:10px 12px; border:1px solid var(--agent-border); border-radius:var(--agent-radius-control); font:inherit; }
+          .agent-login button { padding:12px; background:var(--agent-ink); color:var(--agent-surface); border:0; border-radius:var(--agent-radius-control); font:700 14px Montserrat,sans-serif; cursor:pointer; }
+          .agent-login .error { color:var(--agent-danger); }
+          .agent-login button,.agent-login .google-btn { min-height:44px; }
+          .agent-login .google-btn { display:flex; align-items:center; justify-content:center; gap:12px; padding:12px; border:1px solid var(--agent-border); border-radius:var(--agent-radius-control); text-decoration:none; }
+          .agent-login .login-divider { text-align:center; margin:20px 0; }
+          .agent-login .fallback-note { font-size:13px; margin:0; }
+          .agent-login .login-recovery { margin-top:24px; }
+          .agent-login summary { cursor:pointer; padding:12px 0; }
+          .agent-login .notice { padding:16px; border:1px solid currentColor; }
+        </style>""",
+    )
 
 
 def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> str:

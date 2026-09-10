@@ -1361,6 +1361,7 @@ def render_fulfillment_sales_page(
         </header>
         {flash_html}
         {ctx_banner}
+        {'<p class="flash" role="status">A rate sheet is being generated. This page stays in place while you work. <a href="/admin/fulfillment/sales">Refresh when you are ready to check its progress</a>. Save your edits first.</p>' if has_running else ''}
         {next_action_html}
         <form id="new-rate-sheet" method="post" action="/admin/fulfillment/sales/generate" enctype="multipart/form-data">
           <input type="hidden" name="hubspot_deal_id" value="{_esc(ctx_deal_id)}">
@@ -1633,7 +1634,6 @@ def render_fulfillment_sales_page(
         }});
       }}, 900);
     }}
-    {'if (true) { setTimeout(() => location.reload(), 8000); }' if has_running else ''}
     // Keyboard shortcuts
     document.addEventListener('keydown', function(e) {{
       // Escape: close any open expand panel

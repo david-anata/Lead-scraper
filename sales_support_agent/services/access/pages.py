@@ -48,6 +48,7 @@ _BASE_STYLES = """
 """
 
 _ADMIN_STYLES = """
+  [hidden] { display:none !important; }
   /* --- Admin table + form shared --- */
   .page-header { display:flex; align-items:center; justify-content:space-between;
     margin-bottom:24px; flex-wrap:wrap; gap:12px; }
@@ -345,20 +346,30 @@ def render_users_page(users: list, roles: list, *, current_user: dict,
     body = f"""
     {_flash_html(flash)}
     <div class="page-header">
-      <h2>People</h2>
+      <h1>People</h1>
     </div>
     <div class="tbl-card" style="margin-bottom:28px">
       <div class="tbl-card-header">
         <span class="tbl-card-title">Requests, invites &amp; users</span>
         {pending_note}
       </div>
-      <table>
+      <div class="tbl-card-header" data-people-controls hidden>
+        <label for="people-search">Search people
+          <input class="form-input" id="people-search" type="search" placeholder="Name or email" aria-controls="people-rows">
+        </label>
+        <button class="btn-xs btn-ghost" type="button" id="people-clear">Clear</button>
+        <span id="people-count" role="status" aria-live="polite"></span>
+      </div>
+      <div style="overflow-x:auto">
+      <table aria-label="Requests, invites and users">
         <thead><tr>
           <th>Email</th><th>Name</th><th>Status</th>
           <th>Access</th><th>Date</th><th>Actions</th>
         </tr></thead>
-        <tbody>{rows}</tbody>
+        <tbody id="people-rows">{rows}</tbody>
+        <tbody id="people-empty" hidden><tr><td colspan="6" class="empty-state">No matching people. Try another name or email.</td></tr></tbody>
       </table>
+      </div>
     </div>
     <div class="form-card" style="margin-bottom:28px">
       <div class="tbl-card-title" style="margin-bottom:6px">Send new invite</div>
