@@ -1727,6 +1727,7 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
           {recovery}
         </section>""",
         extra_head="""<style>
+          *, *::before, *::after { box-sizing:border-box; }
           body { margin:0; background:var(--agent-page); color:var(--agent-ink); font-family:Inter,"Segoe UI",sans-serif; }
           .agent-login { max-width:440px; margin:8vh auto; }
           .agent-login h1 { margin:24px 0 12px; font:800 30px/1.2 Montserrat,sans-serif; }
