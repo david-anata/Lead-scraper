@@ -353,6 +353,15 @@ def render_agent_nav_css() -> str:
         scrollbar-width: none;
       }
       .topbar-section-row::-webkit-scrollbar { display:none; }
+      .topbar-section-row.has-more-left {
+        mask-image: linear-gradient(to right, transparent, black 20px);
+      }
+      .topbar-section-row.has-more-right {
+        mask-image: linear-gradient(to left, transparent, black 20px);
+      }
+      .topbar-section-row.has-more-left.has-more-right {
+        mask-image: linear-gradient(to right, transparent, black 20px, black calc(100% - 20px), transparent);
+      }
       .topbar-section-label {
         font-family: "Montserrat", sans-serif;
         font-size: 10px;
@@ -785,5 +794,5 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
       </div>
     </header>
     {content_target}
-    <script src="/static/admin-interactions.js?v=1" defer></script>
+    <script src="/static/admin-interactions.js?v=2" defer></script>
     """

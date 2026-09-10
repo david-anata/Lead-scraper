@@ -15,6 +15,19 @@ from sales_support_agent.services.hr.store import (
     HR_ROLES, EMPLOYEE_TYPES, cents_to_dollars,
 )
 from sales_support_agent.services.hr.security import csrf_token
+from sales_support_agent.services.hr.payroll import SemimonthlyPeriod, periods_for_year
+
+
+def _pay_period_options(selected: SemimonthlyPeriod) -> str:
+    """Offer real payroll calendar periods, retaining adjacent-year access."""
+    options = []
+    for year in range(max(1, selected.start_date.year - 1), min(9998, selected.start_date.year + 1) + 1):
+        for period in periods_for_year(year):
+            label = (f"{period.start_date:%b %d, %Y} – {period.end_date:%b %d, %Y}"
+                     f" · Pay {period.pay_date:%b %d, %Y}")
+            chosen = " selected" if period.start_date == selected.start_date else ""
+            options.append(f'<option value="{period.start_date}"{chosen}>{_esc(label)}</option>')
+    return "".join(options)
 
 
 def _esc(v) -> str:
@@ -1775,8 +1788,8 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     <h1 class="hr-h1">Payroll control room</h1>
     <p class="hr-sub">Review and freeze {_esc(period.start_date)}–{_esc(period.end_date)} for payment on {_esc(period.pay_date)}.</p>
     <form class="hr-inline" method="get" action="/admin/hr/payroll">
-      <label for="period-date">Choose a date inside the pay period</label>
-      <input id="period-date" type="date" name="period_date" value="{_esc(period.start_date)}">
+      <label for="period-date">Pay period</label>
+      <select id="period-date" name="period_date">{_pay_period_options(period)}</select>
       <button class="hr-btn hr-btn-light" type="submit">Open period</button>
     </form>
     {urgent_panel}
@@ -2682,7 +2695,7 @@ def render_hr_settings(
         '<p class="hr-help"><strong>Service account to share the calendar with:</strong> '
         f'{_esc(calendar.get("service_account_email"))}</p>'
         if calendar.get("service_account_email") else
-        '<p class="hr-help"><strong>Service account:</strong> Add the protected calendar credential in Render first; its safe sharing email will appear here after deployment.</p>'
+        '<p class="hr-help"><strong>Service account not configured.</strong> Ask your deployment administrator to connect the calendar credential. The email to share with will appear here once configured.</p>'
     )
     body = f"""
     {_flash(flash)}
@@ -2712,15 +2725,17 @@ def render_hr_settings(
       {calendar_identity}
       <ol class="hr-sub">
         <li>Create or open the dedicated Google Calendar named <strong>Anata OOO</strong>.</li>
-        <li>Share it with the service-account email listed above using “Make changes to events.”</li>
-        <li>In Render, set <code>HR_OOO_GOOGLE_CALENDAR_ID</code> and <code>HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON</code>, then deploy.</li>
+        <li>{'Share it with the service-account email shown above using “Make changes to events.”' if calendar.get('service_account_email') else 'Wait for your deployment administrator to connect the service account; do not share the calendar until its email appears above.'}</li>
+        <li>Ask your deployment administrator to connect this calendar to Agent. You do not need to enter deployment credentials here.</li>
+        <li>Use Test calendar connection below to confirm access.</li>
         <li>Return to Time &amp; PTO and retry any item marked as needing calendar attention.</li>
       </ol>
+      <details><summary>Deployment administrator setup</summary><p>In the environment serving agent.anatainc.com, configure <code>HR_OOO_GOOGLE_CALENDAR_ID</code> and <code>HR_OOO_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON</code>, then deploy. Keep the credential private. Return here to verify the sharing email and test the connection.</p></details>
       <form method="post" action="/admin/hr/settings/ooo-calendar/test">
         <button class="hr-btn hr-btn-light" type="submit"{' disabled' if not calendar.get('configured') else ''}>Test calendar connection</button>
       </form>
       <p class="hr-help">The test checks calendar visibility and event-write permission without creating an employee event.</p>
-      <p class="hr-help">Never paste the service-account JSON into an HR form, email, or employee record. It belongs only in Render’s secret environment settings.</p>
+      <p class="hr-help">Never paste the service-account JSON into an HR form, email, or employee record. It belongs only in the active deployment’s protected environment settings.</p>
     </section>
     <section class="hr-card">
       <div class="hr-kicker">Base44 recovery</div>

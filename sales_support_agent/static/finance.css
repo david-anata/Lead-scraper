@@ -2030,7 +2030,7 @@ input:focus, select:focus, textarea:focus {
 
 .money-account-summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 .money-account-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

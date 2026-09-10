@@ -203,7 +203,18 @@ def outbound_scoreboard(request: Request) -> Response:
     import outbound_efficacy as _ef
     import outbound_compliance as _cp
 
-    board = _sb.get_scoreboard(_sb.load_instantly_key())
+    instantly_key = _sb.load_instantly_key()
+    board = _sb.get_scoreboard(instantly_key)
+    connection_help = ""
+    if not board.connected:
+        connection_help = (
+            '<section class="nur-wrap" aria-labelledby="instantly-setup"><h2 id="instantly-setup">Connect Instantly analytics</h2>'
+            + ('<p>A credential is configured, but Agent could not read analytics. Ask your deployment administrator to check its validity and analytics access.</p>'
+               if instantly_key else
+               '<p>Ask your deployment administrator to connect an Instantly API credential with analytics access. Then reload this page to check the connection.</p>')
+            + '<details><summary>Administrator setup</summary><p>Configure <code>INSTANTLY_API_KEY</code> in the environment serving agent.anatainc.com and deploy. The legacy <code>INSTANTLY_AI</code> setting is also supported. Never paste the key into notes or comments.</p></details>'
+            '<p>Reading analytics does not send outreach or enroll any leads.</p></section>'
+        )
 
     # Guardrails from the outbound briefs: what is provably OK, broken, or still
     # needs a one-time human confirmation in Instantly/Clay.
@@ -232,6 +243,7 @@ def outbound_scoreboard(request: Request) -> Response:
         <h1>Outbound performance</h1>
         <p class="sub">What happened after companies entered outreach. Reads live from Instantly.</p>
         {_sb.render_scoreboard_body(board)}
+        {connection_help}
         {_cp.render_compliance_html(checks)}
         {_bn.render_bottlenecks_html(bottlenecks)}
         {_ef.render_efficacy_html(efficacy)}

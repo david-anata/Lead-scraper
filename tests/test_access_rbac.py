@@ -584,8 +584,9 @@ class AccessFinalizeTests(unittest.TestCase):
         self.assertNotIn('<div class="login-divider">', google_only)
         both = render_login_page(show_google_button=True, show_password_form=True)
         self.assertIn('name="password"', both)
-        self.assertIn('<div class="login-divider">', both)
-        self.assertIn("Admin fallback", both)
+        self.assertIn('<details class="login-recovery">', both)
+        self.assertIn("Administrator recovery", both)
+        self.assertNotIn('<details class="login-recovery" open', both)
         self.assertIn("shared break-glass password", both)
         self.assertIn("Continue with fallback", both)
         self.assertNotIn("GET STARTED", both)
@@ -600,7 +601,8 @@ class AccessFinalizeTests(unittest.TestCase):
         )
         self.assertIn('action="/admin/auth/email"', page)
         self.assertIn("Email me a one-time link", page)
-        self.assertIn("Yahoo", page)
+        self.assertIn('type="email"', page)
+        self.assertIn("No password needed.", page)
         self.assertIn("Or use Google", page)
 
 
