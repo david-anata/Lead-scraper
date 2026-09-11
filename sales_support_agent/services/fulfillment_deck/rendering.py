@@ -512,7 +512,7 @@ def _render_rates_explorer_section(
           <p class="eyebrow">Explore your rates</p>
           <h2 class="slide-title">What shipping costs, anywhere in the US</h2>
         </div>
-        <p class="caption">Every ZIP area in the country, colored by what it costs to ship there from our dock — the rings mark real mileage bands. Hover anywhere for the exact distance and rate, then see the full per-zone table below. One set of controls — carrier filter, Cost / Transit toggle, and optimizer — drives both the map and the table. Adjust a product's dims or weight and press “Request rates” — the whole sheet re-quotes with live rates and saves to this report. {badge}</p>
+        <p class="caption">Every ZIP area in the country, colored by what it costs to ship there from our dock — the rings mark real mileage bands. Hover anywhere for the exact distance and rate, then see the full per-zone table below. One set of controls — carrier filter, Cost / Transit toggle, and optimizer — drives both the map and the table. Adjust a product's dims or weight and press “Request rates” — the estimate updates with live rates for this view. Customer calculations do not change the published proposal. {badge}</p>
       </header>
       {render_interactive_rate_map(matrix, origin_label, requote_path)}
       <div class="rates-tables" id="rates-tables">
@@ -834,7 +834,7 @@ def _render_fee_schedule_section(
           <p class="eyebrow">Full rate card</p>
           <h2 class="slide-title">Every fee — no surprises</h2>
         </div>
-        <p class="caption">These are Anata's contract baseline rates. Volume discounts and adjustments are confirmed in your scoping call.</p>
+        <p class="caption">These are your proposed customer rates, including saved pricing adjustments. Conditional services and one-time charges are listed separately.</p>
       </header>
       <div class="fs-grid">
         <div class="fs-col">
