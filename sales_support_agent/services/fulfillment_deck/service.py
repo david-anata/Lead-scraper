@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import math
 import re
 import secrets
 from datetime import datetime, timezone
@@ -18,7 +19,7 @@ from typing import Optional
 from sales_support_agent.config import Settings
 from sales_support_agent.services.deck.formatting import _slugify
 from sales_support_agent.services.fulfillment_deck import llm as llm_module
-from sales_support_agent.services.fulfillment_deck import storage
+from sales_support_agent.services.fulfillment_deck import storage, workflow
 from sales_support_agent.services.fulfillment_deck.intake import (
     build_extraction_context,
     fetch_brand_assets,
@@ -347,13 +348,22 @@ def _assemble(
     rate_card_note: str = "",
     segment: str = "dfy",
     suppress_fulfillment_pricing: bool = False,
+    stored_matrix: Optional[dict] = None,
+    sales_pricing: Optional[dict] = None,
 ) -> dict:
     """Shared back half: rates -> savings -> quote -> narrative -> HTML.
 
     Returns the summary fields that change whenever the profile changes.
     """
     segment = clean_segment(segment)
-    matrix, rate_warnings = build_rate_matrix(list(profile.products), origin, get_wms_client())
+    if stored_matrix is not None:
+        stored_matrix = {**stored_matrix, "products": [
+            {**row, "product": next((p.to_dict() for p in profile.products if p.name == (row.get("product") or {}).get("name")), row.get("product"))}
+            for row in stored_matrix.get("products") or []
+        ]}
+        matrix, rate_warnings = RateMatrix.from_dict(stored_matrix), []
+    else:
+        matrix, rate_warnings = build_rate_matrix(list(profile.products), origin, get_wms_client())
     warnings.extend(rate_warnings)
     if matrix.source == RATE_SOURCE_MOCK:
         warnings.append(
@@ -366,12 +376,16 @@ def _assemble(
 
     blended_rate, blend_method = _blended_rate(profile, matrix)
     avg_transit = _avg_transit_days(profile, matrix)
+    customer_rates = workflow.resolved_rates({
+        "prospect_profile": profile.to_dict(), "quote_margin_override": quote_margin_override,
+        "rate_overrides": rate_overrides or {}, "sales_pricing": sales_pricing or {},
+    })
     fulfillment_quote = build_fulfillment_quote(
         profile, matrix, blended_rate,
         margin_override=quote_margin_override,
-        rate_overrides=rate_overrides or {},
+        rate_overrides=customer_rates,
     )
-    narrative = _public_narrative(profile, matrix) if suppress_fulfillment_pricing else _build_narrative(profile, matrix, savings)
+    narrative = _public_narrative(profile, matrix) if suppress_fulfillment_pricing else (_fallback_narrative(profile, matrix, savings) if stored_matrix is not None else _build_narrative(profile, matrix, savings))
     flags = decide_sections(profile, matrix)
 
     now = datetime.now(timezone.utc)
@@ -390,7 +404,7 @@ def _assemble(
         blend_method=blend_method,
         avg_transit_days=avg_transit,
         quote=fulfillment_quote,
-        rate_overrides=rate_overrides or {},
+        rate_overrides=customer_rates,
         rate_card_note=rate_card_note or "",
         segment=segment,
         suppress_fulfillment_pricing=suppress_fulfillment_pricing,
@@ -410,6 +424,7 @@ def _assemble(
         "narrative": narrative.to_dict(),
         "savings": savings,
         "fulfillment_quote": fulfillment_quote,
+        "resolved_customer_rates": customer_rates,
         "blend_method": blend_method,
         "blended_rate": round(blended_rate, 2) if blended_rate else None,
         "avg_transit_days": round(avg_transit, 2) if avg_transit else None,
@@ -532,7 +547,7 @@ def generate_rate_sheet(
         raise
 
 
-def rerender_rate_sheet(run_id: int, *, settings: Settings) -> dict:
+def rerender_rate_sheet(run_id: int, *, settings: Settings, refresh_rates: bool = False) -> dict:
     """Rebuild rates/savings/narrative/HTML from the stored profile (used
     after review-page edits). Returns the patched summary."""
     run = storage.get_run(run_id)
@@ -549,16 +564,19 @@ def rerender_rate_sheet(run_id: int, *, settings: Settings) -> dict:
         rate_overrides=dict(summary.get("rate_overrides") or {}),
         rate_card_note=str(summary.get("rate_card_note") or ""),
         segment=clean_segment(summary.get("segment")),
-        suppress_fulfillment_pricing=bool(summary.get("suppress_fulfillment_pricing")),
+        suppress_fulfillment_pricing=workflow.document_kind(summary) == "shipping_teaser",
+        stored_matrix=None if refresh_rates else summary.get("rate_matrix"),
+        sales_pricing=summary.get("sales_pricing"),
     )
-    storage.update_summary(run_id, patch)
-    summary.update(patch)
+    storage.update_summary(run_id, patch, expected_revision=int(summary.get("draft_revision") or 1), rendered=True)
+    summary = dict(storage.get_run(run_id).summary_json or {})
     return {"run_id": run_id, **summary}
 
 
 def apply_viewer_requote(
     run_id: int, products: list, origin_zip: str, *, settings: Settings,
     persist: bool = True,
+    expected_revision: int | None = None,
 ) -> dict:
     """Requote a viewer's "Request rates" edit from the hosted sheet's map.
 
@@ -581,7 +599,11 @@ def apply_viewer_requote(
     run = storage.get_run(run_id)
     if run is None:
         raise ValueError(f"Rate sheet run {run_id} not found")
-    summary = dict(run.summary_json or {})
+    summary = dict(run.summary_json or {}) if persist else workflow.public_summary(dict(run.summary_json or {}))
+    if persist and expected_revision is not None and int(summary.get("draft_revision") or 1) != expected_revision:
+        raise workflow.RevisionConflict("This draft changed. Reload before requesting rates.")
+    if not persist:
+        summary.update((run.summary_json or {}).get("published_calculation") or {"quote_margin_override": (run.summary_json or {}).get("quote_margin_override")})
     stored_profile = ProspectProfile.from_dict(summary.get("prospect_profile") or {})
 
     posted_by_name = {p.name: p for p in products if p.name}
@@ -618,7 +640,7 @@ def apply_viewer_requote(
     fulfillment_quote = build_fulfillment_quote(
         profile, matrix, blended_rate,
         margin_override=_opt_margin(summary.get("quote_margin_override")),
-        rate_overrides=dict(summary.get("rate_overrides") or {}),
+        rate_overrides=(summary.get("resolved_customer_rates") or workflow.resolved_rates(summary)),
     )
     # Deterministic narrative only — viewer edits must never trigger an LLM call.
     suppress_fulfillment_pricing = bool(summary.get("suppress_fulfillment_pricing"))
@@ -645,7 +667,7 @@ def apply_viewer_requote(
         blend_method=blend_method,
         avg_transit_days=avg_transit,
         quote=fulfillment_quote,
-        rate_overrides=dict(summary.get("rate_overrides") or {}),
+        rate_overrides=(summary.get("resolved_customer_rates") or workflow.resolved_rates(summary)),
         rate_card_note=str(summary.get("rate_card_note") or ""),
         segment=clean_segment(summary.get("segment")),
         suppress_fulfillment_pricing=suppress_fulfillment_pricing,
@@ -665,11 +687,11 @@ def apply_viewer_requote(
         "sections_included": [key for key, on in flags.to_dict().items() if on],
     }
     if persist:
-        storage.update_summary(run_id, patch)
+        storage.update_summary(run_id, patch, expected_revision=int(summary.get("draft_revision") or 1), rendered=True)
     return {"run_id": run_id, "persisted": bool(persist), **patch}
 
 
-def apply_profile_edits(run_id: int, edits: dict, *, settings: Settings) -> dict:
+def apply_profile_edits(run_id: int, edits: dict, *, settings: Settings, expected_revision: int | None = None, actor: str = "") -> dict:
     """Merge review-page edits onto the stored ProspectProfile, then
     re-render. ``edits["products"]`` replaces the product list wholesale —
     a product absent from the list is deleted."""
@@ -686,7 +708,8 @@ def apply_profile_edits(run_id: int, edits: dict, *, settings: Settings) -> dict
         if key in edits:
             stored[key] = edits[key]  # None clears the value
     if "products" in edits:
-        stored["products"] = list(edits["products"] or [])
+        previous = {p.get("name"): p for p in stored.get("products") or []}
+        stored["products"] = [{**previous.get(p.get("name"), {}), **p} for p in edits["products"] or []]
 
     profile = ProspectProfile.from_dict(stored)
 
@@ -707,6 +730,18 @@ def apply_profile_edits(run_id: int, edits: dict, *, settings: Settings) -> dict
     for key in ("hubspot_deal_id", "hubspot_deal_url"):
         if key in edits:
             patch[key] = str(edits.get(key) or "").strip()
-    storage.update_summary(run_id, patch)
+    for key in ("fulfillment_actual_costs", "document_kind", "segment"):
+        if key in edits:
+            patch[key] = edits[key]
+    merged = {**summary, **patch}
+    workflow.resolved_rates(merged)  # reject invalid prices before saving
+    if any(not math.isfinite(value) or value < 0 for value in workflow.normalized_costs(merged.get("fulfillment_actual_costs") or {}).values()):
+        raise ValueError("Warehouse costs must be finite, non-negative numbers.")
+    if workflow.document_kind(merged) == "fulfillment_proposal" and merged.get("segment") == "diy":
+        raise ValueError("Change service segment before preparing a fulfillment proposal.")
+    old_packages = [(p.get("name"), p.get("length_in"), p.get("width_in"), p.get("height_in"), p.get("weight_lb")) for p in (summary.get("prospect_profile") or {}).get("products") or []]
+    new_packages = [(p.get("name"), p.get("length_in"), p.get("width_in"), p.get("height_in"), p.get("weight_lb")) for p in profile.to_dict().get("products") or []]
+    refresh_rates = old_packages != new_packages or patch.get("origin_zip", summary.get("origin_zip")) != summary.get("origin_zip")
+    storage.update_summary(run_id, patch, expected_revision=expected_revision if expected_revision is not None else int(summary.get("draft_revision") or 1), actor=actor, event="Fulfillment proposal prepared" if edits.get("document_kind") == "fulfillment_proposal" else "Draft saved")
 
-    return rerender_rate_sheet(run_id, settings=settings)
+    return rerender_rate_sheet(run_id, settings=settings, refresh_rates=refresh_rates)

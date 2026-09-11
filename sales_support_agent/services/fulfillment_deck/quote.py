@@ -442,10 +442,10 @@ def build_fulfillment_quote(
     # Packaging: size-class estimate per order, billed at package cost + 10%,
     # then marked up by the sales margin multiplier.
     packaging_class, packaging_cost, packaging_why = _packaging_class(profile)
-    packaging_rate = packaging_cost * m
+    packaging_rate = packaging_cost / (1 + float(BASELINE_RATES["packaging_markup_pct"]) / 100) * (1 + float(br["packaging_markup_pct"]) / 100) * m
     lines.append(
         _line(
-            "packaging", "Packaging (est., cost +10% before margin)",
+            "packaging", "Packaging (estimated)",
             orders, "orders",
             packaging_rate,
             orders * packaging_rate,
@@ -539,7 +539,7 @@ def build_fulfillment_quote(
             f"65% cube) -> {pallets} pallet{'s' if pallets != 1 else ''}/month, "
             "one month of inventory on hand"
         )
-    assumptions.append(f"Packaging: {packaging_why}, billed at cost + 10% before sales margin")
+    assumptions.append(f"Packaging: {packaging_why}; estimated customer charge shown above.")
     if fragile_units:
         names = ", ".join(
             p.name or "(unnamed product)" for p in fragile_products
@@ -552,10 +552,10 @@ def build_fulfillment_quote(
     assumptions.append(f"Rates reflect {dominant}-category handling")
     if floor_applied:
         assumptions.append(
-            "Anata's $500 monthly minimum applied (added as an adjustment above)"
+            f"Monthly minimum of ${monthly_minimum:,.2f} applied (adjustment shown above)"
         )
     else:
-        assumptions.append("Anata's $500 monthly minimum applies to all accounts")
+        assumptions.append(f"Monthly minimum for this proposal: ${monthly_minimum:,.2f}")
     assumptions.append(
         "Final pricing after a scoping call — this is a directional estimate"
     )

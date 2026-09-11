@@ -94,6 +94,23 @@ def _spec(name: str, units=None) -> ProductSpec:
     )
 
 
+
+def _ready_to_publish(run_id: int) -> None:
+    from sales_support_agent.services.fulfillment_deck.service import rerender_rate_sheet
+    from sales_support_agent.config import load_settings
+    summary = dict(storage.get_run(run_id).summary_json)
+    matrix = summary["rate_matrix"]
+    for product in matrix["products"]:
+        for zone in product["zones"]:
+            for quote in zone["quotes"]:
+                quote["source"] = "wms"
+    costs = {"pick_pack_per_order": .1}
+    storage.update_summary(run_id, {"rate_matrix": matrix, "rates_source": "wms",
+        "fulfillment_actual_costs": costs,
+        "fulfillment_cost_submissions": [{"name": "Test warehouse", "email": "test@example.test", "costs": costs}]})
+    summary = rerender_rate_sheet(run_id, settings=load_settings())
+    storage.approve_pricing(run_id, expected_revision=summary["draft_revision"], actor="test")
+
 class RateSheetServiceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -173,11 +190,13 @@ class RateSheetServiceTests(unittest.TestCase):
     def test_publish_flips_draft_to_completed(self) -> None:
         result = self._generate()
         run_id = result["run_id"]
+        _ready_to_publish(run_id)
         self.assertTrue(storage.publish_run(run_id))
         run = storage.get_run(run_id)
         self.assertEqual(run.status, "completed")
         self.assertTrue(dict(run.summary_json)["published_at"])
         # Idempotent on already-published runs.
+        _ready_to_publish(run_id)
         self.assertTrue(storage.publish_run(run_id))
         # But not on failed/missing runs.
         self.assertFalse(storage.publish_run(999999))
@@ -188,6 +207,7 @@ class RateSheetServiceTests(unittest.TestCase):
         row = next(r for r in storage.list_runs() if r["id"] == run_id)
         self.assertEqual(row["status"], "draft")
         self.assertFalse(row["published"])
+        _ready_to_publish(run_id)
         storage.publish_run(run_id)
         row = next(r for r in storage.list_runs() if r["id"] == run_id)
         self.assertTrue(row["published"])
@@ -883,7 +903,7 @@ class RateSheetServiceTests(unittest.TestCase):
         self.assertEqual(quote["packaging_class"], "small box")
         self.assertEqual(by_key["packaging"]["monthly"], 2466.75)
         self.assertTrue(by_key["packaging"]["scales_with_orders"])
-        self.assertIn("cost +10%", by_key["packaging"]["label"])
+        self.assertEqual("Packaging (estimated)", by_key["packaging"]["label"])
         # No fragile product -> no special-handling line.
         self.assertNotIn("fragile", by_key)
         # Tech: $75 flat, NO multiplier.
@@ -1498,7 +1518,7 @@ class RateSheetServiceTests(unittest.TestCase):
             round(quote["fixed_monthly"] + quote["variable_monthly"], 2), 500.00
         )
         self.assertIn(
-            "Anata's $500 monthly minimum applied (added as an adjustment above)",
+            "Monthly minimum of $500.00 applied (adjustment shown above)",
             quote["assumptions"],
         )
 
@@ -1531,7 +1551,7 @@ class RateSheetServiceTests(unittest.TestCase):
         )
         self.assertEqual(quote["effective_per_order"], 10.36)
         self.assertIn(
-            "Anata's $500 monthly minimum applies to all accounts",
+            "Monthly minimum for this proposal: $500.00",
             quote["assumptions"],
         )
 

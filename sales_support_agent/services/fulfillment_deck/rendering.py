@@ -764,6 +764,7 @@ def _render_fee_schedule_section(
         )
 
     inbound = "".join([
+        _row("Receiving — standard pallet", f"${br['receiving_per_pallet']:.2f} / pallet"),
         _row("Receiving — pre-counted box", f"${br['receiving_precounted_box']:.2f} / box"),
         _row("Receiving — count required", f"${br['receiving_count_per_item']:.2f} / item"),
         _row("Kit assembly", f"${br['kitting_per_unit']:.2f} / unit",
@@ -784,7 +785,7 @@ def _render_fee_schedule_section(
              f"${br['wholesale_per_unit']:.2f} / unit",
              "B2B orders: dental clinics, retail accounts, etc."),
         _row("Pallet / freight order minimum",
-             f"${br['pallet_order_min']:.2f} / pallet-order minimum"),
+             f"${br['pallet_order_per_pallet']:.2f} / pallet"),
     ])
     storage_returns = "".join([
         _row("Storage (short-term)",
@@ -799,21 +800,21 @@ def _render_fee_schedule_section(
         _row("Return custom steps",
              f"${br['returns_custom_steps_per_unit']:.2f} / unit"),
         _row("Packaging materials",
-             "at cost + 5%",
-             "mailers, boxes, void fill — billed through"),
+             "see estimated invoice",
+             "estimated per order from the package size; final materials depend on usage"),
     ])
     platform = "".join([
         _row("Platform & tech (monthly flat)",
              f"${br['monthly_tech_fee']:.2f} / month",
-             "can be waived as a sales tactic"),
+             "recurring account fee"),
         _row("Customer service",
              f"${br['customer_service_monthly']:.2f} / month",
-             "waived when Anata manages the relationship"),
+             "if scoped; not included in the estimated monthly invoice"),
         _row("Special projects",
              f"${br['special_projects_per_hour']:.2f} / hour"),
         _row("Implementation & onboarding",
              f"${br['integration_setup_fee']:,.0f} one-time",
-             "Shopify, Amazon, and standard WMS setup; can be waived or reduced"),
+             "Shopify, Amazon, and standard WMS setup"),
         _row("Shopify integration", "included after onboarding"),
         _row("Amazon Seller Central", "included"),
         _row("Custom EDI / API", "contact us"),

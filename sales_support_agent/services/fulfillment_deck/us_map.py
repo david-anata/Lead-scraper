@@ -1126,6 +1126,7 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
                 swapFragments(data.fragments);
                 updateDimsLabels();
                 var saved = !!data.persisted;
+                if (saved && window.parent !== window) window.parent.postMessage({{type: "proposal-draft-updated"}}, window.location.origin);
                 statusEl.textContent = isReset
                   ? (saved ? 'Restored the quoted specs — rates updated and saved.'
                            : 'Restored the quoted specs for this view.')

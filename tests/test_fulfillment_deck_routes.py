@@ -44,6 +44,23 @@ def _cookie_for(email: str, name: str = "User", role: str = "member"):
     return s.admin_cookie_name, create_user_session_token(s, email=email, name=name, role=role)
 
 
+
+def _ready_to_publish(run_id: int) -> None:
+    from sales_support_agent.services.fulfillment_deck.service import rerender_rate_sheet
+    from sales_support_agent.config import load_settings
+    summary = dict(storage.get_run(run_id).summary_json)
+    matrix = summary["rate_matrix"]
+    for product in matrix["products"]:
+        for zone in product["zones"]:
+            for quote in zone["quotes"]:
+                quote["source"] = "wms"
+    costs = {"pick_pack_per_order": .1}
+    storage.update_summary(run_id, {"rate_matrix": matrix, "rates_source": "wms",
+        "fulfillment_actual_costs": costs,
+        "fulfillment_cost_submissions": [{"name": "Test warehouse", "email": "test@example.test", "costs": costs}]})
+    summary = rerender_rate_sheet(run_id, settings=load_settings())
+    storage.approve_pricing(run_id, expected_revision=summary["draft_revision"], actor="test")
+
 class FulfillmentDeckRouteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -78,8 +95,9 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
 
     def _generate_published(self) -> dict:
         run = self._generate()
+        _ready_to_publish(run["id"])
         response = self.client.post(
-            f"{_BASE}/runs/{run['id']}/publish", follow_redirects=False
+            f"{_BASE}/runs/{run['id']}/publish", data={"expected_revision": storage.get_run(run["id"]).summary_json["draft_revision"]}, follow_redirects=False
         )
         self.assertEqual(response.status_code, 303)
         return next(r for r in storage.list_runs() if r["id"] == run["id"])
@@ -165,8 +183,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
                 .filter_by(hubspot_deal_id="ctx_deal", asset_type="rate_sheet", run_id=str(run["id"]))
                 .first()
             )
-            self.assertIsNotNone(asset)
-            self.assertEqual(asset.url, summary["view_path"])
+            self.assertIsNone(asset)  # Creating/saving a proposal no longer writes to HubSpot.
 
     def test_review_page_renders_for_draft(self) -> None:
         run = self._generate()
@@ -174,8 +191,8 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("TabCo", response.text)
         self.assertIn(f"{_BASE}/runs/{run['id']}/preview", response.text)
-        self.assertIn("Publish rate sheet", response.text)
-        self.assertIn("Save &amp; re-render", response.text)
+        self.assertIn("Publish proposal", response.text)
+        self.assertIn("Save draft", response.text)
         self.assertIn("Widget", response.text)
 
     def test_draft_public_view_is_404_but_admin_preview_works(self) -> None:
@@ -217,8 +234,9 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
 
     def test_publish_redirect_flash_contains_public_link(self) -> None:
         run = self._generate()
+        _ready_to_publish(run["id"])
         response = self.client.post(
-            f"{_BASE}/runs/{run['id']}/publish", follow_redirects=False
+            f"{_BASE}/runs/{run['id']}/publish", data={"expected_revision": storage.get_run(run["id"]).summary_json["draft_revision"]}, follow_redirects=False
         )
         self.assertEqual(response.status_code, 303)
         self.assertIn("/review", response.headers["location"])
@@ -230,7 +248,8 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertIn(f"{_BASE}/runs/{run['id']}/review", page)
         self.assertNotIn(f'href="{run["view_path"]}?viewer=internal"', page)
 
-        self.client.post(f"{_BASE}/runs/{run['id']}/publish", follow_redirects=False)
+        _ready_to_publish(run["id"])
+        self.client.post(f"{_BASE}/runs/{run['id']}/publish", data={"expected_revision": storage.get_run(run["id"]).summary_json["draft_revision"]}, follow_redirects=False)
         page = self.client.get(_BASE).text
         self.assertIn('class="action-menu"', page)
         self.assertIn('aria-label="Actions for TabCo"', page)
@@ -246,6 +265,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         response = self.client.post(
             f"{_BASE}/runs/{run['id']}/update",
             data={
+                "expected_revision": storage.get_run(run["id"]).summary_json.get("draft_revision", 1),
                 "brand": "TabCo Prime",
                 "origin_zip": "84043",
                 "monthly_order_volume": "750",
@@ -282,79 +302,15 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         # Re-rendered HTML reflects the edit.
         self.assertIn("9 × 7 × 4 in", summary["deck_html"])
 
-    def test_review_page_can_select_deal_and_mark_pricing_ready_for_quote(self) -> None:
-        run = self._generate_published()
-        with Session(get_engine()) as s:
-            for model in (SalesDealAsset, HubSpotDeal):
-                for row in s.query(model).all():
-                    if getattr(row, "hubspot_deal_id", "") == "quote_ready_deal":
-                        s.delete(row)
-            s.add(HubSpotDeal(
-                hubspot_deal_id="quote_ready_deal",
-                deal_name="TabCo Fulfillment",
-                is_closed=False,
-            ))
-            s.commit()
-
-        review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
-        self.assertEqual(review.status_code, 200)
-        self.assertIn("Deal &amp; Quote Readiness", review.text)
-        self.assertIn("TabCo Fulfillment", review.text)
-        self.assertIn('name="hubspot_deal_id"', review.text)
-
-        response = self.client.post(
-            f"{_BASE}/runs/{run['id']}/update",
-            data={
-                "brand": "TabCo",
-                "origin_zip": "84043",
-                "hubspot_deal_id": "quote_ready_deal",
-                "sales_pricing_reviewed": "1",
-                "product_name": ["Widget"],
-                "product_length": ["6"],
-                "product_width": ["5"],
-                "product_height": ["3"],
-                "product_weight": ["1.5"],
-                "product_units": ["500"],
-                "product_estimated": ["0"],
-            },
-            follow_redirects=False,
-        )
-        self.assertEqual(response.status_code, 303)
-        summary = dict(storage.get_run(run["id"]).summary_json)
-        self.assertEqual(summary["hubspot_deal_id"], "quote_ready_deal")
-        self.assertTrue(summary["sales_pricing"]["reviewed"])
-        from sales_support_agent.services.fulfillment_deck.pricing_rules import validate_quote_readiness
-        blockers = validate_quote_readiness(summary, published=True)
-        self.assertIn("Collect a signed fulfillment cost submission before creating a quote.", blockers)
-        self.assertIn("Configure live WMS carrier rates before creating a quote.", blockers)
-        storage.update_summary(run["id"], {
-            "fulfillment_cost_submissions": [{
-                "at": "2026-07-01T00:00:00+00:00",
-                "name": "Kyle Paulson",
-                "email": "kyle@anatainc.com",
-                "costs": {"pick_pack_per_order": 0.8},
-            }],
-            "rates_source": "wms",
-        })
-        summary = dict(storage.get_run(run["id"]).summary_json)
-        self.assertEqual(validate_quote_readiness(summary, published=True), [])
-        with Session(get_engine()) as s:
-            asset = (
-                s.query(SalesDealAsset)
-                .filter_by(hubspot_deal_id="quote_ready_deal", asset_type="rate_sheet", run_id=str(run["id"]))
-                .first()
-            )
-            self.assertIsNotNone(asset)
-            self.assertEqual(asset.url, summary["view_path"])
-
-    def test_review_page_offers_create_deal_from_rate_sheet(self) -> None:
+    def test_hubspot_is_optional_and_cannot_approve_pricing(self) -> None:
         run = self._generate_published()
         review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
         self.assertEqual(review.status_code, 200)
-        self.assertIn("Create new HubSpot deal", review.text)
-        self.assertIn("/admin/sales/deals/create?", review.text)
-        self.assertIn(f"rate_sheet_run_id={run['id']}", review.text)
-        self.assertIn(f"return_to=%2Fadmin%2Ffulfillment%2Fsales%2Fruns%2F{run['id']}%2Freview", review.text)
+        self.assertIn("HubSpot (optional)", review.text)
+        self.assertNotIn("Create the HubSpot quote", review.text)
+        self.assertNotIn("Create new HubSpot deal", review.text)
+        response = self.client.post(f"{_BASE}/runs/{run['id']}/quote", follow_redirects=False)
+        self.assertIn("temporarily", response.headers["location"])
 
     def test_update_route_quote_margin_override_round_trip(self) -> None:
         run = self._generate()
@@ -366,6 +322,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         response = self.client.post(
             f"{_BASE}/runs/{run['id']}/update",
             data={
+                "expected_revision": storage.get_run(run["id"]).summary_json.get("draft_revision", 1),
                 "brand": "TabCo",
                 "origin_zip": "84043",
                 "quote_margin_override": "12",
@@ -393,6 +350,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         response = self.client.post(
             f"{_BASE}/runs/{run['id']}/update",
             data={
+                "expected_revision": storage.get_run(run["id"]).summary_json.get("draft_revision", 1),
                 "brand": "TabCo",
                 "origin_zip": "84043",
                 "quote_margin_override": "",
@@ -416,6 +374,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         response = self.client.post(
             f"{_BASE}/runs/{run['id']}/update",
             data={
+                "expected_revision": storage.get_run(run["id"]).summary_json.get("draft_revision", 1),
                 "brand": "TabCo",
                 "origin_zip": "84043",
                 "rate_pick_pack": "2",
@@ -450,7 +409,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(summary["fulfillment_actual_costs"]["pick_pack_per_order"], 0.80)
         self.assertEqual(summary["fulfillment_actual_costs"]["customer_service_monthly"], 0.0)
         self.assertIn("negotiation_history", summary)
-        self.assertEqual(summary["negotiation_history"][-1]["event"], "Saved and re-rendered")
+        self.assertEqual(summary["negotiation_history"][-1]["event"], "Draft saved")
         pick_pack = next(line for line in summary["fulfillment_quote"]["lines"] if line.get("key") == "pick_pack")
         self.assertEqual(float(pick_pack["rate"]), 2.0)
 
@@ -461,8 +420,8 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertIn("Estimated monthly net margin", review.text)
         self.assertIn("Pricing &amp; Cost Lines", review.text)
         self.assertIn('class="review-section"', review.text)
-        self.assertIn("Save &amp; re-render agent preview", review.text)
-        self.assertIn("Re-publish live sheet", review.text)
+        self.assertIn("Save draft", review.text)
+        self.assertIn("Update live proposal", review.text)
         self.assertIn("Negotiation history", review.text)
         self.assertIn('name="actual_pick_pack_per_order"', review.text)
         self.assertIn('name="rate_pick_pack"', review.text)
@@ -482,6 +441,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         response = self.client.patch(
             f"{_BASE}/runs/{run['id']}/costs",
             json={
+                "expected_revision": storage.get_run(run["id"]).summary_json["draft_revision"],
                 "pick_pack_per_order": 0,
                 "monthly_tech_fee": 0,
                 "storage_per_pallet_mo": 30,
@@ -520,6 +480,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         unsigned = public.post(
             path,
             data={
+                "expected_revision": storage.get_run(run["id"]).summary_json["draft_revision"],
                 "actual_pick_pack_per_order": "0.91",
                 "actual_pick_pack_additional_item": "0.16",
             },
@@ -533,6 +494,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         posted = public.post(
             path,
             data={
+                "expected_revision": storage.get_run(run["id"]).summary_json.get("draft_revision", 1),
                 "submitter_name": "Kyle Paulson",
                 "submitter_email": "Kyle@AnataInc.com",
                 "actual_pick_pack_per_order": "0.91",
@@ -563,7 +525,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
 
         review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
         self.assertEqual(review.status_code, 200)
-        self.assertIn("Rate sheet workflow status", review.text)
+        self.assertIn("Proposal workflow status", review.text)
         self.assertIn("Signed by fulfillment", review.text)
         self.assertIn("Fulfillment costs submitted", review.text)
         self.assertIn("kyle@anatainc.com", review.text)
@@ -621,6 +583,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.client.post(
             f"{_BASE}/runs/{run['id']}/update",
             data={
+                "expected_revision": storage.get_run(run["id"]).summary_json.get("draft_revision", 1),
                 "brand": "TabCo", "origin_zip": "84043",
                 "product_name": ["Widget", "Crate"],
                 "product_length": ["6", "20"],
@@ -645,6 +608,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         response = self.client.post(
             f"{_BASE}/runs/{run['id']}/update",
             data={
+                "expected_revision": storage.get_run(run["id"]).summary_json.get("draft_revision", 1),
                 "brand": "TabCo",
                 "origin_zip": "84043",
                 "product_name": ["Widget", "Gadget"],
@@ -773,8 +737,9 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         run = self._generate()
         public = TestClient(app)
         self.assertEqual(public.get(run["view_path"]).status_code, 404)
-        response = public.post(
-            run["view_path"] + "/requote",
+        self.assertEqual(public.post(run["view_path"] + "/requote", json={"products": [{}]}).status_code, 404)
+        response = self.client.post(
+            f"{_BASE}/runs/{run['id']}/requote?revision={storage.get_run(run['id']).summary_json['draft_revision']}",
             json={"products": [{"name": "Widget", "length_in": 6, "width_in": 5,
                                 "height_in": 3, "weight_lb": 1.5}]},
         )

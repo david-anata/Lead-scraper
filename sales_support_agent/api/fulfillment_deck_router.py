@@ -27,7 +27,7 @@ from sales_support_agent.services.auth_deps import (
     get_current_user,
     require_tool,
 )
-from sales_support_agent.services.fulfillment_deck import storage
+from sales_support_agent.services.fulfillment_deck import storage, workflow
 from sales_support_agent.services.fulfillment_deck.schema import (
     ProductSpec,
     RateMatrix,
@@ -46,6 +46,7 @@ from sales_support_agent.services.fulfillment_deck.pricing_rules import (
 )
 from sales_support_agent.services.fulfillment_deck.service import (
     apply_profile_edits,
+    rerender_rate_sheet,
     apply_viewer_requote,
     generate_rate_sheet,
 )
@@ -195,29 +196,8 @@ async def generate(
                 },
             }
             storage.update_summary(result["run_id"], patch)
-            view_path = str(result.get("view_path") or "")
-            if view_path:
-                from sales_support_agent.services.sales.asset_linker import link_asset_to_deal
-                with Session(get_engine()) as session:
-                    link_asset_to_deal(
-                        session,
-                        hubspot_deal_id=hubspot_deal_id,
-                        asset_type="rate_sheet",
-                        run_id=result["run_id"],
-                        url=view_path,
-                        label="Fulfillment Rate Sheet",
-                    )
-                    session.commit()
         except Exception:
             logger.exception("[fulfillment_deck] failed to persist HubSpot deal context")
-    try:
-        from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_new_prospect as _hs_new
-        _run = storage.get_run(result["run_id"])
-        if _run is not None:
-            _summary = dict(_run.summary_json or {})
-            _hs_new(result["run_id"], _summary, dict(_summary.get("prospect_profile") or {}))
-    except Exception:
-        logger.exception("[fulfillment_deck] hubspot sync_new failed")
     return RedirectResponse(review_path, status_code=303)
 
 
@@ -234,7 +214,7 @@ def _load_reviewable_run(run_id: int):
     summary = dict(run.summary_json or {})
     if not summary.get("deck_html"):
         return None, None
-    return run, summary
+    return run, workflow.migrate(summary, published=run.status == "completed")
 
 
 @admin_router.get("/runs/{run_id}/review", response_class=HTMLResponse)
@@ -265,7 +245,11 @@ def preview_run(run_id: int) -> HTMLResponse:
             render_public_recovery_page(report_kind="rate sheet preview"),
             status_code=404,
         )
-    return HTMLResponse(str(summary.get("deck_html") or ""))
+    html = str(summary.get("deck_html") or "")
+    view_path = str(summary.get("view_path") or "")
+    if view_path:
+        html = html.replace(f"{view_path}/requote", f"{_BASE}/runs/{run_id}/requote?revision={summary['draft_revision']}")
+    return HTMLResponse(html)
 
 
 def _opt_int(value: str):
@@ -292,6 +276,8 @@ def _opt_float(value: str):
 def update_run(
     run_id: int,
     request: Request,
+    expected_revision: int = Form(...),
+    segment: str = Form(default=""),
     brand: str = Form(default=""),
     origin_zip: str = Form(default=""),
     monthly_order_volume: str = Form(default=""),
@@ -466,181 +452,88 @@ def update_run(
         "hubspot_deal_id": hubspot_deal_id,
         "hubspot_deal_url": hubspot_deal_url,
         "sales_pricing": {
-            "reviewed": sales_pricing_reviewed == "1",
+            "reviewed": False,
             "margin_approved": margin_approved == "1",
             "waiver_reason": (waiver_reason or "").strip(),
             "fee_rows": fee_rows,
         },
     }
+    if segment in {"dfy", "diy"}:
+        edits["segment"] = segment
+        if segment == "diy":
+            edits["document_kind"] = "shipping_teaser"
+    if actual_costs_form == "1":
+        edits["fulfillment_actual_costs"] = actual_costs
+    actor = str((get_current_user(request) or {}).get("email") or "")
     try:
-        result = apply_profile_edits(run_id, edits, settings=settings)
-        if actual_costs_form == "1":
-            storage.update_costs(run_id, actual_costs)
-            try:
-                from sales_support_agent.services.fulfillment_deck.quote import compute_margin
-                from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
-                from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_margin as _hs_margin
-
-                updated = storage.get_run(run_id)
-                updated_summary = dict(updated.summary_json or {}) if updated is not None else dict(result or {})
-                quote = dict(updated_summary.get("fulfillment_quote") or {})
-                pitched = float(quote.get("monthly_total") or 0)
-                pass_through = 0.0
-                for line in quote.get("lines") or []:
-                    if isinstance(line, dict) and str(line.get("key") or "") == "shipping":
-                        try:
-                            pass_through += float(line.get("monthly") or 0)
-                        except (TypeError, ValueError):
-                            pass
-                profile_obj = ProspectProfile.from_dict(updated_summary.get("prospect_profile") or {})
-                if pitched and any(v for v in actual_costs.values() if v):
-                    margin = compute_margin(pitched, actual_costs, profile_obj, pass_through)
-                    _hs_margin(run_id, margin, pitched)
-            except Exception:
-                logger.exception("[fulfillment_deck] review cost margin sync failed")
-        _user_email = str((get_current_user(request) or {}).get("email") or "")
-        _parts = []
-        if hubspot_deal_id:
-            _parts.append(f"deal {hubspot_deal_id}")
-        if rate_overrides:
-            _parts.append(f"{len(rate_overrides)} customer fee override{'s' if len(rate_overrides) != 1 else ''}")
-        if actual_costs_form == "1":
-            _parts.append("internal costs")
-        storage.append_history(
-            run_id,
-            "Saved and re-rendered",
-            ", ".join(_parts) or "profile updated",
-            user_email=_user_email,
-        )
-        if hubspot_deal_id:
-            try:
-                from sqlalchemy.orm import Session
-                from sales_support_agent.models.database import get_engine
-                from sales_support_agent.services.sales.asset_linker import link_asset_to_deal
-
-                view_path = str(result.get("view_path") or "")
-                with Session(get_engine()) as session:
-                    link_asset_to_deal(
-                        session,
-                        hubspot_deal_id=hubspot_deal_id,
-                        asset_type="rate_sheet",
-                        run_id=run_id,
-                        url=view_path,
-                        label="Fulfillment Rate Sheet",
-                    )
-                    session.commit()
-            except Exception:
-                logger.exception("[fulfillment_deck] explicit deal asset link failed")
-    except ValueError:
-        return RedirectResponse(
-            f"{_BASE}?kind=warn&msg=" + quote_plus("Rate sheet not found."), status_code=303
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("[fulfillment_deck] update failed")
-        return RedirectResponse(
-            f"{_BASE}/runs/{run_id}/review?msg=" + quote_plus(f"Update failed: {str(exc)[:140]}"),
-            status_code=303,
-        )
+        apply_profile_edits(run_id, edits, settings=settings, expected_revision=expected_revision, actor=actor)
+    except workflow.RevisionConflict as exc:
+        return HTMLResponse(f"<h1>Draft changed</h1><p>{str(exc)}</p><p>Use Back to keep your entered values, or reload the proposal to reconcile changes.</p>", status_code=409)
+    except ValueError as exc:
+        return RedirectResponse(f"{_BASE}/runs/{run_id}/review?msg=" + quote_plus(str(exc)), status_code=303)
+    except Exception:
+        logger.exception("[fulfillment_deck] draft render failed run=%s", run_id)
+        return RedirectResponse(f"{_BASE}/runs/{run_id}/review?msg=" + quote_plus("Draft inputs saved; preview could not rebuild. Live proposal unchanged. Save draft to retry."), status_code=303)
     return RedirectResponse(
-        f"{_BASE}/runs/{run_id}/review?msg=" + quote_plus("Updated"), status_code=303
+        f"{_BASE}/runs/{run_id}/review?msg=" + quote_plus("Draft saved. Live proposal unchanged."), status_code=303
     )
+
+
+def _workflow_redirect(run_id: int, message: str) -> RedirectResponse:
+    """Return to the proposal workbench with an operator-safe status."""
+    return RedirectResponse(f"{_BASE}/runs/{run_id}/review?msg=" + quote_plus(message), status_code=303)
+
+
+@admin_router.post("/runs/{run_id}/convert")
+def convert_proposal(run_id: int, request: Request, expected_revision: int = Form(...)):
+    """Explicitly prepare a DFY draft without changing the live teaser."""
+    run = storage.get_run(run_id)
+    if run is None:
+        return _workflow_redirect(run_id, "Proposal not found.")
+    if (run.summary_json or {}).get("segment") == "diy":
+        return _workflow_redirect(run_id, "Shipping OS uses postage only. Change the service scope before preparing a 3PL proposal.")
+    try:
+        apply_profile_edits(run_id, {"document_kind": "fulfillment_proposal"}, settings=load_settings(),
+            expected_revision=expected_revision, actor=str((get_current_user(request) or {}).get("email") or ""))
+    except workflow.RevisionConflict as exc:
+        return HTMLResponse(f"<h1>Draft changed</h1><p>{str(exc)}</p>", status_code=409)
+    except Exception:
+        logger.exception("[fulfillment_deck] conversion render failed run=%s", run_id)
+        return _workflow_redirect(run_id, "Draft prepared but preview could not rebuild. Save draft to retry; live content is unchanged.")
+    return _workflow_redirect(run_id, "Fulfillment proposal prepared. Review the draft customer pricing; live content is unchanged.")
+
+
+@admin_router.post("/runs/{run_id}/approve-pricing")
+def approve_pricing(run_id: int, request: Request, expected_revision: int = Form(...)):
+    """Record approval for the saved preview independently of Save."""
+    try:
+        storage.approve_pricing(run_id, expected_revision=expected_revision,
+            actor=str((get_current_user(request) or {}).get("email") or ""))
+    except workflow.RevisionConflict as exc:
+        return HTMLResponse(f"<h1>Draft changed</h1><p>{str(exc)}</p>", status_code=409)
+    except ValueError as exc:
+        return _workflow_redirect(run_id, str(exc))
+    return _workflow_redirect(run_id, "Pricing approved for this draft. Publish when ready to share.")
 
 
 @admin_router.post("/runs/{run_id}/publish")
-def publish_run(run_id: int, request: Request) -> RedirectResponse:
-    if not storage.publish_run(run_id):
-        return RedirectResponse(
-            f"{_BASE}?kind=warn&msg=" + quote_plus("Rate sheet not found or not publishable."),
-            status_code=303,
-        )
-    run = storage.get_run(run_id)
-    summary = dict(run.summary_json or {}) if run is not None else {}
-    view_path = str(summary.get("view_path") or "")
-    prospect = str(summary.get("prospect") or "")
-    _owner_email = str((get_current_user(request) or {}).get("email") or "")
+def publish_run(run_id: int, request: Request, expected_revision: int = Form(...)) -> RedirectResponse:
+    """Publish the reviewed snapshot without requiring or calling HubSpot."""
     try:
-        from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_quote as _hs_quote
-        quote_errors = validate_quote_readiness(summary, published=True)
-        if not quote_errors:
-            _hs_quote(run_id, owner_email=_owner_email)
-    except Exception:
-        logger.exception("[fulfillment_deck] hubspot sync_quote failed")
-    # Store the publishing rep's email for first-view notifications.
-    if _owner_email:
-        try:
-            storage.update_summary(run_id, {"owner_email": _owner_email})
-        except Exception:
-            logger.exception("[fulfillment_deck] owner_email store failed")
-    try:
-        storage.append_history(run_id, "Re-published", "Public rate sheet refreshed", user_email=_owner_email)
-    except Exception:
-        logger.exception("[fulfillment_deck] publish history append failed")
-    # Auto-advance pipeline stage to "published" (unless already won/lost).
-    stage_now = str(summary.get("pipeline_stage") or "intake")
-    if stage_now not in ("won", "lost", "published"):
-        try:
-            storage.update_stage(run_id, "published")
-        except Exception:
-            logger.exception("[fulfillment_deck] auto stage advance failed")
-    if view_path:
-        try:
-            from sales_support_agent.services.sales.asset_linker import link_asset_to_deal, try_link_rate_sheet
-            with Session(get_engine()) as _s:
-                explicit_deal = str(summary.get("hubspot_deal_id") or "").strip()
-                if explicit_deal:
-                    link_asset_to_deal(
-                        _s,
-                        hubspot_deal_id=explicit_deal,
-                        asset_type="rate_sheet",
-                        run_id=run_id,
-                        url=view_path,
-                        label="Fulfillment Rate Sheet",
-                    )
-                else:
-                    try_link_rate_sheet(_s, brand_name=prospect, run_id=run_id, url=view_path)
-                _s.commit()
-        except Exception:
-            logger.exception("[fulfillment_deck] auto deal asset link failed")
-    quote_errors = validate_quote_readiness({**summary, **(dict(storage.get_run(run_id).summary_json or {}) if storage.get_run(run_id) is not None else {})}, published=True)
-    msg = "Published — rate sheet is live. Use the link above to copy or share."
-    if quote_errors:
-        msg += " HubSpot quote not created yet: " + quote_errors[0]
-    return RedirectResponse(
-        f"{_BASE}/runs/{run_id}/review?msg="
-        + quote_plus(msg),
-        status_code=303,
-    )
+        if not storage.publish_run(run_id, expected_revision=expected_revision,
+                actor=str((get_current_user(request) or {}).get("email") or "")):
+            return _workflow_redirect(run_id, "Proposal not found or not publishable.")
+    except workflow.RevisionConflict as exc:
+        return HTMLResponse(f"<h1>Draft changed</h1><p>{str(exc)}</p>", status_code=409)
+    except ValueError as exc:
+        return _workflow_redirect(run_id, str(exc))
+    return _workflow_redirect(run_id, "Published. Ready to share the existing link or print / save PDF. HubSpot is optional.")
 
 
 @admin_router.post("/runs/{run_id}/quote")
 def create_quote(run_id: int, request: Request) -> RedirectResponse:
-    """Trigger HubSpot quote creation (or re-creation) for an already-published run."""
-    run = storage.get_run(run_id)
-    if run is None or run.status != "completed":
-        return RedirectResponse(
-            f"{_BASE}?kind=warn&msg=" + quote_plus("Rate sheet not found or not yet published."),
-            status_code=303,
-        )
-    summary = dict(run.summary_json or {})
-    quote_errors = validate_quote_readiness(summary, published=True)
-    if quote_errors:
-        return RedirectResponse(
-            f"{_BASE}/runs/{run_id}/review?msg=" + quote_plus("Quote blocked: " + quote_errors[0]),
-            status_code=303,
-        )
-    _owner_email = str((get_current_user(request) or {}).get("email") or "")
-    try:
-        from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_quote as _hs_quote
-        _hs_quote(run_id, owner_email=_owner_email, force=True)
-        storage.append_history(run_id, "HubSpot quote requested", "Quote creation/sync started", user_email=_owner_email)
-        msg = "Creating HubSpot quote — refresh in a few seconds to see the Quote button."
-    except Exception:
-        logger.exception("[fulfillment_deck] hubspot create_quote failed")
-        msg = "Quote creation failed — check that HUBSPOT_API_TOKEN is set in Render."
-    return RedirectResponse(
-        f"{_BASE}/runs/{run_id}/review?msg=" + quote_plus(msg),
-        status_code=303,
-    )
+    """Keep unsafe legacy quote recreation disabled during standalone rollout."""
+    return _workflow_redirect(run_id, "Optional HubSpot quote creation is temporarily unavailable while revision-safe syncing is repaired. Your proposal can be published and shared without it.")
 
 
 @admin_router.post("/runs/{run_id}/delete")
@@ -668,8 +561,6 @@ async def patch_stage(run_id: int, request: Request) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": f"unknown stage: {stage}"})
     if not storage.update_stage(run_id, stage):
         return JSONResponse(status_code=404, content={"error": "not found"})
-    from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_stage as _hs_stage
-    _hs_stage(run_id, stage)
     return JSONResponse({"ok": True})
 
 
@@ -710,8 +601,15 @@ async def patch_costs(run_id: int, request: Request) -> JSONResponse:
         "special_project_hours_mo": _f("special_project_hours_mo"),
         "special_projects_per_hour": _f("special_projects_per_hour"),
     }
-    if not storage.update_costs(run_id, costs):
-        return JSONResponse(status_code=404, content={"error": "not found"})
+    try:
+        expected = int(body["expected_revision"])
+    except (KeyError, TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"error": "Reload the page before saving costs."})
+    try:
+        if not storage.update_costs(run_id, costs, expected_revision=expected):
+            return JSONResponse(status_code=404, content={"error": "not found"})
+    except workflow.RevisionConflict as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
 
     # Return computed margin so the UI can update without a reload.
     run = storage.get_run(run_id)
@@ -732,8 +630,6 @@ async def patch_costs(run_id: int, request: Request) -> JSONResponse:
                     except (TypeError, ValueError):
                         pass
             margin = compute_margin(pitched, costs, profile, pass_through)
-            from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_margin as _hs_margin
-            _hs_margin(run_id, margin, pitched)
             rec_pp = float(costs.get("receiving_per_pallet") or 0)
             rec_box = float(costs.get("receiving_precounted_box") or 0)
             rec_count = float(costs.get("receiving_count_per_item") or 0)
@@ -743,13 +639,14 @@ async def patch_costs(run_id: int, request: Request) -> JSONResponse:
             rec_total = rec_total if rec_total else None
             return JSONResponse({
                 "ok": True,
+                "draft_revision": int(summary.get("draft_revision") or 1),
                 "margin": margin,
                 "pitched": pitched,
                 "actual_monthly": margin.get("actual_monthly"),
                 "receiving_one_time": rec_total,
                 "pallets_mo": pallets_mo or None,
             })
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "draft_revision": int((run.summary_json or {}).get("draft_revision") or 1) if run else expected})
 
 
 @admin_router.post("/runs/{run_id}/send-brief")
@@ -968,6 +865,7 @@ def fulfillment_cost_form(run_id: int, token: str, saved: str = "") -> HTMLRespo
 def save_fulfillment_cost_form(
     run_id: int,
     token: str,
+    expected_revision: int = Form(...),
     submitter_name: str = Form(default=""),
     submitter_email: str = Form(default=""),
     actual_pick_pack_per_order: str = Form(default=""),
@@ -1061,45 +959,19 @@ def save_fulfillment_cost_form(
         "email": submitter_email[:160],
         "costs": {key: value for key, value in costs.items() if value is not None},
     })
-    storage.update_summary(
-        run_id,
-        {
+    try:
+        storage.update_summary(run_id, {
             "fulfillment_actual_costs": costs,
             "fulfillment_cost_submissions": submissions[-50:],
-        },
-    )
+        }, expected_revision=expected_revision)
+    except workflow.RevisionConflict:
+        return HTMLResponse("<h1>Cost form changed</h1><p>Use Back to preserve your entries, then reload the latest cost form before submitting.</p>", status_code=409)
     storage.append_history(
         run_id,
         "Fulfillment costs submitted",
         f"Shared cost form saved by {submitter_name} <{submitter_email}>",
         user_email=submitter_email,
     )
-    try:
-        from sales_support_agent.services.fulfillment_deck.quote import compute_margin
-        from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
-        from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_margin as _hs_margin
-
-        updated = storage.get_run(run_id)
-        summary = dict(updated.summary_json or {}) if updated is not None else dict(run.summary_json or {})
-        quote = dict(summary.get("fulfillment_quote") or {})
-        pitched = float(quote.get("monthly_total") or 0)
-        pass_through = 0.0
-        for line in quote.get("lines") or []:
-            if isinstance(line, dict) and str(line.get("key") or "") == "shipping":
-                try:
-                    pass_through += float(line.get("monthly") or 0)
-                except (TypeError, ValueError):
-                    pass
-        if pitched and any(v for v in costs.values() if v):
-            margin = compute_margin(
-                pitched,
-                costs,
-                ProspectProfile.from_dict(summary.get("prospect_profile") or {}),
-                pass_through,
-            )
-            _hs_margin(run_id, margin, pitched)
-    except Exception:
-        logger.exception("[fulfillment_deck] shared cost form margin sync failed")
     return RedirectResponse(f"/fulfillment-costs/{run_id}/{token}?saved=1", status_code=303)
 
 
@@ -1108,7 +980,7 @@ def rate_sheet_view(slug: str, run_id: int, token: str) -> HTMLResponse:
     run = _load_valid_run(run_id, token)
     if run is None:
         return HTMLResponse(render_public_recovery_page(report_kind="rate sheet"), status_code=404)
-    deck_html = str((run.summary_json or {}).get("deck_html") or "")
+    deck_html = str(workflow.public_summary(dict(run.summary_json or {})).get("deck_html") or "")
     if not deck_html:
         return HTMLResponse(render_public_recovery_page(report_kind="rate sheet"), status_code=404)
     return HTMLResponse(deck_html)
@@ -1136,9 +1008,20 @@ async def rate_sheet_requote(request: Request, slug: str, run_id: int, token: st
     session-only so a shared/prospect link cannot overwrite the canonical
     published sheet."""
     run = storage.get_run(run_id)
-    if run is None or (dict(run.summary_json or {}).get("export_token") != token) or not token:
+    if run is None or run.status != "completed" or (dict(run.summary_json or {}).get("export_token") != token) or not token:
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
 
+    return await _requote_response(request, run_id, persist=False)
+
+
+@admin_router.post("/runs/{run_id}/requote")
+async def admin_requote(request: Request, run_id: int, revision: int):
+    """Authenticated package confirmation updates the draft only."""
+    return await _requote_response(request, run_id, persist=True, expected_revision=revision)
+
+
+async def _requote_response(request: Request, run_id: int, *, persist: bool, expected_revision: int | None = None) -> JSONResponse:
+    """Shared bounded rate response; caller determines authenticated persistence."""
     try:
         payload = await request.json()
     except Exception:  # noqa: BLE001
@@ -1160,8 +1043,11 @@ async def rate_sheet_requote(request: Request, slug: str, run_id: int, token: st
             products,
             origin,
             settings=load_settings(),
-            persist=(run.status != "completed"),
+            persist=persist,
+            expected_revision=expected_revision,
         )
+    except workflow.RevisionConflict as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     except ValueError:
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
 
