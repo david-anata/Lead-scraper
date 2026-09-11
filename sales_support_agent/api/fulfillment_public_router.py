@@ -582,7 +582,8 @@ async def rate_sheet_result(
     summary = dict(run.summary_json or {})
     if str(summary.get("public_rate_sheet_status") or "") != "ready":
         return JSONResponse(status_code=409, content={"detail": "Rate sheet is not ready."})
-    payload = serialize_public_matrix(summary, preview=False)
+    from sales_support_agent.services.fulfillment_deck.workflow import public_summary
+    payload = serialize_public_matrix(public_summary(summary), preview=False)
     if payload is None:
         return JSONResponse(status_code=503, content={"detail": "Live carrier rates are unavailable."})
     return JSONResponse(content=payload)

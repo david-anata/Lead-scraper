@@ -820,3 +820,38 @@ production database or providers, reports that provider mode as a dry run, and
 fails unless every created test database is removed and cleanup is verified.
 Render therefore alerts on the first failed handoff without leaving a live hold,
 invoice, message, calendar event, or customer artifact.
+
+
+### Fulfillment proposals: draft, review, publish, share
+
+The fulfillment sales workbench works without HubSpot credentials, a deal, or a
+quote. Public funnel assets start as **Shipping teasers** (carrier postage only).
+Use **Prepare fulfillment proposal** on a DFY teaser to include customer service
+fees and an estimated invoice in the private draft. The existing run and share
+URL are retained. Shipping OS remains postage-only.
+
+**Save draft** saves inputs and rebuilds only the private customer preview.
+Review that preview, then use **Approve saved pricing** and **Publish proposal**
+(or **Update live proposal**). Publication requires current signed warehouse
+costs, current pricing approval, valid customer prices, live rates, waiver
+reasons, and any configured margin exception approval. It requires no HubSpot
+connection. Sharing the published link or printing/saving PDF completes the flow.
+
+Published content is a separate snapshot. Draft edits and admin re-quotes never
+change the shared version; publication copies the reviewed saved content without
+refreshing rates. Any relevant edit invalidates pricing review. Stale concurrent
+forms must be reloaded and reconciled; failed rendering leaves saved inputs and
+the prior live snapshot intact. Signed cost submissions apply to their recorded
+cost values, not arbitrary later edits. Cost forms remain warehouse-only.
+
+Existing published runs are lazily snapshotted under a row lock on their first
+write. This preserves the currently served content and existing token/URL; it
+cannot reconstruct older content that was overwritten before this change.
+Teasers are never automatically converted based on entered prices. Pipeline
+rows with teaser pricing point Sales to the explicit conversion action.
+
+HubSpot quote creation is temporarily disabled while revision-safe syncing is
+repaired. Existing quote links remain available in the optional integration
+section and may be stale; core proposal actions do not write to HubSpot. Do not
+re-enable quote creation until it consumes an immutable published revision and
+handles idempotency and accepted quotes safely.

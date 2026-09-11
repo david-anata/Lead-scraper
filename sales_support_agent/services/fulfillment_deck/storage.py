@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
+from . import workflow
 from sqlalchemy.orm import Session
 
 from sales_support_agent.models.database import get_engine
@@ -118,7 +119,7 @@ def save_draft(run_id: int, summary: dict) -> None:
             return
         run.status = "draft"
         run.completed_at = datetime.now(timezone.utc)
-        run.summary_json = summary
+        run.summary_json = workflow.migrate(summary, published=False)
         s.add(run)
         _bind_public_correlation_session(
             s,
@@ -131,50 +132,94 @@ def save_draft(run_id: int, summary: dict) -> None:
 complete_run = save_draft
 
 
-def publish_run(run_id: int) -> bool:
-    """Flip a draft to published ("completed") — public link goes live.
+def _locked_run(session: Session, run_id: int):
+    """Serialize JSON updates on Postgres so publication cannot race edits."""
+    return session.execute(select(AutomationRun).where(
+        AutomationRun.id == run_id, AutomationRun.run_type == RUN_TYPE,
+    ).with_for_update()).scalar_one_or_none()
 
-    Idempotent for already-published runs. Returns False for missing/failed
-    runs.
-    """
-    with _session() as s:
-        run = s.execute(
-            select(AutomationRun).where(
-                AutomationRun.id == run_id,
-                AutomationRun.run_type == RUN_TYPE,
-            )
-        ).scalar_one_or_none()
+
+def publish_run(run_id: int, *, expected_revision: int | None = None, actor: str = "") -> bool:
+    """Publish exactly the reviewed rendered draft, without external calls."""
+    with _session() as session:
+        run = _locked_run(session, run_id)
         if run is None or run.status not in ("draft", "completed"):
             return False
-        summary = dict(run.summary_json or {})
+        summary = workflow.migrate(dict(run.summary_json or {}), published=run.status == "completed")
+        revision = summary["draft_revision"]
+        if expected_revision is not None and revision != expected_revision:
+            raise workflow.RevisionConflict("This draft changed. Reload and review the latest version.")
+        errors = workflow.publication_errors(summary)
+        if errors:
+            raise ValueError(errors[0])
         summary["published_at"] = datetime.now(timezone.utc).isoformat()
+        summary["published_snapshot"] = workflow.customer_snapshot(summary)
+        summary["published_calculation"] = {"quote_margin_override": summary.get("quote_margin_override")}
+        summary["owner_email"] = actor or summary.get("owner_email", "")
+        if summary.get("pipeline_stage") not in ("won", "lost"):
+            summary["pipeline_stage"] = "published"
+        history = list(summary.get("negotiation_history") or [])
+        history.append(workflow.history_event("Proposal published", actor, revision))
+        summary["negotiation_history"] = history[-25:]
         run.status = "completed"
         run.summary_json = summary
-        s.add(run)
-        _bind_public_correlation_session(
-            s,
-            run_id=run_id,
-            correlation_id=str(summary.get("public_correlation_id") or ""),
-        )
         return True
 
 
-def update_summary(run_id: int, patch: dict) -> bool:
-    """Shallow-merge ``patch`` into the run's summary_json."""
-    with _session() as s:
-        run = s.execute(
-            select(AutomationRun).where(
-                AutomationRun.id == run_id,
-                AutomationRun.run_type == RUN_TYPE,
-            )
-        ).scalar_one_or_none()
+def update_summary(run_id: int, patch: dict, *, expected_revision: int | None = None,
+                   rendered: bool = False, actor: str = "", event: str = "") -> bool:
+    """Merge under lock, preserving the live snapshot and invalidating review."""
+    with _session() as session:
+        run = _locked_run(session, run_id)
         if run is None:
             return False
-        summary = dict(run.summary_json or {})
-        summary.update(patch or {})
+        summary = workflow.migrate(dict(run.summary_json or {}), published=run.status == "completed")
+        if expected_revision is not None and summary["draft_revision"] != expected_revision:
+            raise workflow.RevisionConflict("This draft changed. Reload and review the latest version.")
+        changed = any(key in patch and patch[key] != summary.get(key) for key in workflow.INPUT_KEYS)
+        # Never accept a caller's stale copy of lifecycle metadata.
+        safe_patch = {key: value for key, value in patch.items() if key not in {
+            "draft_revision", "rendered_revision", "published_snapshot", "published_calculation", "pricing_review",
+        }}
+        summary.update(safe_patch)
+        if changed:
+            summary["draft_revision"] += 1
+            summary.pop("pricing_review", None)
+            pricing = dict(summary.get("sales_pricing") or {})
+            pricing["reviewed"] = False
+            if "fulfillment_actual_costs" in patch and "sales_pricing" not in patch:
+                pricing["margin_approved"] = False
+            summary["sales_pricing"] = pricing
+        summary["suppress_fulfillment_pricing"] = workflow.document_kind(summary) == "shipping_teaser"
+        if rendered:
+            summary["rendered_revision"] = summary["draft_revision"]
+        if actor:
+            history = list(summary.get("negotiation_history") or [])
+            history.append(workflow.history_event(event or ("Draft saved" if not rendered else "Preview rebuilt"), actor, summary["draft_revision"]))
+            summary["negotiation_history"] = history[-25:]
         run.summary_json = summary
-        s.add(run)
         return True
+
+
+def approve_pricing(run_id: int, *, expected_revision: int, actor: str) -> None:
+    """Approve the visible saved version, never implicitly approve new edits."""
+    with _session() as session:
+        run = _locked_run(session, run_id)
+        if run is None:
+            raise ValueError("Proposal not found.")
+        summary = workflow.migrate(dict(run.summary_json or {}), published=run.status == "completed")
+        if summary["draft_revision"] != expected_revision:
+            raise workflow.RevisionConflict("This draft changed. Reload and review the latest version.")
+        if workflow.document_kind(summary) != "fulfillment_proposal":
+            raise ValueError("Prepare a fulfillment proposal before reviewing pricing.")
+        errors = workflow.publication_errors(summary, require_review=False)
+        if errors:
+            raise ValueError(errors[0])
+        event = workflow.history_event("Pricing reviewed", actor, expected_revision)
+        summary["pricing_review"] = {"revision": expected_revision, "actor": actor, "at": event["at"]}
+        summary["sales_pricing"] = {**(summary.get("sales_pricing") or {}), "reviewed": True}
+        summary["negotiation_history"] = [*(summary.get("negotiation_history") or []), event][-25:]
+        run.summary_json = summary
 
 
 def fail_run(run_id: int, error: str) -> None:
@@ -285,6 +330,7 @@ def list_runs(limit: int = 100) -> list[dict]:
             out.append(
                 {
                     "id": int(r.id),
+                    "draft_revision": int(summary.get("draft_revision") or 1),
                     "status": r.status,
                     # Existing rows predating the draft flow were published on
                     # completion, so status=="completed" IS the published bit.
@@ -292,6 +338,7 @@ def list_runs(limit: int = 100) -> list[dict]:
                     "started_at": r.started_at.isoformat() if r.started_at else None,
                     "design_title": str(summary.get("design_title") or ""),
                     "prospect": str(summary.get("prospect") or ""),
+                    "needs_proposal_conversion": workflow.document_kind(summary) == "shipping_teaser" and summary.get("segment") != "diy" and bool(summary.get("rate_overrides")),
                     "origin_zip": str(summary.get("origin_zip") or ""),
                     "rates_source": str(summary.get("rates_source") or ""),
                     "sections_included": list(summary.get("sections_included") or []),
@@ -323,8 +370,8 @@ def update_stage(run_id: int, stage: str) -> bool:
     return update_summary(run_id, {"pipeline_stage": stage})
 
 
-def update_costs(run_id: int, costs: dict) -> bool:
-    return update_summary(run_id, {"fulfillment_actual_costs": costs})
+def update_costs(run_id: int, costs: dict, *, expected_revision: int | None = None) -> bool:
+    return update_summary(run_id, {"fulfillment_actual_costs": costs}, expected_revision=expected_revision)
 
 
 def update_notes(run_id: int, notes: str) -> bool:
@@ -333,19 +380,19 @@ def update_notes(run_id: int, notes: str) -> bool:
 
 def append_history(run_id: int, event: str, detail: str = "", *, user_email: str = "") -> bool:
     """Append a compact operator-visible history event to summary_json."""
-    run = get_run(run_id)
-    if run is None:
-        return False
-    summary = dict(run.summary_json or {})
-    history = list(summary.get("negotiation_history") or [])
-    history.append({
-        "at": datetime.now(timezone.utc).isoformat(),
-        "event": str(event or "Updated").strip()[:80],
-        "detail": str(detail or "").strip()[:220],
-        "user_email": str(user_email or "").strip()[:120],
-    })
-    summary["negotiation_history"] = history[-25:]
-    return update_summary(run_id, summary)
+    with _session() as session:
+        run = _locked_run(session, run_id)
+        if run is None:
+            return False
+        summary = workflow.migrate(dict(run.summary_json or {}), published=run.status == "completed")
+        history = list(summary.get("negotiation_history") or [])
+        history.append({"at": datetime.now(timezone.utc).isoformat(),
+            "event": str(event or "Updated").strip()[:80],
+            "detail": str(detail or "").strip()[:220],
+            "user_email": str(user_email or "").strip()[:120]})
+        summary["negotiation_history"] = history[-25:]
+        run.summary_json = summary
+        return True
 
 
 def delete_run(run_id: int) -> bool:

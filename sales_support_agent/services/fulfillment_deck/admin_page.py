@@ -7,6 +7,7 @@ so it reads as a sibling tool.
 from __future__ import annotations
 
 import html
+from . import workflow
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlencode
@@ -145,7 +146,7 @@ _STYLES = """
       .muted { color: rgba(43,54,68,0.55); font-size: 12px; }
       .empty { color: rgba(43,54,68,0.55); font-size: 13.5px; padding: 18px 0; }
       .review-toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between; margin:0 0 14px; }
-      .review-sections { display:grid; gap:12px; margin-top:14px; }
+      .review-sections { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; margin-top:14px; }
       .review-section {
         border: 1px solid var(--border); border-radius: 14px; background: #fff;
         box-shadow: 0 8px 18px rgba(43,54,68,0.04); overflow: clip;
@@ -159,7 +160,7 @@ _STYLES = """
       .review-section > summary::after { content:"▾"; color:rgba(43,54,68,0.45); font-size:12px; }
       .review-section:not([open]) > summary::after { transform: rotate(-90deg); }
       .review-section__sub { display:block; margin-top:3px; font-family:"Inter", sans-serif; font-weight:500; font-size:12px; color:rgba(43,54,68,0.55); }
-      .review-section__body { padding: 0 16px 16px; }
+      .review-section__body { min-width:0; padding: 0 16px 16px; }
       .form-grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 4px 22px; }
       .form-grid--wide { grid-template-columns: repeat(3, minmax(220px, 1fr)); }
       .history-bar {
@@ -719,6 +720,7 @@ def render_fulfillment_cost_form_page(
         </table></div>
         {_submission_history()}
         <form method="post" action="{_esc(form_path)}">
+          <input type="hidden" name="expected_revision" value="{int(summary.get('draft_revision') or 1)}">
           <section class="cost-group">
             <h2>Cost submission signature</h2>
             <p class="muted">Required on every save so Agent can track who committed the fulfillment costs.</p>
@@ -899,7 +901,7 @@ def _expand_panel(run: dict) -> str:
               id="spr-{run_id}" value="{_cv('special_projects_per_hour')}"></div>
         </div>
         <button class="btn btn--ghost" style="margin-top:10px" type="button"
-          onclick="pipelineCosts(this,{run_id})">Save costs</button>
+          data-revision="{int(run.get('draft_revision') or 1)}" onclick="pipelineCosts(this,{run_id})">Save costs</button>
         {margin_html}
       </div>
       <div>
@@ -1004,6 +1006,12 @@ def _pipeline_next_action(runs: list[dict], engagement: dict[int, dict]) -> str:
         return _esc(run.get("prospect") or run.get("design_title") or f"Run {int(run.get('id') or 0)}")
 
     for run in runs:
+        if run.get("needs_proposal_conversion"):
+            return ('<section class="operator-callout"><div><p class="eyebrow">Needs review</p>'
+                f'<h2>Prepare the fulfillment proposal for {_name(run)}.</h2>'
+                '<p>Customer prices are saved, but the shared document still contains postage only.</p></div>'
+                f'<a class="btn" href="/admin/fulfillment/sales/runs/{int(run["id"])}/review">Prepare proposal</a></section>')
+    for run in runs:
         if str(run.get("status") or "") == "running":
             return (
                 '<section class="operator-callout">'
@@ -1021,7 +1029,7 @@ def _pipeline_next_action(runs: list[dict], engagement: dict[int, dict]) -> str:
                 '<section class="operator-callout">'
                 f'<div><p class="eyebrow">Next action</p><h2>Review and publish {_name(run)}.</h2>'
                 '<p>The rate sheet is not live yet. Review the extracted details, confirm pricing, and publish only when the offer is ready to share.</p>'
-                '<div class="operator-callout__meta">Resolution path: review -> publish -> share link or create quote.</div></div>'
+                '<div class="operator-callout__meta">Resolution path: review -> publish -> share link or PDF.</div></div>'
                 f'<div class="operator-callout__side"><a class="btn" href="/admin/fulfillment/sales/runs/{run_id}/review">Review rate sheet</a></div>'
                 '</section>'
             )
@@ -1040,7 +1048,7 @@ def _pipeline_next_action(runs: list[dict], engagement: dict[int, dict]) -> str:
                 '<section class="operator-callout">'
                 f'<div><p class="eyebrow">Next action</p><h2>Get warehouse costs for {_name(run)}.</h2>'
                 '<p>The public offer exists, but margin is not trusted until fulfillment costs are entered. Send the warehouse brief or cost form, then update the row.</p>'
-                '<div class="operator-callout__meta">Resolution path: collect costs -> save margin -> create quote.</div></div>'
+                '<div class="operator-callout__meta">Resolution path: collect costs -> review pricing -> publish proposal.</div></div>'
                 f'<div class="operator-callout__side">{copy_cost_button}<a class="btn btn--ghost" href="/admin/fulfillment/sales/runs/{run_id}/review">Open review</a></div>'
                 '</section>'
             )
@@ -1048,13 +1056,13 @@ def _pipeline_next_action(runs: list[dict], engagement: dict[int, dict]) -> str:
     for run in runs:
         run_id = int(run.get("id") or 0)
         stage = str(run.get("pipeline_stage") or "intake")
-        if stage == "costs_received" and not str(run.get("hubspot_quote_url") or "").strip():
+        if stage == "costs_received" and not run.get("published"):
             return (
                 '<section class="operator-callout">'
-                f'<div><p class="eyebrow">Next action</p><h2>Create the HubSpot quote for {_name(run)}.</h2>'
-                '<p>Costs are in. Move from internal review to a quote the sales team can send and track.</p>'
-                '<div class="operator-callout__meta">Resolution path: create quote -> send prospect follow-up.</div></div>'
-                f'<div class="operator-callout__side"><a class="btn" href="/admin/fulfillment/sales/runs/{run_id}/review">Create quote</a></div>'
+                f'<div><p class="eyebrow">Next action</p><h2>Review proposal pricing for {_name(run)}.</h2>'
+                '<p>Costs are in. Review the customer pricing, publish the proposal, and share its link.</p>'
+                '<div class="operator-callout__meta">Resolution path: review pricing -> publish -> share.</div></div>'
+                f'<div class="operator-callout__side"><a class="btn" href="/admin/fulfillment/sales/runs/{run_id}/review">Review proposal</a></div>'
                 '</section>'
             )
 
@@ -1225,8 +1233,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
                 )
             if hs_quote_url:
                 actions.append(f'<a class="action-menu-item action-menu-item--quote" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer" title="Open e-signature quote in HubSpot">Open Quote</a>')
-            else:
-                actions.append(
+            actions.append(
                     f'<form method="post" action="/admin/fulfillment/sales/runs/{run_id}/quote" '
                     f'onclick="event.stopPropagation()">'
                     f'<button class="action-menu-item action-menu-item--quote" type="submit" title="Create HubSpot e-signature quote">Create Quote</button></form>'
@@ -1527,6 +1534,7 @@ def render_fulfillment_sales_page(
         return Number.isFinite(parsed) ? parsed : null;
       }}
       var costs = {{
+        expected_revision: Number(btn.dataset.revision),
         pick_pack_per_order: costVal('pp'),
         pick_pack_additional_item: costVal('ppi'),
         storage_per_pallet_mo: costVal('st'),
@@ -1552,6 +1560,7 @@ def render_fulfillment_sales_page(
         method: 'PATCH', headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify(costs)
       }}).then(r => r.json()).then(data => {{
+        if (data.error) {{ btn.textContent = data.error; return; }}
         btn.textContent = 'Saved ✓';
         var fmt = v => '$' + Math.abs(v).toLocaleString('en-US', {{maximumFractionDigits:0}});
         if (data.margin) {{
@@ -1601,6 +1610,7 @@ def render_fulfillment_sales_page(
         }}
         // Update live stats bar with new margin
         if (data.margin) {{ _marginData[String(runId)] = {{m: data.margin.monthly_margin, s: 'costs_received'}}; refreshStatsBar(); }}
+        if (data.draft_revision) btn.dataset.revision = data.draft_revision;
         setTimeout(() => btn.textContent = 'Save costs', 2000);
       }}).catch(() => {{ btn.textContent = 'Error — retry'; setTimeout(() => btn.textContent = 'Save costs', 3500); }});
     }}
@@ -1956,30 +1966,15 @@ def render_rate_sheet_review_page(
     hs_deal_id = str(summary.get("hubspot_deal_id") or "").strip()
     hs_deal_url = str(summary.get("hubspot_deal_url") or "").strip()
     hs_quote_url = str(summary.get("hubspot_quote_url") or "")
-    quote_guard_errors = validate_quote_readiness(summary, published=published)
-    quote_guard_html = ""
-    if quote_guard_errors:
-        quote_guard_html = (
-            '<div class="flash flash--warn"><strong>Quote blocked until:</strong><ul style="margin:6px 0 0;padding-left:18px">'
-            + "".join(f"<li>{_esc(item)}</li>" for item in quote_guard_errors)
-            + "</ul></div>"
-        )
-    hs_quote_btn = (
-        f'<a class="btn" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer" '
-        f'style="background:#ff7a59;border-color:#ff7a59;color:#fff">Open HubSpot Quote ✍</a>'
-        if hs_quote_url else ""
-    )
-    hs_create_quote_btn = (
-        f'<form method="post" action="{base}/runs/{run_id}/quote" style="display:inline">'
-        f'<button class="btn" type="submit" style="background:#ff7a59;border-color:#ff7a59;color:#fff">Create HubSpot Quote ✍</button></form>'
-        if not quote_guard_errors else
-        '<button class="btn" type="button" disabled style="background:#d4d4d4;border-color:#d4d4d4;color:#666;cursor:not-allowed">Create HubSpot Quote ✍</button>'
-    )
-    hs_deal_chip = ""
-    if hs_deal_url:
-        hs_deal_chip = f'<a class="btn btn--ghost" href="{_esc(hs_deal_url)}" target="_blank" rel="noreferrer">Open HubSpot Deal</a>'
-    elif hs_deal_id:
-        hs_deal_chip = f'<span class="pill pill--live">HubSpot deal {_esc(hs_deal_id)}</span>'
+    summary = workflow.migrate(summary, published=published)
+    revision = int(summary["draft_revision"])
+    kind = workflow.document_kind(summary)
+    kind_label = "Shipping teaser" if kind == "shipping_teaser" else "Fulfillment proposal"
+    revision_field = f'<input type="hidden" name="expected_revision" value="{revision}">'
+    quote_guard_errors = workflow.publication_errors(summary)
+    hs_deal_chip = (f'<a class="btn btn--ghost" href="{_esc(hs_deal_url)}" target="_blank" rel="noreferrer">Open linked deal</a>' if hs_deal_url else '')
+    hs_quote_btn = (f'<a class="btn btn--ghost" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer">Open existing quote (may be stale)</a>' if hs_quote_url else '')
+    hs_create_quote_btn = ''
     prospect_name = str(summary.get("prospect") or summary.get("design_title") or "your brand")
     cost_form_block = ""
     if cost_form_path:
@@ -2009,42 +2004,15 @@ def render_rate_sheet_review_page(
             "this.textContent='Email copied!';setTimeout(()=>this.textContent='Copy email',2000);",
             quote=True,
         )
-        publish_block = f"""
-        <div class="flash">
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-            <strong>Published.</strong>
-            <code style="font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{_esc(view_path)}</code>
-          </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn--ghost" type="button"
-              onclick="navigator.clipboard.writeText({_full_link_js});this.textContent='Copied!';">Copy link</button>
-            <button class="btn btn--ghost" type="button"
-              onclick="{_copy_email_js}">Copy email</button>
-            <a class="btn btn--ghost" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer">Open</a>
-            {hs_deal_chip}
-            {hs_quote_btn if hs_quote_url else hs_create_quote_btn}
-          </div>
-          <p class="muted" style="margin:10px 0 0">Save &amp; re-render updates the agent preview and this public URL. Re-publish is the explicit action for refreshing the live shared sheet and HubSpot quote workflow.</p>
-        </div>"""
-        publish_button = '<button class="btn" type="submit">Re-publish live sheet</button>'
-    else:
-        publish_block = ""
-        publish_button = '<button class="btn" type="submit">Publish — get shareable link</button>'
-    publish_form_html = (
-        f"""
-        <form method="post" action="{base}/runs/{run_id}/publish" style="margin-top:10px">
+    publish_button = "Update live proposal" if published else "Publish proposal"
+    publish_form_html = f"""
+        <form method="post" action="{base}/runs/{run_id}/publish" id="proposal-publish">
+          {revision_field}
           <div class="review-actions">
-            {publish_button}
-            <a class="btn btn--ghost" href="{base}">← Pipeline</a>
-            <span class="muted" style="font-size:12px">Re-publish refreshes the prospect-facing rate sheet and can re-run the HubSpot quote workflow when quote guards pass.</span>
+            <button class="btn" type="submit" {'disabled' if quote_guard_errors else ''}>{publish_button}</button>
+            <span class="muted">Publishes the saved, reviewed preview. Live link stays the same. No HubSpot action.</span>
           </div>
         </form>"""
-        if published else
-        f"""
-        <div class="review-actions" style="margin-top:10px">
-          <a class="btn btn--ghost" href="{base}">← Pipeline</a>
-        </div>"""
-    )
 
     rows = "".join(_product_row(i, p) for i, p in enumerate(products))
     rows += _product_row(len(products), {}, template=True)
@@ -2095,12 +2063,12 @@ def render_rate_sheet_review_page(
     margin_value = "" if margin_override is None else f"{margin_override:g}"
     sales_pricing = dict(summary.get("sales_pricing") or {})
     hubspot_deal_id = str(summary.get("hubspot_deal_id") or "").strip()
-    deal_picker_html = _hubspot_deal_picker(hubspot_deal_id)
+    deal_picker_html = ""  # Optional CRM context never blocks the workbench.
     create_deal_href = _esc(_create_deal_href(int(run_id), summary, profile))
     fee_rows = merge_fee_rows(sales_pricing.get("fee_rows") or summary.get("pricing_fee_rows") or [])
     waived_keys = {str(r.get("fee_key") or "") for r in fee_rows if r.get("waived")}
     waiver_reason = _esc(str(sales_pricing.get("waiver_reason") or ""))
-    pricing_reviewed = bool(sales_pricing.get("reviewed"))
+    pricing_reviewed = (summary.get("pricing_review") or {}).get("revision") == revision
     margin_approved = bool(sales_pricing.get("margin_approved"))
     fee_checks = "".join(
         '<label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;font-weight:600;margin:6px 0">'
@@ -2123,7 +2091,7 @@ def render_rate_sheet_review_page(
     latest_cost_submission = signed_cost_submissions[-1] if signed_cost_submissions else {}
     section_deal_status = "Deal attached" if hubspot_deal_id else "Select or create deal"
     section_pricing_status = "Reviewed" if pricing_reviewed else "Needs review"
-    section_cost_status = "Signed by fulfillment" if signed_cost_submissions else "Needs signed costs"
+    section_cost_status = "Signed by fulfillment" if workflow.signed_costs_current(summary) else "Needs current signed costs"
     section_waiver_status = f"{len(waived_keys)} waived" if waived_keys else "No waivers"
     section_product_status = f"{len(products)} product{'s' if len(products) != 1 else ''}"
     pricing_summary_html = _pricing_summary_html(summary, profile)
@@ -2158,8 +2126,6 @@ def render_rate_sheet_review_page(
 
     def _aval(key: str, default_key: str | None = None) -> str:
         v = _actual_costs.get(key)
-        if v is None and default_key:
-            v = INTERNAL_COST_BASELINES.get(default_key)
         return f"{float(v):g}" if v is not None else ""
 
     def _internal_hint(key: str) -> str:
@@ -2276,7 +2242,7 @@ def render_rate_sheet_review_page(
         ),
         _pricing_line(
             "Receiving / pallet",
-            "Agreement standard pallet receiving. One-time receiving support.",
+            "Receiving handling at the estimated monthly pallet volume.",
             _number_cell("Fulfillment cost", "actual_receiving_per_pallet", "actual_receiving_per_pallet", _aval("receiving_per_pallet", "receiving_per_pallet"), INTERNAL_COST_BASELINES["receiving_per_pallet"], hint=_internal_hint("receiving_per_pallet")),
             _suggested_cell("receiving_per_pallet", "receiving_per_pallet", "receiving_per_pallet"),
             _number_cell("Final customer price", "rate_receiving", "rate_receiving", _rval("receiving_per_pallet"), BASELINE_RATES["receiving_per_pallet"], hint=_rate_hint("receiving_per_pallet")),
@@ -2448,51 +2414,34 @@ def render_rate_sheet_review_page(
         <div class="prospect-summary__item"><span>Prospect</span><strong>{_esc(profile.get('brand') or summary.get('prospect') or '—')}</strong></div>
         <div class="prospect-summary__item"><span>Monthly volume</span><strong>{_esc(monthly_volume or '—')}</strong></div>
         <div class="prospect-summary__item"><span>Products</span><strong>{len(products)}</strong></div>
-        <div class="prospect-summary__item"><span>HubSpot deal</span><strong>{_esc(hubspot_deal_id or 'Not attached')}</strong></div>
+        <div class="prospect-summary__item"><span>Document</span><strong>{_esc(kind_label)}</strong></div>
       </div>
     """
 
     rate_card_note_val = _esc(str(summary.get("rate_card_note") or ""))
     history_bar_html = _history_bar_html(summary)
 
-    status_label = "Published" if published else "Draft — not publicly visible yet"
-    status_pill_cls = "pill--live" if published else "pill--draft"
-    if not published:
-        primary_action_html = (
-            '<section class="operator-callout">'
-            '<div><p class="eyebrow">Next action</p><h2>Publish this rate sheet.</h2>'
-            '<p>The sheet is still private. Confirm the extraction, pricing, and costs below, then publish to create the shareable link.</p>'
-            '<div class="operator-callout__meta">Resolution path: publish -> copy email/link -> create quote when ready.</div></div>'
-            f'<div class="operator-callout__side"><form method="post" action="{base}/runs/{run_id}/publish">'
-            '<button class="btn" type="submit">Publish rate sheet</button></form></div>'
-            '</section>'
-        )
+    live_revision = int((summary.get("published_snapshot") or {}).get("revision") or 0)
+    has_changes = published and revision != live_revision
+    status_label = "Unpublished changes" if has_changes else ("Published" if published else "Draft")
+    status_pill_cls = "pill--live" if published and not has_changes else "pill--draft"
+    if kind == "shipping_teaser" and summary.get("segment") != "diy":
+        next_title = "Prepare a fulfillment proposal."
+        next_detail = "This is a shipping teaser. Fulfillment pricing is saved internally but is not included in the customer preview."
+        next_button = f'<form method="post" action="{base}/runs/{run_id}/convert">{revision_field}<button class="btn" type="submit">Prepare fulfillment proposal</button></form>'
     elif quote_guard_errors:
-        primary_action_html = (
-            '<section class="operator-callout">'
-            '<div><p class="eyebrow">Next action</p><h2>Clear quote blockers.</h2>'
-            f'<p>{_esc(str(quote_guard_errors[0]))}</p>'
-            '<div class="operator-callout__meta">Save the required deal, pricing, or cost fields below before creating the HubSpot quote.</div></div>'
-            '<div class="operator-callout__side"><button class="btn btn--ghost" type="submit" form="rate-sheet-update">Save changes</button></div>'
-            '</section>'
-        )
-    elif hs_quote_url:
-        primary_action_html = (
-            '<section class="operator-callout">'
-            '<div><p class="eyebrow">Next action</p><h2>Quote is ready to send.</h2>'
-            '<p>The rate sheet is live and the HubSpot quote exists. Open it to send or confirm e-signature status.</p></div>'
-            f'<div class="operator-callout__side"><a class="btn" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer">Open HubSpot quote</a></div>'
-            '</section>'
-        )
+        next_title = "Review this draft."
+        next_detail = quote_guard_errors[0]
+        next_button = '<a class="btn btn--ghost" href="#proposal-review">Review pricing and preview</a>'
+    elif not published or has_changes:
+        next_title = "Publish the reviewed proposal."
+        next_detail = "The saved customer preview is ready. Publishing updates your shareable link."
+        next_button = f'<button class="btn" type="submit" form="proposal-publish">{publish_button}</button>'
     else:
-        primary_action_html = (
-            '<section class="operator-callout">'
-            '<div><p class="eyebrow">Next action</p><h2>Create the HubSpot quote.</h2>'
-            '<p>The sheet is live and quote readiness checks passed. Create the quote so Sales has a sendable closing asset.</p></div>'
-            f'<div class="operator-callout__side"><form method="post" action="{base}/runs/{run_id}/quote">'
-            '<button class="btn" type="submit" style="background:#ff7a59;border-color:#ff7a59;color:#fff">Create HubSpot quote</button></form></div>'
-            '</section>'
-        )
+        next_title = "Ready to share."
+        next_detail = "Your published proposal is ready. Share the link or open it to print / save PDF. HubSpot is optional."
+        next_button = f'<a class="btn" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer">Open live proposal</a>'
+    primary_action_html = f'<section class="operator-callout"><div><p class="eyebrow">Next action</p><h2>{next_title}</h2><p>{_esc(next_detail)}</p></div><div class="operator-callout__side">{next_button}</div></section>'
     if published and view_path:
         rate_sheet_card = f"""
           <article class="review-action-card">
@@ -2501,14 +2450,13 @@ def render_rate_sheet_review_page(
               <span class="pill pill--live">Live</span>
             </div>
             <code>{_esc(view_path)}</code>
-            <p>Prospect-facing sheet. Save &amp; re-render updates the preview and public URL; re-publish refreshes the live sheet and quote workflow.</p>
+            <p>This is the published version. Save draft changes only the private preview. Publish when you are ready to update this link.</p>
             <div class="review-action-card__buttons">
               <button class="btn btn--ghost" type="button"
                 onclick="navigator.clipboard.writeText(window.location.origin+'{_esc(view_path)}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy link',1800)">Copy link</button>
               <button class="btn btn--ghost" type="button" onclick="{_copy_email_js}">Copy email</button>
-              <a class="btn btn--ghost" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer">Open</a>
-              {hs_deal_chip}
-              {hs_quote_btn if hs_quote_url else hs_create_quote_btn}
+              <a class="btn btn--ghost" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer">Open live proposal / Print PDF</a>
+
             </div>
           </article>"""
     else:
@@ -2545,7 +2493,7 @@ def render_rate_sheet_review_page(
     review_flag_sections = []
     if quote_guard_errors:
         review_flag_sections.append(
-            '<strong>Quote blocked until:</strong><ul>'
+            '<strong>Before publishing:</strong><ul>'
             + "".join(f"<li>{_esc(item)}</li>" for item in quote_guard_errors)
             + "</ul>"
         )
@@ -2582,14 +2530,12 @@ def render_rate_sheet_review_page(
     latest_cost_sig = ""
     if latest_cost_submission:
         latest_cost_sig = " by " + _esc(latest_cost_submission.get("name") or latest_cost_submission.get("email") or "fulfillment")
-    quote_status_text = "HubSpot quote ready" if hs_quote_url else ("Blocked" if quote_guard_errors else "Ready to create")
-    quote_status_detail = "Open quote in HubSpot." if hs_quote_url else (quote_guard_errors[0] if quote_guard_errors else "Quote guards passed.")
     status_strip_html = f"""
-      <div class="review-status-strip" aria-label="Rate sheet workflow status">
-        <div class="review-status-card"><span>Rate sheet</span><strong>{_esc(status_label)}</strong><em>{'Public link is live.' if published else 'Publish before sharing.'}</em></div>
-        <div class="review-status-card"><span>Cost form</span><strong>{_esc(section_cost_status)}</strong><em>{'Latest signed submission' + latest_cost_sig if signed_cost_submissions else 'Send the cost form to fulfillment.'}</em></div>
-        <div class="review-status-card"><span>Quote</span><strong>{_esc(quote_status_text)}</strong><em>{_esc(quote_status_detail)}</em></div>
-        <div class="review-status-card"><span>Sales follow-up</span><strong>{'Ready after quote' if hs_quote_url else 'Use Deal Detail'}</strong><em>Draft the email from the HubSpot deal command center.</em></div>
+      <div class="review-status-strip" aria-label="Proposal workflow status">
+        <div class="review-status-card"><span>Document</span><strong>{_esc(kind_label)}</strong><em>{'Postage only' if kind == 'shipping_teaser' else 'Customer fees and estimate included'}</em></div>
+        <div class="review-status-card"><span>Publication</span><strong>{_esc(status_label)}</strong><em>{'Live revision ' + str(live_revision) if published else 'Private until published'} / Draft {revision}</em></div>
+        <div class="review-status-card"><span>Costs</span><strong>{_esc(section_cost_status)}</strong><em>Warehouse costs remain private.</em></div>
+        <div class="review-status-card"><span>Pricing</span><strong>{_esc(section_pricing_status)}</strong><em>Approval applies to this saved draft only.</em></div>
       </div>
     """
     action_hub_html = f"""
@@ -2630,38 +2576,22 @@ def render_rate_sheet_review_page(
       <div class="workspace">
         <p class="eyebrow"><a href="{base}" style="color:inherit;text-decoration:none;opacity:0.7">← Pipeline</a> · Review</p>
         <h1>{_esc(summary.get('prospect') or 'Rate sheet')} <span style="color:var(--light-blue)">rate sheet</span>.</h1>
-        <p class="intro">{'Rate sheet is live — edit fields below and re-publish to update. Shareable link stays the same.' if published else 'Check the preview, fix anything the extraction got wrong, then publish to activate the shareable link.'} <span class="pill {status_pill_cls}">{_esc(status_label)}</span></p>
+        <p class="intro">{'Save changes as a private draft, then publish to update the existing live link.' if published else 'Check the preview, fix anything the extraction got wrong, then publish to activate the shareable link.'} <span class="pill {status_pill_cls}">{_esc(status_label)}</span></p>
         {flash_html}
         {primary_action_html}
         {action_hub_html}
         <form method="post" action="{base}/runs/{run_id}/update" id="rate-sheet-update">
+          {revision_field}
           {prospect_summary_html}
           <div class="review-sections">
-          <details class="review-section" open>
-            <summary>
-              <span>Deal &amp; Quote Readiness <span class="review-section__sub">{_esc(section_deal_status)} · {_esc(section_pricing_status)}</span></span>
-            </summary>
+          <details class="review-section">
+            <summary>HubSpot (optional)</summary>
             <div class="review-section__body">
-          <div class="grid2">
-            <div>
-              {deal_picker_html}
-            </div>
-            <div class="flash" style="margin:0;background:rgba(133,187,218,0.08);border-color:rgba(133,187,218,0.35)">
-              <strong>Before creating a quote</strong>
-              <label style="display:flex;gap:8px;align-items:center;font-size:13px;font-weight:700;margin:12px 0 8px">
-                <input type="checkbox" name="sales_pricing_reviewed" value="1" {"checked" if pricing_reviewed else ""} style="width:auto"> Sales pricing reviewed
-              </label>
-              <p class="muted" style="margin:0 0 10px">If the deal already exists, select it and save. If it does not exist yet, create it from this rate sheet; it will return here attached.</p>
-              <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <button class="btn btn--ghost" type="submit">Save deal &amp; pricing</button>
-                <a class="btn" href="{create_deal_href}">Create new HubSpot deal</a>
-              </div>
-            </div>
-          </div>
+              <p>Your proposal works without HubSpot. Quote creation is temporarily unavailable while syncing is repaired.</p>
+              <p>{hs_deal_chip} {hs_quote_btn}</p>
+              <input type="hidden" name="hubspot_deal_id" value="{_esc(hubspot_deal_id)}">
             </div>
           </details>
-        <iframe class="preview-frame" id="preview" src="{base}/runs/{run_id}/preview" title="Rate sheet preview"></iframe>
-
           <details class="review-section">
             <summary>
               <span>Prospect Details <span class="review-section__sub">{_esc(profile.get('brand') or summary.get('prospect') or 'Brand details')} · {monthly_volume or 'no'} orders/mo</span></span>
@@ -2670,6 +2600,12 @@ def render_rate_sheet_review_page(
           <div class="form-grid">
             <div>
               <div class="field">
+                <label for="segment">Service scope</label>
+                <select id="segment" name="segment">
+                  <option value="dfy" {'selected' if summary.get('segment') != 'diy' else ''}>Anata Fulfillment (3PL)</option>
+                  <option value="diy" {'selected' if summary.get('segment') == 'diy' else ''}>Shipping OS (your own dock)</option>
+                </select>
+                <p class="muted">Shipping OS includes postage only. Save a scope change before preparing a fulfillment proposal.</p>
                 <label for="brand">Brand</label>
                 <input type="text" id="brand" name="brand" value="{_esc(profile.get('brand') or '')}">
               </div>
@@ -2714,7 +2650,7 @@ def render_rate_sheet_review_page(
             <div class="review-section__body">
           <input type="hidden" name="actual_costs_form" value="1">
           {pricing_summary_html}
-          <p class="muted" style="margin-bottom:12px">Internal fulfillment costs are warehouse-only and never shown to the prospect. Final customer prices are shown on the public rate sheet and used by Calculate My Estimate after save/re-publish. Leave a final price blank to use the agreement default plus any quote margin override.</p>
+          <p class="muted" style="margin-bottom:12px">Internal fulfillment costs are warehouse-only and never shown to the prospect. Final customer prices appear in the fulfillment proposal draft and go live only after publication. Leave a final price blank to use the agreement default plus any quote margin override.</p>
           {pricing_lines_html}
           <div class="field" style="margin-top:14px">
             <label for="rate_card_note">Rate card note (shown at bottom of Full Rate Card section)</label>
@@ -2726,10 +2662,10 @@ def render_rate_sheet_review_page(
 
           <details class="review-section">
             <summary>
-              <span>Sales Pricing &amp; Waivers <span class="review-section__sub">{_esc(section_waiver_status)} · reasons required before quote creation</span></span>
+              <span>Sales Pricing &amp; Waivers <span class="review-section__sub">{_esc(section_waiver_status)} · reasons required before publishing</span></span>
             </summary>
             <div class="review-section__body">
-          <p class="muted" style="margin-bottom:12px">Sales can waive or override any fee. Waivers are allowed, but quote creation requires a reason so the deal stays auditable.</p>
+          <p class="muted" style="margin-bottom:12px">Sales can waive or override any fee. Waivers are allowed, but publishing requires a reason so the proposal stays auditable.</p>
           <div class="grid2">
             <div class="field">
               <label>Waived fees</label>
@@ -2740,9 +2676,7 @@ def render_rate_sheet_review_page(
                 <label for="waiver_reason">Waiver / pricing reason</label>
                 <textarea id="waiver_reason" name="waiver_reason" rows="4" style="width:100%;resize:vertical" placeholder="Required when any fee is waived.">{waiver_reason}</textarea>
               </div>
-              <label style="display:flex;gap:8px;align-items:center;font-size:13px;font-weight:700;margin:10px 0">
-                <input type="checkbox" name="sales_pricing_reviewed" value="1" {"checked" if pricing_reviewed else ""} style="width:auto"> Sales pricing reviewed
-              </label>
+              <p class="muted">Approve the saved customer preview below after saving your pricing changes.</p>
               <label style="display:flex;gap:8px;align-items:center;font-size:13px;font-weight:700;margin:10px 0">
                 <input type="checkbox" name="margin_approved" value="1" {"checked" if margin_approved else ""} style="width:auto"> Approve low-margin exception
               </label>
@@ -2766,16 +2700,44 @@ def render_rate_sheet_review_page(
             </div>
           </details>
           </div>
+          <div id="draft-edit-status" role="status" aria-live="polite"></div>
           <div class="review-actions">
-            <button class="btn" type="submit">Save &amp; re-render agent preview</button>
-            <span class="muted" style="font-size:12px">Saves changes and rebuilds the agent/public preview. Use Re-publish below when the prospect-facing sheet should be refreshed.</span>
+            <button class="btn" type="submit">Save draft</button>
+            <span class="muted" style="font-size:12px">Saves your inputs and rebuilds the private preview. The live proposal is unchanged.</span>
           </div>
         </form>
+        <section id="proposal-review">
+          <h2>Draft customer preview</h2>
+          <p>Draft {revision}. {'Stale preview: save draft to rebuild before approval.' if summary.get('rendered_revision') != revision else 'Review the customer fees and estimated invoice below before approving.'}</p>
+          <iframe class="preview-frame" id="preview" src="{base}/runs/{run_id}/preview" title="Draft customer preview"></iframe>
+          <form method="post" action="{base}/runs/{run_id}/approve-pricing">
+            {revision_field}
+            <div class="review-actions"><button class="btn btn--ghost" type="submit" {'disabled' if pricing_reviewed or kind == 'shipping_teaser' or workflow.publication_errors(summary, require_review=False) else ''}>Approve saved pricing</button>
+            <span class="muted">{'Approved for this draft.' if pricing_reviewed else 'Approves only this saved preview. Any pricing change requires a new review.'}</span></div>
+          </form>
+        </section>
         {publish_form_html}
         {history_bar_html}
       </div>
     </main>
     <script>
+      window.addEventListener('message', function(event) {{
+        var preview = document.getElementById('preview');
+        if (event.origin !== window.location.origin || !preview || event.source !== preview.contentWindow || !event.data || event.data.type !== 'proposal-draft-updated') return;
+        document.getElementById('draft-edit-status').textContent = 'Package rates saved to a newer draft. Reload this page before editing or approving; keep a copy of any unsaved entries first.';
+        document.querySelectorAll('#proposal-review button, #proposal-publish button, button[form="proposal-publish"]').forEach(function(button) {{ button.disabled = true; }});
+      }});
+      var draftForm = document.getElementById('rate-sheet-update');
+      if (draftForm) draftForm.addEventListener('input', function() {{
+        document.getElementById('draft-edit-status').textContent = 'Unsaved changes. Save draft before approving or publishing.';
+        document.querySelectorAll('#proposal-review button, #proposal-publish button, button[form="proposal-publish"]').forEach(function(button) {{ button.disabled = true; }});
+      }});
+      document.querySelectorAll('form').forEach(function(form) {{
+        form.addEventListener('submit', function() {{
+          form.setAttribute('aria-busy', 'true');
+          form.querySelectorAll('button[type="submit"]').forEach(function(button) {{ button.disabled = true; button.textContent = 'Saving...'; }});
+        }});
+      }});
       // Editing any dim/weight input clears that row's "estimated" flag.
       document.querySelectorAll('.products-table tbody tr').forEach(function(tr) {{
         var hidden = tr.querySelector('input[name=product_estimated]');
