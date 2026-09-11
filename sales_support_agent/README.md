@@ -855,3 +855,5 @@ repaired. Existing quote links remain available in the optional integration
 section and may be stale; core proposal actions do not write to HubSpot. Do not
 re-enable quote creation until it consumes an immutable published revision and
 handles idempotency and accepted quotes safely.
+
+Published fulfillment links include a branded 1200×630 PNG preview and Open Graph / large-image Twitter metadata. The token-gated `/rate-sheets/{slug}/{run_id}/{token}/share.png` image uses the published recipient and document type only, never draft names or prices. Existing published HTML receives metadata at read time without regenerating or republishing the proposal. Preview fonts are bundled under the shared brand package with their OFL license; no external image service or HubSpot connection is required.

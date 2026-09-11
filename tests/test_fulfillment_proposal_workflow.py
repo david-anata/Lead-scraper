@@ -95,7 +95,7 @@ def test_conversion_save_review_publish_share_without_hubspot(context):
     response = client.post(base + "/publish", data={"expected_revision": revision}, follow_redirects=False)
     assert response.status_code == 303
     published = client.get(path).text
-    assert published == summary["deck_html"]
+    assert published.split("</head>", 1)[1] == summary["deck_html"].split("</head>", 1)[1]
     assert "PRIVATE CONCESSION" not in published
     assert "before sales margin" not in published
     assert "Ready to share" in client.get(base + "/review").text
@@ -203,3 +203,34 @@ def test_missing_revision_and_diy_cannot_convert(context):
     response = client.post(base + "/convert", data={"expected_revision": before["draft_revision"]}, follow_redirects=False)
     assert "Shipping+OS" in response.headers["location"]
     assert current(run_id) == before
+
+
+def test_share_preview_uses_published_identity_and_same_token(context):
+    from io import BytesIO
+    from PIL import Image
+    from bs4 import BeautifulSoup
+    client, run_id, path, _ = context
+    response = client.get(path)
+    soup = BeautifulSoup(response.text, "html.parser")
+    assert len(soup.select('meta[property="og:title"]')) == 1
+    assert soup.select_one('meta[name="twitter:card"]')["content"] == "summary_large_image"
+    image_url = soup.select_one('meta[property="og:image"]')["content"]
+    assert image_url.endswith(path + "/share.png?v=1")
+    image_response = client.get(path + "/share.png")
+    assert image_response.status_code == 200
+    assert image_response.headers["content-type"] == "image/png"
+    assert Image.open(BytesIO(image_response.content)).size == (1200, 630)
+    original_image = image_response.content
+    storage.update_summary(run_id, {"prospect_profile": {"brand": "PRIVATE DRAFT NAME"}})
+    assert client.get(path + "/share.png").content == original_image
+    assert "PRIVATE DRAFT NAME" not in client.get(path).text
+    assert client.get(path.replace("test-token", "wrong-token") + "/share.png").status_code == 404
+
+
+def test_share_metadata_escapes_names_and_images_handle_long_names():
+    from sales_support_agent.services.fulfillment_deck.sharing import with_share_metadata, render_share_image
+    summary = {"prospect_profile": {"brand": '<Brand & "Company">'}, "document_kind": "fulfillment_proposal"}
+    result = with_share_metadata("<html><head></head><body>UNCHANGED</body></html>", summary, "https://example.test/proposal")
+    assert '&lt;Brand &amp; &quot;Company&quot;&gt;' in result
+    assert '<body>UNCHANGED</body>' in result
+    assert render_share_image("A" * 96, "Fulfillment proposal").startswith(b"\x89PNG")

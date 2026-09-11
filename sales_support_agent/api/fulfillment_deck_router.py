@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -983,7 +983,23 @@ def rate_sheet_view(slug: str, run_id: int, token: str) -> HTMLResponse:
     deck_html = str(workflow.public_summary(dict(run.summary_json or {})).get("deck_html") or "")
     if not deck_html:
         return HTMLResponse(render_public_recovery_page(report_kind="rate sheet"), status_code=404)
-    return HTMLResponse(deck_html)
+    from sales_support_agent.services.fulfillment_deck.sharing import with_share_metadata
+    summary = workflow.public_summary(dict(run.summary_json or {}))
+    base = load_settings().deck_public_base_url.rstrip("/")
+    path = summary.get("view_path") or f"/rate-sheets/{slug}/{run_id}/{token}"
+    return HTMLResponse(with_share_metadata(deck_html, summary, base + path))
+
+
+@public_router.get("/rate-sheets/{slug}/{run_id}/{token}/share.png")
+def rate_sheet_share_image(slug: str, run_id: int, token: str) -> Response:
+    """Allow crawlers to fetch the published preview with the existing share token."""
+    run = _load_valid_run(run_id, token)
+    if run is None:
+        return Response(status_code=404, headers={"Cache-Control": "no-store"})
+    from sales_support_agent.services.fulfillment_deck.sharing import render_share_image, share_identity
+    summary = workflow.public_summary(dict(run.summary_json or {}))
+    return Response(render_share_image(*share_identity(summary)), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=300", "X-Robots-Tag": "noindex"})
 
 
 # Sections the requote response re-ships as swappable HTML fragments. The

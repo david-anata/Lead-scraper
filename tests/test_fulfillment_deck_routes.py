@@ -258,7 +258,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertIn(f'href="{_BASE}/runs/{run["id"]}/review"', page)
         self.assertIn(">Edit</a>", page)
         self.assertIn(">Share</button>", page)
-        self.assertIn(">Create Quote</button>", page)
+        self.assertNotIn(">Create Quote</button>", page)
 
     def test_update_route_round_trip(self) -> None:
         run = self._generate()
