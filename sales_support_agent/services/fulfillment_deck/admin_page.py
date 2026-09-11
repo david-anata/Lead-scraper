@@ -1233,11 +1233,6 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
                 )
             if hs_quote_url:
                 actions.append(f'<a class="action-menu-item action-menu-item--quote" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer" title="Open e-signature quote in HubSpot">Open Quote</a>')
-            actions.append(
-                    f'<form method="post" action="/admin/fulfillment/sales/runs/{run_id}/quote" '
-                    f'onclick="event.stopPropagation()">'
-                    f'<button class="action-menu-item action-menu-item--quote" type="submit" title="Create HubSpot e-signature quote">Create Quote</button></form>'
-                )
             actions.append(f'<a class="action-menu-item" href="{review_path}" target="_blank" rel="noreferrer">Edit</a>')
         actions.append(
             f'<form method="post" action="/admin/fulfillment/sales/runs/{run_id}/delete" '
