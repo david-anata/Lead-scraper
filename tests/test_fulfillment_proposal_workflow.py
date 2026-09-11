@@ -215,7 +215,7 @@ def test_share_preview_uses_published_identity_and_same_token(context):
     assert len(soup.select('meta[property="og:title"]')) == 1
     assert soup.select_one('meta[name="twitter:card"]')["content"] == "summary_large_image"
     image_url = soup.select_one('meta[property="og:image"]')["content"]
-    assert image_url.endswith(path + "/share.png?v=1")
+    assert image_url == "http://testserver" + path + "/share.png?v=1"
     image_response = client.get(path + "/share.png")
     assert image_response.status_code == 200
     assert image_response.headers["content-type"] == "image/png"
