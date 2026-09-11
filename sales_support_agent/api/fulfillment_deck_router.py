@@ -976,7 +976,7 @@ def save_fulfillment_cost_form(
 
 
 @public_router.get("/rate-sheets/{slug}/{run_id}/{token}", response_class=HTMLResponse)
-def rate_sheet_view(slug: str, run_id: int, token: str) -> HTMLResponse:
+def rate_sheet_view(slug: str, run_id: int, token: str, request: Request) -> HTMLResponse:
     run = _load_valid_run(run_id, token)
     if run is None:
         return HTMLResponse(render_public_recovery_page(report_kind="rate sheet"), status_code=404)
@@ -985,7 +985,7 @@ def rate_sheet_view(slug: str, run_id: int, token: str) -> HTMLResponse:
         return HTMLResponse(render_public_recovery_page(report_kind="rate sheet"), status_code=404)
     from sales_support_agent.services.fulfillment_deck.sharing import with_share_metadata
     summary = workflow.public_summary(dict(run.summary_json or {}))
-    base = load_settings().deck_public_base_url.rstrip("/")
+    base = str(request.base_url).rstrip("/")
     path = summary.get("view_path") or f"/rate-sheets/{slug}/{run_id}/{token}"
     return HTMLResponse(with_share_metadata(deck_html, summary, base + path))
 
