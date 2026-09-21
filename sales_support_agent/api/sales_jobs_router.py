@@ -12,6 +12,9 @@ from sales_support_agent.services.building_holds import expire_building_holds
 from sales_support_agent.services.building_lead_follow_up import (
     process_building_lead_follow_up,
 )
+from sales_support_agent.services.building_clickup import (
+    backfill_building_inquiries_to_clickup,
+)
 from sales_support_agent.services.job_lease import claim_scheduled_job, finish_scheduled_job
 
 
@@ -62,11 +65,21 @@ async def building_lead_follow_up_job(
                 }
             )
     try:
+        clickup_result = (
+            {"scanned": 0, "projected": 0, "failed": 0}
+            if dry_run
+            else backfill_building_inquiries_to_clickup(
+                request.app.state.session_factory,
+                settings=request.app.state.settings,
+                actor="job:building-lead-follow-up",
+            )
+        )
         result = process_building_lead_follow_up(
             request.app.state.session_factory,
             settings=request.app.state.settings,
             dry_run=dry_run,
         )
+        result["clickup_projection"] = clickup_result
     except Exception as exc:
         if lease is not None:
             finish_scheduled_job(

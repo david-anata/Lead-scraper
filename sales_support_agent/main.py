@@ -167,6 +167,9 @@ def create_app() -> FastAPI:
             from sales_support_agent.services.sales.operator_dashboard import (
                 get_operator_snapshot,
             )
+            from sales_support_agent.services.building_clickup import (
+                backfill_building_inquiries_to_clickup,
+            )
 
             sales_snapshot_future = app.state.dashboard_sync_executor.submit(
                 get_operator_snapshot,
@@ -174,6 +177,11 @@ def create_app() -> FastAPI:
                 session_factory=session_factory,
             )
             sales_snapshot_future.add_done_callback(_log_sales_snapshot_prewarm)
+            app.state.dashboard_sync_executor.submit(
+                backfill_building_inquiries_to_clickup,
+                session_factory,
+                settings=settings,
+            )
         try:
             yield
         finally:

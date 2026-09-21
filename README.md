@@ -185,6 +185,13 @@ Confirmed bookings also maintain CRM relationships automatically:
 - new inquiries receive an owner and response deadline immediately; configure
   `BUILDING_DEFAULT_LEAD_OWNER` and `BUILDING_RESPONSE_SLA_HOURS` (default `4`)
   to match the operating team
+- every Building form fill is projected into the configured ClickUp sales list;
+  repeat submissions for the same email reuse one lead task and are appended as
+  comments, while Eventective and Marketplace source references prevent
+  provider retries from creating duplicate inquiries
+- the hourly Building lead job retries unsynced historical inquiries, including
+  organic and AI-referred leads, so a temporary ClickUp outage cannot silently
+  strand them outside the outreach pipeline
 - the hourly operator job expires due soft holds, releases their availability,
   queues calendar cleanup, and preserves an audit record
 - private-office availability published to the website is derived from active
