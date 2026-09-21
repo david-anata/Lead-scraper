@@ -81,6 +81,11 @@ class ClickUpClient:
     def get_task(self, task_id: str) -> dict[str, Any]:
         return self._request("GET", f"task/{task_id}")
 
+    def create_task(self, list_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create one task in a ClickUp list."""
+
+        return self._request("POST", f"list/{list_id}/task", json_body=payload)
+
     def get_task_comments(self, task_id: str) -> list[dict[str, Any]]:
         try:
             payload = self._request("GET", f"task/{task_id}/comment")

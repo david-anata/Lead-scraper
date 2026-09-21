@@ -34,6 +34,8 @@ from sales_support_agent.services.building_lead_intake import (
     prefill_event_interview,
 )
 from sales_support_agent.services.building_inquiry_receipt import attempt_inquiry_receipt
+from sales_support_agent.services.building_clickup import project_building_inquiry_to_clickup
+from sales_support_agent.integrations.clickup import ClickUpClient
 from sales_support_agent.services.building_public_availability import candidate_date_availability
 from sales_support_agent.integrations.building_google_calendar import BuildingGoogleCalendarClient
 from sales_support_agent.models.database import session_scope
@@ -737,6 +739,48 @@ def create_inquiry(
                 "customer_receipt": dict(existing.payload_json or {}).get("_customer_receipt", {}),
             }
 
+        if payload.source_reference.strip():
+            existing = session.execute(
+                select(BuildingInquiry)
+                .where(
+                    BuildingInquiry.source == (payload.source or "anata-building"),
+                    BuildingInquiry.source_reference == payload.source_reference.strip(),
+                )
+                .order_by(BuildingInquiry.created_at.asc())
+            ).scalars().first()
+            if existing is not None:
+                return {
+                    "ok": True,
+                    "inquiry_id": existing.id,
+                    "status": existing.status,
+                    "duplicate": True,
+                    "customer_receipt": dict(existing.payload_json or {}).get(
+                        "_customer_receipt", {}
+                    ),
+                }
+
+        recent_match = session.execute(
+            select(BuildingInquiry)
+            .where(
+                BuildingInquiry.email == payload.email,
+                BuildingInquiry.kind == payload.kind,
+                BuildingInquiry.offering_id == payload.offering_id,
+                BuildingInquiry.preferred_date == payload.preferred_date,
+                BuildingInquiry.created_at >= _now() - timedelta(minutes=15),
+            )
+            .order_by(BuildingInquiry.created_at.desc())
+        ).scalars().first()
+        if recent_match is not None:
+            return {
+                "ok": True,
+                "inquiry_id": recent_match.id,
+                "status": recent_match.status,
+                "duplicate": True,
+                "customer_receipt": dict(recent_match.payload_json or {}).get(
+                    "_customer_receipt", {}
+                ),
+            }
+
         if payload.offering_id and session.get(BuildingOffering, payload.offering_id) is None:
             raise HTTPException(status_code=422, detail="Unknown offering.")
 
@@ -950,6 +994,14 @@ def create_inquiry(
                 inquiry=inquiry,
                 actor=actor,
             )
+
+        project_building_inquiry_to_clickup(
+            session=session,
+            inquiry=inquiry,
+            client=ClickUpClient(request.app.state.settings),
+            list_id=request.app.state.settings.clickup_list_id,
+            actor=actor,
+        )
 
         return {
             "ok": True,
