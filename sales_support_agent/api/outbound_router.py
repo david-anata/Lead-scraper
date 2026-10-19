@@ -2345,3 +2345,63 @@ async def outbound_nurture_enroll(request: Request) -> Response:
     client = HubSpotClient(settings)
     result = outbound_nurture.enroll_contact(client, email=email, outcome=outcome, brand=brand)
     return JSONResponse(status_code=(200 if result.get("ok") else 400), content=result)
+
+
+# ---------------------------------------------------------------------------
+# Clay replacement: contact finder test (dry run only, nothing is sent)
+# ---------------------------------------------------------------------------
+
+_ENRICH_TEST: dict[str, Any] = {"running": False, "report": None, "started": "", "error": ""}
+
+
+def _run_enrich_test(limit: int) -> None:
+    import outbound_contacts as _oc
+    import outbound_enrich as _oe
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_memory
+
+    try:
+        engine = get_engine()
+        leads = outbound_memory.load_leads(engine, limit=500)
+        report = _oe.run_enrichment(
+            engine, leads, api_key=_oc.load_contact_config(),
+            max_companies=limit, max_contacts=2, credit_budget=limit * 4,
+            campaign_id="", dry_run=True)
+        _ENRICH_TEST.update(report=report.as_dict(), error="")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[outbound-enrich] test run failed")
+        _ENRICH_TEST.update(report=None, error=type(exc).__name__)
+    finally:
+        _ENRICH_TEST["running"] = False
+
+
+@router.post("/admin/api/outbound/enrich-test", response_class=JSONResponse)
+async def outbound_enrich_test(request: Request) -> Response:
+    """Find contacts for the next few sourced brands. Dry run: stores contacts
+    and openers, spends contact-finder credits, sends nothing to Instantly."""
+    from starlette.background import BackgroundTask
+
+    import outbound_contacts as _oc
+
+    if _ENRICH_TEST.get("running"):
+        return JSONResponse(status_code=409, content={"ok": False, "reason": "A test is already running."})
+    if not _oc.load_contact_config():
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "PROSPEO_API_KEY is not set on this service."})
+    form = await request.form()
+    try:
+        limit = max(1, min(int(str(form.get("limit") or 10)), 50))
+    except (TypeError, ValueError):
+        limit = 10
+    _ENRICH_TEST.update(running=True, report=None, error="",
+                        started=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    return JSONResponse(
+        content={"ok": True, "started": limit,
+                 "reason": f"Finding contacts for up to {limit} brands. Dry run, nothing is sent. "
+                           "Check the status in a minute."},
+        background=BackgroundTask(_run_enrich_test, limit))
+
+
+@router.get("/admin/api/outbound/enrich-test", response_class=JSONResponse)
+def outbound_enrich_test_status(request: Request) -> Response:
+    return JSONResponse(content=dict(_ENRICH_TEST))
