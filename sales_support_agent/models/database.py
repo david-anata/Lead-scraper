@@ -54,7 +54,12 @@ def _normalize_db_url(url: str) -> str:
     boots cleanly regardless of which form it's in. Other URLs (sqlite,
     postgresql+driver) pass through untouched."""
     if url.startswith("postgres://"):
-        return "postgresql://" + url[len("postgres://"):]
+        url = "postgresql://" + url[len("postgres://"):]
+    # SQLAlchemy 2.1 changed the bare "postgresql://" default driver from
+    # psycopg2 to psycopg (v3). We ship psycopg2-binary, so name it explicitly or
+    # a fresh build fails at engine creation with "No module named 'psycopg'".
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg2://" + url[len("postgresql://"):]
     return url
 
 

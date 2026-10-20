@@ -42,5 +42,5 @@ def test_cashflow_engine_uses_the_same_serverless_pool_policy() -> None:
     ):
         database.init_cashflow_db("postgres://user:secret@example.test/app")
 
-    assert create.call_args.args[0].startswith("postgresql://")
+    assert create.call_args.args[0].startswith("postgresql+psycopg2://")
     assert create.call_args.kwargs["poolclass"] is NullPool
