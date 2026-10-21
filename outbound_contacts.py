@@ -229,4 +229,8 @@ def find_contacts(
 
 def load_contact_config() -> str:
     """The one value David sets on Render. Never hardcoded, never rendered back."""
-    return (os.getenv("PROSPEO_API_KEY") or "").strip()
+    for name in ("PROSPEO_API_KEY", "PROSPEO_KEY", "PROSPEO_TOKEN"):
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return ""
