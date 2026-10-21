@@ -25,6 +25,8 @@ services:
         value: "true"
       - key: OUTBOUND_EMBEDDED_SCHEDULER
         value: "false"
+      - key: PROSPEO_API_KEY
+        sync: false
       - key: CLICKUP_API_TOKEN
         sync: false
       - key: CLICKUP_API_KEY

@@ -2404,4 +2404,13 @@ async def outbound_enrich_test(request: Request) -> Response:
 
 @router.get("/admin/api/outbound/enrich-test", response_class=JSONResponse)
 def outbound_enrich_test_status(request: Request) -> Response:
-    return JSONResponse(content=dict(_ENRICH_TEST))
+    import os
+
+    import outbound_contacts as _oc
+
+    # Diagnostics only: whether a key is visible and how long it is. Never the value.
+    content = dict(_ENRICH_TEST)
+    content["key_seen"] = bool(_oc.load_contact_config())
+    content["key_length"] = len(_oc.load_contact_config())
+    content["prospeo_env_names"] = sorted(repr(k) for k in os.environ if "PROSPEO" in k.upper())
+    return JSONResponse(content=content)
