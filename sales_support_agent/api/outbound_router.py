@@ -2412,5 +2412,8 @@ def outbound_enrich_test_status(request: Request) -> Response:
     content = dict(_ENRICH_TEST)
     content["key_seen"] = bool(_oc.load_contact_config())
     content["key_length"] = len(_oc.load_contact_config())
+    content["env_var_count"] = len(os.environ)
+    content["others_seen"] = {n: bool(os.getenv(n)) for n in (
+        "ANTHROPIC_API_KEY", "STORELEADS_API_KEY", "SLACK_BOT_TOKEN", "INSTANTLY_API_KEY", "CLICKUP_API_TOKEN")}
     content["prospeo_env_names"] = sorted(repr(k) for k in os.environ if "PROSPEO" in k.upper())
     return JSONResponse(content=content)
