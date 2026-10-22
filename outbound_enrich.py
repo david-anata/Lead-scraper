@@ -173,7 +173,11 @@ def run_enrichment(
     find: Optional[Callable[..., _contacts.FindResult]] = None,
     write: Optional[Callable[..., tuple[str, str]]] = None,
     push: Optional[Callable[..., _push.PushOutcome]] = None,
+    deadline: Optional[float] = None,
+    clock: Optional[Callable[[], float]] = None,
 ) -> EnrichReport:
+    import time as _time
+    clock = clock or _time.monotonic
     find = find or _contacts.find_contacts
     write = write or _openers.write_opener
     push = push or _push.push_leads
@@ -207,6 +211,9 @@ def run_enrichment(
     for domain, lead in list(leads_by_domain.items())[:max_companies]:
         if report.credits_used >= credit_budget:
             report.stopped_reason = f"Credit budget of {credit_budget} reached."
+            break
+        if deadline is not None and clock() >= deadline:
+            report.stopped_reason = "Time budget for this run reached; the next run continues."
             break
         report.companies_tried += 1
         res = find(domain, api_key=api_key, max_contacts=max_contacts)
@@ -298,3 +305,13 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
             "skipped": outcome.skipped, "dry_run": outcome.dry_run,
             "errors": outcome.errors, "note": outcome.reason or outcome.summary,
             "preview": preview}
+
+
+def enriched_since(engine, since_utc) -> dict[str, int]:
+    """Companies tried and credits spent since a UTC timestamp (daily caps)."""
+    ensure_tables(engine)
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            f"SELECT COUNT(*), COALESCE(SUM(credits_used), 0) FROM {_DOMAINS} WHERE enriched_at >= :t"),
+            {"t": since_utc}).fetchone()
+    return {"companies": int(row[0] or 0), "credits": int(row[1] or 0)}

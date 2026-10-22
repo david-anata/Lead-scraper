@@ -9,7 +9,9 @@
         "api/index.py": {
           "maxDuration": 800,
           "memory": 2048,
-          "regions": ["pdx1"]
+          "regions": [
+            "pdx1"
+          ]
         }
       }
     }
@@ -78,6 +80,10 @@
     {
       "path": "/api/jobs/outbound-morning/run",
       "schedule": "0 13,14 * * *"
+    },
+    {
+      "path": "/api/jobs/outbound-enrich/run",
+      "schedule": "15 14,15,16,17 * * 1-5"
     }
   ]
 }
