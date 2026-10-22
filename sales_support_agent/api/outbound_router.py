@@ -2412,6 +2412,9 @@ def outbound_enrich_test_status(request: Request) -> Response:
     content = dict(_ENRICH_TEST)
     content["key_seen"] = bool(_oc.load_contact_config())
     content["key_length"] = len(_oc.load_contact_config())
+    content["served_by"] = {n: os.getenv(n, "") for n in (
+        "RENDER_SERVICE_ID", "RENDER_SERVICE_NAME", "RENDER_INSTANCE_ID", "RENDER_GIT_COMMIT",
+        "RENDER_GIT_BRANCH", "RENDER_EXTERNAL_HOSTNAME")}
     content["env_var_count"] = len(os.environ)
     content["others_seen"] = {n: bool(os.getenv(n)) for n in (
         "ANTHROPIC_API_KEY", "STORELEADS_API_KEY", "SLACK_BOT_TOKEN", "INSTANTLY_API_KEY", "CLICKUP_API_TOKEN")}
