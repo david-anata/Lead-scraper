@@ -25,7 +25,8 @@ def engine():
 def env(monkeypatch):
     monkeypatch.setenv("PROSPEO_API_KEY", "k" * 20)
     monkeypatch.setenv("OUTBOUND_PUSH_ENABLED", "true")
-    for n in ("OUTBOUND_AUTO_ENRICH", "OUTBOUND_ENRICH_DAILY_COMPANIES",
+    monkeypatch.setenv("OUTBOUND_AUTO_ENRICH", "true")
+    for n in ("OUTBOUND_ENRICH_DAILY_COMPANIES",
               "OUTBOUND_ENRICH_DAILY_CREDITS", "OUTBOUND_ENRICH_PER_RUN"):
         monkeypatch.delenv(n, raising=False)
 
@@ -164,3 +165,9 @@ def test_failed_instantly_check_never_contacts(engine):
     rep = out["report"]
     assert rep["companies_tried"] == 0 and out["pushed"] == 0
     assert "Could not check Instantly" in rep["stopped_reason"]
+
+
+def test_off_unless_explicitly_on(engine, monkeypatch):
+    monkeypatch.delenv("OUTBOUND_AUTO_ENRICH")
+    out, posts = run(engine)
+    assert not out["ran"] and posts == []

@@ -10,7 +10,7 @@ the live Instantly campaign (the one Clay used to feed). A Slack summary posts
 after each call that did something.
 
 Limits, all overridable with env vars:
-  OUTBOUND_AUTO_ENRICH            "false" turns the whole job off (kill switch)
+  OUTBOUND_AUTO_ENRICH            must be "true" for the job to run (off by default)
   OUTBOUND_ENRICH_DAILY_COMPANIES companies per day across all calls (120)
   OUTBOUND_ENRICH_DAILY_CREDITS   Prospeo credits per day (250)
   OUTBOUND_ENRICH_PER_RUN         companies per call (40), keeps a call short
@@ -53,7 +53,8 @@ def _int_env(name: str, default: int) -> int:
 
 
 def _enabled() -> bool:
-    return (os.getenv("OUTBOUND_AUTO_ENRICH") or "true").strip().lower() != "false"
+    # Off until David finishes his review and sets OUTBOUND_AUTO_ENRICH=true on Vercel.
+    return (os.getenv("OUTBOUND_AUTO_ENRICH") or "").strip().lower() == "true"
 
 
 def _start_of_day_utc(now: datetime) -> datetime:
