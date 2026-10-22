@@ -36,3 +36,24 @@ def test_second_start_while_running_is_409(monkeypatch):
     resp = asyncio.run(r.outbound_enrich_test(_request()))
     assert resp.status_code == 409
     r._ENRICH_TEST.update(running=False)
+
+
+def test_vercel_runs_inline_and_returns_report(monkeypatch):
+    import sales_support_agent.api.outbound_router as r
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.setenv("PROSPEO_API_KEY", "k" * 20)
+    ran = []
+
+    def fake(limit):
+        ran.append(limit)
+        r._ENRICH_TEST.update(report={"companies_tried": limit}, error="", running=False)
+
+    monkeypatch.setattr(r, "_run_enrich_test", fake)
+    r._ENRICH_TEST.update(running=False)
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    app = FastAPI()
+    app.include_router(r.router)
+    resp = TestClient(app).post("/admin/api/outbound/enrich-test", data={"limit": "7"})
+    assert ran == [7]
+    assert resp.json()["report"]["companies_tried"] == 7

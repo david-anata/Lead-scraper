@@ -2395,6 +2395,13 @@ async def outbound_enrich_test(request: Request) -> Response:
         limit = 10
     _ENRICH_TEST.update(running=True, report=None, error="",
                         started=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    import os
+    if os.getenv("VERCEL"):
+        # Serverless: work after the response is cut off, and memory is not
+        # shared between requests. Run inside the request and return the report.
+        from starlette.concurrency import run_in_threadpool
+        await run_in_threadpool(_run_enrich_test, limit)
+        return JSONResponse(content={"ok": not _ENRICH_TEST.get("error"), **dict(_ENRICH_TEST)})
     return JSONResponse(
         content={"ok": True, "started": limit,
                  "reason": f"Finding contacts for up to {limit} brands. Dry run, nothing is sent. "
@@ -2413,8 +2420,8 @@ def outbound_enrich_test_status(request: Request) -> Response:
     content["key_seen"] = bool(_oc.load_contact_config())
     content["key_length"] = len(_oc.load_contact_config())
     content["served_by"] = {n: os.getenv(n, "") for n in (
-        "RENDER_SERVICE_ID", "RENDER_SERVICE_NAME", "RENDER_INSTANCE_ID", "RENDER_GIT_COMMIT",
-        "RENDER_GIT_BRANCH", "RENDER_EXTERNAL_HOSTNAME")}
+        "RENDER_SERVICE_ID", "RENDER_SERVICE_NAME", "RENDER_GIT_COMMIT",
+        "VERCEL", "VERCEL_ENV", "VERCEL_GIT_COMMIT_SHA", "VERCEL_URL")}
     content["env_var_count"] = len(os.environ)
     content["others_seen"] = {n: bool(os.getenv(n)) for n in (
         "ANTHROPIC_API_KEY", "STORELEADS_API_KEY", "SLACK_BOT_TOKEN", "INSTANTLY_API_KEY", "CLICKUP_API_TOKEN")}
