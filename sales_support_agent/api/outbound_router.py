@@ -2400,6 +2400,39 @@ async def outbound_enrich_test(request: Request) -> Response:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[outbound-enrich] rewrite failed")
             return JSONResponse(status_code=500, content={"ok": False, "reason": type(exc).__name__})
+    if str(form.get("action") or "") == "prospeo_probe":
+        # Diagnostics: account status and the raw answer to one search. Never the key.
+        import requests as _rq
+        from starlette.concurrency import run_in_threadpool
+
+        import outbound_contacts as _oc
+        key = _oc.load_contact_config()
+
+        def _probe() -> dict[str, Any]:
+            out: dict[str, Any] = {}
+            hdr = {"X-KEY": key, "Content-Type": "application/json"}
+            for name, url, body in (
+                ("account", "https://api.prospeo.io/account-information", {}),
+                ("search", _oc.PROSPEO_SEARCH_URL, {"page": 1, "filters": {
+                    "company": {"websites": {"include": [str(form.get("domain") or "basin.com")]}}}}),
+            ):
+                try:
+                    r = _rq.post(url, json=body, headers=hdr, timeout=25)
+                    try:
+                        data = r.json()
+                    except Exception:  # noqa: BLE001
+                        data = {"text": r.text[:300]}
+                    if name == "search" and isinstance(data, dict):
+                        data = {k: v for k, v in data.items() if k != "results"} | {
+                            "results_count": len(data.get("results") or [])}
+                    rate = {k: v for k, v in r.headers.items()
+                            if "rate" in k.lower() or "retry" in k.lower() or "limit" in k.lower()}
+                    out[name] = {"status": r.status_code, "body": data, "headers": rate}
+                except Exception as exc:  # noqa: BLE001
+                    out[name] = {"error": str(exc).replace(key, "<key>")[:200]}
+            return out
+
+        return JSONResponse(content={"ok": True, **(await run_in_threadpool(_probe))})
     if str(form.get("action") or "") == "run_daily_job":
         # Same code path the scheduler runs, triggered by a signed-in admin.
         from starlette.concurrency import run_in_threadpool
