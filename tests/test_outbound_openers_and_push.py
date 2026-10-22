@@ -141,3 +141,26 @@ def test_friendly_category():
 def test_live_campaign_not_protected_by_default(monkeypatch):
     monkeypatch.delenv("OUTBOUND_PROTECTED_CAMPAIGN_IDS", raising=False)
     assert push.LIVE_CAMPAIGN_ID not in push.protected_campaigns()
+
+
+class _R:
+    def __init__(self, code, data):
+        self.status_code, self._d = code, data
+
+    def json(self):
+        return self._d
+
+
+def test_domain_in_instantly_matches_company_not_substring():
+    hit = lambda *a, **k: _R(200, {"items": [{"email": "laura@basin.com", "company_domain": "basin.com"}]})  # noqa: E731
+    near = lambda *a, **k: _R(200, {"items": [{"email": "x@mybasin.com", "company_domain": "mybasin.com"}]})  # noqa: E731
+    assert push.domain_in_instantly("basin.com", key="k" * 20, post=hit) is True
+    assert push.domain_in_instantly("basin.com", key="k" * 20, post=near) is False
+
+
+def test_domain_in_instantly_failure_is_none():
+    assert push.domain_in_instantly("a.com", key="k" * 20, post=lambda *a, **k: _R(500, {})) is None
+    def boom(*a, **k):
+        raise RuntimeError("down")
+    assert push.domain_in_instantly("a.com", key="k" * 20, post=boom) is None
+    assert push.domain_in_instantly("a.com", key="") is None

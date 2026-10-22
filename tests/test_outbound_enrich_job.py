@@ -51,7 +51,8 @@ def run(engine, n=10, **kw):
     posts = []
     out = job.run_enrich_job(now=kw.pop("now", WEEKDAY), engine=engine, leads=leads(n),
                              find=finder, write=write, push=kw.pop("push", ok_push),
-                             post_slack=posts.append, **kw)
+                             post_slack=posts.append,
+                             in_instantly=kw.pop("in_instantly", lambda d: False), **kw)
     return out, posts
 
 
@@ -145,3 +146,21 @@ def test_deadline_stops_run(engine):
     rep = oe.run_enrichment(engine, leads(5), api_key="k", find=finder, write=write,
                             deadline=50, clock=lambda: next(ticks))
     assert rep.companies_tried == 2 and "Time budget" in rep.stopped_reason
+
+
+def test_companies_already_in_instantly_are_skipped_and_cost_nothing(engine):
+    out, posts = run(engine, n=6, in_instantly=lambda d: d in {"d0.com", "d1.com"})
+    rep = out["report"]
+    assert rep["skipped_in_instantly"] == 2 and rep["companies_tried"] == 4
+    assert rep["credits_used"] == 8 and out["pushed"] == 4
+    assert "already in Instantly: 2" in posts[0]
+    # and they are remembered, so the next run does not re-check them
+    again, _ = run(engine, n=6, in_instantly=lambda d: (_ for _ in ()).throw(AssertionError(d)))
+    assert again["report"]["skipped_already_enriched"] == 6
+
+
+def test_failed_instantly_check_never_contacts(engine):
+    out, _ = run(engine, n=8, in_instantly=lambda d: None)
+    rep = out["report"]
+    assert rep["companies_tried"] == 0 and out["pushed"] == 0
+    assert "Could not check Instantly" in rep["stopped_reason"]

@@ -146,3 +146,41 @@ def push_leads(
             msg = str(exc).replace(key, "<instantly-key>") if key else str(exc)
             out.errors.append(f"push failed: {msg}")
     return out
+
+
+INSTANTLY_LIST_LEADS_URL = "https://api.instantly.ai/api/v2/leads/list"
+
+
+def _same_company(item: dict[str, Any], domain: str) -> bool:
+    d = domain.lower().lstrip(".")
+    cd = str(item.get("company_domain") or "").lower().removeprefix("www.")
+    em = str(item.get("email") or "").lower()
+    site = str(item.get("website") or "").lower()
+    site = site.split("//")[-1].removeprefix("www.").split("/")[0]
+    return cd == d or em.endswith("@" + d) or site == d
+
+
+def domain_in_instantly(domain: str, *, key: Optional[str] = None,
+                        post: Optional[Callable[..., Any]] = None) -> Optional[bool]:
+    """Is anyone at this company already a lead anywhere in Instantly?
+
+    True: yes, skip the company (Clay or an earlier run already worked it).
+    False: no one found. None: the check failed; callers treat that as "do not
+    touch this company this run" so a broken check never causes a double touch.
+    """
+    key = key if key is not None else api_key()
+    if not key or not domain:
+        return None
+    post = post or requests.post
+    try:
+        resp = post(INSTANTLY_LIST_LEADS_URL,
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json={"search": domain, "limit": 50}, timeout=30)
+        if resp.status_code >= 300:
+            logger.warning("[instantly] lead search returned %s", resp.status_code)
+            return None
+        items = (resp.json() or {}).get("items") or []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[instantly] lead search failed: %s", str(exc).replace(key, "<instantly-key>"))
+        return None
+    return any(_same_company(i or {}, domain) for i in items)

@@ -2400,6 +2400,15 @@ async def outbound_enrich_test(request: Request) -> Response:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[outbound-enrich] rewrite failed")
             return JSONResponse(status_code=500, content={"ok": False, "reason": type(exc).__name__})
+    if str(form.get("action") or "") == "instantly_check":
+        from starlette.concurrency import run_in_threadpool
+
+        import outbound_instantly_push as _ip
+        domains = [d.strip() for d in str(form.get("domains") or "").split(",") if d.strip()][:10]
+        results = {}
+        for d in domains:
+            results[d] = await run_in_threadpool(_ip.domain_in_instantly, d)
+        return JSONResponse(content={"ok": True, "in_instantly": results})
     if str(form.get("action") or "") == "push":
         import os as _os
 

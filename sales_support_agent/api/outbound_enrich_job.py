@@ -71,6 +71,10 @@ def summary_text(result: dict[str, Any]) -> str:
         f"Added to Instantly: {result.get('pushed', 0)}"
         + ("" if result.get("push_enabled") else " (sending switch is off, nothing added)"),
     ]
+    if rep.get("skipped_in_instantly"):
+        lines.append(f"Skipped, company already in Instantly: {rep['skipped_in_instantly']}")
+    if rep.get("skipped_check_failed"):
+        lines.append(f"Skipped, Instantly check failed (retried next run): {rep['skipped_check_failed']}")
     if rep.get("stopped_reason"):
         lines.append(f"Stopped: {rep['stopped_reason']}")
     if result.get("push_problem"):
@@ -87,6 +91,7 @@ def run_enrich_job(
     write: Optional[Callable[..., Any]] = None,
     push: Optional[Callable[..., Any]] = None,
     post_slack: Optional[Callable[[str], Any]] = None,
+    in_instantly: Optional[Callable[[str], Optional[bool]]] = None,
 ) -> dict[str, Any]:
     """One scheduled call. Never raises."""
     import outbound_contacts as _oc
@@ -136,6 +141,8 @@ def run_enrich_job(
             campaign_id=campaign, dry_run=not push_on,
             find=find, write=write, push=push,
             deadline=time.monotonic() + _TIME_BUDGET_SECONDS,
+            # Never touch a company Clay (or anything else) already put in Instantly.
+            already_in_instantly=in_instantly or _ip.domain_in_instantly,
         )
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-enrich-job] run failed")

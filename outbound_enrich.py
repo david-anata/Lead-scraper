@@ -135,6 +135,8 @@ class EnrichReport:
     contacts_found: int = 0
     credits_used: int = 0
     skipped_already_enriched: int = 0
+    skipped_in_instantly: int = 0
+    skipped_check_failed: int = 0
     stopped_reason: str = ""
     pushed: int = 0
     push_note: str = ""
@@ -155,6 +157,8 @@ class EnrichReport:
             "find_rate": self.find_rate, "contacts_found": self.contacts_found,
             "credits_used": self.credits_used, "credits_per_contact": self.credits_per_contact,
             "skipped_already_enriched": self.skipped_already_enriched,
+            "skipped_in_instantly": self.skipped_in_instantly,
+            "skipped_check_failed": self.skipped_check_failed,
             "stopped_reason": self.stopped_reason, "pushed": self.pushed,
             "push_note": self.push_note, "samples": self.samples[:10],
         }
@@ -175,6 +179,7 @@ def run_enrichment(
     push: Optional[Callable[..., _push.PushOutcome]] = None,
     deadline: Optional[float] = None,
     clock: Optional[Callable[[], float]] = None,
+    already_in_instantly: Optional[Callable[[str], Optional[bool]]] = None,
 ) -> EnrichReport:
     import time as _time
     clock = clock or _time.monotonic
@@ -208,13 +213,31 @@ def run_enrichment(
             continue
         leads_by_domain.setdefault(d, lead)
 
-    for domain, lead in list(leads_by_domain.items())[:max_companies]:
+    for domain, lead in list(leads_by_domain.items()):
+        if report.companies_tried >= max_companies:
+            break
         if report.credits_used >= credit_budget:
             report.stopped_reason = f"Credit budget of {credit_budget} reached."
             break
         if deadline is not None and clock() >= deadline:
             report.stopped_reason = "Time budget for this run reached; the next run continues."
             break
+        if already_in_instantly is not None:
+            seen = already_in_instantly(domain)
+            if seen is None:
+                report.skipped_check_failed += 1
+                if report.skipped_check_failed >= 5 and report.companies_tried == 0:
+                    report.stopped_reason = "Could not check Instantly for existing leads."
+                    break
+                continue
+            if seen:
+                report.skipped_in_instantly += 1
+                try:
+                    _record_domain(engine, domain, "in_instantly", 0, 0,
+                                   "Already a lead in Instantly; not contacted again.")
+                except Exception:  # noqa: BLE001
+                    logger.exception("[outbound-enrich] could not mark %s", domain)
+                continue
         report.companies_tried += 1
         res = find(domain, api_key=api_key, max_contacts=max_contacts)
         report.credits_used += res.credits_used
