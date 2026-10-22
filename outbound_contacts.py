@@ -156,7 +156,7 @@ def find_contacts(
     max_contacts: int = 2,
     post: Optional[Post] = None,
     sleep: Callable[[float], None] = time.sleep,
-    pace_seconds: float = 0.6,
+    pace_seconds: float = 1.1,
 ) -> FindResult:
     """Return up to ``max_contacts`` verified people at ``domain``."""
     domain = normalize_domain(domain)
@@ -176,6 +176,7 @@ def find_contacts(
             "person_job_title": {"include": SEARCH_TITLES, "match_mode": "CONTAINS"},
         },
     }
+    sleep(pace_seconds)  # Prospeo allows about 1 request a second
     try:
         status, data = _post_retrying(post, PROSPEO_SEARCH_URL, key=api_key, body=search_body, sleep=sleep)
     except Exception as exc:  # noqa: BLE001
