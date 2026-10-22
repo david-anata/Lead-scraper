@@ -131,3 +131,33 @@ def test_request_shape_uses_domain_filter_and_verified_only():
     enrich_body = calls[1][1]
     assert enrich_body["only_verified_email"] is True
     assert enrich_body["enrich_mobile"] is False
+
+
+def test_rate_limit_waits_and_retries():
+    import outbound_contacts as oc
+    calls = {"n": 0}
+    waits = []
+
+    def post(url, key, body):
+        if url == oc.PROSPEO_SEARCH_URL:
+            return 200, {"results": [{"person": {"person_id": "p1", "current_job_title": "Founder"}}]}
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return 429, {}
+        return 200, {"person": {"person_id": "p1", "first_name": "A", "current_job_title": "Founder",
+                                "email": {"email": "a@x.com", "status": "VERIFIED"}}}
+
+    r = oc.find_contacts("x.com", api_key="k", post=post, sleep=waits.append)
+    assert [c.email for c in r.contacts] == ["a@x.com"]
+    assert r.reason == ""
+    assert 2.0 in waits and 5.0 in waits
+
+
+def test_rate_limit_gives_up_after_retries():
+    import outbound_contacts as oc
+
+    def post(url, key, body):
+        return 429, {}
+
+    r = oc.find_contacts("x.com", api_key="k", post=post, sleep=lambda s: None)
+    assert r.reason == "Rate limit reached." and not r.contacts

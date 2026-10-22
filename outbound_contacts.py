@@ -134,6 +134,21 @@ def _http_post(url: str, *, key: str, body: dict[str, Any], timeout: int = 25) -
     return resp.status_code, data if isinstance(data, dict) else {}
 
 
+RETRY_WAITS = (2.0, 5.0, 10.0, 20.0)
+
+
+def _post_retrying(post: Post, url: str, *, key: str, body: dict[str, Any],
+                   sleep: Callable[[float], None]) -> tuple[int, dict[str, Any]]:
+    """Call ``post``; on HTTP 429 wait and retry a few times before giving up."""
+    status, data = post(url, key=key, body=body)
+    for wait in RETRY_WAITS:
+        if status != 429:
+            break
+        sleep(wait)
+        status, data = post(url, key=key, body=body)
+    return status, data
+
+
 def find_contacts(
     domain: str,
     *,
@@ -141,7 +156,7 @@ def find_contacts(
     max_contacts: int = 2,
     post: Optional[Post] = None,
     sleep: Callable[[float], None] = time.sleep,
-    pace_seconds: float = 0.2,
+    pace_seconds: float = 0.6,
 ) -> FindResult:
     """Return up to ``max_contacts`` verified people at ``domain``."""
     domain = normalize_domain(domain)
@@ -162,9 +177,12 @@ def find_contacts(
         },
     }
     try:
-        status, data = post(PROSPEO_SEARCH_URL, key=api_key, body=search_body)
+        status, data = _post_retrying(post, PROSPEO_SEARCH_URL, key=api_key, body=search_body, sleep=sleep)
     except Exception as exc:  # noqa: BLE001
         result.reason = _redact(f"search failed: {exc}", api_key)
+        return result
+    if status == 429:
+        result.reason = "Rate limit reached."
         return result
     if status != 200 or data.get("error"):
         code = data.get("error_code") or status
@@ -193,7 +211,7 @@ def find_contacts(
             "data": {"person_id": person["person_id"]},
         }
         try:
-            status, data = post(PROSPEO_ENRICH_URL, key=api_key, body=body)
+            status, data = _post_retrying(post, PROSPEO_ENRICH_URL, key=api_key, body=body, sleep=sleep)
         except Exception as exc:  # noqa: BLE001
             result.reason = _redact(f"enrich failed: {exc}", api_key)
             continue
