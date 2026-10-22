@@ -2400,6 +2400,30 @@ async def outbound_enrich_test(request: Request) -> Response:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[outbound-enrich] rewrite failed")
             return JSONResponse(status_code=500, content={"ok": False, "reason": type(exc).__name__})
+    if str(form.get("action") or "") == "push":
+        import os as _os
+
+        from starlette.concurrency import run_in_threadpool
+
+        import outbound_enrich as _oe
+        import outbound_instantly_push as _ip
+        from sales_support_agent.models.database import get_engine
+
+        campaign = (str(form.get("campaign_id") or "").strip()
+                    or _os.getenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", "").strip()
+                    or _ip.LIVE_CAMPAIGN_ID)
+        live = str(form.get("dry_run") or "true").lower() == "false"
+        try:
+            n = max(1, min(int(str(form.get("limit") or 50)), 500))
+        except ValueError:
+            n = 50
+        try:
+            out = await run_in_threadpool(
+                lambda: _oe.push_pending(get_engine(), campaign, dry_run=not live, limit=n))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[outbound-enrich] push failed")
+            return JSONResponse(status_code=500, content={"ok": False, "reason": type(exc).__name__})
+        return JSONResponse(content={"ok": not out["errors"], "campaign_id": campaign, **out})
     if _ENRICH_TEST.get("running"):
         return JSONResponse(status_code=409, content={"ok": False, "reason": "A test is already running."})
     if not _oc.load_contact_config():
@@ -2439,6 +2463,9 @@ def outbound_enrich_test_status(request: Request) -> Response:
     content["served_by"] = {n: os.getenv(n, "") for n in (
         "RENDER_SERVICE_ID", "RENDER_SERVICE_NAME", "RENDER_GIT_COMMIT",
         "VERCEL", "VERCEL_ENV", "VERCEL_GIT_COMMIT_SHA", "VERCEL_URL")}
+    import outbound_instantly_push as _ip
+    content["instantly_key_seen"] = bool(_ip.api_key())
+    content["push_enabled"] = _ip.push_enabled()
     content["env_var_count"] = len(os.environ)
     content["others_seen"] = {n: bool(os.getenv(n)) for n in (
         "ANTHROPIC_API_KEY", "STORELEADS_API_KEY", "SLACK_BOT_TOKEN", "INSTANTLY_API_KEY", "CLICKUP_API_TOKEN")}

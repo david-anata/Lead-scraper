@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 INSTANTLY_ADD_LEADS_URL = "https://api.instantly.ai/api/v2/leads/add"
 CHUNK = 100
 
-# The live "AGENT SDR // MARCH '26" campaign. Protected until David explicitly
-# approves feeding it directly, the way Clay does.
+# The live "AGENT SDR // MARCH '26" campaign. David approved feeding it directly,
+# the way Clay does (2026-10-22), so it is the default target, not protected.
 LIVE_CAMPAIGN_ID = "4f118329-c07e-4279-9c08-12059f2a49f4"
-DEFAULT_PROTECTED: tuple[str, ...] = (LIVE_CAMPAIGN_ID,)
+DEFAULT_PROTECTED: tuple[str, ...] = ()
 
 
 def friendly_category(raw: Any) -> str:

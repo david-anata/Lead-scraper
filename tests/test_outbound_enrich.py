@@ -159,3 +159,21 @@ def test_rewrite_openers_updates_unpushed_only(engine):
     out = oe.rewrite_openers(engine, [lead("a.com", "Acme")], write=lambda l, c=None: ("New line for Acme.", "ai"))
     assert out["rewritten"] == 1 and out["ai"] == 1
     assert oe.unpushed(engine)[0]["opener"] == "New line for Acme."
+
+
+def test_push_pending_dry_run_marks_nothing(engine):
+    f = finder({"a.com": ["x@a.com"]})
+    oe.run_enrichment(engine, [lead("a.com", "Acme")], api_key="k", find=f, write=opener)
+    out = oe.push_pending(engine, "camp", dry_run=True)
+    assert out["pending"] == 1 and out["pushed"] == 0 and out["dry_run"]
+    assert out["preview"][0]["company_name"] == "Acme" and "email" not in out["preview"][0]
+    assert len(oe.unpushed(engine)) == 1
+
+
+def test_push_pending_live_marks_pushed(engine):
+    f = finder({"a.com": ["x@a.com"]})
+    oe.run_enrichment(engine, [lead("a.com")], api_key="k", find=f, write=opener)
+    ok = lambda payload, cid, dry_run=False, **k: push.PushOutcome(  # noqa: E731
+        attempted=len(payload), created=len(payload), dry_run=False)
+    out = oe.push_pending(engine, "camp", dry_run=False, push=ok)
+    assert out["pushed"] == 1 and oe.unpushed(engine) == []

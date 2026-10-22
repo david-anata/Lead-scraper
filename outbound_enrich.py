@@ -242,18 +242,9 @@ def run_enrichment(
             break
 
     if campaign_id and not dry_run:
-        pending = unpushed(engine)
-        payload, emails = [], []
-        for p in pending:
-            lead = {"domain": p["domain"], "brand": p["brand"], "categories": p["category"],
-                    "recipe": p["recipe"], "tier": p["tier"]}
-            payload.append(_push.build_lead(p, lead, p["opener"]))
-            emails.append(p["email"])
-        outcome = push(payload, campaign_id, dry_run=False)
-        report.push_note = outcome.summary if not outcome.reason else outcome.reason
-        if not outcome.dry_run and not outcome.errors:
-            _mark_pushed(engine, emails, campaign_id)
-            report.pushed = len(emails)
+        out = push_pending(engine, campaign_id, dry_run=False, push=push)
+        report.push_note = out["note"]
+        report.pushed = out["pushed"]
     else:
         report.push_note = "Dry run: nothing sent to Instantly."
     return report
@@ -283,3 +274,27 @@ def rewrite_openers(engine, leads: list[dict[str, Any]], *,
         if len(samples) < 12:
             samples.append({"brand": brand, "title": title, "opener": line, "source": src})
     return {"rewritten": done, "ai": ai, "fallback": done - ai, "samples": samples}
+
+
+def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int = 500,
+                 push: Optional[Callable[..., _push.PushOutcome]] = None) -> dict[str, Any]:
+    """Add every not-yet-pushed contact to an Instantly campaign. Marks them
+    pushed only when Instantly accepted the batch with no errors."""
+    push = push or _push.push_leads
+    pending = unpushed(engine, limit)
+    payload, emails = [], []
+    for p in pending:
+        lead = {"domain": p["domain"], "brand": p["brand"], "categories": p["category"],
+                "recipe": p["recipe"], "tier": p["tier"]}
+        payload.append(_push.build_lead(p, lead, p["opener"]))
+        emails.append(p["email"])
+    outcome = push(payload, campaign_id, dry_run=dry_run)
+    pushed = 0
+    if not outcome.dry_run and not outcome.errors and payload:
+        _mark_pushed(engine, emails, campaign_id)
+        pushed = len(emails)
+    preview = [{k: v for k, v in lead.items() if k != "email"} for lead in payload[:3]]
+    return {"pending": len(payload), "pushed": pushed, "created": outcome.created,
+            "skipped": outcome.skipped, "dry_run": outcome.dry_run,
+            "errors": outcome.errors, "note": outcome.reason or outcome.summary,
+            "preview": preview}

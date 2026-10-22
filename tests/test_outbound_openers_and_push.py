@@ -67,8 +67,9 @@ def test_push_is_dry_run_by_default_and_calls_nothing():
     assert out.dry_run and not calls
 
 
-def test_push_refuses_protected_live_campaign(monkeypatch):
+def test_push_refuses_protected_campaign(monkeypatch):
     monkeypatch.setenv("OUTBOUND_PUSH_ENABLED", "true")
+    monkeypatch.setenv("OUTBOUND_PROTECTED_CAMPAIGN_IDS", "4f118329-c07e-4279-9c08-12059f2a49f4")
     calls = []
     out = push.push_leads([{"email": "a@b.com"}], "4f118329-c07e-4279-9c08-12059f2a49f4",
                           dry_run=False, key="k" * 20, post=lambda *a, **k: calls.append(1))
@@ -135,3 +136,8 @@ def test_friendly_category():
     assert push.friendly_category("/Apparel") == "apparel"
     assert push.friendly_category(["/Apparel/Clothing Accessories"]) == "clothing accessories"
     assert push.friendly_category("") == ""
+
+
+def test_live_campaign_not_protected_by_default(monkeypatch):
+    monkeypatch.delenv("OUTBOUND_PROTECTED_CAMPAIGN_IDS", raising=False)
+    assert push.LIVE_CAMPAIGN_ID not in push.protected_campaigns()
