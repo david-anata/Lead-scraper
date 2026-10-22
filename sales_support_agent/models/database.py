@@ -133,6 +133,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
         ensure_outbound_schema(engine)
         ensure_outbound_settings_schema(engine, force=True)
         ensure_outbound_batch_schema(engine, force=True)
+        _ensure_outbound_enrich_tables(engine)
         return
 
     # Production deployments use a persistent Postgres database. Running
@@ -169,6 +170,17 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     ensure_outbound_schema(engine)
     ensure_outbound_settings_schema(engine, force=True)
     ensure_outbound_batch_schema(engine, force=True)
+    _ensure_outbound_enrich_tables(engine)
+
+
+def _ensure_outbound_enrich_tables(engine: Any) -> None:
+    """Tables for the contact finder (Clay replacement)."""
+    try:
+        from outbound_enrich import ensure_tables
+    except ImportError:  # pragma: no cover - module lives at the repo root
+        logger.warning("outbound_enrich not importable; skipping its tables")
+        return
+    ensure_tables(engine)
 
 
 def _ensure_content_tables(engine: Any) -> None:

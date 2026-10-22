@@ -61,6 +61,11 @@ _CREATE = (
 
 
 def ensure_tables(engine) -> None:
+    """Create the two tables. Runs in the Render pre-deploy migration (schema
+    owner). Vercel's runtime role cannot run DDL, so it skips this there."""
+    import os
+    if os.getenv("VERCEL") and engine.dialect.name == "postgresql":
+        return
     with engine.begin() as conn:
         for sql in _CREATE:
             conn.execute(text(sql))

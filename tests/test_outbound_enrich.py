@@ -125,3 +125,29 @@ def test_out_of_credits_stops_run(engine):
         return oc.FindResult(domain=domain, reason="Out of contact-finder credits.")
     r = oe.run_enrichment(engine, [lead("a.com"), lead("b.com")], api_key="k", find=find, write=opener)
     assert r.companies_tried == 1 and "credits" in r.stopped_reason.lower()
+
+
+def test_init_database_creates_enrich_tables():
+    from sqlalchemy import inspect
+    from sales_support_agent.models.database import init_database
+    from sqlalchemy.orm import sessionmaker
+    e = create_engine("sqlite://")
+    init_database(sessionmaker(bind=e))
+    names = set(inspect(e).get_table_names())
+    assert {"outbound_enriched", "outbound_enriched_contacts"} <= names
+
+
+def test_vercel_postgres_skips_ddl(monkeypatch):
+    monkeypatch.setenv("VERCEL", "1")
+    calls = []
+
+    class Eng:
+        class dialect:
+            name = "postgresql"
+
+        def begin(self):
+            calls.append(1)
+            raise AssertionError("no DDL on Vercel")
+
+    oe.ensure_tables(Eng())
+    assert calls == []
