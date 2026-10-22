@@ -2400,6 +2400,13 @@ async def outbound_enrich_test(request: Request) -> Response:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[outbound-enrich] rewrite failed")
             return JSONResponse(status_code=500, content={"ok": False, "reason": type(exc).__name__})
+    if str(form.get("action") or "") == "run_daily_job":
+        # Same code path the scheduler runs, triggered by a signed-in admin.
+        from starlette.concurrency import run_in_threadpool
+
+        from sales_support_agent.api.outbound_enrich_job import run_enrich_job
+        result = await run_in_threadpool(run_enrich_job)
+        return JSONResponse(content={"ok": True, **result})
     if str(form.get("action") or "") == "instantly_check":
         from starlette.concurrency import run_in_threadpool
 
