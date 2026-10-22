@@ -26,8 +26,23 @@ logger = logging.getLogger(__name__)
 INSTANTLY_ADD_LEADS_URL = "https://api.instantly.ai/api/v2/leads/add"
 CHUNK = 100
 
-# The live "AGENT SDR // MARCH '26" campaign. Never written to by this module.
-DEFAULT_PROTECTED = ("4f118329-c07e-4279-9c08-12059f2a49f4",)
+# The live "AGENT SDR // MARCH '26" campaign. Protected until David explicitly
+# approves feeding it directly, the way Clay does.
+LIVE_CAMPAIGN_ID = "4f118329-c07e-4279-9c08-12059f2a49f4"
+DEFAULT_PROTECTED: tuple[str, ...] = (LIVE_CAMPAIGN_ID,)
+
+
+def friendly_category(raw: Any) -> str:
+    """StoreLeads paths ("/Home & Garden/Gardening & Landscaping, /Business & ...")
+    become the words the email reads: "gardening & landscaping"."""
+    if isinstance(raw, (list, tuple)):
+        raw = ", ".join(str(r) for r in raw)
+    paths = [p.strip() for p in str(raw or "").split(",") if p.strip()]
+    if not paths:
+        return ""
+    preferred = [p for p in paths if not p.lower().startswith("/business & industrial")] or paths
+    leaf = [seg for seg in preferred[0].split("/") if seg.strip()]
+    return leaf[-1].strip().lower() if leaf else ""
 
 
 def protected_campaigns() -> set[str]:
@@ -46,9 +61,7 @@ def api_key() -> str:
 def build_lead(contact: dict[str, Any], lead: dict[str, Any], opener: str) -> dict[str, Any]:
     """One Instantly lead. Field names match the sequence variables:
     {{firstName}}, {{companyName}}, {{personalization}}, {{category}}."""
-    categories = lead.get("categories") or ""
-    if isinstance(categories, (list, tuple)):
-        categories = categories[0] if categories else ""
+    category = friendly_category(lead.get("categories") or "") or str(lead.get("niche") or "").strip().lower()
     return {
         "email": str(contact.get("email") or "").strip().lower(),
         "first_name": str(contact.get("first_name") or "").strip(),
@@ -57,7 +70,7 @@ def build_lead(contact: dict[str, Any], lead: dict[str, Any], opener: str) -> di
         "website": str(lead.get("domain") or "").strip(),
         "personalization": opener,
         "custom_variables": {
-            "category": str(categories or lead.get("niche") or "").strip(),
+            "category": category,
             "signal": str(lead.get("recipe") or "").strip(),
             "tier": str(lead.get("tier") or "").strip(),
             "contact_title": str(contact.get("title") or "").strip(),

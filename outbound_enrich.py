@@ -96,7 +96,7 @@ def _record_person(engine, c: _contacts.Contact, opener: str, source: str,
                    lead: dict[str, Any]) -> None:
     cats = lead.get("categories") or ""
     if isinstance(cats, (list, tuple)):
-        cats = cats[0] if cats else ""
+        cats = ", ".join(str(c) for c in cats)
     with engine.begin() as conn:
         conn.execute(text(
             f"INSERT INTO {_PEOPLE} (email, domain, first_name, last_name, title, linkedin_url, "
@@ -245,7 +245,7 @@ def run_enrichment(
         pending = unpushed(engine)
         payload, emails = [], []
         for p in pending:
-            lead = {"domain": p["domain"], "brand": p["brand"], "categories": [p["category"]],
+            lead = {"domain": p["domain"], "brand": p["brand"], "categories": p["category"],
                     "recipe": p["recipe"], "tier": p["tier"]}
             payload.append(_push.build_lead(p, lead, p["opener"]))
             emails.append(p["email"])

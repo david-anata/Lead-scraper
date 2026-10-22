@@ -57,7 +57,7 @@ def test_build_lead_maps_instantly_fields():
     lead = push.build_lead(CONTACT, LEAD, "Hello line")
     assert lead["email"] == "ann@huppy.com"
     assert lead["company_name"] == "Huppy" and lead["personalization"] == "Hello line"
-    assert lead["custom_variables"]["category"] == "Health & Beauty"
+    assert lead["custom_variables"]["category"] == "health & beauty"
 
 
 def test_push_is_dry_run_by_default_and_calls_nothing():
@@ -128,3 +128,10 @@ def test_retry_once_then_accept():
     lines = iter(["I noticed Huppy is building something special.", "Huppy toothpaste tabs look great. Selling them on Amazon yet?"])
     line, src = op.write_opener(LEAD, CONTACT, llm=lambda p: next(lines))
     assert src == "ai" and line.startswith("Huppy toothpaste")
+
+
+def test_friendly_category():
+    assert push.friendly_category("/Business & Industrial/Agriculture & Forestry, /Home & Garden/Gardening & Landscaping") == "gardening & landscaping"
+    assert push.friendly_category("/Apparel") == "apparel"
+    assert push.friendly_category(["/Apparel/Clothing Accessories"]) == "clothing accessories"
+    assert push.friendly_category("") == ""
