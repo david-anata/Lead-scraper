@@ -2383,6 +2383,23 @@ async def outbound_enrich_test(request: Request) -> Response:
 
     import outbound_contacts as _oc
 
+    form = await request.form()
+    if str(form.get("action") or "") == "rewrite_openers":
+        from starlette.concurrency import run_in_threadpool
+
+        import outbound_enrich as _oe
+        from sales_support_agent.models.database import get_engine
+        from sales_support_agent.services import outbound_memory
+
+        def _rewrite() -> dict[str, Any]:
+            engine = get_engine()
+            return _oe.rewrite_openers(engine, outbound_memory.load_leads(engine, limit=1000))
+
+        try:
+            return JSONResponse(content={"ok": True, **(await run_in_threadpool(_rewrite))})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[outbound-enrich] rewrite failed")
+            return JSONResponse(status_code=500, content={"ok": False, "reason": type(exc).__name__})
     if _ENRICH_TEST.get("running"):
         return JSONResponse(status_code=409, content={"ok": False, "reason": "A test is already running."})
     if not _oc.load_contact_config():

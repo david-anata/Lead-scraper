@@ -151,3 +151,11 @@ def test_vercel_postgres_skips_ddl(monkeypatch):
 
     oe.ensure_tables(Eng())
     assert calls == []
+
+
+def test_rewrite_openers_updates_unpushed_only(engine):
+    f = finder({"a.com": ["x@a.com"]})
+    oe.run_enrichment(engine, [lead("a.com")], api_key="k", find=f, write=opener)
+    out = oe.rewrite_openers(engine, [lead("a.com", "Acme")], write=lambda l, c=None: ("New line for Acme.", "ai"))
+    assert out["rewritten"] == 1 and out["ai"] == 1
+    assert oe.unpushed(engine)[0]["opener"] == "New line for Acme."

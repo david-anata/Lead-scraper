@@ -28,15 +28,23 @@ BANNED_PHRASES = (
     "hope this finds you", "hope you're well", "hope you are well", "game-changing",
     "game changing", "revolutionary", "cutting-edge", "cutting edge", "synergy",
     "i came across your", "touch base", "circle back", "reaching out",
+    # Template tics the model fell into on the first live run.
+    "i noticed", "we noticed", "building something", "something special",
+    "i'm curious", "we're curious", "curious how", "ideal customer profile", "icp",
 )
 
 _SYSTEM = (
-    "You write the first line of a cold email from Abby at Anata. Anata Intelligence "
-    "builds an Amazon growth strategy for a brand and runs the ad actions automatically. "
-    "Write ONE or TWO short sentences that show we looked at this specific brand and end "
-    "by lightly asking a question about Amazon. Use only the facts provided. Never state "
-    "a number, statistic, or result. No links. No em dashes. No greeting, no sign-off. "
-    "Plain, warm, founder-to-founder."
+    "You write the first line of a cold email from Abby at Anata to a founder or "
+    "marketing lead at a consumer brand. Anata Intelligence builds a brand's Amazon "
+    "strategy and runs the ad actions automatically. Write ONE or TWO short sentences "
+    "(under 30 words total) that reference something concrete about this brand from the "
+    "facts given (what they sell, their category, or the signal), then ask one light, "
+    "specific question about Amazon. Vary the structure: do not start with 'I noticed', "
+    "'We noticed' or the brand name followed by 'is building'. Never use the words "
+    "'curious', 'special', 'building something', or 'ideal customer profile'. Use only "
+    "the facts provided; if a fact sounds like an internal note about why we chose them, "
+    "do not repeat it. Never state a number, statistic, or result. No links. No em "
+    "dashes. No greeting, no sign-off. Plain, warm, founder-to-founder."
 )
 
 
@@ -67,13 +75,12 @@ def validate(text: str) -> tuple[bool, str]:
 
 
 def fallback_line(brand: str, niche: str = "", reason: str = "") -> str:
-    """Deterministic opener. Honest, specific only to what we know."""
+    """Deterministic opener. Honest, specific only to what we know. ``reason`` is
+    an internal note and is deliberately never shown to a prospect."""
     name = (brand or "your brand").strip()
-    if reason and not re.search(r"\d", reason) and len(reason.split()) <= 14:
-        return clean(f"Noticed {name} lately: {reason.rstrip('.')}. Is Amazon part of the plan?")
     if niche:
-        return clean(f"Been looking at brands in {niche} and {name} stood out. How are you thinking about Amazon?")
-    return clean(f"{name} stood out to me. How are you thinking about Amazon right now?")
+        return clean(f"{name} stood out while I was looking at {niche} brands. Is Amazon a real growth channel for you yet?")
+    return clean(f"{name} stood out to me. Is Amazon a real growth channel for you yet?")
 
 
 def _build_prompt(brand: str, niche: str, reason: str, categories: str, title: str) -> str:
@@ -120,12 +127,16 @@ def write_opener(
     if llm is None and key:
         llm = lambda p: _call_anthropic(p, key)  # noqa: E731
     if llm is not None:
+        prompt = _build_prompt(brand, niche, reason, str(cats), title)
         try:
-            raw = llm(_build_prompt(brand, niche, reason, str(cats), title))
-            ok, why = validate(raw)
-            if ok:
-                return clean(raw), "ai"
-            logger.info("[outbound-openers] rejected AI line (%s), using fallback", why)
+            for _attempt in range(2):
+                raw = llm(prompt)
+                ok, why = validate(raw)
+                if ok:
+                    return clean(raw), "ai"
+                logger.info("[outbound-openers] rejected AI line (%s)", why)
+                prompt = (prompt + f"\n\nYour last line was rejected ({why}). "
+                          "Write a different one that follows every rule.")
         except Exception:  # noqa: BLE001 - never block a lead on the AI
             logger.exception("[outbound-openers] AI call failed, using fallback")
     return fallback_line(brand, niche, reason), "fallback"

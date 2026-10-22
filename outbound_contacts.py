@@ -134,7 +134,7 @@ def _http_post(url: str, *, key: str, body: dict[str, Any], timeout: int = 25) -
     return resp.status_code, data if isinstance(data, dict) else {}
 
 
-RETRY_WAITS = (2.0, 5.0, 10.0, 20.0)
+RETRY_WAITS = (2.0, 5.0, 10.0, 20.0, 30.0)
 
 
 def _post_retrying(post: Post, url: str, *, key: str, body: dict[str, Any],

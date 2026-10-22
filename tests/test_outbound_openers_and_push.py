@@ -113,3 +113,18 @@ def test_push_error_hides_key(monkeypatch):
 
     out = push.push_leads([{"email": "a@b.com"}], "new-campaign", dry_run=False, key=secret, post=post)
     assert out.errors and all(secret not in e for e in out.errors)
+
+
+def test_fallback_never_leaks_internal_reason():
+    line = op.fallback_line("Basin", "bath", "They fit our ideal customer profile")
+    assert "ideal customer" not in line.lower() and "Basin" in line and op.validate(line)[0]
+
+
+def test_template_tics_rejected():
+    assert not op.validate("I noticed Basin is building something special. Curious?")[0]
+
+
+def test_retry_once_then_accept():
+    lines = iter(["I noticed Huppy is building something special.", "Huppy toothpaste tabs look great. Selling them on Amazon yet?"])
+    line, src = op.write_opener(LEAD, CONTACT, llm=lambda p: next(lines))
+    assert src == "ai" and line.startswith("Huppy toothpaste")

@@ -257,3 +257,29 @@ def run_enrichment(
     else:
         report.push_note = "Dry run: nothing sent to Instantly."
     return report
+
+
+def rewrite_openers(engine, leads: list[dict[str, Any]], *,
+                    write: Optional[Callable[..., tuple[str, str]]] = None,
+                    limit: int = 200) -> dict[str, Any]:
+    """Rewrite openers for contacts not yet pushed (after a prompt change).
+    Costs only AI calls, never contact-finder credits."""
+    write = write or _openers.write_opener
+    by_domain = {_contacts.normalize_domain(str(l.get("domain") or "")): l for l in leads}
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            f"SELECT email, domain, title, brand, category, recipe, tier FROM {_PEOPLE} "
+            "WHERE pushed_at IS NULL ORDER BY created_at LIMIT :n"), {"n": limit}).fetchall()
+    done, ai, samples = 0, 0, []
+    for email, domain, title, brand, category, recipe, tier in rows:
+        lead = by_domain.get(domain) or {"domain": domain, "brand": brand,
+                                         "categories": [category], "recipe": recipe, "tier": tier}
+        line, src = write(lead, {"title": title})
+        with engine.begin() as conn:
+            conn.execute(text(f"UPDATE {_PEOPLE} SET opener = :o, opener_source = :s WHERE email = :e"),
+                         {"o": line, "s": src, "e": email})
+        done += 1
+        ai += src == "ai"
+        if len(samples) < 12:
+            samples.append({"brand": brand, "title": title, "opener": line, "source": src})
+    return {"rewritten": done, "ai": ai, "fallback": done - ai, "samples": samples}
