@@ -12,7 +12,7 @@
  */
 (function () {
   var CFG = window.__ANATA_CALL__ || {};
-  var PER_CALL = ['ss-beliefs', 'ss-gap', 'ss-nums', 'ss-sel', 'ss-asks', 'ss-ai', 'ss-callmeta', 'ss-last'];
+  var PER_CALL = ['ss-beliefs', 'ss-gap', 'ss-nums', 'ss-sel', 'ss-asks', 'ss-ai', 'ss-callmeta', 'ss-last', 'ss-live'];
 
   /* ---- Hydrate this lead's tracker before the script reads storage ---- */
   try {
@@ -187,4 +187,391 @@
       return Promise.resolve(null);
     }
   };
+})();
+
+/* ---------------------------------------------------------------------------
+ * Live call module: Go live, Tape extension bridge, live state polling, coach
+ * updates applied to the tracker, End call with automatic review and the
+ * after-call steps. Renders into [data-live] at the top of the Talk flow tab.
+ * ------------------------------------------------------------------------- */
+(function () {
+  var CFG = window.__ANATA_CALL__ || {};
+  if (!CFG.trackerId) return;
+  var BASE = CFG.base + '/' + CFG.trackerId;
+  var POLL_MS = 2000;
+  var EXT_MIN = '1.1.0';
+  var OFFERS = {
+    starter: 'Brand Starter, $99/mo',
+    growth: 'Brand Growth, $199/mo',
+    pro: 'Brand Pro, $399/mo',
+    full: 'Full service, $3,000/mo + 5% over baseline'
+  };
+  var KIND = { ask: 'Ask next', handle: 'Handle it', tiedown: 'Tie it down', moveon: 'Move on', pitch: 'Pitch now', close: 'Close', temperature: 'Temperature check' };
+  var BELIEFS = ['Pain', 'Doubt', 'Cost', 'Desire', 'Support', 'Trust', 'Money'];
+
+  var st = {
+    session: null, lines: [], lastLineId: 0, rev: 0, patch: null, coachRunning: false,
+    polling: null, failures: 0, ext: { present: false, version: '', status: '' },
+    pingTimer: null, busy: false, error: '', afterCall: null, reviewState: '', pitchAt: null,
+    justEnded: false
+  };
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function $(sel, r) { return (r || document).querySelector(sel); }
+  function $$(sel, r) { return Array.prototype.slice.call((r || document).querySelectorAll(sel)); }
+
+  function api(path, opts) {
+    opts = opts || {};
+    return fetch(BASE + path, {
+      method: opts.method || 'GET',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CFG.csrf || '' },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      credentials: 'same-origin'
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) { var e = new Error((j && (j.detail || j.error)) || ('Request failed (' + r.status + ')')); e.status = r.status; throw e; }
+        return j;
+      });
+    });
+  }
+
+  /* ---- Per-lead live memory (locks and coach quotes), saved with the tracker ---- */
+  function liveMem() {
+    var m = null;
+    try { m = JSON.parse(localStorage.getItem('ss-live') || 'null'); } catch (e) { m = null; }
+    if (!m || typeof m !== 'object') m = {};
+    m.locks = m.locks || {}; m.locks.beliefs = m.locks.beliefs || {};
+    m.coach = m.coach || {}; m.coach.beliefs = m.coach.beliefs || {};
+    return m;
+  }
+  function saveMem(m) { try { localStorage.setItem('ss-live', JSON.stringify(m)); } catch (e) { /* storage blocked */ } }
+
+  /* ---- Tape extension bridge ---- */
+  function verGte(a, b) {
+    var x = String(a || '0').split('.').map(Number), y = String(b).split('.').map(Number);
+    for (var i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); }
+    return true;
+  }
+  function toExt(type, extra) {
+    var msg = { source: 'anata-call', type: type };
+    if (extra) for (var k in extra) msg[k] = extra[k];
+    window.postMessage(msg, location.origin);
+  }
+  window.addEventListener('message', function (e) {
+    if (e.source !== window || !e.data || e.data.source !== 'tape-ext') return;
+    var d = e.data;
+    if (d.type === 'PONG' || d.type === 'LIVE_STATUS') {
+      st.ext.present = true;
+      if (d.version) st.ext.version = d.version;
+      if (st.pingTimer) { clearTimeout(st.pingTimer); st.pingTimer = null; }
+    }
+    if (d.type === 'LIVE_STATUS') {
+      st.ext.status = d.status || '';
+      st.error = d.status === 'error' ? (d.error || 'The Tape extension reported a problem.') : st.error;
+      if (d.status === 'live' && !st.polling) startPolling();
+    }
+    render();
+  });
+  function ping() {
+    st.ext.present = false;
+    if (st.pingTimer) clearTimeout(st.pingTimer);
+    st.pingTimer = setTimeout(function () { st.pingTimer = null; render(); }, 1500);
+    toExt('PING');
+  }
+  function extReady() { return st.ext.present && verGte(st.ext.version, EXT_MIN); }
+
+  /* ---- Coach patch -> tracker ---- */
+  function markCoachNumbers(keys) {
+    (keys || []).forEach(function (k) {
+      $$('[data-num="' + k + '"]').forEach(function (el) { el.classList.add('coachfill'); el.title = 'Filled from the call. Type to change it.'; });
+    });
+  }
+  function paintBeliefQuotes() {
+    var m = liveMem();
+    $$('.meter .bt[data-b]').forEach(function (b) {
+      var q = m.coach.beliefs[b.dataset.b];
+      var locked = Object.prototype.hasOwnProperty.call(m.locks.beliefs, b.dataset.b);
+      b.classList.toggle('coach', !!q && !locked && b.getAttribute('aria-pressed') === 'true');
+      if (q) b.title = 'Heard: "' + q + '"' + (locked ? ' (you set this one)' : '');
+    });
+  }
+  function paintSections(p) {
+    var secs = (p && p.sections) || {};
+    $$('nav a[data-sid]').forEach(function (a) {
+      var s = secs[a.dataset.sid];
+      a.classList.toggle('live-done', !!(s && s.done));
+      if (s && s.done && s.quote) a.title = 'Covered: "' + s.quote + '"';
+    });
+  }
+  function applyPatch(p) {
+    if (!p || !window.SS) return;
+    var SS = window.SS, m = liveMem();
+    var said = [];
+    BELIEFS.forEach(function (b) {
+      var v = p.beliefs && p.beliefs[b];
+      if (!v) return;
+      if (v.quote) m.coach.beliefs[b] = v.quote;
+      if (v.status === 'said' && !Object.prototype.hasOwnProperty.call(m.locks.beliefs, b)) said.push(b);
+    });
+    saveMem(m);
+    if (SS.applyCall) {
+      var out = SS.applyCall({ beliefs: said, nums: p.numbers || {}, quotes: p.quotes || [], personalGoal: p.personalGoal || '' });
+      markCoachNumbers(out && out.nums);
+    }
+    if (SS.applySel) SS.applySel({ pains: p.pains || [], objs: p.objs || [], res: p.res || [] });
+    if (p.pitch && p.pitch.ready && !st.pitchAt) st.pitchAt = Date.now();
+    paintSections(p);
+    paintBeliefQuotes();
+  }
+
+  /* Rep clicks a belief: from then on the coach leaves that belief alone */
+  document.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('.meter .bt[data-b]') : null;
+    if (!b) return;
+    setTimeout(function () {
+      var m = liveMem();
+      if (!st.session && !m.coach.beliefs[b.dataset.b]) return;
+      m.locks.beliefs[b.dataset.b] = b.getAttribute('aria-pressed') === 'true';
+      saveMem(m); paintBeliefQuotes();
+    }, 0);
+  }, true);
+  document.addEventListener('input', function (e) {
+    if (e.target && e.target.classList && e.target.classList.contains('coachfill')) {
+      e.target.classList.remove('coachfill'); e.target.removeAttribute('title');
+    }
+  }, true);
+
+  /* ---- Polling ---- */
+  function startPolling() {
+    if (st.polling) return;
+    st.polling = setInterval(poll, POLL_MS);
+    poll();
+  }
+  function stopPolling() { if (st.polling) { clearInterval(st.polling); st.polling = null; } }
+  function poll() {
+    return api('/live/state?after=' + st.lastLineId + '&rev=' + st.rev).then(function (j) {
+      st.failures = 0;
+      st.session = j.session || null;
+      (j.lines || []).forEach(function (l) { st.lines.push(l); });
+      if (st.lines.length > 400) st.lines = st.lines.slice(-400);
+      if (typeof j.lastLineId === 'number') st.lastLineId = Math.max(st.lastLineId, j.lastLineId);
+      st.coachRunning = !!j.coachRunning;
+      if (j.coach && j.coach.rev > st.rev) { st.rev = j.coach.rev; st.patch = j.coach.patch || null; applyPatch(st.patch); }
+      if (!st.session || st.session.status === 'ended') stopPolling();
+      render();
+    }).catch(function () { st.failures++; render(); });
+  }
+
+  /* ---- Actions ---- */
+  function goLive() {
+    if (st.busy) return;
+    st.busy = true; st.error = ''; st.afterCall = null; st.reviewState = ''; st.justEnded = false; render();
+    var ctx = '';
+    try { ctx = (window.SS && window.SS.coachContext) ? window.SS.coachContext() : ''; } catch (e) { ctx = ''; }
+    api('/live', { method: 'POST', body: { coachContext: ctx.slice(0, 120000), label: CFG.label || '' } }).then(function (j) {
+      st.session = { id: j.sessionId, status: 'pending', startedAt: j.startedAt, consentAt: null, endedAt: null };
+      st.lines = []; st.lastLineId = 0; st.rev = 0; st.patch = null; st.pitchAt = null;
+      toExt('LIVE_ARM', { session: { sessionId: j.sessionId, token: j.token, relayUrl: j.relayUrl, label: CFG.label || '', trackerUrl: location.href } });
+      st.busy = false;
+      startPolling();
+      var tab = document.getElementById('tab-flow'); if (tab) tab.click();
+    }).catch(function (e) { st.busy = false; st.error = e.message; render(); });
+  }
+  function rearm() {
+    api('/live', { method: 'POST', body: { coachContext: (window.SS && window.SS.coachContext ? window.SS.coachContext() : '').slice(0, 120000), label: CFG.label || '' } }).then(function (j) {
+      toExt('LIVE_ARM', { session: { sessionId: j.sessionId, token: j.token, relayUrl: j.relayUrl, label: CFG.label || '', trackerUrl: location.href } });
+      st.error = ''; render();
+    }).catch(function (e) { st.error = e.message; render(); });
+  }
+  function consent() {
+    api('/live/consent', { method: 'POST', body: {} }).then(function (j) {
+      if (st.session) st.session.consentAt = j.consentAt; render();
+    }).catch(function (e) { st.error = e.message; render(); });
+  }
+  function endCall() {
+    if (st.busy) return;
+    st.busy = true; render();
+    toExt('LIVE_STOP');
+    api('/live/end', { method: 'POST', body: {} }).then(function (j) {
+      st.busy = false; stopPolling(); st.justEnded = true;
+      if (st.session) { st.session.status = 'ended'; st.session.endedAt = j.endedAt; }
+      var text = (j.transcript || '').trim();
+      if (!text) { st.reviewState = 'empty'; render(); return; }
+      var ok = window.SS && window.SS.liveReview ? window.SS.liveReview(text, 'Live call: ' + (CFG.label || 'prospect')) : false;
+      st.reviewState = ok ? 'running' : 'unavailable';
+      render();
+    }).catch(function (e) { st.busy = false; st.error = e.message; render(); });
+  }
+  function offerKey() { return (st.patch && st.patch.pitch && st.patch.pitch.offer) || 'none'; }
+  function runAfterCall(analysis) {
+    st.reviewState = 'saving'; st.lastAnalysis = analysis; render();
+    api('/after-call', { method: 'POST', body: { analysis: analysis, offer: offerKey() } }).then(function (j) {
+      st.afterCall = j.steps || {}; st.reviewState = 'done'; render();
+    }).catch(function (e) { st.reviewState = 'failed'; st.error = e.message; render(); });
+  }
+  document.addEventListener('ss:aianalyzed', function (e) {
+    if (!st.justEnded) return;
+    runAfterCall(e.detail && e.detail.analysis);
+  });
+
+  /* ---- Rendering ---- */
+  function mmss(ms) {
+    if (!(ms >= 0)) return '0:00';
+    var s = Math.floor(ms / 1000), m = Math.floor(s / 60);
+    return m + ':' + String(s % 60).padStart(2, '0');
+  }
+  function since(iso) { var t = Date.parse(iso || ''); return isNaN(t) ? 0 : Date.now() - t; }
+  function discoveryMin() {
+    if (!st.session) return 0;
+    var startT = Date.parse(st.session.firstAudioAt || st.session.startedAt || '');
+    if (isNaN(startT)) return 0;
+    var endT = st.pitchAt || Date.now();
+    return Math.max(0, Math.floor((endT - startT) / 60000));
+  }
+  function extLine() {
+    if (st.pingTimer) return '<span class="lv-pill">Checking for Tape</span>';
+    if (extReady()) return '<span class="lv-pill ok">Tape ' + esc(st.ext.version) + ' connected</span>';
+    if (st.ext.present) return '<span class="lv-pill warn">Tape ' + esc(st.ext.version || '') + ' needs an update</span>';
+    return '<span class="lv-pill warn">Tape extension not found</span>';
+  }
+  function installHelp() {
+    return '<p class="hint">Install or update the Tape extension (v' + EXT_MIN + '+), then reload this page. On a call: open your Google Meet tab, click the Tape icon (or Alt+Shift+T), and press <b>Start live call</b>.</p>';
+  }
+  function slideBtns(p) {
+    var nums = (p.slides || []).filter(function (n) { return n > 0; }).slice(0, 4);
+    var T = (window.SS && window.SS.deck && window.SS.deck.titles) ? window.SS.deck.titles() : {};
+    if (!nums.length) return '<button type="button" class="lv-btn sec" data-lvgo="pricing">Open pricing</button>';
+    return nums.map(function (n) { return '<button type="button" class="lv-btn sec" data-lvslide="' + n + '" title="' + esc(T[n] || '') + '">Slide ' + n + '</button>'; }).join('');
+  }
+  function caseName(k) {
+    var C = window.SS && window.SS.meta && window.SS.meta.CASES;
+    return C && C[k] ? C[k].n + ': ' + C[k].r : '';
+  }
+  function liveHTML() {
+    var s = st.session, p = st.patch || {}, h = '';
+    var live = s.status === 'live';
+    h += '<div class="lv-head"><span class="lv-dot' + (live ? ' on' : '') + '" aria-hidden="true"></span><h3>' + (live ? 'Live' : 'Armed') + '</h3>';
+    h += '<span class="lv-timer" data-lvtimer>' + mmss(since(s.firstAudioAt || s.startedAt)) + '</span>';
+    if (live) { var dm = discoveryMin(); h += '<span class="lv-pill ' + (dm >= 20 ? 'ok' : '') + '">Discovery ' + dm + ' of 20 min</span>'; }
+    if (st.coachRunning) h += '<span class="lv-pill">Coach reading</span>';
+    if (st.failures >= 2) h += '<span class="lv-pill bad">Live paused, retrying</span>';
+    h += '</div>';
+    if (!live) {
+      h += '<p>Switch to your Meet tab, click the Tape icon (or Alt+Shift+T), then press <b>Start live call</b>.</p>';
+      if (!extReady()) h += installHelp();
+      h += '<div class="lv-btns"><button type="button" class="lv-btn sec" data-lvrearm>Send to Tape again</button><button type="button" class="lv-btn sec" data-lvend>Cancel</button></div>';
+      return h;
+    }
+    if (!s.consentAt) h += '<div class="lv-card consent"><div class="k">Consent</div><div class="say">Say: "Quick note, this call is recorded."</div><div class="lv-btns"><button type="button" class="lv-btn" data-lvconsent>Said it</button></div></div>';
+    (p.warnings || []).slice(0, 3).forEach(function (w) { h += '<div class="lv-warn">' + esc(w) + '</div>'; });
+    var nm = p.nextMove;
+    if (nm && nm.say) {
+      h += '<div class="lv-card lv-next"><div class="k">' + esc(KIND[nm.kind] || 'Next move') + '</div><div class="say">' + esc(nm.say) + '</div>' + (nm.why ? '<div class="why">' + esc(nm.why) + '</div>' : '') +
+        (nm.section ? '<div class="lv-btns" style="margin-top:6px"><button type="button" class="lv-btn sec" data-lvgo="' + esc(nm.section) + '">Open the script here</button></div>' : '') + '</div>';
+    } else {
+      h += '<div class="lv-card lv-next"><div class="k">Next move</div><div class="why">Listening. The coach updates every 10 to 15 seconds once the conversation starts.</div></div>';
+    }
+    if (p.pitch && p.pitch.ready) {
+      h += '<div class="lv-card pitch"><div class="k">Ready to pitch</div><div class="say">' + esc(OFFERS[p.pitch.offer] || 'Anata Intelligence') + '</div>' +
+        (p.pitch.bridge ? '<p>' + esc(p.pitch.bridge) + '</p>' : '') +
+        (p.pitch.case && caseName(p.pitch.case) ? '<p class="why">Proof: ' + esc(caseName(p.pitch.case)) + '</p>' : '') +
+        '<div class="lv-btns" style="margin-top:6px">' + slideBtns(p.pitch) + '</div></div>';
+    }
+    var t = p.temperature;
+    if (t && t.asked) {
+      var good = t.quality === 'clear' && t.score >= 8;
+      h += '<div class="lv-card ' + (good ? 'pitch' : 'guard') + '"><div class="k">Temperature check</div><div class="say">' + (t.score != null ? esc(t.score) + ' of 10, ' : '') + esc(t.quality === 'clear' ? 'clear answer' : 'vague answer') + '</div>' +
+        (good ? '<p>Move to the close: connect Seller Central on the call.</p>' : '<p>' + esc(t.followUp || 'Ask what would make it a 10, then handle the objection.') + '</p><div class="lv-btns"><button type="button" class="lv-btn sec" data-lvraised>Back to objections</button></div>') + '</div>';
+    }
+    var th = p.three || {};
+    h += '<div class="lv-row"><span class="lv-pill ' + (th.problem ? 'ok' : '') + '">Problem</span><span class="lv-pill ' + (th.gap ? 'ok' : '') + '">Gap</span><span class="lv-pill ' + (th.cost ? 'ok' : '') + '">Cost of waiting</span></div>';
+    var m = liveMem(), heard = BELIEFS.filter(function (b) { return m.coach.beliefs[b]; });
+    if (heard.length) h += '<div><div class="k" style="font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Beliefs heard</div><ul class="lv-list">' + heard.map(function (b) { return '<li><b>' + esc(b) + ':</b> "' + esc(m.coach.beliefs[b]) + '"</li>'; }).join('') + '</ul></div>';
+    var td = (p.tieDowns || []).filter(function (x) { return x && x.line; });
+    if (td.length) h += '<div><div class="k" style="font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Tie-downs</div><ul class="lv-list">' + td.map(function (x) { return '<li>"' + esc(x.line) + '" <span class="lv-pill' + ((x.uses || 0) >= 5 ? ' ok' : '') + '">' + esc(x.uses || 0) + ' of 6</span></li>'; }).join('') + '</ul></div>';
+    var last = st.lines.slice(-3);
+    if (last.length) h += '<ul class="lv-list lv-lines">' + last.map(function (l) { return '<li><b>' + (l.speaker === 'rep' ? 'You' : 'Them') + ':</b> ' + esc(l.text) + '</li>'; }).join('') + '</ul>';
+    h += '<div class="lv-btns"><button type="button" class="lv-btn end" data-lvend>End call</button></div>';
+    return h;
+  }
+  function stepLine(name, r) {
+    r = r || {};
+    var ok = r.status === 'ok' || r.status === 'done' || r.status === 'skipped' || r.ok === true;
+    var label = r.message || r.detail || r.status || 'Pending';
+    var link = r.url ? ' <a href="' + esc(r.url) + '" target="_blank" rel="noopener">Open</a>' : '';
+    return '<li><span><b>' + esc(name) + ':</b> ' + esc(label) + link + '</span>' + (ok ? '<span class="lv-pill ok">Done</span>' : '<button type="button" class="lv-btn sec" data-lvafter>Retry</button>') + '</li>';
+  }
+  function endedHTML() {
+    var h = '<div class="lv-head"><span class="lv-dot" aria-hidden="true"></span><h3>Call ended</h3></div>';
+    if (st.reviewState === 'running') h += '<p>Scoring the call from the transcript. The review panel shows progress.</p>';
+    else if (st.reviewState === 'saving') h += '<p>Updating ClickUp, drafting the recap and setting the day-10 review.</p>';
+    else if (st.reviewState === 'empty') h += '<p>No transcript was captured for this call, so there is nothing to review.</p>';
+    else if (st.reviewState === 'unavailable') h += '<p>Ask Claude is off on this agent, so the automatic review can\'t run. Use End call &amp; review to log the call by hand.</p>';
+    else if (st.reviewState === 'failed') h += '<p>The after-call steps didn\'t finish.</p><div class="lv-btns"><button type="button" class="lv-btn" data-lvafter>Retry</button></div>';
+    if (st.afterCall) {
+      h += '<ul class="lv-list lv-steps">' + stepLine('Review', { status: 'ok', message: 'Saved to your coaching dashboard' }) + stepLine('ClickUp', st.afterCall.clickup) + stepLine('Recap', st.afterCall.recap) + stepLine('Day-10 review', st.afterCall.day10) + '</ul>';
+    }
+    h += '<div class="lv-btns"><button type="button" class="lv-btn sec" data-lvnew>Go live again</button></div>';
+    return h;
+  }
+  function idleHTML() {
+    var h = '<div class="lv-head"><span class="lv-dot" aria-hidden="true"></span><h3>Live call</h3>' + extLine() + '</div>';
+    h += '<p class="hint">Go live to have Tape listen to the Meet call. Beliefs, numbers, tie-downs and your next move update here as the prospect talks.</p>';
+    if (!st.pingTimer && !extReady()) h += installHelp();
+    h += '<div class="lv-btns"><button type="button" class="lv-btn" data-lvgolive' + (st.busy ? ' disabled' : '') + '>' + (st.busy ? 'Starting' : 'Go live') + '</button></div>';
+    return h;
+  }
+  var lastHTML = '';
+  function render() {
+    var box = $('[data-live]'); if (!box) return;
+    var inner;
+    if (st.session && st.session.status !== 'ended') inner = liveHTML();
+    else if (st.justEnded) inner = endedHTML();
+    else inner = idleHTML();
+    if (st.error) inner += '<p class="lv-warn" role="alert">' + esc(st.error) + '</p>';
+    var html = '<div class="lv">' + inner + '</div>';
+    if (html !== lastHTML) { box.innerHTML = html; lastHTML = html; }
+  }
+  setInterval(function () {
+    var t = $('[data-lvtimer]');
+    if (t && st.session && st.session.status !== 'ended') t.textContent = mmss(since(st.session.firstAudioAt || st.session.startedAt));
+  }, 1000);
+
+  document.addEventListener('click', function (e) {
+    var t = e.target && e.target.closest ? e.target : null;
+    if (!t || !t.closest('[data-live]')) return;
+    if (t.closest('[data-lvgolive]') || t.closest('[data-lvnew]')) { goLive(); return; }
+    if (t.closest('[data-lvrearm]')) { rearm(); return; }
+    if (t.closest('[data-lvconsent]')) { consent(); return; }
+    if (t.closest('[data-lvend]')) { endCall(); return; }
+    if (t.closest('[data-lvafter]')) { if (st.lastAnalysis) runAfterCall(st.lastAnalysis); return; }
+    if (t.closest('[data-lvraised]')) { var tb = document.getElementById('tab-raised'); if (tb) tb.click(); return; }
+    var sl = t.closest('[data-lvslide]');
+    if (sl && window.SS && window.SS.deck) { window.SS.deck.open(Number(sl.dataset.lvslide)); return; }
+    var go = t.closest('[data-lvgo]');
+    if (go && window.SS && window.SS.goTo) { window.SS.goTo(go.dataset.lvgo); }
+  });
+
+  /* ---- Boot: wait for the script, then resume any open session ---- */
+  function boot(tries) {
+    if (!window.SS || !window.SS.applyCall || !$('[data-live]')) {
+      if (tries > 100) return;
+      setTimeout(function () { boot(tries + 1); }, 100);
+      return;
+    }
+    ping();
+    render();
+    paintBeliefQuotes();
+    api('/live/state?after=0&rev=0').then(function (j) {
+      if (j.session && j.session.status !== 'ended') {
+        st.session = j.session;
+        (j.lines || []).forEach(function (l) { st.lines.push(l); });
+        st.lastLineId = j.lastLineId || 0;
+        if (j.coach) { st.rev = j.coach.rev; st.patch = j.coach.patch; applyPatch(st.patch); }
+        startPolling();
+      }
+      render();
+    }).catch(function () { render(); });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { boot(0); }); else boot(0);
 })();
