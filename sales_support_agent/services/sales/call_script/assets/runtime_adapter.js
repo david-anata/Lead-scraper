@@ -496,9 +496,18 @@
   }
   function stepLine(name, r) {
     r = r || {};
-    var ok = r.status === 'ok' || r.status === 'done' || r.status === 'skipped' || r.ok === true;
-    var label = r.message || r.detail || r.status || 'Pending';
-    var link = r.url ? ' <a href="' + esc(r.url) + '" target="_blank" rel="noopener">Open</a>' : '';
+    var ok = r.ok === true;
+    var label;
+    if (r.ok === undefined) label = 'Pending';
+    else if (!r.ok) label = r.error || 'Failed';
+    else if (r.skipped) label = 'Skipped: ' + (r.reason || '');
+    else if (r.note) label = r.note;
+    else if (name === 'ClickUp') label = (r.created ? 'Task created' : 'Task updated') + (r.status ? ', status "' + r.status + '"' : '');
+    else if (name === 'Recap') label = 'Gmail draft ready' + (r.to ? ' for ' + r.to : '');
+    else if (name === 'Day-10 review') label = 'ClickUp task due ' + (r.due || 'in 10 days');
+    else label = 'Done';
+    var url = r.url || (r.taskId ? 'https://app.clickup.com/t/' + r.taskId : '') || (r.draftId ? 'https://mail.google.com/mail/u/0/#drafts' : '');
+    var link = url ? ' <a href="' + esc(url) + '" target="_blank" rel="noopener">Open</a>' : '';
     return '<li><span><b>' + esc(name) + ':</b> ' + esc(label) + link + '</span>' + (ok ? '<span class="lv-pill ok">Done</span>' : '<button type="button" class="lv-btn sec" data-lvafter>Retry</button>') + '</li>';
   }
   function endedHTML() {
@@ -509,7 +518,7 @@
     else if (st.reviewState === 'unavailable') h += '<p>Ask Claude is off on this agent, so the automatic review can\'t run. Use End call &amp; review to log the call by hand.</p>';
     else if (st.reviewState === 'failed') h += '<p>The after-call steps didn\'t finish.</p><div class="lv-btns"><button type="button" class="lv-btn" data-lvafter>Retry</button></div>';
     if (st.afterCall) {
-      h += '<ul class="lv-list lv-steps">' + stepLine('Review', { status: 'ok', message: 'Saved to your coaching dashboard' }) + stepLine('ClickUp', st.afterCall.clickup) + stepLine('Recap', st.afterCall.recap) + stepLine('Day-10 review', st.afterCall.day10) + '</ul>';
+      h += '<ul class="lv-list lv-steps">' + stepLine('Review', { ok: true, note: 'Saved to your coaching dashboard' }) + stepLine('ClickUp', st.afterCall.clickup) + stepLine('Recap', st.afterCall.recap) + stepLine('Day-10 review', st.afterCall.day10) + '</ul>';
     }
     h += '<div class="lv-btns"><button type="button" class="lv-btn sec" data-lvnew>Go live again</button></div>';
     return h;
