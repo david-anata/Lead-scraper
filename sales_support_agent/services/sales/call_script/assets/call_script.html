@@ -676,6 +676,51 @@ html.deck-resizing,html.deck-resizing *{cursor:col-resize!important;user-select:
 .ai-say{border-left:3px solid var(--green);padding-left:8px}
 .ak-older>summary{cursor:pointer;font-size:13px;color:var(--muted);margin:4px 0 8px}
 .ak-quick{margin-top:12px}
+
+/* ---------- Live call block (Talk flow) ---------- */
+.liveblk{margin:0 0 14px}
+.liveblk:empty{display:none}
+.lv{border:1px solid var(--line);border-radius:12px;background:var(--paper);padding:12px 14px;display:grid;gap:10px}
+.lv-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.lv-head h3{margin:0;font-size:15px}
+.lv-dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
+.lv-dot.on{background:var(--t-red);box-shadow:0 0 0 4px var(--t-red-bg);animation:lvpulse 1.6s ease-in-out infinite}
+@keyframes lvpulse{50%{box-shadow:0 0 0 1px var(--t-red-bg)}}
+@media (prefers-reduced-motion:reduce){.lv-dot.on{animation:none}}
+.lv-timer{font-variant-numeric:tabular-nums;font-weight:700;color:var(--ink)}
+.lv-pill{font-size:11.5px;font-weight:700;border-radius:4px;padding:2px 7px;background:var(--canvas);border:1px solid var(--line);color:var(--muted)}
+.lv-pill.ok{background:var(--t-green-bg);border-color:var(--t-green);color:var(--t-green)}
+.lv-pill.warn{background:var(--t-orange-bg);border-color:var(--t-orange);color:var(--t-orange)}
+.lv-pill.bad{background:var(--t-red-bg);border-color:var(--t-red);color:var(--t-red)}
+.lv p{margin:0;font-size:13.5px;line-height:1.45}
+.lv .hint{margin:0}
+.lv-btns{display:flex;gap:8px;flex-wrap:wrap}
+.lv-btn{font:inherit;font-size:13px;font-weight:700;border-radius:8px;padding:7px 12px;border:1px solid var(--navy);background:var(--navy);color:#fff;cursor:pointer}
+.lv-btn.sec{background:transparent;color:var(--ink);border-color:var(--line)}
+.lv-btn.end{background:var(--t-red);border-color:var(--t-red)}
+.lv-btn:disabled{opacity:.5;cursor:default}
+.lv-card{border-radius:10px;padding:10px 12px;border:1px solid var(--line);background:var(--canvas)}
+.lv-card .k{font-size:11.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.lv-card .say{font-weight:700;font-size:14.5px;line-height:1.35;margin:3px 0}
+.lv-card .why{font-size:12.5px;color:var(--muted)}
+.lv-card.lv-next{background:var(--t-blue-bg);border-color:var(--t-blue)}
+.lv-card .lv-btn.sec{background:var(--paper)}
+.lv-card.pitch{background:var(--t-green-bg);border-color:var(--t-green)}
+.lv-card.guard{background:var(--t-orange-bg);border-color:var(--t-orange)}
+.lv-card.consent{background:var(--t-gold-bg);border-color:var(--t-gold)}
+.lv-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.lv-list{margin:0;padding:0;list-style:none;display:grid;gap:6px}
+.lv-list li{font-size:13px;line-height:1.4}
+.lv-list b{color:var(--ink)}
+.lv-lines li{color:var(--muted)}
+.lv-lines li b{font-weight:700}
+.lv-warn{font-size:12.5px;color:var(--t-orange);font-weight:700}
+.lv-steps li{display:flex;gap:6px;align-items:baseline;justify-content:space-between}
+.rail .bt.coach{box-shadow:inset 0 -2px 0 var(--t-blue)}
+input.coachfill{border-color:var(--t-blue)!important;background:var(--t-blue-bg)!important}
+nav a[data-sid].live-done .nn{background:var(--green);color:#fff;border-color:var(--green)}
+nav a[data-sid].live-done .nn{font-size:0}
+nav a[data-sid].live-done .nn::after{content:"✓";font-size:12px}
 </style>
 </head>
 <body>
@@ -1906,6 +1951,7 @@ html.deck-resizing,html.deck-resizing *{cursor:col-resize!important;user-select:
       </div>
     </section>
     <section class="blk pane flowblk" id="pane-flow" role="tabpanel" aria-labelledby="tab-flow" data-pane="flow" hidden>
+      <div class="liveblk" data-live aria-live="polite"></div>
       <div data-railties></div>
       <div data-flow></div>
       <div class="flow-actions">
@@ -3972,7 +4018,7 @@ html.deck-resizing,html.deck-resizing *{cursor:col-resize!important;user-select:
     e.preventDefault(); e.stopPropagation();
     setW(deck.getBoundingClientRect().width + (e.key === 'ArrowLeft' ? 40 : -40)); saveF();
   });
-  SS.deck = {open:openDeck, close:closeDeck, isOpen:function(){ return open; }, step:step};
+  SS.deck = {open:openDeck, close:closeDeck, isOpen:function(){ return open; }, step:step, titles:function(){ return T; }, total:TOTAL};
 
   /* ---------- Full screen (in-page) ---------- */
   var hintTimer;
@@ -4494,6 +4540,7 @@ html.deck-resizing,html.deck-resizing *{cursor:col-resize!important;user-select:
       running = null; rerun = false;
       A = {analysis:an, title:T.title, at:Date.now(), applied:applyAnalysis(an)};
       SS.save('ss-ai', A);
+      document.dispatchEvent(new CustomEvent('ss:aianalyzed', {detail:{analysis:an, title:T.title}}));
       if (SS.reopenReview) SS.reopenReview(); else { var b = $('[data-rvai]'); if (b) renderReviewAI(b); }
     } catch(e){
       running = null;
@@ -4610,6 +4657,33 @@ html.deck-resizing,html.deck-resizing *{cursor:col-resize!important;user-select:
     var go = $('[data-aigo]'); if (go) go.disabled = !T;
     setStat(T ? 'Ready: pasted transcript (' + words(v).toLocaleString() + ' words).' : '');
   });
+
+  /* ---------- Live call hooks (the agent's live coach and auto-review) ---------- */
+  SS.coachContext = function(){
+    var deckT = (SS.deck && SS.deck.titles) ? SS.deck.titles() : {};
+    var slides = Object.keys(deckT).map(function(n){ return n + ' ' + deckT[n]; }).join('; ');
+    return [
+      METHOD,
+      'SCRIPT SECTIONS (id and name): ' + SECTIONS,
+      RULES,
+      'PLAYBOOK\n' + playbook(),
+      'KEYS. Pain points: ' + keyList(M.P) + '. Objections: ' + keyList(M.O) + '. Reservations: ' + keyList(M.R) + '. Categories: ' + keyList(M.CATMAP) + '.',
+      'APPROVED CASE STUDY KEYS (use only these): ' + Object.keys(M.CASES).map(function(k){ return k + ' = ' + M.CASES[k].n; }).join('; ') + '.',
+      'OFFER KEYS: starter = Brand Starter $99/mo (default close); growth = Brand Growth $199/mo (needs more than 2 channels or seats); pro = Brand Pro $399/mo (larger operation, up to 6 channels, 10 seats); full = Full service $3,000/mo + 5% of sales above baseline (no time or team, wants it done for them, or roughly $80K+/month on Amazon wanting fast growth). Every call is built to close on the first call.',
+      'DECK SLIDES (number and title): ' + slides,
+      'LIVE COACH RULES: stay in discovery at least 20 of 45 minutes before pitching; frame discovery as checking the oil; offer a ballpark ladder when they do not know a number; get the three things said (the problem, the gap between where they are and want to be, the cost of doing nothing); a goal without a number and date is a wish, ask for both; check goals against the margins they shared; restate each pain as a tie-down 5 to 6 times through the pitch and in their exact words at the close; before closing ask for a 1 to 10 and grade the answer: a clear 8 or higher with a reason moves to the close, a vague or hedged answer or anything under 8 gets a follow-up such as What would make it a 10 and goes back to objections; for a price objection ask compared to what and run the ad spend math; if the prospect already confirmed a point several times, move on.'
+    ].join('\n\n');
+  };
+  /* Feed a live call's transcript into the review panel and run the existing analysis */
+  SS.liveReview = function(text, title){
+    if (!sampleFn || !text) return false;
+    T = {text:text, title:title || 'Live call transcript', pasted:true};
+    rerun = true;
+    var btn = $('[data-review]');
+    if (btn) btn.click();
+    setTimeout(function(){ analyze(); }, 60);
+    return true;
+  };
 
   /* What the review record keeps (never the transcript itself) */
   SS.ai = {

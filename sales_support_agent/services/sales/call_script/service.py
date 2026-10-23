@@ -37,6 +37,7 @@ PER_CALL_KEYS = (
     "ss-ai",
     "ss-callmeta",
     "ss-last",
+    "ss-live",
 )
 MAX_STATE_BYTES = 512 * 1024
 MAX_REVIEW_BYTES = 256 * 1024
