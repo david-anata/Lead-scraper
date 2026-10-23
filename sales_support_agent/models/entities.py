@@ -2940,3 +2940,37 @@ class BuildingStripeEvent(Base):
     error_message: Mapped[str] = mapped_column(Text, default="")
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SalesCallTracker(Base):
+    """One live-call tracker per lead: the call script's saved state.
+
+    `state_json` holds the tracker's own storage keys (beliefs, gap notes,
+    numbers, raised items, call meta) so a rep can reopen a lead's tracker
+    exactly where the last call left it.
+    """
+
+    __tablename__ = "sales_call_trackers"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_email: Mapped[str] = mapped_column(String(255), index=True)
+    prospect_name: Mapped[str] = mapped_column(String(255), default="")
+    company: Mapped[str] = mapped_column(String(255), default="")
+    lead_link: Mapped[str] = mapped_column(String(1024), default="")
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    state_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+
+
+class SalesCallReview(Base):
+    """A scored call review written by the call script's coaching dashboard."""
+
+    __tablename__ = "sales_call_reviews"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_email: Mapped[str] = mapped_column(String(255), primary_key=True)
+    tracker_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    review_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

@@ -51,6 +51,7 @@ _NAV_SECTIONS = [
         _NavSubpage("sales.deals", "Sales Overview", "/admin/sales", "sales_operator"),
         _NavSubpage("sales.deals", "Pipeline", "/admin/sales/deals", "sales_deals"),
         _NavSubpage("sales.deals", "Rep Accountability", "/admin/sales/reps", "sales_reps"),
+        _NavSubpage("sales.call", "Call Script", "/admin/sales/call", "sales_call"),
         _NavSubpage("outbound.scoreboard", "Daily Leads", "/admin/outbound/daily", "outbound_daily"),
         _NavSubpage("outbound.scoreboard", "Company Library", "/admin/outbound/leads", "outbound_leads"),
         _NavSubpage("outbound.scoreboard", "Recipes & ICP", "/admin/outbound/recipes", "outbound_recipes"),
