@@ -2974,3 +2974,53 @@ class SalesCallReview(Base):
     review_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class SalesCallLiveSession(Base):
+    """One live call on a tracker: Tape streams audio, the coach reads the lines."""
+
+    __tablename__ = "sales_call_live_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tracker_id: Mapped[str] = mapped_column(String(36), index=True)
+    owner_email: Mapped[str] = mapped_column(String(255), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    label: Mapped[str] = mapped_column(String(255), default="")
+    coach_context: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    first_audio_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    consent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    tape_ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    coach_lease_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_coach_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_coach_line_id: Mapped[int] = mapped_column(Integer, default=0)
+    after_call_json: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class SalesCallTranscriptLine(Base):
+    """One finished line of live transcript, labelled by speaker."""
+
+    __tablename__ = "sales_call_transcript_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(36), index=True)
+    speaker: Mapped[str] = mapped_column(String(16))
+    text: Mapped[str] = mapped_column(Text, default="")
+    start_ms: Mapped[int] = mapped_column(Integer, default=0)
+    end_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class SalesCallCoachEvent(Base):
+    """One live coach pass: the patch the page applied, for replay and audit."""
+
+    __tablename__ = "sales_call_coach_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(36), index=True)
+    rev: Mapped[int] = mapped_column(Integer, default=1)
+    patch_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    model: Mapped[str] = mapped_column(String(64), default="")
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

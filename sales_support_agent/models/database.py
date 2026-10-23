@@ -179,7 +179,13 @@ def _ensure_sales_call_tables(engine: Any) -> None:
 
     tables = [
         Base.metadata.tables[name]
-        for name in ("sales_call_trackers", "sales_call_reviews")
+        for name in (
+            "sales_call_trackers",
+            "sales_call_reviews",
+            "sales_call_live_sessions",
+            "sales_call_transcript_lines",
+            "sales_call_coach_events",
+        )
         if name in Base.metadata.tables
     ]
     if tables:

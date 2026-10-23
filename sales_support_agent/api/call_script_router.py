@@ -13,6 +13,14 @@ JSON (used by the script's runtime adapter):
   GET|PUT|DELETE /admin/sales/call/api/reviews/{review_id}
   POST /admin/sales/call/api/sample      Ask Claude
 
+Live calls (see docs/LIVE_CALL_COACH_SPEC.md):
+  POST /admin/sales/call/{id}/live              start or reuse a live session
+  GET  /admin/sales/call/{id}/live/state        new lines + latest coach update
+  POST /admin/sales/call/{id}/live/consent      log "Said it"
+  POST /admin/sales/call/{id}/live/end          end the session, return transcript
+  GET  /admin/sales/call/{id}/live/transcript   transcript of the latest session
+  POST /admin/sales/call/{id}/after-call        ClickUp, recap draft, day-10 task
+
 Every route needs the `sales.call` tool. Writes require a same-origin request
 and the session-bound CSRF token (form field, X-CSRF-Token header, or the
 `csrf` query parameter for sendBeacon).
@@ -29,7 +37,10 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.services.auth_deps import get_current_user, require_tool
+from sales_support_agent.services.sales.call_script import after_call
 from sales_support_agent.services.sales.call_script import ai as call_ai
+from sales_support_agent.services.sales.call_script import coach
+from sales_support_agent.services.sales.call_script import live as live_svc
 from sales_support_agent.services.sales.call_script import service
 from sales_support_agent.services.sales.call_script.pages import render_call_list_page
 from sales_support_agent.services.sales.security import csrf_token, valid_csrf_token
@@ -253,3 +264,163 @@ async def set_status(tracker_id: str, request: Request):
         return RedirectResponse(url=f"{service.BASE_PATH}?error={quote(str(exc))}", status_code=303)
     suffix = "?archived=1" if status == service.STATUS_OPEN else ""
     return RedirectResponse(url=f"{service.BASE_PATH}{suffix}", status_code=303)
+
+
+# ---------------------------------------------------------------- live calls
+
+
+def _agent_settings(request: Request):
+    settings = getattr(request.app.state, "agent_settings", None)
+    if settings is not None and hasattr(settings, "clickup_api_token"):
+        return settings
+    from sales_support_agent.config import load_settings
+
+    settings = load_settings()
+    request.app.state.agent_settings = settings
+    return settings
+
+
+def _clickup_client(settings):
+    from sales_support_agent.integrations.clickup import ClickUpClient
+
+    return ClickUpClient(settings)
+
+
+def _gmail_client(settings):
+    from sales_support_agent.integrations.gmail import GmailClient
+
+    return GmailClient(settings)
+
+
+def _tracker_or_404(session, user, tracker_id):
+    tracker = service.get_tracker(session, user, tracker_id)
+    if tracker is None:
+        raise HTTPException(status_code=404, detail="Call not found.")
+    return tracker
+
+
+def _live_error(exc: live_svc.LiveError) -> HTTPException:
+    return HTTPException(status_code=exc.status, detail=str(exc))
+
+
+@router.post("/{tracker_id}/live", dependencies=[Depends(require_json_token)])
+async def live_start(tracker_id: str, request: Request) -> JSONResponse:
+    user = get_current_user(request)
+    body = await _json_body(request)
+    try:
+        with session_scope(_factory(request)) as session:
+            tracker = _tracker_or_404(session, user, tracker_id)
+            live = live_svc.start_session(
+                session,
+                tracker,
+                user,
+                coach_context=str(body.get("coachContext") or ""),
+                label=str(body.get("label") or ""),
+            )
+            token, exp = live_svc.sign_token(live.id, tracker.id, live.owner_email)
+            payload = {
+                "sessionId": live.id,
+                "token": token,
+                "relayUrl": live_svc.relay_url(),
+                "expiresAt": exp,
+                "startedAt": live_svc.iso(live.started_at),
+                "status": live.status,
+            }
+    except live_svc.LiveError as exc:
+        raise _live_error(exc)
+    return JSONResponse(payload)
+
+
+@router.get("/{tracker_id}/live/state")
+def live_state(tracker_id: str, request: Request) -> JSONResponse:
+    user = get_current_user(request)
+    try:
+        after = int(request.query_params.get("after") or 0)
+        rev = int(request.query_params.get("rev") or 0)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="after and rev must be numbers.")
+    with session_scope(_factory(request)) as session:
+        tracker = _tracker_or_404(session, user, tracker_id)
+        live = live_svc.latest_session_for(session, tracker.id)
+        if live is None:
+            return JSONResponse({"session": None, "lines": [], "lastLineId": 0, "coach": None, "coachRunning": False})
+        if live_svc.coach_due(session, live):
+            coach.run_pass(session, live, tracker)
+        lines = live_svc.lines_after(session, live.id, after)
+        event = live_svc.latest_coach_event(session, live.id)
+        lease = live_svc.aware(live.coach_lease_until)
+        payload = {
+            "session": live_svc.session_json(live),
+            "lines": [live_svc.line_json(r) for r in lines],
+            "lastLineId": lines[-1].id if lines else max(after, 0),
+            "coach": (
+                {"rev": event.rev, "patch": event.patch_json, "createdAt": live_svc.iso(event.created_at)}
+                if event is not None and event.rev > rev
+                else None
+            ),
+            "coachRunning": bool(lease and lease > live_svc.now_utc()),
+        }
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/{tracker_id}/live/consent", dependencies=[Depends(require_json_token)])
+def live_consent(tracker_id: str, request: Request) -> JSONResponse:
+    user = get_current_user(request)
+    with session_scope(_factory(request)) as session:
+        tracker = _tracker_or_404(session, user, tracker_id)
+        live = live_svc.open_session_for(session, tracker.id)
+        if live is None:
+            raise HTTPException(status_code=409, detail="No live call is running.")
+        at = live_svc.mark_consent(session, live)
+    return JSONResponse({"consentAt": at.isoformat()})
+
+
+@router.post("/{tracker_id}/live/end", dependencies=[Depends(require_json_token)])
+def live_end(tracker_id: str, request: Request) -> JSONResponse:
+    user = get_current_user(request)
+    with session_scope(_factory(request)) as session:
+        tracker = _tracker_or_404(session, user, tracker_id)
+        live = live_svc.latest_session_for(session, tracker.id)
+        if live is None:
+            raise HTTPException(status_code=409, detail="No live call to end.")
+        ended = live_svc.end_session(session, live)
+        transcript = live_svc.transcript_text(live_svc.all_lines(session, live.id))
+    return JSONResponse({"endedAt": ended.isoformat(), "transcript": transcript})
+
+
+@router.get("/{tracker_id}/live/transcript")
+def live_transcript(tracker_id: str, request: Request) -> JSONResponse:
+    user = get_current_user(request)
+    with session_scope(_factory(request)) as session:
+        tracker = _tracker_or_404(session, user, tracker_id)
+        live = live_svc.latest_session_for(session, tracker.id)
+        if live is None:
+            return JSONResponse({"transcript": "", "lines": []})
+        rows = live_svc.all_lines(session, live.id)
+        payload = {"transcript": live_svc.transcript_text(rows), "lines": [live_svc.line_json(r) for r in rows]}
+    return JSONResponse(payload)
+
+
+@router.post("/{tracker_id}/after-call", dependencies=[Depends(require_json_token)])
+async def live_after_call(tracker_id: str, request: Request) -> JSONResponse:
+    user = get_current_user(request)
+    body = await _json_body(request)
+    settings = _agent_settings(request)
+    with session_scope(_factory(request)) as session:
+        tracker = _tracker_or_404(session, user, tracker_id)
+        live = live_svc.latest_session_for(session, tracker.id)
+        if live is None:
+            raise HTTPException(status_code=409, detail="No live call on this lead yet.")
+        try:
+            steps = after_call.run_after_call(
+                session,
+                live,
+                tracker,
+                body.get("analysis"),
+                str(body.get("offer") or "none"),
+                clickup_client=_clickup_client(settings),
+                gmail_client=_gmail_client(settings),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse({"steps": steps})
