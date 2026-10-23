@@ -2400,6 +2400,31 @@ async def outbound_enrich_test(request: Request) -> Response:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[outbound-enrich] rewrite failed")
             return JSONResponse(status_code=500, content={"ok": False, "reason": type(exc).__name__})
+    if str(form.get("action") or "") == "instantly_stats":
+        # Read-only: campaign totals and per-step numbers for one campaign.
+        import requests as _rq
+        from starlette.concurrency import run_in_threadpool
+
+        import outbound_instantly_push as _ip
+        key = _ip.api_key()
+        cid = str(form.get("campaign_id") or _ip.LIVE_CAMPAIGN_ID)
+
+        def _stats() -> dict[str, Any]:
+            hdr = {"Authorization": f"Bearer {key}"}
+            out: dict[str, Any] = {}
+            for name, url, params in (
+                ("campaign", "https://api.instantly.ai/api/v2/campaigns/analytics", {"id": cid}),
+                ("steps", "https://api.instantly.ai/api/v2/campaigns/analytics/steps", {"campaign_id": cid}),
+                ("all_campaigns", "https://api.instantly.ai/api/v2/campaigns/analytics", {}),
+            ):
+                try:
+                    r = _rq.get(url, headers=hdr, params=params, timeout=30)
+                    out[name] = {"status": r.status_code, "body": r.json() if r.content else None}
+                except Exception as exc:  # noqa: BLE001
+                    out[name] = {"error": str(exc).replace(key, "<key>")[:200]}
+            return out
+
+        return JSONResponse(content={"ok": True, **(await run_in_threadpool(_stats))})
     if str(form.get("action") or "") == "prospeo_probe":
         # Diagnostics: account status and the raw answer to one search. Never the key.
         import requests as _rq
