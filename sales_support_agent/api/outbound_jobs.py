@@ -96,7 +96,7 @@ _BATCH_LINK = f"{_APP_URL}/admin/api/outbound/brands.csv?scanned=1&max_new=200"
 
 
 def _sendable_brands(engine) -> list[dict]:
-    """Brands with a real Amazon finding: what actually goes to Clay."""
+    """Brands with a real Amazon finding."""
     from sales_support_agent.services import outbound_memory
 
     held = outbound_memory.load_leads(engine, limit=2000)
@@ -133,7 +133,7 @@ def _email_the_batch(engine, summary: dict, *, force: bool = False) -> bool:
     if force and not recipients:
         recipients = [os.getenv("OUTBOUND_DIGEST_TO", "david@anatainc.com").strip()]
     lines = [
-        f"{len(ready)} brand(s) are ready to put into Clay.",
+        f"{len(ready)} brand(s) have an Amazon finding.",
     ]
     if prefs.get("content_mode") == "link" or force:
         lines += ["", f"Download the file:  {_BATCH_LINK}"]
@@ -148,14 +148,11 @@ def _email_the_batch(engine, summary: dict, *, force: bool = False) -> bool:
     lines += [
         "",
         "What to do with it:",
-        "  1. Clay > Anata // Claude Table > Recent Store Leads tab > Import CSV",
-        "  2. Run Find people at these companies, then Work Email",
-        "  3. Run the opening line column",
-        "  4. Export from Found Contacts and upload into Instantly",
+        "  Nothing. Contacts are found and added to Instantly automatically each",
+        "  weekday morning (Prospeo daily job). Clay is no longer used.",
         "",
         f"This morning: pulled {summary.get('pulled', 0)}, checked {summary.get('scanned', 0)} on Amazon.",
         "",
-        "Nothing sends until you press Resume in Instantly.",
     ]
 
     try:
@@ -166,7 +163,7 @@ def _email_the_batch(engine, summary: dict, *, force: bool = False) -> bool:
             attachments = _csv_attachment(ready, "anata-leads-daily-digest.csv")
             for recipient in recipients:
                 ok = notify._send(settings, to_email=recipient,
-                                  subject=f"Outbound: {len(ready)} brands ready for Clay",
+                                  subject=f"Outbound: {len(ready)} brands with an Amazon finding",
                                   text="\n".join(lines), attachments=attachments)
                 sent = ok or sent
                 outbound_memory.record_delivery_attempt(
