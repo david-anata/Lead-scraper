@@ -91,9 +91,16 @@ def test_parse_model_json_tolerates_noise():
 # ---------- runner ----------
 
 class FakeClient:
-    def __init__(self, received, threads=None):
+    def __init__(self, received, threads=None, interested=None, leads=None):
         self.received, self.threads = received, threads or {}
+        self.interested, self.leads = interested or [], leads or {}
         self.replies, self.blocks, self.interest = [], [], []
+
+    def interested_latest(self, campaign_id):
+        return list(self.interested)
+
+    def lead(self, email):
+        return self.leads.get(email, {})
 
     def received_since(self, since, campaign_id):
         return list(self.received)
@@ -117,13 +124,15 @@ class FakeClient:
 @pytest.fixture
 def engine(monkeypatch):
     monkeypatch.setenv("ABBY_MODE", "live")
+    monkeypatch.setenv("ABBY_TAKEOVER_AT", "2026-10-26T00:00:00Z")
     monkeypatch.setenv("ABBY_START_AT", "2026-10-26T00:00:00Z")
     return create_engine("sqlite://")
 
 
-def email(i, lead="ann@huppy.com", thread="t1"):
+def email(i, lead="ann@huppy.com", thread="t1", ts=None):
     return {"id": f"e{i}", "thread_id": thread, "lead": lead, "eaccount": "abby@x.com",
-            "subject": "Idea for Huppy", "ue_type": 2, "body": {"text": "yes please"}}
+            "subject": "Idea for Huppy", "ue_type": 2, "body": {"text": "yes please"},
+            "timestamp_created": ts or f"2026-10-2{i}T10:00:00Z"}
 
 
 def fixed(decision):
@@ -156,22 +165,92 @@ def test_off_mode_does_nothing(engine, monkeypatch):
     assert out["reason"] == "ABBY_MODE is off"
 
 
-def test_thread_with_human_reply_is_left_alone(engine):
-    th = [email(1), {"id": "m1", "ue_type": 3, "body": {"text": "Gabe here"}}, email(2)]
-    c = FakeClient([email(2)], {"t1": th})
+def test_reply_already_answered_is_skipped(engine):
+    th = [email(1), {"id": "m1", "ue_type": 3, "timestamp_created": "2026-10-21T12:00:00Z"}]
+    c = FakeClient([email(1)], {"t1": th})
     out = runner.run(engine, client=c, campaign_id="camp", now=NOW,
                      think=fixed(abby.Decision("interested", "reply", reply=LINK)))
     assert out["skipped"] == 1 and c.replies == []
 
 
-def test_abbys_own_reply_does_not_count_as_human(engine):
-    c = FakeClient([email(1)])
-    dec = abby.Decision("question", "reply", reply=f"Good question. {LINK}")
-    runner.run(engine, client=c, campaign_id="camp", now=NOW, think=fixed(dec))
-    th = [email(1), {"id": "r1", "ue_type": 3}, email(2)]
-    c2 = FakeClient([email(2)], {"t1": th})
-    out = runner.run(engine, client=c2, campaign_id="camp", now=NOW, think=fixed(dec))
-    assert out["replied"] == 1
+def test_takeover_answers_unanswered_reply_in_gabes_thread(engine):
+    th = [email(1), {"id": "m1", "ue_type": 3, "timestamp_created": "2026-10-21T12:00:00Z"}, email(3)]
+    c = FakeClient([email(3)], {"t1": th})
+    out = runner.run(engine, client=c, campaign_id="camp", now=NOW,
+                     think=fixed(abby.Decision("interested", "reply", reply=LINK)))
+    assert out["replied"] == 1 and c.replies[0]["reply_to"] == "e3"
+
+
+def test_older_reply_superseded_by_newer_prospect_message(engine):
+    th = [email(1), email(3)]
+    c = FakeClient([email(1), email(3)], {"t1": th})
+    out = runner.run(engine, client=c, campaign_id="camp", now=NOW,
+                     think=fixed(abby.Decision("interested", "reply", reply=LINK)))
+    assert out["replied"] == 1 and out["skipped"] == 1
+
+
+def test_name_falls_back_to_instantly_lead(engine):
+    seen = {}
+    def think(thread, *, lead_email, company, first_name, thread_categories):
+        seen.update(company=company, first_name=first_name)
+        return abby.Decision("auto_reply", "ignore")
+    c = FakeClient([email(1)], leads={"ann@huppy.com": {"first_name": "Ann", "company_name": "Huppy"}})
+    runner.run(engine, client=c, campaign_id="camp", now=NOW, think=think)
+    assert seen == {"company": "Huppy", "first_name": "Ann"}
+
+
+# ---------- nudges ----------
+
+def ours(i, thread="t9", days_ago=4):
+    return {"id": f"o{i}", "thread_id": thread, "lead": "ann@huppy.com", "ue_type": 3,
+            "eaccount": "abby@x.com",
+            "timestamp_created": (NOW - timedelta(days=days_ago)).isoformat().replace("+00:00", "Z")}
+
+
+def nudge_client(days_ago):
+    latest = ours(1, days_ago=days_ago)
+    prospect = email(1, thread="t9", ts="2026-10-10T10:00:00Z")
+    return FakeClient([], {"t9": [prospect, latest]}, interested=[latest],
+                      leads={"ann@huppy.com": {"first_name": "Ann", "company_name": "Huppy"}})
+
+
+def test_nudge_1_after_3_days_replies_to_prospects_email(engine):
+    c = nudge_client(4)
+    out = runner.run(engine, client=c, campaign_id="camp", now=NOW)
+    assert out["nudges"] == 1 and c.replies[0]["reply_to"] == "e1"
+    assert LINK in c.replies[0]["body"] and "Hi Ann" in c.replies[0]["body"] and c.replies[0]["cc"] == []
+
+
+def test_no_nudge_before_3_days_or_when_prospect_wrote_last(engine):
+    assert runner.run(engine, client=nudge_client(2), campaign_id="camp", now=NOW)["nudges"] == 0
+    c = nudge_client(10)
+    c.interested = [email(5, thread="t9")]
+    assert runner.run(engine, client=c, campaign_id="camp", now=NOW)["nudges"] == 0
+
+
+def test_three_nudges_max_last_one_ccs_david(engine):
+    posts = []
+    for _ in range(3):
+        c = nudge_client(8)
+        runner.run(engine, client=c, campaign_id="camp", now=NOW, post_slack=posts.append)
+    assert c.replies[0]["cc"] == [abby.DAVID_EMAIL]
+    c4 = nudge_client(30)
+    assert runner.run(engine, client=c4, campaign_id="camp", now=NOW)["nudges"] == 0
+    assert any("last nudge" in p for p in posts)
+
+
+def test_nudge_text_passes_reply_checks():
+    for n in (1, 2, 3):
+        body, _ = runner.nudge_text(n, "Ann", "Huppy")
+        assert abby.validate_reply("interested", body)[0], n
+
+
+def test_shadow_nudges_send_nothing(engine, monkeypatch):
+    monkeypatch.setenv("ABBY_MODE", "shadow")
+    c = nudge_client(4)
+    posts = []
+    runner.run(engine, client=c, campaign_id="camp", now=NOW, post_slack=posts.append)
+    assert c.replies == [] and any("not sent" in p for p in posts)
 
 
 def test_opt_out_blocks_company_but_freemail_blocks_address(engine):
@@ -215,3 +294,13 @@ def test_not_now_followup_sent_after_60_days(engine):
 
 def test_followup_text_has_no_stray_numbers():
     assert abby.validate_reply("interested", runner.followup_text("Ann"))[0]
+
+
+def test_before_takeover_no_nudges_and_no_backlog(engine, monkeypatch):
+    monkeypatch.setenv("ABBY_TAKEOVER_AT", "2026-12-01T00:00:00Z")
+    monkeypatch.setenv("ABBY_START_AT", "2026-10-27T15:00:00Z")
+    c = nudge_client(10)
+    c.received = [email(1)]
+    out = runner.run(engine, client=c, campaign_id="camp", now=NOW,
+                     think=fixed(abby.Decision("interested", "reply", reply=LINK)))
+    assert out["nudges"] == 0 and out["seen"] == 1  # list call is time-filtered server side

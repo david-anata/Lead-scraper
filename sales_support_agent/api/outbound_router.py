@@ -2522,6 +2522,22 @@ async def outbound_enrich_test(request: Request) -> Response:
             return rows
 
         return JSONResponse(content={"ok": True, "preview": await run_in_threadpool(_preview)})
+    if str(form.get("action") or "") == "abby_takeover_preview":
+        from starlette.concurrency import run_in_threadpool
+
+        import abby as _abby
+        import abby_runner as _ar
+        import outbound_instantly_push as _ip
+        from datetime import datetime as _dt, timezone as _tz
+        from sales_support_agent.api.abby_job import lead_info_from_db
+        from sales_support_agent.models.database import get_engine
+
+        def _tp() -> dict[str, Any]:
+            engine = get_engine()
+            return _ar.preview_takeover(engine, _ar.Instantly(_ip.api_key()), _ip.LIVE_CAMPAIGN_ID,
+                                        _dt.now(_tz.utc), _abby.think, lead_info_from_db(engine))
+
+        return JSONResponse(content={"ok": True, **(await run_in_threadpool(_tp))})
     if str(form.get("action") or "") == "abby_run":
         from starlette.concurrency import run_in_threadpool
 

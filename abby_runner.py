@@ -59,6 +59,16 @@ def start_at() -> datetime:
         return datetime.now(timezone.utc) - timedelta(hours=2)
 
 
+def takeover_at() -> datetime:
+    """When the backlog sweep and nudges begin (previewed first)."""
+    raw = (os.getenv("ABBY_TAKEOVER_AT") or "2026-10-26T23:30:00Z").strip()
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return datetime(2026, 10, 26, 23, 30, tzinfo=timezone.utc)
+
+
 def ensure_tables(engine) -> None:
     """Postgres tables are created by migration; Vercel's role cannot run DDL."""
     if os.getenv("VERCEL") and engine.dialect.name == "postgresql":
@@ -87,11 +97,32 @@ class Instantly:
                            str(exc).replace(self.key, "<key>"))
             return 0, None
 
-    def received_since(self, since: datetime, campaign_id: str) -> list[dict]:
-        st, data = self._call("GET", "emails", params={
+    def received_since(self, since: datetime, campaign_id: str, pages: int = 3) -> list[dict]:
+        items: list[dict] = []
+        params: dict[str, Any] = {
             "email_type": "received", "campaign_id": campaign_id, "sort_order": "asc",
-            "limit": 50, "min_timestamp_created": since.isoformat().replace("+00:00", "Z")})
+            "limit": 100, "min_timestamp_created": since.isoformat().replace("+00:00", "Z")}
+        for _ in range(pages):
+            st, data = self._call("GET", "emails", params=params)
+            if st != 200:
+                break
+            items += (data or {}).get("items") or []
+            nxt = (data or {}).get("next_starting_after")
+            if not nxt:
+                break
+            params["starting_after"] = nxt
+        return items
+
+    def interested_latest(self, campaign_id: str) -> list[dict]:
+        """Latest email of each thread for leads marked Interested (status 1)."""
+        st, data = self._call("GET", "emails", params={
+            "i_status": 1, "latest_of_thread": "true", "campaign_id": campaign_id, "limit": 100})
         return (data or {}).get("items") or [] if st == 200 else []
+
+    def lead(self, email: str) -> dict:
+        st, data = self._call("POST", "leads/list", json={"contacts": [email], "limit": 1})
+        items = (data or {}).get("items") or [] if st == 200 else []
+        return items[0] if items else {}
 
     def thread(self, thread_id: str) -> list[dict]:
         st, data = self._call("GET", "emails", params={
@@ -154,14 +185,30 @@ def _abby_reply_ids(engine) -> set[str]:
 def _sent_today(engine, now: datetime) -> int:
     since = (now - timedelta(hours=24)).replace(tzinfo=None)
     with engine.connect() as conn:
-        row = conn.execute(text("SELECT COUNT(*) FROM abby_handled WHERE action = 'reply' AND mode = 'live' "
+        row = conn.execute(text("SELECT COUNT(*) FROM abby_handled WHERE action IN ('reply', 'nudge') AND mode = 'live' "
                                 "AND created_at >= :s"), {"s": since}).fetchone()
     return int(row[0] or 0)
 
 
+def _ts(m: dict) -> str:
+    return str(m.get("timestamp_created") or m.get("timestamp_email") or "")
+
+
 def _human_already_replied(thread: list[dict], received: dict, abby_ids: set[str]) -> bool:
-    """A manual send (ue_type 3) in this thread that Abby did not write."""
+    """Kept for the preview: a manual send (ue_type 3) Abby did not write."""
     return any(m.get("ue_type") == 3 and m.get("id") not in abby_ids for m in thread)
+
+
+def already_answered(thread: list[dict], received: dict) -> bool:
+    """Someone (Gabe, Abby, or a campaign step) sent something after this reply,
+    or the prospect wrote again later (the later message is the one to answer)."""
+    t = _ts(received)
+    for m in thread:
+        if m.get("id") == received.get("id") or not t:
+            continue
+        if _ts(m) > t and m.get("ue_type") in (1, 2, 3):
+            return True
+    return False
 
 
 def _subject(s: str) -> str:
@@ -187,7 +234,11 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
     lead_info = lead_info or (lambda e: {})
     cap = int(os.getenv("ABBY_DAILY_CAP") or 60)
 
-    since = max(start_at(), now - timedelta(days=2))
+    # David 2026-10-26: Abby takes over follow-ups, including the backlog of
+    # unanswered replies from the last 30 days (threads Gabe started included).
+    since = now - timedelta(days=int(os.getenv("ABBY_BACKLOG_DAYS") or 30))
+    if now < takeover_at():
+        since = max(start_at(), now - timedelta(days=2))   # before takeover: new replies only
     received = [e for e in client.received_since(since, campaign_id) if e.get("id")]
     done = _handled_ids(engine, [e["id"] for e in received])
     todo = [e for e in received if e["id"] not in done][:MAX_PER_RUN]
@@ -197,12 +248,12 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
     for email in todo:
         lead = str(email.get("lead") or email.get("from_address_email") or "").lower()
         thread = client.thread(email.get("thread_id") or "") or [email]
-        if _human_already_replied(thread, email, abby_ids):
-            _record(engine, email=email, decision=abby.Decision("other", "skip", reason="person already replied in thread"),
+        if already_answered(thread, email):
+            _record(engine, email=email, decision=abby.Decision("other", "skip", reason="already answered"),
                     run_mode=run_mode)
             out["skipped"] += 1
             continue
-        info = lead_info(lead) or {}
+        info = lead_info(lead) or _instantly_info(client, lead)
         decision = think(thread, lead_email=lead, company=info.get("company", ""),
                          first_name=info.get("first_name", ""),
                          thread_categories=_thread_categories(engine, email.get("thread_id") or ""))
@@ -250,6 +301,7 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
         _record(engine, email=email, decision=decision, run_mode=run_mode, reply_id=reply_id, detail=detail)
 
     out["followups"] = _send_due_followups(engine, client, now, run_mode, post_slack)
+    out["nudges"] = _send_nudges(engine, client, campaign_id, now, run_mode, post_slack, lead_info, cap)
     return out
 
 
@@ -281,3 +333,132 @@ def _send_due_followups(engine, client: Instantly, now: datetime, run_mode: str,
         else:
             post_slack(f"Abby's 60-day check-in to {lead} failed to send ({st}).")
     return sent
+
+
+def _instantly_info(client: Instantly, lead: str) -> dict:
+    try:
+        rec = client.lead(lead) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    return {"first_name": str(rec.get("first_name") or ""), "company": str(rec.get("company_name") or "")}
+
+
+# Nudges for Interested leads that went quiet: days since OUR last message
+# before nudge 1, 2, 3 (3, then 4 more = day 7, then 7 more = day 14).
+NUDGE_GAPS_DAYS = (3, 4, 7)
+MAX_NUDGES_PER_RUN = 5
+
+
+def nudge_text(n: int, first_name: str, company: str) -> tuple[str, list[str]]:
+    hi = f"Hi {first_name}," if first_name else "Hi there,"
+    link = abby.BOOKING_LINK
+    if n == 1:
+        body = (f"{hi}\n\nQuick nudge in case this got buried. Happy to set up the free 14-day trial, "
+                f"where we build your Amazon strategy and run the ad automation. Grab a time with David here: {link}\n\nAbby")
+        return body, []
+    if n == 2:
+        who = company or "your brand"
+        body = (f"{hi}\n\nStill keen to show you what the free 14-day trial would look like for {who}. "
+                f"Here is David's calendar: {link}\n\nAbby")
+        return body, []
+    body = (f"{hi}\n\nLast note from me. If the timing is off, no worries at all. If you want the free 14-day trial, "
+            f"David's calendar is here: {link}\n\nLooping David, our owner, in.\n\nAbby")
+    return body, [abby.DAVID_EMAIL]
+
+
+def _nudges_sent(engine, thread_id: str) -> int:
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT COUNT(*) FROM abby_handled WHERE thread_id = :t AND action = 'nudge'"),
+                           {"t": thread_id}).fetchone()
+    return int(row[0] or 0)
+
+
+def _parse_ts(s: str) -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _send_nudges(engine, client: Instantly, campaign_id: str, now: datetime, run_mode: str,
+                 post_slack: Callable[[str], Any], lead_info: Callable[[str], dict], cap: int) -> int:
+    if run_mode == "off" or now < takeover_at():
+        return 0
+    sent = 0
+    for latest in client.interested_latest(campaign_id):
+        if sent >= MAX_NUDGES_PER_RUN:
+            break
+        if latest.get("ue_type") not in (1, 3):
+            continue                      # prospect wrote last: the reply flow answers it
+        thread_id = str(latest.get("thread_id") or "")
+        n = _nudges_sent(engine, thread_id) + 1
+        if not thread_id or n > len(NUDGE_GAPS_DAYS):
+            continue
+        last = _parse_ts(_ts(latest))
+        if last is None or now - last < timedelta(days=NUDGE_GAPS_DAYS[n - 1]):
+            continue
+        thread = client.thread(thread_id)
+        received = [m for m in thread if m.get("ue_type") == 2]
+        if not received:
+            continue                      # never replied: nothing to reply to safely
+        anchor = received[-1]
+        lead = str(anchor.get("lead") or latest.get("lead") or "").lower()
+        info = lead_info(lead) or _instantly_info(client, lead)
+        body, cc = nudge_text(n, info.get("first_name", ""), info.get("company", ""))
+        if run_mode == "live" and _sent_today(engine, now) >= cap:
+            break
+        key = {"id": f"nudge:{thread_id}:{n}", "thread_id": thread_id, "lead": lead}
+        if run_mode == "live":
+            st, data = client.reply(reply_to=anchor["id"], eaccount=anchor.get("eaccount") or latest.get("eaccount") or "",
+                                    subject=_subject(anchor.get("subject") or ""), body=body, cc=cc, extra=[])
+            if st != 200:
+                post_slack(f"Abby's nudge {n} to {lead} failed to send ({st}).")
+                continue
+            _record(engine, email=key, decision=abby.Decision("nudge", "nudge", reason=f"nudge {n}"),
+                    run_mode=run_mode, reply_id=str((data or {}).get("id") or ""))
+            if n == len(NUDGE_GAPS_DAYS):
+                post_slack(f"Abby sent her last nudge to {lead} (CC'd David). No booking yet.")
+        else:
+            post_slack(f"[Abby nudge {n}, not sent] {lead}\n\n{body}")
+            _record(engine, email=key, decision=abby.Decision("nudge", "nudge", reason=f"shadow nudge {n}"),
+                    run_mode=run_mode)
+        sent += 1
+    return sent
+
+
+def preview_takeover(engine, client: Instantly, campaign_id: str, now: datetime,
+                     think: Callable[..., abby.Decision], lead_info: Callable[[str], dict],
+                     limit: int = 15) -> dict[str, Any]:
+    """What the backlog sweep and nudges WOULD do. Sends and records nothing."""
+    since = now - timedelta(days=int(os.getenv("ABBY_BACKLOG_DAYS") or 30))
+    received = [e for e in client.received_since(since, campaign_id) if e.get("id")]
+    done = _handled_ids(engine, [e["id"] for e in received])
+    backlog = []
+    for e in received:
+        if e["id"] in done or len(backlog) >= limit:
+            continue
+        thread = client.thread(e.get("thread_id") or "") or [e]
+        if already_answered(thread, e):
+            continue
+        lead = str(e.get("lead") or "").lower()
+        info = lead_info(lead) or _instantly_info(client, lead)
+        d = think(thread, lead_email=lead, company=info.get("company", ""),
+                  first_name=info.get("first_name", ""), thread_categories=[])
+        backlog.append({"lead": lead, "received": _ts(e)[:10],
+                        "their_message": str((e.get("body") or {}).get("text") or "")[:240],
+                        "category": d.category, "action": d.action, "cc": d.cc, "reply": d.reply,
+                        "reason": d.reason})
+    nudges = []
+    for latest in client.interested_latest(campaign_id):
+        if latest.get("ue_type") not in (1, 3):
+            continue
+        tid = str(latest.get("thread_id") or "")
+        n = _nudges_sent(engine, tid) + 1
+        last = _parse_ts(_ts(latest))
+        if not tid or n > len(NUDGE_GAPS_DAYS) or last is None:
+            continue
+        due = (now - last) >= timedelta(days=NUDGE_GAPS_DAYS[n - 1])
+        nudges.append({"lead": str(latest.get("lead") or ""), "nudge": n,
+                       "days_since_last": (now - last).days, "due_now": due})
+    return {"backlog": backlog, "nudges": nudges, "takeover_at": takeover_at().isoformat()}
