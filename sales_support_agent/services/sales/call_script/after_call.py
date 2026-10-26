@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from sales_support_agent.models.entities import SalesCallLiveSession, SalesCallTracker
+from sales_support_agent.services.sales.call_script import live as live_svc
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,14 @@ def run_after_call(
     when = when or datetime.now(timezone.utc)
     stored = dict(live.after_call_json or {})
     steps = dict(stored.get("steps") or {})
+
+    if not stored.get("steps") and not live_svc.has_prospect_lines(session, live.id):
+        # A call where the prospect never spoke (a solo test, or the Meet tab's
+        # audio was not captured) must not create CRM tasks or emails.
+        reason = "The prospect never spoke on this call, so nothing was sent."
+        return {"clickup": {"ok": True, "skipped": True, "reason": reason},
+                "recap": {"ok": True, "skipped": True, "reason": reason},
+                "day10": {"ok": True, "skipped": True, "reason": reason}}
 
     def done(name: str) -> bool:
         return bool((steps.get(name) or {}).get("ok"))

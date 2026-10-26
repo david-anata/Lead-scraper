@@ -337,13 +337,37 @@ def line_json(row: SalesCallTranscriptLine) -> dict:
     }
 
 
+MERGE_GAP_MS = 2500
+
+
 def transcript_text(lines: list[SalesCallTranscriptLine]) -> str:
-    """Merge both tracks into time order: 'Prospect: ...' / 'Rep: ...'."""
-    out = []
+    """Merge both tracks into time order: 'Prospect: ...' / 'Rep: ...'.
+
+    Speech-to-text splits on short pauses, so back-to-back lines from the same
+    speaker (gap under MERGE_GAP_MS) are joined into one turn.
+    """
+    turns: list[list] = []  # [speaker, text, end_ms]
     for row in sorted(lines, key=lambda r: (r.start_ms, r.id)):
-        who = "Prospect" if row.speaker == "prospect" else "Rep"
-        out.append(f"{who}: {row.text}")
-    return "\n".join(out)
+        text = " ".join(str(row.text or "").split())
+        if not text:
+            continue
+        last = turns[-1] if turns else None
+        if last and last[0] == row.speaker and (row.start_ms or 0) - (last[2] or 0) <= MERGE_GAP_MS:
+            last[1] = f"{last[1]} {text}"
+            last[2] = max(last[2] or 0, row.end_ms or 0)
+        else:
+            turns.append([row.speaker, text, row.end_ms or 0])
+    return "\n".join(f"{'Prospect' if sp == 'prospect' else 'Rep'}: {tx}" for sp, tx, _ in turns)
+
+
+def has_prospect_lines(session: Session, session_id: str) -> bool:
+    stmt = (
+        select(SalesCallTranscriptLine.id)
+        .where(SalesCallTranscriptLine.session_id == session_id)
+        .where(SalesCallTranscriptLine.speaker == "prospect")
+        .limit(1)
+    )
+    return session.scalar(stmt) is not None
 
 
 # ---------------------------------------------------------------- coach state
