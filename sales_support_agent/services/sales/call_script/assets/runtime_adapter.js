@@ -397,6 +397,7 @@
       if (st.session) { st.session.status = 'ended'; st.session.endedAt = j.endedAt; }
       var text = (j.transcript || '').trim();
       if (!text) { st.reviewState = 'empty'; render(); return; }
+      if (!/^Prospect:/m.test(text)) { st.reviewState = 'noprospect'; render(); return; }
       var ok = window.SS && window.SS.liveReview ? window.SS.liveReview(text, 'Live call: ' + (CFG.label || 'prospect')) : false;
       st.reviewState = ok ? 'running' : 'unavailable';
       render();
@@ -463,6 +464,11 @@
       return h;
     }
     if (!s.consentAt) h += '<div class="lv-card consent"><div class="k">Consent</div><div class="say">Say: "Quick note, this call is recorded."</div><div class="lv-btns"><button type="button" class="lv-btn" data-lvconsent>Said it</button></div></div>';
+    var heardProspect = st.lines.some(function (l) { return l.speaker === 'prospect'; });
+    var heardRep = st.lines.some(function (l) { return l.speaker === 'rep'; });
+    if (heardRep && !heardProspect && since(s.firstAudioAt || s.startedAt) > 20000) {
+      h += '<div class="lv-warn">Only hearing you so far. The prospect\'s side comes from the Meet tab\'s audio, so it fills in once someone else talks on the call.</div>';
+    }
     (p.warnings || []).slice(0, 3).forEach(function (w) { h += '<div class="lv-warn">' + esc(w) + '</div>'; });
     var nm = p.nextMove;
     if (nm && nm.say) {
@@ -515,6 +521,7 @@
     if (st.reviewState === 'running') h += '<p>Scoring the call from the transcript. The review panel shows progress.</p>';
     else if (st.reviewState === 'saving') h += '<p>Updating ClickUp, drafting the recap and setting the day-10 review.</p>';
     else if (st.reviewState === 'empty') h += '<p>No transcript was captured for this call, so there is nothing to review.</p>';
+    else if (st.reviewState === 'noprospect') h += '<p>Only your side was captured, so there was nothing to review and nothing was sent to ClickUp. For a solo test, join the Meet from your phone and play the prospect there.</p>';
     else if (st.reviewState === 'unavailable') h += '<p>Ask Claude is off on this agent, so the automatic review can\'t run. Use End call &amp; review to log the call by hand.</p>';
     else if (st.reviewState === 'failed') h += '<p>The after-call steps didn\'t finish.</p><div class="lv-btns"><button type="button" class="lv-btn" data-lvafter>Retry</button></div>';
     if (st.afterCall) {

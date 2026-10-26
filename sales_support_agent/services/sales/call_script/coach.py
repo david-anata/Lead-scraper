@@ -58,6 +58,7 @@ Coach rules:
 - Price objection: "Compared to what?" then the cost of the problem vs the fee.
 - If the prospect has already confirmed a point several times, the next move is to move on.
 - A belief only counts when the PROSPECT says it. Quote the prospect's exact words.
+- The transcript is live speech-to-text: expect small talk, off-topic chatter and rough wording. Never call it corrupted, fake or test data, and never tell the rep to reset. Coach from what is there.
 
 Reply with only this JSON object (no prose, no code fences, no em dashes):
 {"sections": {"s1": {"done": true, "quote": "..."}},
@@ -329,6 +330,10 @@ def run_pass(
     upto = live_svc.last_line_id(session, live.id)
     try:
         lines = live_svc.all_lines(session, live.id)
+        if not any(ln.speaker == "prospect" for ln in lines):
+            # Nothing from the prospect yet: no beliefs to judge, so no pass.
+            live_svc.release_lease(session, live, line_id=upto)
+            return None
         prev_event = live_svc.latest_coach_event(session, live.id)
         previous = prev_event.patch_json if prev_event else None
         system, messages = build_messages(live, tracker, lines, previous)

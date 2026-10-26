@@ -262,9 +262,27 @@ class LiveRouteTests(unittest.TestCase):
             self.assertEqual(event.rev, 1)
             self.assertFalse(live_svc.coach_due(session, row))  # no new lines since
 
+    def test_after_call_skips_when_prospect_never_spoke(self) -> None:
+        tid = self._tracker()
+        live = self._go_live(tid)
+        self._post_lines(live["sessionId"], live["token"], [
+            {"speaker": "rep", "text": "What brought you to the call?", "startMs": 0, "endMs": 2000}])
+        clickup = MagicMock()
+        gmail = MagicMock()
+        with patch("sales_support_agent.api.call_script_router._clickup_client", return_value=clickup), \
+             patch("sales_support_agent.api.call_script_router._gmail_client", return_value=gmail):
+            body = self.client.post(f"/admin/sales/call/{tid}/after-call",
+                                    json={"analysis": {"outcome": "closed"}, "offer": "starter"}).json()
+        for step in ("clickup", "recap", "day10"):
+            self.assertTrue(body["steps"][step]["skipped"])
+        clickup.create_task.assert_not_called()
+        gmail.create_draft.assert_not_called()
+
     def test_after_call_is_idempotent(self) -> None:
         tid = self._tracker()
-        self._go_live(tid)
+        live = self._go_live(tid)
+        self._post_lines(live["sessionId"], live["token"], [
+            {"speaker": "prospect", "text": "Our ACoS is way too high.", "startMs": 0, "endMs": 2000}])
         clickup = MagicMock()
         clickup.get_tasks.return_value = []
         clickup.create_task.side_effect = [
@@ -336,3 +354,16 @@ class AfterCallUnitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_transcript_text_merges_same_speaker_fragments():
+    from types import SimpleNamespace as L
+    from sales_support_agent.services.sales.call_script import live as lv
+
+    lines = [
+        L(id=1, speaker="rep", start_ms=0, end_ms=1000, text="Well, it's"),
+        L(id=2, speaker="rep", start_ms=1200, end_ms=3000, text="two more."),
+        L(id=3, speaker="prospect", start_ms=3500, end_ms=5000, text="Sure."),
+        L(id=4, speaker="rep", start_ms=20000, end_ms=21000, text="Next."),
+    ]
+    assert lv.transcript_text(lines) == "Rep: Well, it's two more.\nProspect: Sure.\nRep: Next."
