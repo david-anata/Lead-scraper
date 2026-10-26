@@ -2400,6 +2400,34 @@ async def outbound_enrich_test(request: Request) -> Response:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[outbound-enrich] rewrite failed")
             return JSONResponse(status_code=500, content={"ok": False, "reason": type(exc).__name__})
+    if str(form.get("action") or "") == "instantly_get":
+        # Read-only Instantly lookups for the funnel audit. GET only, allowlisted.
+        import requests as _rq
+        from starlette.concurrency import run_in_threadpool
+
+        import outbound_instantly_push as _ip
+        allowed = ("accounts", "campaigns/", "campaigns/analytics/daily", "webhooks",
+                   "emails", "emails/unread/count", "accounts/analytics/daily",
+                   "account-campaign-mappings/")
+        path = str(form.get("path") or "").strip().lstrip("/")
+        if not any(path == a or (a.endswith("/") and path.startswith(a)) for a in allowed):
+            return JSONResponse(status_code=400, content={"ok": False, "reason": "path not allowed"})
+        import json as _json
+        try:
+            params = _json.loads(str(form.get("params") or "{}"))
+        except ValueError:
+            params = {}
+        key = _ip.api_key()
+
+        def _get() -> dict[str, Any]:
+            try:
+                r = _rq.get(f"https://api.instantly.ai/api/v2/{path}",
+                            headers={"Authorization": f"Bearer {key}"}, params=params, timeout=30)
+                return {"status": r.status_code, "body": r.json() if r.content else None}
+            except Exception as exc:  # noqa: BLE001
+                return {"error": str(exc).replace(key, "<key>")[:200]}
+
+        return JSONResponse(content={"ok": True, **(await run_in_threadpool(_get))})
     if str(form.get("action") or "") == "instantly_stats":
         # Read-only: campaign totals and per-step numbers for one campaign.
         import requests as _rq
