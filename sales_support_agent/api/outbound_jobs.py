@@ -39,7 +39,8 @@ _TZ = "America/Denver"
 _MARKER = "__morning_run__"             # recipe name used purely as a daily marker
 _RUN_HOUR = 7                           # before the working day, so it is ready
 _SCAN_PER_DAY = 12                      # ~30 min of Amazon checks, then it stops
-_DAILY_COMPANY_CAP = 150                # one controlled morning sheet, across all recipes
+_DAILY_COMPANY_CAP = 300                # David 2026-10-26: maximize brands pulled
+_PULL_TIME_BUDGET_S = 420              # leave room for the Amazon checks inside 800s
 
 
 def _today(now: datetime) -> str:
@@ -190,6 +191,39 @@ def _email_the_batch(engine, summary: dict, *, force: bool = False) -> bool:
         return False
 
 
+def _pull_baseline_slices(_op, _rx, api_key, already, requested, recipe, tunables, now, started):
+    """Run the baseline once per revenue slice until the cap or time budget is hit.
+
+    Returns one combined PipelineResult so the caller records a single run."""
+    import dataclasses
+    import time as _time
+
+    combined = _op.PipelineResult(dry_run=True)
+    combined.recipe = recipe.key
+    seen = set(already)
+    for override in _rx.baseline_slices_for(now, tunables):
+        if combined.fresh >= requested or _time.monotonic() - started > _PULL_TIME_BUDGET_S:
+            break
+        sliced = dataclasses.replace(recipe, build=lambda _now, _s, o=override: dict(o))
+        part = _op.run_storeleads_to_clay(
+            api_key=api_key, clay_webhook_url="", processed_domains=seen,
+            max_new=requested - combined.fresh, dry_run=True,
+            recipe=sliced, settings=tunables,
+        )
+        combined.scanned += part.scanned
+        combined.matched_icp += part.matched_icp
+        combined.skipped_already_contacted += part.skipped_already_contacted
+        combined.partial = combined.partial or part.partial
+        for lead in part.leads:
+            if lead["domain"] in seen:
+                continue
+            seen.add(lead["domain"])
+            combined.leads.append(lead)
+            combined.fresh += 1
+    combined.leads.sort(key=lambda l: l.get("score", 0), reverse=True)
+    return combined
+
+
 def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_PER_DAY) -> dict:
     """Pull whatever is due today, then check those brands on Amazon.
 
@@ -242,6 +276,10 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
     all_leads: list[dict] = []
     recipe_runs: list[dict] = []
     daily_remaining = _DAILY_COMPANY_CAP
+    import time as _time
+    pull_started = _time.monotonic()
+    # Baseline last, so the signal-based recipes get first claim on the daily cap.
+    due = [r for r in due if r.key != "icp_baseline"] + [r for r in due if r.key == "icp_baseline"]
 
     # 1. Pull. Fast and free; the Amazon work is deliberately not inline here,
     #    because at minutes per brand it would never finish inside one request.
@@ -252,11 +290,15 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
                                 "status": "complete", "fresh": 0})
             continue
         try:
-            result = _op.run_storeleads_to_clay(
-                api_key=api_key, clay_webhook_url="", processed_domains=already,
-                max_new=requested, dry_run=True,
-                recipe=recipe, settings=tunables,
-            )
+            if recipe.key == "icp_baseline":
+                result = _pull_baseline_slices(_op, _rx, api_key, already, requested,
+                                               recipe, tunables, now, pull_started)
+            else:
+                result = _op.run_storeleads_to_clay(
+                    api_key=api_key, clay_webhook_url="", processed_domains=already,
+                    max_new=requested, dry_run=True,
+                    recipe=recipe, settings=tunables,
+                )
         except Exception:  # noqa: BLE001
             logger.exception("[outbound-jobs] pull failed for %s", recipe.key)
             recipe_runs.append({"recipe_key": recipe.key, "recipe_label": recipe.label,

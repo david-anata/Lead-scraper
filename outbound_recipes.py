@@ -84,12 +84,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "icp.employees_max": 80,              # the stated ICP, now actually enforced
     "new_growth_app.window_days": 14,     # how recent an install still counts
     "churned_tool.tools_per_day": 1,      # how many tools we check for churn daily
-    "new_growth_app.max_per_run": 40,
-    "churned_tool.max_per_run": 30,
-    "plan_upgrade.max_per_run": 30,
-    "replatformed.max_per_run": 25,
-    "social_surge.max_per_run": 25,
-    "icp_baseline.max_per_run": 25,
+    "new_growth_app.max_per_run": 100,
+    "churned_tool.max_per_run": 60,
+    "plan_upgrade.max_per_run": 100,
+    "replatformed.max_per_run": 100,
+    "social_surge.max_per_run": 100,
+    "icp_baseline.max_per_run": 200,
     "social_surge.min_growth_pct": 25,
     "plan_upgrade.window_days": 60,
     "replatformed.window_days": 90,
@@ -276,6 +276,31 @@ def _social_surge(now: datetime, settings=None) -> dict[str, Any]:
 
 def _icp_baseline(now: datetime, settings=None) -> dict[str, Any]:
     return {"sort": "-er,rank"}
+
+
+# StoreLeads stops a query after about 11 pages (550 stores), so the baseline
+# always re-read the same top-revenue stores and ran dry once they were all
+# contacted. Splitting the revenue band into narrow slices gives every slice its
+# own 550-store window. Slices rotate by day so each morning starts somewhere new.
+BASELINE_SLICES = 12
+
+
+def revenue_slices(settings: Optional[dict[str, Any]] = None,
+                   n: int = BASELINE_SLICES) -> list[tuple[int, int]]:
+    """Log-spaced (min, max) monthly-cents slices covering the ICP revenue band."""
+    lo = max(1, _int(settings, "icp.revenue_min_usd") * 100 // 12)
+    hi = max(lo + 1, _int(settings, "icp.revenue_max_usd") * 100 // 12)
+    ratio = (hi / lo) ** (1.0 / n)
+    edges = [int(round(lo * ratio ** i)) for i in range(n)] + [hi]
+    return [(edges[i], edges[i + 1]) for i in range(n) if edges[i + 1] > edges[i]]
+
+
+def baseline_slices_for(now: datetime, settings: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
+    """Today's ordered list of StoreLeads param overrides, one per revenue slice."""
+    slices = revenue_slices(settings)
+    start = now.toordinal() % len(slices) if slices else 0
+    ordered = slices[start:] + slices[:start]
+    return [{"f:ermin": a, "f:ermax": b, "sort": "-er,rank"} for a, b in ordered]
 
 
 RECIPES: tuple[Recipe, ...] = (

@@ -94,7 +94,7 @@ class MorningRoutineTests(unittest.TestCase):
         self.assertLess(jobs._RUN_HOUR, 9)
 
     def test_one_daily_sheet_has_a_controlled_company_ceiling(self):
-        self.assertEqual(jobs._DAILY_COMPANY_CAP, 150)
+        self.assertEqual(jobs._DAILY_COMPANY_CAP, 300)  # raised 2026-10-26 (maximize pulls)
 
 
 class ScheduledRouteTests(unittest.TestCase):
