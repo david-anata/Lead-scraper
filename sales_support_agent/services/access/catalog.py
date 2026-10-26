@@ -27,6 +27,7 @@ class Tool:
 # Ordered; grouped by section. `access.manage` gates the RBAC admin UI itself.
 TOOL_CATALOG: tuple[Tool, ...] = (
     Tool("sales.deals", "Control Room & Deal Board", "Sales", ("/admin/sales",)),
+    Tool("sales.call", "Live Call Script", "Sales", ("/admin/sales/call",)),
     Tool("sales.priorities", "Fix Queue", "Sales", ("/admin",), exact=True),
     Tool("sales.decks", "Sales Decks", "Sales", ("/admin/sales-decks", "/admin/sales/decks", "/admin/api/generate-deck", "/admin/api/deck-runs")),
     Tool("website_ops.seo", "Overview, Indexing & Query Map", "Website Ops", ("/admin/website-ops", "/admin/website-ops/indexing", "/admin/website-ops/queries", "/admin/api/website-ops/run", "/admin/api/website-ops/status"), exact=True),

@@ -171,6 +171,25 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     ensure_outbound_settings_schema(engine, force=True)
     ensure_outbound_batch_schema(engine, force=True)
     _ensure_outbound_enrich_tables(engine)
+    _ensure_sales_call_tables(engine)
+
+
+def _ensure_sales_call_tables(engine: Any) -> None:
+    """Create the additive live call script tables (trackers + reviews)."""
+
+    tables = [
+        Base.metadata.tables[name]
+        for name in (
+            "sales_call_trackers",
+            "sales_call_reviews",
+            "sales_call_live_sessions",
+            "sales_call_transcript_lines",
+            "sales_call_coach_events",
+        )
+        if name in Base.metadata.tables
+    ]
+    if tables:
+        Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
 
 
 def _ensure_outbound_enrich_tables(engine: Any) -> None:
