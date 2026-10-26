@@ -2486,6 +2486,47 @@ async def outbound_enrich_test(request: Request) -> Response:
             return out
 
         return JSONResponse(content={"ok": True, **(await run_in_threadpool(_probe))})
+    if str(form.get("action") or "") == "abby_preview":
+        # Read-only: what Abby WOULD do with the most recent replies. Sends nothing.
+        from starlette.concurrency import run_in_threadpool
+
+        import abby as _abby
+        import abby_runner as _ar
+        import outbound_instantly_push as _ip
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        from sales_support_agent.api.abby_job import lead_info_from_db
+        from sales_support_agent.models.database import get_engine
+
+        try:
+            n = max(1, min(int(str(form.get("limit") or 12)), 20))
+        except ValueError:
+            n = 12
+
+        def _preview() -> list[dict[str, Any]]:
+            client = _ar.Instantly(_ip.api_key())
+            engine = get_engine()
+            info = lead_info_from_db(engine)
+            got = client.received_since(_dt.now(_tz.utc) - _td(days=14), _ip.LIVE_CAMPAIGN_ID)
+            got = sorted(got, key=lambda e: str(e.get("timestamp_created") or ""), reverse=True)[:n]
+            rows = []
+            for e in got:
+                lead = str(e.get("lead") or "").lower()
+                thread = client.thread(e.get("thread_id") or "") or [e]
+                i = info(lead) or {}
+                dec = _abby.think(thread, lead_email=lead, company=i.get("company", ""),
+                                  first_name=i.get("first_name", ""), thread_categories=[])
+                rows.append({"lead": lead, "their_message": str((e.get("body") or {}).get("text") or e.get("content_preview") or "")[:300],
+                             "human_replied": _ar._human_already_replied(thread, e, set()),
+                             "category": dec.category, "action": dec.action, "cc": dec.cc,
+                             "reply": dec.reply, "reason": dec.reason})
+            return rows
+
+        return JSONResponse(content={"ok": True, "preview": await run_in_threadpool(_preview)})
+    if str(form.get("action") or "") == "abby_run":
+        from starlette.concurrency import run_in_threadpool
+
+        from sales_support_agent.api.abby_job import run_abby
+        return JSONResponse(content={"ok": True, **(await run_in_threadpool(run_abby))})
     if str(form.get("action") or "") == "run_daily_job":
         # Same code path the scheduler runs, triggered by a signed-in admin.
         from starlette.concurrency import run_in_threadpool
