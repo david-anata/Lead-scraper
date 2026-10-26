@@ -450,8 +450,20 @@ def _send_nudges(engine, client: Instantly, campaign_id: str, now: datetime, run
 
 def preview_takeover(engine, client: Instantly, campaign_id: str, now: datetime,
                      think: Callable[..., abby.Decision], lead_info: Callable[[str], dict],
-                     limit: int = 15) -> dict[str, Any]:
+                     limit: int = 8) -> dict[str, Any]:
     """What the backlog sweep and nudges WOULD do. Sends and records nothing."""
+    nudges = []
+    for latest in client.interested_latest(campaign_id):
+        if latest.get("ue_type") not in (1, 3):
+            continue
+        tid = str(latest.get("thread_id") or "")
+        n = _nudges_sent(engine, tid) + 1
+        last = _parse_ts(_ts(latest))
+        if not tid or n > len(NUDGE_GAPS_DAYS) or last is None:
+            continue
+        due = (now - last) >= timedelta(days=NUDGE_GAPS_DAYS[n - 1])
+        nudges.append({"lead": str(latest.get("lead") or ""), "nudge": n,
+                       "days_since_last": (now - last).days, "due_now": due})
     since = now - timedelta(days=int(os.getenv("ABBY_BACKLOG_DAYS") or 30))
     received = [e for e in client.received_since(since, campaign_id) if e.get("id")]
     done = _handled_ids(engine, [e["id"] for e in received])
@@ -470,16 +482,4 @@ def preview_takeover(engine, client: Instantly, campaign_id: str, now: datetime,
                         "their_message": str((e.get("body") or {}).get("text") or "")[:240],
                         "category": d.category, "action": d.action, "cc": d.cc, "reply": d.reply,
                         "reason": d.reason})
-    nudges = []
-    for latest in client.interested_latest(campaign_id):
-        if latest.get("ue_type") not in (1, 3):
-            continue
-        tid = str(latest.get("thread_id") or "")
-        n = _nudges_sent(engine, tid) + 1
-        last = _parse_ts(_ts(latest))
-        if not tid or n > len(NUDGE_GAPS_DAYS) or last is None:
-            continue
-        due = (now - last) >= timedelta(days=NUDGE_GAPS_DAYS[n - 1])
-        nudges.append({"lead": str(latest.get("lead") or ""), "nudge": n,
-                       "days_since_last": (now - last).days, "due_now": due})
     return {"backlog": backlog, "nudges": nudges, "takeover_at": takeover_at().isoformat()}
