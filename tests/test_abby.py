@@ -229,13 +229,21 @@ def test_no_nudge_before_3_days_or_when_prospect_wrote_last(engine):
 
 
 def test_three_nudges_max_last_one_ccs_david(engine):
-    posts = []
-    for _ in range(3):
-        c = nudge_client(8)
+    posts, sent = [], []
+    prospect = email(1, thread="t9", ts="2026-10-10T10:00:00Z")
+    abby_msgs = []
+    for _ in range(5):
+        latest = abby_msgs[-1] if abby_msgs else dict(prospect, ue_type=2)
+        last = {"id": f"x{len(abby_msgs)}", "thread_id": "t9", "lead": "ann@huppy.com", "ue_type": 3,
+                "timestamp_created": (NOW - timedelta(days=20)).isoformat().replace("+00:00", "Z")}
+        thread = [prospect] + abby_msgs
+        c = FakeClient([], {"t9": thread}, interested=[abby_msgs[-1] if abby_msgs else dict(last, id="seed")])
         runner.run(engine, client=c, campaign_id="camp", now=NOW, post_slack=posts.append)
-    assert c.replies[0]["cc"] == [abby.DAVID_EMAIL]
-    c4 = nudge_client(30)
-    assert runner.run(engine, client=c4, campaign_id="camp", now=NOW)["nudges"] == 0
+        for r in c.replies:
+            sent.append(r)
+            abby_msgs.append({"id": f"r{len(c.replies)}", "thread_id": "t9", "ue_type": 3,
+                              "timestamp_created": (NOW - timedelta(days=20 - len(sent))).isoformat().replace("+00:00", "Z")})
+    assert len(sent) <= 3 and sent and sent[-1]["cc"] == [abby.DAVID_EMAIL]
     assert any("last nudge" in p for p in posts)
 
 
@@ -304,3 +312,22 @@ def test_before_takeover_no_nudges_and_no_backlog(engine, monkeypatch):
     out = runner.run(engine, client=c, campaign_id="camp", now=NOW,
                      think=fixed(abby.Decision("interested", "reply", reply=LINK)))
     assert out["nudges"] == 0 and out["seen"] == 1  # list call is time-filtered server side
+
+
+def test_gabes_manual_followups_count_toward_three(engine):
+    prospect = email(1, thread="t9", ts="2026-10-10T10:00:00Z")
+    g1 = dict(ours(1, days_ago=12)); g2 = dict(ours(2, days_ago=8)); g3 = dict(ours(3, days_ago=4))
+    c = FakeClient([], {"t9": [prospect, g1, g2, g3]}, interested=[g3])
+    out = runner.run(engine, client=c, campaign_id="camp", now=NOW)
+    assert out["nudges"] == 0 and c.replies == []
+    again = FakeClient([], {"t9": [prospect, g1, g2, g3]}, interested=[g3])
+    runner.run(engine, client=again, campaign_id="camp", now=NOW)
+    assert again.replies == []
+
+
+def test_two_manual_followups_means_next_is_last_nudge_with_cc(engine):
+    prospect = email(1, thread="t9", ts="2026-10-10T10:00:00Z")
+    g1 = dict(ours(1, days_ago=15)); g2 = dict(ours(2, days_ago=8))
+    c = FakeClient([], {"t9": [prospect, g1, g2]}, interested=[g2])
+    runner.run(engine, client=c, campaign_id="camp", now=NOW)
+    assert len(c.replies) == 1 and c.replies[0]["cc"] == [abby.DAVID_EMAIL]

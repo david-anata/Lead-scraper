@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 API = "https://api.instantly.ai/api/v2"
 FREEMAIL = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com",
             "live.com", "msn.com", "me.com", "proton.me", "protonmail.com", "gmx.com"}
-MAX_PER_RUN = 10
+MAX_PER_RUN = 8   # Instantly allows ~20 email reads a minute
 
 _DDL = (
     """CREATE TABLE IF NOT EXISTS abby_handled (
@@ -346,7 +346,7 @@ def _instantly_info(client: Instantly, lead: str) -> dict:
 # Nudges for Interested leads that went quiet: days since OUR last message
 # before nudge 1, 2, 3 (3, then 4 more = day 7, then 7 more = day 14).
 NUDGE_GAPS_DAYS = (3, 4, 7)
-MAX_NUDGES_PER_RUN = 5
+MAX_NUDGES_PER_RUN = 4
 
 
 def nudge_text(n: int, first_name: str, company: str) -> tuple[str, list[str]]:
@@ -371,6 +371,13 @@ def _nudges_sent(engine, thread_id: str) -> int:
         row = conn.execute(text("SELECT COUNT(*) FROM abby_handled WHERE thread_id = :t AND action = 'nudge'"),
                            {"t": thread_id}).fetchone()
     return int(row[0] or 0)
+
+
+def _nudges_done(engine, thread_id: str) -> bool:
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT 1 FROM abby_handled WHERE email_id = :i"),
+                           {"i": f"nudge:{thread_id}:done"}).fetchone()
+    return row is not None
 
 
 def _parse_ts(s: str) -> Optional[datetime]:
@@ -398,11 +405,25 @@ def _send_nudges(engine, client: Instantly, campaign_id: str, now: datetime, run
         last = _parse_ts(_ts(latest))
         if last is None or now - last < timedelta(days=NUDGE_GAPS_DAYS[n - 1]):
             continue
+        if _nudges_done(engine, thread_id):
+            continue
         thread = client.thread(thread_id)
         received = [m for m in thread if m.get("ue_type") == 2]
         if not received:
             continue                      # never replied: nothing to reply to safely
         anchor = received[-1]
+        # Follow-ups a person already sent after the prospect's last message count
+        # toward the three, so nobody gets six chasers.
+        abby_ids = _abby_reply_ids(engine)
+        manual = sum(1 for m in thread if m.get("ue_type") == 3 and _ts(m) > _ts(anchor)
+                     and m.get("id") not in abby_ids)
+        n = _nudges_sent(engine, thread_id) + manual + 1
+        if n > len(NUDGE_GAPS_DAYS):
+            _record(engine, email={"id": f"nudge:{thread_id}:done", "thread_id": thread_id,
+                                   "lead": str(anchor.get("lead") or "")},
+                    decision=abby.Decision("nudge", "skip", reason="already followed up 3 times"),
+                    run_mode=run_mode)
+            continue
         lead = str(anchor.get("lead") or latest.get("lead") or "").lower()
         info = lead_info(lead) or _instantly_info(client, lead)
         body, cc = nudge_text(n, info.get("first_name", ""), info.get("company", ""))
