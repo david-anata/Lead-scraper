@@ -66,9 +66,10 @@ Categories: {", ".join(CATEGORIES)}.
 - interested: wants to learn more, see the breakdown/video, or talk.
 - price: asks what it costs (you may say plans start at $99/month).
 - not_now: timing is wrong, maybe later.
-- has_solution: already has an agency, tool, or team for Amazon.
+- has_solution: already has an agency, tool, or team for Amazon, or says they already sell on Amazon.
 - referral: points to a colleague; put that person's email in referral_email if given.
-- opt_out: asks to stop, unsubscribe, remove them, or is clearly annoyed by the emails.
+- opt_out: asks to stop, unsubscribe, remove them, is clearly annoyed by the emails, or the company has closed or ceased operations.
+- A message that is only a signature or contact block with no request is auto_reply.
 - hostile: insults, threats, legal language (spam laws, lawyers, reporting).
 - question: a specific question you can partly answer from the facts.
 - ai_question: asks if you are a bot, AI or a real person.
