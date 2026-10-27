@@ -10,7 +10,11 @@ Safety rails, all in code:
   * a thread where a person already replied by hand is left alone;
   * opt-outs block the company domain (or just the address for gmail-type
     domains) and never get a reply;
-  * hostile, legal, unsure or failed drafts are held and posted to Slack.
+  * hostile, legal, unsure or failed drafts are held and posted to Slack;
+  * departed-employee notices, out-of-office messages, and automated
+    forwards are ignored: no reply, no Interested status, no David CC.
+    A departed contact is recorded on the handled row so the brand can
+    be tried again later. Nothing is sent.
 """
 
 from __future__ import annotations
@@ -181,6 +185,8 @@ def _detail(email: dict, decision: abby.Decision, detail: str) -> str:
     them = re.split(r"\n\s*On .{5,90} wrote:|\nFrom: ", them)[0]
     them = re.sub(r"\s+", " ", them).strip()[:400]
     parts = [detail or decision.reason]
+    if decision.note:
+        parts.append(decision.note)
     if them:
         parts.append(f"THEM: {them}")
     if decision.reply and decision.action == "reply":

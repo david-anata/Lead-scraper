@@ -1,5 +1,6 @@
 """Abby: rules in code, one reply per email, opt-outs never answered."""
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -67,6 +68,237 @@ def test_referral_adds_colleague_and_ccs_david():
 
 def test_auto_reply_ignored():
     assert d("auto_reply").action == "ignore"
+
+
+# Real mailbox rules from Oct 26-27, 2026. Each one was labeled a referral,
+# then Abby wrote the forwarding address, CC'd David, and marked Interested.
+
+RIOMAR = """Greetings,
+
+
+The person associated with this email address is no longer with Riomar Shoes. Please reach out customerservice@riomarshoes.com.
+
+-----
+
+Mac Smith //
+Riomar Shoes // riomarshoes.com
+mac@riomarshoes.com
+"""
+
+GARBARINI = """Thank you for your message. As of the end of January, I have concluded
+my role with Garbarini and will no longer be monitoring this inbox.
+
+For assistance moving forward, please contact the appropriate team member below:
+
+Elisa – Operations Manager
+elisa@garbarinishop.com
+
+Sierra Romick – E-commerce & Social Media
+sierra@garbarinishop.com
+
+I'm grateful for the opportunity to have worked with Garbarini.
+If you have a question about an online order, call 303-333-8686.
+
+Don't worry—eligible returns will be processed within 3 business days.
+
+Just a bean living the dream, Carley
+"""
+
+BELLOCQ = """Hello,
+
+
+Thank you for your email. I am no longer with Bellocq. Please email
+sales@bellocq.com with any inquiries.
+
+Best,
+
+
+Danielle
+"""
+
+OOO = """Hello,
+
+I am out of the office until November 4 with no access to email.
+Please direct inquiries to info@riomarshoes.com.
+
+Mac
+"""
+
+SARAH = ("Hi Abby, I do not cover Amazon. My colleague Sarah Chen does. "
+         "Her email is sarah.chen@huppy.com.\n\nAnn")
+
+MIKE = ("Thanks for writing. Mike Alvarez runs sales for us, and he is the right person. "
+        "You can reach him at mike.alvarez@northwind.com.\n\nJames")
+
+
+def _referral_json(address: str, name: str, reply: str) -> str:
+    return json.dumps({
+        "category": "referral", "confidence": 0.95,
+        "referral_email": address, "referral_name": name, "reply": reply,
+    })
+
+
+def _bad_referral(_prompt: str) -> str:
+    """What the model did on Garbarini: a named person in a mailbox rule, treated as a colleague."""
+    return _referral_json(
+        "sierra@garbarinishop.com", "Sierra Romick",
+        f"Hi Sierra, Carley pointed me your way. Grab a time with David here: {LINK}\n\nAbby",
+    )
+
+
+def _assert_ignored(r, *bits: str):
+    assert r.action == "ignore" and r.category == "auto_reply"
+    assert r.reply == "" and r.cc == [] and r.to_extra == [] and r.interest is None
+    assert r.slack == ""
+    assert "Nothing sent." in r.note
+    assert "—" not in r.note and "–" not in r.note
+    for bit in bits:
+        assert bit in r.note
+
+
+def test_prompt_treats_departed_and_ooo_as_auto_reply():
+    text = abby.SYSTEM
+    assert "—" not in text and "–" not in text
+    for phrase in ("no longer with", "has left the company", "out of the office",
+                   "please direct inquiries", "customerservice@", "info@", "sales@", "support@"):
+        assert phrase in text
+    assert "a human wrote this reply" in text
+    assert "unsure a human wrote" in text
+
+
+@pytest.mark.parametrize("lead,body,bits", [
+    ("mac@riomarshoes.com", RIOMAR, ("Departed contact mac@riomarshoes.com", "customerservice@riomarshoes.com")),
+    ("carley@garbarinishop.com", GARBARINI, ("Departed contact carley@garbarinishop.com", "sierra@garbarinishop.com", "elisa@garbarinishop.com")),
+    ("danielle@bellocq.com", BELLOCQ, ("Departed contact danielle@bellocq.com", "sales@bellocq.com")),
+    ("mac@riomarshoes.com", OOO, ("Out of office from mac@riomarshoes.com", "info@riomarshoes.com")),
+])
+def test_real_notices_are_ignored_before_the_model(lead, body, bits):
+    calls = []
+
+    def llm(prompt):
+        calls.append(prompt)
+        return _bad_referral(prompt)
+
+    r = abby.think([{"ue_type": 2, "subject": "Re: Amazon", "body": {"text": body}}],
+                   lead_email=lead, company="Brand", first_name="There",
+                   thread_categories=[], llm=llm)
+    assert calls == []
+    _assert_ignored(r, *bits)
+
+
+def test_decide_overrides_a_referral_label_on_the_riomar_notice():
+    r = abby.decide(
+        {"category": "referral", "confidence": 0.99,
+         "referral_email": "customerservice@riomarshoes.com", "referral_name": "Customer Service",
+         "reply": f"Hi, Mac pointed me your way. {LINK}\n\nAbby"},
+        lead_email="mac@riomarshoes.com", thread_categories=[], message=RIOMAR)
+    _assert_ignored(r, "customerservice@riomarshoes.com")
+
+
+def test_decide_overrides_interested_on_a_departed_notice():
+    r = abby.decide(
+        {"category": "interested", "confidence": 0.99,
+         "reply": f"Thanks Mac. Grab a time with David here: {LINK}\n\nLooping David, our owner, in.\n\nAbby"},
+        lead_email="mac@riomarshoes.com", thread_categories=[], message=RIOMAR)
+    _assert_ignored(r, "Departed contact")
+
+
+def test_shared_inbox_referral_is_ignored_even_without_the_body():
+    r = d("referral", f"Hi. {LINK} Abby", referral_email="sales@bellocq.com")
+    _assert_ignored(r, "sales@bellocq.com")
+
+
+def test_please_email_support_is_not_a_colleague():
+    body = "Hello, please email support@acme.com and someone on the team will help."
+    calls = []
+    r = abby.think([{"ue_type": 2, "body": {"text": body}}],
+                   lead_email="person@acme.com", company="Acme", first_name="Pat",
+                   thread_categories=[], llm=lambda p: calls.append(p) or _bad_referral(p))
+    assert calls == []
+    _assert_ignored(r, "support@acme.com")
+
+
+def test_auto_reply_header_blocks_a_named_forward():
+    body = "I am away this week. Please contact Jordan Hale at jordan.hale@bellocq.com."
+    msg = {"ue_type": 2, "subject": "Re: Amazon", "headers": {"Auto-Submitted": "auto-replied"},
+           "body": {"text": body}}
+    calls = []
+    r = abby.think([msg], lead_email="danielle@bellocq.com", company="Bellocq", first_name="Danielle",
+                   thread_categories=[], llm=lambda p: calls.append(p) or _bad_referral(p))
+    assert calls == []
+    _assert_ignored(r, "jordan.hale@bellocq.com")
+    via_header = abby.decide(
+        {"category": "referral", "confidence": 0.93, "referral_email": "jordan.hale@bellocq.com",
+         "reply": f"Hi Jordan, Danielle pointed me your way. {LINK}\n\nAbby"},
+        lead_email="danielle@bellocq.com", thread_categories=[], message=body,
+        headers={"X-Autoreply": "yes"})
+    _assert_ignored(via_header)
+
+
+def test_instantly_auto_reply_flag_and_subject_are_ignored():
+    flagged = {"ue_type": 2, "is_auto_reply": 1,
+               "body": {"text": "Looping in my colleague Dana at dana@garbarinishop.com."}}
+    r = abby.think([flagged], lead_email="carley@garbarinishop.com", company="Garbarini",
+                   first_name="Carley", thread_categories=[], llm=_bad_referral)
+    _assert_ignored(r, "dana@garbarinishop.com")
+    subject = abby.automated_notice(
+        "I will return on Monday. Jordan can be reached at jordan@bellocq.com.",
+        lead_email="danielle@bellocq.com", subject="Automatic reply: Out of Office")
+    assert subject is not None and subject.kind == "out_of_office"
+    assert abby.header_says_auto({"Precedence": "auto_reply"})
+    assert not abby.header_says_auto({"Auto-Submitted": "no"})
+    assert not abby.header_says_auto({"Precedence": "bulk"})
+
+
+def test_quoted_departed_notice_does_not_hide_a_new_human_reply():
+    body = ("Yes, send the breakdown.\n\n-----\n"
+            "The person is no longer with Riomar. Please reach out customerservice@riomarshoes.com.")
+    raw = json.dumps({
+        "category": "interested", "confidence": 0.92,
+        "reply": f"Thanks. Grab a time with David here: {LINK}\n\nLooping David, our owner, in.\n\nAbby",
+    })
+    r = abby.think([{"ue_type": 2, "body": {"text": body}, "is_auto_reply": 0}],
+                   lead_email="newperson@riomarshoes.com", company="Riomar", first_name="Sam",
+                   thread_categories=[], llm=lambda _p: raw)
+    assert r.action == "reply" and r.interest == 1 and r.note == ""
+
+
+def test_signature_info_address_does_not_block_a_human():
+    body = "Yes, send the breakdown. Happy to look.\n\nAnn Cole\nEmail: info@huppy.com\n"
+    raw = json.dumps({
+        "category": "interested", "confidence": 0.93,
+        "reply": f"Thanks Ann. Grab a time with David here: {LINK}\n\nLooping David, our owner, in.\n\nAbby",
+    })
+    r = abby.think([{"ue_type": 2, "body": {"text": body}, "headers": {"Auto-Submitted": "no"}}],
+                   lead_email="ann@huppy.com", company="Huppy", first_name="Ann",
+                   thread_categories=[], llm=lambda _p: raw)
+    assert r.action == "reply" and r.interest == 1 and abby.DAVID_EMAIL in r.cc and r.to_extra == []
+
+
+@pytest.mark.parametrize("lead,body,address,name,greeting", [
+    ("ann@huppy.com", SARAH, "sarah.chen@huppy.com", "Sarah Chen", "Hi Sarah, Ann pointed me your way."),
+    ("james@northwind.com", MIKE, "mike.alvarez@northwind.com", "Mike Alvarez", "Hi Mike, James pointed me your way."),
+])
+def test_human_referral_still_writes_the_colleague(lead, body, address, name, greeting):
+    reply = (f"{greeting} The free 14-day trial is where we build your Amazon strategy "
+             f"and run the ad automation. Grab a time with David here: {LINK}\n\nAbby")
+    r = abby.think(
+        [{"ue_type": 2, "is_auto_reply": 0, "body": {"text": body}}],
+        lead_email=lead, company="Brand", first_name="There", thread_categories=[],
+        llm=lambda _p: _referral_json(address, name, reply))
+    assert r.action == "reply" and r.category == "referral"
+    assert r.to_extra == [address] and abby.DAVID_EMAIL in r.cc and r.interest == 1
+    assert r.note == "" and name.split()[0] in r.reply and LINK in r.reply
+
+
+def test_human_referral_survives_decide_when_the_message_is_passed():
+    reply = (f"Hi Sarah, Ann pointed me your way. The free 14-day trial is where we build "
+             f"your Amazon strategy and run the ad automation. Grab a time with David here: {LINK}\n\nAbby")
+    r = abby.decide(
+        {"category": "referral", "confidence": 0.95, "referral_email": "sarah.chen@huppy.com",
+         "referral_name": "Sarah Chen", "reply": reply},
+        lead_email="ann@huppy.com", thread_categories=[], message=SARAH)
+    assert r.action == "reply" and r.to_extra == ["sarah.chen@huppy.com"] and r.interest == 1
 
 
 def test_em_dash_cleaned_and_unknown_links_held():
@@ -376,3 +608,35 @@ def test_no_nudges_once_david_is_in_the_thread(engine):
     c.threads["t9"].insert(1, david_msg(1, thread="t9", ts="2026-10-11T10:00:00Z"))
     assert runner.run(engine, client=c, campaign_id="camp", now=NOW)["nudges"] == 0
     assert c.replies == []
+
+
+def test_live_run_records_departed_notices_and_sends_nothing(engine):
+    """Riomar, Garbarini, and Bellocq: no reply, no Interested mark, note kept."""
+    cases = [
+        ("mac@riomarshoes.com", RIOMAR, "customerservice@riomarshoes.com"),
+        ("carley@garbarinishop.com", GARBARINI, "sierra@garbarinishop.com"),
+        ("danielle@bellocq.com", BELLOCQ, "sales@bellocq.com"),
+    ]
+    messages, threads = [], {}
+    for i, (lead, body, _needle) in enumerate(cases, start=1):
+        msg = email(i, lead=lead, thread=f"tn{i}")
+        msg["body"] = {"text": body}
+        msg["from_address_email"] = lead
+        messages.append(msg)
+        threads[msg["thread_id"]] = [msg]
+
+    def think(thread, **kw):
+        return abby.think(thread, llm=_bad_referral, **kw)
+
+    c = FakeClient(messages, threads)
+    out = runner.run(engine, client=c, campaign_id="camp", now=NOW, think=think)
+    assert out["ignored"] == 3 and out["replied"] == 0 and out["held"] == 0
+    assert c.replies == [] and c.interest == [] and c.blocks == []
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT lead, action, detail FROM abby_handled ORDER BY lead")).fetchall()
+    saved = {lead: (action, detail) for lead, action, detail in rows}
+    for lead, _body, needle in cases:
+        action, detail = saved[lead]
+        assert action == "ignore"
+        assert "Departed contact" in detail and needle in detail and "Nothing sent." in detail
