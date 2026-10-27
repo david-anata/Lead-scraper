@@ -48,11 +48,16 @@ def run_abby() -> dict[str, Any]:
     from sales_support_agent.models.database import get_engine
 
     try:
+        import outbound_reengage as reng
         engine = get_engine()
-        return abby_runner.run(
-            engine, client=abby_runner.Instantly(ip.api_key()),
-            campaign_id=ip.LIVE_CAMPAIGN_ID, lead_info=lead_info_from_db(engine),
-            post_slack=slack_poster())
+        client = abby_runner.Instantly(ip.api_key())
+        campaigns = [ip.LIVE_CAMPAIGN_ID] + client.campaign_ids_named(reng.NAME)
+        out = {}
+        post = slack_poster()
+        for cid in campaigns:
+            out[cid] = abby_runner.run(engine, client=client, campaign_id=cid,
+                                       lead_info=lead_info_from_db(engine), post_slack=post)
+        return out
     except Exception as exc:  # noqa: BLE001
         logger.exception("[abby] run failed")
         return {"error": type(exc).__name__}

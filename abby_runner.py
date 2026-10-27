@@ -119,6 +119,11 @@ class Instantly:
             "i_status": 1, "latest_of_thread": "true", "campaign_id": campaign_id, "limit": 100})
         return (data or {}).get("items") or [] if st == 200 else []
 
+    def campaign_ids_named(self, name: str) -> list[str]:
+        st, data = self._call("GET", "campaigns", params={"search": name[:20], "limit": 10})
+        items = (data or {}).get("items") or [] if st == 200 else []
+        return [c["id"] for c in items if c.get("name") == name and c.get("id")]
+
     def lead(self, email: str) -> dict:
         st, data = self._call("POST", "leads/list", json={"contacts": [email], "limit": 1})
         items = (data or {}).get("items") or [] if st == 200 else []

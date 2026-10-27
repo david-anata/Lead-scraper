@@ -2522,6 +2522,54 @@ async def outbound_enrich_test(request: Request) -> Response:
             return rows
 
         return JSONResponse(content={"ok": True, "preview": await run_in_threadpool(_preview)})
+    if str(form.get("action") or "") in ("reengage_create", "reengage_status", "reengage_activate"):
+        # Re-engagement campaign (outbound_reengage). create: paused campaign +
+        # copy past no-reply leads into it. status: counts. activate: start it.
+        import requests as _rq
+        from starlette.concurrency import run_in_threadpool
+
+        import outbound_instantly_push as _ip
+        import outbound_reengage as _re
+        key = _ip.api_key()
+        act = str(form.get("action"))
+        cid_in = str(form.get("campaign_id") or "").strip()
+
+        def _api(method: str, path: str, **kw) -> tuple[int, Any]:
+            try:
+                r = _rq.request(method, f"https://api.instantly.ai/api/v2/{path}", timeout=60,
+                                headers={"Authorization": f"Bearer {key}"}, **kw)
+                return r.status_code, (r.json() if r.content else None)
+            except Exception as exc:  # noqa: BLE001
+                return 0, {"error": str(exc).replace(key, "<key>")[:200]}
+
+        def _run() -> dict[str, Any]:
+            if act == "reengage_create":
+                st, existing = _api("GET", "campaigns", params={"search": "Re-engage", "limit": 10})
+                for c in (existing or {}).get("items") or []:
+                    if c.get("name") == _re.NAME:
+                        return {"ok": False, "reason": "already exists", "campaign_id": c.get("id")}
+                st, live = _api("GET", f"campaigns/{_ip.LIVE_CAMPAIGN_ID}")
+                if st != 200:
+                    return {"ok": False, "reason": f"could not read live campaign ({st})"}
+                st, made = _api("POST", "campaigns", json=_re.campaign_body(live))
+                if st != 200:
+                    return {"ok": False, "reason": f"create failed ({st})", "detail": made}
+                cid = made.get("id")
+                jobs = []
+                for src in _re.SOURCE_CAMPAIGNS:
+                    st2, job = _api("POST", "leads/move", json=_re.copy_body(src, cid))
+                    jobs.append({"source": src, "status": st2, "job": (job or {}).get("id"), "detail": job if st2 != 200 else None})
+                return {"ok": True, "campaign_id": cid, "copy_jobs": jobs}
+            if act == "reengage_status":
+                st, a = _api("GET", "campaigns/analytics", params={"id": cid_in})
+                st2, c = _api("GET", f"campaigns/{cid_in}")
+                row = (a or [{}])[0] if isinstance(a, list) and a else a
+                return {"ok": True, "analytics": row, "status": (c or {}).get("status"),
+                        "daily_limit": (c or {}).get("daily_limit"), "inboxes": len((c or {}).get("email_list") or [])}
+            st, res = _api("POST", f"campaigns/{cid_in}/activate", json={})
+            return {"ok": st == 200, "status": st, "detail": res}
+
+        return JSONResponse(content=await run_in_threadpool(_run))
     if str(form.get("action") or "") == "abby_takeover_preview":
         from starlette.concurrency import run_in_threadpool
 
