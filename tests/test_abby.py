@@ -331,3 +331,12 @@ def test_two_manual_followups_means_next_is_last_nudge_with_cc(engine):
     c = FakeClient([], {"t9": [prospect, g1, g2]}, interested=[g2])
     runner.run(engine, client=c, campaign_id="camp", now=NOW)
     assert len(c.replies) == 1 and c.replies[0]["cc"] == [abby.DAVID_EMAIL]
+
+
+def test_detail_keeps_their_message_and_abbys_reply(engine):
+    c = FakeClient([dict(email(1), body={"text": "Sounds good, tell me more\n\nOn Mon, Oct 26, 2026 Abby wrote:\n> old"})])
+    runner.run(engine, client=c, campaign_id="camp", now=NOW,
+               think=fixed(abby.Decision("interested", "reply", reply=f"Great. {LINK} Abby")))
+    with engine.connect() as conn:
+        d = conn.execute(text("SELECT detail FROM abby_handled")).fetchone()[0]
+    assert "THEM: Sounds good, tell me more" in d and "old" not in d and "ABBY: Great." in d

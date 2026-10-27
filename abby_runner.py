@@ -171,7 +171,21 @@ def _record(engine, *, email: dict, decision: abby.Decision, run_mode: str,
             "VALUES (:i, :t, :l, :c, :a, :m, :r, :d) ON CONFLICT (email_id) DO NOTHING"),
             {"i": email.get("id"), "t": email.get("thread_id"), "l": email.get("lead"),
              "c": decision.category, "a": decision.action, "m": run_mode,
-             "r": reply_id, "d": (detail or decision.reason)[:500]})
+             "r": reply_id, "d": _detail(email, decision, detail)})
+
+
+def _detail(email: dict, decision: abby.Decision, detail: str) -> str:
+    """Reason, plus what the prospect said and what Abby sent, so the daily
+    action list can draft a reply without opening Instantly."""
+    them = str((email.get("body") or {}).get("text") or email.get("content_preview") or "")
+    them = re.split(r"\n\s*On .{5,90} wrote:|\nFrom: ", them)[0]
+    them = re.sub(r"\s+", " ", them).strip()[:400]
+    parts = [detail or decision.reason]
+    if them:
+        parts.append(f"THEM: {them}")
+    if decision.reply and decision.action == "reply":
+        parts.append("ABBY: " + re.sub(r"\s+", " ", decision.reply)[:300])
+    return " | ".join(p for p in parts if p)[:1000]
 
 
 def _thread_categories(engine, thread_id: str) -> list[str]:
