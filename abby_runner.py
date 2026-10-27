@@ -213,6 +213,33 @@ def _ts(m: dict) -> str:
     return str(m.get("timestamp_created") or m.get("timestamp_email") or "")
 
 
+def _sender(m: dict) -> str:
+    return str(m.get("from_address_email") or "").strip().lower()
+
+
+def is_team(address: str) -> bool:
+    """Anyone at Anata: David, the team, or one of our own sending inboxes.
+
+    David often answers from Gmail with the Abby inbox on the thread, so his
+    reply lands in Instantly as a *received* email. It must never be treated
+    as the prospect talking (2026-10-27: Abby answered David as if he were Brad).
+    """
+    a = (address or "").strip().lower()
+    if not a or "@" not in a:
+        return False
+    if a == abby.DAVID_EMAIL:
+        return True
+    domain = a.split("@")[-1]
+    extra = {d.strip().lower() for d in (os.getenv("ABBY_TEAM_DOMAINS") or "").split(",") if d.strip()}
+    return "anata" in domain or domain in extra
+
+
+def team_in_thread(thread: list[dict]) -> bool:
+    """A person from Anata wrote in this thread (received from a team address).
+    From then on the thread is theirs: Abby neither replies nor nudges."""
+    return any(m.get("ue_type") == 2 and is_team(_sender(m)) for m in thread)
+
+
 def _human_already_replied(thread: list[dict], received: dict, abby_ids: set[str]) -> bool:
     """Kept for the preview: a manual send (ue_type 3) Abby did not write."""
     return any(m.get("ue_type") == 3 and m.get("id") not in abby_ids for m in thread)
@@ -266,7 +293,17 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
 
     for email in todo:
         lead = str(email.get("lead") or email.get("from_address_email") or "").lower()
+        if is_team(_sender(email)) or is_team(lead):
+            _record(engine, email=email, decision=abby.Decision("other", "skip", reason="written by our team"),
+                    run_mode=run_mode)
+            out["skipped"] += 1
+            continue
         thread = client.thread(email.get("thread_id") or "") or [email]
+        if team_in_thread(thread):
+            _record(engine, email=email, decision=abby.Decision("other", "skip", reason="David has this thread"),
+                    run_mode=run_mode)
+            out["skipped"] += 1
+            continue
         if already_answered(thread, email):
             _record(engine, email=email, decision=abby.Decision("other", "skip", reason="already answered"),
                     run_mode=run_mode)
@@ -427,7 +464,13 @@ def _send_nudges(engine, client: Instantly, campaign_id: str, now: datetime, run
         if _nudges_done(engine, thread_id):
             continue
         thread = client.thread(thread_id)
-        received = [m for m in thread if m.get("ue_type") == 2]
+        if team_in_thread(thread):
+            _record(engine, email={"id": f"nudge:{thread_id}:done", "thread_id": thread_id,
+                                   "lead": str(latest.get("lead") or "")},
+                    decision=abby.Decision("nudge", "skip", reason="David has this thread"),
+                    run_mode=run_mode)
+            continue
+        received = [m for m in thread if m.get("ue_type") == 2 and not is_team(_sender(m))]
         if not received:
             continue                      # never replied: nothing to reply to safely
         anchor = received[-1]
@@ -488,10 +531,10 @@ def preview_takeover(engine, client: Instantly, campaign_id: str, now: datetime,
     done = _handled_ids(engine, [e["id"] for e in received])
     backlog = []
     for e in received:
-        if e["id"] in done or len(backlog) >= limit:
+        if e["id"] in done or len(backlog) >= limit or is_team(_sender(e)):
             continue
         thread = client.thread(e.get("thread_id") or "") or [e]
-        if already_answered(thread, e):
+        if team_in_thread(thread) or already_answered(thread, e):
             continue
         lead = str(e.get("lead") or "").lower()
         info = lead_info(lead) or _instantly_info(client, lead)

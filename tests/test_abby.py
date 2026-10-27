@@ -340,3 +340,39 @@ def test_detail_keeps_their_message_and_abbys_reply(engine):
     with engine.connect() as conn:
         d = conn.execute(text("SELECT detail FROM abby_handled")).fetchone()[0]
     assert "THEM: Sounds good, tell me more" in d and "old" not in d and "ABBY: Great." in d
+
+
+# ---------- David's own replies (2026-10-27: Abby answered David as if he were Brad) ----------
+
+def david_msg(i, thread="t1", ts="2026-10-23T10:00:00Z"):
+    return {"id": f"d{i}", "thread_id": thread, "lead": "ann@huppy.com", "eaccount": "abby@x.com",
+            "from_address_email": "david@anatainc.com", "subject": "Re: Idea for Huppy",
+            "ue_type": 2, "body": {"text": "Happy to jump on a call"}, "timestamp_created": ts}
+
+
+def test_is_team_addresses():
+    assert runner.is_team("david@anatainc.com") and runner.is_team("a.orit@workanatagroup.com")
+    assert runner.is_team("abbyorit@tryanata.com") and not runner.is_team("brad@gmail.com")
+
+
+def test_davids_gmail_reply_is_never_answered(engine):
+    th = [email(1), david_msg(1)]
+    c = FakeClient([david_msg(1)], {"t1": th})
+    out = runner.run(engine, client=c, campaign_id="camp", now=NOW,
+                     think=fixed(abby.Decision("interested", "reply", reply=LINK)))
+    assert c.replies == [] and out["skipped"] == 1
+
+
+def test_prospect_reply_after_david_joined_is_left_to_david(engine):
+    th = [email(1), david_msg(1), email(4)]
+    c = FakeClient([email(4)], {"t1": th})
+    out = runner.run(engine, client=c, campaign_id="camp", now=NOW,
+                     think=fixed(abby.Decision("interested", "reply", reply=LINK)))
+    assert c.replies == [] and out["skipped"] == 1
+
+
+def test_no_nudges_once_david_is_in_the_thread(engine):
+    c = nudge_client(10)
+    c.threads["t9"].insert(1, david_msg(1, thread="t9", ts="2026-10-11T10:00:00Z"))
+    assert runner.run(engine, client=c, campaign_id="camp", now=NOW)["nudges"] == 0
+    assert c.replies == []
