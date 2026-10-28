@@ -45,6 +45,11 @@ def test_title_rank_orders_owners_before_marketing():
 def test_normalize_domain():
     assert oc.normalize_domain("https://www.Brand.com/shop") == "brand.com"
     assert oc.normalize_domain("brand.com") == "brand.com"
+    assert oc.normalize_domain("ca.petlibro.com") == "petlibro.com"
+    assert oc.normalize_domain("https://shop.russh.com/collections") == "russh.com"
+    assert oc.normalize_domain("costco.bowerandbranch.com") == "bowerandbranch.com"
+    assert oc.normalize_domain("shop.brand.co.uk") == "brand.co.uk"
+    assert oc.normalize_domain("shop.brand.com.au") == "brand.com.au"
 
 
 def test_returns_two_best_verified_contacts_and_counts_credits():
@@ -151,6 +156,29 @@ def test_rate_limit_waits_and_retries():
     assert [c.email for c in r.contacts] == ["a@x.com"]
     assert r.reason == ""
     assert 2.0 in waits and 5.0 in waits
+
+
+def test_store_subdomain_is_searched_as_the_registrable_domain():
+    calls = []
+    results = [_person("p1", "Founder")]
+    enrich = {"p1": _enriched("p1", "Ann", "ann@petlibro.com")}
+    oc.find_contacts("https://ca.petlibro.com/shop", api_key="k" * 20,
+                     post=make_post(results, enrich, calls=calls), sleep=no_sleep)
+    assert calls[0][1]["filters"]["company"]["websites"]["include"] == ["petlibro.com"]
+
+
+def test_invalid_filters_reason_keeps_filter_error_and_hides_the_key():
+    secret = "sk_live_supersecretkey"
+
+    def post(url, *, key, body, timeout=25):
+        return 400, {"error": True, "error_code": "INVALID_FILTERS",
+                     "filter_error": f"websites include rejected {key}"}
+
+    r = oc.find_contacts("ca.petlibro.com", api_key=secret, post=post, sleep=no_sleep)
+    assert r.reason.startswith("search returned INVALID_FILTERS:")
+    assert "websites include rejected" in r.reason
+    assert secret not in r.reason
+    assert "<prospeo-key>" in r.reason
 
 
 def test_rate_limit_gives_up_after_retries():

@@ -49,6 +49,28 @@ _DDL = (
 )
 
 
+# The trial campaign. ABBY_CAMPAIGN_IDS overrides this list. AGENT SDR and
+# Re-engage are always watched in addition to whatever the env var names.
+TRIAL_CAMPAIGN_ID = "e5f5046b-07e4-41ad-a395-79cf8766ccd0"
+
+
+def watched_campaign_ids(reengage_ids: Optional[list[str]] = None) -> list[str]:
+    """Campaigns Abby reads. Trial is the default extra; SDR and Re-engage stay."""
+    import outbound_instantly_push as ip
+
+    raw = os.getenv("ABBY_CAMPAIGN_IDS")
+    if raw is None or not raw.strip():
+        extras = [TRIAL_CAMPAIGN_ID]
+    else:
+        extras = [part.strip() for part in raw.split(",") if part.strip()]
+    ordered = [ip.LIVE_CAMPAIGN_ID, *(reengage_ids or []), *extras]
+    seen: list[str] = []
+    for campaign_id in ordered:
+        if campaign_id and campaign_id not in seen:
+            seen.append(campaign_id)
+    return seen
+
+
 def mode() -> str:
     m = (os.getenv("ABBY_MODE") or "off").strip().lower()
     return m if m in {"off", "shadow", "live"} else "off"
@@ -350,7 +372,9 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
         if decision.action == "block":
             if run_mode == "live":
                 dom = decision.block_domain
-                client.block(lead if (not dom or dom in FREEMAIL) else dom)
+                blocked_value = lead if (not dom or dom in FREEMAIL) else dom
+                client.block(blocked_value)
+                _remember_opt_out(engine, blocked_value)
             out["blocked"] += 1
         if decision.interest is not None and run_mode == "live" and decision.action in {"reply", "block", "ignore", "hold"}:
             client.set_interest(lead, decision.interest, campaign_id)
@@ -367,11 +391,21 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
     return out
 
 
+def _remember_opt_out(engine, value: str) -> None:
+    """Keep Abby's live opt-out on our list as well as Instantly's blocklist."""
+    try:
+        import outbound_suppression as suppression
+        kind = "email" if "@" in (value or "") else "domain"
+        suppression.add(engine, kind=kind, value=value, reason="opt_out", source="abby")
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not record the opt-out")
+
+
 def followup_text(first_name: str) -> str:
     hi = f"Hi {first_name}," if first_name else "Hi,"
     return (f"{hi}\n\nChecking back in as promised. Is Amazon growth on the table now? "
             f"Happy to set up the free 14-day trial, where we build your Amazon strategy and run the ad automation. "
-            f"Grab a time with David here: {abby.BOOKING_LINK}\n\nAbby")
+            f"Grab a time with David here: {abby.BOOKING_LINK}\n\n{abby.SIGNATURE}")
 
 
 def _send_due_followups(engine, client: Instantly, now: datetime, run_mode: str,
@@ -414,18 +448,19 @@ MAX_NUDGES_PER_RUN = 4
 def nudge_text(n: int, first_name: str, company: str) -> tuple[str, list[str]]:
     hi = f"Hi {first_name}," if first_name else "Hi there,"
     link = abby.BOOKING_LINK
+    sign = abby.SIGNATURE
     if n == 1:
         body = (f"{hi}\n\nQuick nudge in case this got buried. Happy to set up the free 14-day trial, "
-                f"where we build your Amazon strategy and run the ad automation. Grab a time with David here: {link}\n\nAbby")
+                f"where we build your Amazon strategy and run the ad automation. Grab a time with David here: {link}\n\n{sign}")
         return body, []
     if n == 2:
         who = company or "your brand"
         body = (f"{hi}\n\nStill keen to show you what the free 14-day trial would look like for {who}. "
-                f"Here is David's calendar: {link}\n\nAbby")
+                f"Here is David's calendar: {link}\n\n{sign}")
         return body, []
     body = (f"{hi}\n\nLast note from me. If the timing is off, no worries at all. If you want the free 14-day trial, "
-            f"David's calendar is here: {link}\n\nLooping David, our owner, in.\n\nAbby")
-    return body, [abby.DAVID_EMAIL]
+            f"David's calendar is here: {link}\n\n{sign}")
+    return body, []
 
 
 def _nudges_sent(engine, thread_id: str) -> int:
@@ -507,7 +542,7 @@ def _send_nudges(engine, client: Instantly, campaign_id: str, now: datetime, run
             _record(engine, email=key, decision=abby.Decision("nudge", "nudge", reason=f"nudge {n}"),
                     run_mode=run_mode, reply_id=str((data or {}).get("id") or ""))
             if n == len(NUDGE_GAPS_DAYS):
-                post_slack(f"Abby sent her last nudge to {lead} (CC'd David). No booking yet.")
+                post_slack(f"Abby sent her last nudge to {lead}. No booking yet.")
         else:
             post_slack(f"[Abby nudge {n}, not sent] {lead}\n\n{body}")
             _record(engine, email=key, decision=abby.Decision("nudge", "nudge", reason=f"shadow nudge {n}"),

@@ -20,9 +20,10 @@ def d(cat, reply="", conf=0.9, **kw):
                        lead_email="ann@huppy.com", thread_categories=kw.pop("prior", []) if "prior" in kw else [])
 
 
-def test_interested_replies_with_link_and_ccs_david():
-    r = d("interested", f"Thanks Ann. Grab a time with David here: {LINK}\n\nLooping David, our owner, in.\n\nAbby")
-    assert r.action == "reply" and abby.DAVID_EMAIL in r.cc and r.interest == 1 and r.slack
+def test_interested_replies_with_link_and_does_not_cc_david():
+    r = d("interested", f"Thanks Ann. Grab a time with David here: {LINK}\n\n{abby.SIGNATURE}")
+    assert r.action == "reply" and r.cc == [] and r.interest == 1 and r.slack
+    assert "CC'd David" not in r.slack
 
 
 def test_interested_without_link_is_held():
@@ -63,15 +64,15 @@ def test_not_now_schedules_60_day_followup_no_cc():
 
 def test_referral_adds_colleague_and_ccs_david():
     r = d("referral", f"Hi Sam, Ann pointed me your way. {LINK} Abby", referral_email="sam@huppy.com")
-    assert r.to_extra == ["sam@huppy.com"] and abby.DAVID_EMAIL in r.cc
+    assert r.to_extra == ["sam@huppy.com"] and r.cc == []
 
 
 def test_auto_reply_ignored():
     assert d("auto_reply").action == "ignore"
 
 
-# Real mailbox rules from Oct 26-27, 2026. Each one was labeled a referral,
-# then Abby wrote the forwarding address, CC'd David, and marked Interested.
+# Real mailbox rules from Oct 26-27, 2026. Each one was labeled a referral
+# and must stay an auto-reply, not a send.
 
 RIOMAR = """Greetings,
 
@@ -272,7 +273,7 @@ def test_signature_info_address_does_not_block_a_human():
     r = abby.think([{"ue_type": 2, "body": {"text": body}, "headers": {"Auto-Submitted": "no"}}],
                    lead_email="ann@huppy.com", company="Huppy", first_name="Ann",
                    thread_categories=[], llm=lambda _p: raw)
-    assert r.action == "reply" and r.interest == 1 and abby.DAVID_EMAIL in r.cc and r.to_extra == []
+    assert r.action == "reply" and r.interest == 1 and r.cc == [] and r.to_extra == []
 
 
 @pytest.mark.parametrize("lead,body,address,name,greeting", [
@@ -287,7 +288,7 @@ def test_human_referral_still_writes_the_colleague(lead, body, address, name, gr
         lead_email=lead, company="Brand", first_name="There", thread_categories=[],
         llm=lambda _p: _referral_json(address, name, reply))
     assert r.action == "reply" and r.category == "referral"
-    assert r.to_extra == [address] and abby.DAVID_EMAIL in r.cc and r.interest == 1
+    assert r.to_extra == [address] and r.cc == [] and r.interest == 1
     assert r.note == "" and name.split()[0] in r.reply and LINK in r.reply
 
 
@@ -460,7 +461,7 @@ def test_no_nudge_before_3_days_or_when_prospect_wrote_last(engine):
     assert runner.run(engine, client=c, campaign_id="camp", now=NOW)["nudges"] == 0
 
 
-def test_three_nudges_max_last_one_ccs_david(engine):
+def test_three_nudges_max_and_the_last_does_not_cc_david(engine):
     posts, sent = [], []
     prospect = email(1, thread="t9", ts="2026-10-10T10:00:00Z")
     abby_msgs = []
@@ -475,7 +476,9 @@ def test_three_nudges_max_last_one_ccs_david(engine):
             sent.append(r)
             abby_msgs.append({"id": f"r{len(c.replies)}", "thread_id": "t9", "ue_type": 3,
                               "timestamp_created": (NOW - timedelta(days=20 - len(sent))).isoformat().replace("+00:00", "Z")})
-    assert len(sent) <= 3 and sent and sent[-1]["cc"] == [abby.DAVID_EMAIL]
+    assert len(sent) <= 3 and sent and sent[-1]["cc"] == []
+    assert "Looping David" not in sent[-1]["body"]
+    assert sent[-1]["body"].endswith(abby.SIGNATURE)
     assert any("last nudge" in p for p in posts)
 
 
@@ -557,12 +560,13 @@ def test_gabes_manual_followups_count_toward_three(engine):
     assert again.replies == []
 
 
-def test_two_manual_followups_means_next_is_last_nudge_with_cc(engine):
+def test_two_manual_followups_means_next_is_the_last_nudge_without_cc(engine):
     prospect = email(1, thread="t9", ts="2026-10-10T10:00:00Z")
     g1 = dict(ours(1, days_ago=15)); g2 = dict(ours(2, days_ago=8))
     c = FakeClient([], {"t9": [prospect, g1, g2]}, interested=[g2])
     runner.run(engine, client=c, campaign_id="camp", now=NOW)
-    assert len(c.replies) == 1 and c.replies[0]["cc"] == [abby.DAVID_EMAIL]
+    assert len(c.replies) == 1 and c.replies[0]["cc"] == []
+    assert c.replies[0]["body"].endswith(abby.SIGNATURE)
 
 
 def test_detail_keeps_their_message_and_abbys_reply(engine):
@@ -640,3 +644,53 @@ def test_live_run_records_departed_notices_and_sends_nothing(engine):
         action, detail = saved[lead]
         assert action == "ignore"
         assert "Departed contact" in detail and needle in detail and "Nothing sent." in detail
+
+
+def test_prompt_uses_the_fyxer_link_signature_and_optional_founder_cc():
+    assert abby.BOOKING_LINK == "https://app.fyxer.com/t/sales-team99/30"
+    assert abby.BOOKING_LINK in abby.SYSTEM
+    assert "AI account specialist on David's team" in abby.SYSTEM
+    assert "Never say \"virtual assistant\"" in abby.SYSTEM
+    assert "Looping David" not in abby.SYSTEM
+    assert "cc_david" in abby.SYSTEM
+    assert "because he is the one managing the calls" in abby.SYSTEM
+    assert abby.SIGNATURE in abby.SYSTEM
+    reply = (f"Thanks Ann. Grab a time with David here: {LINK}\n\n"
+             f"David, any thoughts on timing for the 14-day trial?\n\n{abby.SIGNATURE}")
+    assert abby.validate_reply("interested", reply)[0]
+    assert d("interested", reply).cc == []
+    chosen = d("interested", reply, cc_david=True)
+    assert chosen.cc == [abby.DAVID_EMAIL] and "CC'd David" in chosen.slack
+
+
+def test_templates_sign_as_account_specialist_and_do_not_cc():
+    assert runner.followup_text("Ann").endswith(abby.SIGNATURE)
+    for n in (1, 2, 3):
+        body, cc = runner.nudge_text(n, "Ann", "Huppy")
+        assert body.endswith(abby.SIGNATURE) and cc == []
+        assert "Looping David" not in body
+        assert abby.validate_reply("interested", body)[0]
+
+
+def test_watched_campaigns_keep_sdr_and_reengage_and_default_to_the_trial(monkeypatch):
+    monkeypatch.delenv("ABBY_CAMPAIGN_IDS", raising=False)
+    ids = runner.watched_campaign_ids(["reengage-id"])
+    assert ids[0] == "4f118329-c07e-4279-9c08-12059f2a49f4"
+    assert "reengage-id" in ids and runner.TRIAL_CAMPAIGN_ID in ids
+    monkeypatch.setenv("ABBY_CAMPAIGN_IDS", "custom-1, custom-1")
+    replaced = runner.watched_campaign_ids(["reengage-id"])
+    assert runner.TRIAL_CAMPAIGN_ID not in replaced
+    assert replaced.count("custom-1") == 1
+    assert "reengage-id" in replaced and ids[0] in replaced
+
+
+def test_live_opt_out_is_remembered_on_our_suppression_list(engine):
+    import outbound_suppression as suppression
+    c = FakeClient([email(1), email(2, lead="joe@gmail.com", thread="t2")])
+
+    def think(thread, *, lead_email, **k):
+        return abby.Decision("opt_out", "block", block_domain=lead_email.split("@")[1], interest=-1)
+
+    runner.run(engine, client=c, campaign_id="camp", now=NOW, think=think)
+    emails, domains = suppression.lists(engine)
+    assert "huppy.com" in domains and "joe@gmail.com" in emails

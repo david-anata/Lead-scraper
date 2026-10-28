@@ -51,6 +51,10 @@ class InstantlyWebhookService:
         event_type = str(payload.get("event_type") or "").strip()
         if not event_type:
             return {"status": "ignored", "reason": "missing_event_type"}
+        # Record sends, bounces, and unsubscribes before the ClickUp allowlist.
+        # Outbound brands are not ClickUp tasks, and the CRM allowlist does not
+        # have to include these events for the bounce report to see them.
+        self._record_outbound_delivery(payload)
         if event_type not in self.settings.instantly_webhook_allowed_event_types:
             return {"status": "ignored", "reason": "event_type_not_enabled", "event_type": event_type}
         if event_type not in SUPPORTED_EVENT_MAP:
@@ -99,6 +103,15 @@ class InstantlyWebhookService:
             "result": result,
         }
 
+
+    def _record_outbound_delivery(self, payload: dict[str, Any]) -> None:
+        try:
+            from sales_support_agent.models.database import get_engine
+            import outbound_bounces
+
+            outbound_bounces.record_webhook(get_engine(), payload)
+        except Exception:  # noqa: BLE001
+            logger.exception("[instantly] could not record the delivery outcome")
 
     def _update_linkedin_queue(self, event_type: str, lead_email: str) -> None:
         """Let the email decide whether a LinkedIn touch is still wanted.

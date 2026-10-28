@@ -158,6 +158,21 @@ def test_domain_in_instantly_matches_company_not_substring():
     assert push.domain_in_instantly("basin.com", key="k" * 20, post=near) is False
 
 
+def test_domain_in_instantly_treats_a_store_host_as_the_brand():
+    hit = lambda *a, **k: _R(200, {"items": [{  # noqa: E731
+        "email": "a@ca.petlibro.com", "company_domain": "ca.petlibro.com",
+        "website": "https://ca.petlibro.com"}]})
+    assert push.domain_in_instantly("petlibro.com", key="k" * 20, post=hit) is True
+    seen = {}
+
+    def post(url, **kw):
+        seen["body"] = kw.get("json")
+        return _R(200, {"items": []})
+
+    assert push.domain_in_instantly("ca.petlibro.com", key="k" * 20, post=post) is False
+    assert seen["body"]["search"] == "petlibro.com"
+
+
 def test_domain_in_instantly_failure_is_none():
     assert push.domain_in_instantly("a.com", key="k" * 20, post=lambda *a, **k: _R(500, {})) is None
     def boom(*a, **k):

@@ -170,6 +170,76 @@ def test_push_pending_dry_run_marks_nothing(engine):
     assert len(oe.unpushed(engine)) == 1
 
 
+def test_email_status_is_stored_on_the_contact(engine):
+    def find(domain, *, api_key, max_contacts=2, **kw):
+        return oc.FindResult(domain=domain, credits_used=2, contacts=[
+            oc.Contact(domain=domain, first_name="A", last_name="B", email=f"a@{domain}",
+                       title="Founder", email_status="VERIFIED")])
+    oe.run_enrichment(engine, [lead("a.com")], api_key="k", find=find, write=opener)
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        status = conn.execute(text("SELECT email_status FROM outbound_enriched_contacts")).scalar()
+    assert status == "VERIFIED"
+
+
+def test_invalid_filters_failure_is_retried_and_a_normal_miss_is_not(engine):
+    oe.ensure_tables(engine)
+    oe._record_domain(engine, "petlibro.com", "none", 0, 0, "search returned INVALID_FILTERS: bad host")
+    oe._record_domain(engine, "russh.com", "none", 0, 0, "No decision-maker found at this domain.")
+    calls = []
+
+    def find(domain, *, api_key, max_contacts=2, **kw):
+        calls.append(domain)
+        return oc.FindResult(domain=domain, credits_used=1, contacts=[
+            oc.Contact(domain=domain, first_name="A", last_name="B", email=f"a@{domain}", title="Founder")])
+
+    r = oe.run_enrichment(engine, [lead("petlibro.com"), lead("russh.com")], api_key="k",
+                          find=find, write=opener, already_in_instantly=lambda d: False)
+    assert calls == ["petlibro.com"]
+    assert r.companies_tried == 1 and r.skipped_already_enriched == 1
+
+
+def test_old_subdomain_failure_does_not_block_the_brand(engine):
+    oe.ensure_tables(engine)
+    oe._record_domain(engine, "ca.petlibro.com", "none", 0, 0,
+                      "search returned INVALID_FILTERS: websites include host was rejected")
+    calls = []
+
+    def find(domain, *, api_key, max_contacts=2, **kw):
+        calls.append(domain)
+        return oc.FindResult(domain=domain, credits_used=2, contacts=[
+            oc.Contact(domain=domain, first_name="A", last_name="B", email="a@petlibro.com",
+                       title="Founder", email_status="VERIFIED")])
+
+    first = oe.run_enrichment(engine, [lead("ca.petlibro.com"), lead("shop.petlibro.com")],
+                              api_key="k", find=find, write=opener, already_in_instantly=lambda d: False)
+    assert calls == ["petlibro.com"] and first.companies_tried == 1
+    second = oe.run_enrichment(engine, [lead("uk.petlibro.com")], api_key="k", find=find,
+                               write=opener, already_in_instantly=lambda d: False)
+    assert second.companies_tried == 0 and calls == ["petlibro.com"]
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        old = conn.execute(text("SELECT reason FROM outbound_enriched WHERE domain = 'ca.petlibro.com'")).scalar()
+    assert "INVALID_FILTERS" in old
+
+
+def test_suppressed_contacts_are_not_pushed(engine):
+    import outbound_suppression as suppression
+    f = finder({"a.com": ["x@a.com"], "b.com": ["y@b.com"], "c.com": ["z@c.com"]})
+    oe.run_enrichment(engine, [lead("a.com"), lead("b.com"), lead("c.com")], api_key="k", find=f, write=opener)
+    suppression.add(engine, kind="email", value="x@a.com", reason="opt_out", source="manual")
+    suppression.add(engine, kind="domain", value="b.com", reason="hard_bounce", source="manual")
+    sent = []
+
+    def ok(payload, cid, dry_run=False, **k):
+        sent.extend(lead["email"] for lead in payload)
+        return push.PushOutcome(attempted=len(payload), created=len(payload), dry_run=False)
+
+    out = oe.push_pending(engine, "camp", dry_run=False, push=ok)
+    assert sent == ["z@c.com"] and out["pushed"] == 1 and out["suppressed"] == 2
+    assert [row["email"] for row in oe.unpushed(engine)] == []
+
+
 def test_push_pending_live_marks_pushed(engine):
     f = finder({"a.com": ["x@a.com"]})
     oe.run_enrichment(engine, [lead("a.com")], api_key="k", find=f, write=opener)

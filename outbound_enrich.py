@@ -55,8 +55,15 @@ _CREATE = (
         tier TEXT,
         campaign_id TEXT,
         pushed_at TIMESTAMP,
+        email_status TEXT,
+        skip_reason TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""",
+)
+
+_PEOPLE_ALTERS = (
+    f"ALTER TABLE {_PEOPLE} ADD COLUMN email_status TEXT",
+    f"ALTER TABLE {_PEOPLE} ADD COLUMN skip_reason TEXT",
 )
 
 
@@ -69,12 +76,31 @@ def ensure_tables(engine) -> None:
     with engine.begin() as conn:
         for sql in _CREATE:
             conn.execute(text(sql))
+    for stmt in _PEOPLE_ALTERS:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+        except Exception:  # noqa: BLE001 — column already present
+            pass
 
 
 def enriched_domains(engine) -> set[str]:
+    """Domains we will not search again.
+
+    A failed INVALID_FILTERS row is not done: the subdomain bug stored those
+    failures, and a later run has to be allowed to search the brand again.
+    A domain we already found contacts for, or already saw inside Instantly,
+    stays done even if the reason text mentions the filter error.
+    """
     with engine.connect() as conn:
-        rows = conn.execute(text(f"SELECT domain FROM {_DOMAINS}")).fetchall()
-    return {str(r[0]).lower() for r in rows}
+        rows = conn.execute(text(
+            f"SELECT domain, COALESCE(status, ''), COALESCE(reason, '') FROM {_DOMAINS}")).fetchall()
+    done = set()
+    for domain, status, reason in rows:
+        if "INVALID_FILTERS" in str(reason).upper() and status not in {"found", "in_instantly"}:
+            continue
+        done.add(str(domain).lower())
+    return done
 
 
 def known_emails(engine) -> set[str]:
@@ -89,7 +115,7 @@ def _record_domain(engine, domain: str, status: str, found: int, credits: int, r
             f"INSERT INTO {_DOMAINS} (domain, status, contacts_found, credits_used, reason) "
             "VALUES (:d, :s, :f, :c, :r) ON CONFLICT (domain) DO UPDATE SET "
             "status = :s, contacts_found = :f, credits_used = :c, reason = :r"),
-            {"d": domain, "s": status, "f": found, "c": credits, "r": reason[:300]})
+            {"d": domain, "s": status, "f": found, "c": credits, "r": reason[:500]})
 
 
 def _record_person(engine, c: _contacts.Contact, opener: str, source: str,
@@ -100,20 +126,22 @@ def _record_person(engine, c: _contacts.Contact, opener: str, source: str,
     with engine.begin() as conn:
         conn.execute(text(
             f"INSERT INTO {_PEOPLE} (email, domain, first_name, last_name, title, linkedin_url, "
-            "opener, opener_source, brand, category, recipe, tier) "
-            "VALUES (:e, :d, :f, :l, :t, :u, :o, :s, :b, :cat, :r, :tier) "
+            "opener, opener_source, brand, category, recipe, tier, email_status) "
+            "VALUES (:e, :d, :f, :l, :t, :u, :o, :s, :b, :cat, :r, :tier, :status) "
             "ON CONFLICT (email) DO NOTHING"),
             {"e": c.email, "d": c.domain, "f": c.first_name, "l": c.last_name, "t": c.title,
              "u": c.linkedin_url, "o": opener, "s": source,
              "b": str(lead.get("brand") or c.domain), "cat": str(cats or lead.get("niche") or ""),
-             "r": str(lead.get("recipe") or ""), "tier": str(lead.get("tier") or "")})
+             "r": str(lead.get("recipe") or ""), "tier": str(lead.get("tier") or ""),
+             "status": c.email_status or ""})
 
 
 def unpushed(engine, limit: int = 500) -> list[dict[str, Any]]:
     with engine.connect() as conn:
         rows = conn.execute(text(
             "SELECT email, domain, first_name, last_name, title, opener, brand, category, "
-            f"recipe, tier FROM {_PEOPLE} WHERE pushed_at IS NULL ORDER BY created_at LIMIT :n"),
+            f"recipe, tier FROM {_PEOPLE} WHERE pushed_at IS NULL "
+            "AND COALESCE(skip_reason, '') = '' ORDER BY created_at LIMIT :n"),
             {"n": limit}).fetchall()
     return [dict(zip(("email", "domain", "first_name", "last_name", "title", "opener", "brand",
                       "category", "recipe", "tier"), r)) for r in rows]
@@ -139,6 +167,7 @@ class EnrichReport:
     skipped_check_failed: int = 0
     stopped_reason: str = ""
     pushed: int = 0
+    suppressed: int = 0
     push_note: str = ""
     samples: list[dict[str, Any]] = field(default_factory=list)
 
@@ -160,6 +189,7 @@ class EnrichReport:
             "skipped_in_instantly": self.skipped_in_instantly,
             "skipped_check_failed": self.skipped_check_failed,
             "stopped_reason": self.stopped_reason, "pushed": self.pushed,
+            "suppressed": self.suppressed,
             "push_note": self.push_note, "samples": self.samples[:10],
         }
 
@@ -275,6 +305,7 @@ def run_enrichment(
         out = push_pending(engine, campaign_id, dry_run=False, push=push)
         report.push_note = out["note"]
         report.pushed = out["pushed"]
+        report.suppressed = int(out.get("suppressed") or 0)
     else:
         report.push_note = "Dry run: nothing sent to Instantly."
     return report
@@ -306,28 +337,64 @@ def rewrite_openers(engine, leads: list[dict[str, Any]], *,
     return {"rewritten": done, "ai": ai, "fallback": done - ai, "samples": samples}
 
 
+def _mark_skipped(engine, people: list[dict[str, Any]]) -> None:
+    """Keep a suppressed contact out of the unpushed queue without deleting it."""
+    with engine.begin() as conn:
+        for person in people:
+            conn.execute(text(
+                f"UPDATE {_PEOPLE} SET skip_reason = :r WHERE email = :e AND pushed_at IS NULL"),
+                {"r": f"suppressed:{person.get('suppressed_match') or 'match'}"[:200],
+                 "e": person.get("email")})
+
+
 def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int = 500,
                  push: Optional[Callable[..., _push.PushOutcome]] = None) -> dict[str, Any]:
-    """Add every not-yet-pushed contact to an Instantly campaign. Marks them
-    pushed only when Instantly accepted the batch with no errors."""
+    """Add every not-yet-pushed contact to an Instantly campaign.
+
+    Suppressed emails and domains are left unpushed and, on a live push, marked
+    so they do not clog the queue. A contact is marked pushed only when
+    Instantly accepted the batch with no errors. If the suppression list cannot
+    be read, nothing is pushed.
+    """
     push = push or _push.push_leads
-    pending = unpushed(engine, limit)
+    try:
+        pending = unpushed(engine, limit)
+        import outbound_suppression as suppression
+        allowed, blocked = suppression.partition(engine, pending)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich] suppression check failed")
+        return {"pending": 0, "pushed": 0, "created": 0, "skipped": 0,
+                "suppressed": 0, "dry_run": dry_run,
+                "errors": ["suppression list could not be read"],
+                "note": "Suppression list could not be read; nothing pushed.",
+                "preview": []}
+    if blocked and not dry_run:
+        _mark_skipped(engine, blocked)
     payload, emails = [], []
-    for p in pending:
+    for p in allowed:
         lead = {"domain": p["domain"], "brand": p["brand"], "categories": p["category"],
                 "recipe": p["recipe"], "tier": p["tier"]}
         payload.append(_push.build_lead(p, lead, p["opener"]))
         emails.append(p["email"])
+    if not payload:
+        note = "Nothing to push."
+        if blocked:
+            note = f"Skipped {len(blocked)} suppressed contacts."
+        return {"pending": 0, "pushed": 0, "created": 0, "skipped": 0,
+                "suppressed": len(blocked), "dry_run": dry_run, "errors": [],
+                "note": note, "preview": []}
     outcome = push(payload, campaign_id, dry_run=dry_run)
     pushed = 0
     if not outcome.dry_run and not outcome.errors and payload:
         _mark_pushed(engine, emails, campaign_id)
         pushed = len(emails)
     preview = [{k: v for k, v in lead.items() if k != "email"} for lead in payload[:3]]
+    note = outcome.reason or outcome.summary
+    if blocked:
+        note = f"{note} Skipped {len(blocked)} suppressed contacts.".strip()
     return {"pending": len(payload), "pushed": pushed, "created": outcome.created,
-            "skipped": outcome.skipped, "dry_run": outcome.dry_run,
-            "errors": outcome.errors, "note": outcome.reason or outcome.summary,
-            "preview": preview}
+            "skipped": outcome.skipped, "suppressed": len(blocked), "dry_run": outcome.dry_run,
+            "errors": outcome.errors, "note": note, "preview": preview}
 
 
 def enriched_since(engine, since_utc) -> dict[str, int]:
