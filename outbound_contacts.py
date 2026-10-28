@@ -24,11 +24,15 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 import requests
+import tldextract
 
 logger = logging.getLogger(__name__)
 
 PROSPEO_SEARCH_URL = "https://api.prospeo.io/search-person"
 PROSPEO_ENRICH_URL = "https://api.prospeo.io/enrich-person"
+
+# Offline public-suffix snapshot. suffix_list_urls=() means this never fetches.
+_EXTRACT = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
 
 # Titles we want, best first. Matching is substring, lowercase. Order is the
 # ranking: owners and founders answer cold email about tools; ecommerce and
@@ -107,14 +111,54 @@ def rank_candidates(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [s[2] for s in scored]
 
 
-def normalize_domain(value: str) -> str:
+def normalize_host(value: str) -> str:
+    """Lowercase host with scheme, path, port, leading www, and any mailbox stripped."""
     v = (value or "").strip().lower()
-    for prefix in ("https://", "http://"):
-        if v.startswith(prefix):
-            v = v[len(prefix):]
+    if "://" in v:
+        v = v.split("://", 1)[1]
+    v = v.split("/")[0].split("?")[0].split("#")[0]
+    if "@" in v:
+        v = v.split("@", 1)[1]
+    if ":" in v and not v.startswith("["):
+        v = v.split(":", 1)[0]
     if v.startswith("www."):
         v = v[4:]
-    return v.split("/")[0]
+    return v.strip(".")
+
+
+def registrable_domain(value: str) -> str:
+    """eTLD+1, so ca.petlibro.com and shop.brand.co.uk search as the brand.
+
+    A host we cannot reduce (single label, or no public suffix) is returned as-is.
+    """
+    host = normalize_host(value)
+    if not host or "." not in host:
+        return host
+    try:
+        ext = _EXTRACT(host)
+    except Exception:  # noqa: BLE001
+        return host
+    if not ext.domain or not ext.suffix:
+        return host
+    return f"{ext.domain}.{ext.suffix}"
+
+
+def normalize_domain(value: str) -> str:
+    """The domain we search, store, and dedupe on: the registrable domain."""
+    return registrable_domain(value)
+
+
+def search_failure_reason(status: int, data: dict[str, Any], api_key: str) -> str:
+    """Prospeo search error, including filter_error, with the key removed."""
+    code = (data or {}).get("error_code") or status
+    detail = (data or {}).get("filter_error") or ""
+    if not isinstance(detail, str):
+        detail = str(detail)
+    detail = " ".join(detail.split())
+    text = f"search returned {code}"
+    if detail:
+        text = f"{text}: {detail}"
+    return _redact(text, api_key)[:500]
 
 
 Post = Callable[..., tuple[int, dict[str, Any]]]
@@ -186,8 +230,7 @@ def find_contacts(
         result.reason = "Rate limit reached."
         return result
     if status != 200 or data.get("error"):
-        code = data.get("error_code") or status
-        result.reason = f"search returned {code}"
+        result.reason = search_failure_reason(status, data, api_key)
         return result
 
     found = data.get("results") or []

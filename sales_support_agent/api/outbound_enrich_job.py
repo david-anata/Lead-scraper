@@ -9,13 +9,32 @@ decision-makers per brand (Prospeo), writes an opening line, and adds them to
 the live Instantly campaign (the one Clay used to feed). A Slack summary posts
 after each call that did something.
 
-Limits, all overridable with env vars:
+Limits, all overridable with env vars. Defaults are the approved caps, so a
+deploy changes nothing until the env vars are set:
   OUTBOUND_AUTO_ENRICH            must be "true" for the job to run (off by default)
   OUTBOUND_ENRICH_DAILY_COMPANIES companies per day across all calls (120)
   OUTBOUND_ENRICH_DAILY_CREDITS   Prospeo credits per day (250)
   OUTBOUND_ENRICH_PER_RUN         companies per call (40), keeps a call short
+  OUTBOUND_ENRICH_MAX_CONTACTS    verified people per brand (2)
 Leads only reach Instantly when OUTBOUND_PUSH_ENABLED is "true"; otherwise the
 contacts are found and stored and the summary says nothing was added.
+
+Recommended once David wants about 540 contacts on a weekday, across the four
+cron runs (15:15, 16:15, 17:15, 18:15 UTC). Do not treat these as defaults.
+
+  OUTBOUND_ENRICH_DAILY_COMPANIES=300
+  OUTBOUND_ENRICH_PER_RUN=75
+  OUTBOUND_ENRICH_MAX_CONTACTS=2
+  OUTBOUND_ENRICH_DAILY_CREDITS=1100
+
+Prospeo charges 1 credit for a search that returns people and 1 credit for each
+verified email. Misses are not charged. 300 companies that yield about 1.8
+verified emails each is about 300 + 540 = 840 credits for about 540 contacts.
+The 1100 cap is headroom so a search-heavy morning is not cut off early.
+If yield stays closer to one verified email per company, 300 companies produce
+about 300 contacts and about 600 credits, and the 540 second time budget (about
+70 to 90 companies per run) is the real ceiling. In that case raise the daily
+company cap toward 400 and the credit cap toward 1200.
 """
 
 from __future__ import annotations
@@ -40,6 +59,7 @@ _TIME_BUDGET_SECONDS = 540  # well inside Vercel's 800s function limit
 DEFAULT_DAILY_COMPANIES = 120
 DEFAULT_DAILY_CREDITS = 250
 DEFAULT_PER_RUN = 40
+DEFAULT_MAX_CONTACTS = 2
 
 
 def _int_env(name: str, default: int) -> int:
@@ -76,11 +96,36 @@ def summary_text(result: dict[str, Any]) -> str:
         lines.append(f"Skipped, company already in Instantly: {rep['skipped_in_instantly']}")
     if rep.get("skipped_check_failed"):
         lines.append(f"Skipped, Instantly check failed (retried next run): {rep['skipped_check_failed']}")
+    if rep.get("suppressed"):
+        lines.append(f"Skipped, on our suppression list: {rep['suppressed']}")
     if rep.get("stopped_reason"):
         lines.append(f"Stopped: {rep['stopped_reason']}")
     if result.get("push_problem"):
         lines.append(f"Instantly problem: {result.get('push_note', '')}")
+    bounce = result.get("bounce_today") or {}
+    if bounce.get("sent"):
+        rate = bounce.get("bounce_rate")
+        rate_text = f"{rate}%" if rate is not None else "no rate"
+        lines.append(
+            f"Bounces today: {bounce.get('bounces', 0)} of {bounce.get('sent', 0)} sent ({rate_text})")
+    elif bounce.get("bounces"):
+        lines.append(f"Bounces today: {bounce.get('bounces', 0)} (no sends recorded yet, so no rate)")
     return "\n".join(lines)
+
+
+def _refresh_delivery_state(engine) -> dict[str, Any]:
+    """Sync the blocklist and backfill bounces. A failure here does not stop finding."""
+    try:
+        import outbound_bounces as _bounces
+        import outbound_suppression as _suppression
+        return {
+            "blocklist": _suppression.sync_blocklist(engine),
+            "polled": _bounces.poll_lead_outcomes(engine),
+            "bounces": _bounces.bounce_report(engine, days=2),
+        }
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich-job] deliverability refresh failed")
+        return {}
 
 
 def run_enrich_job(
@@ -124,6 +169,13 @@ def run_enrich_job(
     company_room = _int_env("OUTBOUND_ENRICH_DAILY_COMPANIES", DEFAULT_DAILY_COMPANIES) - today["companies"]
     credit_room = _int_env("OUTBOUND_ENRICH_DAILY_CREDITS", DEFAULT_DAILY_CREDITS) - today["credits"]
     out["credits_today"] = today["credits"]
+    delivery = _refresh_delivery_state(engine)
+    bounce_today = None
+    try:
+        import outbound_bounces as _bounces
+        bounce_today = _bounces.today_slice(delivery.get("bounces") or {}, now)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich-job] could not summarize bounces")
     if company_room <= 0 or credit_room <= 0:
         out["reason"] = "daily cap reached"
         return out
@@ -138,7 +190,8 @@ def run_enrich_job(
         report = _oe.run_enrichment(
             engine, leads, api_key=key,
             max_companies=min(company_room, _int_env("OUTBOUND_ENRICH_PER_RUN", DEFAULT_PER_RUN)),
-            max_contacts=2, credit_budget=credit_room,
+            max_contacts=_int_env("OUTBOUND_ENRICH_MAX_CONTACTS", DEFAULT_MAX_CONTACTS),
+            credit_budget=credit_room,
             campaign_id=campaign, dry_run=not push_on,
             find=find, write=write, push=push,
             deadline=time.monotonic() + _TIME_BUDGET_SECONDS,
@@ -153,9 +206,13 @@ def run_enrich_job(
     out.update(
         ran=True, report=report.as_dict(), pushed=report.pushed,
         push_enabled=push_on, push_note=report.push_note,
-        push_problem=bool(push_on and report.contacts_found and not report.pushed),
+        push_problem=bool(
+            push_on and report.contacts_found and not report.pushed
+            and report.suppressed < report.contacts_found
+        ),
         credits_today=today["credits"] + report.credits_used,
         campaign_id=campaign,
+        bounce_today=bounce_today,
     )
 
     if report.companies_tried or report.pushed:

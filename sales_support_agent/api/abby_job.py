@@ -51,7 +51,7 @@ def run_abby() -> dict[str, Any]:
         import outbound_reengage as reng
         engine = get_engine()
         client = abby_runner.Instantly(ip.api_key())
-        campaigns = [ip.LIVE_CAMPAIGN_ID] + client.campaign_ids_named(reng.NAME)
+        campaigns = abby_runner.watched_campaign_ids(client.campaign_ids_named(reng.NAME))
         out = {}
         post = slack_poster()
         for cid in campaigns:

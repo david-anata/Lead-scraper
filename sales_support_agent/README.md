@@ -98,6 +98,28 @@ Operational:
 - `INSTANTLY_WEBHOOK_SECRET`
 - `INSTANTLY_WEBHOOK_SECRET_HEADER`
 
+Outbound contact finding (defaults are unchanged until these are set):
+
+- `OUTBOUND_ENRICH_DAILY_COMPANIES` — companies per weekday (default 120)
+- `OUTBOUND_ENRICH_DAILY_CREDITS` — Prospeo credits per weekday (default 250)
+- `OUTBOUND_ENRICH_PER_RUN` — companies per cron call (default 40)
+- `OUTBOUND_ENRICH_MAX_CONTACTS` — verified people per brand (default 2)
+- `ABBY_CAMPAIGN_IDS` — extra Instantly campaigns Abby watches, comma separated.
+  When unset, the trial campaign `e5f5046b-07e4-41ad-a395-79cf8766ccd0` is
+  included. AGENT SDR and Re-engage are always included.
+
+To aim at about 540 contacts a weekday across the four enrich runs, set
+companies 300, per run 75, max contacts 2, and credits 1100. Expected spend is
+about 840 Prospeo credits when each company yields about 1.8 verified emails
+(one search credit plus one credit per email). See the docstring on
+`sales_support_agent/api/outbound_enrich_job.py` before raising the caps.
+
+Bounce rate uses the existing Instantly webhook. Subscribe `email_sent`,
+`email_bounced`, and `lead_unsubscribed` on that webhook. Those three are stored
+even when they are absent from `INSTANTLY_WEBHOOK_ALLOWED_EVENT_TYPES`. Apply
+`sales_support_agent/migrations/20261028_outbound_bounce_suppression.sql` before
+deploying the code that reads the new tables.
+
 Website Ops:
 
 - `WEBSITE_OPS_ROOT` — persistent report, state, backup, and delivery storage

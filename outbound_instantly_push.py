@@ -152,12 +152,31 @@ INSTANTLY_LIST_LEADS_URL = "https://api.instantly.ai/api/v2/leads/list"
 
 
 def _same_company(item: dict[str, Any], domain: str) -> bool:
-    d = domain.lower().lstrip(".")
-    cd = str(item.get("company_domain") or "").lower().removeprefix("www.")
-    em = str(item.get("email") or "").lower()
-    site = str(item.get("website") or "").lower()
-    site = site.split("//")[-1].removeprefix("www.").split("/")[0]
-    return cd == d or em.endswith("@" + d) or site == d
+    """True when the lead belongs to this brand, including a store subdomain.
+
+    ca.petlibro.com and petlibro.com are the same company. mybasin.com is not
+    basin.com: comparison is the registrable domain, not a substring.
+    """
+    import outbound_contacts as _contacts
+
+    target = _contacts.registrable_domain(domain)
+    if not target:
+        return False
+    hosts = [
+        str(item.get("company_domain") or ""),
+        str(item.get("website") or ""),
+    ]
+    email = str(item.get("email") or "")
+    if "@" in email:
+        hosts.append(email.split("@", 1)[1])
+    for host in hosts:
+        raw = _contacts.normalize_host(host)
+        reg = _contacts.registrable_domain(host)
+        if not raw and not reg:
+            continue
+        if raw == target or reg == target or raw.endswith("." + target):
+            return True
+    return False
 
 
 def domain_in_instantly(domain: str, *, key: Optional[str] = None,
@@ -169,6 +188,8 @@ def domain_in_instantly(domain: str, *, key: Optional[str] = None,
     touch this company this run" so a broken check never causes a double touch.
     """
     key = key if key is not None else api_key()
+    import outbound_contacts as _contacts
+    domain = _contacts.registrable_domain(domain)
     if not key or not domain:
         return None
     post = post or requests.post

@@ -27,7 +27,8 @@ def env(monkeypatch):
     monkeypatch.setenv("OUTBOUND_PUSH_ENABLED", "true")
     monkeypatch.setenv("OUTBOUND_AUTO_ENRICH", "true")
     for n in ("OUTBOUND_ENRICH_DAILY_COMPANIES",
-              "OUTBOUND_ENRICH_DAILY_CREDITS", "OUTBOUND_ENRICH_PER_RUN"):
+              "OUTBOUND_ENRICH_DAILY_CREDITS", "OUTBOUND_ENRICH_PER_RUN",
+              "OUTBOUND_ENRICH_MAX_CONTACTS"):
         monkeypatch.delenv(n, raising=False)
 
 
@@ -51,7 +52,7 @@ def ok_push(payload, cid, dry_run=False, **k):
 def run(engine, n=10, **kw):
     posts = []
     out = job.run_enrich_job(now=kw.pop("now", WEEKDAY), engine=engine, leads=leads(n),
-                             find=finder, write=write, push=kw.pop("push", ok_push),
+                             find=kw.pop("find", finder), write=write, push=kw.pop("push", ok_push),
                              post_slack=posts.append,
                              in_instantly=kw.pop("in_instantly", lambda d: False), **kw)
     return out, posts
@@ -62,6 +63,18 @@ def test_runs_pushes_to_live_campaign_and_posts_slack(engine):
     assert out["ran"] and out["pushed"] == 10
     assert out["campaign_id"] == push.LIVE_CAMPAIGN_ID
     assert len(posts) == 1 and "Added to Instantly: 10" in posts[0]
+
+
+def test_max_contacts_comes_from_the_env(engine, monkeypatch):
+    monkeypatch.setenv("OUTBOUND_ENRICH_MAX_CONTACTS", "1")
+    seen = {}
+
+    def find(domain, *, api_key, max_contacts=2, **kw):
+        seen["max"] = max_contacts
+        return finder(domain, api_key=api_key, max_contacts=max_contacts)
+
+    run(engine, n=1, find=find)
+    assert seen["max"] == 1
 
 
 def test_per_run_cap(engine, monkeypatch):
@@ -88,7 +101,10 @@ def test_daily_credit_cap(engine, monkeypatch):
 
 
 def test_defaults_are_the_approved_caps():
-    assert job.DEFAULT_DAILY_COMPANIES == 120 and job.DEFAULT_DAILY_CREDITS == 250
+    assert job.DEFAULT_DAILY_COMPANIES == 120
+    assert job.DEFAULT_DAILY_CREDITS == 250
+    assert job.DEFAULT_PER_RUN == 40
+    assert job.DEFAULT_MAX_CONTACTS == 2
 
 
 def test_kill_switch(engine, monkeypatch):
