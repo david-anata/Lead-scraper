@@ -2608,8 +2608,6 @@ async def outbound_enrich_test(request: Request) -> Response:
             results[d] = await run_in_threadpool(_ip.domain_in_instantly, d)
         return JSONResponse(content={"ok": True, "in_instantly": results})
     if str(form.get("action") or "") == "push":
-        import os as _os
-
         from starlette.concurrency import run_in_threadpool
 
         import outbound_enrich as _oe
@@ -2617,8 +2615,11 @@ async def outbound_enrich_test(request: Request) -> Response:
         from sales_support_agent.models.database import get_engine
 
         campaign = (str(form.get("campaign_id") or "").strip()
-                    or _os.getenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", "").strip()
-                    or _ip.LIVE_CAMPAIGN_ID)
+                    or _ip.configured_campaign_id())
+        if not campaign:
+            logger.error("[outbound-enrich] %s", _ip.MISSING_CAMPAIGN_MESSAGE)
+            return JSONResponse(status_code=400, content={
+                "ok": False, "reason": _ip.MISSING_CAMPAIGN_MESSAGE})
         live = str(form.get("dry_run") or "true").lower() == "false"
         try:
             n = max(1, min(int(str(form.get("limit") or 50)), 500))

@@ -4,9 +4,8 @@
 Safety, in order of importance:
   * DRY RUN is the default. Nothing leaves this process unless the caller passes
     ``dry_run=False`` AND ``OUTBOUND_PUSH_ENABLED`` is "true" on Render.
-  * Protected campaigns. The live campaign is listed in
-    ``OUTBOUND_PROTECTED_CAMPAIGN_IDS`` (plus a built-in default) and this module
-    refuses to add leads to any protected campaign.
+  * Protected campaigns. Campaigns listed in ``OUTBOUND_PROTECTED_CAMPAIGN_IDS``
+    are refused. There is no built-in protected list.
   * Adding leads to a paused campaign does not send anything; the campaign has
     to be started in Instantly by a person.
   * The API key is never logged or returned.
@@ -26,10 +25,25 @@ logger = logging.getLogger(__name__)
 INSTANTLY_ADD_LEADS_URL = "https://api.instantly.ai/api/v2/leads/add"
 CHUNK = 100
 
-# The live "AGENT SDR // MARCH '26" campaign. David approved feeding it directly,
-# the way Clay does (2026-10-22), so it is the default target, not protected.
+# Retired "AGENT SDR // MARCH '26" campaign. Older read-only tools still name it.
+# Pushes must not fall back to this id. The only push target is
+# OUTBOUND_INSTANTLY_CAMPAIGN_ID.
 LIVE_CAMPAIGN_ID = "4f118329-c07e-4279-9c08-12059f2a49f4"
+MISSING_CAMPAIGN_MESSAGE = (
+    "OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset. Skipping the Instantly push. "
+    "The retired campaign is not used as a fallback."
+)
 DEFAULT_PROTECTED: tuple[str, ...] = ()
+
+
+def configured_campaign_id() -> str:
+    """Return the campaign to push into.
+
+    Empty when ``OUTBOUND_INSTANTLY_CAMPAIGN_ID`` is unset. Callers must skip
+    the push in that case. ``LIVE_CAMPAIGN_ID`` is not a substitute.
+    """
+
+    return (os.getenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID") or "").strip()
 
 
 def friendly_category(raw: Any) -> str:
