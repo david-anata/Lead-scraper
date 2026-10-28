@@ -22,8 +22,10 @@ contacts are found and stored and the summary says nothing was added.
 Recommended once David wants about 540 contacts on a weekday, across the four
 cron runs (14:15, 15:15, 16:15, 17:15 UTC). Do not treat these as defaults.
 Each hour is its own path, one cron per path, the same shape as Abby.
-Sharing one path across several crons made Vercel list the jobs and then
-not send the request. ``/run`` is a single temporary 18:45 UTC recovery.
+A single schedule of ``15 14,15,16,17 * * 1-5`` on ``/run`` was listed and
+then never invoked, including on a deploy where the morning comma-hour cron
+and the weekday ``1-5`` crons did run. ``/run`` stays as one temporary
+20:30 UTC recovery (``30 20 * * 1-5``).
 
   OUTBOUND_ENRICH_DAILY_COMPANIES=300
   OUTBOUND_ENRICH_PER_RUN=75
@@ -304,7 +306,7 @@ def run_missed_enrich_check(
         logger.exception("[outbound-enrich-job] could not check whether enrich ran today")
         message = (
             "Outbound enrich watchdog could not read today's activity. "
-            "Check /api/jobs/outbound-enrich/run."
+            "Check /api/jobs/outbound-enrich/at-1415."
         )
         logger.error("[outbound-enrich-job] %s", message)
         _notify_slack(post_slack, message)
@@ -319,8 +321,9 @@ def run_missed_enrich_check(
     message = (
         "Outbound enrich has not recorded a run today (America/Denver). "
         "outbound_enriched has no new rows since midnight, and scheduled_job_runs "
-        "has no outbound-enrich row. Weekday cron: /api/jobs/outbound-enrich/run "
-        "at 14:15, 15:15, 16:15, and 17:15 UTC."
+        "has no outbound-enrich row. Weekday crons: "
+        "/api/jobs/outbound-enrich/at-1415, at-1515, at-1615, and at-1715 "
+        "(14:15, 15:15, 16:15, and 17:15 UTC)."
     )
     logger.error("[outbound-enrich-job] %s", message)
     _notify_slack(post_slack, message)
@@ -333,24 +336,38 @@ def run_missed_enrich_check(
 
 
 def run_scheduled_enrich(request: Request) -> dict:
-    """Called by Vercel Cron (CRON_SECRET) or an internal operator key.
+    """Called by Vercel Cron (GET, ``Authorization: Bearer $CRON_SECRET``).
 
-    One function, GET and POST, same decorator Abby uses. Each cron has its
-    own path so Vercel sends the request.
+    The check is ``_require_scheduler_auth``, the same function Abby uses.
+    ``VERCEL_CRON_ENABLED_JOBS`` is not read. A value there does not skip
+    this route. POST accepts the same credentials for an operator trigger.
     """
 
     _require_scheduler_auth(request)
     return {"status": "ok", "details": run_enrich_job()}
 
 
-# /run is the 18:45 UTC recovery cron. The at-* paths are the weekday hours.
-for _suffix in ("/run", "/at-1415", "/at-1515", "/at-1615", "/at-1715"):
-    router.add_api_route(
-        _suffix,
-        run_scheduled_enrich,
-        methods=["GET", "POST"],
-        name=f"run_scheduled_enrich{_suffix.replace('/', '_')}",
-    )
+# One route per method. A single route with methods ["GET", "POST"] reuses the
+# GET operation id for POST, and FastAPI warns "Duplicate Operation ID
+# run_scheduled_enrich..._get". /run is the temporary 20:30 UTC recovery.
+# The at-* paths are the weekday hours, one Vercel cron per path.
+_ENRICH_RUN_SUFFIXES = ("/run", "/at-1415", "/at-1515", "/at-1615", "/at-1715")
+
+
+def _register_enrich_run_routes() -> None:
+    for suffix in _ENRICH_RUN_SUFFIXES:
+        slug = suffix.strip("/").replace("-", "_")
+        for method in ("GET", "POST"):
+            router.add_api_route(
+                suffix,
+                run_scheduled_enrich,
+                methods=[method],
+                name=f"outbound_enrich_{slug}_{method.lower()}",
+                operation_id=f"outbound_enrich_{slug}_{method.lower()}",
+            )
+
+
+_register_enrich_run_routes()
 
 
 @router.get("/missed-run", operation_id="outbound_enrich_missed_run_get")
