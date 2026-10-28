@@ -6,8 +6,8 @@ Approved by David on 2026-10-22: run into the live Instantly campaign, up to
 Vercel Cron calls this a few times each weekday morning. Each call takes the
 newest sourced brands that have not been enriched, finds up to two verified
 decision-makers per brand (Prospeo), writes an opening line, and adds them to
-the live Instantly campaign (the one Clay used to feed). A Slack summary posts
-after each call that did something.
+the Instantly campaign in ``OUTBOUND_INSTANTLY_CAMPAIGN_ID``. There is no
+fallback campaign. A Slack summary posts after each call that did something.
 
 Limits, all overridable with env vars. Defaults are the approved caps, so a
 deploy changes nothing until the env vars are set:
@@ -20,7 +20,9 @@ Leads only reach Instantly when OUTBOUND_PUSH_ENABLED is "true"; otherwise the
 contacts are found and stored and the summary says nothing was added.
 
 Recommended once David wants about 540 contacts on a weekday, across the four
-cron runs (15:15, 16:15, 17:15, 18:15 UTC). Do not treat these as defaults.
+cron runs (14:15, 15:15, 16:15, 17:15 UTC). Do not treat these as defaults.
+Each hour is its own cron entry. One expression that listed all four hours
+stopped being invoked after a redeploy, while the single-hour crons kept firing.
 
   OUTBOUND_ENRICH_DAILY_COMPANIES=300
   OUTBOUND_ENRICH_PER_RUN=75
@@ -100,6 +102,8 @@ def summary_text(result: dict[str, Any]) -> str:
         lines.append(f"Skipped, on our suppression list: {rep['suppressed']}")
     if rep.get("stopped_reason"):
         lines.append(f"Stopped: {rep['stopped_reason']}")
+    if result.get("campaign_missing"):
+        lines.append("Instantly push skipped: OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset.")
     if result.get("push_problem"):
         lines.append(f"Instantly problem: {result.get('push_note', '')}")
     bounce = result.get("bounce_today") or {}
@@ -126,6 +130,47 @@ def _refresh_delivery_state(engine) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-enrich-job] deliverability refresh failed")
         return {}
+
+
+def _default_post_slack(text: str) -> None:
+    """Post through the shared Slack client the other jobs already use."""
+
+    from sales_support_agent.config import load_settings
+    from sales_support_agent.integrations.slack import SlackClient
+
+    SlackClient(load_settings()).post_message(text=text)
+
+
+def _notify_slack(post_slack: Optional[Callable[[str], Any]], text: str) -> None:
+    try:
+        (post_slack or _default_post_slack)(text)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich-job] Slack alert failed")
+
+
+def _enrich_run_log_count(engine: Any, since_utc: datetime) -> int:
+    """Rows in the existing scheduled-job log for an enrich run since ``since_utc``.
+
+    The table is optional. A missing table means there is no run log to count.
+    """
+
+    try:
+        from sqlalchemy import text
+
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*) FROM scheduled_job_runs
+                    WHERE job_key IN ('outbound_enrich', 'outbound-enrich')
+                      AND started_at >= :t
+                    """
+                ),
+                {"t": since_utc.isoformat()},
+            ).fetchone()
+    except Exception:  # noqa: BLE001
+        return 0
+    return int(row[0] or 0) if row else 0
 
 
 def run_enrich_job(
@@ -176,6 +221,14 @@ def run_enrich_job(
         bounce_today = _bounces.today_slice(delivery.get("bounces") or {}, now)
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-enrich-job] could not summarize bounces")
+    push_on = _ip.push_enabled()
+    campaign = _ip.configured_campaign_id()
+    campaign_missing = not campaign
+    out["campaign_missing"] = campaign_missing
+    out["campaign_id"] = campaign
+    if campaign_missing:
+        logger.error("[outbound-enrich-job] %s", _ip.MISSING_CAMPAIGN_MESSAGE)
+        _notify_slack(post_slack, _ip.MISSING_CAMPAIGN_MESSAGE)
     if company_room <= 0 or credit_room <= 0:
         out["reason"] = "daily cap reached"
         return out
@@ -185,14 +238,12 @@ def run_enrich_job(
             from sales_support_agent.services import outbound_memory
             leads = outbound_memory.load_leads(engine, limit=1000)
 
-        push_on = _ip.push_enabled()
-        campaign = os.getenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", "").strip() or _ip.LIVE_CAMPAIGN_ID
         report = _oe.run_enrichment(
             engine, leads, api_key=key,
             max_companies=min(company_room, _int_env("OUTBOUND_ENRICH_PER_RUN", DEFAULT_PER_RUN)),
             max_contacts=_int_env("OUTBOUND_ENRICH_MAX_CONTACTS", DEFAULT_MAX_CONTACTS),
             credit_budget=credit_room,
-            campaign_id=campaign, dry_run=not push_on,
+            campaign_id=campaign, dry_run=not push_on or campaign_missing,
             find=find, write=write, push=push,
             deadline=time.monotonic() + _TIME_BUDGET_SECONDS,
             # Never touch a company Clay (or anything else) already put in Instantly.
@@ -203,34 +254,112 @@ def run_enrich_job(
         out["reason"] = "run failed"
         return out
 
+    if campaign_missing:
+        report.push_note = _ip.MISSING_CAMPAIGN_MESSAGE
     out.update(
         ran=True, report=report.as_dict(), pushed=report.pushed,
-        push_enabled=push_on, push_note=report.push_note,
+        push_enabled=push_on and not campaign_missing, push_note=report.push_note,
         push_problem=bool(
-            push_on and report.contacts_found and not report.pushed
+            push_on and not campaign_missing
+            and report.contacts_found and not report.pushed
             and report.suppressed < report.contacts_found
         ),
         credits_today=today["credits"] + report.credits_used,
         campaign_id=campaign,
+        campaign_missing=campaign_missing,
         bounce_today=bounce_today,
     )
 
     if report.companies_tried or report.pushed:
-        try:
-            if post_slack is None:
-                from sales_support_agent.config import load_settings
-                from sales_support_agent.integrations.slack import SlackClient
-                client = SlackClient(load_settings())
-                post_slack = lambda text: client.post_message(text=text)  # noqa: E731
-            post_slack(summary_text(out))
-        except Exception:  # noqa: BLE001
-            logger.exception("[outbound-enrich-job] Slack summary failed")
+        _notify_slack(post_slack, summary_text(out))
     logger.info("[outbound-enrich-job] %s", {k: v for k, v in out.items() if k != "report"})
     return out
 
 
-@router.api_route("/run", methods=["GET", "POST"])
-def run_scheduled_enrich(request: Request) -> dict:
+def run_missed_enrich_check(
+    *,
+    now: Optional[datetime] = None,
+    engine: Any = None,
+    post_slack: Optional[Callable[[str], Any]] = None,
+) -> dict[str, Any]:
+    """Alert when today's Denver date has no enrich activity by mid-morning.
+
+    Activity is a row in ``outbound_enriched`` or an outbound-enrich row in
+    ``scheduled_job_runs``. Neither table is created here.
+    """
+
+    now = now or datetime.now(ZoneInfo(_TZ))
+    if now.weekday() >= 5:
+        return {"alerted": False, "reason": "weekend"}
+    since = _start_of_day_utc(now)
+    try:
+        if engine is None:
+            from sales_support_agent.models.database import get_engine
+            engine = get_engine()
+        import outbound_enrich as _oe
+        today = _oe.enriched_since(engine, since)
+        run_logs = _enrich_run_log_count(engine, since)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich-job] could not check whether enrich ran today")
+        message = (
+            "Outbound enrich watchdog could not read today's activity. "
+            "Check /api/jobs/outbound-enrich/run."
+        )
+        logger.error("[outbound-enrich-job] %s", message)
+        _notify_slack(post_slack, message)
+        return {"alerted": True, "reason": "could not read enrich activity"}
+    if int(today["companies"]) > 0 or run_logs > 0:
+        return {
+            "alerted": False,
+            "reason": "enrich activity recorded",
+            "companies": today["companies"],
+            "run_logs": run_logs,
+        }
+    message = (
+        "Outbound enrich has not recorded a run today (America/Denver). "
+        "outbound_enriched has no new rows since midnight, and scheduled_job_runs "
+        "has no outbound-enrich row. Weekday cron: /api/jobs/outbound-enrich/run "
+        "at 14:15, 15:15, 16:15, and 17:15 UTC."
+    )
+    logger.error("[outbound-enrich-job] %s", message)
+    _notify_slack(post_slack, message)
+    return {
+        "alerted": True,
+        "reason": "no enrich activity today",
+        "companies": 0,
+        "run_logs": 0,
+    }
+
+
+def _run_scheduled_enrich(request: Request) -> dict:
     """Called by Vercel Cron (CRON_SECRET) or an internal operator key."""
+
     _require_scheduler_auth(request)
     return {"status": "ok", "details": run_enrich_job()}
+
+
+@router.get("/run", operation_id="outbound_enrich_run_get")
+def run_scheduled_enrich(request: Request) -> dict:
+    """GET entry used by Vercel Cron."""
+
+    return _run_scheduled_enrich(request)
+
+
+@router.post("/run", operation_id="outbound_enrich_run_post")
+def run_scheduled_enrich_post(request: Request) -> dict:
+    """POST entry used by an internal operator."""
+
+    return _run_scheduled_enrich(request)
+
+
+@router.get("/missed-run", operation_id="outbound_enrich_missed_run_get")
+def run_scheduled_missed_enrich_check(request: Request) -> dict:
+    """Weekday 15:30 UTC check that enrich has already recorded work today."""
+
+    _require_scheduler_auth(request)
+    return {"status": "ok", "details": run_missed_enrich_check()}
+
+
+@router.post("/missed-run", operation_id="outbound_enrich_missed_run_post")
+def run_scheduled_missed_enrich_check_post(request: Request) -> dict:
+    return run_scheduled_missed_enrich_check(request)

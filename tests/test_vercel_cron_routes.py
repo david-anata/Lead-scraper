@@ -40,12 +40,59 @@ def test_vercel_website_ops_cron_accepts_get() -> None:
     assert response.json()["detail"] == "Invalid internal API key."
 
 
-def test_vercel_crons_target_registered_job_routes() -> None:
-    config = json.loads(
+def _cron_config() -> dict:
+    return json.loads(
         (Path(__file__).parents[1] / "vercel.json").read_text(encoding="utf-8")
     )
+
+
+def test_vercel_crons_target_registered_job_routes() -> None:
+    config = _cron_config()
     paths = {item["path"] for item in config["crons"]}
     assert "/api/jobs/content/run" in paths
     assert "/api/jobs/website-ops/run" in paths
     assert "/api/vercel-cron/content" not in paths
     assert "/api/vercel-cron/website-ops" not in paths
+
+
+def test_outbound_enrich_crons_are_single_hour_and_match_the_handler() -> None:
+    """The combined hour list stopped being invoked. Each slot is its own entry."""
+
+    config = _cron_config()
+    enrich = [
+        item for item in config["crons"]
+        if item["path"] == "/api/jobs/outbound-enrich/run"
+    ]
+    assert [item["schedule"] for item in enrich] == [
+        "15 14 * * 1-5",
+        "15 15 * * 1-5",
+        "15 16 * * 1-5",
+        "15 17 * * 1-5",
+    ]
+    assert all("," not in item["schedule"] for item in enrich)
+    missed = [
+        item for item in config["crons"]
+        if item["path"] == "/api/jobs/outbound-enrich/missed-run"
+    ]
+    assert [item["schedule"] for item in missed] == ["30 15 * * 1-5"]
+    # 14 defined jobs, plus the three extra enrich hours and the watchdog.
+    assert len(config["crons"]) == 18
+
+
+def test_known_vercel_cron_paths_have_no_handler() -> None:
+    """These cron paths 404. The real jobs live on other POST routes."""
+
+    from fastapi.routing import iter_route_contexts
+
+    from sales_support_agent.main import app
+
+    registered = {ctx.path for ctx in iter_route_contexts(app.routes)}
+    for path in (
+        "/api/vercel-cron/durable-tasks",
+        "/api/vercel-cron/gmail-sync",
+        "/api/vercel-cron/building-operations",
+    ):
+        assert path not in registered
+    assert "/api/jobs/outbound-enrich/run" in registered
+    assert "/api/jobs/outbound-enrich/missed-run" in registered
+    assert "/api/jobs/gmail-sync/run" in registered

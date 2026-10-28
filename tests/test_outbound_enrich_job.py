@@ -21,11 +21,15 @@ def engine():
     return create_engine("sqlite://")
 
 
+CAMPAIGN = "11111111-1111-4111-8111-111111111111"
+
+
 @pytest.fixture(autouse=True)
 def env(monkeypatch):
     monkeypatch.setenv("PROSPEO_API_KEY", "k" * 20)
     monkeypatch.setenv("OUTBOUND_PUSH_ENABLED", "true")
     monkeypatch.setenv("OUTBOUND_AUTO_ENRICH", "true")
+    monkeypatch.setenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", CAMPAIGN)
     for n in ("OUTBOUND_ENRICH_DAILY_COMPANIES",
               "OUTBOUND_ENRICH_DAILY_CREDITS", "OUTBOUND_ENRICH_PER_RUN",
               "OUTBOUND_ENRICH_MAX_CONTACTS"):
@@ -58,11 +62,33 @@ def run(engine, n=10, **kw):
     return out, posts
 
 
-def test_runs_pushes_to_live_campaign_and_posts_slack(engine):
-    out, posts = run(engine)
+def test_runs_pushes_to_configured_campaign_and_posts_slack(engine):
+    seen = {}
+
+    def record(payload, cid, dry_run=False, **k):
+        seen["campaign_id"] = cid
+        return ok_push(payload, cid, dry_run=dry_run)
+
+    out, posts = run(engine, push=record)
     assert out["ran"] and out["pushed"] == 10
-    assert out["campaign_id"] == push.LIVE_CAMPAIGN_ID
+    assert out["campaign_id"] == CAMPAIGN
+    assert seen["campaign_id"] == CAMPAIGN
+    assert push.LIVE_CAMPAIGN_ID not in posts[0]
     assert len(posts) == 1 and "Added to Instantly: 10" in posts[0]
+
+
+def test_missing_campaign_skips_push_logs_and_alerts(engine, monkeypatch, caplog):
+    monkeypatch.delenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID")
+    called = []
+    with caplog.at_level("ERROR"):
+        out, posts = run(engine, push=lambda *a, **k: called.append(1))
+    assert out["ran"] and out["pushed"] == 0 and out["campaign_missing"]
+    assert out["campaign_id"] == ""
+    assert called == []
+    assert push.LIVE_CAMPAIGN_ID not in "".join(posts)
+    assert any(push.MISSING_CAMPAIGN_MESSAGE in post for post in posts)
+    assert "OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset" in caplog.text
+    assert len(oe.unpushed(engine)) == 10
 
 
 def test_max_contacts_comes_from_the_env(engine, monkeypatch):
@@ -142,6 +168,45 @@ def test_no_key_does_nothing(engine, monkeypatch):
     assert not out["ran"] and posts == []
 
 
+def test_enrich_run_route_is_one_get_and_one_post():
+    """GET and POST are separate routes so they do not share one operation id."""
+
+    matches = [
+        route for route in job.router.routes
+        if getattr(route, "path", "") == "/api/jobs/outbound-enrich/run"
+    ]
+    gets = [route for route in matches if "GET" in route.methods]
+    posts = [route for route in matches if "POST" in route.methods]
+    assert len(gets) == 1 and len(posts) == 1
+    assert gets[0] is not posts[0]
+
+
+def test_missed_enrich_alerts_when_today_is_empty(engine):
+    posts = []
+    out = job.run_missed_enrich_check(now=WEEKDAY, engine=engine, post_slack=posts.append)
+    assert out["alerted"] is True and out["companies"] == 0
+    assert posts and "outbound_enriched" in posts[0]
+
+
+def test_missed_enrich_is_quiet_when_a_row_exists(engine):
+    from sqlalchemy import text
+    oe.ensure_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO outbound_enriched (domain, status, contacts_found, credits_used, reason, enriched_at) "
+            "VALUES ('a.com', 'found', 1, 1, '', :t)"
+        ), {"t": job._start_of_day_utc(WEEKDAY)})
+    posts = []
+    out = job.run_missed_enrich_check(now=WEEKDAY, engine=engine, post_slack=posts.append)
+    assert out["alerted"] is False and out["companies"] == 1 and posts == []
+
+
+def test_missed_enrich_skips_the_weekend(engine):
+    posts = []
+    out = job.run_missed_enrich_check(now=SATURDAY, engine=engine, post_slack=posts.append)
+    assert out["alerted"] is False and out["reason"] == "weekend" and posts == []
+
+
 def test_route_requires_scheduler_auth(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -156,6 +221,14 @@ def test_route_requires_scheduler_auth(monkeypatch):
     assert c.get("/api/jobs/outbound-enrich/run").status_code == 401
     r = c.get("/api/jobs/outbound-enrich/run", headers={"Authorization": "Bearer " + "s" * 16})
     assert r.status_code == 200 and called == [1]
+    assert c.get("/api/jobs/outbound-enrich/missed-run").status_code == 401
+    watched = []
+    monkeypatch.setattr(job, "run_missed_enrich_check", lambda: watched.append(1) or {"alerted": False})
+    missed = c.get(
+        "/api/jobs/outbound-enrich/missed-run",
+        headers={"Authorization": "Bearer " + "s" * 16},
+    )
+    assert missed.status_code == 200 and watched == [1]
 
 
 def test_deadline_stops_run(engine):

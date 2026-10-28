@@ -143,6 +143,13 @@ def test_live_campaign_not_protected_by_default(monkeypatch):
     assert push.LIVE_CAMPAIGN_ID not in push.protected_campaigns()
 
 
+def test_configured_campaign_id_does_not_fall_back(monkeypatch):
+    monkeypatch.delenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", raising=False)
+    assert push.configured_campaign_id() == ""
+    monkeypatch.setenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", "  campaign-1  ")
+    assert push.configured_campaign_id() == "campaign-1"
+
+
 class _R:
     def __init__(self, code, data):
         self.status_code, self._d = code, data
