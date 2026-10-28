@@ -168,17 +168,23 @@ def test_no_key_does_nothing(engine, monkeypatch):
     assert not out["ran"] and posts == []
 
 
-def test_enrich_run_route_is_one_get_and_one_post():
-    """GET and POST are separate routes so they do not share one operation id."""
+def test_enrich_run_paths_each_accept_get_like_abby():
+    """Every cron path is one GET+POST route. None of them is registered twice."""
 
-    matches = [
+    wanted = {
+        "/api/jobs/outbound-enrich/run",
+        "/api/jobs/outbound-enrich/at-1415",
+        "/api/jobs/outbound-enrich/at-1515",
+        "/api/jobs/outbound-enrich/at-1615",
+        "/api/jobs/outbound-enrich/at-1715",
+    }
+    found = [
         route for route in job.router.routes
-        if getattr(route, "path", "") == "/api/jobs/outbound-enrich/run"
+        if getattr(route, "path", "") in wanted
     ]
-    gets = [route for route in matches if "GET" in route.methods]
-    posts = [route for route in matches if "POST" in route.methods]
-    assert len(gets) == 1 and len(posts) == 1
-    assert gets[0] is not posts[0]
+    assert {route.path for route in found} == wanted
+    assert all({"GET", "POST"} <= set(route.methods) for route in found)
+    assert len(found) == len(wanted)
 
 
 def test_missed_enrich_alerts_when_today_is_empty(engine):

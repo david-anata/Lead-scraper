@@ -21,8 +21,9 @@ contacts are found and stored and the summary says nothing was added.
 
 Recommended once David wants about 540 contacts on a weekday, across the four
 cron runs (14:15, 15:15, 16:15, 17:15 UTC). Do not treat these as defaults.
-Each hour is its own cron entry. One expression that listed all four hours
-stopped being invoked after a redeploy, while the single-hour crons kept firing.
+Each hour is its own path, one cron per path, the same shape as Abby.
+Sharing one path across several crons made Vercel list the jobs and then
+not send the request. ``/run`` is a single temporary 18:45 UTC recovery.
 
   OUTBOUND_ENRICH_DAILY_COMPANIES=300
   OUTBOUND_ENRICH_PER_RUN=75
@@ -331,25 +332,25 @@ def run_missed_enrich_check(
     }
 
 
-def _run_scheduled_enrich(request: Request) -> dict:
-    """Called by Vercel Cron (CRON_SECRET) or an internal operator key."""
+def run_scheduled_enrich(request: Request) -> dict:
+    """Called by Vercel Cron (CRON_SECRET) or an internal operator key.
+
+    One function, GET and POST, same decorator Abby uses. Each cron has its
+    own path so Vercel sends the request.
+    """
 
     _require_scheduler_auth(request)
     return {"status": "ok", "details": run_enrich_job()}
 
 
-@router.get("/run", operation_id="outbound_enrich_run_get")
-def run_scheduled_enrich(request: Request) -> dict:
-    """GET entry used by Vercel Cron."""
-
-    return _run_scheduled_enrich(request)
-
-
-@router.post("/run", operation_id="outbound_enrich_run_post")
-def run_scheduled_enrich_post(request: Request) -> dict:
-    """POST entry used by an internal operator."""
-
-    return _run_scheduled_enrich(request)
+# /run is the 18:45 UTC recovery cron. The at-* paths are the weekday hours.
+for _suffix in ("/run", "/at-1415", "/at-1515", "/at-1615", "/at-1715"):
+    router.add_api_route(
+        _suffix,
+        run_scheduled_enrich,
+        methods=["GET", "POST"],
+        name=f"run_scheduled_enrich{_suffix.replace('/', '_')}",
+    )
 
 
 @router.get("/missed-run", operation_id="outbound_enrich_missed_run_get")

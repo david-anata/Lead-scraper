@@ -82,20 +82,25 @@
       "schedule": "0 13,14 * * *"
     },
     {
-      "path": "/api/jobs/outbound-enrich/run",
+      "path": "/api/jobs/outbound-enrich/at-1415",
       "schedule": "15 14 * * 1-5"
     },
     {
-      "path": "/api/jobs/outbound-enrich/run",
+      "path": "/api/jobs/outbound-enrich/at-1515",
       "schedule": "15 15 * * 1-5"
     },
     {
-      "path": "/api/jobs/outbound-enrich/run",
+      "path": "/api/jobs/outbound-enrich/at-1615",
       "schedule": "15 16 * * 1-5"
     },
     {
-      "path": "/api/jobs/outbound-enrich/run",
+      "path": "/api/jobs/outbound-enrich/at-1715",
       "schedule": "15 17 * * 1-5"
+    },
+    {
+      "path": "/api/jobs/outbound-enrich/run",
+      "schedule": "45 18 * * 1-5",
+      "//": "TEMP: recovery run at 12:45 PM MT. Remove after it fires."
     },
     {
       "path": "/api/jobs/outbound-enrich/missed-run",
