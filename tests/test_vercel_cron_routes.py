@@ -67,8 +67,9 @@ def test_outbound_enrich_crons_are_single_hour_and_match_the_handler() -> None:
     assert by_path["/api/jobs/outbound-enrich/at-1615"]["schedule"] == "15 16 * * 1-5"
     assert by_path["/api/jobs/outbound-enrich/at-1715"]["schedule"] == "15 17 * * 1-5"
     recovery = by_path["/api/jobs/outbound-enrich/run"]
-    assert recovery["schedule"] == "45 18 * * 1-5"
-    assert recovery["//"].startswith("TEMP")
+    assert recovery["schedule"] == "30 20 * * 1-5"
+    for item in config["crons"]:
+        assert set(item) == {"path", "schedule"}
     assert by_path["/api/jobs/outbound-enrich/missed-run"]["schedule"] == "30 15 * * 1-5"
     assert by_path["/api/jobs/abby/run"]["schedule"] == "*/5 * * * *"
     assert len(config["crons"]) == 19
