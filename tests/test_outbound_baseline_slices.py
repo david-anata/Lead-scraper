@@ -20,6 +20,8 @@ def test_rotation_changes_daily_and_covers_all():
     d1 = rx.baseline_slices_for(datetime(2026, 10, 27), BAND)
     d2 = rx.baseline_slices_for(datetime(2026, 10, 28), BAND)
     assert d1[0] != d2[0]
+    assert d1[0]["sort"] != d2[0]["sort"]
+    assert {row["sort"] for row in d1} <= set(rx.BASELINE_SORTS)
     assert sorted(x["f:ermin"] for x in d1) == sorted(x["f:ermin"] for x in d2)
 
 

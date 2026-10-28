@@ -294,10 +294,10 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
                 result = _pull_baseline_slices(_op, _rx, api_key, already, requested,
                                                recipe, tunables, now, pull_started)
             else:
-                result = _op.run_storeleads_to_clay(
+                result = _op.run_recipe_pull(
                     api_key=api_key, clay_webhook_url="", processed_domains=already,
                     max_new=requested, dry_run=True,
-                    recipe=recipe, settings=tunables,
+                    recipe=recipe, settings=tunables, now=now,
                 )
         except Exception:  # noqa: BLE001
             logger.exception("[outbound-jobs] pull failed for %s", recipe.key)

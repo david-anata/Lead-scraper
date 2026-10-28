@@ -98,16 +98,52 @@ def ensure_tables(engine: Any, *, force: bool = False) -> None:
     seed_recipes(engine)
 
 
+def _weekday_csv(recipe: Any) -> str:
+    """The same weekday list the code scheduler uses, stored as '1,3'."""
+    return ",".join(str(day) for day in recipe.weekdays)
+
+
+def _builtin_recipe_definitions(engine: Any) -> list[dict[str, Any]]:
+    """Code defaults, plus any recipe saved into settings while the table was missing."""
+    import outbound_recipes as source
+
+    defaults = [
+        {"key": recipe.key, "label": recipe.label, "template_key": recipe.key,
+         "reason": recipe.reason, "tier": recipe.tier, "priority": index + 1,
+         "weekdays": _weekday_csv(recipe), "cap": recipe.max_per_run,
+         "active": True, "include_in_daily": True, "version": 1,
+         "updated_by": "system", "updated_at": ""}
+        for index, recipe in enumerate(source.RECIPES)
+    ]
+    if engine is None:
+        return defaults
+    try:
+        from sales_support_agent.services import outbound_settings
+        saved = outbound_settings.load_settings(engine)
+    except Exception:
+        return defaults
+    by_key = {item["key"]: item for item in defaults}
+    for setting_key, raw in saved.items():
+        if not str(setting_key).startswith("recipe."):
+            continue
+        try:
+            definition = json.loads(raw)
+            by_key[str(definition["key"])] = definition
+        except (TypeError, ValueError, KeyError):
+            continue
+    return sorted(by_key.values(), key=lambda item: (
+        not item.get("active", True), int(item.get("priority") or 100), item["key"]))
+
+
 def seed_recipes(engine: Any) -> None:
     """Seed the six current recipes without changing their behavior."""
     import outbound_recipes as source
 
-    weekday_map = {"daily": "0,1,2,3,4", "weekly": "1,2"}
     rows = [
         {
             "recipe_key": recipe.key, "label": recipe.label, "template_key": recipe.key,
             "reason": recipe.reason, "tier": recipe.tier,
-            "priority": index + 1, "weekdays": weekday_map[recipe.cadence],
+            "priority": index + 1, "weekdays": _weekday_csv(recipe),
             "cap": recipe.max_per_run,
         }
         for index, recipe in enumerate(source.RECIPES)
@@ -121,13 +157,21 @@ def seed_recipes(engine: Any) -> None:
 
 
 def load_recipe_definitions(engine: Any) -> list[dict[str, Any]]:
+    """Rows from outbound_recipe_definitions, or the code defaults when that is empty.
+
+    An empty table (the migration has not been applied, or it created the table
+    and the seed did not run) must not blank the morning schedule. A table with
+    rows is authoritative, including rows an operator has paused.
+    """
     if engine is None:
-        return []
+        return _builtin_recipe_definitions(None)
     try:
         with engine.connect() as conn:
             rows = conn.execute(text(f"""SELECT recipe_key,label,template_key,reason,tier,
                 priority,weekdays,cap,active,include_in_daily,version,updated_by,updated_at
                 FROM {_RECIPES} ORDER BY active DESC, priority, recipe_key""")).fetchall()
+        if not rows:
+            return _builtin_recipe_definitions(engine)
         return [
             {"key": r[0], "label": r[1], "template_key": r[2], "reason": r[3],
              "tier": r[4], "priority": int(r[5]), "weekdays": str(r[6]),
@@ -136,26 +180,7 @@ def load_recipe_definitions(engine: Any) -> list[dict[str, Any]]:
             for r in rows
         ]
     except Exception:
-        import outbound_recipes as source
-        weekdays = {"daily": "0,1,2,3,4", "weekly": "1,2"}
-        defaults = [{"key": recipe.key, "label": recipe.label, "template_key": recipe.key,
-                 "reason": recipe.reason, "tier": recipe.tier, "priority": index + 1,
-                 "weekdays": weekdays[recipe.cadence], "cap": recipe.max_per_run,
-                 "active": True, "include_in_daily": True, "version": 1,
-                 "updated_by": "system", "updated_at": ""}
-                for index, recipe in enumerate(source.RECIPES)]
-        from sales_support_agent.services import outbound_settings
-        saved = outbound_settings.load_settings(engine)
-        by_key = {item["key"]: item for item in defaults}
-        for setting_key, raw in saved.items():
-            if not str(setting_key).startswith("recipe."):
-                continue
-            try:
-                definition = json.loads(raw)
-                by_key[str(definition["key"])] = definition
-            except (TypeError, ValueError, KeyError):
-                continue
-        return sorted(by_key.values(), key=lambda item: (not item.get("active", True), int(item.get("priority") or 100), item["key"]))
+        return _builtin_recipe_definitions(engine)
 
 
 def save_recipe(engine: Any, values: dict[str, Any], *, actor: str) -> dict[str, Any]:
