@@ -169,7 +169,7 @@ def test_no_key_does_nothing(engine, monkeypatch):
 
 
 def test_enrich_run_paths_each_accept_get_like_abby():
-    """Every cron path is one GET+POST route. None of them is registered twice."""
+    """Every cron path has one GET route and one POST route, not two GETs."""
 
     wanted = {
         "/api/jobs/outbound-enrich/run",
@@ -182,9 +182,15 @@ def test_enrich_run_paths_each_accept_get_like_abby():
         route for route in job.router.routes
         if getattr(route, "path", "") in wanted
     ]
-    assert {route.path for route in found} == wanted
-    assert all({"GET", "POST"} <= set(route.methods) for route in found)
-    assert len(found) == len(wanted)
+    by_path: dict[str, list] = {}
+    for route in found:
+        by_path.setdefault(route.path, []).append(route)
+    assert set(by_path) == wanted
+    for path, routes in by_path.items():
+        assert len(routes) == 2, path
+        assert sum("GET" in route.methods for route in routes) == 1
+        assert sum("POST" in route.methods for route in routes) == 1
+        assert len({route.operation_id for route in routes}) == 2
 
 
 def test_missed_enrich_alerts_when_today_is_empty(engine):
@@ -213,28 +219,95 @@ def test_missed_enrich_skips_the_weekend(engine):
     assert out["alerted"] is False and out["reason"] == "weekend" and posts == []
 
 
-def test_route_requires_scheduler_auth(monkeypatch):
+def _cron_client(monkeypatch):
+    import warnings
+    from types import SimpleNamespace
+
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from types import SimpleNamespace
+
     monkeypatch.setenv("CRON_SECRET", "s" * 16)
     app = FastAPI()
-    app.state.settings = SimpleNamespace(internal_api_key="")
+    app.state.settings = SimpleNamespace(internal_api_key="internal-test-key")
     app.include_router(job.router)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        app.openapi()
+    duplicates = [str(item.message) for item in caught if "Duplicate Operation ID" in str(item.message)]
+    assert duplicates == []
+    return TestClient(app)
+
+
+def test_route_requires_scheduler_auth(monkeypatch):
     called = []
     monkeypatch.setattr(job, "run_enrich_job", lambda: called.append(1) or {"ran": False})
-    c = TestClient(app)
+    c = _cron_client(monkeypatch)
+    secret = "s" * 16
+    bearer = {"Authorization": "Bearer " + secret}
     assert c.get("/api/jobs/outbound-enrich/run").status_code == 401
-    r = c.get("/api/jobs/outbound-enrich/run", headers={"Authorization": "Bearer " + "s" * 16})
-    assert r.status_code == 200 and called == [1]
+    assert c.get("/api/jobs/outbound-enrich/run", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    for path in (
+        "/api/jobs/outbound-enrich/run",
+        "/api/jobs/outbound-enrich/at-1415",
+        "/api/jobs/outbound-enrich/at-1515",
+        "/api/jobs/outbound-enrich/at-1615",
+        "/api/jobs/outbound-enrich/at-1715",
+    ):
+        response = c.get(path, headers=bearer)
+        assert response.status_code == 200, path
+        posted = c.post(path, headers=bearer)
+        assert posted.status_code == 200, path
+    assert len(called) == 10
     assert c.get("/api/jobs/outbound-enrich/missed-run").status_code == 401
     watched = []
     monkeypatch.setattr(job, "run_missed_enrich_check", lambda: watched.append(1) or {"alerted": False})
     missed = c.get(
         "/api/jobs/outbound-enrich/missed-run",
-        headers={"Authorization": "Bearer " + "s" * 16},
+        headers=bearer,
     )
     assert missed.status_code == 200 and watched == [1]
+
+
+def test_enabled_jobs_allowlist_does_not_block_enrich(monkeypatch):
+    """VERCEL_CRON_ENABLED_JOBS is not a gate. Any value still reaches the job."""
+
+    monkeypatch.setenv("VERCEL_CRON_ENABLED_JOBS", "abby")
+    called = []
+    monkeypatch.setattr(job, "run_enrich_job", lambda: called.append(1) or {"ran": False})
+    response = _cron_client(monkeypatch).get(
+        "/api/jobs/outbound-enrich/at-1415",
+        headers={"Authorization": "Bearer " + "s" * 16},
+    )
+    assert response.status_code == 200 and called == [1]
+
+
+def test_trailing_slash_redirects_the_same_way_as_abby(monkeypatch):
+    """Vercel Cron does not follow redirects. The cron path is the one without a slash."""
+
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from sales_support_agent.api.abby_job import router as abby_router
+    from sales_support_agent.api.outbound_jobs import _require_scheduler_auth
+    from sales_support_agent.api import abby_job
+
+    assert abby_job._require_scheduler_auth is _require_scheduler_auth
+    assert job._require_scheduler_auth is _require_scheduler_auth
+    monkeypatch.setenv("CRON_SECRET", "s" * 16)
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(internal_api_key="")
+    app.include_router(job.router)
+    app.include_router(abby_router)
+    client = TestClient(app, follow_redirects=False)
+    enrich = client.get("/api/jobs/outbound-enrich/run/")
+    abby = client.get("/api/jobs/abby/run/")
+    assert enrich.status_code == abby.status_code == 307
+    assert enrich.headers["location"].endswith("/api/jobs/outbound-enrich/run")
+    assert abby.headers["location"].endswith("/api/jobs/abby/run")
+    direct = client.get("/api/jobs/outbound-enrich/run")
+    assert direct.status_code == 401
 
 
 def test_deadline_stops_run(engine):
