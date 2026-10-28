@@ -17,7 +17,39 @@ def engine():
 
 def test_seeded_recipes_materialize_for_a_weekday():
     value = engine()
-    assert len(batches.load_recipe_definitions(value)) == 6
+    import outbound_recipes as recipes
+    saved = batches.load_recipe_definitions(value)
+    assert len(saved) == 6
+    by_key = {item["key"]: item["weekdays"] for item in saved}
+    assert by_key == {recipe.key: ",".join(str(day) for day in recipe.weekdays) for recipe in recipes.RECIPES}
+    assert [recipe.key for recipe in batches.materialize_recipes(value, 0, {})] == ["icp_baseline"]
+
+
+def test_recipe_migration_matches_the_code_defaults():
+    from pathlib import Path
+    import outbound_recipes as recipes
+    sql = Path("supabase/migrations/20261028000000_outbound_recipe_tables.sql").read_text()
+    assert "CREATE TABLE IF NOT EXISTS outbound_recipe_definitions" in sql
+    assert "CREATE TABLE IF NOT EXISTS outbound_daily_batches" in sql
+    assert "CREATE TABLE IF NOT EXISTS outbound_daily_batch_runs" in sql
+    assert "CREATE TABLE IF NOT EXISTS outbound_daily_batch_companies" in sql
+    assert "ON CONFLICT (recipe_key) DO NOTHING" in sql
+    for recipe in recipes.RECIPES:
+        assert f"'{recipe.key}'" in sql
+        weekdays = ",".join(str(day) for day in recipe.weekdays)
+        assert f"'{weekdays}'" in sql
+        assert recipe.label in sql
+        assert str(recipe.max_per_run) in sql
+
+
+def test_an_empty_recipe_table_falls_back_to_the_code_defaults():
+    value = engine()
+    from sqlalchemy import text
+    with value.begin() as conn:
+        conn.execute(text("DELETE FROM outbound_recipe_definitions"))
+    import outbound_recipes as recipes
+    saved = batches.load_recipe_definitions(value)
+    assert [item["key"] for item in saved] == [recipe.key for recipe in recipes.RECIPES]
     assert [recipe.key for recipe in batches.materialize_recipes(value, 0, {})] == ["icp_baseline"]
 
 

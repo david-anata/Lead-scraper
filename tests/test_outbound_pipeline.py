@@ -288,5 +288,88 @@ class TestLeadsToCsv(unittest.TestCase):
         self.assertEqual(csv_text.strip(), ",".join(op.clay_header(c) for c in op.CLAY_CSV_COLUMNS))
 
 
+class TestCursorPagination(unittest.TestCase):
+    def test_cursor_is_sent_instead_of_a_page_number(self):
+        params = op.build_storeleads_query(cursor="abc", extra_params={"sort": "-er,rank", "f:plan": "Shopify Plus"})
+        self.assertEqual(params["cursor"], "abc")
+        self.assertNotIn("page", params)
+        self.assertEqual(params["sort"], "-er,rank")
+        self.assertEqual(params["f:plan"], "Shopify Plus")
+        self.assertEqual(params["page_size"], op.STORELEADS_PAGE_SIZE)
+
+    def test_the_first_page_omits_the_legacy_page_parameter(self):
+        params = op.build_storeleads_query(page=0)
+        self.assertNotIn("page", params)
+        self.assertNotIn("cursor", params)
+
+    def test_a_live_pull_follows_next_cursor(self):
+        seen = []
+
+        def fetch_result(api_key, *, cursor=None, page_size=100, extra_params=None, **kw):
+            seen.append({"cursor": cursor, "page_size": page_size})
+            if cursor is None:
+                return op.StoreLeadsPage([_store(name="a.com")], next_cursor="next-1")
+            self.assertEqual(cursor, "next-1")
+            return op.StoreLeadsPage([_store(name="b.com", categories="Pet Supplies")], next_cursor=None)
+
+        result = op.run_storeleads_to_clay(
+            api_key="x", clay_webhook_url="", processed_domains=set(),
+            max_new=10, throttle_seconds=0, fetch_result=fetch_result,
+        )
+        self.assertEqual([lead["domain"] for lead in result.leads], ["a.com", "b.com"])
+        self.assertEqual([call["cursor"] for call in seen], [None, "next-1"])
+        self.assertTrue(all(call["page_size"] == op.STORELEADS_PAGE_SIZE for call in seen))
+
+
+class TestRecipeFanOut(unittest.TestCase):
+    def test_churn_falls_back_to_removed_at_when_the_server_filter_is_empty(self):
+        import outbound_recipes as rc
+        from datetime import datetime, timezone
+        now = datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc)
+        calls = []
+
+        def fetch(api_key, *, page=0, page_size=50, extra_params=None, **kw):
+            calls.append(dict(extra_params or {}))
+            if page:
+                return []
+            if extra_params and extra_params.get("f:app_uninstalled_at"):
+                return []
+            return [_store(
+                name="dropped.com",
+                apps=[{
+                    "platform": "shopify", "token": "rebuy",
+                    "removed_at": "2026-07-20T00:00:00.585839251Z",
+                }],
+            ), _store(name="still-there.com", apps=[{"platform": "shopify", "token": "rebuy"}])]
+
+        result = op.run_recipe_pull(
+            api_key="x", clay_webhook_url="", processed_domains=set(),
+            max_new=5, throttle_seconds=0, recipe=rc.recipe("churned_tool"),
+            now=now, fetch_page=fetch,
+        )
+        self.assertTrue(any("f:app_uninstalled_at" in call for call in calls))
+        self.assertTrue(any("f:app_uninstalled_at" not in call for call in calls))
+        self.assertEqual([lead["domain"] for lead in result.leads], ["dropped.com"])
+        self.assertTrue(all("f:it" not in call for call in calls))
+
+    def test_new_growth_queries_each_app_once(self):
+        import outbound_recipes as rc
+        from datetime import datetime, timezone
+        now = datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc)
+        seen = []
+
+        def fetch(api_key, *, page=0, page_size=50, extra_params=None, **kw):
+            if page == 0:
+                seen.append(extra_params["f:app_installed_at"])
+            return []
+
+        op.run_recipe_pull(
+            api_key="x", clay_webhook_url="", processed_domains=set(),
+            max_new=5, throttle_seconds=0, recipe=rc.recipe("new_growth_app"),
+            now=now, fetch_page=fetch,
+        )
+        self.assertEqual(sorted(seen), sorted(rc.GROWTH_APP_TOKENS))
+
+
 if __name__ == "__main__":
     unittest.main()

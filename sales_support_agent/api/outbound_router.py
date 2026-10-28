@@ -413,7 +413,7 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "",
     version = _st.config_version(engine) if engine is not None else 0
     cap = chosen.cap(tunables) if chosen else max(1, min(int(max_new or 100), 500))
     try:
-        result = _op.run_storeleads_to_clay(
+        result = _op.run_recipe_pull(
             api_key=api_key,
             clay_webhook_url="",  # dry-run: build the list, push nothing
             processed_domains=already,
@@ -908,7 +908,7 @@ def outbound_lead_ops(request: Request) -> Response:
     rows = []
     recipe_labels = {recipe.key: recipe.label for recipe in _rx.RECIPES}
     for r in _rx.RECIPES:
-        due = "Today" if r.key in todays_keys else ("Tue / Wed" if r.cadence == "weekly" else "Weekdays")
+        due = "Today" if r.key in todays_keys else _rx.weekday_label(r)
         cap_now = r.cap(tunables)
         pull_action = (
             f"<form class='lo-pull-form' method='post' action='/admin/api/outbound/brands.csv?recipe={r.key}'>"
@@ -1399,7 +1399,7 @@ async def outbound_push_to_clay(request: Request) -> Response:
     used = outbound_memory.total_delivered(engine)
 
     try:
-        result = _op.run_storeleads_to_clay(
+        result = _op.run_recipe_pull(
             api_key=api_key, clay_webhook_url="", processed_domains=already,
             max_new=chosen.cap(tunables) if chosen else 25, dry_run=True,
             recipe=chosen, settings=tunables,

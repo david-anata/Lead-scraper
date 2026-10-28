@@ -2,8 +2,9 @@
 
 Each recipe is a saved StoreLeads query plus the timing that makes it a genuine
 "why now" trigger rather than a static list. StoreLeads refreshes its data weekly
-(normally Monday), so trigger recipes are pulled early in the week when the
-newly-changed rows appear; the baseline recipe runs daily to keep volume steady.
+(normally Monday), so trigger recipes start Tuesday, once that refresh has landed,
+and are spread across the week so the next morning does not re-scan the same pool.
+The baseline recipe runs every weekday to keep volume steady.
 
 Every recipe carries the reason it fired. That reason is what makes the opening
 line defensible and it is also what we measure: the scoreboard reports booked
@@ -70,8 +71,45 @@ GROWTH_APP_TOKENS = (
 
 
 def _iso(dt: datetime) -> str:
-    """StoreLeads wants JSON-style timestamps, e.g. 2026-04-23T18:25:43.511Z."""
+    """StoreLeads wants JSON-style timestamps, e.g. 2012-04-23T18:25:43.511Z."""
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _parse_app_date(value: Any) -> Optional[datetime]:
+    """Parse an app install or removal timestamp, including nanosecond fractions."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    text = raw.replace("Z", "+00:00")
+    if "." in text:
+        head, tail = text.split(".", 1)
+        digits = []
+        rest = ""
+        for index, char in enumerate(tail):
+            if char.isdigit():
+                digits.append(char)
+            else:
+                rest = tail[index:]
+                break
+        text = f"{head}.{(''.join(digits) + '000000')[:6]}{rest}"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _app_id(app: dict[str, Any]) -> str:
+    """StoreLeads app id: platform + token, e.g. shopify.rebuy."""
+    token = str(app.get("token") or "").strip()
+    if not token:
+        return ""
+    if token.startswith("shopify."):
+        return token
+    platform = str(app.get("platform") or "shopify").strip() or "shopify"
+    return f"{platform}.{token}"
 
 
 # ---- tunables ----------------------------------------------------------------
@@ -83,7 +121,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "icp.employees_min": 2,               # a real business, not a side project
     "icp.employees_max": 80,              # the stated ICP, now actually enforced
     "new_growth_app.window_days": 14,     # how recent an install still counts
-    "churned_tool.tools_per_day": 1,      # how many tools we check for churn daily
+    # One call per app. The uninstall filter accepts a single id, so a default
+    # of 1 left most of the list unchecked and a miss looked like an empty recipe.
+    "churned_tool.tools_per_day": len(GROWTH_APP_TOKENS),
     "new_growth_app.max_per_run": 100,
     "churned_tool.max_per_run": 60,
     "plan_upgrade.max_per_run": 100,
@@ -162,16 +202,38 @@ class Recipe:
     max_per_run: int
     build: Callable[..., dict[str, Any]] = field(repr=False)
     # Some triggers cannot be expressed as a single StoreLeads filter, so the
-    # server narrows and this re-checks each row. Verified live 25 Jul: the
-    # app install/uninstall filters accept ONE app id, not a list, so a list
-    # silently returns zero rows.
+    # server narrows and this re-checks each row. The app install and uninstall
+    # filters accept ONE app id. A comma list silently returns zero rows.
     client_filter: Optional[Callable[..., bool]] = field(default=None, repr=False)
+    # Mon=0 .. Fri=4. The morning job and the recipe table both read this.
+    weekdays: tuple[int, ...] = ()
+    # When one filter cannot carry a list, expand returns one partial query
+    # per StoreLeads call. None means a single build() query.
+    expand: Optional[Callable[..., list]] = field(default=None, repr=False)
+
+    def param_sets(self, now: Optional[datetime] = None,
+                   settings: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
+        """Every StoreLeads query this recipe should run, ICP floor included.
+
+        A value of None in an expanded query removes that ICP filter for this
+        call (the client gate still applies it). Keys starting with '_' are
+        internal and are not sent.
+        """
+        now = now or datetime.now(timezone.utc)
+        extras = self.expand(now, settings) if self.expand else [self.build(now, settings)]
+        sets = []
+        for extra in extras:
+            merged = {**base_filters(settings), **(extra or {})}
+            sets.append({
+                key: value for key, value in merged.items()
+                if value is not None and not str(key).startswith("_")
+            })
+        return sets or [{key: value for key, value in base_filters(settings).items() if value is not None}]
 
     def params(self, now: Optional[datetime] = None,
                settings: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """Full StoreLeads query for this recipe at a point in time."""
-        now = now or datetime.now(timezone.utc)
-        return {**base_filters(settings), **self.build(now, settings)}
+        return self.param_sets(now, settings)[0]
 
     def keeps(self, store: dict[str, Any], now: Optional[datetime] = None,
               settings: Optional[dict[str, Any]] = None) -> bool:
@@ -203,54 +265,126 @@ def _installed_recently(store: dict[str, Any], now: datetime,
     for app in store.get("apps") or []:
         if not isinstance(app, dict):
             continue
-        token = f"{app.get('platform', 'shopify')}.{app.get('token', '')}"
-        if token not in GROWTH_APP_TOKENS:
+        if _app_id(app) not in GROWTH_APP_TOKENS:
             continue
-        raw = str(app.get("installed_at") or "").strip().replace("Z", "+00:00")
-        if not raw:
+        installed = _parse_app_date(app.get("installed_at"))
+        if installed is None:
             continue
-        try:
-            installed = datetime.fromisoformat(raw)
-        except ValueError:
-            continue
-        if installed.tzinfo is None:
-            installed = installed.replace(tzinfo=timezone.utc)
         age = (now - installed).days
         if 0 <= age <= days:
             return True
     return False
 
 
+def growth_app_tokens_for(now: datetime, settings=None) -> list[str]:
+    """Every growth app, rotated so the cap does not always fill from the same one.
+
+    f:app_installed_at accepts one app id. A comma list returns zero rows and no
+    error, so each app is its own call.
+    """
+    tokens = list(GROWTH_APP_TOKENS)
+    start = now.toordinal() % len(tokens)
+    return tokens[start:] + tokens[:start]
+
+
+def _growth_queries(now: datetime, settings=None) -> list[dict[str, Any]]:
+    window = _iso(now - timedelta(days=_int(settings, "new_growth_app.window_days")))
+    return [
+        {
+            "f:app_installed_at": token,
+            "f:app_installed_at:min": window,
+            "sort": "-er,rank",
+        }
+        for token in growth_app_tokens_for(now, settings)
+    ]
+
+
 def _new_growth_app(now: datetime, settings=None) -> dict[str, Any]:
-    # Server narrows to "has one of these apps"; the install window is applied
-    # client-side because f:app_installed_at only accepts a single app id.
-    return {
-        "f:an": ",".join(GROWTH_APP_TOKENS),
-        "f:an:op": "or",
-        "sort": "-er,rank",
-    }
+    return _growth_queries(now, settings)[0]
 
 
 def churn_tokens_for(now: datetime, settings=None) -> list[str]:
-    """Which tools we check for churn today. f:app_uninstalled_at takes ONE app
-    id, so we rotate; checking more per day widens coverage at the cost of more
-    calls."""
+    """Which tools we check for churn today.
+
+    f:app_uninstalled_at takes ONE app id. The list is rotated so the first call
+    (and a cap that stops early) does not always start on the same tool.
+    """
     per_day = max(1, _int(settings, "churned_tool.tools_per_day"))
-    start = (now.timetuple().tm_yday * per_day) % len(GROWTH_APP_TOKENS)
-    return [GROWTH_APP_TOKENS[(start + i) % len(GROWTH_APP_TOKENS)]
-            for i in range(min(per_day, len(GROWTH_APP_TOKENS)))]
+    count = min(per_day, len(GROWTH_APP_TOKENS))
+    start = now.toordinal() % len(GROWTH_APP_TOKENS)
+    return [GROWTH_APP_TOKENS[(start + i) % len(GROWTH_APP_TOKENS)] for i in range(count)]
+
+
+def _churn_queries(now: datetime, settings=None) -> list[dict[str, Any]]:
+    """One uninstall query per tool.
+
+    The date format and the shopify. prefix already match the docs (the same
+    timestamp helper is what plan_upgrade and replatformed use successfully).
+    What zeroed this recipe is stacking f:it=email plus the employee bounds on
+    an already single-app, 30-day filter: that intersection returned an empty
+    200. Email and headcount are still required by store_matches_icp.
+    """
+    window = _iso(now - timedelta(days=_int(settings, "churned_tool.window_days")))
+    return [
+        {
+            "f:app_uninstalled_at": token,
+            "f:app_uninstalled_at:min": window,
+            "f:it": None,
+            "f:empcmin": None,
+            "f:empcmax": None,
+            "sort": "-er,rank",
+        }
+        for token in churn_tokens_for(now, settings)
+    ]
 
 
 def _churned_tool(now: datetime, settings=None) -> dict[str, Any]:
-    return {
-        "f:app_uninstalled_at": churn_tokens_for(now, settings)[0],
-        "f:app_uninstalled_at:min": _iso(
-            now - timedelta(days=_int(settings, "churned_tool.window_days"))),
-        "sort": "-er,rank",
-    }
+    return _churn_queries(now, settings)[0]
+
+
+def _removed_in_window(store: dict[str, Any], now: datetime,
+                       settings: Optional[dict[str, Any]] = None,
+                       *, require_removal: bool = False) -> bool:
+    """True when apps[].removed_at shows one of today's tools dropped in window.
+
+    require_removal is the fallback path, used when the uninstall filter itself
+    returned no domains. The normal path trusts the server if the payload has
+    no removal timestamps to check.
+    """
+    wanted = set(churn_tokens_for(now, settings))
+    days = _int(settings, "churned_tool.window_days")
+    apps = [app for app in (store.get("apps") or []) if isinstance(app, dict)]
+    saw_removal = False
+    for app in apps:
+        if app.get("removed_at"):
+            saw_removal = True
+        if _app_id(app) not in wanted:
+            continue
+        removed = _parse_app_date(app.get("removed_at"))
+        if removed is None:
+            continue
+        age = (now - removed).days
+        if 0 <= age <= days:
+            return True
+    if require_removal:
+        return False
+    return not apps or not saw_removal
+
+
+def _churn_keeps(store: dict[str, Any], now: datetime,
+                 settings: Optional[dict[str, Any]] = None) -> bool:
+    return _removed_in_window(store, now, settings, require_removal=False)
+
+
+def churn_fallback_keeps(store: dict[str, Any], now: datetime,
+                          settings: Optional[dict[str, Any]] = None) -> bool:
+    """Client-side churn check for a pull that did not use the uninstall filter."""
+    return _removed_in_window(store, now, settings, require_removal=True)
 
 
 def _plan_upgrade(now: datetime, settings=None) -> dict[str, Any]:
+    # Left tight on purpose. This is the highest-scoring recipe (93 of 104 leads
+    # at 8 or above). It runs once a week so Wednesday does not re-scan Tuesday.
     return {
         "f:plan": "Shopify Plus",
         "f:last_plan_change_at:min": _iso(
@@ -259,29 +393,124 @@ def _plan_upgrade(now: datetime, settings=None) -> dict[str, Any]:
     }
 
 
+# Previous platforms a real brand migrates off of. Values are the ones
+# f:last_platform documents (lowercase). The field is mutually exclusive, so
+# multiple values require f:last_platform:op=or or the query matches nothing.
+PREVIOUS_PLATFORMS = (
+    "woocommerce",
+    "bigcommerce",
+    "magento",
+    "wix",
+    "squarespace",
+    "prestashop",
+    "shopware",
+    "volusion",
+    "opencart",
+    "3dcart",
+    "demandware",
+    "bigcartel",
+)
+REPLATFORM_SORTS = ("-er,rank", "-prank,rank", "-mas,rank")
+
+
 def _replatformed(now: datetime, settings=None) -> dict[str, Any]:
     return {
+        "f:last_platform": ",".join(PREVIOUS_PLATFORMS),
+        "f:last_platform:op": "or",
         "f:last_platform_change_at:min": _iso(
             now - timedelta(days=_int(settings, "replatformed.window_days"))),
-        "sort": "-er,rank",
+        "sort": REPLATFORM_SORTS[now.toordinal() % len(REPLATFORM_SORTS)],
     }
+
+
+# TikTok has a documented sort (-fc30dp_10) and no documented 30-day filter.
+# f:tiktokfollowers30dpmin was ignored, so the recipe was only a sort of the
+# whole ICP. YouTube, Pinterest and Twitter have real percent filters.
+SOCIAL_GROWTH_SIGNALS = (
+    ("tiktok", "", "-fc30dp_10,rank"),
+    ("youtube", "f:youtubefollowers30dpmin", "-fc30dp_8,rank"),
+    ("pinterest", "f:pinterestfollowers30dpmin", "-fc30dp_6,rank"),
+    ("twitter", "f:twitterfollowers30dpmin", "-fc30dp_1,rank"),
+)
+_SOCIAL_CONTACT_TYPES = ("tiktok", "youtube", "pinterest", "twitter")
+
+
+def _social_queries(now: datetime, settings=None) -> list[dict[str, Any]]:
+    """TikTok first (the signal that scores well), then each documented filter.
+
+    The three documented networks rotate so the second pull of the week is not
+    the same head of the list. TikTok stays first so it still fills the cap.
+    """
+    pct = _int(settings, "social_surge.min_growth_pct")
+    supported = list(SOCIAL_GROWTH_SIGNALS[1:])
+    start = now.toordinal() % len(supported)
+    ordered = (SOCIAL_GROWTH_SIGNALS[0], *(supported[start:] + supported[:start]))
+    queries = []
+    for _kind, filt, sort in ordered:
+        extra: dict[str, Any] = {"sort": sort}
+        if filt:
+            extra[filt] = pct
+        queries.append(extra)
+    return queries
 
 
 def _social_surge(now: datetime, settings=None) -> dict[str, Any]:
-    return {
-        "f:tiktokfollowers30dpmin": _int(settings, "social_surge.min_growth_pct"),
-        "sort": "-fc30dp_10,rank",
-    }
+    return _social_queries(now, settings)[0]
+
+
+def _follower_growth_pct(contact: dict[str, Any]) -> Optional[float]:
+    try:
+        followers = float(contact.get("followers"))
+        delta = float(contact.get("followers_30d"))
+    except (TypeError, ValueError):
+        return None
+    base = followers - delta
+    if base <= 0:
+        return 100.0 if delta > 0 else 0.0
+    return delta / base * 100.0
+
+
+def _social_grew(store: dict[str, Any], now: datetime,
+                 settings: Optional[dict[str, Any]] = None) -> bool:
+    """Keep a store with measured 30-day growth at or above the setting.
+
+    Rows with no follower counts are kept: a documented server filter already
+    applied the threshold, and the list payload sometimes omits the counts.
+    """
+    minimum = _int(settings, "social_surge.min_growth_pct")
+    measured = False
+    for item in store.get("contact_info") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").lower() not in _SOCIAL_CONTACT_TYPES:
+            continue
+        pct = _follower_growth_pct(item)
+        if pct is None:
+            continue
+        measured = True
+        if pct >= minimum:
+            return True
+    return not measured
+
+
+# Documented sorts. Revenue stays in the rotation; the others change which
+# stores sit in the first pages once the top of -er,rank has all been seen.
+BASELINE_SORTS = ("-er,rank", "-mas,rank", "-prank,rank")
+
+
+def baseline_sort_for(now: datetime) -> str:
+    return BASELINE_SORTS[now.toordinal() % len(BASELINE_SORTS)]
 
 
 def _icp_baseline(now: datetime, settings=None) -> dict[str, Any]:
-    return {"sort": "-er,rank"}
+    return {"sort": baseline_sort_for(now)}
 
 
-# StoreLeads stops a query after about 11 pages (550 stores), so the baseline
-# always re-read the same top-revenue stores and ran dry once they were all
-# contacted. Splitting the revenue band into narrow slices gives every slice its
-# own 550-store window. Slices rotate by day so each morning starts somewhere new.
+# List Domains documents cursor pagination, not page numbers. The page parameter
+# stops at about 11 pages (550 stores at page_size 50). Slices still matter:
+# each revenue band is its own walk, and the sort rotates so a dry head of
+# -er,rank is not the only window we ever see. Cursor walking happens in
+# outbound_pipeline, so a slice can continue past that 550.
 BASELINE_SLICES = 12
 
 
@@ -300,46 +529,55 @@ def baseline_slices_for(now: datetime, settings: Optional[dict[str, Any]] = None
     slices = revenue_slices(settings)
     start = now.toordinal() % len(slices) if slices else 0
     ordered = slices[start:] + slices[:start]
-    return [{"f:ermin": a, "f:ermax": b, "sort": "-er,rank"} for a, b in ordered]
+    sort = baseline_sort_for(now)
+    return [{"f:ermin": a, "f:ermax": b, "sort": sort} for a, b in ordered]
 
 
+# Weekdays are Mon=0 .. Fri=4. Triggers start Tuesday, after the Monday refresh.
+# plan_upgrade is the one query that does not change between days, so it runs
+# once. The others run twice, on non-consecutive days, with a rotated query.
 RECIPES: tuple[Recipe, ...] = (
     Recipe(
         key="new_growth_app",
         label="Just installed a growth or CRO app",
         reason="They added a growth or conversion tool in the last two weeks",
         tier="A", cadence="weekly", max_per_run=40, build=_new_growth_app,
-        client_filter=_installed_recently,
+        client_filter=_installed_recently, weekdays=(1, 3), expand=_growth_queries,
     ),
     Recipe(
         key="churned_tool",
         label="Just dropped a growth tool",
         reason="They removed a growth tool recently, so the problem is still open",
         tier="A", cadence="weekly", max_per_run=30, build=_churned_tool,
+        client_filter=_churn_keeps, weekdays=(1, 4), expand=_churn_queries,
     ),
     Recipe(
         key="plan_upgrade",
         label="Upgraded to Shopify Plus",
         reason="They upgraded their store plan recently, which usually means new budget",
         tier="B", cadence="weekly", max_per_run=30, build=_plan_upgrade,
+        weekdays=(2,),
     ),
     Recipe(
         key="replatformed",
         label="Recently replatformed",
         reason="They moved platforms recently, so vendors are being chosen right now",
         tier="B", cadence="weekly", max_per_run=25, build=_replatformed,
+        weekdays=(2, 4),
     ),
     Recipe(
         key="social_surge",
         label="Social following spiking",
         reason="Their social following jumped in the last month",
         tier="B", cadence="weekly", max_per_run=25, build=_social_surge,
+        client_filter=_social_grew, weekdays=(1, 3), expand=_social_queries,
     ),
     Recipe(
         key="icp_baseline",
         label="Core ICP (volume filler)",
         reason="They fit our ideal customer profile",
         tier="C", cadence="daily", max_per_run=25, build=_icp_baseline,
+        weekdays=(0, 1, 2, 3, 4),
     ),
 )
 
@@ -350,18 +588,25 @@ def recipe(key: str) -> Optional[Recipe]:
     return _BY_KEY.get(key)
 
 
+_WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri")
+
+
+def weekday_label(item: Recipe) -> str:
+    """Operator-facing schedule, e.g. 'Tue, Thu'."""
+    return ", ".join(_WEEKDAY_NAMES[day] for day in item.weekdays if 0 <= day < 5)
+
+
 def recipes_for_day(weekday: int, settings: Optional[dict[str, Any]] = None) -> list[Recipe]:
-    """Which recipes run on a given weekday (Mon=0). StoreLeads refreshes weekly
-    on Monday, so triggers are pulled Tue/Wed once the new rows have landed;
-    the baseline runs every weekday to keep volume steady. Recipes switched off
-    in settings never run."""
-    if weekday >= 5:            # weekends: no sending, so no pulling
+    """Which recipes run on a given weekday (Mon=0).
+
+    StoreLeads refreshes weekly on Monday, so nothing but the baseline runs that
+    day. Triggers are spread Tue-Fri. Each recipe's weekdays tuple is the same
+    list the recipe table is seeded with. Recipes switched off in settings never
+    run. Weekends: no sending, so no pulling.
+    """
+    if weekday >= 5:
         return []
-    live = [r for r in RECIPES if r.enabled(settings)]
-    out = [r for r in live if r.cadence == "daily"]
-    if weekday in (1, 2):       # Tuesday, Wednesday
-        out = [r for r in live if r.cadence == "weekly"] + out
-    return out
+    return [r for r in RECIPES if r.enabled(settings) and weekday in r.weekdays]
 
 
 def daily_plan(now: Optional[datetime] = None,

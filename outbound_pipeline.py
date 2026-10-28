@@ -16,6 +16,7 @@ STORELEADS_API_KEY and CLAY_WEBHOOK_URL are set on Render.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import time
@@ -29,6 +30,11 @@ logger = logging.getLogger(__name__)
 
 STORELEADS_BASE_URL = "https://storeleads.app/json/api/v1/all"
 STORELEADS_DOMAIN_PATH = "/domain"
+# List Domains documents cursor, and page_size up to 5000. page= stops around
+# 11 pages (550 stores at the old page_size of 50). 100-row cursor pages walk
+# past that window without a 40-request loop.
+STORELEADS_PAGE_SIZE = 100
+STORELEADS_CURSOR_PAGES = 15
 
 # ---- ICP (mirrors the coded target + docs/outbound/03) -----------------------
 ICP_MIN_YEARLY_SALES_CENTS = 1_000_000_00      # ~$1M/yr floor
@@ -437,41 +443,92 @@ def _retry_after_seconds(resp: "requests.Response") -> Optional[float]:
         return None
 
 
-def fetch_storeleads_page(
+# Ask for the whole apps and contact_info objects. Naming a nested field
+# (apps.removed_at) can limit the object to that field and drop the categories
+# the scorer reads. last_platform is separate and is what the replatform recipe
+# is now filtering on.
+_STORELEADS_FIELDS = ",".join((
+    "name", "merchant_name", "platform", "country_code",
+    "estimated_sales_yearly", "categories", "tags", "contact_info", "apps",
+    # Richer fields the signal scorer reads (docs/outbound/08).
+    "technologies", "monthly_app_spend", "last_plan_change_at", "last_platform",
+    "plan", "created_at", "features", "employee_count",
+))
+
+
+@dataclass
+class StoreLeadsPage:
+    """One List Domains response. next_cursor is empty at the end of the results."""
+
+    domains: list[dict[str, Any]] = field(default_factory=list)
+    next_cursor: Optional[str] = None
+
+
+def build_storeleads_query(
+    *,
+    page: int = 0,
+    page_size: int = STORELEADS_PAGE_SIZE,
+    cursor: Optional[str] = None,
+    extra_params: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Query string for List Domains.
+
+    Cursor is the documented paginator. page is only sent for a legacy offset
+    above 0, which StoreLeads stops honoring after about 11 pages. The first
+    request omits both and reads next_cursor from the response.
+    """
+    params: dict[str, Any] = {
+        "f:p": "shopify",
+        "page_size": page_size,
+        "sort": "-rank",
+        "fields": _STORELEADS_FIELDS,
+    }
+    if cursor:
+        params["cursor"] = cursor
+    elif page:
+        params["page"] = page
+    if extra_params:
+        # Recipe filters win over the defaults (e.g. a recipe's own sort order).
+        params.update({
+            key: value for key, value in extra_params.items()
+            if value is not None and not str(key).startswith("_")
+        })
+    return params
+
+
+def _domains_from_payload(payload: Any) -> StoreLeadsPage:
+    if isinstance(payload, dict):
+        domains = payload.get("domains") or payload.get("results") or []
+        raw_cursor = payload.get("next_cursor") or ""
+        cursor = str(raw_cursor).strip() or None
+        return StoreLeadsPage(list(domains) if isinstance(domains, list) else [], cursor)
+    if isinstance(payload, list):
+        return StoreLeadsPage(payload, None)
+    return StoreLeadsPage()
+
+
+def fetch_storeleads_result(
     api_key: str,
     *,
     page: int = 0,
-    page_size: int = 50,
+    page_size: int = STORELEADS_PAGE_SIZE,
     timeout: int = 30,
     max_retries: int = 4,
+    cursor: Optional[str] = None,
     extra_params: Optional[dict[str, Any]] = None,
-) -> list[dict[str, Any]]:
-    """Fetch one page of Shopify stores from StoreLeads, newest-ranked first.
+) -> StoreLeadsPage:
+    """Fetch one List Domains page, including the cursor for the next page.
 
-    extra_params carries a recipe's server-side filters (see outbound_recipes),
-    which is what turns a static list into a timed trigger. The authoritative ICP
-    filtering still happens client-side in store_matches_icp, so a StoreLeads
-    filter quirk can never widen our target.
+    extra_params carries a recipe's server-side filters (see outbound_recipes).
+    The authoritative ICP filtering still happens client-side in store_matches_icp,
+    so a StoreLeads filter quirk can never widen our target.
 
     Retries politely on 429 (rate limit), honoring Retry-After when present, with
     exponential backoff otherwise.
     """
-    params = {
-        "f:p": "shopify",
-        "page": page,
-        "page_size": page_size,
-        "sort": "-rank",
-        "fields": ",".join((
-            "name", "merchant_name", "platform", "country_code",
-            "estimated_sales_yearly", "categories", "tags", "contact_info", "apps",
-            # Richer fields the signal scorer reads (docs/outbound/08).
-            "technologies", "monthly_app_spend", "last_plan_change_at",
-            "plan", "created_at", "features", "employee_count",
-        )),
-    }
-    if extra_params:
-        # Recipe filters win over the defaults (e.g. a recipe's own sort order).
-        params.update({k: v for k, v in extra_params.items() if v is not None})
+    params = build_storeleads_query(
+        page=page, page_size=page_size, cursor=cursor, extra_params=extra_params,
+    )
     for attempt in range(max_retries + 1):
         resp = requests.get(
             f"{STORELEADS_BASE_URL}{STORELEADS_DOMAIN_PATH}",
@@ -481,18 +538,29 @@ def fetch_storeleads_page(
         )
         if resp.status_code == 429 and attempt < max_retries:
             wait = _retry_after_seconds(resp) or (2 ** attempt)
-            logger.warning("[outbound] StoreLeads rate-limited (page %s); waiting %ss", page, wait)
+            logger.warning("[outbound] StoreLeads rate-limited; waiting %ss", wait)
             time.sleep(min(wait, 30))
             continue
         resp.raise_for_status()
-        payload = resp.json()
-        # StoreLeads returns the store array under "domains" (list endpoint).
-        if isinstance(payload, dict):
-            return payload.get("domains") or payload.get("results") or []
-        if isinstance(payload, list):
-            return payload
-        return []
-    return []
+        return _domains_from_payload(resp.json())
+    return StoreLeadsPage()
+
+
+def fetch_storeleads_page(
+    api_key: str,
+    *,
+    page: int = 0,
+    page_size: int = 50,
+    timeout: int = 30,
+    max_retries: int = 4,
+    extra_params: Optional[dict[str, Any]] = None,
+    cursor: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Fetch one page of stores. Prefer fetch_storeleads_result for the cursor."""
+    return fetch_storeleads_result(
+        api_key, page=page, page_size=page_size, timeout=timeout,
+        max_retries=max_retries, cursor=cursor, extra_params=extra_params,
+    ).domains
 
 
 def push_to_clay(webhook_url: str, leads: list[dict[str, Any]], *, timeout: int = 30) -> dict[str, Any]:
@@ -527,13 +595,15 @@ def run_storeleads_to_clay(
     clay_webhook_url: str,
     processed_domains: set[str],
     max_new: int = 100,
-    max_pages: int = 40,
+    max_pages: int = STORELEADS_CURSOR_PAGES,
     dry_run: bool = False,
     throttle_seconds: float = 1.5,
     recipe: Optional[Any] = None,
     now: Optional[datetime] = None,
     settings: Optional[dict[str, Any]] = None,
+    extra_params: Optional[dict[str, Any]] = None,
     fetch_page: Optional[Callable[..., list[dict[str, Any]]]] = None,
+    fetch_result: Optional[Callable[..., StoreLeadsPage]] = None,
     push: Optional[Callable[..., dict[str, Any]]] = None,
     amazon_check: Optional[Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = None,
 ) -> PipelineResult:
@@ -545,8 +615,12 @@ def run_storeleads_to_clay(
     rate limit. If StoreLeads still cuts us off, returns the brands gathered so
     far and flags the result partial, instead of failing the whole pull.
     """
-    fetch_page = fetch_page or fetch_storeleads_page
     push = push or push_to_clay
+    # Injected page fetchers (tests) stay on offset pages. Live pulls follow
+    # next_cursor, which is what gets past the ~550 store offset cap.
+    use_cursor = fetch_page is None
+    if use_cursor:
+        fetch_result = fetch_result or fetch_storeleads_result
 
     result = PipelineResult(dry_run=dry_run or not clay_webhook_url)
     result.recipe = getattr(recipe, "key", "") if recipe else ""
@@ -554,15 +628,38 @@ def run_storeleads_to_clay(
 
     # A recipe supplies the server-side filters that make this pull a timed
     # trigger (see outbound_recipes); without one we pull the broad ICP list.
-    extra = recipe.params(now, settings) if recipe is not None else None
+    # extra_params wins when a caller is walking one query of a multi-query recipe.
+    if extra_params is not None:
+        extra = extra_params
+    elif recipe is not None:
+        extra = recipe.params(now, settings)
+    else:
+        extra = None
 
+    cursor: Optional[str] = None
     for page in range(max_pages):
         if result.fresh >= max_new:
             break
         if page > 0 and throttle_seconds:
             time.sleep(throttle_seconds)
         try:
-            stores = fetch_page(api_key, page=page, extra_params=extra)
+            if use_cursor:
+                assert fetch_result is not None
+                fetched = fetch_result(
+                    api_key, cursor=cursor, page_size=STORELEADS_PAGE_SIZE, extra_params=extra,
+                )
+                if isinstance(fetched, StoreLeadsPage):
+                    stores = fetched.domains
+                    cursor = fetched.next_cursor
+                elif isinstance(fetched, tuple) and len(fetched) == 2:
+                    stores, cursor = fetched
+                    cursor = str(cursor).strip() or None if cursor else None
+                else:
+                    stores, cursor = list(fetched or []), None
+            else:
+                assert fetch_page is not None
+                stores = fetch_page(api_key, page=page, extra_params=extra)
+                cursor = None
         except Exception as exc:  # noqa: BLE001 — return partial instead of failing
             logger.warning("[outbound] StoreLeads page %s failed, returning %s brands gathered: %s",
                            page, len(result.leads), exc)
@@ -610,6 +707,8 @@ def run_storeleads_to_clay(
             result.fresh += 1
             if result.fresh >= max_new:
                 break
+        if use_cursor and not cursor:
+            break
 
     # Rank hottest first so Tier A brands lead the CSV / the push.
     result.leads.sort(key=lambda l: l.get("score", 0), reverse=True)
@@ -624,6 +723,98 @@ def run_storeleads_to_clay(
         result.skipped_already_contacted, result.dry_run,
     )
     return result
+
+
+def _absorb_pull(combined: PipelineResult, part: PipelineResult, seen: set[str]) -> None:
+    """Fold one query's result into a multi-query recipe run."""
+    combined.scanned += part.scanned
+    combined.matched_icp += part.matched_icp
+    combined.skipped_already_contacted += part.skipped_already_contacted
+    combined.partial = combined.partial or part.partial
+    for lead in part.leads:
+        domain = str(lead.get("domain") or "")
+        if not domain or domain in seen:
+            continue
+        seen.add(domain)
+        combined.leads.append(lead)
+    combined.fresh = len(combined.leads)
+    combined.leads.sort(key=lambda item: item.get("score", 0), reverse=True)
+
+
+def run_recipe_pull(
+    *,
+    api_key: str,
+    clay_webhook_url: str,
+    processed_domains: set[str],
+    max_new: int = 100,
+    max_pages: int = STORELEADS_CURSOR_PAGES,
+    dry_run: bool = False,
+    throttle_seconds: float = 1.5,
+    recipe: Optional[Any] = None,
+    now: Optional[datetime] = None,
+    settings: Optional[dict[str, Any]] = None,
+    fetch_page: Optional[Callable[..., list[dict[str, Any]]]] = None,
+    fetch_result: Optional[Callable[..., StoreLeadsPage]] = None,
+    push: Optional[Callable[..., dict[str, Any]]] = None,
+    amazon_check: Optional[Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = None,
+) -> PipelineResult:
+    """Run every query a recipe expands to, then one Clay push.
+
+    Install and uninstall filters take a single app id, and social growth is one
+    network per call. Each call is a separate List Domains request. Parts are
+    dry runs; this function pushes the combined list once.
+    """
+    push = push or push_to_clay
+    if recipe is None:
+        return run_storeleads_to_clay(
+            api_key=api_key, clay_webhook_url=clay_webhook_url,
+            processed_domains=processed_domains, max_new=max_new, max_pages=max_pages,
+            dry_run=dry_run, throttle_seconds=throttle_seconds, now=now, settings=settings,
+            fetch_page=fetch_page, fetch_result=fetch_result, push=push,
+            amazon_check=amazon_check,
+        )
+
+    sets = recipe.param_sets(now, settings)
+    combined = PipelineResult(dry_run=dry_run or not clay_webhook_url, recipe=recipe.key)
+    seen = set(processed_domains)
+    for params in sets:
+        if combined.fresh >= max_new:
+            break
+        part = run_storeleads_to_clay(
+            api_key=api_key, clay_webhook_url="", processed_domains=processed_domains,
+            max_new=max_new - combined.fresh, max_pages=max_pages, dry_run=True,
+            throttle_seconds=throttle_seconds, recipe=recipe, now=now, settings=settings,
+            extra_params=params, fetch_page=fetch_page, fetch_result=fetch_result,
+            push=push, amazon_check=amazon_check,
+        )
+        _absorb_pull(combined, part, seen)
+
+    if getattr(recipe, "key", "") == "churned_tool" and combined.scanned == 0 and sets:
+        # The uninstall filter returned an empty list and no error. Scan the ICP
+        # and keep stores whose apps[].removed_at is inside the window.
+        logger.warning(
+            "[outbound] churned_tool uninstall filter returned no domains; "
+            "filtering apps[].removed_at ourselves"
+        )
+        import outbound_recipes as recipes
+
+        fallback = dict(sets[0])
+        fallback.pop("f:app_uninstalled_at", None)
+        fallback.pop("f:app_uninstalled_at:min", None)
+        variant = dataclasses.replace(recipe, client_filter=recipes.churn_fallback_keeps)
+        part = run_storeleads_to_clay(
+            api_key=api_key, clay_webhook_url="", processed_domains=processed_domains,
+            max_new=max(0, max_new - combined.fresh), max_pages=min(max_pages, 8),
+            dry_run=True, throttle_seconds=throttle_seconds, recipe=variant, now=now,
+            settings=settings, extra_params=fallback, fetch_page=fetch_page,
+            fetch_result=fetch_result, push=push, amazon_check=amazon_check,
+        )
+        _absorb_pull(combined, part, seen)
+
+    if not combined.dry_run and combined.leads:
+        outcome = push(clay_webhook_url, combined.leads)
+        combined.pushed = int(outcome.get("pushed", 0) or 0)
+    return combined
 
 
 def load_config_from_env() -> tuple[str, str]:

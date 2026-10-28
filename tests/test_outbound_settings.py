@@ -89,15 +89,18 @@ class TunablesChangeBehaviourTests(unittest.TestCase):
         self.assertTrue(p["f:last_platform_change_at:min"].startswith("2026-07-19"))
 
     def test_growth_percent_setting_reaches_the_query(self):
-        p = rc.recipe("social_surge").params(WED, {"social_surge.min_growth_pct": 60})
-        self.assertEqual(p["f:tiktokfollowers30dpmin"], 60)
+        sets = rc.recipe("social_surge").param_sets(WED, {"social_surge.min_growth_pct": 60})
+        youtube = next(item for item in sets if "f:youtubefollowers30dpmin" in item)
+        self.assertEqual(youtube["f:youtubefollowers30dpmin"], 60)
+        self.assertTrue(all("f:tiktokfollowers30dpmin" not in item for item in sets))
 
     def test_cap_override(self):
         self.assertEqual(rc.recipe("icp_baseline").cap({"icp_baseline.max_per_run": 99}), 99)
 
     def test_disabling_a_recipe_removes_it_from_the_day(self):
-        keys = [r.key for r in rc.recipes_for_day(WED.weekday(),
-                                                  {"new_growth_app.enabled": "false"})]
+        # Tuesday is a day the install recipe actually runs.
+        self.assertIn("new_growth_app", [r.key for r in rc.recipes_for_day(1)])
+        keys = [r.key for r in rc.recipes_for_day(1, {"new_growth_app.enabled": "false"})]
         self.assertNotIn("new_growth_app", keys)
 
     def test_reason_follows_the_tuned_window(self):
@@ -133,7 +136,10 @@ class TunablesChangeBehaviourTests(unittest.TestCase):
         self.assertIn("30 days", res.leads[0]["reason"])
 
     def test_defaults_still_apply_when_settings_absent(self):
-        self.assertEqual(rc.recipe("icp_baseline").cap(None), 25)
+        # The settings default is what a pull uses when nothing has been saved.
+        # Recipe.max_per_run is only the last-resort fallback if that default is 0.
+        self.assertEqual(rc.recipe("icp_baseline").cap(None),
+                         rc.DEFAULT_SETTINGS["icp_baseline.max_per_run"])
         self.assertTrue(rc.recipe("icp_baseline").enabled(None))
 
 
