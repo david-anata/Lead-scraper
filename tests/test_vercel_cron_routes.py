@@ -56,27 +56,22 @@ def test_vercel_crons_target_registered_job_routes() -> None:
 
 
 def test_outbound_enrich_crons_are_single_hour_and_match_the_handler() -> None:
-    """The combined hour list stopped being invoked. Each slot is its own entry."""
+    """One cron per path, same shape as Abby. /run is the temporary recovery."""
 
     config = _cron_config()
-    enrich = [
-        item for item in config["crons"]
-        if item["path"] == "/api/jobs/outbound-enrich/run"
-    ]
-    assert [item["schedule"] for item in enrich] == [
-        "15 14 * * 1-5",
-        "15 15 * * 1-5",
-        "15 16 * * 1-5",
-        "15 17 * * 1-5",
-    ]
-    assert all("," not in item["schedule"] for item in enrich)
-    missed = [
-        item for item in config["crons"]
-        if item["path"] == "/api/jobs/outbound-enrich/missed-run"
-    ]
-    assert [item["schedule"] for item in missed] == ["30 15 * * 1-5"]
-    # 14 defined jobs, plus the three extra enrich hours and the watchdog.
-    assert len(config["crons"]) == 18
+    paths = [item["path"] for item in config["crons"]]
+    assert len(paths) == len(set(paths))
+    by_path = {item["path"]: item for item in config["crons"]}
+    assert by_path["/api/jobs/outbound-enrich/at-1415"]["schedule"] == "15 14 * * 1-5"
+    assert by_path["/api/jobs/outbound-enrich/at-1515"]["schedule"] == "15 15 * * 1-5"
+    assert by_path["/api/jobs/outbound-enrich/at-1615"]["schedule"] == "15 16 * * 1-5"
+    assert by_path["/api/jobs/outbound-enrich/at-1715"]["schedule"] == "15 17 * * 1-5"
+    recovery = by_path["/api/jobs/outbound-enrich/run"]
+    assert recovery["schedule"] == "45 18 * * 1-5"
+    assert recovery["//"].startswith("TEMP")
+    assert by_path["/api/jobs/outbound-enrich/missed-run"]["schedule"] == "30 15 * * 1-5"
+    assert by_path["/api/jobs/abby/run"]["schedule"] == "*/5 * * * *"
+    assert len(config["crons"]) == 19
 
 
 def test_known_vercel_cron_paths_have_no_handler() -> None:
@@ -94,5 +89,6 @@ def test_known_vercel_cron_paths_have_no_handler() -> None:
     ):
         assert path not in registered
     assert "/api/jobs/outbound-enrich/run" in registered
+    assert "/api/jobs/outbound-enrich/at-1415" in registered
     assert "/api/jobs/outbound-enrich/missed-run" in registered
     assert "/api/jobs/gmail-sync/run" in registered
