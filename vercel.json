@@ -99,8 +99,7 @@
     },
     {
       "path": "/api/jobs/outbound-enrich/run",
-      "schedule": "45 18 * * 1-5",
-      "//": "TEMP: recovery run at 12:45 PM MT. Remove after it fires."
+      "schedule": "30 20 * * 1-5"
     },
     {
       "path": "/api/jobs/outbound-enrich/missed-run",
