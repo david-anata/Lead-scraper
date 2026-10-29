@@ -360,7 +360,7 @@ def test_citation_config_falls_back_to_anthropic(monkeypatch, tmp_path) -> None:
 
     assert config.provider == "anthropic"
     assert config.api_key == "anthropic-key"
-    assert config.model == "claude-sonnet-4-6"
+    assert config.model == "claude-haiku-4-5-20251001"
 
 
 def test_anthropic_citation_records_search_and_citation(monkeypatch, tmp_path) -> None:

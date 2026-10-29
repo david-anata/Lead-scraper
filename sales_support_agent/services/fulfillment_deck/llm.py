@@ -298,7 +298,7 @@ def extract_prospect_profile(
     profile: Optional[ProspectProfile] = None
     if key:
         try:
-            import anthropic
+            from sales_support_agent.services.llm_client import llm_client
 
             blocks = _attachment_blocks(attachments)
             if blocks:
@@ -307,7 +307,7 @@ def extract_prospect_profile(
                 # Back-compat: plain string content when there's nothing to attach.
                 content = context
 
-            client = anthropic.Anthropic(api_key=key)
+            client = llm_client(caller="fulfillment_deck_extract", api_key=key)
             message = client.messages.create(
                 model=model,
                 max_tokens=4000,
@@ -471,7 +471,7 @@ def generate_narrative(
 
     if key:
         try:
-            import anthropic
+            from sales_support_agent.services.llm_client import llm_client
 
             facts = json.dumps(
                 {
@@ -481,7 +481,7 @@ def generate_narrative(
                 },
                 sort_keys=True,
             )
-            client = anthropic.Anthropic(api_key=key)
+            client = llm_client(caller="fulfillment_deck_narrative", api_key=key)
             message = client.messages.create(
                 model=model,
                 max_tokens=1500,

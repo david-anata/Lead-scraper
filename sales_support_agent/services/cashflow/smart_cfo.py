@@ -310,10 +310,10 @@ def _unready_trust_analysis(packet: Mapping[str, Any], packet_hash: str) -> dict
 
 def _call_anthropic(api_key: str, model: str, packet: Mapping[str, Any]) -> Mapping[str, Any]:
     """Use Anthropic's installed SDK; JSON parsing is validated before display."""
-    import anthropic
+    from sales_support_agent.services.llm_client import llm_client
 
     try:
-        message = anthropic.Anthropic(api_key=api_key).messages.create(
+        message = llm_client(caller="finance_smart_cfo", api_key=api_key).messages.create(
             model=model,
             max_tokens=1600,
             system=_instructions(),

@@ -90,9 +90,9 @@ def generate_cashflow_summary(
     prompt = _build_prompt(weeks, alerts, current_balance_cents)
 
     try:
-        import anthropic
+        from sales_support_agent.services.llm_client import llm_client
 
-        client = anthropic.Anthropic(api_key=key)
+        client = llm_client(caller="finance_summary", api_key=key)
         message = client.messages.create(
             model=model,
             max_tokens=256,

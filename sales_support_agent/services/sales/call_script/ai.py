@@ -10,7 +10,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 MAX_INPUT_CHARS = 400_000
-DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 QUICK_MODEL = "claude-haiku-4-5-20251001"
 
 
@@ -28,7 +28,9 @@ class SampleResult:
 
 
 def ai_enabled() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    from sales_support_agent.services.llm_client import llm_available
+
+    return llm_available()
 
 
 def _model_for(tier: str) -> str:
@@ -64,8 +66,10 @@ def normalize_messages(raw: Any) -> list[dict]:
 
 
 def run_sample(raw_input: Any, *, tier: str = "default", want_json: bool = False) -> SampleResult:
+    from sales_support_agent.services.llm_client import llm_available
+
     key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not key:
+    if not llm_available(api_key=key):
         raise SampleError("Ask Claude is not configured on this agent.", 503)
     messages = normalize_messages(raw_input)
     model = _model_for(tier)
@@ -77,9 +81,9 @@ def run_sample(raw_input: Any, *, tier: str = "default", want_json: bool = False
     if want_json:
         system += " Reply with valid JSON only, no prose and no code fences."
     try:
-        import anthropic
+        from sales_support_agent.services.llm_client import llm_client
 
-        client = anthropic.Anthropic(api_key=key)
+        client = llm_client(caller="call_script", api_key=key)
         msg = client.messages.create(
             model=model,
             max_tokens=4000 if want_json else 2000,

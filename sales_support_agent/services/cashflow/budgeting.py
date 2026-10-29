@@ -943,7 +943,7 @@ def run_budget_review(settings: Any, *, force: bool = False) -> dict[str, Any]:
 def _call_anthropic(
     api_key: str, model: str, packet: Mapping[str, Any]
 ) -> Mapping[str, Any]:
-    import anthropic
+    from sales_support_agent.services.llm_client import llm_client
 
     schema = {
         "type": "object",
@@ -977,7 +977,7 @@ def _call_anthropic(
         "required": ["summary", "recommendations"],
     }
     try:
-        message = anthropic.Anthropic(api_key=api_key).messages.create(
+        message = llm_client(caller="finance_budget", api_key=api_key).messages.create(
             model=model,
             max_tokens=1800,
             system=(

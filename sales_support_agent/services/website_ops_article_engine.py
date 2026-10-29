@@ -251,17 +251,24 @@ def _request_article(*, settings: Any, prompt: str) -> dict[str, Any]:
     if not config.api_key or config.provider not in {"openai", "anthropic"}:
         raise RuntimeError("Article generation needs an OpenAI or Anthropic API key.")
     if config.provider == "anthropic":
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": config.api_key,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-            },
-            json={
+        from sales_support_agent.services.llm_client import post_messages
+
+        class _Payload:
+            def __init__(self, data: dict) -> None:
+                self._data = data
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return self._data
+
+        response = _Payload(post_messages(
+            caller="article_engine",
+            api_key=config.api_key,
+            timeout=150,
+            payload={
                 "model": config.model,
-                # A 900+ word article plus structured citations can exceed 5,000
-                # output tokens. Truncation produces terminally malformed JSON.
                 "max_tokens": 8000,
                 "messages": [{"role": "user", "content": prompt}],
                 "tools": [{
@@ -271,8 +278,7 @@ def _request_article(*, settings: Any, prompt: str) -> dict[str, Any]:
                     "allowed_domains": OFFICIAL_RESEARCH_DOMAINS,
                 }],
             },
-            timeout=150,
-        )
+        ))
     else:
         response = requests.post(
             "https://api.openai.com/v1/responses",

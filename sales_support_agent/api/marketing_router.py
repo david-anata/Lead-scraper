@@ -923,9 +923,9 @@ def _compose_brand_read(identity: dict[str, str], kind: str) -> str:
         "store_domain": identity.get("domain", "").strip(),
     }
     try:
-        import anthropic
+        from sales_support_agent.services.llm_client import llm_client
 
-        client = anthropic.Anthropic()
+        client = llm_client(caller="marketing_intake")
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=220,
