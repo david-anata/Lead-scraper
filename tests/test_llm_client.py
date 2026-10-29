@@ -115,6 +115,81 @@ def test_missing_oidc_uses_the_direct_key(fake_sdk, monkeypatch):
     assert len(fake_sdk.calls) == 1
 
 
+def test_header_without_env_var_uses_gateway(fake_sdk, monkeypatch):
+    import types
+
+    monkeypatch.setenv("VERCEL", "1")
+    headers = types.ModuleType("vercel.headers")
+    headers.get = lambda name: "header-token" if str(name).lower() == "x-vercel-oidc-token" else ""
+    vercel_mod = types.ModuleType("vercel")
+    vercel_mod.headers = headers
+    monkeypatch.setitem(__import__("sys").modules, "vercel", vercel_mod)
+    monkeypatch.setitem(__import__("sys").modules, "vercel.headers", headers)
+    llm.llm_client(caller="llm_ping").messages.create(
+        model=llm.HAIKU, max_tokens=10, messages=[{"role": "user", "content": "hi"}],
+    )
+    assert fake_sdk.calls[0].api_key == "header-token"
+    assert fake_sdk.calls[0].base_url == llm.GATEWAY_BASE_URL
+    assert fake_sdk.kwargs[0]["extra_headers"]["ai-reporting-tags"] == "caller:llm_ping"
+
+
+def test_request_context_without_env_var_uses_gateway(fake_sdk, monkeypatch):
+    monkeypatch.setenv("VERCEL", "1")
+    token = llm.bind_request_oidc("context-token")
+    try:
+        llm.llm_client(caller="llm_ping").messages.create(
+            model=llm.HAIKU, max_tokens=10, messages=[{"role": "user", "content": "hi"}],
+        )
+    finally:
+        llm.reset_request_oidc(token)
+    assert fake_sdk.calls[0].api_key == "context-token"
+    assert fake_sdk.calls[0].base_url == llm.GATEWAY_BASE_URL
+
+
+def test_background_thread_inherits_oidc_context():
+    seen = []
+    token = llm.bind_request_oidc("threaded-token")
+
+    def read() -> None:
+        seen.append(llm._oidc_token())
+
+    try:
+        thread = llm.start_background_thread(read)
+        thread.join(timeout=2)
+    finally:
+        llm.reset_request_oidc(token)
+    assert seen == ["threaded-token"]
+
+
+def test_llm_ping_route_requires_internal_api_key(monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from sales_support_agent.api.llm_ping import router
+
+    def fake_ping():
+        return {"route": "gateway", "model": "anthropic/claude-haiku-4.5", "ok": True}
+
+    monkeypatch.setattr("sales_support_agent.api.llm_ping.llm_ping", fake_ping)
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(internal_api_key="internal-test-key")
+    app.include_router(router)
+    client = TestClient(app)
+    assert client.get("/api/admin/llm-ping").status_code == 401
+    response = client.get(
+        "/api/admin/llm-ping",
+        headers={"X-Internal-Api-Key": "internal-test-key"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "route": "gateway",
+        "model": "anthropic/claude-haiku-4.5",
+        "ok": True,
+    }
+
+
 def test_no_credentials_raise(monkeypatch):
     monkeypatch.delenv("VERCEL", raising=False)
     monkeypatch.delenv("VERCEL_OIDC_TOKEN", raising=False)

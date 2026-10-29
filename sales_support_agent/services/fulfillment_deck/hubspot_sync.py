@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 import time
 from typing import Optional
 
@@ -371,7 +370,9 @@ def _monthly_mrr(fulfillment_quote: dict) -> float:
 # ---------------------------------------------------------------------------
 
 def _bg(fn, *args, **kwargs) -> None:
-    threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True).start()
+    from sales_support_agent.services.llm_client import start_background_thread
+
+    start_background_thread(fn, args=args, kwargs=kwargs, daemon=True)
 
 
 # ---------------------------------------------------------------------------

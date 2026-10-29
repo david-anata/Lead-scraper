@@ -770,8 +770,9 @@ def export_pipeline_csv() -> HTMLResponse:
 
 def _notify_first_view(run_id: int) -> None:
     """Send a Resend email to the rep when a prospect opens their rate sheet for the first time."""
-    import threading
-    threading.Thread(target=_do_notify_first_view, args=(run_id,), daemon=True).start()
+    from sales_support_agent.services.llm_client import start_background_thread
+
+    start_background_thread(_do_notify_first_view, args=(run_id,), daemon=True)
 
 
 def _do_notify_first_view(run_id: int) -> None:
