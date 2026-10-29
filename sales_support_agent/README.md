@@ -114,6 +114,13 @@ about 840 Prospeo credits when each company yields about 1.8 verified emails
 (one search credit plus one credit per email). See the docstring on
 `sales_support_agent/api/outbound_enrich_job.py` before raising the caps.
 
+Abby runs every 5 minutes and, after she finishes replies, calls the enrich
+job directly. The dedicated enrich cron paths stay registered. The first Abby
+tick runs enrich when no attempt has succeeded today or in the last 6 hours,
+including right after deploy and outside 8:15-11:15 AM America/Denver. Later
+ticks run enrich at most once per Denver hour on weekdays. The run still
+requires `OUTBOUND_AUTO_ENRICH=true`. Search logs for `[enrich-via-abby]`.
+
 Bounce rate uses the existing Instantly webhook. Subscribe `email_sent`,
 `email_bounced`, and `lead_unsubscribed` on that webhook. Those three are stored
 even when they are absent from `INSTANTLY_WEBHOOK_ALLOWED_EVENT_TYPES`. Apply
