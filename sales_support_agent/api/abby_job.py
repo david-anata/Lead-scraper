@@ -1,4 +1,10 @@
-"""Scheduler entry point for Abby (see abby_runner). Vercel Cron, every 5 minutes."""
+"""Scheduler entry point for Abby (see abby_runner). Vercel Cron, every 5 minutes.
+
+After Abby finishes, the same tick may run outbound enrich in-process.
+Enrich can take several minutes (its own budget is 540s, inside the 800s
+function limit). It runs only after Abby's work so a long or failed enrich
+cannot drop replies Abby already handled. See maybe_run_enrich_from_abby.
+"""
 
 from __future__ import annotations
 
@@ -63,7 +69,22 @@ def run_abby() -> dict[str, Any]:
         return {"error": type(exc).__name__}
 
 
+def _run_enrich_after_abby() -> dict[str, Any]:
+    """Call enrich directly. Never raises into Abby's response."""
+
+    try:
+        from sales_support_agent.api.outbound_enrich_job import maybe_run_enrich_from_abby
+
+        result = maybe_run_enrich_from_abby()
+        if isinstance(result, dict):
+            return result
+    except Exception:  # noqa: BLE001
+        logger.exception("[enrich-via-abby] hook failed")
+    return {"ran": False, "reason": "hook failed", "pushed": 0}
+
+
 @router.api_route("/run", methods=["GET", "POST"])
 def run_scheduled_abby(request: Request) -> dict:
     _require_scheduler_auth(request)
-    return {"status": "ok", "details": run_abby()}
+    details = run_abby()
+    return {"status": "ok", "details": details, "enrich_via_abby": _run_enrich_after_abby()}
