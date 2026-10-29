@@ -370,11 +370,11 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
                 detail = "shadow: " + decision.reply
                 post_slack(f"[Abby draft, not sent] {lead} ({decision.category})\n\n{decision.reply}")
         if decision.action == "block":
+            dom = decision.block_domain
+            blocked_value = lead if (not dom or dom in FREEMAIL) else dom
             if run_mode == "live":
-                dom = decision.block_domain
-                blocked_value = lead if (not dom or dom in FREEMAIL) else dom
                 client.block(blocked_value)
-                _remember_opt_out(engine, blocked_value)
+            _remember_opt_out(engine, blocked_value, post_slack)
             out["blocked"] += 1
         if decision.interest is not None and run_mode == "live" and decision.action in {"reply", "block", "ignore", "hold"}:
             client.set_interest(lead, decision.interest, campaign_id)
@@ -391,14 +391,23 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
     return out
 
 
-def _remember_opt_out(engine, value: str) -> None:
-    """Keep Abby's live opt-out on our list as well as Instantly's blocklist."""
+def _remember_opt_out(engine, value: str, post_slack: Optional[Callable[[str], Any]] = None) -> None:
+    """Keep Abby's opt-out on our list as well as Instantly's blocklist.
+
+    Shadow mode records the same row. Only live mode calls Instantly's block API.
+    """
     try:
         import outbound_suppression as suppression
         kind = "email" if "@" in (value or "") else "domain"
         suppression.add(engine, kind=kind, value=value, reason="opt_out", source="abby")
     except Exception:  # noqa: BLE001
         logger.exception("[abby] could not record the opt-out")
+        if post_slack is None:
+            return
+        try:
+            post_slack(f"[abby] opt-out not saved: {value}")
+        except Exception:  # noqa: BLE001
+            logger.exception("[abby] could not post the opt-out failure")
 
 
 def followup_text(first_name: str) -> str:

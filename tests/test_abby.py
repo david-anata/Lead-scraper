@@ -694,3 +694,47 @@ def test_live_opt_out_is_remembered_on_our_suppression_list(engine):
     runner.run(engine, client=c, campaign_id="camp", now=NOW, think=think)
     emails, domains = suppression.lists(engine)
     assert "huppy.com" in domains and "joe@gmail.com" in emails
+
+
+def test_domain_opt_out_stores_the_registrable_domain(engine):
+    import outbound_suppression as suppression
+    c = FakeClient([email(1, lead="ann@shop.petlibro.com")])
+
+    def think(thread, *, lead_email, **k):
+        return abby.Decision("opt_out", "block", block_domain="shop.petlibro.com", interest=-1)
+
+    runner.run(engine, client=c, campaign_id="camp", now=NOW, think=think)
+    _emails, domains = suppression.lists(engine)
+    assert "petlibro.com" in domains
+    assert "shop.petlibro.com" not in domains
+
+
+def test_shadow_opt_out_is_recorded_but_not_blocked_in_instantly(engine, monkeypatch):
+    import outbound_suppression as suppression
+    monkeypatch.setenv("ABBY_MODE", "shadow")
+    c = FakeClient([email(1, lead="ann@huppy.com")])
+
+    def think(thread, *, lead_email, **k):
+        return abby.Decision("opt_out", "block", block_domain="huppy.com", interest=-1)
+
+    runner.run(engine, client=c, campaign_id="camp", now=NOW, think=think)
+    assert c.blocks == []
+    _emails, domains = suppression.lists(engine)
+    assert "huppy.com" in domains
+
+
+def test_opt_out_save_failure_posts_slack(engine, monkeypatch):
+    import outbound_suppression as suppression
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(suppression, "add", boom)
+    posts = []
+    c = FakeClient([email(1)])
+
+    def think(thread, *, lead_email, **k):
+        return abby.Decision("opt_out", "block", block_domain="huppy.com", interest=-1)
+
+    runner.run(engine, client=c, campaign_id="camp", now=NOW, think=think, post_slack=posts.append)
+    assert "[abby] opt-out not saved: huppy.com" in posts
