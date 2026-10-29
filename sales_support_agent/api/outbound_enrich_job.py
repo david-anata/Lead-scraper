@@ -88,6 +88,17 @@ def _enabled() -> bool:
     return (os.getenv("OUTBOUND_AUTO_ENRICH") or "").strip().lower() == "true"
 
 
+def _in_enrich_hours(local: datetime) -> bool:
+    """True from the start hour inclusive until the end hour exclusive.
+
+    Defaults are 7 and 18 America/Denver, so 06:00 and 18:00 are outside.
+    """
+
+    start = _int_env("OUTBOUND_ENRICH_START_HOUR", 7)
+    end = _int_env("OUTBOUND_ENRICH_END_HOUR", 18)
+    return start <= local.hour < end
+
+
 def _start_of_day_utc(now: datetime) -> datetime:
     local_midnight = datetime.combine(now.date(), dtime.min, tzinfo=now.tzinfo)
     return local_midnight.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
@@ -205,6 +216,9 @@ def run_enrich_job(
         return out
     if now.weekday() >= 5:
         out["reason"] = "weekend"
+        return out
+    if not _in_enrich_hours(_as_denver(now)):
+        out["reason"] = "outside enrich hours"
         return out
     key = _oc.load_contact_config()
     if not key:
@@ -408,14 +422,16 @@ def _as_denver(now: datetime) -> datetime:
 def enrich_via_abby_window(now: datetime, *, recent_success: bool) -> Optional[str]:
     """Lease key for this Abby tick, or None when enrich must not start.
 
-    Weekdays use one key per Denver hour, at any minute, so the first tick in
-    that hour runs. That includes the first tick after deploy, outside the old
-    14:15-17:15 UTC cron hours. On Saturday and Sunday, one catch-up key per
-    Denver date runs only when nothing has succeeded today or in the last 6 hours.
+    Weekdays use one key per Denver hour inside the enrich hours (default 7
+    inclusive through 18 exclusive), at any minute, so the first tick in that
+    hour runs. On Saturday and Sunday, one catch-up key per Denver date runs
+    only when nothing has succeeded today or in the last 6 hours.
     """
 
     local = _as_denver(now)
     if local.weekday() < 5:
+        if not _in_enrich_hours(local):
+            return None
         return local.strftime("abby-%Y-%m-%dT%H")
     if not recent_success:
         return local.strftime("abby-catchup-%Y-%m-%d")
