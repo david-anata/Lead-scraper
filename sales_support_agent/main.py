@@ -292,6 +292,9 @@ def create_app() -> FastAPI:
     app.include_router(outbound_jobs_router)
     app.include_router(outbound_enrich_job_router)
     app.include_router(abby_job_router)
+    from sales_support_agent.api.llm_ping import router as llm_ping_router
+
+    app.include_router(llm_ping_router)
     include_building_routers(app)
     from sales_support_agent.api.outbound_router import router as outbound_router
     app.include_router(outbound_router)
@@ -308,6 +311,19 @@ def create_app() -> FastAPI:
     app.add_middleware(WebsiteOpsStorageMiddleware)
     install_access_middleware(app)
     app.add_exception_handler(ToolForbidden, render_forbidden_response)
+
+    @app.middleware("http")
+    async def capture_vercel_oidc(request, call_next):
+        """Keep x-vercel-oidc-token on this request, including work it starts."""
+
+        from sales_support_agent.services.llm_client import bind_request_oidc, reset_request_oidc
+
+        token = bind_request_oidc(request.headers.get("x-vercel-oidc-token", ""))
+        try:
+            return await call_next(request)
+        finally:
+            reset_request_oidc(token)
+
     return app
 
 

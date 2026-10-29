@@ -10,9 +10,11 @@ each caller can keep its own fallback.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
-from typing import Any, Mapping, Optional
+import threading
+from typing import Any, Callable, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,76 @@ class LLMError(RuntimeError):
     """The gateway and the direct Anthropic key could not complete the call."""
 
 
+# Request middleware stores the x-vercel-oidc-token header here. Raw threads
+# must be started with start_background_thread so they copy this context.
+_oidc_var: contextvars.ContextVar[str] = contextvars.ContextVar("vercel_oidc_token", default="")
+_last_route: contextvars.ContextVar[str] = contextvars.ContextVar("llm_route", default="")
+
+
+def bind_request_oidc(value: str) -> contextvars.Token:
+    """Remember the request OIDC header for this context. Returns a reset token."""
+
+    return _oidc_var.set((value or "").strip())
+
+
+def reset_request_oidc(token: contextvars.Token) -> None:
+    _oidc_var.reset(token)
+
+
+def _header_from_vercel() -> str:
+    """Read x-vercel-oidc-token from vercel.headers when that runtime module exists."""
+
+    try:
+        import vercel.headers as vercel_headers
+    except Exception:  # noqa: BLE001
+        return ""
+    getter = getattr(vercel_headers, "get", None)
+    if not callable(getter):
+        return ""
+    for name in ("x-vercel-oidc-token", "X-Vercel-Oidc-Token"):
+        try:
+            value = getter(name)
+        except Exception:  # noqa: BLE001
+            continue
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _oidc_token() -> str:
+    """OIDC token from vercel.headers, then the request context, then the env var."""
+
+    header = _header_from_vercel()
+    if header:
+        return header
+    current = (_oidc_var.get() or "").strip()
+    if current:
+        return current
+    return (os.getenv("VERCEL_OIDC_TOKEN") or "").strip()
+
+
+def start_background_thread(
+    target: Callable[..., Any],
+    args: tuple = (),
+    kwargs: Optional[dict[str, Any]] = None,
+    *,
+    name: Optional[str] = None,
+    daemon: bool = True,
+) -> threading.Thread:
+    """Start a raw thread that keeps the caller's contextvars, including the OIDC token."""
+
+    ctx = contextvars.copy_context()
+    arguments = kwargs or {}
+
+    def runner() -> None:
+        ctx.run(target, *args, **arguments)
+
+    thread = threading.Thread(target=runner, name=name, daemon=daemon)
+    thread.start()
+    return thread
+
+
 def llm_available(*, api_key: Optional[str] = None) -> bool:
     """True when a gateway token or a direct Anthropic key is present."""
 
@@ -44,7 +116,7 @@ def llm_available(*, api_key: Optional[str] = None) -> bool:
         return True
     if (os.getenv("ANTHROPIC_API_KEY") or "").strip():
         return True
-    return bool(os.getenv("VERCEL") and (os.getenv("VERCEL_OIDC_TOKEN") or "").strip())
+    return bool(os.getenv("VERCEL") and _oidc_token())
 
 
 def _direct_key(api_key: Optional[str]) -> str:
@@ -133,31 +205,35 @@ def _invoke_sdk(*, credential: str, gateway: bool, caller: str, kwargs: dict[str
 def create_message(*, caller: str, api_key: Optional[str] = None, **kwargs: Any) -> Any:
     """Send one Messages request. Gateway first on Vercel, then the direct key."""
 
-    oidc = (os.getenv("VERCEL_OIDC_TOKEN") or "").strip()
+    oidc = _oidc_token()
     on_vercel = bool(os.getenv("VERCEL"))
     gateway_error: Optional[BaseException] = None
     if on_vercel and oidc:
         try:
-            return _invoke_sdk(
+            message = _invoke_sdk(
                 credential=oidc,
                 gateway=True,
                 caller=caller,
                 kwargs=dict(kwargs),
             )
+            _last_route.set("gateway")
+            return message
         except Exception as exc:  # noqa: BLE001
             gateway_error = exc
             logger.warning("[llm] gateway failed for %s: %s", caller, type(exc).__name__)
     elif on_vercel:
-        logger.warning("[llm] VERCEL_OIDC_TOKEN missing for %s", caller)
+        logger.warning("[llm] OIDC token missing for %s", caller)
 
     key = _direct_key(api_key)
     try:
-        return _invoke_sdk(
+        message = _invoke_sdk(
             credential=key,
             gateway=False,
             caller=caller,
             kwargs=dict(kwargs),
         )
+        _last_route.set("direct")
+        return message
     except Exception as exc:  # noqa: BLE001
         if gateway_error is not None:
             raise LLMError("AI Gateway and the direct Anthropic key both failed.") from exc
@@ -184,7 +260,7 @@ def post_messages(
     import requests
 
     body = dict(payload)
-    oidc = (os.getenv("VERCEL_OIDC_TOKEN") or "").strip()
+    oidc = _oidc_token()
     on_vercel = bool(os.getenv("VERCEL"))
     gateway_error: Optional[BaseException] = None
     if on_vercel and oidc:
@@ -205,12 +281,13 @@ def post_messages(
             )
             response.raise_for_status()
             data = response.json()
+            _last_route.set("gateway")
             return data if isinstance(data, dict) else {}
         except Exception as exc:  # noqa: BLE001
             gateway_error = exc
             logger.warning("[llm] gateway failed for %s: %s", caller, type(exc).__name__)
     elif on_vercel:
-        logger.warning("[llm] VERCEL_OIDC_TOKEN missing for %s", caller)
+        logger.warning("[llm] OIDC token missing for %s", caller)
 
     key = _direct_key(api_key)
     if key:
@@ -228,6 +305,7 @@ def post_messages(
             )
             response.raise_for_status()
             data = response.json()
+            _last_route.set("direct")
             return data if isinstance(data, dict) else {}
         except Exception as exc:  # noqa: BLE001
             if gateway_error is None:
@@ -236,3 +314,23 @@ def post_messages(
     if gateway_error is not None:
         raise LLMError("AI Gateway failed and ANTHROPIC_API_KEY is not set.") from gateway_error
     raise LLMError("No AI Gateway token and no ANTHROPIC_API_KEY.")
+
+
+def llm_ping() -> dict[str, Any]:
+    """One Haiku call used to see whether this request took the gateway.
+
+    No database writes and no Instantly calls.
+    """
+
+    try:
+        message = create_message(
+            caller="llm_ping",
+            model=HAIKU,
+            max_tokens=16,
+            messages=[{"role": "user", "content": "Reply with the single word ok."}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[llm] ping failed: %s", type(exc).__name__)
+        return {"route": _last_route.get() or "", "model": "", "ok": False}
+    model = str(getattr(message, "model", "") or "")
+    return {"route": _last_route.get() or "", "model": model, "ok": True}

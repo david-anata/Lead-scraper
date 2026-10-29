@@ -7,7 +7,7 @@ import secrets
 import logging
 import hashlib
 from datetime import date, datetime, timedelta
-from threading import Event, Thread
+from threading import Event
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -460,10 +460,11 @@ def install_embedded_website_ops_scheduler(app: FastAPI) -> None:
                     logger.exception("Embedded Website Ops scheduler failed.")
             stop_event.wait(300)
 
-    thread = Thread(target=worker, name="website-ops-scheduler", daemon=True)
+    from sales_support_agent.services.llm_client import start_background_thread
+
+    thread = start_background_thread(worker, name="website-ops-scheduler", daemon=True)
     app.state.website_ops_scheduler_stop = stop_event
     app.state.website_ops_scheduler_thread = thread
-    thread.start()
 
 
 @router.get("/health")
