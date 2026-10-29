@@ -462,6 +462,8 @@ class StoreLeadsPage:
 
     domains: list[dict[str, Any]] = field(default_factory=list)
     next_cursor: Optional[str] = None
+    status: Any = ""
+    error: str = ""
 
 
 def build_storeleads_query(
@@ -542,7 +544,9 @@ def fetch_storeleads_result(
             time.sleep(min(wait, 30))
             continue
         resp.raise_for_status()
-        return _domains_from_payload(resp.json())
+        page = _domains_from_payload(resp.json())
+        page.status = resp.status_code
+        return page
     return StoreLeadsPage()
 
 
@@ -587,6 +591,8 @@ class PipelineResult:
     dry_run: bool = False
     partial: bool = False  # True if StoreLeads cut us off (rate limit) mid-run
     recipe: str = ""       # which pull recipe sourced this batch
+    storeleads_status: Any = ""
+    storeleads_error: str = ""
 
 
 def run_storeleads_to_clay(
@@ -651,6 +657,9 @@ def run_storeleads_to_clay(
                 if isinstance(fetched, StoreLeadsPage):
                     stores = fetched.domains
                     cursor = fetched.next_cursor
+                    if fetched.status or fetched.error:
+                        result.storeleads_status = fetched.status
+                        result.storeleads_error = fetched.error or ""
                 elif isinstance(fetched, tuple) and len(fetched) == 2:
                     stores, cursor = fetched
                     cursor = str(cursor).strip() or None if cursor else None
@@ -661,6 +670,9 @@ def run_storeleads_to_clay(
                 stores = fetch_page(api_key, page=page, extra_params=extra)
                 cursor = None
         except Exception as exc:  # noqa: BLE001 — return partial instead of failing
+            response = getattr(exc, "response", None)
+            result.storeleads_status = getattr(response, "status_code", "") or ""
+            result.storeleads_error = str(exc)[:300]
             logger.warning("[outbound] StoreLeads page %s failed, returning %s brands gathered: %s",
                            page, len(result.leads), exc)
             result.partial = True
@@ -731,6 +743,9 @@ def _absorb_pull(combined: PipelineResult, part: PipelineResult, seen: set[str])
     combined.matched_icp += part.matched_icp
     combined.skipped_already_contacted += part.skipped_already_contacted
     combined.partial = combined.partial or part.partial
+    if part.storeleads_status or part.storeleads_error:
+        combined.storeleads_status = part.storeleads_status
+        combined.storeleads_error = part.storeleads_error
     for lead in part.leads:
         domain = str(lead.get("domain") or "")
         if not domain or domain in seen:
@@ -810,6 +825,14 @@ def run_recipe_pull(
             fetch_result=fetch_result, push=push, amazon_check=amazon_check,
         )
         _absorb_pull(combined, part, seen)
+
+    if combined.scanned == 0:
+        logger.warning(
+            "[outbound] recipe=%s scanned 0 status=%s error=%s",
+            getattr(recipe, "key", "") or "",
+            combined.storeleads_status,
+            combined.storeleads_error,
+        )
 
     if not combined.dry_run and combined.leads:
         outcome = push(clay_webhook_url, combined.leads)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import outbound_recipes as rc
 import outbound_pipeline as op
@@ -79,16 +79,22 @@ class TriggerWindowTests(unittest.TestCase):
             set(rc.GROWTH_APP_TOKENS),
         )
 
-    def test_plan_upgrade_targets_plus_in_60_days(self):
+    def test_plan_upgrade_targets_plus_in_180_days(self):
         p = rc.recipe("plan_upgrade").params(WED)
         self.assertEqual(p["f:plan"], "Shopify Plus")
-        self.assertTrue(p["f:last_plan_change_at:min"].startswith("2026-05-30"))
-        self.assertEqual(p["sort"], "-lplancat,rank")
+        self.assertTrue(p["f:last_plan_change_at:min"].startswith("2026-01-30"))
+        self.assertEqual(p["sort"], rc.PLAN_UPGRADE_SORTS[WED.toordinal() % 3])
         self.assertEqual(len(rc.recipe("plan_upgrade").param_sets(WED)), 1)
+
+    def test_plan_upgrade_sort_rotates_by_calendar_day(self):
+        days = [datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=i) for i in range(3)]
+        seen = [rc.recipe("plan_upgrade").params(day)["sort"] for day in days]
+        self.assertEqual(seen, [rc.PLAN_UPGRADE_SORTS[day.toordinal() % 3] for day in days])
+        self.assertEqual(set(seen), set(rc.PLAN_UPGRADE_SORTS))
 
     def test_replatformed_limits_the_previous_platform(self):
         p = rc.recipe("replatformed").params(WED)
-        self.assertTrue(p["f:last_platform_change_at:min"].startswith("2026-04-30"))
+        self.assertTrue(p["f:last_platform_change_at:min"].startswith("2026-01-30"))
         self.assertEqual(p["f:last_platform:op"], "or")
         for platform in ("woocommerce", "bigcommerce", "magento", "wix", "squarespace"):
             self.assertIn(platform, p["f:last_platform"])
@@ -208,6 +214,22 @@ class PipelineIntegrationTests(unittest.TestCase):
             max_new=5, throttle_seconds=0, fetch_page=fetch,
         )
         self.assertEqual(r.recipe, "")
+
+    def test_zero_scan_logs_storeleads_status_and_error(self):
+        def fetch_result(api_key, **_kwargs):
+            return op.StoreLeadsPage([], None, status=422, error="invalid filter")
+
+        with self.assertLogs("outbound_pipeline", level="WARNING") as logs:
+            result = op.run_recipe_pull(
+                api_key="x", clay_webhook_url="", processed_domains=set(),
+                max_new=5, throttle_seconds=0, recipe=rc.recipe("plan_upgrade"),
+                now=WED, fetch_result=fetch_result,
+            )
+        self.assertEqual(result.scanned, 0)
+        self.assertTrue(any(
+            "recipe=plan_upgrade scanned 0 status=422 error=invalid filter" in line
+            for line in logs.output
+        ))
 
 
 class ClientFilterTests(unittest.TestCase):
