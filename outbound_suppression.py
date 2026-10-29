@@ -252,11 +252,12 @@ def sync_blocklist(engine, *, key: str = "", get: Optional[Callable[..., Any]] =
         pages += 1
         nxt = str(data.get("next_starting_after") or "")
         if not nxt or not items:
-            cursor = ""
+            # Final page. Keep the last non-empty cursor. Never persist "".
             break
         cursor = nxt
     try:
-        set_cursor(engine, "instantly_blocklist", cursor)
+        if cursor:
+            set_cursor(engine, "instantly_blocklist", cursor)
     except Exception:  # noqa: BLE001
         logger.exception("[suppression] could not save the blocklist cursor")
     return {"synced": synced, "pages": pages, "reason": ""}

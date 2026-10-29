@@ -43,7 +43,8 @@ def test_blocklist_sync_stores_email_and_domain_and_resumes(monkeypatch):
     suppression.sync_blocklist(eng, get=get, max_pages=1)
     _, domains = suppression.lists(eng)
     assert "russh.com" in domains
-    assert suppression.get_cursor(eng, "instantly_blocklist") == ""
+    # The last page has no next cursor. Keep cursor-1. Do not save "".
+    assert suppression.get_cursor(eng, "instantly_blocklist") == "cursor-1"
 
 
 def test_push_match_covers_a_store_host():
