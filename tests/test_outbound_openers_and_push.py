@@ -3,6 +3,10 @@
 import outbound_instantly_push as push
 import outbound_openers as op
 
+
+def setup_function():
+    op._OPENERS_BY_DOMAIN.clear()
+
 LEAD = {"brand": "Huppy", "domain": "huppy.com", "niche": "oral care",
         "reason": "launched a new product line", "recipe": "new_growth_app", "tier": "A",
         "categories": ["Health & Beauty"]}
@@ -20,11 +24,15 @@ def test_validate_rejects_numbers_links_cliches_and_length():
     assert not op.validate("Hope this finds you well, Ann.")[0]
     assert not op.validate(" ".join(["word"] * 40))[0]
     assert not op.validate("")[0]
-    assert op.validate("Huppy looks like it is growing fast. Is Amazon on your radar?")[0]
+    assert op.validate("Huppy sells toothpaste tabs.")[0]
+    assert not op.validate("Is Amazon on your radar?")[0]
+    assert not op.validate("They have social momentum.")[0]
+    assert not op.validate("Look at apparel_accessories next.")[0]
+    assert not op.validate("Nice work — really")[0]
 
 
 def test_ai_line_used_when_valid():
-    line, src = op.write_opener(LEAD, CONTACT, llm=lambda p: "Huppy keeps showing up in my feed. Is Amazon part of the plan?")
+    line, src = op.write_opener(LEAD, CONTACT, llm=lambda p: "Huppy sells oral care.")
     assert src == "ai" and "Huppy" in line
 
 
@@ -126,9 +134,40 @@ def test_template_tics_rejected():
 
 
 def test_retry_once_then_accept():
-    lines = iter(["I noticed Huppy is building something special.", "Huppy toothpaste tabs look great. Selling them on Amazon yet?"])
+    lines = iter(["I noticed Huppy is building something special.", "Huppy sells toothpaste tabs."])
     line, src = op.write_opener(LEAD, CONTACT, llm=lambda p: next(lines))
-    assert src == "ai" and line.startswith("Huppy toothpaste")
+    assert src == "ai" and line == "Huppy sells toothpaste tabs."
+
+
+def test_category_slugs_become_plain_words_and_product_wins():
+    slug_line = op.fallback_line("Huppy", "apparel_accessories")
+    assert "apparel_accessories" not in slug_line
+    assert "apparel and accessories" in slug_line
+    assert op.plain_category("food_beverage") == "food and beverage"
+    assert op.plain_category("beauty_wellness") == "beauty and wellness"
+    assert "?" not in slug_line
+    product_line = op.fallback_line("Huppy", "apparel_accessories", product="toothpaste tabs")
+    assert "toothpaste tabs" in product_line
+    assert "apparel_accessories" not in product_line
+    signal = op.fallback_line("Huppy", "", recipe="plan_upgrade")
+    assert "upgraded their store plan" in signal
+    assert "?" not in signal
+
+
+def test_one_opener_per_company_is_cached_by_domain():
+    calls = []
+
+    def llm(prompt):
+        calls.append(prompt)
+        return "Huppy sells toothpaste tabs."
+
+    lead = {**LEAD, "amz_product": "toothpaste tabs"}
+    first = op.write_opener(lead, CONTACT, llm=llm)
+    second = op.write_opener(lead, {"title": "CMO", "email": "other@huppy.com"}, llm=llm)
+    assert first == second
+    assert first[1] == "ai"
+    assert len(calls) == 1
+    assert "toothpaste tabs" in calls[0]
 
 
 def test_friendly_category():
