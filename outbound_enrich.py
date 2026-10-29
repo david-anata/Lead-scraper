@@ -73,9 +73,10 @@ def ensure_tables(engine) -> None:
     import os
     if os.getenv("VERCEL") and engine.dialect.name == "postgresql":
         return
-    with engine.begin() as conn:
-        for sql in _CREATE:
-            conn.execute(text(sql))
+    from sales_support_agent.services.outbound_ddl import create_table_if_absent
+
+    for table, sql in zip((_DOMAINS, _PEOPLE), _CREATE, strict=True):
+        create_table_if_absent(engine, sql, table)
     for stmt in _PEOPLE_ALTERS:
         try:
             with engine.begin() as conn:

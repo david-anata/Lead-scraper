@@ -22,6 +22,8 @@ from typing import Any, Iterable, Optional
 
 from sqlalchemy import text
 
+from sales_support_agent.services.outbound_ddl import create_table_if_absent
+
 logger = logging.getLogger(__name__)
 
 _SETTINGS_TABLE = "outbound_settings"
@@ -66,9 +68,12 @@ def _is_pg(engine) -> bool:
 def ensure_tables(engine, *, force: bool = False) -> None:
     if _is_pg(engine) and not force:
         return
-    with engine.begin() as conn:
-        conn.execute(text(_CREATE_SETTINGS))
-        conn.execute(text(_CREATE_CHANGES_PG if _is_pg(engine) else _CREATE_CHANGES))
+    create_table_if_absent(engine, _CREATE_SETTINGS, _SETTINGS_TABLE)
+    create_table_if_absent(
+        engine,
+        _CREATE_CHANGES_PG if _is_pg(engine) else _CREATE_CHANGES,
+        _CHANGES_TABLE,
+    )
 
 
 def load_settings(engine) -> dict[str, Any]:
