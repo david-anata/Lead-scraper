@@ -31,8 +31,13 @@ logger = logging.getLogger(__name__)
 PROSPEO_SEARCH_URL = "https://api.prospeo.io/search-person"
 PROSPEO_ENRICH_URL = "https://api.prospeo.io/enrich-person"
 
-# Offline public-suffix snapshot. suffix_list_urls=() means this never fetches.
-_EXTRACT = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
+# Bundled public-suffix snapshot only. Empty suffix_list_urls never fetches,
+# and cache_dir=None does not write a cache (Vercel /var/task is read-only).
+_EXTRACT = tldextract.TLDExtract(
+    suffix_list_urls=(),
+    cache_dir=None,
+    fallback_to_snapshot=True,
+)
 
 # Titles we want, best first. Matching is substring, lowercase. Order is the
 # ranking: owners and founders answer cold email about tools; ecommerce and
