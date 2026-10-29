@@ -218,8 +218,8 @@ def build_followup_draft(
             "pricing_summary": pricing_summary or None,
         }
         try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=key)
+            from sales_support_agent.services.llm_client import llm_client
+            client = llm_client(caller="followup_draft", api_key=key)
             msg = client.messages.create(
                 model=resolved_model,
                 max_tokens=600,

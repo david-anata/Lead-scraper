@@ -303,12 +303,12 @@ def build_messages(
 
 
 def _call_claude(system: list[dict], messages: list[dict], model: str) -> str:
-    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not key:
-        raise CoachError("ANTHROPIC_API_KEY is not set on the agent.")
-    import anthropic
+    from sales_support_agent.services.llm_client import llm_available, llm_client
 
-    client = anthropic.Anthropic(api_key=key)
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not llm_available(api_key=key):
+        raise CoachError("No AI Gateway token and no ANTHROPIC_API_KEY.")
+    client = llm_client(caller="call_coach", api_key=key)
     msg = client.messages.create(model=model, max_tokens=2000, system=system, messages=messages)
     return "".join(getattr(b, "text", "") for b in (msg.content or []) if getattr(b, "type", "") == "text")
 

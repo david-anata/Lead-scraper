@@ -517,7 +517,7 @@ class LlmExtractionTests(unittest.TestCase):
         patcher, client = _mock_anthropic(response_text='{"company": "Acme"}')
         with patcher, mock.patch.dict("os.environ", {"FULFILLMENT_DECK_MODEL": ""}):
             extract_prospect_profile("ctx", api_key="test-key")
-        self.assertEqual(client.messages.create.call_args.kwargs["model"], "claude-sonnet-4-6")
+        self.assertEqual(client.messages.create.call_args.kwargs["model"], "claude-haiku-4-5-20251001")
 
     def test_model_env_override(self):
         patcher, client = _mock_anthropic(response_text='{"company": "Acme"}')

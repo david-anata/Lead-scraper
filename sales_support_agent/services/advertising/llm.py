@@ -148,15 +148,17 @@ def generate_narrative(
     model: str = "claude-haiku-4-5-20251001",
 ) -> NarrativeResult:
     baseline = build_deterministic_read(summary, recs, goals)
+    from sales_support_agent.services.llm_client import llm_available
+
     key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
+    if not llm_available(api_key=key):
         return NarrativeResult(text=baseline, model="deterministic")
 
     prompt = _build_prompt(summary, recs, goals or Goals(), prior_summary)
     try:
-        import anthropic
+        from sales_support_agent.services.llm_client import llm_client
 
-        client = anthropic.Anthropic(api_key=key)
+        client = llm_client(caller="ads_narrative", api_key=key)
         message = client.messages.create(
             model=model,
             max_tokens=320,

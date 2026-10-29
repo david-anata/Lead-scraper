@@ -52,8 +52,8 @@ def _claude_extract(html_text: str, prompt: str) -> Optional[dict]:
     if not html_text:
         return None
     try:
-        import anthropic
-        client = anthropic.Anthropic()
+        from sales_support_agent.services.llm_client import llm_client
+        client = llm_client(caller="brand_analysis_enrich")
         snippet = html_text[:8000]
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",

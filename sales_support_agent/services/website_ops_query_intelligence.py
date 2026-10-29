@@ -699,7 +699,7 @@ def citation_config(settings: Any) -> CitationHarnessConfig:
         model = (
             os.getenv("WEBSITE_OPS_ANTHROPIC_CITATION_MODEL", "").strip()
             or legacy_model
-            or "claude-sonnet-4-6"
+            or "claude-haiku-4-5-20251001"
         )
     else:
         model = (
@@ -749,14 +749,13 @@ def _anthropic_web_search(
     config: CitationHarnessConfig,
     prompt: str,
 ) -> dict[str, Any]:
-    response = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": config.api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        },
-        json={
+    from sales_support_agent.services.llm_client import post_messages
+
+    return post_messages(
+        caller="website_ops_citation",
+        api_key=config.api_key,
+        timeout=90,
+        payload={
             "model": config.model,
             "max_tokens": 1600,
             "messages": [{"role": "user", "content": prompt}],
@@ -768,11 +767,7 @@ def _anthropic_web_search(
                 }
             ],
         },
-        timeout=90,
     )
-    response.raise_for_status()
-    payload = response.json()
-    return payload if isinstance(payload, dict) else {}
 
 
 def _citation_from_response(

@@ -62,8 +62,8 @@ def _claude(prompt: str, html: str, max_tokens: int = 1024) -> Optional[dict]:
     if not html:
         return None
     try:
-        import anthropic
-        client = anthropic.Anthropic()
+        from sales_support_agent.services.llm_client import llm_client
+        client = llm_client(caller="brand_deal_discovery")
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=max_tokens,
@@ -208,8 +208,8 @@ def qualify_listing(listing: dict) -> dict:
     )
     # We pass an empty html string since all context is in the prompt
     try:
-        import anthropic
-        client = anthropic.Anthropic()
+        from sales_support_agent.services.llm_client import llm_client
+        client = llm_client(caller="brand_deal_discovery")
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=512,

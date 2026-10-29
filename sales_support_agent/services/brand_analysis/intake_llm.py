@@ -254,9 +254,9 @@ def classify(
         f"SCHEMA:\n{_SCHEMA_HINT}\n{period_block}{context_block}\nLINE ITEMS:\n{body}\n\nReturn the JSON now."
     )
     try:
-        import anthropic
+        from sales_support_agent.services.llm_client import llm_client
 
-        client = anthropic.Anthropic(api_key=key)
+        client = llm_client(caller="brand_analysis_intake", api_key=key)
         message = client.messages.create(
             model=model,
             max_tokens=1500,

@@ -642,8 +642,10 @@ def reason_listing_recommendations(
     """Return {'seo':[...], 'cro':[...], 'creative':[...]} reasoned from the
     real listing data, or None to signal the caller to keep the deterministic
     fixed-string recommendations. Never raises."""
+    from sales_support_agent.services.llm_client import llm_available
+
     key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
+    if not llm_available(api_key=key):
         return None
     if not (target_title or brand_name):
         return None
@@ -657,9 +659,9 @@ def reason_listing_recommendations(
         "review_count": review_count if review_count is not None else "",
     }
     try:
-        import anthropic
+        from sales_support_agent.services.llm_client import llm_client
 
-        client = anthropic.Anthropic(api_key=key)
+        client = llm_client(caller="deck_listing", api_key=key)
         message = client.messages.create(
             model=model,
             max_tokens=900,

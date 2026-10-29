@@ -97,9 +97,9 @@ def _build_prompt(brand: str, niche: str, reason: str, categories: str, title: s
 
 
 def _call_anthropic(prompt: str, api_key: str) -> str:
-    import anthropic  # imported lazily so tests and fallbacks never need it
+    from sales_support_agent.services.llm_client import llm_client
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = llm_client(caller="outbound_openers", api_key=api_key)
     msg = client.messages.create(
         model=MODEL, max_tokens=120, system=_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
@@ -124,7 +124,9 @@ def write_opener(
     title = str((contact or {}).get("title") or "").strip()
 
     key = api_key if api_key is not None else os.getenv("ANTHROPIC_API_KEY", "")
-    if llm is None and key:
+    from sales_support_agent.services.llm_client import llm_available
+
+    if llm is None and llm_available(api_key=key):
         llm = lambda p: _call_anthropic(p, key)  # noqa: E731
     if llm is not None:
         prompt = _build_prompt(brand, niche, reason, str(cats), title)

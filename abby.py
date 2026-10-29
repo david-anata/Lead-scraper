@@ -33,7 +33,9 @@ from typing import Any, Callable, NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-6"
+CLASSIFY_MODEL = "claude-haiku-4-5-20251001"
+DRAFT_MODEL = "claude-sonnet-4-6"
+MODEL = DRAFT_MODEL
 BOOKING_LINK = "https://app.fyxer.com/t/sales-team99/30"
 DAVID_EMAIL = "david@anatainc.com"
 SIGNATURE = "Abby\nAccount Specialist, Anata"
@@ -456,13 +458,71 @@ def build_prompt(thread: list[dict[str, Any]], *, company: str, first_name: str)
     return "\n".join(lines) + "\n\nClassify the prospect's LATEST message and draft Abby's reply."
 
 
-def call_model(prompt: str, api_key: Optional[str] = None) -> str:
-    import anthropic
+def _cached_system(text: str) -> list[dict[str, Any]]:
+    """Anthropic prompt cache marker for a fixed system prompt."""
 
-    client = anthropic.Anthropic(api_key=api_key or os.getenv("ANTHROPIC_API_KEY", ""))
-    msg = client.messages.create(model=MODEL, max_tokens=600, system=SYSTEM,
-                                 messages=[{"role": "user", "content": prompt}])
-    return "".join(getattr(b, "text", "") for b in msg.content)
+    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+
+
+CLASSIFY_SYSTEM = f"""You classify a prospect's latest email for Abby at Anata.
+{FACTS}
+
+Categories: {", ".join(CATEGORIES)}.
+- interested: wants to learn more, see the breakdown/video, or talk.
+- price: asks what it costs.
+- not_now: timing is wrong, maybe later.
+- has_solution: already has an agency, tool, or team for Amazon, or says they already sell on Amazon.
+- referral: a human wrote this reply and recommends a colleague. Put that person's email in referral_email if they gave one. A shared inbox is not a colleague. Never put info@, sales@, support@, or customerservice@ in referral_email.
+- opt_out: asks to stop, unsubscribe, remove them, is clearly annoyed by the emails, or the company has closed or ceased operations.
+- A message that is only a signature or contact block with no request is auto_reply.
+- hostile: insults, threats, legal language (spam laws, lawyers, reporting).
+- question: a specific question you can partly answer from the facts.
+- ai_question: asks if you are a bot, AI or a real person.
+- auto_reply: out of office, an automated message, a departed-employee notice, or a forwarding notice. This includes "no longer with", "has left the company", "out of the office", "please direct inquiries to", "concluded my role", and "no longer monitoring". A pointer to info@, sales@, support@, or customerservice@ is auto_reply. Naming a person or giving their email does not make these a referral. Leave referral_email null. If you are unsure a human wrote the message, choose auto_reply.
+- wrong_person: a human says this is not their area and names no colleague.
+
+Do not draft the reply. Set reply to null.
+Return ONLY JSON: {{"category": "...", "confidence": 0.0-1.0, "referral_email": null or "x@y.com", "referral_name": null or "Name", "cc_david": false, "reply": null}}"""
+
+
+def _message_text(msg: Any) -> str:
+    return "".join(getattr(block, "text", "") for block in getattr(msg, "content", []) or [])
+
+
+def call_model(prompt: str, api_key: Optional[str] = None) -> str:
+    """Classify with Haiku, then draft a reply with Sonnet only when one is allowed."""
+
+    from sales_support_agent.services.llm_client import llm_client
+
+    classified = llm_client(caller="abby_classify", api_key=api_key).messages.create(
+        model=CLASSIFY_MODEL,
+        max_tokens=400,
+        system=_cached_system(CLASSIFY_SYSTEM),
+        messages=[{"role": "user", "content": prompt}],
+    )
+    data = parse_model_json(_message_text(classified))
+    category = str(data.get("category") or "other")
+    if category not in REPLY_CATEGORIES:
+        data["reply"] = None
+        return json.dumps(data)
+    drafted = llm_client(caller="abby_draft", api_key=api_key).messages.create(
+        model=DRAFT_MODEL,
+        max_tokens=600,
+        system=_cached_system(SYSTEM),
+        messages=[{
+            "role": "user",
+            "content": prompt + f"\n\nThe category is {category}. Draft Abby's reply now.",
+        }],
+    )
+    draft = parse_model_json(_message_text(drafted))
+    if draft.get("reply"):
+        data["reply"] = draft["reply"]
+    if "cc_david" in draft:
+        data["cc_david"] = draft["cc_david"]
+    for key in ("referral_email", "referral_name"):
+        if draft.get(key):
+            data[key] = draft[key]
+    return json.dumps(data)
 
 
 def to_html(text: str) -> str:

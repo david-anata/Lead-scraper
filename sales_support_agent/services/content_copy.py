@@ -105,15 +105,17 @@ def deterministic_native_bundle(*, title: str, transcript: str) -> dict[str, str
 
 
 def _ai_native_bundle(*, title: str, transcript: str) -> dict[str, str] | None:
+    from sales_support_agent.services.llm_client import llm_available
+
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if not api_key or os.getenv(
+    if not llm_available(api_key=api_key) or os.getenv(
         "CONTENT_COPY_AI_ENABLED", "true"
     ).strip().lower() not in {"1", "true", "yes", "on"}:
         return None
     try:
-        import anthropic
+        from sales_support_agent.services.llm_client import llm_client
 
-        message = anthropic.Anthropic(api_key=api_key).messages.create(
+        message = llm_client(caller="content_copy", api_key=api_key).messages.create(
             model=os.getenv(
                 "CONTENT_COPY_MODEL", "claude-haiku-4-5-20251001"
             ).strip(),

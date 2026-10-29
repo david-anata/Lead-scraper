@@ -207,8 +207,10 @@ def generate_narrative(
     model: str = "claude-haiku-4-5-20251001",
 ) -> NarrativeResult:
     baseline = build_deterministic(brand, current, growth_bps, scorecard, red_flags, has_yoy)
+    from sales_support_agent.services.llm_client import llm_available
+
     key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key:
+    if not llm_available(api_key=key):
         return baseline
 
     prompt = _facts(brand, category, current, growth_bps, scorecard, red_flags, confidence, has_yoy,
@@ -219,9 +221,9 @@ def generate_narrative(
             + context_notes.strip()
         )
     try:
-        import anthropic
+        from sales_support_agent.services.llm_client import llm_client
 
-        client = anthropic.Anthropic(api_key=key)
+        client = llm_client(caller="brand_analysis", api_key=key)
         message = client.messages.create(
             model=model,
             max_tokens=700,
