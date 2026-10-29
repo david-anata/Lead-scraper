@@ -80,8 +80,28 @@ def test_weekday_window_is_any_denver_hour_including_outside_the_old_crons():
     assert job.enrich_via_abby_window(EVENING_UTC, recent_success=True) == "abby-2026-10-28T17"
     assert job.enrich_via_abby_window(EVENING_UTC, recent_success=False) == "abby-2026-10-28T17"
     assert job.enrich_via_abby_window(EARLY, recent_success=True) == "abby-2026-10-28T07"
-    late = datetime(2026, 10, 23, 23, 47, tzinfo=DENVER)  # Friday night
-    assert job.enrich_via_abby_window(late, recent_success=False) == "abby-2026-10-23T23"
+    late = datetime(2026, 10, 23, 23, 47, tzinfo=DENVER)  # Friday night, after 18:00
+    assert job.enrich_via_abby_window(late, recent_success=False) is None
+
+
+def test_enrich_window_is_only_hours_7_through_17():
+    day = datetime(2026, 10, 28, tzinfo=DENVER)
+    six = day.replace(hour=6, minute=10)
+    eighteen = day.replace(hour=18, minute=0)
+    seven = day.replace(hour=7, minute=0)
+    seventeen = day.replace(hour=17, minute=30)
+    assert job.enrich_via_abby_window(six, recent_success=False) is None
+    assert job.enrich_via_abby_window(eighteen, recent_success=False) is None
+    assert job.enrich_via_abby_window(seven, recent_success=False) == "abby-2026-10-28T07"
+    assert job.enrich_via_abby_window(seventeen, recent_success=False) == "abby-2026-10-28T17"
+
+
+def test_scheduled_enrich_skips_at_6(monkeypatch):
+    monkeypatch.setenv("OUTBOUND_AUTO_ENRICH", "true")
+    six = datetime(2026, 10, 28, 6, 5, tzinfo=DENVER)
+    out = job.run_enrich_job(now=six)
+    assert out["ran"] is False
+    assert out["reason"] == "outside enrich hours"
 
 
 def test_weekend_window_is_a_single_catchup_only_without_recent_success():
@@ -131,23 +151,24 @@ def test_recent_success_is_today_or_the_last_six_hours(engine):
 
 def test_first_tick_runs_once_per_hour_then_again_next_hour(engine, enrich_on, caplog):
     seen, run_job = _calls()
+    sixteen = datetime(2026, 10, 28, 16, 51, tzinfo=DENVER)
     with caplog.at_level("INFO"):
-        first = job.maybe_run_enrich_from_abby(now=EVENING_UTC, engine=engine, run_job=run_job)
-        second = job.maybe_run_enrich_from_abby(now=EVENING_UTC, engine=engine, run_job=run_job)
+        first = job.maybe_run_enrich_from_abby(now=sixteen, engine=engine, run_job=run_job)
+        second = job.maybe_run_enrich_from_abby(now=sixteen, engine=engine, run_job=run_job)
         third = job.maybe_run_enrich_from_abby(
-            now=EVENING_UTC + timedelta(hours=1), engine=engine, run_job=run_job,
+            now=sixteen + timedelta(hours=1), engine=engine, run_job=run_job,
         )
     assert first["ran"] is True
-    assert first["window"] == "abby-2026-10-28T17"
+    assert first["window"] == "abby-2026-10-28T16"
     assert first["leads_attempted"] == 3
     assert first["enriched"] == 4
     assert first["pushed"] == 2
     assert second["ran"] is False
     assert second["reason"] == "already ran this window"
     assert third["ran"] is True
-    assert third["window"] == "abby-2026-10-28T18"
+    assert third["window"] == "abby-2026-10-28T17"
     assert len(seen) == 2
-    assert "[enrich-via-abby] start window=abby-2026-10-28T17" in caplog.text
+    assert "[enrich-via-abby] start window=abby-2026-10-28T16" in caplog.text
     assert "leads_attempted=3 enriched=4 pushed=2" in caplog.text
 
 
