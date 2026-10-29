@@ -131,8 +131,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "social_surge.max_per_run": 100,
     "icp_baseline.max_per_run": 200,
     "social_surge.min_growth_pct": 25,
-    "plan_upgrade.window_days": 60,
-    "replatformed.window_days": 90,
+    "plan_upgrade.window_days": 180,
+    "replatformed.window_days": 180,
     "churned_tool.window_days": 30,
     # Amazon marketplace check. A brand losing control of its own listings is a
     # real "why now", but a wrong claim is worse than no claim, so the gates are
@@ -382,6 +382,10 @@ def churn_fallback_keeps(store: dict[str, Any], now: datetime,
     return _removed_in_window(store, now, settings, require_removal=True)
 
 
+# Rotated each calendar day so the same brands are not always first.
+PLAN_UPGRADE_SORTS = ("-lplancat,rank", "-er,rank", "-prank,rank")
+
+
 def _plan_upgrade(now: datetime, settings=None) -> dict[str, Any]:
     # Left tight on purpose. This is the highest-scoring recipe (93 of 104 leads
     # at 8 or above). It runs once a week so Wednesday does not re-scan Tuesday.
@@ -389,7 +393,7 @@ def _plan_upgrade(now: datetime, settings=None) -> dict[str, Any]:
         "f:plan": "Shopify Plus",
         "f:last_plan_change_at:min": _iso(
             now - timedelta(days=_int(settings, "plan_upgrade.window_days"))),
-        "sort": "-lplancat,rank",
+        "sort": PLAN_UPGRADE_SORTS[now.toordinal() % 3],
     }
 
 
