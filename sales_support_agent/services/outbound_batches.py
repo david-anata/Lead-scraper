@@ -9,6 +9,8 @@ from typing import Any, Iterable
 
 from sqlalchemy import text
 
+from sales_support_agent.services.outbound_ddl import create_table_if_absent
+
 
 @dataclass(frozen=True)
 class DailyBatch:
@@ -92,9 +94,10 @@ def ensure_tables(engine: Any, *, force: bool = False) -> None:
             updated_by TEXT NOT NULL DEFAULT '', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
     ]
-    with engine.begin() as conn:
-        for statement in statements:
-            conn.execute(text(statement))
+    for table, statement in zip(
+        (_BATCHES, _BATCH_RUNS, _BATCH_COMPANIES, _RECIPES), statements, strict=True,
+    ):
+        create_table_if_absent(engine, statement, table)
     seed_recipes(engine)
 
 

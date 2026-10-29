@@ -19,6 +19,8 @@ from typing import Any, Iterable
 
 from sqlalchemy import text
 
+from sales_support_agent.services.outbound_ddl import create_table_if_absent
+
 logger = logging.getLogger(__name__)
 
 
@@ -301,19 +303,23 @@ def ensure_runs_table(engine, *, force: bool = False) -> None:
     if is_pg and not force:
         return
     sql = _CREATE_RUNS_SQL_PG if is_pg else _CREATE_RUNS_SQL
-    with engine.begin() as conn:
-        conn.execute(text(sql))
+    create_table_if_absent(engine, sql, _RUNS_TABLE)
     for stmt in _RUN_ALTERS:
         try:
             with engine.begin() as conn:
                 conn.execute(text(stmt))
         except Exception:  # noqa: BLE001 — column already present
             pass
-    with engine.begin() as conn:
-        conn.execute(text(_CREATE_RUN_LEADS_SQL))
-        conn.execute(text(_CREATE_DELIVERY_SQL))
-        conn.execute(text(_CREATE_EXPORTS_SQL_PG if is_pg else _CREATE_EXPORTS_SQL))
-        conn.execute(text(_CREATE_DELIVERY_HISTORY_SQL_PG if is_pg else _CREATE_DELIVERY_HISTORY_SQL))
+    create_table_if_absent(engine, _CREATE_RUN_LEADS_SQL, _RUN_LEADS_TABLE)
+    create_table_if_absent(engine, _CREATE_DELIVERY_SQL, _DELIVERY_TABLE)
+    create_table_if_absent(
+        engine, _CREATE_EXPORTS_SQL_PG if is_pg else _CREATE_EXPORTS_SQL, _EXPORTS_TABLE,
+    )
+    create_table_if_absent(
+        engine,
+        _CREATE_DELIVERY_HISTORY_SQL_PG if is_pg else _CREATE_DELIVERY_HISTORY_SQL,
+        _DELIVERY_HISTORY_TABLE,
+    )
     try:
         with engine.begin() as conn:
             conn.execute(text(f"ALTER TABLE {_DELIVERY_TABLE} ADD COLUMN slack_channel TEXT NOT NULL DEFAULT ''"))
@@ -647,8 +653,7 @@ def load_delivery_history(engine, limit: int = 8) -> list[dict[str, Any]]:
 def ensure_table(engine, *, force: bool = False) -> None:
     if "postgres" in str(getattr(engine, "url", "")).lower() and not force:
         return
-    with engine.begin() as conn:
-        conn.execute(text(_CREATE_SQL))
+    create_table_if_absent(engine, _CREATE_SQL, _TABLE)
     for stmt in _ALTERS:
         try:
             with engine.begin() as conn:
@@ -1060,8 +1065,7 @@ CREATE TABLE IF NOT EXISTS {_HR_TABLE} (
 def ensure_heyreach_table(engine) -> None:
     if engine is None:
         return
-    with engine.begin() as conn:
-        conn.execute(text(_HR_CREATE))
+    create_table_if_absent(engine, _HR_CREATE, _HR_TABLE)
 
 
 def load_heyreach_sent(engine, campaign_id: str = "") -> set[str]:
@@ -1133,8 +1137,7 @@ _CT_COLS = ("email", "linkedin_url", "first_name", "last_name", "company",
 def ensure_contacts_table(engine) -> None:
     if engine is None:
         return
-    with engine.begin() as conn:
-        conn.execute(text(_CT_CREATE))
+    create_table_if_absent(engine, _CT_CREATE, _CT_TABLE)
 
 
 def _email(value: Any) -> str:
