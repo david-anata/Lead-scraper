@@ -672,6 +672,22 @@ def test_templates_sign_as_account_specialist_and_do_not_cc():
         assert abby.validate_reply("interested", body)[0]
 
 
+def test_default_watch_list_includes_the_signal_campaigns(monkeypatch):
+    monkeypatch.delenv("ABBY_CAMPAIGN_IDS", raising=False)
+    ids = runner.watched_campaign_ids(["reengage-id"])
+    assert ids[0] == "4f118329-c07e-4279-9c08-12059f2a49f4"
+    assert "reengage-id" in ids and runner.TRIAL_CAMPAIGN_ID in ids
+    for campaign_id in runner.SIGNAL_CAMPAIGN_IDS:
+        assert campaign_id in ids
+    assert len(ids) == len(set(ids))
+    monkeypatch.setenv("ABBY_CAMPAIGN_IDS", "custom-1")
+    replaced = runner.watched_campaign_ids(["reengage-id"])
+    assert runner.TRIAL_CAMPAIGN_ID not in replaced
+    for campaign_id in runner.SIGNAL_CAMPAIGN_IDS:
+        assert campaign_id not in replaced
+    assert "custom-1" in replaced and "reengage-id" in replaced
+
+
 def test_watched_campaigns_keep_sdr_and_reengage_and_default_to_the_trial(monkeypatch):
     monkeypatch.delenv("ABBY_CAMPAIGN_IDS", raising=False)
     ids = runner.watched_campaign_ids(["reengage-id"])
