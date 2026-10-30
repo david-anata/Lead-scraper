@@ -40,7 +40,7 @@ MAX_PER_RUN = 8   # Instantly allows ~20 email reads a minute
 _DDL = (
     """CREATE TABLE IF NOT EXISTS abby_handled (
         email_id TEXT PRIMARY KEY, thread_id TEXT, lead TEXT, category TEXT,
-        action TEXT, mode TEXT, reply_id TEXT, detail TEXT,
+        action TEXT, mode TEXT, reply_id TEXT, detail TEXT, campaign_id TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     """CREATE TABLE IF NOT EXISTS abby_followups (
         id SERIAL PRIMARY KEY, lead TEXT, reply_to_id TEXT, eaccount TEXT, subject TEXT,
@@ -112,6 +112,15 @@ def ensure_tables(engine) -> None:
     with engine.begin() as conn:
         for d in ddl:
             conn.execute(text(d))
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE abby_handled ADD COLUMN IF NOT EXISTS campaign_id TEXT"))
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE abby_handled ADD COLUMN campaign_id TEXT"))
+    except Exception:  # noqa: BLE001 — column already present
+        pass
 
 
 class Instantly:
@@ -197,15 +206,26 @@ def _handled_ids(engine, ids: list[str]) -> set[str]:
     return {i for i in ids if i in have}
 
 
+def email_campaign_id(email: dict, fallback: str = "") -> str:
+    """Campaign on the Instantly email, or the campaign Abby was reading."""
+
+    raw = email.get("campaign_id")
+    if isinstance(raw, dict):
+        raw = raw.get("id") or raw.get("campaign_id")
+    found = str(raw or "").strip()
+    return found or str(fallback or "").strip()
+
+
 def _record(engine, *, email: dict, decision: abby.Decision, run_mode: str,
-            reply_id: str = "", detail: str = "") -> None:
+            reply_id: str = "", detail: str = "", campaign_id: str = "") -> None:
     with engine.begin() as conn:
         conn.execute(text(
-            "INSERT INTO abby_handled (email_id, thread_id, lead, category, action, mode, reply_id, detail) "
-            "VALUES (:i, :t, :l, :c, :a, :m, :r, :d) ON CONFLICT (email_id) DO NOTHING"),
+            "INSERT INTO abby_handled (email_id, thread_id, lead, category, action, mode, reply_id, detail, campaign_id) "
+            "VALUES (:i, :t, :l, :c, :a, :m, :r, :d, :camp) ON CONFLICT (email_id) DO NOTHING"),
             {"i": email.get("id"), "t": email.get("thread_id"), "l": email.get("lead"),
              "c": decision.category, "a": decision.action, "m": run_mode,
-             "r": reply_id, "d": _detail(email, decision, detail)})
+             "r": reply_id, "d": _detail(email, decision, detail),
+             "camp": email_campaign_id(email, campaign_id)})
 
 
 def _detail(email: dict, decision: abby.Decision, detail: str) -> str:
@@ -331,18 +351,18 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
         lead = str(email.get("lead") or email.get("from_address_email") or "").lower()
         if is_team(_sender(email)) or is_team(lead):
             _record(engine, email=email, decision=abby.Decision("other", "skip", reason="written by our team"),
-                    run_mode=run_mode)
+                    run_mode=run_mode, campaign_id=campaign_id)
             out["skipped"] += 1
             continue
         thread = client.thread(email.get("thread_id") or "") or [email]
         if team_in_thread(thread):
             _record(engine, email=email, decision=abby.Decision("other", "skip", reason="David has this thread"),
-                    run_mode=run_mode)
+                    run_mode=run_mode, campaign_id=campaign_id)
             out["skipped"] += 1
             continue
         if already_answered(thread, email):
             _record(engine, email=email, decision=abby.Decision("other", "skip", reason="already answered"),
-                    run_mode=run_mode)
+                    run_mode=run_mode, campaign_id=campaign_id)
             out["skipped"] += 1
             continue
         info = lead_info(lead) or _instantly_info(client, lead)
@@ -392,7 +412,8 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
             out["ignored"] += 1
         if decision.slack and (decision.action == "hold" or run_mode == "live"):
             post_slack(decision.slack)
-        _record(engine, email=email, decision=decision, run_mode=run_mode, reply_id=reply_id, detail=detail)
+        _record(engine, email=email, decision=decision, run_mode=run_mode, reply_id=reply_id,
+                detail=detail, campaign_id=campaign_id)
 
     out["followups"] = _send_due_followups(engine, client, now, run_mode, post_slack)
     out["nudges"] = _send_nudges(engine, client, campaign_id, now, run_mode, post_slack, lead_info, cap)
@@ -524,9 +545,10 @@ def _send_nudges(engine, client: Instantly, campaign_id: str, now: datetime, run
         thread = client.thread(thread_id)
         if team_in_thread(thread):
             _record(engine, email={"id": f"nudge:{thread_id}:done", "thread_id": thread_id,
-                                   "lead": str(latest.get("lead") or "")},
+                                   "lead": str(latest.get("lead") or ""),
+                                   "campaign_id": latest.get("campaign_id") or campaign_id},
                     decision=abby.Decision("nudge", "skip", reason="David has this thread"),
-                    run_mode=run_mode)
+                    run_mode=run_mode, campaign_id=campaign_id)
             continue
         received = [m for m in thread if m.get("ue_type") == 2 and not is_team(_sender(m))]
         if not received:
@@ -540,16 +562,18 @@ def _send_nudges(engine, client: Instantly, campaign_id: str, now: datetime, run
         n = _nudges_sent(engine, thread_id) + manual + 1
         if n > len(NUDGE_GAPS_DAYS):
             _record(engine, email={"id": f"nudge:{thread_id}:done", "thread_id": thread_id,
-                                   "lead": str(anchor.get("lead") or "")},
+                                   "lead": str(anchor.get("lead") or ""),
+                                   "campaign_id": anchor.get("campaign_id") or campaign_id},
                     decision=abby.Decision("nudge", "skip", reason="already followed up 3 times"),
-                    run_mode=run_mode)
+                    run_mode=run_mode, campaign_id=campaign_id)
             continue
         lead = str(anchor.get("lead") or latest.get("lead") or "").lower()
         info = lead_info(lead) or _instantly_info(client, lead)
         body, cc = nudge_text(n, info.get("first_name", ""), info.get("company", ""))
         if run_mode == "live" and _sent_today(engine, now) >= cap:
             break
-        key = {"id": f"nudge:{thread_id}:{n}", "thread_id": thread_id, "lead": lead}
+        key = {"id": f"nudge:{thread_id}:{n}", "thread_id": thread_id, "lead": lead,
+               "campaign_id": anchor.get("campaign_id") or latest.get("campaign_id") or campaign_id}
         if run_mode == "live":
             st, data = client.reply(reply_to=anchor["id"], eaccount=anchor.get("eaccount") or latest.get("eaccount") or "",
                                     subject=_subject(anchor.get("subject") or ""), body=body, cc=cc, extra=[])
@@ -557,13 +581,14 @@ def _send_nudges(engine, client: Instantly, campaign_id: str, now: datetime, run
                 post_slack(f"Abby's nudge {n} to {lead} failed to send ({st}).")
                 continue
             _record(engine, email=key, decision=abby.Decision("nudge", "nudge", reason=f"nudge {n}"),
-                    run_mode=run_mode, reply_id=str((data or {}).get("id") or ""))
+                    run_mode=run_mode, reply_id=str((data or {}).get("id") or ""),
+                    campaign_id=campaign_id)
             if n == len(NUDGE_GAPS_DAYS):
                 post_slack(f"Abby sent her last nudge to {lead}. No booking yet.")
         else:
             post_slack(f"[Abby nudge {n}, not sent] {lead}\n\n{body}")
             _record(engine, email=key, decision=abby.Decision("nudge", "nudge", reason=f"shadow nudge {n}"),
-                    run_mode=run_mode)
+                    run_mode=run_mode, campaign_id=campaign_id)
         sent += 1
     return sent
 

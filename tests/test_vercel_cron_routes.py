@@ -72,12 +72,13 @@ def test_outbound_enrich_crons_are_single_hour_and_match_the_handler() -> None:
         assert set(item) == {"path", "schedule"}
     assert by_path["/api/jobs/outbound-enrich/missed-run"]["schedule"] == "30 15 * * 1-5"
     assert by_path["/api/jobs/abby/run"]["schedule"] == "*/5 * * * *"
+    assert by_path["/api/jobs/instantly/analytics-sync"]["schedule"] == "0 12 * * *"
     # Hour lists on one path were listed by Vercel and never invoked.
     # The project cap is 100 crons on every plan (since 2026-01-20).
     for path, item in by_path.items():
         if path.startswith("/api/jobs/outbound-enrich/"):
             assert "," not in item["schedule"]
-    assert len(config["crons"]) == 19
+    assert len(config["crons"]) == 20
     assert len(config["crons"]) <= 100
 
 
@@ -98,4 +99,5 @@ def test_known_vercel_cron_paths_have_no_handler() -> None:
     assert "/api/jobs/outbound-enrich/run" in registered
     assert "/api/jobs/outbound-enrich/at-1415" in registered
     assert "/api/jobs/outbound-enrich/missed-run" in registered
+    assert "/api/jobs/instantly/analytics-sync" in registered
     assert "/api/jobs/gmail-sync/run" in registered

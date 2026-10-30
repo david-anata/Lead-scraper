@@ -372,6 +372,24 @@ def fixed(decision):
     return lambda *a, **k: decision
 
 
+def test_handled_row_stores_the_email_campaign(engine):
+    message = email(1)
+    message["campaign_id"] = "from-the-email"
+    runner.run(engine, client=FakeClient([message]), campaign_id="camp", now=NOW,
+               think=fixed(abby.Decision("other", "ignore")))
+    with engine.connect() as conn:
+        stored = conn.execute(text("SELECT campaign_id FROM abby_handled")).scalar()
+    assert stored == "from-the-email"
+
+
+def test_handled_row_uses_the_run_campaign_when_the_email_has_none(engine):
+    runner.run(engine, client=FakeClient([email(1)]), campaign_id="camp", now=NOW,
+               think=fixed(abby.Decision("other", "ignore")))
+    with engine.connect() as conn:
+        stored = conn.execute(text("SELECT campaign_id FROM abby_handled")).scalar()
+    assert stored == "camp"
+
+
 def test_live_reply_sent_once_and_recorded(engine):
     c = FakeClient([email(1)])
     dec = abby.Decision("interested", "reply", reply=f"Hi {LINK}", cc=[abby.DAVID_EMAIL], interest=1)
