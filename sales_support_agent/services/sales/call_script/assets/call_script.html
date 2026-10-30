@@ -1898,7 +1898,7 @@ nav a[data-sid].live-done .nn::after{content:"✓";font-size:12px}
 <button type="button" class="railfab railbtn" aria-controls="rail" aria-expanded="false">Close tracker <b data-count>0</b>/7</button>
 <aside class="rail" id="rail" aria-label="Close tracker">
   <div class="rail-head">
-    <div class="rh"><h2>Close tracker</h2><span class="status" data-status></span><button type="button" class="reviewbtn" data-review title="Score this call and get feedback">&#9733; End call &amp; review</button><button type="button" class="newcallbtn" data-newcall title="Clear all notes and selections for a new call">&#8635; New call</button><button type="button" class="rail-x" aria-label="Close the tracker panel">&times;</button></div>
+    <div class="rh"><h2>Close tracker</h2><span class="status" data-status></span><button type="button" class="reviewbtn" data-review title="Score this call and get feedback">&#9733; End call &amp; review</button><button type="button" class="rail-x" aria-label="Close the tracker panel">&times;</button></div>
     <div class="meter" role="group" aria-label="Beliefs the prospect has confirmed"><button type="button" class="bt" data-b="Pain" aria-pressed="false">Pain</button><button type="button" class="bt" data-b="Doubt" aria-pressed="false">Doubt</button><button type="button" class="bt" data-b="Cost" aria-pressed="false">Cost</button><button type="button" class="bt" data-b="Desire" aria-pressed="false">Desire</button><button type="button" class="bt" data-b="Support" aria-pressed="false">Support</button><button type="button" class="bt" data-b="Trust" aria-pressed="false">Trust</button><button type="button" class="bt" data-b="Money" aria-pressed="false">Money</button></div>
     <div class="next" data-next aria-live="polite"></div>
   </div>
@@ -3554,11 +3554,10 @@ nav a[data-sid].live-done .nn::after{content:"✓";font-size:12px}
     h += '<div data-rvanalysis></div>';
     h += '<div class="rai" data-rai>' + (rec.ai ? '<h3>AI coaching</h3><div class="raitext">' + esc(rec.ai) + '</div>' : '') + '</div>';
     h += '<div class="rv-actions"><button type="button" class="rv-sec-btn" data-aicall hidden>Get AI coaching on this call</button>' +
-      '<button type="button" class="rv-primary" data-rvnew>Start a new call</button><button type="button" class="rv-sec-btn" data-rvclose>Close</button></div>';
+      '<button type="button" class="rv-primary" data-rvclose>Close</button></div>';
     $('[data-rvbody]').innerHTML = h;
     ov.querySelector('.rv').scrollTop = 0;
     $('[data-rvclose]').addEventListener('click', closeOv);
-    $('[data-rvnew]').addEventListener('click', function(){ closeOv(); var b = $('[data-newcall]'); if (b) b.click(); });
     wireAI($('[data-aicall]'), rec);
     if (ov.hidden) openOv();
     document.dispatchEvent(new CustomEvent('ss:feedback', {detail:rec}));
