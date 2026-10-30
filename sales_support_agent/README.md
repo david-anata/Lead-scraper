@@ -108,6 +108,18 @@ Outbound contact finding (defaults are unchanged until these are set):
   When unset, the trial campaign `e5f5046b-07e4-41ad-a395-79cf8766ccd0` is
   included. AGENT SDR and Re-engage are always included.
 
+`push_pending` sends each stored contact to the Instantly campaign for its
+`recipe` column. The map is hardcoded in
+`outbound_instantly_push.RECIPE_CAMPAIGN_MAP` (`amz_on`, `amz_off`,
+`plan_upgrade`, `replatform`, `abby_reengage`). Any other recipe uses
+`OUTBOUND_INSTANTLY_CAMPAIGN_ID`. Contacts tagged `redo_partner` are stored
+and left out of that push. This does not create, edit, or activate campaigns.
+
+`POST /api/admin/outbound/enrich-list` requires `X-Internal-Api-Key`. The body
+is `{"domains": ["brand.com"], "dry_run": true}`. `dry_run` defaults to true,
+which only normalizes the list. `dry_run: false` finds contacts and stores
+them with `recipe=redo_partner`. It does not add them to Instantly.
+
 To aim at about 540 contacts a weekday across the four enrich runs, set
 companies 300, per run 75, max contacts 2, and credits 1100. Expected spend is
 about 840 Prospeo credits when each company yields about 1.8 verified emails

@@ -247,3 +247,128 @@ def test_push_pending_live_marks_pushed(engine):
         attempted=len(payload), created=len(payload), dry_run=False)
     out = oe.push_pending(engine, "camp", dry_run=False, push=ok)
     assert out["pushed"] == 1 and oe.unpushed(engine) == []
+
+
+def test_push_pending_routes_each_recipe_and_holds_redo_partner(engine, monkeypatch):
+    monkeypatch.delenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", raising=False)
+    recipes = {
+        "plan.com": "plan_upgrade",
+        "plat.com": "replatform",
+        "base.com": "icp_baseline",
+        "redo.com": "redo_partner",
+        "amz.com": "amz_on",
+    }
+    emails = {domain: [f"a@{domain}"] for domain in recipes}
+    f = finder(emails)
+
+    def one(domain):
+        row = lead(domain)
+        row["recipe"] = recipes[domain]
+        return row
+
+    oe.run_enrichment(engine, [one(domain) for domain in recipes], api_key="k", find=f, write=opener)
+    sent = {}
+
+    def record(payload, cid, dry_run=False, **k):
+        sent[cid] = sorted(item["email"] for item in payload)
+        return push.PushOutcome(attempted=len(payload), created=len(payload), dry_run=False)
+
+    out = oe.push_pending(engine, "default-camp", dry_run=False, push=record)
+    assert sent[push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]] == ["a@plan.com"]
+    assert sent[push.RECIPE_CAMPAIGN_MAP["replatform"]] == ["a@plat.com"]
+    assert sent[push.RECIPE_CAMPAIGN_MAP["amz_on"]] == ["a@amz.com"]
+    assert sent["default-camp"] == ["a@base.com"]
+    assert "a@redo.com" not in [email for emails in sent.values() for email in emails]
+    assert out["pushed"] == 4 and out["excluded_recipes"] == 1
+    assert [row["email"] for row in oe.unpushed(engine)] == ["a@redo.com"]
+    assert oe.unpushed(engine, exclude_recipes=push.PUSH_EXCLUDED_RECIPES) == []
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT email, campaign_id FROM outbound_enriched_contacts WHERE pushed_at IS NOT NULL"
+        )).fetchall()
+    marked = {email: campaign for email, campaign in rows}
+    assert marked["a@plan.com"] == push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]
+    assert marked["a@base.com"] == "default-camp"
+    assert "a@redo.com" not in marked
+
+
+def test_unmapped_recipe_uses_the_env_when_no_campaign_is_passed(engine, monkeypatch):
+    monkeypatch.setenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", "env-campaign")
+    f = finder({"a.com": ["x@a.com"]})
+    oe.run_enrichment(engine, [lead("a.com")], api_key="k", find=f, write=opener)
+    seen = {}
+
+    def record(payload, cid, dry_run=False, **k):
+        seen["campaign"] = cid
+        return push.PushOutcome(attempted=len(payload), created=len(payload), dry_run=False)
+
+    oe.push_pending(engine, "", dry_run=False, push=record)
+    assert seen["campaign"] == "env-campaign"
+
+
+def test_mapped_recipe_still_pushes_when_the_default_campaign_is_unset(engine, monkeypatch):
+    monkeypatch.delenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", raising=False)
+    f = finder({"plus.com": ["a@plus.com"], "base.com": ["a@base.com"]})
+    plus = lead("plus.com")
+    plus["recipe"] = "plan_upgrade"
+    base = lead("base.com")
+    base["recipe"] = "icp_baseline"
+    oe.run_enrichment(engine, [plus, base], api_key="k", find=f, write=opener)
+    sent = []
+
+    def record(payload, cid, dry_run=False, **k):
+        sent.append((cid, [item["email"] for item in payload]))
+        return push.PushOutcome(attempted=len(payload), created=len(payload), dry_run=False)
+
+    out = oe.push_pending(engine, "", dry_run=False, push=record)
+    assert sent == [(push.RECIPE_CAMPAIGN_MAP["plan_upgrade"], ["a@plus.com"])]
+    assert out["pending"] == 1 and out["pushed"] == 1
+    assert push.MISSING_CAMPAIGN_MESSAGE in out["note"]
+    remaining = [row["email"] for row in oe.unpushed(engine)]
+    assert remaining == ["a@base.com"]
+
+
+def test_enrich_domain_list_dry_run_does_not_search_or_store(engine):
+    calls = []
+
+    def find(domain, *, api_key, max_contacts=2, **kw):
+        calls.append(domain)
+        return oc.FindResult(domain=domain)
+
+    out = oe.enrich_domain_list(
+        engine, ["https://www.Example.com/path", "example.com", "other.com"],
+        api_key="k", dry_run=True, find=find,
+    )
+    assert out["ok"] and out["dry_run"] and out["recipe"] == "redo_partner"
+    assert out["domains"] == ["example.com", "other.com"]
+    assert calls == []
+    from sqlalchemy import inspect
+    assert "outbound_enriched_contacts" not in set(inspect(engine).get_table_names())
+
+
+def test_enrich_domain_list_tags_redo_partner_and_the_regular_push_skips_it(engine):
+    def find(domain, *, api_key, max_contacts=2, **kw):
+        return oc.FindResult(domain=domain, credits_used=1, contacts=[
+            oc.Contact(domain=domain, first_name="A", last_name="B", email=f"a@{domain}", title="Founder")])
+
+    live = oe.enrich_domain_list(engine, "redo.com, plus.com", api_key="k", dry_run=False, find=find, write=opener)
+    assert live["ok"] and live["dry_run"] is False and live["contacts_found"] == 2
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        recipes = conn.execute(text(
+            "SELECT domain, recipe FROM outbound_enriched_contacts ORDER BY domain"
+        )).fetchall()
+    assert recipes == [("plus.com", "redo_partner"), ("redo.com", "redo_partner")]
+    # A normal sourced contact is still pushed. The partner rows are not.
+    normal = lead("base.com")
+    normal["recipe"] = "plan_upgrade"
+    oe.run_enrichment(engine, [normal], api_key="k", find=finder({"base.com": ["a@base.com"]}), write=opener)
+    sent = []
+
+    def record(payload, cid, dry_run=False, **k):
+        sent.extend(item["email"] for item in payload)
+        return push.PushOutcome(attempted=len(payload), created=len(payload), dry_run=False)
+
+    out = oe.push_pending(engine, "camp", dry_run=False, push=record)
+    assert sent == ["a@base.com"] and out["excluded_recipes"] == 2 and out["pushed"] == 1

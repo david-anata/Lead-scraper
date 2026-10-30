@@ -189,6 +189,29 @@ def test_configured_campaign_id_does_not_fall_back(monkeypatch):
     assert push.configured_campaign_id() == "campaign-1"
 
 
+def test_recipe_campaign_map_is_fixed_and_does_not_use_the_retired_campaign():
+    assert push.RECIPE_CAMPAIGN_MAP == {
+        "amz_on": "a333e00e-bc3b-4abf-bcbf-4e0eb126090c",
+        "amz_off": "45a521a0-68e2-439f-9622-1672f9ede214",
+        "plan_upgrade": "1937c21a-89c4-458f-a949-306f90ae6258",
+        "replatform": "d12b5512-d34c-4331-841f-8e59263f5b5e",
+        "abby_reengage": "8ebf1923-7ba4-4a63-96a8-adb18a58ddf6",
+    }
+    assert push.LIVE_CAMPAIGN_ID not in push.RECIPE_CAMPAIGN_MAP.values()
+    assert "redo_partner" in push.PUSH_EXCLUDED_RECIPES
+
+
+def test_campaign_for_recipe_uses_the_map_then_the_default_then_the_env(monkeypatch):
+    monkeypatch.setenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", "env-campaign")
+    assert push.campaign_for_recipe("plan_upgrade", "caller") == push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]
+    assert push.campaign_for_recipe("replatformed", "caller") == "caller"
+    assert push.campaign_for_recipe("  amz_off  ") == push.RECIPE_CAMPAIGN_MAP["amz_off"]
+    assert push.campaign_for_recipe("icp_baseline") == "env-campaign"
+    monkeypatch.delenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID")
+    assert push.campaign_for_recipe("icp_baseline", "") == ""
+    assert push.campaign_for_recipe("abby_reengage", "") == push.RECIPE_CAMPAIGN_MAP["abby_reengage"]
+
+
 class _R:
     def __init__(self, code, data):
         self.status_code, self._d = code, data

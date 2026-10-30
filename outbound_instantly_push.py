@@ -26,8 +26,8 @@ INSTANTLY_ADD_LEADS_URL = "https://api.instantly.ai/api/v2/leads/add"
 CHUNK = 100
 
 # Retired "AGENT SDR // MARCH '26" campaign. Older read-only tools still name it.
-# Pushes must not fall back to this id. The only push target is
-# OUTBOUND_INSTANTLY_CAMPAIGN_ID.
+# Pushes must not fall back to this id. Unmapped recipes use
+# OUTBOUND_INSTANTLY_CAMPAIGN_ID. Mapped recipes use RECIPE_CAMPAIGN_MAP.
 LIVE_CAMPAIGN_ID = "4f118329-c07e-4279-9c08-12059f2a49f4"
 MISSING_CAMPAIGN_MESSAGE = (
     "OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset. Skipping the Instantly push. "
@@ -35,15 +35,47 @@ MISSING_CAMPAIGN_MESSAGE = (
 )
 DEFAULT_PROTECTED: tuple[str, ...] = ()
 
+# Contacts whose recipe column is one of these go to that Instantly campaign.
+# Anything else uses the caller's campaign id, then OUTBOUND_INSTANTLY_CAMPAIGN_ID.
+# This is a code map on purpose: no new env var and no schema change.
+RECIPE_CAMPAIGN_MAP: dict[str, str] = {
+    "amz_on": "a333e00e-bc3b-4abf-bcbf-4e0eb126090c",
+    "amz_off": "45a521a0-68e2-439f-9622-1672f9ede214",
+    "plan_upgrade": "1937c21a-89c4-458f-a949-306f90ae6258",
+    "replatform": "d12b5512-d34c-4331-841f-8e59263f5b5e",
+    "abby_reengage": "8ebf1923-7ba4-4a63-96a8-adb18a58ddf6",
+}
+
+# Partner-list contacts are stored for a separate pass and stay out of push_pending.
+REDO_PARTNER_RECIPE = "redo_partner"
+PUSH_EXCLUDED_RECIPES: frozenset[str] = frozenset({REDO_PARTNER_RECIPE})
+
 
 def configured_campaign_id() -> str:
-    """Return the campaign to push into.
+    """Return the campaign for recipes that are not in ``RECIPE_CAMPAIGN_MAP``.
 
-    Empty when ``OUTBOUND_INSTANTLY_CAMPAIGN_ID`` is unset. Callers must skip
-    the push in that case. ``LIVE_CAMPAIGN_ID`` is not a substitute.
+    Empty when ``OUTBOUND_INSTANTLY_CAMPAIGN_ID`` is unset. ``LIVE_CAMPAIGN_ID``
+    is not a substitute.
     """
 
     return (os.getenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID") or "").strip()
+
+
+def campaign_for_recipe(recipe: Any, default: str = "") -> str:
+    """Campaign for one contact's recipe column.
+
+    A mapped recipe always wins. An unmapped recipe uses ``default`` when that
+    is set, otherwise ``OUTBOUND_INSTANTLY_CAMPAIGN_ID``. Empty means there is
+    no campaign to add this contact to.
+    """
+
+    mapped = RECIPE_CAMPAIGN_MAP.get(str(recipe or "").strip())
+    if mapped:
+        return mapped
+    explicit = str(default or "").strip()
+    if explicit:
+        return explicit
+    return configured_campaign_id()
 
 
 def friendly_category(raw: Any) -> str:

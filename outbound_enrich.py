@@ -137,15 +137,51 @@ def _record_person(engine, c: _contacts.Contact, opener: str, source: str,
              "status": c.email_status or ""})
 
 
-def unpushed(engine, limit: int = 500) -> list[dict[str, Any]]:
+def unpushed(engine, limit: int = 500, *,
+             exclude_recipes: Iterable[str] = ()) -> list[dict[str, Any]]:
+    """Contacts waiting for a push, oldest first.
+
+    ``exclude_recipes`` keeps those recipe values out of this page so a large
+    held batch cannot crowd the limit. They stay unpushed.
+    """
+    excluded = [str(recipe).strip() for recipe in exclude_recipes if str(recipe).strip()]
+    params: dict[str, Any] = {"n": limit}
+    sql = (
+        "SELECT email, domain, first_name, last_name, title, opener, brand, category, "
+        f"recipe, tier FROM {_PEOPLE} WHERE pushed_at IS NULL "
+        "AND COALESCE(skip_reason, '') = '' "
+    )
+    if excluded:
+        holders = []
+        for index, recipe in enumerate(excluded):
+            key = f"x{index}"
+            holders.append(f":{key}")
+            params[key] = recipe
+        sql += f"AND COALESCE(recipe, '') NOT IN ({', '.join(holders)}) "
+    sql += "ORDER BY created_at LIMIT :n"
     with engine.connect() as conn:
-        rows = conn.execute(text(
-            "SELECT email, domain, first_name, last_name, title, opener, brand, category, "
-            f"recipe, tier FROM {_PEOPLE} WHERE pushed_at IS NULL "
-            "AND COALESCE(skip_reason, '') = '' ORDER BY created_at LIMIT :n"),
-            {"n": limit}).fetchall()
+        rows = conn.execute(text(sql), params).fetchall()
     return [dict(zip(("email", "domain", "first_name", "last_name", "title", "opener", "brand",
                       "category", "recipe", "tier"), r)) for r in rows]
+
+
+def _count_unpushed_recipes(engine, recipes: Iterable[str]) -> int:
+    names = [str(recipe).strip() for recipe in recipes if str(recipe).strip()]
+    if not names:
+        return 0
+    params: dict[str, Any] = {}
+    holders = []
+    for index, recipe in enumerate(names):
+        key = f"r{index}"
+        holders.append(f":{key}")
+        params[key] = recipe
+    sql = (
+        f"SELECT COUNT(*) FROM {_PEOPLE} WHERE pushed_at IS NULL "
+        "AND COALESCE(skip_reason, '') = '' "
+        f"AND COALESCE(recipe, '') IN ({', '.join(holders)})"
+    )
+    with engine.connect() as conn:
+        return int(conn.execute(text(sql), params).scalar() or 0)
 
 
 def _mark_pushed(engine, emails: Iterable[str], campaign_id: str) -> None:
@@ -302,7 +338,9 @@ def run_enrichment(
             report.stopped_reason = res.reason
             break
 
-    if campaign_id and not dry_run:
+    if not dry_run:
+        # campaign_id is only the default for recipes that are not in the map.
+        # An empty id still pushes mapped recipes.
         out = push_pending(engine, campaign_id, dry_run=False, push=push)
         report.push_note = out["note"]
         report.pushed = out["pushed"]
@@ -348,54 +386,114 @@ def _mark_skipped(engine, people: list[dict[str, Any]]) -> None:
                  "e": person.get("email")})
 
 
+def _empty_push(*, dry_run: bool, suppressed: int = 0, excluded: int = 0,
+                note: str = "Nothing to push.", errors: Optional[list[str]] = None) -> dict[str, Any]:
+    return {
+        "pending": 0, "pushed": 0, "created": 0, "skipped": 0,
+        "suppressed": suppressed, "excluded_recipes": excluded, "dry_run": dry_run,
+        "errors": errors or [], "note": note, "preview": [], "campaigns": [],
+    }
+
+
 def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int = 500,
                  push: Optional[Callable[..., _push.PushOutcome]] = None) -> dict[str, Any]:
-    """Add every not-yet-pushed contact to an Instantly campaign.
+    """Add not-yet-pushed contacts to Instantly, one campaign per recipe group.
 
+    A recipe in ``RECIPE_CAMPAIGN_MAP`` goes to that campaign. Every other
+    recipe uses ``campaign_id`` when it is set, otherwise
+    ``OUTBOUND_INSTANTLY_CAMPAIGN_ID``. ``redo_partner`` is left unpushed.
     Suppressed emails and domains are left unpushed and, on a live push, marked
     so they do not clog the queue. A contact is marked pushed only when
-    Instantly accepted the batch with no errors. If the suppression list cannot
-    be read, nothing is pushed.
+    Instantly accepted that campaign's batch with no errors. If the suppression
+    list cannot be read, nothing is pushed.
     """
     push = push or _push.push_leads
     try:
-        pending = unpushed(engine, limit)
+        excluded = _count_unpushed_recipes(engine, _push.PUSH_EXCLUDED_RECIPES)
+        pending = unpushed(engine, limit, exclude_recipes=_push.PUSH_EXCLUDED_RECIPES)
         import outbound_suppression as suppression
         allowed, blocked = suppression.partition(engine, pending)
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-enrich] suppression check failed")
-        return {"pending": 0, "pushed": 0, "created": 0, "skipped": 0,
-                "suppressed": 0, "dry_run": dry_run,
-                "errors": ["suppression list could not be read"],
-                "note": "Suppression list could not be read; nothing pushed.",
-                "preview": []}
+        return _empty_push(
+            dry_run=dry_run, errors=["suppression list could not be read"],
+            note="Suppression list could not be read; nothing pushed.",
+        )
     if blocked and not dry_run:
         _mark_skipped(engine, blocked)
-    payload, emails = [], []
-    for p in allowed:
-        lead = {"domain": p["domain"], "brand": p["brand"], "categories": p["category"],
-                "recipe": p["recipe"], "tier": p["tier"]}
-        payload.append(_push.build_lead(p, lead, p["opener"]))
-        emails.append(p["email"])
-    if not payload:
-        note = "Nothing to push."
+    default_campaign = (campaign_id or "").strip() or _push.configured_campaign_id()
+    groups: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    missing_campaign = 0
+    for person in allowed:
+        target = _push.campaign_for_recipe(person.get("recipe") or "", default_campaign)
+        lead = {"domain": person["domain"], "brand": person["brand"], "categories": person["category"],
+                "recipe": person["recipe"], "tier": person["tier"]}
+        body = _push.build_lead(person, lead, person["opener"])
+        if not target:
+            missing_campaign += 1
+            continue
+        groups.setdefault(target, []).append((person, body))
+    if not groups:
+        bits = []
+        if excluded:
+            bits.append(f"Excluded {excluded} redo_partner contacts from the regular push.")
         if blocked:
-            note = f"Skipped {len(blocked)} suppressed contacts."
-        return {"pending": 0, "pushed": 0, "created": 0, "skipped": 0,
-                "suppressed": len(blocked), "dry_run": dry_run, "errors": [],
-                "note": note, "preview": []}
-    outcome = push(payload, campaign_id, dry_run=dry_run)
-    pushed = 0
-    if not outcome.dry_run and not outcome.errors and payload:
-        _mark_pushed(engine, emails, campaign_id)
-        pushed = len(emails)
-    preview = [{k: v for k, v in lead.items() if k != "email"} for lead in payload[:3]]
-    note = outcome.reason or outcome.summary
+            bits.append(f"Skipped {len(blocked)} suppressed contacts.")
+        if missing_campaign:
+            bits.append(_push.MISSING_CAMPAIGN_MESSAGE)
+        return _empty_push(
+            dry_run=dry_run, suppressed=len(blocked), excluded=excluded,
+            note=" ".join(bits) or "Nothing to push.",
+        )
+
+    created = skipped = pushed = 0
+    errors: list[str] = []
+    notes: list[str] = []
+    preview: list[dict[str, Any]] = []
+    campaigns: list[dict[str, Any]] = []
+    stayed_dry = True
+    for target, items in groups.items():
+        payload = [body for _person, body in items]
+        emails = [str(person.get("email") or "") for person, _body in items]
+        outcome = push(payload, target, dry_run=dry_run)
+        stayed_dry = stayed_dry and outcome.dry_run
+        group_pushed = 0
+        if not outcome.dry_run and not outcome.errors and payload:
+            _mark_pushed(engine, emails, target)
+            group_pushed = len(emails)
+            pushed += group_pushed
+        created += outcome.created
+        skipped += outcome.skipped
+        errors.extend(outcome.errors)
+        if outcome.reason or outcome.summary:
+            notes.append(outcome.reason or outcome.summary)
+        for body in payload:
+            if len(preview) >= 3:
+                break
+            shown = {key: value for key, value in body.items() if key != "email"}
+            shown["campaign_id"] = target
+            preview.append(shown)
+        campaigns.append({
+            "campaign_id": target,
+            "pending": len(payload),
+            "pushed": group_pushed,
+            "dry_run": outcome.dry_run,
+            "recipes": sorted({str(person.get("recipe") or "") for person, _body in items}),
+        })
+    note = " ".join(notes).strip()
+    if excluded:
+        note = f"{note} Excluded {excluded} redo_partner contacts from the regular push.".strip()
     if blocked:
         note = f"{note} Skipped {len(blocked)} suppressed contacts.".strip()
-    return {"pending": len(payload), "pushed": pushed, "created": outcome.created,
-            "skipped": outcome.skipped, "suppressed": len(blocked), "dry_run": outcome.dry_run,
-            "errors": outcome.errors, "note": note, "preview": preview}
+    if missing_campaign:
+        note = f"{note} {_push.MISSING_CAMPAIGN_MESSAGE}".strip()
+    return {
+        "pending": sum(len(items) for items in groups.values()),
+        "pushed": pushed, "created": created, "skipped": skipped,
+        "suppressed": len(blocked), "excluded_recipes": excluded,
+        "dry_run": stayed_dry, "errors": errors, "note": note,
+        "preview": preview, "campaigns": campaigns,
+    }
 
 
 def enriched_since(engine, since_utc) -> dict[str, int]:
@@ -406,3 +504,101 @@ def enriched_since(engine, since_utc) -> dict[str, int]:
             f"SELECT COUNT(*), COALESCE(SUM(credits_used), 0) FROM {_DOMAINS} WHERE enriched_at >= :t"),
             {"t": since_utc}).fetchone()
     return {"companies": int(row[0] or 0), "credits": int(row[1] or 0)}
+
+
+MAX_ENRICH_LIST_DOMAINS = 200
+
+
+def coerce_dry_run(value: Any) -> bool:
+    """Missing or unrecognized values stay on the safe side: dry run."""
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def domain_list_from(raw: Any) -> list[str]:
+    """Normalize a domain list from a JSON array or a comma/newline string.
+
+    Order is preserved. Duplicates and blanks are dropped. Hosts are reduced
+    to the registrable domain the rest of enrichment already uses.
+    """
+    if isinstance(raw, str):
+        parts = [part.strip() for part in raw.replace(",", "\n").splitlines()]
+    elif isinstance(raw, (list, tuple)):
+        parts = []
+        for item in raw:
+            parts.extend(part.strip() for part in str(item).replace(",", "\n").splitlines())
+    else:
+        parts = []
+    seen: set[str] = set()
+    domains: list[str] = []
+    for part in parts:
+        domain = _contacts.normalize_domain(part)
+        if not domain or domain in seen:
+            continue
+        seen.add(domain)
+        domains.append(domain)
+    return domains
+
+
+def enrich_domain_list(
+    engine,
+    domains: Any,
+    *,
+    api_key: str,
+    dry_run: bool = True,
+    find: Optional[Callable[..., _contacts.FindResult]] = None,
+    write: Optional[Callable[..., tuple[str, str]]] = None,
+    already_in_instantly: Optional[Callable[[str], Optional[bool]]] = None,
+) -> dict[str, Any]:
+    """Enrich an explicit domain list and tag every new contact ``redo_partner``.
+
+    ``dry_run`` defaults to true and does not call the contact finder or write
+    rows. A live run stores contacts and does not push them. It also does not
+    flush the regular unpushed queue: ``redo_partner`` is excluded from
+    ``push_pending``, and this call leaves Instantly alone.
+    """
+    cleaned = domain_list_from(domains)
+    base = {
+        "ok": False,
+        "dry_run": dry_run,
+        "recipe": _push.REDO_PARTNER_RECIPE,
+        "domains": cleaned,
+        "companies": len(cleaned),
+        "pushed": 0,
+    }
+    if len(cleaned) > MAX_ENRICH_LIST_DOMAINS:
+        return {**base, "domains": cleaned[:MAX_ENRICH_LIST_DOMAINS],
+                "reason": f"At most {MAX_ENRICH_LIST_DOMAINS} domains per call."}
+    if not cleaned:
+        return {**base, "reason": "No domains to enrich."}
+    if dry_run:
+        return {**base, "ok": True, "contacts_found": 0,
+                "note": "Dry run: nothing enriched and nothing sent to Instantly."}
+    leads = [{
+        "domain": domain,
+        "brand": domain.split(".")[0],
+        "recipe": _push.REDO_PARTNER_RECIPE,
+        "tier": "",
+        "categories": "",
+    } for domain in cleaned]
+    # Instantly stays off even on a live enrich. Passing dry_run through to
+    # run_enrichment would also push every other waiting contact.
+    report = run_enrichment(
+        engine, leads, api_key=api_key,
+        max_companies=len(leads), max_contacts=2,
+        credit_budget=max(len(leads) * 6, 1),
+        campaign_id="", dry_run=True,
+        find=find, write=write, already_in_instantly=already_in_instantly,
+    )
+    hard_fail = bool(report.stopped_reason) and report.companies_tried == 0 and report.contacts_found == 0
+    return {
+        **base,
+        "ok": not hard_fail,
+        "contacts_found": report.contacts_found,
+        "reason": report.stopped_reason,
+        "note": "Contacts are tagged redo_partner and left out of the regular Instantly push.",
+        "report": report.as_dict(),
+    }
