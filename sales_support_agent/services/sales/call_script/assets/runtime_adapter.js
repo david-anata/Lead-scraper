@@ -88,57 +88,132 @@
     document.body.appendChild(pill);
   }
   function prepText(value) {
-    if (value == null || value === '') return 'Unknown';
-    return String(value);
+    if (value == null) return '';
+    return String(value).trim();
+  }
+  function prepKnown(value) {
+    var t = prepText(value);
+    return t && !/^unknown\.?$/i.test(t) ? t : '';
+  }
+  var PREPARED = /^prepared(,\s*not raised by them)?\s*:\s*/i;
+  function mountPrepCss() {
+    if (document.getElementById('call-prep-css')) return;
+    var css = document.createElement('style');
+    css.id = 'call-prep-css';
+    css.textContent = ''
+      + '#call-prep .prep-meta{display:flex;flex-wrap:wrap;gap:8px;margin:-4px 0 16px}'
+      + '#call-prep .prep-chip{display:inline-block;padding:3px 10px;border-radius:999px;border:1px solid var(--line);font-size:13px;font-weight:600;color:var(--muted)}'
+      + '#call-prep .prep-facts{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:0 0 6px;font-size:14.5px;line-height:1.45}'
+      + '#call-prep .prep-facts dt{font-weight:700;color:var(--muted);margin:0}'
+      + '#call-prep .prep-facts dd{margin:0;max-width:70ch}'
+      + '#call-prep details{border-top:1px solid var(--line);padding:10px 0 4px;margin-top:10px}'
+      + '#call-prep summary{cursor:pointer;font-weight:700;font-size:16px;list-style-position:inside}'
+      + '#call-prep details ol,#call-prep details ul{margin:8px 0 4px;padding-left:1.4em}'
+      + '#call-prep details li{margin:5px 0;font-size:14.5px;line-height:1.45}'
+      + '#call-prep .prep-obj{margin:10px 0 0;font-size:14.5px;line-height:1.45}'
+      + '#call-prep .prep-obj b{display:block}'
+      + '#call-prep .prep-tag{display:inline-block;margin-right:6px;padding:1px 7px;border-radius:999px;background:var(--line);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;vertical-align:1px}'
+      + '#call-prep .prep-unknown{margin:12px 0 0;font-size:13px;color:var(--muted)}'
+      + '@media (max-width:560px){#call-prep .prep-facts{grid-template-columns:1fr}#call-prep .prep-facts dt{margin-top:6px}}';
+    document.head.appendChild(css);
   }
   function mountPrep() {
     var prep = CFG.state && CFG.state['ss-prep'];
     var main = document.getElementById('main');
     if (!prep || !main || document.getElementById('call-prep')) return;
+    mountPrepCss();
     var sections = prep.sections || {};
     var panel = document.createElement('section');
     panel.className = 'sec';
     panel.id = 'call-prep';
+    panel.setAttribute('data-title', 'Prep');
     var heading = document.createElement('h2');
     heading.textContent = 'Prep';
     panel.appendChild(heading);
-    function addLine(label, value) {
-      var p = document.createElement('p');
-      var strong = document.createElement('strong');
-      strong.textContent = label;
-      p.appendChild(strong);
-      p.appendChild(document.createTextNode(' ' + prepText(value)));
-      panel.appendChild(p);
+
+    var meta = document.createElement('div');
+    meta.className = 'prep-meta';
+    [prepKnown(prep.when), prepKnown(prep.purpose)].forEach(function (t) {
+      if (!t) return;
+      var chip = document.createElement('span');
+      chip.className = 'prep-chip';
+      chip.textContent = t;
+      meta.appendChild(chip);
+    });
+    if (meta.childNodes.length) panel.appendChild(meta);
+
+    /* Only show facts we actually have; the gaps go in one line at the end. */
+    var facts = document.createElement('dl');
+    facts.className = 'prep-facts';
+    [['Who', sections.who], ['How they came in', sections.how_they_came_in],
+     ['Likely needs', sections.likely_needs], ['Next step', sections.next_step]].forEach(function (row) {
+      var t = prepKnown(row[1]);
+      if (!t) return;
+      var dt = document.createElement('dt'); dt.textContent = row[0];
+      var dd = document.createElement('dd'); dd.textContent = t;
+      facts.appendChild(dt); facts.appendChild(dd);
+    });
+    if (facts.childNodes.length) panel.appendChild(facts);
+
+    function addGroup(label, build) {
+      var box = document.createElement('details');
+      box.open = true;
+      var sum = document.createElement('summary');
+      sum.textContent = label;
+      box.appendChild(sum);
+      if (build(box)) panel.appendChild(box);
     }
     function addList(label, items, ordered) {
-      var h = document.createElement('h3');
-      h.textContent = label;
-      panel.appendChild(h);
-      if (!items || !items.length) { addLine('', 'Unknown'); return; }
-      var list = document.createElement(ordered ? 'ol' : 'ul');
-      items.forEach(function (item) {
-        var li = document.createElement('li');
-        if (item && typeof item === 'object') {
-          li.textContent = prepText(item.objection) + ' ' + prepText(item.answer);
-        } else {
-          li.textContent = prepText(item);
-        }
-        list.appendChild(li);
+      addGroup(label, function (box) {
+        var list = document.createElement(ordered ? 'ol' : 'ul');
+        (Array.isArray(items) ? items : []).forEach(function (item) {
+          var t = prepKnown(item);
+          if (!t) return;
+          var li = document.createElement('li');
+          li.textContent = t;
+          list.appendChild(li);
+        });
+        if (!list.childNodes.length) return false;
+        box.appendChild(list);
+        return true;
       });
-      panel.appendChild(list);
     }
-    addLine('When:', prep.when);
-    addLine('Purpose:', prep.purpose);
-    addLine('Who and what:', sections.who);
-    addLine('How they came in:', sections.how_they_came_in);
-    addLine('Likely needs:', sections.likely_needs);
     addList('Discovery questions', sections.discovery_questions, true);
     addList('Trial pitch', sections.trial_pitch, false);
-    addList('Objections', sections.objections, false);
-    addLine('Next step:', sections.next_step);
-    if (prep.unknowns && prep.unknowns.length) addLine('Unknown:', prep.unknowns.join(', '));
+    addGroup('Objections', function (box) {
+      var n = 0;
+      (Array.isArray(sections.objections) ? sections.objections : []).forEach(function (item) {
+        if (!item || typeof item !== 'object') return;
+        var q = prepKnown(item.objection), ans = prepKnown(item.answer);
+        if (!q && !ans) return;
+        var div = document.createElement('div');
+        div.className = 'prep-obj';
+        var b = document.createElement('b');
+        if (PREPARED.test(q)) {
+          var tag = document.createElement('span');
+          tag.className = 'prep-tag';
+          tag.textContent = 'Prepared';
+          tag.title = 'Not raised by them yet';
+          b.appendChild(tag);
+          q = q.replace(PREPARED, '');
+        }
+        b.appendChild(document.createTextNode(q));
+        div.appendChild(b);
+        if (ans) div.appendChild(document.createTextNode(ans));
+        box.appendChild(div);
+        n += 1;
+      });
+      return n > 0;
+    });
+    var unknowns = (Array.isArray(prep.unknowns) ? prep.unknowns : []).map(prepText).filter(Boolean);
+    if (unknowns.length) {
+      var u = document.createElement('p');
+      u.className = 'prep-unknown';
+      u.textContent = 'Not found yet: ' + unknowns.join(', ');
+      panel.appendChild(u);
+    }
     var hero = main.querySelector('.hero');
-    if (hero) main.insertBefore(panel, hero);
+    if (hero) main.insertBefore(panel, hero.nextSibling);
     else main.insertBefore(panel, main.firstChild);
   }
   if (document.readyState === 'loading') {
