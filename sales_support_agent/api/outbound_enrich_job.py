@@ -6,8 +6,10 @@ Approved by David on 2026-10-22: run into the live Instantly campaign, up to
 Vercel Cron calls this a few times each weekday morning. Each call takes the
 newest sourced brands that have not been enriched, finds up to two verified
 decision-makers per brand (Prospeo), writes an opening line, and adds them to
-the Instantly campaign in ``OUTBOUND_INSTANTLY_CAMPAIGN_ID``. There is no
-fallback campaign. A Slack summary posts after each call that did something.
+Instantly. A recipe listed in ``RECIPE_CAMPAIGN_MAP`` goes to that campaign.
+Every other recipe uses ``OUTBOUND_INSTANTLY_CAMPAIGN_ID``. There is no
+fallback to the retired campaign. ``redo_partner`` contacts are stored and
+not pushed. A Slack summary posts after each call that did something.
 
 Limits, all overridable with env vars. Defaults are the approved caps, so a
 deploy changes nothing until the env vars are set:
@@ -123,7 +125,11 @@ def summary_text(result: dict[str, Any]) -> str:
     if rep.get("stopped_reason"):
         lines.append(f"Stopped: {rep['stopped_reason']}")
     if result.get("campaign_missing"):
-        lines.append("Instantly push skipped: OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset.")
+        if result.get("pushed"):
+            lines.append(
+                "Unmapped recipes were not pushed: OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset.")
+        else:
+            lines.append("Instantly push skipped: OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset.")
     if result.get("push_problem"):
         lines.append(f"Instantly problem: {result.get('push_note', '')}")
     bounce = result.get("bounce_today") or {}
@@ -266,7 +272,9 @@ def run_enrich_job(
             max_companies=min(company_room, _int_env("OUTBOUND_ENRICH_PER_RUN", DEFAULT_PER_RUN)),
             max_contacts=_int_env("OUTBOUND_ENRICH_MAX_CONTACTS", DEFAULT_MAX_CONTACTS),
             credit_budget=credit_room,
-            campaign_id=campaign, dry_run=not push_on or campaign_missing,
+            # A missing default campaign still pushes mapped recipes. Unmapped
+            # contacts stay queued until OUTBOUND_INSTANTLY_CAMPAIGN_ID is set.
+            campaign_id=campaign, dry_run=not push_on,
             find=find, write=write, push=push,
             deadline=time.monotonic() + _TIME_BUDGET_SECONDS,
             # Never touch a company Clay (or anything else) already put in Instantly.
@@ -277,11 +285,14 @@ def run_enrich_job(
         out["reason"] = "run failed"
         return out
 
-    if campaign_missing:
+    if campaign_missing and not report.pushed:
         report.push_note = _ip.MISSING_CAMPAIGN_MESSAGE
+    elif campaign_missing:
+        report.push_note = f"{report.push_note} {_ip.MISSING_CAMPAIGN_MESSAGE}".strip()
     out.update(
         ran=True, report=report.as_dict(), pushed=report.pushed,
-        push_enabled=push_on and not campaign_missing, push_note=report.push_note,
+        push_enabled=push_on and (not campaign_missing or report.pushed > 0),
+        push_note=report.push_note,
         push_problem=bool(
             push_on and not campaign_missing
             and report.contacts_found and not report.pushed

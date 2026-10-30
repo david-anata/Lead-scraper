@@ -77,6 +77,27 @@ def test_runs_pushes_to_configured_campaign_and_posts_slack(engine):
     assert len(posts) == 1 and "Added to Instantly: 10" in posts[0]
 
 
+def test_missing_default_still_pushes_a_mapped_recipe(engine, monkeypatch):
+    monkeypatch.delenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID")
+    seen = []
+
+    def record(payload, cid, dry_run=False, **k):
+        seen.append(cid)
+        return ok_push(payload, cid, dry_run=dry_run)
+
+    posts = []
+    out = job.run_enrich_job(
+        now=WEEKDAY, engine=engine,
+        leads=[{"domain": "plus.com", "brand": "Plus", "categories": "/Apparel", "recipe": "plan_upgrade"}],
+        find=finder, write=write, push=record, post_slack=posts.append,
+        in_instantly=lambda d: False,
+    )
+    assert out["ran"] and out["pushed"] == 1 and out["campaign_missing"]
+    assert seen == [push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]]
+    assert any(push.MISSING_CAMPAIGN_MESSAGE in post for post in posts)
+    assert push.LIVE_CAMPAIGN_ID not in "".join(posts)
+
+
 def test_missing_campaign_skips_push_logs_and_alerts(engine, monkeypatch, caplog):
     monkeypatch.delenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID")
     called = []

@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, File, Form, Header, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from sales_support_agent.services.auth_deps import get_current_user
@@ -2618,8 +2618,6 @@ async def outbound_enrich_test(request: Request) -> Response:
                     or _ip.configured_campaign_id())
         if not campaign:
             logger.error("[outbound-enrich] %s", _ip.MISSING_CAMPAIGN_MESSAGE)
-            return JSONResponse(status_code=400, content={
-                "ok": False, "reason": _ip.MISSING_CAMPAIGN_MESSAGE})
         live = str(form.get("dry_run") or "true").lower() == "false"
         try:
             n = max(1, min(int(str(form.get("limit") or 50)), 500))
@@ -2631,6 +2629,10 @@ async def outbound_enrich_test(request: Request) -> Response:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[outbound-enrich] push failed")
             return JSONResponse(status_code=500, content={"ok": False, "reason": type(exc).__name__})
+        if not campaign and not out.get("campaigns"):
+            reason = out.get("note") if out.get("excluded_recipes") else _ip.MISSING_CAMPAIGN_MESSAGE
+            return JSONResponse(status_code=400, content={
+                "ok": False, "reason": reason, "campaign_id": campaign, **out})
         return JSONResponse(content={"ok": not out["errors"], "campaign_id": campaign, **out})
     if _ENRICH_TEST.get("running"):
         return JSONResponse(status_code=409, content={"ok": False, "reason": "A test is already running."})
@@ -2679,3 +2681,76 @@ def outbound_enrich_test_status(request: Request) -> Response:
         "ANTHROPIC_API_KEY", "STORELEADS_API_KEY", "SLACK_BOT_TOKEN", "INSTANTLY_API_KEY", "CLICKUP_API_TOKEN")}
     content["prospeo_env_names"] = sorted(repr(k) for k in os.environ if "PROSPEO" in k.upper())
     return JSONResponse(content=content)
+
+
+def _internal_key_denied(request: Request, supplied: str | None) -> JSONResponse | None:
+    """401 unless X-Internal-Api-Key matches the configured internal key.
+
+    An unset server key is a denial. This route spends contact-finder credits.
+    """
+    import secrets
+
+    settings = getattr(request.app.state, "settings", None)
+    configured = str(getattr(settings, "internal_api_key", "") or "").strip()
+    provided = str(supplied or "").strip()
+    if not configured or not provided or not secrets.compare_digest(provided, configured):
+        return JSONResponse(status_code=401, content={"ok": False, "detail": "Invalid internal API key."})
+    return None
+
+
+@router.post("/api/admin/outbound/enrich-list")
+async def outbound_enrich_list(
+    request: Request,
+    x_internal_api_key: str | None = Header(default=None),
+) -> JSONResponse:
+    """Enrich a provided domain list and tag the contacts ``recipe=redo_partner``.
+
+    ``dry_run`` defaults to true: the domains are normalized and nothing is
+    looked up or stored. A live call finds contacts and stores them. It does
+    not add them to Instantly. The regular push skips this recipe.
+    """
+    denied = _internal_key_denied(request, x_internal_api_key)
+    if denied is not None:
+        return denied
+
+    import outbound_contacts as _oc
+    import outbound_enrich as _oe
+    from sales_support_agent.models.database import get_engine
+
+    raw = await request.body()
+    if not raw:
+        body: Any = {}
+    else:
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "reason": "Send a JSON object with a domains list."})
+    if isinstance(body, list):
+        domains: Any = body
+        dry_run = True
+    elif isinstance(body, dict):
+        domains = body.get("domains", body.get("domain_list", []))
+        dry_run = _oe.coerce_dry_run(body.get("dry_run", True))
+    else:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "Send a JSON object with a domains list."})
+    if not dry_run and not _oc.load_contact_config():
+        return JSONResponse(status_code=400, content={
+            "ok": False, "dry_run": False, "reason": "PROSPEO_API_KEY is not set."})
+
+    from starlette.concurrency import run_in_threadpool
+
+    def _run() -> dict[str, Any]:
+        engine = None if dry_run else get_engine()
+        return _oe.enrich_domain_list(
+            engine, domains, api_key=_oc.load_contact_config(), dry_run=dry_run,
+        )
+
+    try:
+        result = await run_in_threadpool(_run)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[outbound-enrich] enrich-list failed")
+        return JSONResponse(status_code=500, content={"ok": False, "reason": type(exc).__name__})
+    status = 200 if result.get("ok") else 400
+    return JSONResponse(status_code=status, content=result)
