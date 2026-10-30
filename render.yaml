@@ -403,6 +403,23 @@ services:
         sync: false
 
   - type: cron
+    name: agent-outbound-campaign-score
+    runtime: python
+    # Monday morning America/Denver. Both UTC offsets are scheduled; the
+    # endpoint accepts only local Monday 7 AM.
+    schedule: "0 13,14 * * 1"
+    buildCommand: pip install -r requirements.txt
+    startCommand: |
+      curl --fail --silent --show-error --max-time 120 \
+        -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/outbound-campaign-score/run" \
+        -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")"
+    envVars:
+      - key: SALES_SUPPORT_AGENT_URL
+        value: https://agent.anatainc.com
+      - key: SALES_AGENT_INTERNAL_API_KEY
+        sync: false
+
+  - type: cron
     name: building-synthetic-journey
     runtime: python
     # Daily isolated journey. A broken handoff or failed cleanup fails the cron.

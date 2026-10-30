@@ -112,11 +112,35 @@ Outbound contact finding (defaults are unchanged until these are set):
   are included. AGENT SDR and Re-engage are always included.
 
 `push_pending` sends each stored contact to the Instantly campaign for its
-`recipe` column. The map is hardcoded in
+`recipe` column. It reads `outbound_campaigns` (active and throttled rows,
+including the `replatformed` alias of `replatform`). When that table is
+empty or cannot be read, it uses the hardcoded
 `outbound_instantly_push.RECIPE_CAMPAIGN_MAP` (`amz_on`, `amz_off`,
 `plan_upgrade`, `replatform`, `abby_reengage`). Any other recipe uses
-`OUTBOUND_INSTANTLY_CAMPAIGN_ID`. Contacts tagged `redo_partner` are stored
-and left out of that push. This does not create, edit, or activate campaigns.
+`OUTBOUND_INSTANTLY_CAMPAIGN_ID`. Contacts whose campaign is `cut` or
+`proposed` stay unpushed. Contacts tagged `redo_partner` are stored and
+left out of that push. This does not create, edit, or activate Instantly
+campaigns.
+
+The weekday morning pull sources `amz_on`, `amz_off`, `plan_upgrade`, and
+`replatform` from each row's `storeleads_filters` before the older recipes.
+Those filters are confirmed List Domains parameters: Shopify, Active, US,
+an email, and about $10k to $20k a month, plus Amazon / not Amazon, a
+Shopify Plus plan change in the last 90 days, or a move off WooCommerce,
+Magento, or BigCommerce in the last 120 days. Domains already in
+`outbound_contacted_domains` are skipped. New companies stay inside the
+300 company and 1100 credit daily caps. Sourcing does not spend Prospeo
+credits and does not call Instantly.
+
+Monday at 7:00 AM America/Denver, `/api/jobs/outbound-campaign-score/at-1300`
+and `at-1400` score the previous week once `instantly_campaign_daily`
+exists. The job also reads `abby_handled.campaign_id` when that column
+exists. A campaign needs at least 150 contacted before it is judged. Boost,
+throttle, and cut are written to `outbound_campaign_scores`. New trait
+combinations are inserted only as `outbound_campaigns.status = 'proposed'`.
+David approves activation, volume, and any Instantly campaign. Apply
+`sales_support_agent/migrations/20261030_outbound_campaigns.sql` before
+this deploy. The runtime role cannot create the tables on Vercel.
 
 `POST /api/admin/outbound/enrich-list` requires `X-Internal-Api-Key`. The body
 is `{"domains": ["brand.com"], "dry_run": true}`. `dry_run` defaults to true,

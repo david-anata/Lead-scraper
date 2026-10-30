@@ -278,8 +278,37 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
     daily_remaining = _DAILY_COMPANY_CAP
     import time as _time
     pull_started = _time.monotonic()
-    # Baseline last, so the signal-based recipes get first claim on the daily cap.
+    # Signal-campaign filters claim the daily cap first (this is what fills
+    # amz_on and amz_off). Scheduled recipes follow. Baseline stays last.
     due = [r for r in due if r.key != "icp_baseline"] + [r for r in due if r.key == "icp_baseline"]
+    if engine is not None and daily_remaining > 0:
+        try:
+            import outbound_campaign_source as _source
+
+            sourced = _source.source_active_campaigns(
+                engine, api_key=api_key, now=now, contacted=already,
+                company_room=daily_remaining,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-jobs] campaign sourcing failed")
+            sourced = {"recorded": 0, "leads": [], "recipes": [], "scanned": 0, "skipped_seen": 0}
+        recorded = int(sourced.get("recorded") or 0)
+        if recorded:
+            sourced_leads = list(sourced.get("leads") or [])
+            all_leads.extend(sourced_leads)
+            already |= {str(lead.get("domain") or "") for lead in sourced_leads}
+            daily_remaining = max(0, daily_remaining - recorded)
+            out["pulled"] += recorded
+            out["recipes"].extend(list(sourced.get("recipes") or []))
+            recipe_runs.append({
+                "recipe_key": "campaign_filters",
+                "recipe_label": "Signal campaign filters",
+                "status": "complete",
+                "fresh": recorded,
+                "scanned": int(sourced.get("scanned") or 0),
+                "matched": recorded,
+                "skipped_seen": int(sourced.get("skipped_seen") or 0),
+            })
 
     # 1. Pull. Fast and free; the Amazon work is deliberately not inline here,
     #    because at minutes per brand it would never finish inside one request.
