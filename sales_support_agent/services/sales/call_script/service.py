@@ -38,6 +38,7 @@ PER_CALL_KEYS = (
     "ss-callmeta",
     "ss-last",
     "ss-live",
+    "ss-prep",
 )
 MAX_STATE_BYTES = 512 * 1024
 MAX_REVIEW_BYTES = 256 * 1024
@@ -140,8 +141,47 @@ def sanitize_state(state: Any) -> dict:
     return clean
 
 
+def merge_stored_prep(existing: Any, incoming: Any) -> Optional[dict]:
+    """Keep server-written prep when a page save is older or drops notify flags.
+
+    The call page round-trips `ss-prep` with the other saved keys. A page that
+    was open before prep finished must not wipe the notes, the event id, or
+    the record that Slack and the draft already went out.
+    """
+
+    if not isinstance(existing, dict):
+        return incoming if isinstance(incoming, dict) else None
+    if not isinstance(incoming, dict):
+        return existing
+
+    def stamp(prep: dict) -> str:
+        return str(prep.get("generated_at") or "")
+
+    base = dict(existing if stamp(existing) > stamp(incoming) else incoming)
+    for key, flag in (("slack", "posted_at"), ("draft", "id")):
+        old = existing.get(key) if isinstance(existing.get(key), dict) else {}
+        new = base.get(key) if isinstance(base.get(key), dict) else {}
+        if old.get(flag) and not new.get(flag):
+            merged = dict(new)
+            for item_key, item_value in old.items():
+                if item_value and not merged.get(item_key):
+                    merged[item_key] = item_value
+            merged[flag] = old[flag]
+            base[key] = merged
+    if existing.get("event_id") and not base.get("event_id"):
+        base["event_id"] = existing["event_id"]
+    return base
+
+
 def save_state(session: Session, tracker: SalesCallTracker, state: Any) -> SalesCallTracker:
-    tracker.state_json = sanitize_state(state)
+    incoming = sanitize_state(state)
+    existing = tracker.state_json if isinstance(tracker.state_json, dict) else {}
+    prep = merge_stored_prep(existing.get("ss-prep"), incoming.get("ss-prep"))
+    if prep is None:
+        incoming.pop("ss-prep", None)
+    else:
+        incoming["ss-prep"] = prep
+    tracker.state_json = incoming
     tracker.updated_at = _now()
     session.flush()
     return tracker

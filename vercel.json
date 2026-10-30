@@ -126,6 +126,10 @@
       "schedule": "*/15 * * * *"
     },
     {
+      "path": "/api/jobs/sales-call-prep/run",
+      "schedule": "*/15 * * * *"
+    },
+    {
       "path": "/api/jobs/instantly/register-webhook",
       "schedule": "7 * * * *"
     }

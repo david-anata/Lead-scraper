@@ -12,7 +12,7 @@
  */
 (function () {
   var CFG = window.__ANATA_CALL__ || {};
-  var PER_CALL = ['ss-beliefs', 'ss-gap', 'ss-nums', 'ss-sel', 'ss-asks', 'ss-ai', 'ss-callmeta', 'ss-last', 'ss-live'];
+  var PER_CALL = ['ss-beliefs', 'ss-gap', 'ss-nums', 'ss-sel', 'ss-asks', 'ss-ai', 'ss-callmeta', 'ss-last', 'ss-live', 'ss-prep'];
 
   /* ---- Hydrate this lead's tracker before the script reads storage ---- */
   try {
@@ -87,7 +87,66 @@
     document.head.appendChild(css);
     document.body.appendChild(pill);
   }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountPill); else mountPill();
+  function prepText(value) {
+    if (value == null || value === '') return 'Unknown';
+    return String(value);
+  }
+  function mountPrep() {
+    var prep = CFG.state && CFG.state['ss-prep'];
+    var main = document.getElementById('main');
+    if (!prep || !main || document.getElementById('call-prep')) return;
+    var sections = prep.sections || {};
+    var panel = document.createElement('section');
+    panel.className = 'sec';
+    panel.id = 'call-prep';
+    var heading = document.createElement('h2');
+    heading.textContent = 'Prep';
+    panel.appendChild(heading);
+    function addLine(label, value) {
+      var p = document.createElement('p');
+      var strong = document.createElement('strong');
+      strong.textContent = label;
+      p.appendChild(strong);
+      p.appendChild(document.createTextNode(' ' + prepText(value)));
+      panel.appendChild(p);
+    }
+    function addList(label, items, ordered) {
+      var h = document.createElement('h3');
+      h.textContent = label;
+      panel.appendChild(h);
+      if (!items || !items.length) { addLine('', 'Unknown'); return; }
+      var list = document.createElement(ordered ? 'ol' : 'ul');
+      items.forEach(function (item) {
+        var li = document.createElement('li');
+        if (item && typeof item === 'object') {
+          li.textContent = prepText(item.objection) + ' ' + prepText(item.answer);
+        } else {
+          li.textContent = prepText(item);
+        }
+        list.appendChild(li);
+      });
+      panel.appendChild(list);
+    }
+    addLine('When:', prep.when);
+    addLine('Purpose:', prep.purpose);
+    addLine('Who and what:', sections.who);
+    addLine('How they came in:', sections.how_they_came_in);
+    addLine('Likely needs:', sections.likely_needs);
+    addList('Discovery questions', sections.discovery_questions, true);
+    addList('Trial pitch', sections.trial_pitch, false);
+    addList('Objections', sections.objections, false);
+    addLine('Next step:', sections.next_step);
+    if (prep.unknowns && prep.unknowns.length) addLine('Unknown:', prep.unknowns.join(', '));
+    var hero = main.querySelector('.hero');
+    if (hero) main.insertBefore(panel, hero);
+    else main.insertBefore(panel, main.firstChild);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () { mountPill(); mountPrep(); });
+  } else {
+    mountPill();
+    mountPrep();
+  }
 
   /* ---- Save this lead's tracker back to the agent ---- */
   var last = JSON.stringify(snapshot());

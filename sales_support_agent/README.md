@@ -16,6 +16,15 @@ eligible for blog qualification. The weekday Codex SEO routine owns research,
 one-page-one-intent checks, article creation, deployment, and production
 verification.
 
+Sales call prep runs every 15 minutes from Vercel Cron at
+`/api/jobs/sales-call-prep/run` (same scheduler auth as the other jobs). It
+reads new appointment-schedule events on the Sales calendar
+(`abby@anatainc.com`). When that calendar is not readable with the credentials
+already configured, it reads `Appointment booked` mail from a configured Gmail
+mailbox. Each new booking gets one Call Script tracker for David, prep notes
+in `ss-prep`, a post in #sales, and a Gmail draft when the draft path is
+configured. The job does not send email.
+
 This FastAPI app handles post-creation sales support inside your existing ClickUp CRM workflow. It does not create new leads in the normal flow. It starts after the ClickUp task already exists and focuses on follow-through, stale-lead prevention, append-only activity logging, owner-directed reminders, daily digests, and mailbox-based signal intake.
 
 ## What Phase 1 Includes
