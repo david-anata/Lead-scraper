@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -104,12 +105,55 @@ def _maybe_analytics_backfill() -> dict[str, Any] | None:
         return {"ok": False, "ran": False, "reason": "backfill skipped"}
 
 
+def _maybe_register_webhook() -> dict[str, Any]:
+    """Register Abby's Instantly webhook after deploy. Missing keys skip quietly."""
+
+    try:
+        from sales_support_agent.services.instantly_abby_webhook import maybe_register_abby_webhook
+
+        return maybe_register_abby_webhook()
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] webhook registration hook failed")
+        return {"ok": False, "skipped": True, "reason": "hook failed"}
+
+
 @router.api_route("/run", methods=["GET", "POST"])
 def run_scheduled_abby(request: Request) -> dict:
     _require_scheduler_auth(request)
     details = run_abby()
-    payload = {"status": "ok", "details": details, "enrich_via_abby": _run_enrich_after_abby()}
+    payload = {
+        "status": "ok",
+        "details": details,
+        "enrich_via_abby": _run_enrich_after_abby(),
+        "webhook_registration": _maybe_register_webhook(),
+    }
     backfill = _maybe_analytics_backfill()
     if backfill is not None:
         payload["analytics_backfill"] = backfill
     return payload
+
+
+@router.api_route("/followups", methods=["GET", "POST"])
+def run_scheduled_followups(request: Request) -> dict[str, Any]:
+    """Send follow-ups whose due time has passed. Guarded like the other jobs."""
+
+    _require_scheduler_auth(request)
+    import abby_runner
+    import outbound_instantly_push as instantly_push
+    from sales_support_agent.models.database import get_engine
+
+    if abby_runner.mode() != "live":
+        return {"status": "ok", "sent": 0, "reason": "ABBY_MODE is not live"}
+    try:
+        engine = get_engine()
+        client = abby_runner.Instantly(instantly_push.api_key())
+        post = slack_poster()
+        cap = int(os.getenv("ABBY_DAILY_CAP") or 60)
+        sent = abby_runner.send_due_scheduled(
+            engine, client, datetime.now(timezone.utc), "live", post, cap,
+        )
+        sent += abby_runner._send_due_followups(engine, client, datetime.now(timezone.utc), "live", post)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[abby] scheduled follow-ups failed")
+        return {"status": "error", "error": type(exc).__name__}
+    return {"status": "ok", "sent": sent}

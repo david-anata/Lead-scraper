@@ -8,18 +8,25 @@ something outside the offer.
   interested / asks for the breakdown -> reply with the 14-day trial and the
       booking link, mark Interested. David is CC'd only when Abby sets cc_david.
   price question -> "plans start at $99/mo", trial, booking link. No automatic CC.
-  not now -> short thanks, check in again in 60 days.
+  not now -> short thanks, then check-ins at 30 and 75 days.
   already has an agency or tool -> ONE reply (operating cost, how do they know
-      it covers everything), then stop.
+      it covers everything), then one later note that the free trial can run
+      alongside their current tool. Nothing after that.
   referral to a colleague -> only when a human wrote the reply and named a
-      colleague. Write to that colleague and CC the referrer. David only if asked.
+      colleague. The approved template asks them, and a referral without an
+      email gets the harder "who handles Amazon or marketing growth" ask.
+      David only if asked.
+  wrong person -> the same harder ask, from the approved template when present.
   opt-out -> no reply, block the whole company domain, mark not interested.
   question Abby is unsure about -> answer what she can, offer the call.
-  hostile / legal / low confidence -> no reply, ask David in Slack.
+  hostile / legal -> no reply, blocklist the lead, mark not interested.
+  low confidence -> no reply, ask David in Slack.
   asked whether she is AI -> she is an AI account specialist on David's team.
-  out of office / auto-reply / departed employee / automated forward -> ignore.
-      No reply, no David CC, no Interested status. A departed contact is
-      recorded so the brand can be tried again later. Nothing is sent.
+  out of office -> no reply now. A follow-up is scheduled for the day after
+      the parsed return date, or 7 days when no date is found.
+  departed employee / automated forward -> ignore. No reply, no David CC,
+      no Interested status, no follow-up. A departed contact is recorded so
+      the brand can be tried again later. Nothing is sent.
 """
 
 from __future__ import annotations
@@ -40,7 +47,7 @@ BOOKING_LINK = "https://app.fyxer.com/t/sales-team99/30"
 DAVID_EMAIL = "david@anatainc.com"
 SIGNATURE = "Abby\nAccount Specialist, Anata"
 AI_DISCLOSURE = "I'm an AI account specialist on David's team."
-FOLLOW_UP_DAYS_NOT_NOW = 60
+NOT_NOW_FOLLOW_UP_DAYS = (30, 75)
 MIN_CONFIDENCE = 0.7
 MAX_WORDS = 150
 
@@ -84,12 +91,12 @@ Categories: {", ".join(CATEGORIES)}.
 Reply rules by category:
 - interested: thank them, one line on the 14-day trial (we build their Amazon strategy and run the ad automation), invite them to grab a time with David at the booking link. Under 80 words. Do not say you are looping David in.
 - price: plans start at $99/month, mention the free 14-day trial, booking link. Do not say you are looping David in.
-- not_now: two short sentences: thanks, and you will check back in a couple of months. No link.
+- not_now: two short sentences: thanks, and you will check back in about a month. No link.
 - has_solution: respectful, one short paragraph: ask what it costs them to run that setup today and how they know it is covering everything they need on Amazon; mention the 14-day trial can run alongside what they have. No pressure.
 - referral: only when a human wrote the referral. Address the colleague by name if known, say who pointed you to them, one line on the trial, booking link.
 - question: answer only from the facts; for anything else say David covers it on a quick call and give the booking link.
 - ai_question: be honest. Say "{AI_DISCLOSURE}" Never say "virtual assistant". Then continue helpfully.
-- wrong_person: thank them and ask who handles Amazon or marketing.
+- wrong_person: thank them and ask who handles Amazon or marketing growth. No booking link.
 - opt_out, hostile, auto_reply, other: reply must be null.
 Bringing David in: he is CC'd only when you set cc_david to true, because he is the one managing the calls. Do that when a warm prospect is ready for a call, when they push back on something outside the facts, for a larger brand, or on a stalled thread. Frame it in the reply, for example "David, any thoughts on X?" Leave cc_david false otherwise, and do not mention looping him in.
 Style: plain, warm, short, founder-to-founder, no em dashes, no exclamation marks overload, no claims about their numbers. Never say "virtual assistant". Sign exactly as:
@@ -111,6 +118,7 @@ class Decision:
     slack: str = ""                  # message for David, if any
     reason: str = ""
     note: str = ""                   # recorded on the handled row; never sent
+    schedule_kind: str = ""          # out_of_office | not_now | has_solution | ""
 
 
 def cc_david_requested(model_out: dict[str, Any]) -> bool:
@@ -371,12 +379,13 @@ def automated_notice(message: Any = "", *, lead_email: str = "", subject: str = 
 
 
 def _ignore(notice: Notice) -> Decision:
-    return Decision("auto_reply", "ignore", reason=notice.reason, note=notice.note)
+    kind = "out_of_office" if notice.kind == "out_of_office" else ""
+    return Decision("auto_reply", "ignore", reason=notice.reason, note=notice.note, schedule_kind=kind)
 
 
 def decide(model_out: dict[str, Any], *, lead_email: str, thread_categories: list[str],
            message: Any = "", subject: str = "", headers: Any = None,
-           is_auto_reply: Any = None) -> Decision:
+           is_auto_reply: Any = None, first_name: str = "", company: str = "") -> Decision:
     """Turn the model's classification into an allowed action. Pure function."""
     cat = str(model_out.get("category") or "other").strip().lower()
     if cat not in CATEGORIES:
@@ -404,8 +413,9 @@ def decide(model_out: dict[str, Any], *, lead_email: str, thread_categories: lis
     if cat == "auto_reply":
         return Decision(cat, "ignore", reason="automatic reply")
     if cat == "hostile":
-        return Decision(cat, "hold", interest=-1, slack=f"Hostile or legal reply from {lead_email}. Nothing sent. Please take a look.",
-                        reason="hostile/legal")
+        return Decision(cat, "block", interest=-1, block_domain="",
+                        slack=f"Hostile or legal reply from {lead_email}. The lead is blocked. Nothing sent.",
+                        reason="hostile/legal: lead blocked")
     if cat == "other" or conf < MIN_CONFIDENCE:
         return Decision(cat, "hold", slack=f"Abby is not sure how to answer {lead_email} ({cat}, confidence {conf:.2f}). Nothing sent.",
                         reason="low confidence")
@@ -414,10 +424,28 @@ def decide(model_out: dict[str, Any], *, lead_email: str, thread_categories: lis
     if cat not in REPLY_CATEGORIES:
         return Decision(cat, "hold", slack=f"Unhandled reply type {cat} from {lead_email}.", reason="unhandled")
 
-    ok, why = validate_reply(cat, reply)
-    if not ok:
-        return Decision(cat, "hold", slack=f"Abby drafted a reply to {lead_email} but it failed a check ({why}). Nothing sent.\n\n{reply}",
-                        reason=f"draft failed: {why}")
+    from sales_support_agent.abby_playbook import render_immediate_reply
+
+    own = ""
+    if isinstance(message, str):
+        own = message
+    elif isinstance(message, dict):
+        own = str((message.get("body") or {}).get("text") or message.get("content_preview") or "")
+    approved = render_immediate_reply(
+        cat,
+        first_name=first_name,
+        company=company,
+        reply_text=own,
+        referral_name=str(model_out.get("referral_name") or ""),
+        referral_email=str(model_out.get("referral_email") or ""),
+    )
+    if approved:
+        reply = approved
+    else:
+        ok, why = validate_reply(cat, reply)
+        if not ok:
+            return Decision(cat, "hold", slack=f"Abby drafted a reply to {lead_email} but it failed a check ({why}). Nothing sent.\n\n{reply}",
+                            reason=f"draft failed: {why}")
 
     d = Decision(cat, "reply", reply=reply, interest=INTEREST.get(cat))
     # The runner sends this list and does not add David on its own.
@@ -428,12 +456,18 @@ def decide(model_out: dict[str, Any], *, lead_email: str, thread_categories: lis
         if re.fullmatch(r"[^@\s]+@[^@\s]+\.[a-z]{2,}", ref):
             d.to_extra.append(ref)
         else:
-            d.slack = f"{lead_email} referred a colleague but gave no email; Abby asked for it."
+            d.slack = f"{lead_email} referred a colleague but gave no email; Abby asked who handles Amazon or marketing growth."
     if cat == "not_now":
-        d.follow_up_days = FOLLOW_UP_DAYS_NOT_NOW
-    if cat in {"interested", "price", "referral"}:
+        d.schedule_kind = "not_now"
+    if cat == "has_solution":
+        d.schedule_kind = "has_solution"
+    if cat in {"interested", "price", "referral"} and not d.slack:
         cc_note = " and CC'd David" if DAVID_EMAIL in d.cc else ""
-        d.slack = f"Positive reply from {lead_email} ({cat}). Abby replied with the booking link{cc_note}."
+        if cat == "referral" and BOOKING_LINK not in d.reply:
+            named = str(model_out.get("referral_name") or "the colleague")
+            d.slack = f"Referral from {lead_email}. Abby wrote {named}."
+        else:
+            d.slack = f"Positive reply from {lead_email} ({cat}). Abby replied with the booking link{cc_note}."
     return d
 
 
@@ -555,4 +589,5 @@ def think(thread: list[dict[str, Any]], *, lead_email: str, company: str, first_
         logger.exception("[abby] model call failed")
         return Decision("other", "hold", slack=f"Abby could not reach the AI for {lead_email}. Nothing sent.",
                         reason="model error")
-    return decide(out, lead_email=lead_email, thread_categories=thread_categories, message=latest)
+    return decide(out, lead_email=lead_email, thread_categories=thread_categories, message=latest,
+                  first_name=first_name, company=company)

@@ -295,8 +295,14 @@ def create_app() -> FastAPI:
     app.include_router(outbound_campaign_score_job_router)
     app.include_router(abby_job_router)
     from sales_support_agent.api.instantly_analytics_job import router as instantly_analytics_router
+    from sales_support_agent.api.instantly_abby_webhook import (
+        job_router as instantly_abby_job_router,
+        webhook_router as instantly_abby_webhook_router,
+    )
 
     app.include_router(instantly_analytics_router)
+    app.include_router(instantly_abby_webhook_router)
+    app.include_router(instantly_abby_job_router)
     from sales_support_agent.api.llm_ping import router as llm_ping_router
 
     app.include_router(llm_ping_router)

@@ -120,6 +120,14 @@
     {
       "path": "/api/jobs/outbound-campaign-score/at-1400",
       "schedule": "0 14 * * 1"
+    },
+    {
+      "path": "/api/jobs/abby/followups",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/jobs/instantly/register-webhook",
+      "schedule": "7 * * * *"
     }
   ]
 }

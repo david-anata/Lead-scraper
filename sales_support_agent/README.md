@@ -154,7 +154,34 @@ about 840 Prospeo credits when each company yields about 1.8 verified emails
 `sales_support_agent/api/outbound_enrich_job.py` before raising the caps.
 
 Abby runs every 5 minutes and, after she finishes replies, calls the enrich
-job directly. The dedicated enrich cron paths stay registered. The first Abby
+job directly. The same tick registers the Instantly reply webhook when
+`SALES_AGENT_INTERNAL_API_KEY` and `INSTANTLY_API_KEY` are set and the
+registration is not already current. `POST /api/webhooks/instantly/reply`
+accepts `reply_received` and `auto_reply_received`. Instantly sends
+`X-Instantly-Webhook-Secret`, the hex HMAC-SHA256 of the literal
+`instantly-webhook` keyed by `SALES_AGENT_INTERNAL_API_KEY`. No separate
+webhook secret is stored. The route returns 200 and handles the email on the
+same `handle_email` path as the poll. Sends still follow `ABBY_MODE` and
+`ABBY_DAILY_CAP`.
+
+`GET /api/jobs/instantly/register-webhook` is the same registration, guarded
+like the other scheduler jobs, and Vercel calls it hourly. It lists webhooks
+first and creates only a missing `reply_received` or `auto_reply_received`
+hook aimed at `https://agent.anatainc.com/api/webhooks/instantly/reply`. A
+plan rejection is kept on the `abby_reply_webhook_v1` sync marker.
+
+Out-of-office replies schedule one follow-up for the day after the parsed
+return date, or 7 days when no date is present. Not-now replies schedule
+check-ins at 30 and 75 days. A lead who already has a solution gets one later
+note, 7 days out, about running the free trial alongside their current tool.
+Wrong-person and referral replies use the approved templates. Hostile replies
+blocklist that lead and stop further sends. Opt-outs still block the company
+domain. Due rows live in `abby_followups_scheduled` (see
+`sales_support_agent/migrations/20261030_abby_followups_scheduled.sql`) and
+`/api/jobs/abby/followups` sends them every 15 minutes. The 5-minute poll
+sends them too.
+
+The dedicated enrich cron paths stay registered. The first Abby
 tick runs enrich when no attempt has succeeded today or in the last 6 hours,
 including right after deploy and outside 8:15-11:15 AM America/Denver. Later
 ticks run enrich at most once per Denver hour on weekdays. The run still
