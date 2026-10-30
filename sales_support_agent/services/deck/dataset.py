@@ -830,6 +830,36 @@ def _category_tokens(category_label: str) -> list[set[str]]:
     return buckets
 
 
+_RELEVANCE_STOPWORDS = frozenset(
+    "a an and the for with of to in on by from at or your our is are new pack set best top".split()
+)
+
+
+def _relevance_tokens(text: str) -> set[str]:
+    tokens = set()
+    for tok in re.findall(r"[a-z]+", (text or "").lower()):
+        if len(tok) < 3 or tok in _RELEVANCE_STOPWORDS:
+            continue
+        tokens.add(tok[:-1] if tok.endswith("s") and len(tok) > 4 else tok)
+    return tokens
+
+
+def relevant_keyword_phrases(phrases: list[str], *, reference_text: str) -> list[str]:
+    """Phrases sharing at least one meaningful word with the listing.
+
+    Cerebro ranks every term an ASIN shows up for, so its top-volume phrase
+    can be unrelated (run 1607: "2014 gmc sierra 1500 accessories" on a car
+    air freshener). Order is preserved; when nothing overlaps, the original
+    list is returned so a sparse title never hides all keywords.
+    """
+
+    reference = _relevance_tokens(reference_text)
+    if not reference:
+        return list(phrases)
+    kept = [p for p in phrases if _relevance_tokens(p) & reference]
+    return kept or list(phrases)
+
+
 def resolve_category_label(
     *,
     user_input: str,

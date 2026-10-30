@@ -378,6 +378,7 @@ class DeckGeneratorTests(unittest.TestCase):
                 word_frequency_csv_bytes=_word_frequency_csv(),
                 word_frequency_filename="words.csv",
                 target_product_input="B0TARGET01",
+                template_version="agency_v1",  # v1-specific markup asserted below
                 channels=["amazon"],
             )
 
@@ -411,6 +412,7 @@ class DeckGeneratorTests(unittest.TestCase):
                 competitor_xray_csv_bytes=_xray_csv(),
                 competitor_xray_filename="xray.csv",
                 target_product_input="https://www.amazon.com/dp/B0TARGET01",
+                template_version="agency_v1",  # v1-specific markup asserted below
             )
 
         with session_scope(session_factory) as session:
@@ -667,6 +669,7 @@ class GrowthPlanTests(unittest.TestCase):
                 competitor_xray_csv_bytes=_xray_csv(),
                 competitor_xray_filename="xray.csv",
                 target_product_input="B0TARGET01",
+                template_version="agency_v1",  # v1-specific markup asserted below
                 growth_plan_inputs={
                     "growth_cvr_pct": "15",
                     "growth_goal_sessions": "60000",
@@ -810,6 +813,7 @@ class GrowthPlanTests(unittest.TestCase):
                 competitor_xray_csv_bytes=_xray_csv(),
                 competitor_xray_filename="xray.csv",
                 target_product_input="B0TARGET01",
+                template_version="agency_v1",  # v1-specific markup asserted below
             )
 
         with session_scope(session_factory) as session:
@@ -1050,6 +1054,7 @@ class DeckRoutingTests(unittest.TestCase):
                 competitor_xray_csv_bytes=_xray_csv(),
                 competitor_xray_filename="xray.csv",
                 target_product_input="B0TARGET01",
+                template_version="agency_v1",  # v1-specific markup asserted below
             )
         with session_scope(session_factory) as session:
             run = session.execute(
@@ -1841,3 +1846,221 @@ class DeckRoutingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _xray_csv_with_duplicates() -> bytes:
+    """Run 1607 shape: variant rows repeat the parent's revenue."""
+    header = (
+        "Product Details,ASIN,URL,Image URL,Brand,Price  $,ASIN Revenue,ASIN Sales,BSR,Ratings,Review Count,Category,Seller Country/Region,Size Tier,Fulfillment,Dimensions,Weight\n"
+    )
+    rows = [
+        "Car Air Freshener Vent Clip,B0DRIFT001,https://www.amazon.com/dp/B0DRIFT001,https://example.com/d.jpg,Drift,19.99,90000,4500,40,4.6,900,Automotive,USA,Small Standard-Size,FBA,3 x 2 x 1 in,0.2 lb",
+        "Car Air Freshener Vent Clip,B0DRIFT001,https://www.amazon.com/dp/B0DRIFT001,https://example.com/d.jpg,Drift,19.99,90000,4500,40,4.6,900,Automotive,USA,Small Standard-Size,FBA,3 x 2 x 1 in,0.2 lb",
+        "Car Air Freshener Vent Clip Refill,B0DRIFT002,https://www.amazon.com/dp/B0DRIFT002,https://example.com/d2.jpg,Drift,19.99,90000,4500,41,4.6,900,Automotive,USA,Small Standard-Size,FBA,3 x 2 x 1 in,0.2 lb",
+        "Moji Car Air Freshener,B0TARGET01,https://www.amazon.com/dp/B0TARGET01,https://example.com/m.jpg,Moji,14.99,12000,800,900,4.4,120,Automotive,USA,Small Standard-Size,FBA,3 x 2 x 1 in,0.2 lb",
+        "Little Trees Car Air Freshener,B0TREES001,https://www.amazon.com/dp/B0TREES001,https://example.com/t.jpg,Little Trees,6.99,30000,4300,90,4.7,5000,Automotive,USA,Small Standard-Size,FBA,3 x 2 x 1 in,0.1 lb",
+    ]
+    return (header + "\n".join(rows) + "\n").encode("utf-8")
+
+
+def _off_category_cerebro_csv() -> bytes:
+    return (
+        "Keyword Phrase,Keyword Sales,Search Volume,Search Volume Trend,Position (Rank),B0TARGET01\n"
+        "2014 gmc sierra 1500 accessories,900,52000,stable,40,40\n"
+        "car air freshener,1800,41000,growing,12,12\n"
+        "car freshener vent clip,400,9000,flat,22,22\n"
+    ).encode("utf-8")
+
+
+class _FakeMojiResearch:
+    def enrich_target_product(self, target: dict[str, str]) -> EnrichedHeroProduct:
+        return EnrichedHeroProduct(
+            asin="B0TARGET01",
+            candidate_asin="B0TARGET01",
+            brand_name="Moji",
+            title="Moji Car Air Freshener",
+            source_url="",
+            description="Car air freshener vent clip.",
+            price="$14.99",
+            dimensions="3 x 2 x 1 in",
+            image_url="https://example.com/m.jpg",
+            product_type="Car Air Freshener",
+            bsr=900,
+            rating=4.4,
+            review_count=120,
+            identity_source="amazon",
+            market_metrics_source="amazon",
+            tags=(),
+            warnings=(),
+        )
+
+
+@unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for deck generator tests")
+class IntelligenceV2TemplateTests(unittest.TestCase):
+    """template_version='intelligence_v2' is the default; inputs must still flow."""
+
+    def _generate(self, *, research=None, settings=None, **kwargs) -> tuple[str, dict]:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        with session_scope(session_factory) as session:
+            service = DeckGenerationService(
+                settings or _build_settings(), session, amazon_client=_FakeAmazonClient()
+            )
+            service.product_research = research or _FakeProductResearch()
+            kwargs.setdefault("competitor_xray_csv_bytes", _xray_csv())
+            kwargs.setdefault("competitor_xray_filename", "xray.csv")
+            kwargs.setdefault("target_product_input", "B0TARGET01")
+            service.generate_deck(**kwargs)
+        with session_scope(session_factory) as session:
+            run = session.execute(
+                select(AutomationRun).where(AutomationRun.run_type == "deck_generation")
+            ).scalar_one()
+            summary = dict(run.summary_json or {})
+        return str(summary.get("deck_html") or ""), summary
+
+    def test_default_template_is_intelligence_v2(self) -> None:
+        html, summary = self._generate()
+        self.assertEqual(summary.get("template_version"), "intelligence_v2")
+        self.assertIn("data-template-version='intelligence_v2'", html)
+        for section in ("cover", "snapshot", "market", "search", "method", "plan", "proof", "offer", "next"):
+            self.assertIn(f"id='{section}'", html)
+
+    def test_agency_v1_still_renders_legacy_deck(self) -> None:
+        html, summary = self._generate(template_version="agency_v1")
+        self.assertEqual(summary.get("template_version"), "agency_v1")
+        self.assertIn('class="rail"', html)
+        self.assertNotIn("intelligence_v2", html)
+
+    def test_unknown_template_falls_back_to_v2(self) -> None:
+        _, summary = self._generate(template_version="nonsense")
+        self.assertEqual(summary.get("template_version"), "intelligence_v2")
+
+    def test_cta_strip_on_every_slide(self) -> None:
+        html, _ = self._generate()
+        slides = html.count("<section class='slide")
+        self.assertEqual(slides, 9)
+        self.assertEqual(html.count("<div class='cta-strip'>"), slides)
+        self.assertIn("Start your free 14-day trial", html)
+        self.assertIn("Plans from $99/mo", html)
+        self.assertIn("Book a call", html)
+
+    def test_cta_urls_fall_back_trial_to_booking_to_default(self) -> None:
+        html, _ = self._generate()
+        self.assertIn("https://calendar.app.google/5TwjbbpmKaGAQuBk8", html)
+        settings = _build_settings()
+        settings.marketing_booking_url = "https://book.example.com/anata"
+        html, _ = self._generate(settings=settings)
+        self.assertIn("href='https://book.example.com/anata'", html)
+        self.assertNotIn("5TwjbbpmKaGAQuBk8", html)
+        settings.trial_signup_url = "https://app.example.com/signup"
+        html, _ = self._generate(settings=settings)
+        self.assertIn("href='https://app.example.com/signup'", html)
+
+    def test_all_inputs_flow_into_v2(self) -> None:
+        html, summary = self._generate(
+            keyword_xray_csv_payloads=[("keywords.csv", _keyword_csv())],
+            cerebro_csv_bytes=_cerebro_csv(),
+            cerebro_filename="cerebro.csv",
+            word_frequency_csv_bytes=_word_frequency_csv(),
+            word_frequency_filename="words.csv",
+            channels=["amazon", "tiktok_shop"],
+            category_label="Spirulina Supplements",
+            creative_mockup_url="https://example.com/mockup.png",
+            case_study_url="https://anatainc.com/case-studies/sonrei",
+            growth_plan_inputs={
+                "growth_cvr_pct": "15",
+                "growth_goal_sessions": "60000",
+                "growth_aov": "29.99",
+                "growth_cogs_per_unit": "4.5",
+                "growth_shipping_per_unit": "2.5",
+                "growth_tacos_target_pct": "12",
+            },
+        )
+        self.assertIn("Spirulina Supplements", html)
+        self.assertIn("Helium 10 Cerebro", html)  # Cerebro CSV is the keyword source
+        self.assertIn("blue spirulina", html)
+        self.assertIn("Rival A", html)  # competitor Xray CSV
+        self.assertIn("TikTok Shop", html)  # channels input is honored in v2
+        self.assertIn("https://example.com/mockup.png", html)
+        self.assertIn("https://anatainc.com/case-studies/sonrei", html)
+        self.assertEqual(summary.get("template_version"), "intelligence_v2")
+
+    def test_offers_input_flows_into_pricing_slide(self) -> None:
+        html, _ = self._generate(offers=["amazon_growth"])
+        self.assertIn("id='offer'", html)
+        self.assertIn("Optional: add Anata", html)
+
+    def test_no_em_dashes_or_placeholders(self) -> None:
+        html, _ = self._generate(cerebro_csv_bytes=_cerebro_csv(), cerebro_filename="cerebro.csv")
+        body = html.split("<body", 1)[1]
+        self.assertNotIn("\u2014", html)
+        self.assertNotIn("\u2013", html)
+        self.assertNotIn(">n/a<", body)
+        self.assertNotIn("$TBD", body)
+
+    def test_brand_links_say_not_verified_without_website(self) -> None:
+        html, _ = self._generate()
+        self.assertIn("Website: not verified", html)
+        self.assertIn("Amazon presence: not verified", html)
+
+    def test_case_studies_only_link_when_published(self) -> None:
+        html, _ = self._generate()
+        self.assertIn("Sonrei", html)
+        self.assertIn("SeroVital", html)
+        self.assertIn("https://anatainc.com/case-studies/sonrei", html)
+        self.assertNotIn("case-studies/serovital", html)
+
+    def test_run_1607_bugs_share_dedupe_and_category(self) -> None:
+        import re as _re
+
+        for version in ("intelligence_v2", "agency_v1"):
+            html, summary = self._generate(
+                research=_FakeMojiResearch(),
+                competitor_xray_csv_bytes=_xray_csv_with_duplicates(),
+                cerebro_csv_bytes=_off_category_cerebro_csv(),
+                cerebro_filename="cerebro.csv",
+                template_version=version,
+            )
+            # Proof copy ("+137% YoY") is a sourced case-study result, not a share.
+            scope = _re.sub(r"<section class='slide' id='proof'.*?</section>", "", html, flags=_re.S)
+            scope = _re.sub(r"<(style|script)\b.*?</\1>", "", scope, flags=_re.S)
+            shares = [float(m) for m in _re.findall(r"(\d+(?:\.\d+)?)%", scope)]
+            self.assertTrue(all(s <= 100.0 for s in shares), (version, max(shares or [0])))
+            # v1 still lists the phrase in its raw Cerebro table (it is real
+            # data); it must no longer drive the deck's category label.
+            outside_tables = _re.sub(r"<table\b.*?</table>", "", scope, flags=_re.S)
+            self.assertNotIn("gmc sierra", outside_tables.lower(), version)
+            self.assertIn("car air freshener", outside_tables.lower(), version)
+
+    def test_unique_listings_dedupes_asin_and_variant_rows(self) -> None:
+        from sales_support_agent.services.deck.intelligence_v2 import brand_shares, unique_listings
+
+        rows = [
+            SimpleNamespace(asin="A1", brand="Drift", units_sold=10, revenue=100.0),
+            SimpleNamespace(asin="A1", brand="Drift", units_sold=10, revenue=100.0),
+            SimpleNamespace(asin="A2", brand="Drift", units_sold=10, revenue=100.0),
+            SimpleNamespace(asin="B1", brand="Trees", units_sold=5, revenue=50.0),
+        ]
+        self.assertEqual([r.asin for r in unique_listings(rows)], ["A1", "B1"])
+        shares = brand_shares(rows)
+        self.assertTrue(all(0 <= s.share <= 100 for s in shares))
+
+    def test_v2_deck_serves_from_stored_html(self) -> None:
+        routing = DeckRoutingTests()
+        routing.addCleanup = self.addCleanup
+        client, sf = routing._make_client()
+        with session_scope(sf) as session:
+            service = DeckGenerationService(_build_settings(), session, amazon_client=_FakeAmazonClient())
+            service.product_research = _FakeProductResearch()
+            service.generate_deck(
+                competitor_xray_csv_bytes=_xray_csv(),
+                competitor_xray_filename="xray.csv",
+                target_product_input="B0TARGET01",
+            )
+        with session_scope(sf) as session:
+            run = session.execute(select(AutomationRun)).scalar_one()
+            summary = dict(run.summary_json or {})
+            run_id, token, slug = run.id, summary["export_token"], summary["deck_slug"]
+        response = client.get(f"/decks/{slug}/{run_id}/{token}")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("data-template-version='intelligence_v2'", response.text)

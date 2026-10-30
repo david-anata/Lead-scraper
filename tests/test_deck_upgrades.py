@@ -156,6 +156,7 @@ class DeckUpgradeTests(unittest.TestCase):
             service = DeckGenerationService(_build_settings(), session, amazon_client=_FakeAmazonClient())
             service.product_research = _FakeProductResearch()
             service.generate_deck(
+                template_version="agency_v1",  # asserts v1 markup
                 competitor_xray_csv_bytes=_xray_csv(),
                 competitor_xray_filename="xray.csv",
                 target_product_input="B0TARGET01",
@@ -179,6 +180,7 @@ class DeckUpgradeTests(unittest.TestCase):
             service = DeckGenerationService(_build_settings(), session, amazon_client=_FakeAmazonClient())
             service.product_research = _FakeProductResearch()
             service.generate_deck(
+                template_version="agency_v1",  # asserts v1 markup
                 competitor_xray_csv_bytes=_xray_csv(),
                 competitor_xray_filename="xray.csv",
                 keyword_xray_csv_bytes=_keyword_csv(),
@@ -204,6 +206,7 @@ class DeckUpgradeTests(unittest.TestCase):
             service = DeckGenerationService(_build_settings(), session, amazon_client=_FakeAmazonClient())
             service.product_research = _FakeProductResearch()
             service.generate_deck(
+                template_version="agency_v1",  # asserts v1 markup
                 competitor_xray_csv_bytes=_xray_csv(),
                 competitor_xray_filename="xray.csv",
                 target_product_input="B0TARGET01",
@@ -220,6 +223,7 @@ class DeckUpgradeTests(unittest.TestCase):
             service = DeckGenerationService(_build_settings(), session, amazon_client=_FakeAmazonClient())
             service.product_research = _FakeProductResearch()
             service.generate_deck(
+                template_version="agency_v1",  # asserts v1 markup
                 competitor_xray_csv_bytes=_xray_csv(),
                 competitor_xray_filename="xray.csv",
                 target_product_input="B0TARGET01",
@@ -254,6 +258,7 @@ class DeckUpgradeTests(unittest.TestCase):
             )
             service.product_research = _FakeProductResearch()
             service.generate_deck(
+                template_version="agency_v1",  # asserts v1 markup
                 competitor_xray_csv_bytes=_xray_csv(),
                 competitor_xray_filename="xray.csv",
                 target_product_input="B0TARGET01",
@@ -270,6 +275,7 @@ class DeckUpgradeTests(unittest.TestCase):
             service = DeckGenerationService(_build_settings(), session, amazon_client=_FakeAmazonClient())
             service.product_research = _FakeProductResearch()
             service.generate_deck(
+                template_version="agency_v1",  # asserts v1 markup
                 competitor_xray_csv_bytes=_xray_csv(),
                 competitor_xray_filename="xray.csv",
                 target_product_input="B0TARGET01",
@@ -290,6 +296,7 @@ class DeckUpgradeTests(unittest.TestCase):
             service = DeckGenerationService(_build_settings(), session, amazon_client=_FakeAmazonClient())
             service.product_research = _FakeProductResearch(source_type_website=True)
             result = service.generate_deck(
+                template_version="agency_v1",  # asserts v1 markup
                 target_product_input="https://oceanrx.com",
                 competitor_xray_csv_payloads=[],
                 keyword_xray_csv_payloads=[],

@@ -43,6 +43,7 @@ from sales_support_agent.services.helium10 import (
 )
 from sales_support_agent.services.product_research import EnrichedHeroProduct, ProductResearchService
 from sales_support_agent.services.public_report_ui import PUBLIC_REPORT_DESIGN_VERSION
+from sales_support_agent.services.deck.intelligence_v2 import unique_listings
 
 from sales_support_agent.services.deck.brand_assets import (
     load_brand_asset,
@@ -50,6 +51,7 @@ from sales_support_agent.services.deck.brand_assets import (
     load_brand_stylesheet,
 )
 from sales_support_agent.services.deck.dataset import (  # noqa: F401
+    relevant_keyword_phrases,
     DeckDataset,
     DeckGenerationResult,
     _build_advertising_summary,
@@ -281,7 +283,12 @@ class DeckGenerationService:
         category_label: str = "",
         trigger: str = "admin_dashboard",
         rainforest_asin: str = "",
+        template_version: str = "",
+        brand_website: str = "",
     ) -> DeckGenerationResult:
+        from sales_support_agent.services.deck.intelligence_v2 import normalize_template_version
+
+        effective_template_version = normalize_template_version(template_version)
         effective_target_input = target_product_input.strip()
         competitor_payloads = [
             (filename, content)
@@ -317,6 +324,10 @@ class DeckGenerationService:
                 "case_study_url": case_study_url.strip(),
                 "offers": [str(card.get("title", "")).strip() for card in offer_cards],
                 "include_recommended_plan": bool(include_recommended_plan),
+                "template_version": effective_template_version,
+                "requested_channels": [str(c) for c in (channels or [])],
+                "category_label": category_label.strip(),
+                "brand_website": brand_website.strip(),
             },
         )
         try:
@@ -337,6 +348,12 @@ class DeckGenerationService:
                 category_label=category_label.strip(),
                 rainforest_asin=effective_rainforest_asin,
             )
+            dataset.deck_payload["template_version"] = effective_template_version
+            dataset.deck_payload["requested_channels"] = [
+                str(c).strip() for c in (channels or []) if str(c).strip()
+            ]
+            if effective_template_version == "intelligence_v2":
+                dataset.deck_payload["link_check"] = self._verify_brand_links(brand_website)
             title = str(dataset.deck_payload.get("deck_title") or self._build_design_title(title_hint=effective_target_input)).strip()
             result = self._generate_html_deck(
                 run=run,
@@ -381,6 +398,7 @@ class DeckGenerationService:
                             ("market_evidence_reason", ""),
                             ("discovery_query", ""),
                             ("comparison_audit", []),
+                            ("template_version", "agency_v1"),
                         )
                     },
                 },
@@ -396,6 +414,27 @@ class DeckGenerationService:
                 },
             )
             raise
+
+    # Overridable in tests; the default fetches public pages only.
+    link_fetcher = None
+
+    def _verify_brand_links(self, brand_website: str) -> dict[str, Any]:
+        """Website and Amazon links, using the call-prep verification.
+
+        Nothing counts as verified unless this process opened it. Without a
+        website there is nothing to verify, so both read "not verified".
+        """
+
+        raw = (brand_website or "").strip()
+        domain = re.sub(r"^https?://", "", raw, flags=re.I).split("/")[0].strip().lower()
+        if not domain:
+            return {"website": {"verified": False, "url": ""}, "amazon": {"verified": False, "urls": []}}
+        from sales_support_agent.services.sales.call_script.prep import fetch_public, verify_links
+
+        try:
+            return verify_links(domain, fetch=self.link_fetcher or fetch_public)
+        except Exception:  # pragma: no cover - verification must never block a deck
+            return {"website": {"verified": False, "url": ""}, "amazon": {"verified": False, "urls": []}}
 
     def _build_design_title(self, *, title_hint: str) -> str:
         cleaned = re.sub(r"\s+", " ", title_hint or "").strip()
@@ -432,14 +471,31 @@ class DeckGenerationService:
             public_url=view_url,
             preview_image_url=preview_image_url,
         )
-        html_content = self._render_html_deck(
-            title=title,
-            dataset=dataset,
-            warnings=warnings,
-            public_url=view_url,
-            preview_image_url=preview_image_url,
-            share_preview=share_preview,
-        )
+        template_version = str(dataset.deck_payload.get("template_version") or "agency_v1")
+        if template_version == "intelligence_v2":
+            from sales_support_agent.services.deck.intelligence_v2 import render_intelligence_v2_deck
+
+            html_content = render_intelligence_v2_deck(
+                payload=dataset.deck_payload,
+                title=title,
+                settings=self.settings,
+                generated_on=datetime.now(timezone.utc).date(),
+                monogram_html=self._load_brand_asset("assets/monogram.png"),
+                favicon_link=load_brand_favicon_link(self.settings),
+                public_url=view_url,
+                preview_image_url=preview_image_url,
+                share_preview=share_preview,
+                link_check=dataset.deck_payload.get("link_check"),
+            )
+        else:
+            html_content = self._render_html_deck(
+                title=title,
+                dataset=dataset,
+                warnings=warnings,
+                public_url=view_url,
+                preview_image_url=preview_image_url,
+                share_preview=share_preview,
+            )
         target = dataset.deck_payload.get("target", {})
         target_identifier = str(target.get("asin") or target.get("source_url") or "").strip()
 
@@ -506,6 +562,7 @@ class DeckGenerationService:
             "story_markdown": story_markdown,
             "share_preview": share_preview,
             "renderer_version": PUBLIC_REPORT_DESIGN_VERSION,
+            "template_version": template_version,
             "deck_evidence_version": int(dataset.deck_payload.get("deck_evidence_version", 1) or 1),
             "evidence_status": str(dataset.deck_payload.get("evidence_status", "ready") or "ready"),
             "market_evidence_sufficient": bool(dataset.deck_payload.get("market_evidence_sufficient", True)),
@@ -698,15 +755,24 @@ class DeckGenerationService:
         # category_label to drop off-category keywords like "protein powder"
         # / "creatine" from the "missing title keywords" list on a fat-burner
         # listing. niche_keyword stays as the literal seed term.
-        _niche_keyword_raw = (
-            cerebro_report.keywords[0].phrase
+        _seed_phrases = (
+            [k.phrase for k in cerebro_report.keywords]
             if cerebro_report and cerebro_report.keywords
             else (
-                keyword_report.keywords[0].phrase
+                [k.phrase for k in keyword_report.keywords]
                 if keyword_report and keyword_report.keywords
-                else ""
+                else []
             )
         )
+        # Skip top-volume phrases that share no word with the listing (run
+        # 1607 labelled a car air freshener "2014 gmc sierra 1500 accessories").
+        _relevant_seed = relevant_keyword_phrases(
+            _seed_phrases,
+            reference_text=" ".join(
+                str(part) for part in (getattr(hero_product, "title", ""), category_label) if part
+            ),
+        )
+        _niche_keyword_raw = _relevant_seed[0] if _relevant_seed else ""
         _competitor_brands = {
             (p.brand or "").strip()
             for p in xray_report.products
@@ -1236,7 +1302,7 @@ class DeckGenerationService:
         )
         comparison_total = xray_report.total_revenue if market_ready else 0.0
         revenue_bars = (
-            "".join(_render_revenue_bar(product, comparison_total) for product in xray_report.products[:8])
+            "".join(_render_revenue_bar(product, comparison_total) for product in unique_listings(xray_report.products)[:8])
             if market_ready
             else ""
         )
@@ -1306,7 +1372,7 @@ class DeckGenerationService:
         niche_table_rows = (
             "".join(
                 _render_niche_summary_row(product, comparison_total)
-                for product in xray_report.products[:10]
+                for product in unique_listings(xray_report.products)[:10]
             )
             if market_ready
             else ""
@@ -1334,7 +1400,7 @@ class DeckGenerationService:
         comparison_mode = str(target.get("comparison_mode", "") or "")
         launch_mode = comparison_mode == "concept_only"
         competitor_landscape_table = _render_competitor_landscape_table(
-            xray_report.products[:10] if market_ready else [],
+            unique_listings(xray_report.products)[:10] if market_ready else [],
             comparison_total,
         )
         comparison_table_html = _render_target_comparison_table(target, best_seller, no_product_image)

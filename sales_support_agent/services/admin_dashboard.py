@@ -5563,6 +5563,23 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
               </label>
               <label class="intake-label">
                 <span class="intake-label-row">
+                  <span>Deck template</span>
+                  <span class="intake-badge">Optional</span>
+                </span>
+                <select name="template_version">
+                  <option value="intelligence_v2" selected>Anata Intelligence (v2, default)</option>
+                  <option value="agency_v1">Agency strategy deck (v1)</option>
+                </select>
+              </label>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Brand website</span>
+                  <span class="intake-badge">Optional</span>
+                </span>
+                <input type="text" name="brand_website" placeholder="mojibrands.com" />
+              </label>
+              <label class="intake-label">
+                <span class="intake-label-row">
                   <span>Mockup URL</span>
                   <span class="intake-badge">Optional</span>
                 </span>
