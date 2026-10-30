@@ -42,8 +42,10 @@ def test_opt_out_blocks_domain_and_never_replies():
     assert r.action == "block" and r.block_domain == "huppy.com" and r.reply == "" and r.interest == -1
 
 
-def test_hostile_and_low_confidence_are_held():
-    assert d("hostile", "x").action == "hold"
+def test_hostile_blocks_the_lead_and_low_confidence_is_held():
+    hostile = d("hostile", "x")
+    assert hostile.action == "block" and hostile.reply == "" and hostile.interest == -1
+    assert hostile.block_domain == ""
     assert d("interested", f"hi {LINK}", conf=0.4).action == "hold"
     assert d("nonsense-category", "x").action == "hold"
 
@@ -54,12 +56,14 @@ def test_has_solution_answered_once_only():
                         lead_email="a@b.com", thread_categories=[])
     second = abby.decide({"category": "has_solution", "confidence": 0.9, "reply": "again"},
                          lead_email="a@b.com", thread_categories=["has_solution"])
-    assert first.action == "reply" and second.action == "ignore"
+    assert first.action == "reply" and first.schedule_kind == "has_solution"
+    assert second.action == "ignore" and second.schedule_kind == ""
 
 
-def test_not_now_schedules_60_day_followup_no_cc():
-    r = d("not_now", "Thanks for letting me know. I'll check back in a couple of months. Abby")
-    assert r.action == "reply" and r.follow_up_days == 60 and r.cc == []
+def test_not_now_schedules_30_and_75_day_followups_no_cc():
+    r = d("not_now", "Thanks for letting me know. I'll check back in about a month. Abby")
+    assert r.action == "reply" and r.follow_up_days is None and r.cc == []
+    assert r.schedule_kind == "not_now"
 
 
 def test_referral_adds_colleague_and_ccs_david():
@@ -276,20 +280,23 @@ def test_signature_info_address_does_not_block_a_human():
     assert r.action == "reply" and r.interest == 1 and r.cc == [] and r.to_extra == []
 
 
-@pytest.mark.parametrize("lead,body,address,name,greeting", [
-    ("ann@huppy.com", SARAH, "sarah.chen@huppy.com", "Sarah Chen", "Hi Sarah, Ann pointed me your way."),
-    ("james@northwind.com", MIKE, "mike.alvarez@northwind.com", "Mike Alvarez", "Hi Mike, James pointed me your way."),
+@pytest.mark.parametrize("lead,body,address,name,first,company", [
+    ("ann@huppy.com", SARAH, "sarah.chen@huppy.com", "Sarah Chen", "Ann", "Huppy"),
+    ("james@northwind.com", MIKE, "mike.alvarez@northwind.com", "Mike Alvarez", "James", "Northwind"),
 ])
-def test_human_referral_still_writes_the_colleague(lead, body, address, name, greeting):
-    reply = (f"{greeting} The free 14-day trial is where we build your Amazon strategy "
-             f"and run the ad automation. Grab a time with David here: {LINK}\n\nAbby")
+def test_human_referral_still_writes_the_colleague(lead, body, address, name, first, company):
+    reply = (f"Hi {name.split()[0]}, {first} pointed me your way. The free 14-day trial is where we build "
+             f"your Amazon strategy and run the ad automation. Grab a time with David here: {LINK}\n\nAbby")
     r = abby.think(
         [{"ue_type": 2, "is_auto_reply": 0, "body": {"text": body}}],
-        lead_email=lead, company="Brand", first_name="There", thread_categories=[],
+        lead_email=lead, company=company, first_name=first, thread_categories=[],
         llm=lambda _p: _referral_json(address, name, reply))
     assert r.action == "reply" and r.category == "referral"
     assert r.to_extra == [address] and r.cc == [] and r.interest == 1
-    assert r.note == "" and name.split()[0] in r.reply and LINK in r.reply
+    assert r.note == "" and name.split()[0] in r.reply
+    assert "free 14-day trial" in r.reply
+    assert r.reply.rstrip().endswith("Account Specialist, Anata")
+    assert "\u2014" not in r.reply
 
 
 def test_human_referral_survives_decide_when_the_message_is_passed():
@@ -772,3 +779,100 @@ def test_opt_out_save_failure_posts_slack(engine, monkeypatch):
 
     runner.run(engine, client=c, campaign_id="camp", now=NOW, think=think, post_slack=posts.append)
     assert "[abby] opt-out not saved: huppy.com" in posts
+
+
+def test_out_of_office_schedules_the_day_after_return_and_sends_nothing(engine):
+    body = "I am out of the office until November 4 with no access to email."
+    message = dict(email(1), body={"text": body})
+    client = FakeClient([message])
+    out = runner.run(engine, client=client, campaign_id="camp", now=NOW)
+    assert out["ignored"] == 1 and out["replied"] == 0 and client.replies == []
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT kind, status, body, due_at FROM abby_followups_scheduled"
+        )).fetchone()
+    assert row[0] == "out_of_office" and row[1] == "pending"
+    assert "Hope your time away went well." in row[2]
+    assert row[2].rstrip().endswith("Account Specialist, Anata")
+    assert "\u2014" not in row[2]
+    assert "2026-11-05" in str(row[3])
+
+
+def test_not_now_schedules_30_and_75_not_the_old_60(engine):
+    decision = abby.decide(
+        {"category": "not_now", "confidence": 0.9, "reply": "Thanks. I'll check back in about a month.\n\nAbby"},
+        lead_email="ann@huppy.com", thread_categories=[], first_name="Ann",
+    )
+    client = FakeClient([email(1)])
+    runner.run(engine, client=client, campaign_id="camp", now=NOW, think=fixed(decision))
+    with engine.connect() as conn:
+        kinds = [row[0] for row in conn.execute(text(
+            "SELECT kind FROM abby_followups_scheduled ORDER BY due_at"
+        )).fetchall()]
+        old = conn.execute(text("SELECT COUNT(*) FROM abby_followups")).fetchone()[0]
+    assert kinds == ["not_now_30", "not_now_75"]
+    assert old == 0
+    assert len(client.replies) == 1
+
+
+def test_has_solution_schedules_one_second_note(engine):
+    decision = abby.decide(
+        {"category": "has_solution", "confidence": 0.9,
+         "reply": "What does that setup cost you to run today?\n\nAbby"},
+        lead_email="ann@huppy.com", thread_categories=[], first_name="Ann",
+    )
+    runner.run(engine, client=FakeClient([email(1)]), campaign_id="camp", now=NOW, think=fixed(decision))
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT kind, body FROM abby_followups_scheduled"
+        )).fetchall()
+    assert len(rows) == 1 and rows[0][0] == "has_solution_second"
+    assert "alongside what you already use" in rows[0][1]
+    assert rows[0][1].rstrip().endswith("Account Specialist, Anata")
+    assert "\u2014" not in rows[0][1]
+
+
+def test_hostile_blocks_the_lead_and_a_later_email_is_not_sent(engine):
+    import outbound_suppression as suppression
+
+    def think(thread, *, lead_email, **_k):
+        return abby.decide({"category": "hostile", "confidence": 0.95},
+                           lead_email=lead_email, thread_categories=[])
+
+    client = FakeClient([email(1)])
+    runner.run(engine, client=client, campaign_id="camp", now=NOW, think=think)
+    assert client.blocks == ["ann@huppy.com"] and client.replies == []
+    emails, _domains = suppression.lists(engine)
+    assert "ann@huppy.com" in emails
+    later = FakeClient([email(2)])
+    out = runner.run(engine, client=later, campaign_id="camp", now=NOW,
+                     think=fixed(abby.Decision("interested", "reply", reply=f"Hi {LINK}")))
+    assert later.replies == [] and out["skipped"] == 1
+
+
+def test_handle_email_records_once(engine):
+    client = FakeClient([email(1)])
+    decision = abby.Decision("interested", "reply", reply=f"Hi {LINK}")
+    message = email(1)
+    first = runner.handle_email(engine, message, client=client, campaign_id="camp", now=NOW, think=fixed(decision))
+    second = runner.handle_email(engine, message, client=client, campaign_id="camp", now=NOW, think=fixed(decision))
+    assert first["replied"] == 1 and second["skipped"] == 1 and len(client.replies) == 1
+
+
+def test_scheduled_followup_sends_once_and_stops_at_the_cap(engine):
+    runner.ensure_tables(engine)
+    now = datetime.now(timezone.utc)
+    with engine.begin() as conn:
+        for kind in ("not_now_30", "not_now_75"):
+            conn.execute(text(
+                "INSERT INTO abby_followups_scheduled "
+                "(lead, reply_to_id, eaccount, subject, first_name, kind, due_at, status, body, source_email_id) "
+                "VALUES ('ann@huppy.com', 'e1', 'abby@x.com', 'Re: Idea', 'Ann', :k, :d, 'pending', :b, :src)"
+            ), {"k": kind, "d": now.replace(tzinfo=None), "b": f"Hi Ann,\n\n{abby.SIGNATURE}", "src": f"e1-{kind}"})
+    client = FakeClient([])
+    posts = []
+    sent = runner.send_due_scheduled(engine, client, now, "live", posts.append, 1)
+    assert sent == 1 and len(client.replies) == 1
+    assert runner.send_due_scheduled(engine, client, now, "live", posts.append, 1) == 0
+    assert any("daily cap" in post for post in posts)
+    assert runner.send_due_scheduled(engine, FakeClient([]), now, "shadow", posts.append, 5) == 0

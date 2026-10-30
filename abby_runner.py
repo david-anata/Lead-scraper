@@ -10,11 +10,14 @@ Safety rails, all in code:
   * a thread where a person already replied by hand is left alone;
   * opt-outs block the company domain (or just the address for gmail-type
     domains) and never get a reply;
-  * hostile, legal, unsure or failed drafts are held and posted to Slack;
-  * departed-employee notices, out-of-office messages, and automated
-    forwards are ignored: no reply, no Interested status, no David CC.
-    A departed contact is recorded on the handled row so the brand can
-    be tried again later. Nothing is sent.
+  * hostile or legal replies blocklist the lead, mark them not interested,
+    and get no further sends. Unsure or failed drafts are held for Slack;
+  * departed-employee notices and automated forwards are ignored: no reply,
+    no Interested status, no David CC, no follow-up. A departed contact is
+    recorded so the brand can be tried again later;
+  * out-of-office replies are not answered now. A follow-up is scheduled
+    for the day after the parsed return date, or 7 days when no date is found;
+  * the same handle_email() path serves the 5-minute poll and the reply webhook.
 """
 
 from __future__ import annotations
@@ -46,6 +49,12 @@ _DDL = (
         id SERIAL PRIMARY KEY, lead TEXT, reply_to_id TEXT, eaccount TEXT, subject TEXT,
         first_name TEXT, due_at TIMESTAMP, status TEXT DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS abby_followups_scheduled (
+        id SERIAL PRIMARY KEY, lead TEXT, reply_to_id TEXT, eaccount TEXT, subject TEXT,
+        first_name TEXT, brand TEXT, campaign_id TEXT, kind TEXT, due_at TIMESTAMP,
+        status TEXT DEFAULT 'pending', body TEXT, source_email_id TEXT, detail TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, sent_at TIMESTAMP,
+        UNIQUE (source_email_id, kind))""",
 )
 
 
@@ -196,13 +205,65 @@ class Instantly:
     def block(self, value: str) -> int:
         return self._call("POST", "block-lists-entries", json={"bl_value": value})[0]
 
+    def get_email(self, email_id: str) -> dict:
+        """One email by id. Empty when Instantly does not return it."""
+
+        if not email_id:
+            return {}
+        status, data = self._call("GET", f"emails/{email_id}")
+        return data if status == 200 and isinstance(data, dict) else {}
+
+    def list_webhooks(self) -> tuple[int, Any]:
+        """Every workspace webhook, one page at a time. ``(status, body)``."""
+
+        items: list[dict] = []
+        params: dict[str, Any] = {"limit": 100}
+        status = 200
+        body: Any = {"items": []}
+        for _ in range(10):
+            status, body = self._call("GET", "webhooks", params=params)
+            if status != 200:
+                return status, body
+            batch = body.get("items") if isinstance(body, dict) else body
+            if isinstance(batch, list):
+                items.extend(item for item in batch if isinstance(item, dict))
+            nxt = body.get("next_starting_after") if isinstance(body, dict) else None
+            if not nxt:
+                break
+            params["starting_after"] = nxt
+        return status, {"items": items}
+
+    def create_webhook(self, payload: dict) -> tuple[int, Any]:
+        return self._call("POST", "webhooks", json=payload)
+
+
+def _naive(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+
 
 def _handled_ids(engine, ids: list[str]) -> set[str]:
+    """Email ids that are finished. A processing row older than 15 minutes is not finished."""
+
     if not ids:
         return set()
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).replace(tzinfo=None)
     with engine.connect() as conn:
-        rows = conn.execute(text("SELECT email_id FROM abby_handled")).fetchall()
-    have = {r[0] for r in rows}
+        rows = conn.execute(text("SELECT email_id, action, created_at FROM abby_handled")).fetchall()
+    have: set[str] = set()
+    for email_id, action, created in rows:
+        if action == "processing":
+            stamp = _naive(created)
+            if stamp is None or stamp < cutoff:
+                continue
+        have.add(email_id)
     return {i for i in ids if i in have}
 
 
@@ -260,7 +321,7 @@ def _abby_reply_ids(engine) -> set[str]:
 def _sent_today(engine, now: datetime) -> int:
     since = (now - timedelta(hours=24)).replace(tzinfo=None)
     with engine.connect() as conn:
-        row = conn.execute(text("SELECT COUNT(*) FROM abby_handled WHERE action IN ('reply', 'nudge') AND mode = 'live' "
+        row = conn.execute(text("SELECT COUNT(*) FROM abby_handled WHERE action IN ('reply', 'nudge', 'followup') AND mode = 'live' "
                                 "AND created_at >= :s"), {"s": since}).fetchone()
     return int(row[0] or 0)
 
@@ -318,6 +379,272 @@ def _subject(s: str) -> str:
     return s if s.lower().startswith("re:") else f"Re: {s}"
 
 
+STALE_CLAIM = timedelta(minutes=15)
+
+
+def _claim(engine, email: dict, run_mode: str, campaign_id: str = "") -> bool:
+    """True when this worker owns the email. A settled row is left alone.
+
+    A processing row older than 15 minutes is cleared so a killed webhook
+    attempt can be retried. ``already_answered`` still stops a second send.
+    """
+
+    email_id = email.get("id")
+    if not email_id:
+        return False
+    params = {
+        "i": email_id,
+        "t": email.get("thread_id"),
+        "l": email.get("lead"),
+        "m": run_mode,
+        "camp": email_campaign_id(email, campaign_id),
+        "cutoff": (datetime.now(timezone.utc) - STALE_CLAIM).replace(tzinfo=None),
+    }
+    insert = (
+        "INSERT INTO abby_handled (email_id, thread_id, lead, category, action, mode, reply_id, detail, campaign_id) "
+        "VALUES (:i, :t, :l, '', 'processing', :m, '', '', :camp) "
+        "ON CONFLICT (email_id) DO NOTHING RETURNING email_id"
+    )
+    with engine.begin() as conn:
+        if conn.execute(text(insert), params).fetchone():
+            return True
+        cleared = conn.execute(text(
+            "DELETE FROM abby_handled WHERE email_id = :i AND action = 'processing' "
+            "AND created_at < :cutoff RETURNING email_id"
+        ), params).fetchone()
+        if not cleared:
+            return False
+        return conn.execute(text(insert), params).fetchone() is not None
+
+
+def _finish(engine, *, email: dict, decision: abby.Decision, run_mode: str,
+            reply_id: str = "", detail: str = "", campaign_id: str = "") -> None:
+    camp = email_campaign_id(email, campaign_id)
+    params = {
+        "i": email.get("id"), "t": email.get("thread_id"), "l": email.get("lead"),
+        "c": decision.category, "a": decision.action, "m": run_mode,
+        "r": reply_id, "d": _detail(email, decision, detail),
+        "camp": camp,
+    }
+    with engine.begin() as conn:
+        updated = conn.execute(text(
+            "UPDATE abby_handled SET thread_id = :t, lead = :l, category = :c, action = :a, "
+            "mode = :m, reply_id = :r, detail = :d, campaign_id = :camp WHERE email_id = :i"
+        ), params)
+        wrote = updated.rowcount != 0
+    if not wrote:
+        _record(engine, email=email, decision=decision, run_mode=run_mode, reply_id=reply_id,
+                detail=detail, campaign_id=camp)
+
+
+def _message_text(email: dict) -> str:
+    return str((email.get("body") or {}).get("text") or email.get("content_preview") or "")
+
+
+def _is_suppressed(engine, lead: str) -> bool:
+    try:
+        import outbound_suppression as suppression
+
+        emails, domains = suppression.lists(engine)
+        return bool(suppression.matched_value(lead, "", emails, domains))
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] suppression lookup failed")
+        return False
+
+
+def _cancel_scheduled(engine, lead: str) -> None:
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "UPDATE abby_followups_scheduled SET status = 'cancelled' "
+                "WHERE lead = :l AND status = 'pending'"
+            ), {"l": lead})
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not cancel scheduled follow-ups")
+
+
+def _schedule_rows(engine, *, email: dict, decision: abby.Decision, info: dict, lead: str,
+                   reply_to: str, now: datetime, run_mode: str, campaign_id: str) -> int:
+    """Insert playbook follow-ups. Live rows are pending; shadow rows are not sent."""
+
+    if not decision.schedule_kind:
+        return 0
+    if decision.schedule_kind in {"not_now", "has_solution"} and decision.action != "reply":
+        return 0
+    if decision.schedule_kind == "out_of_office" and decision.action != "ignore":
+        return 0
+    import sales_support_agent.abby_playbook as playbook
+
+    first = str(info.get("first_name") or "")
+    brand = str(info.get("company") or "")
+    reply_text = _message_text(email)
+    status = "pending" if run_mode == "live" else "shadow"
+    planned: list[tuple[str, datetime, str]] = []
+    if decision.schedule_kind == "out_of_office":
+        due = playbook.ooo_due(reply_text, now)
+        planned.append(("out_of_office", due, playbook.render_ooo_followup(
+            first_name=first, brand=brand, reply_text=reply_text)))
+    elif decision.schedule_kind == "not_now":
+        for day in playbook.NOT_NOW_DAYS:
+            planned.append((f"not_now_{day}", now + timedelta(days=day), playbook.render_not_now(day, first)))
+    elif decision.schedule_kind == "has_solution":
+        due = now + timedelta(days=playbook.HAS_SOLUTION_SECOND_DAYS)
+        planned.append(("has_solution_second", due, playbook.render_has_solution_second(first)))
+    saved = 0
+    for kind, due, body in planned:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "INSERT INTO abby_followups_scheduled "
+                    "(lead, reply_to_id, eaccount, subject, first_name, brand, campaign_id, kind, "
+                    "due_at, status, body, source_email_id, detail) "
+                    "VALUES (:l, :r, :e, :s, :f, :b, :c, :k, :d, :st, :body, :src, :detail) "
+                    "ON CONFLICT (source_email_id, kind) DO NOTHING"
+                ), {
+                    "l": lead, "r": reply_to, "e": email.get("eaccount") or "",
+                    "s": _subject(email.get("subject") or ""), "f": first, "b": brand,
+                    "c": campaign_id, "k": kind, "d": due.replace(tzinfo=None),
+                    "st": status, "body": body, "src": email.get("id") or "",
+                    "detail": decision.schedule_kind,
+                })
+            saved += 1
+        except Exception:  # noqa: BLE001
+            logger.exception("[abby] could not schedule %s for %s", kind, lead)
+    return saved
+
+
+def handle_email(engine, email: dict, *, client: Instantly, campaign_id: str,
+                 now: Optional[datetime] = None,
+                 think: Optional[Callable[..., abby.Decision]] = None,
+                 post_slack: Optional[Callable[[str], Any]] = None,
+                 lead_info: Optional[Callable[[str], dict]] = None,
+                 run_mode: Optional[str] = None, cap: Optional[int] = None) -> dict[str, int]:
+    """Apply every guardrail to one received email and record the result.
+
+    The poll and the reply webhook both call this. A second call for the same
+    email id does nothing. Sends happen only in live mode, under the daily cap.
+    """
+
+    now = now or datetime.now(timezone.utc)
+    run_mode = run_mode or mode()
+    counts = {"replied": 0, "held": 0, "blocked": 0, "ignored": 0, "skipped": 0, "scheduled": 0}
+    if run_mode == "off":
+        return counts
+    ensure_tables(engine)
+    if not email.get("id"):
+        counts["skipped"] += 1
+        return counts
+    resolved_campaign = email_campaign_id(email, campaign_id)
+    email["campaign_id"] = resolved_campaign
+    if not _claim(engine, email, run_mode, resolved_campaign):
+        counts["skipped"] += 1
+        return counts
+    think = think or abby.think
+    post_slack = post_slack or (lambda _t: None)
+    lead_info = lead_info or (lambda _e: {})
+    if cap is None:
+        cap = int(os.getenv("ABBY_DAILY_CAP") or 60)
+    active_campaign = resolved_campaign
+    try:
+        return _handle_claimed(
+            engine, email, client=client, campaign_id=active_campaign, now=now,
+            think=think, post_slack=post_slack, lead_info=lead_info,
+            run_mode=run_mode, cap=cap, counts=counts,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] failed while handling %s", email.get("id"))
+        _finish(engine, email=email, decision=abby.Decision("other", "hold", reason="handler error"),
+                run_mode=run_mode)
+        counts["held"] += 1
+        return counts
+
+
+def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str, now: datetime,
+                    think: Callable[..., abby.Decision], post_slack: Callable[[str], Any],
+                    lead_info: Callable[[str], dict], run_mode: str, cap: int,
+                    counts: dict[str, int]) -> dict[str, int]:
+    lead = str(email.get("lead") or email.get("from_address_email") or "").lower()
+    if is_team(_sender(email)) or is_team(lead):
+        _finish(engine, email=email, decision=abby.Decision("other", "skip", reason="written by our team"),
+                run_mode=run_mode)
+        counts["skipped"] += 1
+        return counts
+    if lead and _is_suppressed(engine, lead):
+        _finish(engine, email=email, decision=abby.Decision("other", "skip", reason="suppressed: no further sends"),
+                run_mode=run_mode)
+        counts["skipped"] += 1
+        return counts
+    thread = client.thread(email.get("thread_id") or "") or [email]
+    if team_in_thread(thread):
+        _finish(engine, email=email, decision=abby.Decision("other", "skip", reason="David has this thread"),
+                run_mode=run_mode)
+        counts["skipped"] += 1
+        return counts
+    if already_answered(thread, email):
+        _finish(engine, email=email, decision=abby.Decision("other", "skip", reason="already answered"),
+                run_mode=run_mode)
+        counts["skipped"] += 1
+        return counts
+    info = lead_info(lead) or _instantly_info(client, lead)
+    decision = think(thread, lead_email=lead, company=info.get("company", ""),
+                     first_name=info.get("first_name", ""),
+                     thread_categories=_thread_categories(engine, email.get("thread_id") or ""))
+
+    if decision.action == "reply" and run_mode == "live" and _sent_today(engine, now) >= cap:
+        decision = abby.Decision(decision.category, "hold", reason="daily cap reached",
+                                 slack=f"Abby hit her daily cap; {lead} is waiting for a reply.")
+
+    reply_id, detail = "", ""
+    if decision.action == "reply":
+        if run_mode == "live":
+            st, data = client.reply(reply_to=email["id"], eaccount=email.get("eaccount") or "",
+                                    subject=_subject(email.get("subject") or ""), body=decision.reply,
+                                    cc=decision.cc, extra=decision.to_extra)
+            if st != 200:
+                decision = abby.Decision(decision.category, "hold", reason=f"send failed ({st})",
+                                         slack=f"Abby's reply to {lead} failed to send ({st}). Nothing went out.")
+            else:
+                reply_id = str((data or {}).get("id") or "")
+                counts["replied"] += 1
+                if decision.follow_up_days:
+                    with engine.begin() as conn:
+                        conn.execute(text(
+                            "INSERT INTO abby_followups (lead, reply_to_id, eaccount, subject, first_name, due_at) "
+                            "VALUES (:l, :r, :e, :s, :f, :d)"),
+                            {"l": lead, "r": reply_id or email["id"], "e": email.get("eaccount") or "",
+                             "s": _subject(email.get("subject") or ""), "f": info.get("first_name", ""),
+                             "d": (now + timedelta(days=decision.follow_up_days)).replace(tzinfo=None)})
+        else:
+            detail = "shadow: " + decision.reply
+            post_slack(f"[Abby draft, not sent] {lead} ({decision.category})\n\n{decision.reply}")
+    if decision.action == "block":
+        dom = decision.block_domain
+        blocked_value = lead if (not dom or dom in FREEMAIL) else dom
+        if run_mode == "live":
+            client.block(blocked_value)
+        reason = "hostile" if decision.category == "hostile" else "opt_out"
+        _remember_opt_out(engine, blocked_value, post_slack, reason=reason)
+        _cancel_scheduled(engine, lead)
+        counts["blocked"] += 1
+    elif decision.action == "reply" and decision.category in {"interested", "price", "question"}:
+        _cancel_scheduled(engine, lead)
+    if decision.interest is not None and run_mode == "live" and decision.action in {"reply", "block", "ignore", "hold"}:
+        client.set_interest(lead, decision.interest, campaign_id)
+    if decision.action == "hold":
+        counts["held"] += 1
+    if decision.action == "ignore":
+        counts["ignored"] += 1
+    if decision.slack and (decision.action in {"hold", "block"} or run_mode == "live"):
+        post_slack(decision.slack)
+    counts["scheduled"] += _schedule_rows(
+        engine, email=email, decision=decision, info=info, lead=lead,
+        reply_to=reply_id or str(email.get("id") or ""), now=now, run_mode=run_mode,
+        campaign_id=campaign_id,
+    )
+    _finish(engine, email=email, decision=decision, run_mode=run_mode, reply_id=reply_id, detail=detail)
+    return counts
+
+
 def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] = None,
         think: Optional[Callable[..., abby.Decision]] = None,
         post_slack: Optional[Callable[[str], Any]] = None,
@@ -344,91 +671,33 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
     received = [e for e in client.received_since(since, campaign_id) if e.get("id")]
     done = _handled_ids(engine, [e["id"] for e in received])
     todo = [e for e in received if e["id"] not in done][:MAX_PER_RUN]
-    abby_ids = _abby_reply_ids(engine)
     out["seen"] = len(todo)
 
     for email in todo:
-        lead = str(email.get("lead") or email.get("from_address_email") or "").lower()
-        if is_team(_sender(email)) or is_team(lead):
-            _record(engine, email=email, decision=abby.Decision("other", "skip", reason="written by our team"),
-                    run_mode=run_mode, campaign_id=campaign_id)
-            out["skipped"] += 1
-            continue
-        thread = client.thread(email.get("thread_id") or "") or [email]
-        if team_in_thread(thread):
-            _record(engine, email=email, decision=abby.Decision("other", "skip", reason="David has this thread"),
-                    run_mode=run_mode, campaign_id=campaign_id)
-            out["skipped"] += 1
-            continue
-        if already_answered(thread, email):
-            _record(engine, email=email, decision=abby.Decision("other", "skip", reason="already answered"),
-                    run_mode=run_mode, campaign_id=campaign_id)
-            out["skipped"] += 1
-            continue
-        info = lead_info(lead) or _instantly_info(client, lead)
-        decision = think(thread, lead_email=lead, company=info.get("company", ""),
-                         first_name=info.get("first_name", ""),
-                         thread_categories=_thread_categories(engine, email.get("thread_id") or ""))
+        part = handle_email(
+            engine, email, client=client, campaign_id=campaign_id, now=now,
+            think=think, post_slack=post_slack, lead_info=lead_info,
+            run_mode=run_mode, cap=cap,
+        )
+        for key in ("replied", "held", "blocked", "ignored", "skipped", "scheduled"):
+            out[key] = out.get(key, 0) + part.get(key, 0)
 
-        if decision.action == "reply" and run_mode == "live" and _sent_today(engine, now) >= cap:
-            decision = abby.Decision(decision.category, "hold", reason="daily cap reached",
-                                     slack=f"Abby hit her daily cap; {lead} is waiting for a reply.")
-
-        reply_id, detail = "", ""
-        if decision.action == "reply":
-            if run_mode == "live":
-                st, data = client.reply(reply_to=email["id"], eaccount=email.get("eaccount") or "",
-                                        subject=_subject(email.get("subject") or ""), body=decision.reply,
-                                        cc=decision.cc, extra=decision.to_extra)
-                if st != 200:
-                    decision = abby.Decision(decision.category, "hold", reason=f"send failed ({st})",
-                                             slack=f"Abby's reply to {lead} failed to send ({st}). Nothing went out.")
-                else:
-                    reply_id = str((data or {}).get("id") or "")
-                    out["replied"] += 1
-                    if decision.follow_up_days:
-                        with engine.begin() as conn:
-                            conn.execute(text(
-                                "INSERT INTO abby_followups (lead, reply_to_id, eaccount, subject, first_name, due_at) "
-                                "VALUES (:l, :r, :e, :s, :f, :d)"),
-                                {"l": lead, "r": reply_id or email["id"], "e": email.get("eaccount") or "",
-                                 "s": _subject(email.get("subject") or ""), "f": info.get("first_name", ""),
-                                 "d": (now + timedelta(days=decision.follow_up_days)).replace(tzinfo=None)})
-            else:
-                detail = "shadow: " + decision.reply
-                post_slack(f"[Abby draft, not sent] {lead} ({decision.category})\n\n{decision.reply}")
-        if decision.action == "block":
-            dom = decision.block_domain
-            blocked_value = lead if (not dom or dom in FREEMAIL) else dom
-            if run_mode == "live":
-                client.block(blocked_value)
-            _remember_opt_out(engine, blocked_value, post_slack)
-            out["blocked"] += 1
-        if decision.interest is not None and run_mode == "live" and decision.action in {"reply", "block", "ignore", "hold"}:
-            client.set_interest(lead, decision.interest, campaign_id)
-        if decision.action == "hold":
-            out["held"] += 1
-        if decision.action == "ignore":
-            out["ignored"] += 1
-        if decision.slack and (decision.action == "hold" or run_mode == "live"):
-            post_slack(decision.slack)
-        _record(engine, email=email, decision=decision, run_mode=run_mode, reply_id=reply_id,
-                detail=detail, campaign_id=campaign_id)
-
+    out["scheduled_sent"] = send_due_scheduled(engine, client, now, run_mode, post_slack, cap)
     out["followups"] = _send_due_followups(engine, client, now, run_mode, post_slack)
     out["nudges"] = _send_nudges(engine, client, campaign_id, now, run_mode, post_slack, lead_info, cap)
     return out
 
 
-def _remember_opt_out(engine, value: str, post_slack: Optional[Callable[[str], Any]] = None) -> None:
-    """Keep Abby's opt-out on our list as well as Instantly's blocklist.
+def _remember_opt_out(engine, value: str, post_slack: Optional[Callable[[str], Any]] = None,
+                      reason: str = "opt_out") -> None:
+    """Keep Abby's opt-out or hostile block on our list as well as Instantly's blocklist.
 
     Shadow mode records the same row. Only live mode calls Instantly's block API.
     """
     try:
         import outbound_suppression as suppression
         kind = "email" if "@" in (value or "") else "domain"
-        suppression.add(engine, kind=kind, value=value, reason="opt_out", source="abby")
+        suppression.add(engine, kind=kind, value=value, reason=reason or "opt_out", source="abby")
     except Exception:  # noqa: BLE001
         logger.exception("[abby] could not record the opt-out")
         if post_slack is None:
@@ -466,6 +735,74 @@ def _send_due_followups(engine, client: Instantly, now: datetime, run_mode: str,
             sent += 1
         else:
             post_slack(f"Abby's 60-day check-in to {lead} failed to send ({st}).")
+    return sent
+
+
+def send_due_scheduled(engine, client: Instantly, now: datetime, run_mode: str,
+                       post_slack: Callable[[str], Any], cap: int) -> int:
+    """Send due rows from abby_followups_scheduled. Live mode only, under the daily cap.
+
+    A row is claimed (pending -> sending) before the Instantly call so the poll
+    and the follow-up cron cannot send it twice.
+    """
+
+    if run_mode != "live":
+        return 0
+    ensure_tables(engine)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT id, lead, reply_to_id, eaccount, subject, body FROM abby_followups_scheduled "
+                "WHERE status = 'pending' AND due_at <= :n ORDER BY due_at LIMIT 8"
+            ), {"n": now.replace(tzinfo=None)}).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not read scheduled follow-ups")
+        return 0
+    sent = 0
+    capped = False
+    for fid, lead, reply_to, eaccount, subject, body in rows:
+        if _sent_today(engine, now) >= cap:
+            capped = True
+            break
+        if lead and _is_suppressed(engine, str(lead)):
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "UPDATE abby_followups_scheduled SET status = 'cancelled', detail = 'suppressed' "
+                    "WHERE id = :i AND status = 'pending'"
+                ), {"i": fid})
+            continue
+        with engine.begin() as conn:
+            claimed = conn.execute(text(
+                "UPDATE abby_followups_scheduled SET status = 'sending' "
+                "WHERE id = :i AND status = 'pending' RETURNING id"
+            ), {"i": fid}).fetchone()
+            if not claimed:
+                continue
+        status, data = client.reply(
+            reply_to=reply_to or "", eaccount=eaccount or "", subject=subject or "",
+            body=body or "", cc=[], extra=[],
+        )
+        if status == 200:
+            _record(
+                engine,
+                email={"id": f"followup:{fid}", "thread_id": "", "lead": lead, "body": {"text": ""}},
+                decision=abby.Decision("followup", "followup", reason=f"scheduled follow-up {fid}"),
+                run_mode="live",
+                reply_id=str((data or {}).get("id") or ""),
+            )
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "UPDATE abby_followups_scheduled SET status = 'sent', sent_at = :n WHERE id = :i"
+                ), {"n": now.replace(tzinfo=None), "i": fid})
+            sent += 1
+        else:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "UPDATE abby_followups_scheduled SET status = :s WHERE id = :i"
+                ), {"s": f"failed {status}", "i": fid})
+            post_slack(f"Abby's scheduled follow-up to {lead} failed to send ({status}).")
+    if capped:
+        post_slack("Abby hit her daily cap. Scheduled follow-ups are waiting.")
     return sent
 
 
