@@ -43,6 +43,7 @@ RECIPE_CAMPAIGN_MAP: dict[str, str] = {
     "amz_off": "45a521a0-68e2-439f-9622-1672f9ede214",
     "plan_upgrade": "1937c21a-89c4-458f-a949-306f90ae6258",
     "replatform": "d12b5512-d34c-4331-841f-8e59263f5b5e",
+    "replatformed": "d12b5512-d34c-4331-841f-8e59263f5b5e",
     "abby_reengage": "8ebf1923-7ba4-4a63-96a8-adb18a58ddf6",
 }
 
