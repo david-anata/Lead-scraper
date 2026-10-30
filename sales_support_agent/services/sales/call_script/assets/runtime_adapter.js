@@ -165,6 +165,7 @@
     });
     return lines.join('\n');
   }
+  window.__anataPrepBrief = prepBrief;
   function mountPrep() {
     var prep = CFG.state && CFG.state['ss-prep'];
     var main = document.getElementById('main');
@@ -419,6 +420,7 @@
     full: 'Full service, $3,000/mo + 5% over baseline'
   };
   var KIND = { ask: 'Ask next', handle: 'Handle it', tiedown: 'Tie it down', moveon: 'Move on', pitch: 'Pitch now', close: 'Close', temperature: 'Temperature check' };
+  function prepBrief(prep) { try { return window.__anataPrepBrief ? window.__anataPrepBrief(prep) : ''; } catch (e) { return ''; } }
   var BELIEFS = ['Pain', 'Doubt', 'Cost', 'Desire', 'Support', 'Trust', 'Money'];
 
   var st = {
