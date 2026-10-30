@@ -134,6 +134,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
         ensure_outbound_settings_schema(engine, force=True)
         ensure_outbound_batch_schema(engine, force=True)
         _ensure_outbound_enrich_tables(engine)
+        _ensure_outbound_campaign_tables(engine)
         return
 
     # Production deployments use a persistent Postgres database. Running
@@ -171,6 +172,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     ensure_outbound_settings_schema(engine, force=True)
     ensure_outbound_batch_schema(engine, force=True)
     _ensure_outbound_enrich_tables(engine)
+    _ensure_outbound_campaign_tables(engine)
     _ensure_sales_call_tables(engine)
 
 
@@ -198,6 +200,16 @@ def _ensure_outbound_enrich_tables(engine: Any) -> None:
         from outbound_enrich import ensure_tables
     except ImportError:  # pragma: no cover - module lives at the repo root
         logger.warning("outbound_enrich not importable; skipping its tables")
+        return
+    ensure_tables(engine)
+
+
+def _ensure_outbound_campaign_tables(engine: Any) -> None:
+    """Campaign catalog and weekly scores. Vercel skips DDL; the migration owns production."""
+    try:
+        from outbound_campaigns import ensure_tables
+    except ImportError:  # pragma: no cover - module lives at the repo root
+        logger.warning("outbound_campaigns not importable; skipping its tables")
         return
     ensure_tables(engine)
 

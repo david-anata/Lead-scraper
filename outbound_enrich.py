@@ -387,20 +387,40 @@ def _mark_skipped(engine, people: list[dict[str, Any]]) -> None:
 
 
 def _empty_push(*, dry_run: bool, suppressed: int = 0, excluded: int = 0,
-                note: str = "Nothing to push.", errors: Optional[list[str]] = None) -> dict[str, Any]:
+                held: int = 0, note: str = "Nothing to push.",
+                errors: Optional[list[str]] = None) -> dict[str, Any]:
     return {
         "pending": 0, "pushed": 0, "created": 0, "skipped": 0,
-        "suppressed": suppressed, "excluded_recipes": excluded, "dry_run": dry_run,
-        "errors": errors or [], "note": note, "preview": [], "campaigns": [],
+        "suppressed": suppressed, "excluded_recipes": excluded, "held": held,
+        "dry_run": dry_run, "errors": errors or [], "note": note,
+        "preview": [], "campaigns": [],
     }
+
+
+def _campaign_routing(engine):
+    """Table routing, or a fallback marker when the table cannot be used."""
+
+    class _Fallback:
+        available = False
+        by_recipe: dict[str, str] = {}
+        blocked: frozenset[str] = frozenset()
+
+    try:
+        import outbound_campaigns as campaigns
+        return campaigns.load_routing(engine)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich] campaign table could not be read; using the hardcoded map")
+        return _Fallback()
 
 
 def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int = 500,
                  push: Optional[Callable[..., _push.PushOutcome]] = None) -> dict[str, Any]:
     """Add not-yet-pushed contacts to Instantly, one campaign per recipe group.
 
-    A recipe in ``RECIPE_CAMPAIGN_MAP`` goes to that campaign. Every other
-    recipe uses ``campaign_id`` when it is set, otherwise
+    A recipe on ``outbound_campaigns`` with status active or throttled goes
+    to that campaign. ``cut`` and ``proposed`` stay unpushed. When that table
+    is empty or cannot be read, ``RECIPE_CAMPAIGN_MAP`` is the fallback.
+    Every other recipe uses ``campaign_id`` when it is set, otherwise
     ``OUTBOUND_INSTANTLY_CAMPAIGN_ID``. ``redo_partner`` is left unpushed.
     Suppressed emails and domains are left unpushed and, on a live push, marked
     so they do not clog the queue. A contact is marked pushed only when
@@ -422,10 +442,19 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
     if blocked and not dry_run:
         _mark_skipped(engine, blocked)
     default_campaign = (campaign_id or "").strip() or _push.configured_campaign_id()
+    routing = _campaign_routing(engine)
+    campaign_map = routing.by_recipe if routing.available else None
     groups: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
     missing_campaign = 0
+    held = 0
     for person in allowed:
-        target = _push.campaign_for_recipe(person.get("recipe") or "", default_campaign)
+        recipe_name = str(person.get("recipe") or "").strip()
+        if routing.available and recipe_name in routing.blocked:
+            held += 1
+            continue
+        target = _push.campaign_for_recipe(
+            recipe_name, default_campaign, campaign_map=campaign_map,
+        )
         lead = {"domain": person["domain"], "brand": person["brand"], "categories": person["category"],
                 "recipe": person["recipe"], "tier": person["tier"]}
         body = _push.build_lead(person, lead, person["opener"])
@@ -441,8 +470,10 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
             bits.append(f"Skipped {len(blocked)} suppressed contacts.")
         if missing_campaign:
             bits.append(_push.MISSING_CAMPAIGN_MESSAGE)
+        if held:
+            bits.append(f"Held {held} contacts whose campaign is cut or proposed.")
         return _empty_push(
-            dry_run=dry_run, suppressed=len(blocked), excluded=excluded,
+            dry_run=dry_run, suppressed=len(blocked), excluded=excluded, held=held,
             note=" ".join(bits) or "Nothing to push.",
         )
 
@@ -487,10 +518,12 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         note = f"{note} Skipped {len(blocked)} suppressed contacts.".strip()
     if missing_campaign:
         note = f"{note} {_push.MISSING_CAMPAIGN_MESSAGE}".strip()
+    if held:
+        note = f"{note} Held {held} contacts whose campaign is cut or proposed.".strip()
     return {
         "pending": sum(len(items) for items in groups.values()),
         "pushed": pushed, "created": created, "skipped": skipped,
-        "suppressed": len(blocked), "excluded_recipes": excluded,
+        "suppressed": len(blocked), "excluded_recipes": excluded, "held": held,
         "dry_run": stayed_dry, "errors": errors, "note": note,
         "preview": preview, "campaigns": campaigns,
     }

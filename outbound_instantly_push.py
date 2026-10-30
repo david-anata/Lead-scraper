@@ -62,15 +62,19 @@ def configured_campaign_id() -> str:
     return (os.getenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID") or "").strip()
 
 
-def campaign_for_recipe(recipe: Any, default: str = "") -> str:
+def campaign_for_recipe(recipe: Any, default: str = "",
+                        campaign_map: Optional[dict[str, str]] = None) -> str:
     """Campaign for one contact's recipe column.
 
-    A mapped recipe always wins. An unmapped recipe uses ``default`` when that
-    is set, otherwise ``OUTBOUND_INSTANTLY_CAMPAIGN_ID``. Empty means there is
-    no campaign to add this contact to.
+    A mapped recipe always wins. ``campaign_map`` is the live table when
+    ``push_pending`` could read it. ``None`` uses ``RECIPE_CAMPAIGN_MAP``.
+    An unmapped recipe uses ``default`` when that is set, otherwise
+    ``OUTBOUND_INSTANTLY_CAMPAIGN_ID``. Empty means there is no campaign
+    to add this contact to.
     """
 
-    mapped = RECIPE_CAMPAIGN_MAP.get(str(recipe or "").strip())
+    source = RECIPE_CAMPAIGN_MAP if campaign_map is None else campaign_map
+    mapped = source.get(str(recipe or "").strip())
     if mapped:
         return mapped
     explicit = str(default or "").strip()
