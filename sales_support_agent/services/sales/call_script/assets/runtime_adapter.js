@@ -670,6 +670,23 @@
     var C = window.SS && window.SS.meta && window.SS.meta.CASES;
     return C && C[k] ? C[k].n + ': ' + C[k].r : '';
   }
+  /* Hold each next move on screen; when a new one arrives, show a 5-second
+     fill bar at the bottom of the card, then switch. Keeps the card readable. */
+  var MOVE_HOLD_MS = 5000;
+  function moveKey(m) { return m ? (m.kind || '') + '|' + (m.say || '') : ''; }
+  function stagedMove(incoming) {
+    if (!incoming || !incoming.say) return st.moveShown || incoming;
+    if (!st.moveShown) { st.moveShown = incoming; st.movePending = null; return incoming; }
+    if (moveKey(incoming) === moveKey(st.moveShown)) { st.moveShown = incoming; st.movePending = null; return incoming; }
+    if (!st.movePending || moveKey(st.movePending) !== moveKey(incoming)) {
+      if (!st.movePending) st.movePendingAt = Date.now();
+      st.movePending = incoming;
+      clearTimeout(st.moveTimer);
+      st.moveTimer = setTimeout(function () { render(); }, Math.max(0, MOVE_HOLD_MS - (Date.now() - st.movePendingAt)) + 20);
+    }
+    if (Date.now() - st.movePendingAt >= MOVE_HOLD_MS) { st.moveShown = st.movePending; st.movePending = null; }
+    return st.moveShown;
+  }
   function liveHTML() {
     var s = st.session, p = st.patch || {}, h = '';
     var live = s.status === 'live';
@@ -692,10 +709,12 @@
       h += '<div class="lv-warn">Only hearing you so far. The prospect\'s side comes from the Meet tab\'s audio, so it fills in once someone else talks on the call.</div>';
     }
     (p.warnings || []).slice(0, 3).forEach(function (w) { h += '<div class="lv-warn">' + esc(w) + '</div>'; });
-    var nm = p.nextMove;
+    var nm = stagedMove(p.nextMove), pend = st.movePending;
     if (nm && nm.say) {
-      h += '<div class="lv-card lv-next"><div class="k">' + esc(KIND[nm.kind] || 'Next move') + '</div><div class="say">' + esc(nm.say) + '</div>' + (nm.why ? '<div class="why">' + esc(nm.why) + '</div>' : '') +
-        (nm.section ? '<div class="lv-btns" style="margin-top:6px"><button type="button" class="lv-btn sec" data-lvgo="' + esc(nm.section) + '">Open the script here</button></div>' : '') + '</div>';
+      h += '<div class="lv-card lv-next"><div class="k">' + esc(KIND[nm.kind] || 'Next move') + '</div><div class="say">' + esc(nm.say) + '</div><div class="why">' + esc(nm.why || '') + '</div>' +
+        '<div class="lv-btns" style="margin-top:6px">' + (nm.section ? '<button type="button" class="lv-btn sec" data-lvgo="' + esc(nm.section) + '">Open the script here</button>' : '') + '</div>' +
+        '<div class="lv-up" aria-live="off">' + (pend ? 'New move coming up' : '') + '</div>' +
+        (pend ? '<div class="lv-bar" role="progressbar" aria-label="Switching to the next move in 5 seconds"><i style="animation-delay:-' + Math.min(MOVE_HOLD_MS, Date.now() - st.movePendingAt) + 'ms"></i></div>' : '') + '</div>';
     } else {
       h += '<div class="lv-card lv-next"><div class="k">Next move</div><div class="why">Listening. The coach updates every 10 to 15 seconds once the conversation starts.</div></div>';
     }
@@ -765,6 +784,7 @@
   function render() {
     var box = $('[data-live]'); if (!box) return;
     var inner;
+    if (!st.session || st.session.status !== 'live') { st.moveShown = null; st.movePending = null; }
     if (st.session && st.session.status !== 'ended') inner = liveHTML();
     else if (st.justEnded) inner = endedHTML();
     else inner = idleHTML();

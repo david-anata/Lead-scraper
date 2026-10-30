@@ -9,18 +9,24 @@
 <link rel="apple-touch-icon" sizes="180x180" href="/brand-static/call-script-favicon-180.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Montserrat:wght@600;700;800&display=swap" rel="stylesheet">
 <style>:root{
-  --navy:#0A2333; --canvas:#F3F3F1; --paper:#FFFFFF; --ink:#212121; --muted:#666666; --line:#E6E6E6;
-  --green:#13835B; --orange:#EA6C34; --peach:#FDE5CF; --lightblue:#C2D9E6;
-  --side:#0A2333; --side-ink:#F3F3F1; --side-muted:#9DB0BD; --side-line:rgba(255,255,255,.10); --side-hi:rgba(255,255,255,.08);
-  --mark:#FDE5CF;
-  --t-red:#A8382B; --t-red-bg:#F7E2DE;
-  --t-green:#13835B; --t-green-bg:#DCEFE6;
-  --t-blue:#2A5D84; --t-blue-bg:#DCE8F1;
+  /* Anata brand tokens (shared/anata_brand/tokens.json, docs/BRAND.md). Same values as admin.css. */
+  --agent-ink:#2b3644; --agent-ink-muted:#5d6977; --agent-blue:#85bbda; --agent-blue-strong:#5e9fc4; --agent-blue-soft:#e7f3f9;
+  --agent-support:#bfa889; --agent-surface:#ffffff; --agent-page:#f9f7f3; --agent-surface-soft:#f2ece3; --agent-border:#dfe3e6;
+  --agent-good:#477a59; --agent-warn:#986817; --agent-danger:#8b4c42; --agent-focus:#2b3644;
+  --agent-radius-control:10px; --agent-radius-panel:16px; --agent-ease:cubic-bezier(0.2,0.8,0.2,1);
+  --font-heading:"Montserrat","Inter","Segoe UI",sans-serif; --font-body:"Inter","Segoe UI",-apple-system,system-ui,sans-serif;
+  --navy:var(--agent-ink); --canvas:var(--agent-page); --paper:var(--agent-surface); --ink:var(--agent-ink); --muted:var(--agent-ink-muted); --line:var(--agent-border);
+  --green:var(--agent-good); --orange:var(--agent-blue-strong); --peach:var(--agent-surface-soft); --lightblue:var(--agent-blue-soft);
+  --side:var(--agent-ink); --side-ink:#f9f7f3; --side-muted:#b3bcc6; --side-line:rgba(255,255,255,.10); --side-hi:rgba(255,255,255,.08);
+  --mark:var(--agent-surface-soft);
+  --t-red:var(--agent-danger); --t-red-bg:#f4e6e3;
+  --t-green:var(--agent-good); --t-green-bg:#e3eee6;
+  --t-blue:#3f7698; --t-blue-bg:var(--agent-blue-soft);
   --t-purple:#674791; --t-purple-bg:#EAE3F3;
-  --t-orange:#B14F1D; --t-orange-bg:#FBE4D5;
-  --t-gold:#856111; --t-gold-bg:#F4EAC9;
+  --t-orange:var(--agent-warn); --t-orange-bg:#f6ecd9;
+  --t-gold:#7d6a4f; --t-gold-bg:var(--agent-surface-soft);
   --sidew:272px; --railw:380px;
   box-sizing:border-box;
   padding-top:env(safe-area-inset-top,0px);
@@ -44,13 +50,14 @@
 }
 *,*::before,*::after{box-sizing:inherit}
 html{scroll-padding-top:calc(env(safe-area-inset-top,0px) + 16px);-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--canvas);color:var(--ink);font-family:"DM Sans","BROmega","Inter",-apple-system,system-ui,"Segoe UI",Roboto,sans-serif;font-size:16px;line-height:1.6;display:grid;grid-template-columns:var(--sidew) minmax(0,1fr) var(--railw)}
+body{margin:0;background:var(--canvas);color:var(--ink);font-family:var(--font-body);font-size:16px;line-height:1.6;display:grid;grid-template-columns:var(--sidew) minmax(0,1fr) var(--railw)}
 a{color:inherit}
 kbd{font:inherit;font-size:12px;line-height:1;padding:3px 6px;border-radius:4px;border:1px solid currentColor;opacity:.75}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 .skip{position:absolute;left:-999px;top:8px;background:var(--paper);padding:8px 12px;border-radius:8px;z-index:50}
 .skip:focus{left:8px}
-:focus-visible{outline:2px solid var(--orange);outline-offset:2px}
+:focus-visible{outline:2px solid var(--agent-focus);outline-offset:2px}
+h1,h2,h3,.brand,.lv-head h3,.lv-card .k{font-family:var(--font-heading)}
 
 /* Sidebar */
 .side{position:sticky;top:env(safe-area-inset-top,0px);height:calc(100dvh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));background:var(--side);color:var(--side-ink);display:flex;flex-direction:column;z-index:30}
@@ -681,7 +688,7 @@ html.deck-resizing,html.deck-resizing *{cursor:col-resize!important;user-select:
 .ak-quick{margin-top:12px}
 
 /* ---------- Live call block (Talk flow) ---------- */
-.liveblk{margin:0 0 14px}
+.liveblk{margin:0 0 14px;overflow-anchor:none}
 .liveblk:empty{display:none}
 .lv{border:1px solid var(--line);border-radius:12px;background:var(--paper);padding:12px 14px;display:grid;gap:10px}
 .lv-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -705,6 +712,16 @@ html.deck-resizing,html.deck-resizing *{cursor:col-resize!important;user-select:
 .lv-card{border-radius:10px;padding:10px 12px;border:1px solid var(--line);background:var(--canvas)}
 .lv-card .k{font-size:11.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
 .lv-card .say{font-weight:700;font-size:14.5px;line-height:1.35;margin:3px 0}
+.lv-card.lv-next{position:relative;overflow:hidden;min-height:132px;padding-bottom:16px;border-radius:var(--agent-radius-control)}
+.lv-card.lv-next .say{min-height:calc(1.35em * 3);display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.lv-card.lv-next .why{min-height:calc(1.4em * 2);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.lv-card.lv-next .lv-up{font-size:11.5px;font-weight:700;color:var(--t-blue);margin-top:6px;min-height:1.4em}
+.lv-bar{position:absolute;left:0;right:0;bottom:0;height:5px;background:rgba(43,54,68,.08)}
+.lv-bar i{display:block;height:100%;width:0;background:var(--agent-blue-strong);animation:lvfill 5s linear forwards}
+@keyframes lvfill{from{width:0}to{width:100%}}
+.lv-lines{min-height:calc(1.4em * 3 + 12px)}
+.lv-lines li{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lv-warns{min-height:0}
 .lv-card .why{font-size:12.5px;color:var(--muted)}
 .lv-card.lv-next{background:var(--t-blue-bg);border-color:var(--t-blue)}
 .lv-card .lv-btn.sec{background:var(--paper)}
