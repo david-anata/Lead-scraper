@@ -9,6 +9,7 @@ cannot drop replies Abby already handled. See maybe_run_enrich_from_abby.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -83,8 +84,32 @@ def _run_enrich_after_abby() -> dict[str, Any]:
     return {"ran": False, "reason": "hook failed", "pushed": 0}
 
 
+def _maybe_analytics_backfill() -> dict[str, Any] | None:
+    """On Vercel, the first Abby tick backfills analytics when the table is empty.
+
+    Vercel Cron already authenticates this route. The backfill does not send mail.
+    """
+
+    if not os.getenv("VERCEL"):
+        return None
+    try:
+        from sales_support_agent.models.database import get_engine
+        from sales_support_agent.services.instantly_campaign_analytics import (
+            maybe_backfill_if_empty,
+        )
+
+        return maybe_backfill_if_empty(get_engine())
+    except Exception:  # noqa: BLE001
+        logger.exception("[instantly-analytics] backfill skipped")
+        return {"ok": False, "ran": False, "reason": "backfill skipped"}
+
+
 @router.api_route("/run", methods=["GET", "POST"])
 def run_scheduled_abby(request: Request) -> dict:
     _require_scheduler_auth(request)
     details = run_abby()
-    return {"status": "ok", "details": details, "enrich_via_abby": _run_enrich_after_abby()}
+    payload = {"status": "ok", "details": details, "enrich_via_abby": _run_enrich_after_abby()}
+    backfill = _maybe_analytics_backfill()
+    if backfill is not None:
+        payload["analytics_backfill"] = backfill
+    return payload

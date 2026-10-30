@@ -108,6 +108,10 @@
     {
       "path": "/api/jobs/abby/run",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/jobs/instantly/analytics-sync",
+      "schedule": "0 12 * * *"
     }
   ]
 }
