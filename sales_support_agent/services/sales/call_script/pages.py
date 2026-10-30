@@ -21,6 +21,12 @@ _STAGE_STATUS = {
     "Reviewed": "confirmed",
 }
 
+_FAVICON = (
+    '<link rel="icon" type="image/svg+xml" href="/brand-static/call-script-favicon.svg">'
+    '<link rel="icon" type="image/png" sizes="32x32" href="/brand-static/call-script-favicon-32.png">'
+    '<link rel="apple-touch-icon" sizes="180x180" href="/brand-static/call-script-favicon-180.png">'
+)
+
 _STYLES = """<style>
 .call-list td .app-table__sub{margin-top:2px}
 .call-actions{display:flex;gap:8px;align-items:center}
@@ -145,5 +151,5 @@ def render_call_list_page(
         navigation=render_agent_nav("sales", sales_section="sales_call", user=user),
         body=body,
         page_class="sales-call-page",
-        extra_head=_STYLES,
+        extra_head=_FAVICON + _STYLES,
     )
