@@ -105,8 +105,11 @@ Outbound contact finding (defaults are unchanged until these are set):
 - `OUTBOUND_ENRICH_PER_RUN` — companies per cron call (default 40)
 - `OUTBOUND_ENRICH_MAX_CONTACTS` — verified people per brand (default 2)
 - `ABBY_CAMPAIGN_IDS` — extra Instantly campaigns Abby watches, comma separated.
-  When unset, the trial campaign `e5f5046b-07e4-41ad-a395-79cf8766ccd0` is
-  included. AGENT SDR and Re-engage are always included.
+  When unset, the trial campaign `e5f5046b-07e4-41ad-a395-79cf8766ccd0` and the
+  five signal campaigns (`a333e00e-bc3b-4abf-bcbf-4e0eb126090c`,
+  `45a521a0-68e2-439f-9622-1672f9ede214`, `1937c21a-89c4-458f-a949-306f90ae6258`,
+  `d12b5512-d34c-4331-841f-8e59263f5b5e`, `8ebf1923-7ba4-4a63-96a8-adb18a58ddf6`)
+  are included. AGENT SDR and Re-engage are always included.
 
 `push_pending` sends each stored contact to the Instantly campaign for its
 `recipe` column. The map is hardcoded in

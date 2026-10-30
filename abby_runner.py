@@ -49,18 +49,26 @@ _DDL = (
 )
 
 
-# The trial campaign. ABBY_CAMPAIGN_IDS overrides this list. AGENT SDR and
-# Re-engage are always watched in addition to whatever the env var names.
+# The trial campaign and the five signal campaigns. ABBY_CAMPAIGN_IDS
+# overrides this list. AGENT SDR and Re-engage are always watched in
+# addition to whatever the env var names.
 TRIAL_CAMPAIGN_ID = "e5f5046b-07e4-41ad-a395-79cf8766ccd0"
+SIGNAL_CAMPAIGN_IDS = (
+    "a333e00e-bc3b-4abf-bcbf-4e0eb126090c",
+    "45a521a0-68e2-439f-9622-1672f9ede214",
+    "1937c21a-89c4-458f-a949-306f90ae6258",
+    "d12b5512-d34c-4331-841f-8e59263f5b5e",
+    "8ebf1923-7ba4-4a63-96a8-adb18a58ddf6",
+)
 
 
 def watched_campaign_ids(reengage_ids: Optional[list[str]] = None) -> list[str]:
-    """Campaigns Abby reads. Trial is the default extra; SDR and Re-engage stay."""
+    """Campaigns Abby reads. Trial and the signal campaigns are the default extras; SDR and Re-engage stay."""
     import outbound_instantly_push as ip
 
     raw = os.getenv("ABBY_CAMPAIGN_IDS")
     if raw is None or not raw.strip():
-        extras = [TRIAL_CAMPAIGN_ID]
+        extras = [TRIAL_CAMPAIGN_ID, *SIGNAL_CAMPAIGN_IDS]
     else:
         extras = [part.strip() for part in raw.split(",") if part.strip()]
     ordered = [ip.LIVE_CAMPAIGN_ID, *(reengage_ids or []), *extras]
