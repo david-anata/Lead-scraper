@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -29,6 +29,21 @@ from sales_support_agent.services.reply_templates import (
 
 AGENT_COMMENT_PREFIX = "[Sales Support Agent]"
 AGENT_COMMENT_SIGNATURE_PREFIX = "Signature:"
+
+
+def as_utc(value: datetime | None) -> datetime | None:
+    """Return ``value`` as timezone-aware UTC.
+
+    Naive values are UTC wall times. ClickUp epoch comments and some mirrored
+    lead columns arrive that way, and comparing them with aware timestamps
+    raises ``TypeError``.
+    """
+
+    if value is None:
+        return None
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -78,21 +93,22 @@ class ReminderService:
         ):
             return None
 
-        last_event = latest_event_at if latest_event_at is not None else self._latest_meaningful_event(lead.clickup_task_id)
-        comment_touch = comment_touch_at if comment_touch_at is not None else self._latest_meaningful_comment(comments or [])
+        last_event = as_utc(latest_event_at) if latest_event_at is not None else self._latest_meaningful_event(lead.clickup_task_id)
+        comment_touch = as_utc(comment_touch_at) if comment_touch_at is not None else self._latest_meaningful_comment(comments or [])
         last_touch = self._max_datetime(lead.last_meaningful_touch_at, lead.last_outbound_at, lead.last_inbound_at, last_event, comment_touch)
+        next_follow_up_at = as_utc(lead.next_follow_up_at)
         has_work_signal = bool(
             last_touch
-            or ((lead.next_follow_up_at is not None) and (lead.communication_summary or lead.recommended_next_action))
+            or (next_follow_up_at is not None and (lead.communication_summary or lead.recommended_next_action))
         )
         policy = status_policy_for(status, self.settings.status_policies)
-        created_at = lead.created_at or lead.last_sync_at or datetime.utcnow()
+        created_at = as_utc(lead.created_at or lead.last_sync_at) or datetime.now(timezone.utc)
         assessment = assess_status_follow_up(
             status=status,
             policy=policy,
             created_at=created_at,
             meaningful_touch_at=last_touch,
-            next_follow_up_date=lead.next_follow_up_at.date() if lead.next_follow_up_at else None,
+            next_follow_up_date=next_follow_up_at.date() if next_follow_up_at else None,
             as_of_date=as_of_date,
             has_work_signal=has_work_signal,
         )
@@ -339,7 +355,7 @@ class ReminderService:
             .limit(1)
         )
         row = self.session.execute(query).scalar_one_or_none()
-        return row.occurred_at if row else None
+        return as_utc(row.occurred_at) if row else None
 
     def _latest_meaningful_comment(self, comments: list[dict[str, Any]]) -> datetime | None:
         latest: datetime | None = None
@@ -356,14 +372,17 @@ class ReminderService:
         if raw_value is None:
             return None
         if isinstance(raw_value, datetime):
-            return raw_value
+            return as_utc(raw_value)
         value = str(raw_value).strip()
         if not value:
             return None
         if value.isdigit():
-            return datetime.fromtimestamp(int(value) / 1000)
+            timestamp = int(value)
+            if timestamp > 10_000_000_000:
+                timestamp = timestamp / 1000
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc)
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return as_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
         except ValueError:
             return None
 
@@ -374,7 +393,11 @@ class ReminderService:
         return ""
 
     def _max_datetime(self, *values: datetime | None) -> datetime | None:
-        filtered = [value for value in values if value is not None]
+        filtered: list[datetime] = []
+        for value in values:
+            normalized = as_utc(value)
+            if normalized is not None:
+                filtered.append(normalized)
         if not filtered:
             return None
         return max(filtered)

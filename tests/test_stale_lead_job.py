@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -275,6 +275,52 @@ class StaleLeadJobTests(unittest.TestCase):
             self.assertEqual(result["commented"], 0)
             self.assertEqual(result["comment_skipped_duplicate"], 1)
             self.assertEqual(clickup_client.created_comments, [])
+        finally:
+            session.close()
+
+    def test_evaluate_lead_compares_naive_and_aware_timestamps(self) -> None:
+        """ClickUp tasks 868db4az9, 868hk7q7k, and 868hk4nd2 mixed the two."""
+
+        aware_touch = datetime(2026, 3, 10, 16, 0, tzinfo=timezone.utc)
+        naive_outbound = datetime(2026, 3, 2, 9, 0)
+        comment_ms = int(datetime(2026, 3, 9, 15, 0, tzinfo=timezone.utc).timestamp() * 1000)
+        comments = [
+            {"comment_text": "Called the buyer", "date": str(comment_ms)},
+            {"comment_text": "They wrote back", "date": "2026-03-12T18:30:00Z"},
+            {"comment_text": "[Sales Support Agent] ignore me", "date": "2026-03-13T00:00:00+00:00"},
+        ]
+        session = self.session_factory()
+        try:
+            service = ReminderService(self.settings, session)
+            for task_id in ("868db4az9", "868hk7q7k", "868hk4nd2"):
+                lead = LeadMirror(
+                    clickup_task_id=task_id,
+                    list_id=self.settings.clickup_list_id,
+                    task_name="Mixed timestamps",
+                    task_url=f"https://app.clickup.com/t/{task_id}",
+                    status="new lead",
+                    created_at=datetime(2026, 3, 1, 9, 0),
+                    updated_at=aware_touch,
+                    last_sync_at=naive_outbound,
+                    last_meaningful_touch_at=aware_touch,
+                    last_outbound_at=naive_outbound,
+                    last_inbound_at=datetime(2026, 3, 8, 11, 0, tzinfo=timezone.utc),
+                    next_follow_up_at=datetime(2026, 3, 20, 0, 0),
+                    raw_task_payload={},
+                )
+                evaluation = service.evaluate_lead(
+                    lead,
+                    as_of_date=date(2026, 4, 15),
+                    comments=comments,
+                    latest_event_at=datetime(2026, 3, 4, 8, 0),
+                )
+                self.assertIsNotNone(evaluation)
+                assert evaluation is not None
+                last_touch = evaluation.last_meaningful_touch_at
+                self.assertIsNotNone(last_touch)
+                assert last_touch is not None
+                self.assertEqual(last_touch.utcoffset(), timedelta(0))
+                self.assertEqual(last_touch, datetime(2026, 3, 12, 18, 30, tzinfo=timezone.utc))
         finally:
             session.close()
 
