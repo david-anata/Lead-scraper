@@ -221,6 +221,9 @@ class Settings:
     google_oauth_allowed_domain: str = "anatainc.com"
     admin_role_map: dict[str, str] = field(default_factory=dict)
     admin_default_role: str = "ops"
+    # Deck CTA "Start your free 14-day trial". Empty until card-on-file
+    # sign-up is confirmed; the deck then falls back to the booking link.
+    trial_signup_url: str = ""
     rbac_enabled: bool = True
     rbac_superadmin_emails: tuple[str, ...] = ("david@anatainc.com",)
     rbac_auto_provision_domain_tools: tuple[str, ...] = (
@@ -558,6 +561,7 @@ def load_settings() -> Settings:
             or "https://api.stripe.com"
         ),
         marketing_booking_url=os.getenv("MARKETING_BOOKING_URL", "").strip(),
+        trial_signup_url=os.getenv("TRIAL_SIGNUP_URL", "").strip(),
         discovery_snapshot_path=Path(
             os.getenv("CLICKUP_DISCOVERY_SNAPSHOT_PATH", "runtime/clickup_schema_snapshot.json").strip()
             or "runtime/clickup_schema_snapshot.json"

@@ -2717,9 +2717,11 @@ async def _run_generate_deck(
     try:
         form_payload = await request.form()
         category_label_input = str(form_payload.get("category_label") or "").strip()
+        template_version_input = str(form_payload.get("template_version") or "").strip()
     except Exception:
         form_payload = {}
         category_label_input = ""
+        template_version_input = ""
 
     try:
         with session_scope(request.app.state.session_factory) as session:
@@ -2798,6 +2800,8 @@ async def _run_generate_deck(
                 growth_plan_inputs=growth_plan_inputs,
                 category_label=category_label_input,
                 trigger=trigger,
+                template_version=template_version_input,
+                brand_website=str(form_payload.get("brand_website") or "").strip(),
             )
             # Surface the auto-detection result so the AE can see what
             # was routed where in the deck's warnings list.

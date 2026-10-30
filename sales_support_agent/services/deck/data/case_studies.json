@@ -1,0 +1,53 @@
+{
+  "_note": "Proof registry for the intelligence_v2 deck. Copy matches anata-website PR #106 (src/components/proof/ProofStories.tsx). Only add numbers a published or approved case study states. Leave a field empty rather than estimate; empty fields are hidden.",
+  "case_studies": [
+    {
+      "key": "sonrei",
+      "name": "Sonrei",
+      "headline": "137% year-over-year growth with TACoS at 14%.",
+      "detail": "A long-term client grew profitably through disciplined audience insights, acquisition, retention, and measurement.",
+      "before": "",
+      "after": "+137% YoY gross ecommerce revenue (2024)",
+      "campaign_volume": "",
+      "ad_results": "TACoS 14%",
+      "url": "https://anatainc.com/case-studies/sonrei",
+      "published": true
+    },
+    {
+      "key": "serovital",
+      "name": "SeroVital",
+      "headline": "Amazon from an average of $12K/day to $33K/day, margins preserved.",
+      "detail": "Fixed catalog and size-pricing issues, unified the channels under one plan and modernized the ad strategy.",
+      "before": "$12K/day average on Amazon",
+      "after": "$33K/day average on Amazon",
+      "campaign_volume": "",
+      "ad_results": "",
+      "url": "https://anatainc.com/case-studies/serovital",
+      "published": false
+    },
+    {
+      "key": "zantrex",
+      "name": "Zantrex",
+      "headline": "40% revenue growth within 30 days.",
+      "detail": "Connected to Anata Intelligence, the same platform trial users get, with the first 30 days spent on leaks and quick wins.",
+      "before": "",
+      "after": "+40% revenue within 30 days",
+      "campaign_volume": "",
+      "ad_results": "",
+      "url": "https://anatainc.com/case-studies/zantrex",
+      "published": false
+    },
+    {
+      "key": "ocean-rx",
+      "name": "Ocean Rx",
+      "headline": "From a fresh start to top 5 in its category.",
+      "detail": "Ran on the Anata stack from day one instead of a patchwork of tools.",
+      "before": "Fresh start (new brand)",
+      "after": "Top 5 in its category",
+      "campaign_volume": "",
+      "ad_results": "",
+      "url": "https://anatainc.com/case-studies/ocean-rx",
+      "published": false
+    }
+  ]
+}

@@ -244,7 +244,7 @@ def _render_niche_summary_row(product: XrayProduct, total_revenue: float) -> str
     """PR34: emit the redesign's `.row-product` / `.thumb` / `.product-name`
     markup — 36×36 thumb keeps the table compact and matches the design.
     Real Amazon image goes inside the thumb box (object-fit: contain)."""
-    share = 0.0 if total_revenue <= 0 else ((product.revenue or 0.0) / total_revenue) * 100
+    share = 0.0 if total_revenue <= 0 else min(((product.revenue or 0.0) / total_revenue) * 100, 100.0)
     sessions = _estimated_sessions(product)
     image_html = (
         f"<img src='{html.escape(product.image_url)}' alt='{html.escape(product.title)}' />"
@@ -264,7 +264,7 @@ def _render_niche_summary_row(product: XrayProduct, total_revenue: float) -> str
         "</td>"
         f"<td class='num-col'>{html.escape(product.price_label)}</td>"
         f"<td class='num-col'>{html.escape(product.revenue_label)}</td>"
-        f"<td class='num-col'>{f'{sessions:,}' if sessions is not None else '—'}</td>"
+        f"<td class='num-col'>{f'{sessions:,}' if sessions is not None else ''}</td>"
         f"<td class='num-col'>{share:.1f}%</td>"
         "</tr>"
     )
@@ -275,7 +275,11 @@ def _aggregate_brands(products: list[Any]) -> list[dict[str, Any]]:
     revenue descending. Each dict has: brand, listing_count, total_revenue,
     revenue_label, best_bsr, image_url, top_title."""
     by_brand: dict[str, dict[str, Any]] = {}
-    for product in products:
+    from sales_support_agent.services.deck.intelligence_v2 import unique_listings
+
+    # Count each listing once; variant rows repeated parent revenue and pushed
+    # brand share past 100% (run 1607: Drift 113.1%).
+    for product in unique_listings(products):
         brand_key = (getattr(product, "brand", "") or "Unbranded").strip() or "Unbranded"
         revenue = getattr(product, "revenue", 0.0) or 0.0
         bsr = getattr(product, "bsr", None)
@@ -316,7 +320,7 @@ def _aggregate_brands(products: list[Any]) -> list[dict[str, Any]]:
 def _render_niche_summary_brand_row(
     bucket: dict[str, Any], total_revenue: float, display_order: int
 ) -> str:
-    share = 0.0 if total_revenue <= 0 else (bucket["total_revenue"] / total_revenue) * 100
+    share = 0.0 if total_revenue <= 0 else min((bucket["total_revenue"] / total_revenue) * 100, 100.0)
     image_html = (
         f"<img src='{html.escape(bucket['image_url'])}' alt='{html.escape(bucket['brand'])}' />"
         if bucket["image_url"]
@@ -324,15 +328,15 @@ def _render_niche_summary_brand_row(
     )
     listing_word = "listing" if bucket["listing_count"] == 1 else "listings"
     revenue_label = (
-        f"${bucket['total_revenue']:,.2f}" if bucket["total_revenue"] >= 1 else "n/a"
+        f"${bucket['total_revenue']:,.2f}" if bucket["total_revenue"] >= 1 else ""
     )
     average_price_label = (
         f"${bucket['price_total'] / bucket['price_count']:,.2f}"
         if bucket["price_count"]
-        else "—"
+        else ""
     )
     sessions_label = (
-        f"{bucket['estimated_sessions']:,}" if bucket["estimated_sessions"] > 0 else "—"
+        f"{bucket['estimated_sessions']:,}" if bucket["estimated_sessions"] > 0 else ""
     )
     bsr_label = f"BSR {int(bucket['best_bsr']):,}" if bucket["best_bsr"] is not None else ""
     return (
@@ -534,7 +538,7 @@ def _render_competitor_landscape_table(products: list[XrayProduct], total_revenu
             f"<td class='num-col'>{html.escape(product.price_label)}</td>"
             f"<td class='num-col'>{html.escape(product.revenue_label)}</td>"
             f"<td class='num-col'>{html.escape(units_label)}</td>"
-            f"<td class='num-col'>{f'{sessions:,}' if sessions is not None else '—'}</td>"
+            f"<td class='num-col'>{f'{sessions:,}' if sessions is not None else ''}</td>"
             f"<td class='num-col'>{html.escape(_label_share(product.revenue, total_revenue))}</td>"
             f"<td class='num-col'>{html.escape(product.bsr_label)}</td>"
             f"<td class='num-col'>{html.escape(product.rating_label)}</td>"
