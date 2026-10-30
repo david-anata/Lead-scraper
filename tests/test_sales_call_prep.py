@@ -34,11 +34,14 @@ from sales_support_agent.services.sales.call_script.bookings import (  # noqa: E
     load_bookings,
 )
 from sales_support_agent.services.sales.call_script.prep import (  # noqa: E402
+    AMAZON_UNVERIFIED,
     SALES_SLACK_CHANNEL,
     PITCH_POINTS,
+    as_list,
     gather_context,
     names_match,
     run_prep,
+    verify_links,
 )
 from sales_support_agent.api import sales_call_prep_job as job  # noqa: E402
 from sales_support_agent.services.admin_auth import create_user_session_token  # noqa: E402
@@ -223,7 +226,7 @@ class PrepJobTests(unittest.TestCase):
     def _run(self, slack, gmail, booking=None):
         booking = booking or self._booking()
 
-        def context_for(item):
+        def context_for(item, tracker=None):
             return {
                 "company": "",
                 "booking": {"purpose": item.purpose},
@@ -287,8 +290,9 @@ class PrepJobTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             prep = rows[0].state_json["ss-prep"]
             self.assertEqual(prep["event_id"], "mds227i2dqb61or1imf1cslvlg")
-            self.assertEqual(len(prep["sections"]["discovery_questions"]), 5)
+            self.assertEqual([step["id"] for step in prep["sections"]["discovery"]], [f"s{i}" for i in range(1, 14)])
             self.assertIn("Unknown", prep["sections"]["how_they_came_in"])
+            self.assertIn("Amazon presence: not verified", prep["links"]["amazon"]["line"])
 
     def test_page_save_keeps_prep_and_the_slack_flag(self) -> None:
         slack, gmail = FakeSlack(), FakeGmail()
@@ -307,7 +311,7 @@ class PrepJobTests(unittest.TestCase):
         soon = booking.starts_at - timedelta(minutes=20)
         slack, gmail = FakeSlack(), FakeGmail()
 
-        def context_for(item):
+        def context_for(item, tracker=None):
             return {"company": "", "abby_handled": {"rows": []}, "clickup": {}, "outbound_contact": {"row": None},
                     "outbound_enriched": {"row": None}}
 
@@ -326,9 +330,11 @@ class PrepJobTests(unittest.TestCase):
             result = run_prep(
                 session, now=booking.starts_at + timedelta(minutes=5), bookings=[booking],
                 source="google_calendar", gap="",
-                context_for=lambda item: {"company": "", "abby_handled": {"rows": []}, "clickup": {}},
+                context_for=lambda item, tracker=None: {"company": "", "abby_handled": {"rows": []}, "clickup": {}},
                 notes_for=_notes, slack=slack, gmail=gmail,
             )
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["created"] + result["prepped"], 1)
         self.assertEqual(result["slack"], 0)
         self.assertEqual(result["drafts"], 0)
         self.assertEqual(slack.messages, [])
@@ -348,7 +354,10 @@ class PrepJobTests(unittest.TestCase):
             ],
         }])
         with session_scope(app.state.session_factory) as session:
-            context = gather_context(session, clickup, booking, fetch_url=lambda url: "")
+            context = gather_context(
+                session, clickup, booking,
+                fetch=lambda url: {"ok": False, "url": "", "status": 0, "html": "", "text": ""},
+            )
         self.assertEqual(context["company"], "Reincorporated")
         self.assertTrue(context["clickup"]["matched"])
         self.assertEqual(context["website"]["domain"], "reincorporated.org")
@@ -393,7 +402,130 @@ class PrepJobTests(unittest.TestCase):
         self.assertTrue(any("2x to 3.5x" in point for point in notes["trial_pitch"]))
         for point in PITCH_POINTS:
             self.assertIn(point, notes["trial_pitch"])
-        self.assertEqual(len(notes["discovery_questions"]), 5)
+        self.assertEqual([step["id"] for step in notes["discovery"]], [f"s{i}" for i in range(1, 14)])
+        self.assertNotIn("discovery_questions", notes)
+
+
+class PrepShapeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        with session_scope(app.state.session_factory) as session:
+            for row in session.query(SalesCallTracker).all():
+                session.delete(row)
+
+    def test_a_paragraph_is_not_split_into_characters(self) -> None:
+        paragraph = (
+            "Walk the free 14-day trial, then plans from $99/mo, "
+            "then the Zantrex proof."
+        )
+        items = as_list(paragraph)
+        self.assertEqual(items, [paragraph])
+        self.assertNotIn("W", items)
+        self.assertGreater(min(len(item) for item in items), 1)
+
+    def test_a_character_list_is_joined_before_it_is_shown(self) -> None:
+        items = as_list(list("Walk the trial. Then the price."))
+        self.assertTrue(all(len(item) > 1 for item in items))
+        self.assertIn("Walk the trial.", items)
+
+    def test_sentences_in_one_string_become_separate_pitch_points(self) -> None:
+        from sales_support_agent.services.sales.call_script.bookings import booking_from_event
+        from sales_support_agent.services.sales.call_script.prep import _ensure_shape
+
+        booking = booking_from_event(NICK_EVENT)
+        notes = _ensure_shape(
+            {"trial_pitch": "Free 14-day trial. Plans from $99/mo. Zantrex proof: ROAS went from 2x to 3.5x."},
+            booking,
+            {},
+        )
+        self.assertGreater(min(len(point) for point in notes["trial_pitch"]), 1)
+        self.assertNotIn("W", notes["trial_pitch"])
+        self.assertTrue(any("2x to 3.5x" in point for point in notes["trial_pitch"]))
+
+    def test_amazon_url_is_included_only_after_it_resolves(self) -> None:
+        html = '<a href="https://www.amazon.com/stores/Reincorporated/page/ABC">shop</a> cdn.shopify.com'
+
+        def fetch(url):
+            if "amazon.com" in url:
+                return {"ok": True, "url": url, "status": 200, "html": "store", "text": "store"}
+            return {"ok": True, "url": "https://reincorporated.org/", "status": 200, "html": html, "text": "beads"}
+
+        links = verify_links("reincorporated.org", fetch=fetch)
+        self.assertEqual(links["website"]["url"], "https://reincorporated.org/")
+        self.assertTrue(links["amazon"]["verified"])
+        self.assertIn("amazon.com/stores/Reincorporated", links["amazon"]["urls"][0])
+        self.assertTrue(links["shopify"])
+
+    def test_an_unresolved_amazon_url_is_not_claimed(self) -> None:
+        html = 'See https://www.amazon.com/dp/B00EXAMPLE on our site'
+
+        def fetch(url):
+            if "amazon.com" in url:
+                return {"ok": False, "url": url, "status": 404, "html": "", "text": ""}
+            return {"ok": True, "url": "https://reincorporated.org/", "status": 200, "html": html, "text": "home"}
+
+        links = verify_links("reincorporated.org", fetch=fetch)
+        self.assertFalse(links["amazon"]["verified"])
+        self.assertEqual(links["amazon"]["urls"], [])
+        self.assertEqual(links["amazon"]["line"], AMAZON_UNVERIFIED)
+
+    def test_discovery_follows_the_script_and_quotes_prefill_the_tracker(self) -> None:
+        booking = booking_from_event(NICK_EVENT)
+        assert booking is not None
+        asked = {"notes": 0}
+
+        def context_for(item, tracker=None):
+            return {
+                "company": "Reincorporated NFP",
+                "links": {
+                    "website": {"verified": True, "url": "https://reincorporated.org/"},
+                    "amazon": {"verified": False, "urls": [], "line": AMAZON_UNVERIFIED},
+                    "shopify": True,
+                    "text": "bead project",
+                },
+                "abby_handled": {"rows": [{"category": "interested", "action": "reply", "detail": "positive reply", "created_at": "2026-09-01"}]},
+                "clickup": {
+                    "matched": True,
+                    "url": "https://app.clickup.com/t/868kzf9rd",
+                    "comments": [{"by": "Gabe Smedley", "text": "Nick said: I am interested but I need two weeks."}],
+                },
+                "gmail": [{"from": "David Narayan <david@anatainc.com>", "date": "Oct 28", "subject": "Checking back in", "snippet": "David wrote, not Nick."}],
+                "instantly": {"available": True, "emails": []},
+                "mailbox": [],
+            }
+
+        def notes_for(item, context):
+            asked["notes"] += 1
+            from sales_support_agent.services.sales.call_script.prep import fallback_notes
+            return fallback_notes(item, context), "facts"
+
+        slack, gmail = FakeSlack(), FakeGmail()
+        with session_scope(app.state.session_factory) as session:
+            for row in session.query(SalesCallTracker).all():
+                session.delete(row)
+        with session_scope(app.state.session_factory) as session:
+            result = run_prep(
+                session, now=NOW, bookings=[booking], source="google_calendar", gap="",
+                context_for=context_for, notes_for=notes_for, slack=slack, gmail=gmail,
+            )
+            tracker = session.get(SalesCallTracker, result["bookings"][0]["tracker_id"])
+            prep = tracker.state_json["ss-prep"]
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(asked["notes"], 1)
+            self.assertIn("Reincorporated", prep["sections"]["who"])
+            self.assertEqual([step["id"] for step in prep["sections"]["discovery"]], [f"s{i}" for i in range(1, 14)])
+            self.assertIn("https://reincorporated.org/", slack.messages[0]["text"])
+            self.assertIn(AMAZON_UNVERIFIED, slack.messages[0]["text"])
+            self.assertNotIn("https://www.amazon.com", slack.messages[0]["text"])
+            self.assertIn("I am interested but I need two weeks.", tracker.state_json["ss-gap"]["quotes"])
+            self.assertIn("positive reply", prep["sections"]["how_they_came_in"])
+        with session_scope(app.state.session_factory) as session:
+            again = run_prep(
+                session, now=NOW, bookings=[booking], source="google_calendar", gap="",
+                context_for=context_for, notes_for=notes_for, slack=slack, gmail=gmail,
+            )
+        self.assertEqual(again["reused"], 1)
+        self.assertEqual(asked["notes"], 1)
+        self.assertEqual(len(gmail.drafts), 1)
 
 
 class PrepRouteTests(unittest.TestCase):

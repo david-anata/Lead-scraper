@@ -26,6 +26,7 @@ from sales_support_agent.services.sales.call_script.after_call import (
     FIELD_NAME,
     agent_url,
     list_id,
+    task_id_from_link,
 )
 from sales_support_agent.services.sales.call_script.bookings import LOOKAHEAD, LOOKBACK, Booking
 
@@ -40,6 +41,27 @@ PITCH_POINTS = (
     "Plans from $99/mo.",
     "Zantrex proof: ROAS went from 2x to 3.5x.",
 )
+DISCOVERY_STEPS = (
+    ("s1", "Isolate the problem"),
+    ("s2", "Background"),
+    ("s3", "Current situation"),
+    ("s4", "Assess current efforts"),
+    ("s5", "The numbers"),
+    ("s6", "How long"),
+    ("s7", "Widen the gap"),
+    ("s8", "Doubt"),
+    ("s9", "Solutions tried"),
+    ("s10", "Cost / why now"),
+    ("s11", "Support"),
+    ("s12", "Desired situation"),
+    ("s13", "Tie down"),
+)
+AMAZON_UNVERIFIED = "Amazon presence: not verified"
+_AMAZON_URL = re.compile(
+    r"https?://(?:www\.)?(?:amazon\.[a-z.]+|amzn\.to)/(?:stores/|dp/|gp/)[^\s\"'<>\\]+",
+    re.I,
+)
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
 _DASHES = re.compile(r"[‒–—―]")
 _FREEMAIL = {
     "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com",
@@ -127,6 +149,31 @@ def _domain(email: str) -> str:
     return host
 
 
+def as_list(value: Any) -> list:
+    """Turn a model field into a list of items. Never walk a string character by character."""
+
+    if isinstance(value, list):
+        if value and all(isinstance(item, str) and len(item) == 1 for item in value):
+            return as_list("".join(value))
+        return [item for item in value if item not in ("", None)]
+    if not isinstance(value, str):
+        return []
+    text_value = value.strip()
+    if not text_value:
+        return []
+    lines = []
+    for line in re.split(r"[\r\n]+", text_value):
+        cleaned = re.sub(r"^[\s\-•*]+", "", line).strip()
+        if cleaned:
+            lines.append(cleaned)
+    if len(lines) > 1:
+        return lines
+    sentences = [part.strip() for part in _SENTENCE.split(text_value) if part.strip()]
+    if len(sentences) > 1:
+        return sentences
+    return [text_value]
+
+
 def _query(session: Optional[Session], sql: str, params: dict) -> tuple[bool, list[dict]]:
     """Read one source inside a savepoint so a missing table does not abort prep."""
 
@@ -143,86 +190,306 @@ def _query(session: Optional[Session], sql: str, params: dict) -> tuple[bool, li
         return False, []
 
 
-def _clickup_task(client: Any, booking: Booking) -> dict:
-    if client is None or not getattr(client, "get_tasks", None):
+def _task_blob(task: dict) -> str:
+    parts = [
+        task.get("name"),
+        task.get("description"),
+        task.get("text_content"),
+        task.get("markdown_description"),
+        _field(task, FIELD_EMAIL),
+        _field(task, FIELD_NAME),
+        _field(task, FIELD_COMPANY),
+    ]
+    return " ".join(str(part or "") for part in parts).lower()
+
+
+def _comment_rows(client: Any, task_id: str) -> list[dict]:
+    if not task_id or client is None or not getattr(client, "get_task_comments", None):
+        return []
+    try:
+        comments = client.get_task_comments(task_id) or []
+    except Exception as exc:
+        logger.info("[call-prep] clickup comments failed: %s", type(exc).__name__)
+        return []
+    rows = []
+    for comment in comments[:8]:
+        if not isinstance(comment, dict):
+            continue
+        text_value = " ".join(str(comment.get("comment_text") or "").split())
+        if not text_value:
+            continue
+        user = comment.get("user") if isinstance(comment.get("user"), dict) else {}
+        rows.append({
+            "by": str(user.get("username") or ""),
+            "text": text_value[:500],
+        })
+    return rows
+
+
+def _task_record(task: dict, client: Any) -> dict:
+    task_id = str(task.get("id") or "")
+    status = task.get("status")
+    if isinstance(status, dict):
+        status = status.get("status")
+    return {
+        "available": True,
+        "matched": True,
+        "id": task_id,
+        "name": str(task.get("name") or ""),
+        "status": str(status or ""),
+        "company": str(_field(task, FIELD_COMPANY) or ""),
+        "email": str(_field(task, FIELD_EMAIL) or "").strip().lower(),
+        "person": str(_field(task, FIELD_NAME) or ""),
+        "description": " ".join(str(task.get("text_content") or task.get("description") or "").split())[:800],
+        "url": str(task.get("url") or (f"https://app.clickup.com/t/{task_id}" if task_id else "")),
+        "comments": _comment_rows(client, task_id),
+    }
+
+
+def _task_matches(task: dict, booking: Booking) -> bool:
+    email = (booking.prospect_email or "").lower()
+    blob = _task_blob(task)
+    if email and email in blob:
+        return True
+    title = str(task.get("name") or "")
+    person = str(_field(task, FIELD_NAME) or "")
+    if names_match(booking.prospect_name, title) or (person and names_match(booking.prospect_name, person)):
+        return True
+    company = str(_field(task, FIELD_COMPANY) or "")
+    return bool(company and company.lower() in (booking.summary or "").lower())
+
+
+def _clickup_task(client: Any, booking: Booking, lead_link: str = "") -> dict:
+    if client is None:
+        return {"available": False, "matched": False}
+    linked = task_id_from_link(lead_link)
+    if linked and getattr(client, "get_task", None):
+        try:
+            task = client.get_task(linked)
+        except Exception as exc:
+            logger.info("[call-prep] clickup task %s failed: %s", linked, type(exc).__name__)
+            task = None
+        if isinstance(task, dict) and task.get("id"):
+            return _task_record(task, client)
+    if not getattr(client, "get_tasks", None):
         return {"available": False, "matched": False}
     email = (booking.prospect_email or "").lower()
     try:
-        for page in range(3):
+        for page in range(8):
             tasks = client.get_tasks(list_id(), include_closed=True, page=page) or []
             for task in tasks:
-                if not isinstance(task, dict):
-                    continue
-                task_email = str(_field(task, FIELD_EMAIL) or "").strip().lower()
-                person = str(_field(task, FIELD_NAME) or "")
-                title = str(task.get("name") or "")
-                company = str(_field(task, FIELD_COMPANY) or "")
-                email_hit = bool(email and task_email == email)
-                name_hit = names_match(booking.prospect_name, title) or (
-                    bool(person) and names_match(booking.prospect_name, person)
-                )
-                if not email_hit and not name_hit:
-                    continue
-                task_id = str(task.get("id") or "")
-                return {
-                    "available": True,
-                    "matched": True,
-                    "id": task_id,
-                    "name": title,
-                    "status": str((task.get("status") or {}).get("status") or task.get("status") or ""),
-                    "company": company,
-                    "email": task_email,
-                    "person": person,
-                    "url": str(task.get("url") or (f"https://app.clickup.com/t/{task_id}" if task_id else "")),
-                }
+                if isinstance(task, dict) and _task_matches(task, booking):
+                    full = task
+                    if getattr(client, "get_task", None) and task.get("id"):
+                        try:
+                            loaded = client.get_task(str(task["id"]))
+                            if isinstance(loaded, dict):
+                                full = loaded
+                        except Exception:
+                            full = task
+                    return _task_record(full, client)
             if len(tasks) < 100:
                 break
     except Exception as exc:
         logger.info("[call-prep] clickup lookup failed: %s", type(exc).__name__)
         return {"available": False, "matched": False, "error": type(exc).__name__}
+    if not email:
+        return {"available": True, "matched": False}
     return {"available": True, "matched": False}
 
 
-def fetch_site(url: str) -> str:
-    """Public homepage text, or an empty string when the fetch is unsafe or down."""
+def fetch_public(url: str) -> dict:
+    """GET one public page. ok is true only when the response is 2xx."""
+
+    from urllib.parse import urljoin
 
     from sales_support_agent.services.public_url_guard import public_http_url
+    from sales_support_agent.services.sales.call_script.bookings import html_to_text
 
+    empty = {"ok": False, "url": "", "status": 0, "html": "", "text": ""}
     safe = public_http_url(url)
     if not safe:
-        return ""
+        return empty
     try:
         import requests
 
-        response = requests.get(
-            safe,
-            timeout=8,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; AnataCallPrep/1.0)"},
-            allow_redirects=False,
-        )
-        if response.status_code in {301, 302, 303, 307, 308}:
-            from urllib.parse import urljoin
-
-            nxt = public_http_url(urljoin(safe, str(response.headers.get("location") or "")))
-            if not nxt:
-                return ""
+        current = safe
+        response = None
+        for _ in range(3):
             response = requests.get(
-                nxt,
+                current,
                 timeout=8,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; AnataCallPrep/1.0)"},
                 allow_redirects=False,
             )
-        if not response.ok:
-            return ""
-        from sales_support_agent.services.sales.call_script.bookings import html_to_text
-
-        return " ".join(html_to_text(response.text or "").split())[:3000]
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                break
+            nxt = public_http_url(urljoin(current, str(response.headers.get("location") or "")))
+            if not nxt:
+                return empty
+            current = nxt
+        if response is None or not response.ok:
+            return {**empty, "url": current, "status": getattr(response, "status_code", 0)}
+        html = response.text or ""
+        return {
+            "ok": True,
+            "url": current,
+            "status": response.status_code,
+            "html": html[:200000],
+            "text": " ".join(html_to_text(html).split())[:3000],
+        }
     except Exception as exc:
-        logger.info("[call-prep] website fetch failed: %s", type(exc).__name__)
+        logger.info("[call-prep] fetch failed: %s", type(exc).__name__)
+        return empty
+
+
+def verify_links(domain: str, *, fetch: Callable[[str], dict] = fetch_public) -> dict:
+    """Website and Amazon URLs that this process actually fetched. Nothing else counts."""
+
+    page = fetch(f"https://{domain}") if domain else {"ok": False, "url": "", "html": "", "text": ""}
+    website = {
+        "verified": bool(page.get("ok") and page.get("url")),
+        "url": str(page.get("url") or ""),
+    }
+    html = str(page.get("html") or "")
+    candidates: list[str] = []
+    for match in _AMAZON_URL.findall(html):
+        cleaned = match.rstrip(").,;\"'")
+        if cleaned not in candidates:
+            candidates.append(cleaned)
+    resolved: list[str] = []
+    for candidate in candidates[:3]:
+        checked = fetch(candidate)
+        final = str(checked.get("url") or "")
+        if checked.get("ok") and _AMAZON_URL.search(final or candidate):
+            resolved.append(final or candidate)
+    amazon_line = AMAZON_UNVERIFIED if not resolved else "Amazon: " + ", ".join(resolved)
+    lowered = html.lower()
+    return {
+        "website": website,
+        "amazon": {"verified": bool(resolved), "urls": resolved, "line": amazon_line},
+        "shopify": "cdn.shopify.com" in lowered or "myshopify.com" in lowered,
+        "title": _page_title(html),
+        "text": str(page.get("text") or ""),
+    }
+
+
+def _page_title(html: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", html or "", re.I | re.S)
+    if not match:
         return ""
+    return " ".join(re.sub(r"<[^>]+>", " ", match.group(1)).split())[:160]
 
 
-def gather_context(session: Optional[Session], clickup: Any, booking: Booking, *, fetch_url: Callable[[str], str] = fetch_site) -> dict:
+def _gmail_history(client: Any, email: str) -> list[dict]:
+    if client is None or not email or not getattr(client, "list_messages", None):
+        return []
+    try:
+        messages = client.list_messages(
+            query=f"{email} -subject:\"Call prep:\"",
+            max_results=6,
+        )
+    except Exception as exc:
+        logger.info("[call-prep] gmail history failed: %s", type(exc).__name__)
+        return []
+    from sales_support_agent.integrations.gmail_payloads import extract_body_text, extract_header
+
+    rows = []
+    for item in messages or []:
+        message_id = str((item or {}).get("id") or "")
+        if not message_id or not getattr(client, "get_message", None):
+            continue
+        try:
+            full = client.get_message(message_id)
+        except Exception:
+            continue
+        payload = full.get("payload") if isinstance(full.get("payload"), dict) else {}
+        headers = payload.get("headers") if isinstance(payload.get("headers"), list) else []
+        subject = extract_header(headers, "subject")
+        if subject.lower().startswith("call prep:"):
+            continue
+        body = extract_body_text(payload) or str(full.get("snippet") or "")
+        rows.append({
+            "from": extract_header(headers, "from"),
+            "date": extract_header(headers, "date"),
+            "subject": subject[:180],
+            "snippet": " ".join(body.split())[:400],
+        })
+    return rows
+
+
+def _instantly_history(email: str) -> dict:
+    """Lead and recent thread from the Instantly client the app already uses."""
+
+    if not email:
+        return {"available": False, "lead": None, "emails": []}
+    try:
+        import abby_runner
+        import outbound_instantly_push as instantly_push
+
+        key = instantly_push.api_key()
+        if not key:
+            return {"available": False, "lead": None, "emails": []}
+        client = abby_runner.Instantly(key)
+        lead = client.lead(email) or {}
+        status, data = client._call(
+            "GET", "emails", params={"search": email, "limit": 5, "sort_order": "desc"}
+        )
+        items = (data or {}).get("items") if status == 200 and isinstance(data, dict) else []
+    except Exception as exc:
+        logger.info("[call-prep] instantly history failed: %s", type(exc).__name__)
+        return {"available": False, "lead": None, "emails": []}
+    emails = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        body = item.get("body") if isinstance(item.get("body"), dict) else {}
+        text_value = str(body.get("text") or item.get("content_preview") or "")
+        emails.append({
+            "from": str(item.get("from_address_email") or item.get("lead") or ""),
+            "subject": str(item.get("subject") or "")[:180],
+            "snippet": " ".join(text_value.split())[:400],
+            "timestamp": str(item.get("timestamp_created") or ""),
+        })
+    slim = {}
+    if isinstance(lead, dict):
+        for key in ("email", "company_name", "website", "first_name", "last_name", "campaign"):
+            if lead.get(key):
+                slim[key] = lead.get(key)
+    return {"available": True, "lead": slim or None, "emails": emails}
+
+
+def _mailbox_rows(session: Optional[Session], email: str) -> list[dict]:
+    if not email:
+        return []
+    ok, rows = _query(
+        session,
+        "SELECT sender_email, subject, snippet, occurred_at FROM mailbox_signals "
+        "WHERE lower(sender_email) = :e ORDER BY occurred_at DESC LIMIT 6",
+        {"e": email},
+    )
+    if not ok:
+        return []
+    return [
+        {
+            "from": str(row.get("sender_email") or ""),
+            "subject": str(row.get("subject") or "")[:180],
+            "snippet": " ".join(str(row.get("snippet") or "").split())[:400],
+            "date": str(row.get("occurred_at") or ""),
+        }
+        for row in rows
+    ]
+
+
+def gather_context(
+    session: Optional[Session],
+    clickup: Any,
+    booking: Booking,
+    *,
+    fetch: Callable[[str], dict] = fetch_public,
+    gmail: Any = None,
+    tracker: Any = None,
+) -> dict:
     """Facts already on file for this prospect. Missing sources stay explicit."""
 
     email = (booking.prospect_email or "").lower()
@@ -251,17 +518,27 @@ def gather_context(session: Optional[Session], clickup: Any, booking: Booking, *
         "WHERE lower(lead) = :e ORDER BY created_at DESC LIMIT 8",
         {"e": email},
     ) if email else (True, [])
-    website = fetch_url(f"https://{domain}") if domain else ""
-    clickup_task = _clickup_task(clickup, booking)
+    lead_link = str(getattr(tracker, "lead_link", "") or "")
+    links = verify_links(domain, fetch=fetch)
+    clickup_task = _clickup_task(clickup, booking, lead_link)
+    gmail_rows = _gmail_history(gmail, email)
+    instantly = _instantly_history(email)
+    mailbox = _mailbox_rows(session, email)
     company = ""
     if clickup_task.get("company"):
         company = str(clickup_task["company"])
+    elif tracker is not None and getattr(tracker, "company", ""):
+        company = str(tracker.company)
     elif contacts and contacts[0].get("company"):
         company = str(contacts[0]["company"])
     elif people and people[0].get("brand"):
         company = str(people[0]["brand"])
     elif domains and domains[0].get("brand"):
         company = str(domains[0]["brand"])
+    elif links.get("title"):
+        company = str(links["title"])
+    elif clickup_task.get("name"):
+        company = str(clickup_task["name"]).split("|")[0].strip()
     return {
         "booking": {
             "prospect_name": booking.prospect_name,
@@ -272,7 +549,9 @@ def gather_context(session: Optional[Session], clickup: Any, booking: Booking, *
             "meet_url": booking.meet_url,
             "source": booking.source,
         },
+        "domain": domain,
         "company": company,
+        "links": links,
         "outbound_contact": {"available": contact_ok, "row": contacts[0] if contacts else None},
         "outbound_enriched": {"available": person_ok, "row": people[0] if people else None},
         "outbound_domain": {"available": domain_ok, "row": domains[0] if domains else None},
@@ -284,22 +563,116 @@ def gather_context(session: Optional[Session], clickup: Any, booking: Booking, *
             ],
         },
         "clickup": clickup_task,
-        "website": {"domain": domain, "text": website} if website else {"domain": domain, "text": ""},
+        "gmail": gmail_rows,
+        "instantly": instantly,
+        "mailbox": mailbox,
+        "website": {
+            "domain": domain,
+            "verified": bool((links.get("website") or {}).get("verified")),
+            "url": (links.get("website") or {}).get("url") or "",
+            "shopify": bool(links.get("shopify")),
+            "text": links.get("text") or "",
+        },
     }
 
 
-def _questions(purpose: str) -> list[str]:
-    opening = (
-        f"You booked to {purpose[:180].rstrip('.')}. What do you want that conversation to answer?"
-        if purpose
-        else "What made you book this call?"
-    )
+def _history_line(context: dict) -> str:
+    parts = []
+    for row in (context.get("abby_handled") or {}).get("rows") or []:
+        parts.append(
+            f"Abby {row.get('created_at') or ''}: {row.get('category') or 'unspecified'} / "
+            f"{row.get('action') or 'unspecified'}. {row.get('detail') or ''}".strip()
+        )
+    for comment in (context.get("clickup") or {}).get("comments") or []:
+        parts.append(f"ClickUp {comment.get('by') or ''}: {comment.get('text') or ''}")
+    for note in list(context.get("gmail") or []) + list(context.get("mailbox") or []):
+        parts.append(
+            f"Mail {note.get('date') or ''} from {note.get('from') or 'unknown'}: "
+            f"{note.get('subject') or ''} {note.get('snippet') or ''}".strip()
+        )
+    for note in ((context.get("instantly") or {}).get("emails") or []):
+        parts.append(
+            f"Instantly {note.get('timestamp') or ''} from {note.get('from') or ''}: "
+            f"{note.get('subject') or ''} {note.get('snippet') or ''}".strip()
+        )
+    return " ".join(part for part in parts if part).strip()
+
+
+def prospect_quotes(booking: Booking, context: dict) -> str:
+    """Lines the prospect wrote, for the script's quotes field. Not claims we inferred."""
+
+    email = (booking.prospect_email or "").lower()
+    lines = []
+    for comment in (context.get("clickup") or {}).get("comments") or []:
+        text_value = str(comment.get("text") or "")
+        marker = re.search(r"(?is)\b(?:said|wrote):\s*(.+)", text_value)
+        if marker:
+            lines.append(" ".join(marker.group(1).split())[:400])
+    for note in list(context.get("gmail") or []) + list(context.get("mailbox") or []):
+        sender = str(note.get("from") or "").lower()
+        if email and email in sender and note.get("snippet"):
+            lines.append(" ".join(str(note["snippet"]).split())[:400])
+    seen = []
+    for line in lines:
+        if line and line not in seen:
+            seen.append(line)
+    return "\n".join(seen[:6])
+
+
+def discovery_map(booking: Booking, context: dict) -> list[dict]:
+    """Facts and script angles for sections s1 to s13. No new question bank."""
+
+    links = context.get("links") or {}
+    website = (links.get("website") or {})
+    amazon = (links.get("amazon") or {})
+    company = str(context.get("company") or "").strip() or "Unknown"
+    site_line = website.get("url") if website.get("verified") else "Website: not verified"
+    channel = "The fetched homepage is a Shopify store." if links.get("shopify") else ""
+    amazon_line = str(amazon.get("line") or AMAZON_UNVERIFIED)
+    history = _history_line(context)
+    purpose = booking.purpose or "Unknown"
+    known = {
+        "s1": f"Booking form: {purpose}.",
+        "s2": " ".join(
+            part for part in (
+                f"Company on file: {company}.",
+                f"Website: {site_line}.",
+                channel,
+                amazon_line + ".",
+            ) if part
+        ),
+        "s3": history or "Unknown. No Abby, ClickUp, Gmail, or Instantly history matched this email.",
+        "s4": "Unknown. Ask section 4. Do not treat follow-up emails as their current ad setup.",
+        "s5": "Unknown. No verified account numbers are on file. Use the script's number questions.",
+        "s6": "Unknown. Use section 6.",
+        "s7": "Unknown. Use section 7 after they name the gap.",
+        "s8": "Unknown. Use section 8.",
+        "s9": history or "Unknown. Use section 9.",
+        "s10": f"They booked for: {purpose}.",
+        "s11": "Unknown who else decides. Use section 11.",
+        "s12": "Unknown. Use section 12.",
+        "s13": "Use their words from the quotes field when it has a line. Otherwise use section 13.",
+    }
+    angles = {
+        "s1": "Use section 1. Start from the booking reason, then the script's biggest-challenge question.",
+        "s2": "Use section 2. Only the verified website and Amazon lines above are safe to say.",
+        "s3": "Use section 3. Read back a fact from the history, then ask them to say it in their words.",
+        "s4": "Use section 4. Do not assume an agency, a tool, or an Amazon account.",
+        "s5": "Use section 5. Leave the calculators blank until they give a number.",
+        "s6": "Use section 6.",
+        "s7": "Use section 7.",
+        "s8": "Use section 8.",
+        "s9": "Use section 9. Prior emails are context, not a list of solutions they tried.",
+        "s10": "Use section 10. The booking reason is why they took the meeting.",
+        "s11": "Use section 11.",
+        "s12": "Use section 12.",
+        "s13": "Use section 13 with their words only.",
+    }
+    if not amazon.get("verified"):
+        angles["s2"] += " Do not say they are on Amazon."
     return [
-        opening,
-        "What does Amazon look like for the business today?",
-        "Where is time going that you wish was not?",
-        "Who else has to be comfortable before you would start a trial?",
-        "What would make you decide, on this call, to connect Seller Central?",
+        {"id": step_id, "title": title, "known": known[step_id], "angle": angles[step_id]}
+        for step_id, title in DISCOVERY_STEPS
     ]
 
 
@@ -325,18 +698,29 @@ def fallback_notes(booking: Booking, context: dict) -> dict:
     else:
         how = "Unknown. No outbound row, Abby history, or ClickUp task matched this email."
     needs = booking.purpose or "Unknown. The booking form answer was empty."
+    history = _history_line(context)
+    if history and how.startswith("Unknown"):
+        how = history[:700]
+    elif history and "Abby history" in how:
+        how = (how + " " + history)[:700]
+    links = context.get("links") or {}
+    amazon_line = str((links.get("amazon") or {}).get("line") or AMAZON_UNVERIFIED)
+    if not (links.get("amazon") or {}).get("verified"):
+        needs = needs.rstrip(".") + f". {amazon_line}."
     unknowns = []
     if not company:
         unknowns.append("Company")
     if not booking.purpose:
         unknowns.append("Booking form answer")
-    if not abby and not outbound:
+    if not history and not abby and not outbound:
         unknowns.append("How they came in")
+    if not (links.get("amazon") or {}).get("verified"):
+        unknowns.append(AMAZON_UNVERIFIED)
     return {
         "who": who,
         "how_they_came_in": how,
         "likely_needs": needs,
-        "discovery_questions": _questions(booking.purpose),
+        "discovery": discovery_map(booking, context),
         "trial_pitch": list(PITCH_POINTS),
         "objections": [
             {
@@ -365,35 +749,37 @@ def _ensure_shape(notes: dict, booking: Booking, context: dict) -> dict:
     if not isinstance(notes, dict):
         return base
     cleaned = _walk_dashes(notes)
-    questions = cleaned.get("discovery_questions")
-    if not isinstance(questions, list) or len([item for item in questions if str(item).strip()]) < 5:
-        cleaned["discovery_questions"] = base["discovery_questions"]
-    else:
-        cleaned["discovery_questions"] = [no_em_dash(str(item)).strip() for item in questions[:5]]
-    pitch = [no_em_dash(str(item)).strip() for item in (cleaned.get("trial_pitch") or []) if str(item).strip()]
+    cleaned.pop("discovery_questions", None)
+    cleaned["discovery"] = base["discovery"]
+    pitch = [
+        no_em_dash(str(item)).strip()
+        for item in as_list(cleaned.get("trial_pitch"))
+        if not isinstance(item, dict) and str(item).strip()
+    ]
     blob = " ".join(pitch).lower()
     for point in PITCH_POINTS:
         if point.lower().rstrip(".") not in blob and point.split(":")[0].lower() not in blob:
             pitch.insert(0, point)
             blob = " ".join(pitch).lower()
     cleaned["trial_pitch"] = pitch
-    objections = cleaned.get("objections")
-    if not isinstance(objections, list) or not objections:
-        cleaned["objections"] = base["objections"]
-    else:
-        normalized = []
-        for item in objections:
-            if isinstance(item, dict):
-                normalized.append({
-                    "objection": no_em_dash(str(item.get("objection") or "Unknown")),
-                    "answer": no_em_dash(str(item.get("answer") or "Unknown")),
-                })
-        cleaned["objections"] = normalized or base["objections"]
+    objections = as_list(cleaned.get("objections"))
+    normalized = []
+    for item in objections:
+        if isinstance(item, dict):
+            normalized.append({
+                "objection": no_em_dash(str(item.get("objection") or "Unknown")),
+                "answer": no_em_dash(str(item.get("answer") or "Unknown")),
+            })
+        elif str(item).strip():
+            normalized.append({"objection": no_em_dash(str(item)), "answer": "Unknown"})
+    cleaned["objections"] = normalized or base["objections"]
     for key in ("who", "how_they_came_in", "likely_needs", "next_step"):
         text_value = no_em_dash(str(cleaned.get(key) or "")).strip()
-        cleaned[key] = text_value or base[key]
-    unknowns = cleaned.get("unknowns")
-    cleaned["unknowns"] = [no_em_dash(str(item)) for item in unknowns] if isinstance(unknowns, list) else base["unknowns"]
+        if not text_value or text_value.lower().rstrip(".") == "unknown":
+            text_value = base[key]
+        cleaned[key] = text_value
+    unknowns = as_list(cleaned.get("unknowns"))
+    cleaned["unknowns"] = [no_em_dash(str(item)) for item in unknowns if not isinstance(item, dict)] or base["unknowns"]
     return cleaned
 
 
@@ -412,11 +798,15 @@ def generate_notes(booking: Booking, context: dict) -> tuple[dict, str]:
         "ad spend, tools, or pain. Do not use em dashes. "
         "The trial pitch must include these approved points and no other proof numbers: "
         "Free 14-day trial. Plans from $99/mo. Zantrex proof: ROAS went from 2x to 3.5x. "
-        "Discovery questions are questions, not claims about the prospect. "
+        "Do not write discovery questions. The call script already has sections s1 to s13. "
+        "trial_pitch must be a JSON array of strings, never one paragraph. "
+        "Do not say the prospect is on Amazon unless the packet's amazon.verified is true, "
+        "and then only repeat the resolved URLs. If it is not verified, write "
+        "'Amazon presence: not verified'. "
         "If the prospect has not raised an objection, label it Prepared, not raised by them. "
         "Reply with JSON only, no prose and no code fences, using keys who, how_they_came_in, "
-        "likely_needs, discovery_questions (5 strings), trial_pitch, objections "
-        "(list of {objection, answer}), next_step, unknowns."
+        "likely_needs, trial_pitch (array of strings), objections "
+        "(array of {objection, answer}), next_step, unknowns (array of strings)."
     )
     user = "Packet:\n" + packet
     try:
@@ -484,9 +874,15 @@ def find_tracker(session: Session, booking: Booking) -> Optional[SalesCallTracke
     return pool[0]
 
 
-def _store(session: Session, tracker: SalesCallTracker, prep: dict) -> None:
+def _store(session: Session, tracker: SalesCallTracker, prep: dict, quotes: str = "") -> None:
     state = dict(tracker.state_json or {})
     state["ss-prep"] = prep
+    if quotes:
+        gap = state.get("ss-gap") if isinstance(state.get("ss-gap"), dict) else {}
+        gap = dict(gap)
+        if not str(gap.get("quotes") or "").strip():
+            gap["quotes"] = quotes
+        state["ss-gap"] = gap
     tracker.state_json = call_service.sanitize_state(state)
     tracker.updated_at = datetime.now(timezone.utc)
     session.flush()
@@ -505,9 +901,9 @@ def _lead_link(context: dict) -> str:
 
 def slack_text(tracker: SalesCallTracker, prep: dict, timing_note: str) -> str:
     sections = prep.get("sections") if isinstance(prep.get("sections"), dict) else {}
-    questions = sections.get("discovery_questions") or []
-    pitch = sections.get("trial_pitch") or []
-    objections = sections.get("objections") or []
+    questions = as_list(sections.get("discovery") or sections.get("discovery_questions"))
+    pitch = as_list(sections.get("trial_pitch"))
+    objections = as_list(sections.get("objections"))
     lines = [
         f"Call prep: {prep.get('prospect_name') or tracker.prospect_name or 'Unknown'}",
         f"When: {prep.get('when') or 'Unknown'}",
@@ -524,10 +920,23 @@ def slack_text(tracker: SalesCallTracker, prep: dict, timing_note: str) -> str:
         "How they came in: " + str(sections.get("how_they_came_in") or "Unknown"),
         "Likely needs: " + str(sections.get("likely_needs") or "Unknown"),
         "",
-        "Discovery questions:",
+        "Discovery, using the call script:",
     ]
-    for index, question in enumerate(questions, start=1):
-        lines.append(f"{index}. {question}")
+    links = prep.get("links") if isinstance(prep.get("links"), dict) else {}
+    website = (links.get("website") or {}) if isinstance(links, dict) else {}
+    amazon = (links.get("amazon") or {}) if isinstance(links, dict) else {}
+    if website.get("verified") and website.get("url"):
+        lines.append(f"Website: {website['url']}")
+    if isinstance(amazon, dict) and amazon.get("line"):
+        lines.append(str(amazon["line"]))
+    for item in questions:
+        if isinstance(item, dict):
+            lines.append(
+                f"- {item.get('id') or ''} {item.get('title') or ''}: "
+                f"{item.get('known') or 'Unknown'} Angle: {item.get('angle') or ''}"
+            )
+        else:
+            lines.append(f"- {item}")
     lines.append("")
     lines.append("Trial pitch:")
     for point in pitch:
@@ -612,18 +1021,41 @@ def apply_booking(
     session: Session,
     booking: Booking,
     *,
-    context_for: Callable[[Booking], dict],
+    context_for: Callable[..., dict],
     notes_for: Callable[[Booking, dict], tuple[dict, str]],
     slack: Any,
     gmail: Any,
     now: datetime,
 ) -> dict:
-    """Create or reuse the lead's tracker, store ss-prep, then notify David."""
+    """Create or reuse the lead's tracker, store ss-prep, then notify David.
 
-    context = context_for(booking)
+    A tracker that already has prep for this event is left as-is, including
+    its draft. New notes are not written over it.
+    """
+
+    existing = find_tracker(session, booking)
+    if existing is not None:
+        prior = existing.state_json if isinstance(existing.state_json, dict) else {}
+        saved = prior.get("ss-prep") if isinstance(prior.get("ss-prep"), dict) else {}
+        finished = (
+            saved.get("event_id") == booking.event_id
+            and isinstance(saved.get("sections"), dict)
+            and (saved.get("slack") or {}).get("posted_at")
+            and ((saved.get("draft") or {}).get("id") or (saved.get("draft") or {}).get("skipped"))
+        )
+        if finished:
+            return {
+                "action": "reused",
+                "created": False,
+                "tracker_id": existing.id,
+                "event_id": booking.event_id,
+                "prospect": booking.prospect_name,
+                "slack": False,
+                "draft": False,
+            }
+    context = context_for(booking, existing)
     company = _company(context)
     link = _lead_link(context)
-    existing = find_tracker(session, booking)
     created = False
     if existing is None:
         tracker = call_service.create_tracker(
@@ -663,13 +1095,18 @@ def apply_booking(
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "notes_source": notes_source,
             "sections": sections,
+            "links": {
+                "website": (context.get("links") or {}).get("website") or {},
+                "amazon": (context.get("links") or {}).get("amazon") or {"line": AMAZON_UNVERIFIED},
+            },
             "unknowns": sections.get("unknowns") or [],
             "slack": {},
             "draft": {},
         }
         action = "created" if created else "prepped"
+    quotes = "" if action == "reused" else prospect_quotes(booking, context)
     prep = _notify(slack, gmail, tracker, prep, now)
-    _store(session, tracker, prep)
+    _store(session, tracker, prep, quotes=quotes)
     return {
         "action": action,
         "created": created,
@@ -688,7 +1125,7 @@ def run_prep(
     bookings: list[Booking],
     source: str,
     gap: str,
-    context_for: Callable[[Booking], dict],
+    context_for: Callable[..., dict],
     notes_for: Callable[[Booking, dict], tuple[dict, str]],
     slack: Any,
     gmail: Any,

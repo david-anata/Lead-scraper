@@ -117,6 +117,54 @@
       + '@media (max-width:560px){#call-prep .prep-facts{grid-template-columns:1fr}#call-prep .prep-facts dt{margin-top:6px}}';
     document.head.appendChild(css);
   }
+  /* A model sometimes returns one paragraph where a list belongs. Split lines
+     or sentences. Never walk the string one character at a time. */
+  function asList(value) {
+    if (Array.isArray(value)) {
+      if (value.length && value.every(function (item) { return typeof item === 'string' && item.length === 1; })) {
+        return asList(value.join(''));
+      }
+      return value.filter(function (item) { return item != null && item !== ''; });
+    }
+    if (typeof value !== 'string') return [];
+    var text = value.trim();
+    if (!text) return [];
+    var lines = text.split(/\r?\n+/).map(function (line) {
+      return line.replace(/^[\s\-•*]+/, '').trim();
+    }).filter(Boolean);
+    if (lines.length > 1) return lines;
+    var sentences = [];
+    var buf = '';
+    for (var i = 0; i < text.length; i++) {
+      buf += text.charAt(i);
+      var end = /[.!?]/.test(text.charAt(i)) && (i === text.length - 1 || /\s/.test(text.charAt(i + 1)));
+      if (end) {
+        if (buf.trim()) sentences.push(buf.trim());
+        buf = '';
+        while (i + 1 < text.length && /\s/.test(text.charAt(i + 1))) i++;
+      }
+    }
+    if (buf.trim()) sentences.push(buf.trim());
+    return sentences.length > 1 ? sentences : [text];
+  }
+  function prepBrief(prep) {
+    if (!prep) return '';
+    var sections = prep.sections || {};
+    var links = prep.links || {};
+    var site = links.website || {};
+    var amazon = links.amazon || {};
+    var lines = [];
+    if (sections.who) lines.push(sections.who);
+    if (site.verified && site.url) lines.push('Website: ' + site.url);
+    if (amazon.line) lines.push(amazon.line);
+    else lines.push('Amazon presence: not verified');
+    asList(sections.discovery).forEach(function (step) {
+      if (step && typeof step === 'object' && step.known && step.known.indexOf('Unknown') !== 0) {
+        lines.push((step.id || '') + ' ' + (step.title || '') + ': ' + step.known);
+      }
+    });
+    return lines.join('\n');
+  }
   function mountPrep() {
     var prep = CFG.state && CFG.state['ss-prep'];
     var main = document.getElementById('main');
@@ -163,11 +211,39 @@
       box.appendChild(sum);
       if (build(box)) panel.appendChild(box);
     }
+    var links = prep.links || {};
+    var site = links.website || {};
+    var amazon = links.amazon || {};
+    if (site.verified && site.url) {
+      var siteDt = document.createElement('dt'); siteDt.textContent = 'Website';
+      var siteDd = document.createElement('dd');
+      var siteA = document.createElement('a');
+      siteA.href = site.url; siteA.textContent = site.url; siteA.rel = 'noopener'; siteA.target = '_blank';
+      siteDd.appendChild(siteA);
+      facts.appendChild(siteDt); facts.appendChild(siteDd);
+    }
+    var amDt = document.createElement('dt'); amDt.textContent = 'Amazon';
+    var amDd = document.createElement('dd');
+    if (amazon.verified && amazon.urls && amazon.urls.length) {
+      amazon.urls.forEach(function (href, i) {
+        if (i) amDd.appendChild(document.createTextNode(' '));
+        var a = document.createElement('a');
+        a.href = href; a.textContent = href; a.rel = 'noopener'; a.target = '_blank';
+        amDd.appendChild(a);
+      });
+    } else {
+      amDd.textContent = 'Amazon presence: not verified';
+    }
+    facts.appendChild(amDt); facts.appendChild(amDd);
+    if (!facts.parentNode && facts.childNodes.length) panel.appendChild(facts);
+
     function addList(label, items, ordered) {
       addGroup(label, function (box) {
         var list = document.createElement(ordered ? 'ol' : 'ul');
-        (Array.isArray(items) ? items : []).forEach(function (item) {
-          var t = prepKnown(item);
+        asList(items).forEach(function (item) {
+          var t = prepKnown(typeof item === 'object' && item
+            ? ((item.id ? item.id + ' ' : '') + (item.title ? item.title + '. ' : '') + (item.known || '') + (item.angle ? ' Angle: ' + item.angle : ''))
+            : item);
           if (!t) return;
           var li = document.createElement('li');
           li.textContent = t;
@@ -178,11 +254,13 @@
         return true;
       });
     }
-    addList('Discovery questions', sections.discovery_questions, true);
+    var steps = asList(sections.discovery);
+    if (steps.length && typeof steps[0] === 'object') addList('Discovery', steps, false);
+    else addList('Discovery', sections.discovery_questions, true);
     addList('Trial pitch', sections.trial_pitch, false);
     addGroup('Objections', function (box) {
       var n = 0;
-      (Array.isArray(sections.objections) ? sections.objections : []).forEach(function (item) {
+      asList(sections.objections).forEach(function (item) {
         if (!item || typeof item !== 'object') return;
         var q = prepKnown(item.objection), ans = prepKnown(item.answer);
         if (!q && !ans) return;
@@ -205,7 +283,7 @@
       });
       return n > 0;
     });
-    var unknowns = (Array.isArray(prep.unknowns) ? prep.unknowns : []).map(prepText).filter(Boolean);
+    var unknowns = asList(prep.unknowns).map(prepText).filter(Boolean);
     if (unknowns.length) {
       var u = document.createElement('p');
       u.className = 'prep-unknown';
@@ -502,6 +580,10 @@
     st.busy = true; st.error = ''; st.afterCall = null; st.reviewState = ''; st.justEnded = false; render();
     var ctx = '';
     try { ctx = (window.SS && window.SS.coachContext) ? window.SS.coachContext() : ''; } catch (e) { ctx = ''; }
+    var brief = prepBrief(CFG.state && CFG.state['ss-prep']);
+    if (brief) {
+      ctx += '\n\nPREFILLED LEAD FACTS (already on the tracker, not yet said on this call; do not mark a belief said from these):\n' + brief;
+    }
     api('/live', { method: 'POST', body: { coachContext: ctx.slice(0, 120000), label: CFG.label || '' } }).then(function (j) {
       st.session = { id: j.sessionId, status: 'pending', startedAt: j.startedAt, consentAt: null, endedAt: null };
       st.lines = []; st.lastLineId = 0; st.rev = 0; st.patch = null; st.pitchAt = null;
@@ -512,7 +594,11 @@
     }).catch(function (e) { st.busy = false; st.error = e.message; render(); });
   }
   function rearm() {
-    api('/live', { method: 'POST', body: { coachContext: (window.SS && window.SS.coachContext ? window.SS.coachContext() : '').slice(0, 120000), label: CFG.label || '' } }).then(function (j) {
+    var rearmCtx = '';
+    try { rearmCtx = window.SS && window.SS.coachContext ? window.SS.coachContext() : ''; } catch (e) { rearmCtx = ''; }
+    var rearmBrief = prepBrief(CFG.state && CFG.state['ss-prep']);
+    if (rearmBrief) rearmCtx += '\n\nPREFILLED LEAD FACTS (already on the tracker, not yet said on this call):\n' + rearmBrief;
+    api('/live', { method: 'POST', body: { coachContext: rearmCtx.slice(0, 120000), label: CFG.label || '' } }).then(function (j) {
       toExt('LIVE_ARM', { session: { sessionId: j.sessionId, token: j.token, relayUrl: j.relayUrl, label: CFG.label || '', trackerUrl: location.href } });
       st.error = ''; render();
     }).catch(function (e) { st.error = e.message; render(); });
@@ -667,6 +753,8 @@
   function idleHTML() {
     var h = '<div class="lv-head"><span class="lv-dot" aria-hidden="true"></span><h3>Live call</h3>' + extLine() + '</div>';
     h += '<p class="hint">Go live to have Tape listen to the Meet call. Beliefs, numbers, tie-downs and your next move update here as the prospect talks.</p>';
+    var brief = prepBrief(CFG.state && CFG.state['ss-prep']);
+    if (brief) h += '<div class="lv-card"><div class="k">Before the call</div><p>' + esc(brief).replace(/\n/g, '<br>') + '</p></div>';
     if (!st.pingTimer && !extReady()) h += installHelp();
     h += '<div class="lv-btns"><button type="button" class="lv-btn" data-lvgolive' + (st.busy ? ' disabled' : '') + '>' + (st.busy ? 'Starting' : 'Go live') + '</button></div>';
     return h;

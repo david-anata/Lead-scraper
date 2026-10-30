@@ -68,7 +68,9 @@ def execute(request: Request, now: datetime) -> dict:
             source=loaded.source,
             gap=loaded.gap,
             attempts=loaded.attempts,
-            context_for=lambda booking: gather_context(session, _clickup(settings), booking),
+            context_for=lambda booking, tracker=None: gather_context(
+                session, _clickup(settings), booking, gmail=gmail_clients[0] if gmail_clients else None, tracker=tracker,
+            ),
             notes_for=generate_notes,
             slack=_slack(settings),
             gmail=gmail_clients[0] if gmail_clients else None,

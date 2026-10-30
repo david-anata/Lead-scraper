@@ -23,7 +23,14 @@ reads new appointment-schedule events on the Sales calendar
 already configured, it reads `Appointment booked` mail from a configured Gmail
 mailbox. Each new booking gets one Call Script tracker for David, prep notes
 in `ss-prep`, a post in #sales, and a Gmail draft when the draft path is
-configured. The job does not send email.
+configured. The job does not send email. List fields from the model are
+normalized to sentences or lines, never to single characters. The website
+link is included only after a fetch, and an Amazon store or listing URL is
+included only after that URL itself resolves. Otherwise the note says
+Amazon presence is not verified. Facts are mapped onto call-script sections
+s1 to s13 and prefilled into the tracker so a Tape live session reads them.
+A tracker that already has prep, a Slack post, and a draft for that event
+is left unchanged.
 
 This FastAPI app handles post-creation sales support inside your existing ClickUp CRM workflow. It does not create new leads in the normal flow. It starts after the ClickUp task already exists and focuses on follow-through, stale-lead prevention, append-only activity logging, owner-directed reminders, daily digests, and mailbox-based signal intake.
 
