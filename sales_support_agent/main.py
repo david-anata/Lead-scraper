@@ -48,6 +48,7 @@ from sales_support_agent.api.fulfillment_deck_router import (
     public_router as fulfillment_deck_public_router,
 )
 from sales_support_agent.api.fulfillment_public_router import router as fulfillment_public_router
+from sales_support_agent.api.contact_public_router import router as contact_public_router
 from sales_support_agent.api.shipping_label_router import router as shipping_label_router
 from sales_support_agent.api.router import router
 from sales_support_agent.config import load_settings
@@ -278,6 +279,7 @@ def create_app() -> FastAPI:
     app.include_router(fulfillment_deck_admin_router)
     app.include_router(fulfillment_deck_public_router)
     app.include_router(fulfillment_public_router)
+    app.include_router(contact_public_router)
     app.include_router(shipping_label_router)
     app.include_router(access_router)
     app.include_router(_settings_router)
