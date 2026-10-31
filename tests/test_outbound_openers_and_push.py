@@ -161,13 +161,39 @@ def test_one_opener_per_company_is_cached_by_domain():
         calls.append(prompt)
         return "Huppy sells toothpaste tabs."
 
-    lead = {**LEAD, "amz_product": "toothpaste tabs"}
+    lead = {**LEAD, "amz_product": "toothpaste tabs", "amz_confidence": "high"}
     first = op.write_opener(lead, CONTACT, llm=llm)
     second = op.write_opener(lead, {"title": "CMO", "email": "other@huppy.com"}, llm=llm)
     assert first == second
     assert first[1] == "ai"
     assert len(calls) == 1
     assert "toothpaste tabs" in calls[0]
+
+
+def test_unconfirmed_amazon_product_is_not_used():
+    prompts = []
+
+    def llm(prompt):
+        prompts.append(prompt)
+        return "Huppy sells toothpaste tabs on Amazon."
+
+    for conf in ("", "low", "medium"):
+        op._OPENERS_BY_DOMAIN.clear()
+        prompts.clear()
+        line, source = op.write_opener({**LEAD, "amz_product": "toothpaste tabs", "amz_confidence": conf}, CONTACT, llm=llm)
+        assert "amazon" not in line.lower()
+        assert source == "fallback"
+        assert "Amazon product" not in prompts[0]
+
+
+def test_absent_brand_never_claims_amazon():
+    line, _ = op.write_opener({**LEAD, "amz_product": "tabs", "amazon_confidence": "high", "amazon_absent": True}, CONTACT, llm=lambda p: "Huppy is on Amazon.")
+    assert "amazon" not in line.lower()
+
+
+def test_confirmed_amazon_product_allows_the_claim():
+    line, source = op.write_opener({**LEAD, "amz_product": "toothpaste tabs", "amz_confidence": "high"}, CONTACT, llm=lambda p: "Huppy lists toothpaste tabs on Amazon.")
+    assert source == "ai" and "Amazon" in line
 
 
 def test_friendly_category():

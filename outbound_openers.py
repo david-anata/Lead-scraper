@@ -63,7 +63,9 @@ _SYSTEM = (
     "strategy and runs the ad actions automatically. Write ONE short statement, not a "
     "question, under 30 words. Ground it in one real fact from the list: the Amazon "
     "product, a recent platform move, a recent app install, or a recent plan upgrade. "
-    "If a plain category is given, you may say they sell that. Never print a slug with "
+    "If a plain category is given, you may say they sell that. Only mention Amazon "
+    "when an 'Amazon product' fact is listed; otherwise never say or imply they sell "
+    "on Amazon. Never print a slug with "
     "underscores. Do not claim social momentum, growth, or anything that is not in the "
     "facts. Do not start with 'I noticed' or 'We noticed'. Never use the words "
     "'curious', 'special', 'building something', or 'ideal customer profile'. "
@@ -80,8 +82,17 @@ def clean(text: str) -> str:
     return t
 
 
-def validate(text: str) -> tuple[bool, str]:
+def amazon_confirmed(lead: dict[str, Any]) -> bool:
+    """True only when the Amazon check matched this brand with high confidence."""
+
+    conf = str(lead.get("amz_confidence") or lead.get("amazon_confidence") or "").strip().lower()
+    return conf == "high" and not lead.get("amazon_absent")
+
+
+def validate(text: str, *, allow_amazon: bool = True) -> tuple[bool, str]:
     raw = (text or "").strip()
+    if not allow_amazon and re.search(r"amazon|amzn", raw, re.I):
+        return False, "claims Amazon without a confirmed match"
     if "—" in raw or "–" in raw:
         return False, "em dash"
     if _SLUG.search(raw):
@@ -193,7 +204,8 @@ def write_opener(
     cats = lead.get("categories") or ""
     if isinstance(cats, (list, tuple)):
         cats = ", ".join(str(c) for c in cats[:3])
-    product = str(lead.get("amz_product") or "").strip()
+    confirmed = amazon_confirmed(lead)
+    product = str(lead.get("amz_product") or "").strip() if confirmed else ""
     recipe = str(lead.get("recipe") or "").strip()
 
     def finish(line: str, source: str) -> tuple[str, str]:
@@ -212,7 +224,7 @@ def write_opener(
         try:
             for _attempt in range(2):
                 raw = llm(prompt)
-                ok, why = validate(raw)
+                ok, why = validate(raw, allow_amazon=bool(product))
                 if ok:
                     return finish(clean(raw), "ai")
                 logger.info("[outbound-openers] rejected AI line (%s)", why)
