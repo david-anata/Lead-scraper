@@ -53,6 +53,13 @@ def test_a_query_string_on_the_referrer_is_dropped_so_flashes_do_not_stack():
     assert result == "/admin/finances/audit"
 
 
+def test_a_week_query_survives_while_the_old_flash_is_dropped():
+    result = _with(_FakeRequest(
+        return_to="/admin/finances/calendar/charges?week=2026-08-24&state=unpaid&flash=ok%3Aold"
+    ))
+    assert result == "/admin/finances/calendar/charges?week=2026-08-24&state=unpaid"
+
+
 @pytest.mark.parametrize("hostile", [
     "https://evil.example.com/admin/finances/audit",   # another host
     "https://agent.anatainc.com/admin/sales",          # outside finance

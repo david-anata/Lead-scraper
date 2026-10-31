@@ -13,7 +13,7 @@ from functools import lru_cache
 from time import monotonic
 from typing import Any
 from contextvars import ContextVar
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -268,8 +268,16 @@ def _safe_return_path(default: str = "/admin/finances") -> str:
         path = parsed.path or ""
         if not path.startswith("/admin/finances"):
             continue
+        # Drop a previous flash so messages do not stack, and keep the rest
+        # (the week and column that were open) so a save returns to that list.
+        kept = [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=False)
+            if key != "flash"
+        ]
+        query = f"?{urlencode(kept)}" if kept else ""
         fragment = f"#{parsed.fragment}" if parsed.fragment else ""
-        return f"{path}{fragment}"
+        return f"{path}{query}{fragment}"
     return default
 
 
@@ -571,7 +579,14 @@ async def finance_calendar_charges(
         view = build_charge_drilldown(
             calendar, week_start=week_start, state=state, patterns=patterns
         )
-        return render_charge_panel(view, action=CHARGE_ANSWER_PATH)
+        shown_week = view.get("week_start") or week_start
+        return_to = (
+            "/admin/finances/calendar/charges"
+            f"?week={shown_week.isoformat()}&state={state}"
+        )
+        return render_charge_panel(
+            view, action=CHARGE_ANSWER_PATH, return_to=return_to
+        )
 
     try:
         body = await asyncio.to_thread(_build)
@@ -590,44 +605,72 @@ async def finance_calendar_charges(
 
 
 @router.post("/calendar/charges/answer")
-async def finance_calendar_charge_answer(
-    request: Request,
-    pattern_key: str = Form(""),
-    cadence: str = Form(""),
-    vendor: str = Form(""),
-    return_to: str = Form(""),
-):
-    """Record what a charge is. The same act as tracking it under What is coming,
-    written to the same place so one charge cannot have two answers."""
+async def finance_calendar_charge_answer(request: Request):
+    """Record what one or more charges are.
+
+    The same act as tracking them under What is coming, written to the same
+    place so one charge cannot have two answers. Blank rows are left alone, so
+    the operator can set several and save once.
+    """
     from sales_support_agent.services.cashflow.charge_drilldown import cadence_to_decision
     from sales_support_agent.services.cashflow.bill_patterns import (
         record_bill_pattern_decision,
     )
 
-    request.state.finance_return_to = return_to or "/admin/finances/calendar"
+    form = await request.form()
+    return_to = str(form.get("return_to") or "")
+    request.state.finance_return_to = return_to or "/admin/finances/calendar/charges"
+    keys = [str(value) for value in form.getlist("pattern_key")]
+    cadences = [str(value) for value in form.getlist("cadence")]
+    vendors = [str(value) for value in form.getlist("vendor")]
+    if len(keys) != len(cadences):
+        return _redirect_finance_error(
+            "Those answers could not be read, so nothing was changed."
+        )
+    chosen: list[tuple[str, str, str]] = []
+    for index, (key, cadence) in enumerate(zip(keys, cadences)):
+        cadence = cadence.strip()
+        if not cadence:
+            continue
+        vendor = vendors[index] if index < len(vendors) else ""
+        chosen.append((key.strip(), cadence, vendor))
+    if not chosen:
+        return _redirect_finance_error("Choose at least one charge, then save.")
     user = get_current_user(request) or {}
     actor = str(user.get("email") or user.get("id") or "finance-operator")
+    prepared: list[tuple[str, str, str, str]] = []
     try:
-        decision = cadence_to_decision(str(cadence or "").strip())
-        await asyncio.to_thread(
-            record_bill_pattern_decision,
-            str(pattern_key or "").strip(),
-            decision,
-            actor=actor,
-            evidence={"said": cadence, "vendor": vendor, "from": "calendar"},
-        )
+        for key, cadence, vendor in chosen:
+            if not key:
+                raise ValueError("That charge has no supplier to attach an answer to.")
+            prepared.append((key, cadence_to_decision(cadence), cadence, vendor))
     except ValueError as exc:
         return _redirect_finance_error(f"That could not be saved: {exc}")
+    try:
+        for key, decision, cadence, vendor in prepared:
+            await asyncio.to_thread(
+                record_bill_pattern_decision,
+                key,
+                decision,
+                actor=actor,
+                evidence={"said": cadence, "vendor": vendor, "from": "calendar"},
+            )
     except Exception:
-        logger.exception("A charge answer could not be saved pattern_key=%s", pattern_key)
-        return _redirect_finance_error("That could not be saved. Nothing was changed.")
+        logger.exception("A charge answer could not be saved")
+        return _redirect_finance_error(
+            "A charge answer could not be saved. Refresh the list before trying again."
+        )
     words = {
         "monthly": "Noted as monthly. It now counts from its next date.",
         "weekly": "Noted as weekly. It now counts from its next date.",
         "one_time": "Noted as a one-off. We will keep watching this supplier.",
         "not_a_bill": "Noted. We will stop suggesting this supplier.",
     }
-    return _redirect_finance_home(words.get(cadence, "Saved."))
+    if len(prepared) == 1:
+        message = words.get(prepared[0][2], "Saved.")
+    else:
+        message = f"Saved {len(prepared)} charge answers."
+    return _redirect_finance_home(message)
 
 
 @router.get("/calendar", response_class=HTMLResponse)
