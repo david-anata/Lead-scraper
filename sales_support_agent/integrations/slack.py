@@ -73,3 +73,33 @@ class SlackClient:
             raise RuntimeError(f"Slack upload completion error: {payload}")
         return payload
 
+
+    def upload_files(self, *, files: list[tuple[str, bytes, str]], initial_comment: str,
+                     channel: str = "") -> dict[str, Any]:
+        """Upload several files as one Slack message. ``files`` is (name, bytes, mime)."""
+        if not self.is_configured(channel):
+            return {"ok": False, "skipped": True, "reason": "slack_not_configured"}
+        headers = {"Authorization": f"Bearer {self.settings.slack_bot_token}"}
+        uploaded: list[dict[str, str]] = []
+        for filename, content, mime in files:
+            request = requests.post(
+                SLACK_UPLOAD_URL_REQUEST, headers=headers,
+                data={"filename": filename, "length": str(len(content))}, timeout=30,
+            )
+            request.raise_for_status()
+            upload = request.json()
+            if not upload.get("ok"):
+                raise RuntimeError(f"Slack upload URL error: {upload.get('error')}")
+            binary = requests.post(upload["upload_url"], files={"file": (filename, content, mime)}, timeout=60)
+            binary.raise_for_status()
+            uploaded.append({"id": upload["file_id"], "title": filename})
+        complete = requests.post(
+            SLACK_UPLOAD_COMPLETE, headers={**headers, "Content-Type": "application/json; charset=utf-8"},
+            json={"files": uploaded, "channel_id": channel or self.settings.slack_channel_id,
+                  "initial_comment": initial_comment}, timeout=30,
+        )
+        complete.raise_for_status()
+        payload = complete.json()
+        if not payload.get("ok"):
+            raise RuntimeError(f"Slack upload completion error: {payload.get('error')}")
+        return payload
