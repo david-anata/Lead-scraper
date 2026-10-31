@@ -297,6 +297,57 @@ class SalesDealCreateRouteTests(unittest.TestCase):
             self.assertIsNotNone(asset)
             self.assertEqual(asset.url, f"/rate-sheets/tabco/{run_id}/token")
 
+    def test_create_form_offers_new_company_and_contact_fields(self) -> None:
+        resp = self.client.get(
+            "/admin/sales/deals/create?company_name=Bloom+Towels&company_domain=bloomtowel.com&contact_email=support@bloomtowels.com"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('name="new_company_name"', resp.text)
+        self.assertIn('value="Bloom Towels"', resp.text)
+        self.assertIn('name="new_contact_email"', resp.text)
+        self.assertIn('value="support@bloomtowels.com"', resp.text)
+
+    def test_create_makes_a_company_and_contact_when_they_are_not_in_hubspot(self) -> None:
+        object.__setattr__(self.settings, "hubspot_api_token", "test-token")
+        created = {
+            "id": "deal_new_records",
+            "properties": {
+                "dealname": "Bloom Towels Fulfillment",
+                "pipeline": "default",
+                "dealstage": "appointmentscheduled",
+            },
+            "createdAt": "2026-09-11T12:00:00Z",
+            "updatedAt": "2026-09-11T12:00:00Z",
+        }
+        with patch.object(HubSpotClient, "create_company", return_value={"id": "co-new"}) as create_company, patch.object(
+            HubSpotClient, "create_contact", return_value={"id": "ct-new"}
+        ) as create_contact, patch.object(HubSpotClient, "create_association") as associate, patch.object(
+            HubSpotClient, "create_deal", return_value=created
+        ) as create_deal, patch("sales_support_agent.api.sales_router.start_hubspot_sync"):
+            resp = self.client.post(
+                "/admin/sales/deals/create",
+                data={
+                    "dealname": "Bloom Towels Fulfillment",
+                    "pipeline": "default",
+                    "dealstage": "appointmentscheduled",
+                    "anata_service_line": "fulfillment",
+                    "anata_lead_source_detail": "agent",
+                    "hubspot_owner_id": "owner1",
+                    "new_company_name": "Bloom Towels",
+                    "new_company_domain": "https://bloomtowel.com",
+                    "new_contact_name": "Bloom Support",
+                    "new_contact_email": "support@bloomtowels.com",
+                },
+                follow_redirects=False,
+            )
+        self.assertEqual(resp.status_code, 303, resp.text)
+        self.assertEqual(create_company.call_args.args[0]["domain"], "bloomtowel.com")
+        self.assertEqual(create_contact.call_args.args[0]["email"], "support@bloomtowels.com")
+        self.assertEqual(create_contact.call_args.args[0]["firstname"], "Bloom")
+        associate.assert_called_once()
+        associations = create_deal.call_args.kwargs["associations"]
+        self.assertEqual({item["to"]["id"] for item in associations}, {"co-new", "ct-new"})
+
 
 if __name__ == "__main__":
     unittest.main()
