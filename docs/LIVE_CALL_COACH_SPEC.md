@@ -182,7 +182,7 @@ The script text never changes. What's new is a Live block at the top of the Talk
 
 1. **Scored review.** The agent runs the same review the script's End call & review uses, on the full stored transcript, and saves it to the coaching dashboard: score, beliefs said before the pitch, minutes in discovery, temperature answer, what to fix next call.
 2. **ClickUp Sales CRM.** Finds the lead's task in the Sales CRM list (anata Sales space, Sales folder) by the lead link on the tracker, then by email or company; creates one if none exists. Updates the custom columns: stage, outcome (trial started, full service, follow-up), offer quoted, beliefs said, pains, objections, next step, call link. Adds a comment with the call summary.
-3. **Abby recap.** Abby writes a short recap in the prospect's own words with the Seller Central connect link to start (or finish) the 14-day trial, CC'ing the rep. If the lead came through the Instantly campaign it goes in the same email thread; otherwise from an Abby inbox. It sends automatically like Abby's other replies; if the coach rates the call outcome as unclear, it waits as a draft for the rep.
+3. **Abby recap.** Abby writes a short recap in the prospect's own words with the sign-up link https://dashboard.anatainc.com/signup to start the 14-day trial, CC'ing the rep. If the lead came through the Instantly campaign it goes in the same email thread; otherwise from an Abby inbox. It sends automatically like Abby's other replies; if the coach rates the call outcome as unclear, it waits as a draft for the rep.
 4. **Day-10 review.** A ClickUp task due 10 days after the trial starts, and a hold on the rep's calendar. The recap includes the booking link so the prospect can confirm the time.
 
 **Trial start signal:** "10 days after the trial starts" needs Anata Intelligence to tell the agent when the prospect connects Seller Central. Until that signal exists, the call date is used.
@@ -199,7 +199,7 @@ One offer from first email to close: the cold email, Abby's replies, the booked 
 
 **Outbound on the $99 offer**
 
-- Rewrite the live Instantly sequence and Abby's reply rules from the $500/mo offer to: Anata Intelligence from $99/mo, 14-day free trial, no card, starts when Seller Central connects.
+- Rewrite the live Instantly sequence and Abby's reply rules from the $500/mo offer to: Anata Intelligence from $99/mo, 14-day free trial, card on file via https://dashboard.anatainc.com/signup, then $99/mo Starter, day-10 review.
 - Abby's answers to price, trial and "what do I get" match the Call Script's pricing section word for word, so nothing on the call contradicts the email.
 
 **Booked call opens prefilled**
