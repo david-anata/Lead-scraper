@@ -28,6 +28,32 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["outbound"])
 
 
+def _friendly_when(value: object) -> str:
+    """Render a stored timestamp as a short operator date, not a raw ISO string."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = None
+    cleaned = raw.replace("Z", "+00:00")
+    for candidate in (cleaned, cleaned[:19]):
+        try:
+            parsed = datetime.fromisoformat(candidate)
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        return html.escape(raw[:16])
+    hour = parsed.strftime("%I").lstrip("0") or "12"
+    return html.escape(f"{parsed.strftime('%b')} {parsed.day}, {parsed.year} · {hour}:{parsed.strftime('%M %p')}")
+
+
+def _pull_clock_label(hour: int) -> str:
+    hour = max(0, min(23, int(hour)))
+    suffix = "AM" if hour < 12 else "PM"
+    shown = hour % 12 or 12
+    return f"{shown}:00 {suffix}"
+
+
 def _shell_page(request: Request, *, active: str, title: str, extra_css: str, body: str) -> str:
     """Wrap page content in the standard agent.anatainc.com shell (top nav)."""
     from sales_support_agent.services.admin_nav import (
@@ -119,7 +145,15 @@ _NURTURE_HTML = """
 
 _DAILY_CSS = """
   .daily-head{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;margin-bottom:24px}
-  .daily-status{padding:9px 12px;border-radius:999px;background:#edf7f0;color:#205c37;font-weight:700;font-size:13px}
+  .daily-status{display:inline-flex;align-items:center;gap:8px;padding:9px 12px;border-radius:999px;background:#edf7f0;color:#205c37;font-weight:700;font-size:13px}
+  .daily-pencil{border:0;background:transparent;color:inherit;font:inherit;font-weight:800;cursor:pointer;text-decoration:underline;min-height:44px;padding:0 4px}
+  .daily-dialog{border:1px solid rgba(43,54,68,.16);border-radius:16px;padding:20px;max-width:min(420px,92vw)}
+  .daily-dialog::backdrop{background:rgba(43,54,68,.45)}
+  .daily-dialog h2{margin:0 0 8px;font:800 20px Montserrat,sans-serif}
+  .daily-dialog p{margin:0 0 8px}
+  .daily-dialog label{display:grid;gap:6px;font-weight:700;margin:12px 0}
+  .daily-dialog input{min-height:44px;font:inherit;padding:8px 10px}
+  .daily-dialog .daily-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
   .daily-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:20px 0 28px}
   .daily-card{border:1px solid var(--border);border-radius:14px;padding:16px;background:#fff}
   .daily-card span{display:block;color:#66717d;font-size:12px;margin-bottom:6px}.daily-card b{font:800 22px Montserrat,sans-serif}
@@ -137,9 +171,30 @@ def outbound_daily(request: Request, page: int = 1) -> Response:
     from sales_support_agent.models.database import get_engine
     from sales_support_agent.services import outbound_batches, outbound_memory
 
+    from zoneinfo import ZoneInfo
+
+    from sales_support_agent.services import outbound_settings as _pull_settings
+
     engine = get_engine()
     batches, total = outbound_batches.load_batches(engine, page=page, per_page=10)
     prefs = outbound_memory.load_delivery_settings(engine)
+    pull_hour = _pull_settings.morning_pull_hour(engine, 7)
+    denver_now = datetime.now(ZoneInfo("America/Denver"))
+    today_key = denver_now.date().isoformat()
+    missing_today = (
+        page == 1
+        and denver_now.weekday() < 5
+        and denver_now.hour >= pull_hour
+        and not any(batch.business_date == today_key for batch in batches)
+    )
+    missing_today_html = ""
+    if missing_today:
+        missing_today_html = (
+            '<div class="daily-callout" role="status"><b>Today&#39;s file is not here yet.</b> '
+            f"The automatic pull is set for {_pull_clock_label(pull_hour)} Denver. "
+            "If that time has passed, the morning job did not create a batch. "
+            '<a href="/admin/outbound/recipes">Open recipes</a> to pull one by hand.</div>'
+        )
     today = batches[0] if batches else None
     rows = "".join(
         f"<tr><td><input class='batch-check' type='checkbox' value='{batch.id}' aria-label='Select {html.escape(batch.business_date)}'></td>"
@@ -154,14 +209,24 @@ def outbound_daily(request: Request, page: int = 1) -> Response:
     channel = prefs.get("slack_channel") or "workspace default"
     pages = max(1, (total + 9) // 10)
     body = f"""
-      <div class='daily-head'><div><h1>Daily Leads</h1><p class='sub'>Your morning company file—pulled automatically, deduplicated once, and ready for Clay.</p></div><span class='daily-status'>Weekdays · 7:00 AM Denver</span></div>
+      <div class='daily-head'><div><h1>Daily Leads</h1><p class='sub'>Your morning company file, pulled automatically, deduplicated once, and ready for Clay.</p></div><span class='daily-status' id='daily-status'>Weekdays · {_pull_clock_label(pull_hour)} Denver <button type='button' class='daily-pencil' id='daily-time-edit' aria-label='Edit automatic pull time'>Edit</button></span></div>
+      {missing_today_html}
+      <dialog class='daily-dialog' id='daily-time-dialog' aria-labelledby='daily-time-title'>
+        <form id='daily-time-form'>
+          <h2 id='daily-time-title'>Automatic pull time</h2>
+          <p>Weekday pulls run at the top of this hour, Mountain time.</p>
+          <label for='pull-time'>Time<input id='pull-time' name='pull_time' type='time' step='3600' value='{pull_hour:02d}:00' required></label>
+          <div class='daily-actions'><button class='daily-btn' type='submit'>Save</button><button class='daily-pencil' type='button' id='daily-time-cancel'>Cancel</button></div>
+          <p id='daily-time-msg' class='daily-muted'></p>
+        </form>
+      </dialog>
       <div class='daily-callout'><b>How this works:</b> active recipes run each weekday, duplicate domains collapse into one row, and the exact stored CSV is emailed and uploaded to Slack. Nothing here contacts a lead.</div>
       <div class='daily-grid'><div class='daily-card'><span>Latest companies</span><b>{selected.unique_companies:,}</b></div><div class='daily-card'><span>Recipes complete</span><b>{selected.completed_count}/{selected.recipe_count}</b></div><div class='daily-card'><span>Duplicates removed</span><b>{selected.duplicates_removed:,}</b></div><div class='daily-card'><span>Batch status</span><b style='font-size:16px'>{html.escape(selected.status.replace('_',' ').title())}</b></div></div>
       <div class='daily-callout'><b>Delivery:</b> Email {'on' if prefs['email_enabled'] else 'off'} to {html.escape(prefs['email_recipients'] or 'no recipients')} · Slack {'on' if prefs['slack_enabled'] else 'off'} to {html.escape(channel)}. <a href='/admin/outbound/recipes'>Manage delivery and recipes</a>.</div>
       <div class='daily-table-wrap'><table class='daily-table'><thead><tr><th></th><th>Date</th><th>Status</th><th>Recipes</th><th>Companies</th><th>Duplicates</th><th>Email / Slack</th><th>File</th></tr></thead><tbody>{rows}</tbody></table></div>
       <div class='daily-pager'><span class='daily-muted'>Page {max(1,page)} of {pages} · {total} daily batches</span><span>{f"<a href='/admin/outbound/daily?page={page-1}'>Previous</a>" if page > 1 else ''} {f"<a href='/admin/outbound/daily?page={page+1}'>Next</a>" if page < pages else ''}</span></div>
       <p class='daily-muted'>Need several days in one sheet? Select the batch rows, then <a id='combine' class='daily-link' href='#'>download one combined CSV</a>.</p>
-      <script>(function(){{var a=document.getElementById('combine');function sync(){{var ids=[].slice.call(document.querySelectorAll('.batch-check:checked')).map(function(x){{return x.value}});a.href=ids.length?'/admin/api/outbound/daily-batches.csv?batch_ids='+ids.join(','):'#';a.setAttribute('download','anata-selected-daily-leads.csv')}}document.querySelectorAll('.batch-check').forEach(function(x){{x.addEventListener('change',sync)}});sync()}})();</script>
+      <script>(function(){{var a=document.getElementById('combine');function sync(){{var ids=[].slice.call(document.querySelectorAll('.batch-check:checked')).map(function(x){{return x.value}});a.href=ids.length?'/admin/api/outbound/daily-batches.csv?batch_ids='+ids.join(','):'#';a.setAttribute('download','anata-selected-daily-leads.csv')}}document.querySelectorAll('.batch-check').forEach(function(x){{x.addEventListener('change',sync)}});sync();var edit=document.getElementById('daily-time-edit'),dialog=document.getElementById('daily-time-dialog'),form=document.getElementById('daily-time-form');if(edit&&dialog)edit.addEventListener('click',function(){{dialog.showModal();}});var cancel=document.getElementById('daily-time-cancel');if(cancel)cancel.addEventListener('click',function(){{dialog.close();}});if(form)form.addEventListener('submit',function(e){{e.preventDefault();var msg=document.getElementById('daily-time-msg'),fd=new FormData();fd.append('pull_time',document.getElementById('pull-time').value);msg.textContent='Saving...';fetch('/admin/api/outbound/pull-time',{{method:'POST',body:fd}}).then(function(r){{return r.json().then(function(d){{return [r,d];}});}}).then(function(x){{msg.textContent=x[1].reason||(x[0].ok?'Saved.':'Could not save.');if(x[0].ok)setTimeout(function(){{location.reload();}},400);}}).catch(function(){{msg.textContent='Could not reach the server.';}});}});}})();</script>
     """
     return HTMLResponse(_shell_page(request, active="outbound_daily", title="Daily Leads", extra_css=_DAILY_CSS, body=body))
 
@@ -461,7 +526,7 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "",
 
 _LEADOPS_CSS = """
   .lo-h { font-size:13px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:#6b7280; margin:22px 0 8px; }
-  .lo-table { border-collapse:collapse; width:100%; max-width:1000px; background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden; }
+  .lo-table { border-collapse:collapse; width:100%; max-width:none; background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden; }
   .lo-table th, .lo-table td { text-align:left; padding:10px 14px; border-bottom:1px solid #f0f0f3; font-size:14px; vertical-align:top; }
   .lo-table th { background:#fafafa; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; }
   .lo-tier { font-weight:800; }
@@ -477,6 +542,13 @@ _LEADOPS_CSS = """
   .lo-field label { font-size:12px; font-weight:700; color:rgba(43,54,68,.7); }
   .lo-field input { width:110px; padding:8px 10px; border:1px solid var(--border); border-radius:9px; font-size:14px; }
   .lo-field.wide input { width:280px; }
+  .lo-tune { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); align-items:end; gap:12px 16px; }
+  .lo-tune .lo-field input, .lo-tune .lo-field.wide input { width:100%; min-height:40px; }
+  .lo-tune .lo-field.wide { grid-column:1 / -1; }
+  .lo-col-recipe { min-width:220px; width:28%; }
+  .lo-pager { display:flex; align-items:center; gap:12px; margin:12px 0 4px; }
+  .lo-pager button { min-height:40px; padding:8px 12px; border:1px solid var(--border); border-radius:9px; background:#fff; font-weight:700; cursor:pointer; }
+  .lo-pager button:disabled { opacity:.45; cursor:default; }
   .lo-save { padding:10px 18px; border:none; border-radius:10px; background:#2B3644; color:#fff; font-weight:800; font-size:14px; cursor:pointer; }
   .lo-msg { margin:10px 0 0; font-size:14px; font-weight:600; }
   .lo-ver { display:inline-block; padding:2px 8px; border-radius:999px; background:rgba(43,54,68,.08); font-size:12px; font-weight:800; }
@@ -484,17 +556,17 @@ _LEADOPS_CSS = """
     border:1px solid var(--border); font-size:14px; }
   .lo-push { border:none; cursor:pointer; font-family:"Montserrat",sans-serif; }
   .lo-today { padding:14px 16px; border-radius:14px; background:rgba(133,187,218,.14); border:1px solid rgba(43,54,68,.08); font-size:15px; }
-  .lo-table-wrap { max-width:1000px; }
+  .lo-table-wrap { max-width:none; overflow-x:auto; }
   .lo-run-tools { display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0 10px; }
   .lo-run-tools input,.lo-run-tools select,.lo-delivery input,.lo-delivery select { min-height:40px;padding:8px 10px;border:1px solid var(--border);border-radius:9px;background:#fff; }
-  .lo-selection { position:sticky;bottom:12px;z-index:4;display:flex;align-items:center;justify-content:space-between;gap:14px;max-width:1000px;margin:12px 0;padding:12px 14px;border-radius:12px;background:#2B3644;color:#fff;box-shadow:0 12px 26px rgba(43,54,68,.22); }
+  .lo-selection { position:sticky;bottom:12px;z-index:4;display:flex;align-items:center;justify-content:space-between;gap:14px;max-width:none;margin:12px 0;padding:12px 14px;border-radius:12px;background:#2B3644;color:#fff;box-shadow:0 12px 26px rgba(43,54,68,.22); }
   .lo-selection[hidden] { display:none; } .lo-selection button { background:#fff;color:#2B3644;border:0;border-radius:8px;padding:9px 13px;font-weight:800;cursor:pointer; }
   .lo-download { display:inline-block;background:#fff;color:#2B3644;border-radius:8px;padding:9px 13px;font-weight:800;text-decoration:none; }
   .lo-download[aria-disabled="true"] { opacity:.55;pointer-events:none; }
   .lo-check { width:18px;height:18px;accent-color:#2B3644; }
   .lo-status { display:inline-flex;padding:3px 7px;border-radius:99px;background:#eef2f6;font-size:12px;font-weight:700; }
   .lo-status.warn { background:#fff1db;color:#8a4b00; }
-  .lo-delivery { max-width:1000px;border:1px solid var(--border);border-radius:14px;padding:16px;background:#fff; }
+  .lo-delivery { max-width:none;border:1px solid var(--border);border-radius:14px;padding:16px;background:#fff; }
   .lo-delivery-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px; }
   .lo-delivery label { display:flex;gap:8px;align-items:center;font-size:14px;font-weight:650; }
   .lo-delivery .wide { grid-column:1/-1;display:flex;flex-direction:column;align-items:stretch; }
@@ -957,7 +1029,7 @@ def outbound_lead_ops(request: Request) -> Response:
             f"<td><input class='lo-check run-check' type='checkbox' aria-label='Select {html.escape(x['recipe'] or 'pull')}' value='{x['id']}' "
             + ("disabled title='Exact results unavailable for this older pull'" if not run_lead_counts.get(x['id']) else "")
             + "></td>"
-            f"<td>{html.escape(str(x['ran_at'])[:16])}</td><td><b>{html.escape(recipe_labels.get(x['recipe'], x['recipe']) or '-')}</b>"
+            f"<td>{_friendly_when(x['ran_at'])}</td><td class='lo-col-recipe'><b>{html.escape(recipe_labels.get(x['recipe'], x['recipe']) or '-')}</b>"
             + (f"<br><small>{html.escape(x['recipe'])}</small>" if x.get('recipe') in recipe_labels else "") + "</td>"
             f"<td>{x['scanned']:,}</td><td>{x['matched']:,}</td><td><b>{x['fresh']:,}</b></td>"
             f"<td>{x['skipped_seen']:,}</td>"
@@ -1006,7 +1078,7 @@ def outbound_lead_ops(request: Request) -> Response:
 
     if changes:
         change_rows = "".join(
-            f"<tr><td>v{c['version']}</td><td>{html.escape(str(c['changed_at'])[:16])}</td>"
+            f"<tr><td>v{c['version']}</td><td>{_friendly_when(c['changed_at'])}</td>"
             f"<td>{html.escape(_rx.TUNABLE_LABELS.get(c['key'], c['key']))}</td>"
             f"<td>{html.escape(str(c['old_value'] or '-'))} &rarr; <b>{html.escape(str(c['new_value']))}</b></td>"
             f"<td>{html.escape(c['note'] or '-')}</td><td>{html.escape(c['changed_by'] or '-')}</td></tr>"
@@ -1071,9 +1143,14 @@ def outbound_lead_ops(request: Request) -> Response:
           <button class="lo-save" id="clear-selection" type="button">Clear</button>
         </div>
         <div class="lo-table-wrap"><table class="lo-table">
-          <thead><tr><th><input class="lo-check" id="check-all" type="checkbox" aria-label="Select all visible pulls"></th><th>When</th><th>Recipe</th><th>Scanned</th><th>Fit ICP</th><th>Fresh</th><th>Already seen</th><th>Delivered</th><th>Status</th><th>Settings</th><th></th></tr></thead>
-          <tbody>{run_rows}</tbody>
+          <thead><tr><th><input class="lo-check" id="check-all" type="checkbox" aria-label="Select all visible pulls"></th><th>When</th><th class="lo-col-recipe">Recipe</th><th>Scanned</th><th>Fit ICP</th><th>Fresh</th><th>Already seen</th><th>Delivered</th><th>Status</th><th>Settings</th><th></th></tr></thead>
+          <tbody id="run-body">{run_rows}</tbody>
         </table></div>
+        <div class="lo-pager" id="run-pager">
+          <button type="button" id="run-prev">Previous</button>
+          <span id="run-page"></span>
+          <button type="button" id="run-next">Next</button>
+        </div>
         <div class="lo-selection" id="selection-bar" hidden>
           <div><b id="selection-summary">0 pulls selected</b><br><small id="selection-detail">Choose pulls to combine.</small></div>
           <div><label style="margin-right:8px"><input id="include-duplicates" type="checkbox"> Include duplicates</label><button id="preview-export" type="button">Preview export</button> <a class="lo-download" id="download-export" aria-disabled="true" download="anata-selected-pulls.csv">Download selected CSV</a></div>
@@ -1124,7 +1201,7 @@ def outbound_lead_ops(request: Request) -> Response:
         </div>
 
         <p class="lo-h">Tuning <span class="lo-ver">now on v{version}</span></p>
-        <div class="lo-form">
+        <div class="lo-form lo-tune">
           {tune_fields}
           <div class="lo-field wide"><label for="s_note">Why are you changing it?</label>
             <input id="s_note" type="text" placeholder="e.g. widening to lift the just-installed yield"></div>
@@ -1136,10 +1213,15 @@ def outbound_lead_ops(request: Request) -> Response:
         of guessing whether it helped.</p>
 
         <p class="lo-h">Change log</p>
-        <table class="lo-table">
+        <div class="lo-table-wrap"><table class="lo-table">
           <thead><tr><th>Version</th><th>When</th><th>Setting</th><th>Change</th><th>Note</th><th>Who</th></tr></thead>
-          <tbody>{change_rows}</tbody>
-        </table>
+          <tbody id="change-body">{change_rows}</tbody>
+        </table></div>
+        <div class="lo-pager" id="change-pager">
+          <button type="button" id="change-prev">Previous</button>
+          <span id="change-page"></span>
+          <button type="button" id="change-next">Next</button>
+        </div>
         </details>
         <script>
           (function(){{
@@ -1151,7 +1233,7 @@ def outbound_lead_ops(request: Request) -> Response:
             var detail=document.getElementById('selection-detail'), preview=document.getElementById('export-preview');
             function esc(v){{return String(v||'').replace(/[&<>"']/g,function(c){{return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c];}});}}
             function chosen(){{return checks.filter(function(c){{return c.checked;}}).map(function(c){{return c.value;}});}}
-            function visible(c){{return c.closest('tr').style.display!=='none'&&!c.disabled;}}
+            function visible(c){{return c.closest('tr').dataset.match!=='0'&&!c.disabled;}}
             function downloadUrl(){{var ids=chosen(),dupes=document.getElementById('include-duplicates').checked;return ids.length?'/admin/api/outbound/pulls.csv?run_ids='+ids.join(',')+'&include_duplicates='+(dupes?'1':'0'):'';}}
             function sync(){{var ids=chosen(),download=document.getElementById('download-export'),url=downloadUrl();bar.hidden=!ids.length;summary.textContent=ids.length+' pull'+(ids.length===1?'':'s')+' selected';detail.textContent='Preview to confirm unique companies and duplicates.';download.setAttribute('aria-disabled',url?'false':'true');if(url)download.setAttribute('href',url);else download.removeAttribute('href');}}
             checks.forEach(function(c){{c.addEventListener('change',sync);}});
@@ -1159,8 +1241,14 @@ def outbound_lead_ops(request: Request) -> Response:
             document.getElementById('select-page').addEventListener('click',function(){{selectVisible(true);}});
             document.getElementById('clear-selection').addEventListener('click',function(){{checks.forEach(function(c){{c.checked=false;}});sync();preview.hidden=true;}});
             document.getElementById('check-all').addEventListener('change',function(e){{selectVisible(e.target.checked);}});
-            function filter(){{var q=document.getElementById('run-search').value.toLowerCase(),s=document.getElementById('run-status').value,from=document.getElementById('run-from').value,to=document.getElementById('run-to').value,v=document.getElementById('run-version').value;checks.forEach(function(c){{var r=c.closest('tr');r.style.display=((!q||r.dataset.recipe.toLowerCase().indexOf(q)>=0)&&(!s||r.dataset.status===s)&&(!from||r.dataset.date>=from)&&(!to||r.dataset.date<=to)&&(!v||r.dataset.version===v))?'':'none';}});}}
-            ['run-search','run-status','run-from','run-to','run-version'].forEach(function(id){{document.getElementById(id).addEventListener(id==='run-search'?'input':'change',filter);}});
+            var runPage=1, runPageSize=8;
+            function filter(){{var q=document.getElementById('run-search').value.toLowerCase(),s=document.getElementById('run-status').value,from=document.getElementById('run-from').value,to=document.getElementById('run-to').value,v=document.getElementById('run-version').value;var matched=[];checks.forEach(function(c){{var r=c.closest('tr');var show=(!q||(r.dataset.recipe||'').toLowerCase().indexOf(q)>=0)&&(!s||r.dataset.status===s)&&(!from||r.dataset.date>=from)&&(!to||r.dataset.date<=to)&&(!v||r.dataset.version===v);r.dataset.match=show?'1':'0';r.style.display=show?'':'none';if(show)matched.push(r);}});var pages=Math.max(1,Math.ceil(matched.length/runPageSize));if(runPage>pages)runPage=pages;matched.forEach(function(r,i){{var on=i>=(runPage-1)*runPageSize&&i<runPage*runPageSize;if(!on)r.style.display='none';}});var label=document.getElementById('run-page');if(label)label.textContent='Page '+runPage+' of '+pages+' · '+matched.length+' pulls';var prev=document.getElementById('run-prev'),next=document.getElementById('run-next');if(prev)prev.disabled=runPage<=1;if(next)next.disabled=runPage>=pages;}}
+            ['run-search','run-status','run-from','run-to','run-version'].forEach(function(id){{document.getElementById(id).addEventListener(id==='run-search'?'input':'change',function(){{runPage=1;filter();}});}});
+            var runPrev=document.getElementById('run-prev'), runNext=document.getElementById('run-next');
+            if(runPrev)runPrev.addEventListener('click',function(){{runPage=Math.max(1,runPage-1);filter();}});
+            if(runNext)runNext.addEventListener('click',function(){{runPage+=1;filter();}});
+            filter();
+            (function pageChanges(){{var body=document.getElementById('change-body');if(!body)return;var rows=[].slice.call(body.querySelectorAll('tr'));var page=1,size=8;function draw(){{var pages=Math.max(1,Math.ceil(rows.length/size));if(page>pages)page=pages;rows.forEach(function(r,i){{r.hidden=i<(page-1)*size||i>=page*size;}});var label=document.getElementById('change-page');if(label)label.textContent='Page '+page+' of '+pages;var prev=document.getElementById('change-prev'),next=document.getElementById('change-next');if(prev)prev.disabled=page<=1;if(next)next.disabled=page>=pages;}}var prev=document.getElementById('change-prev'),next=document.getElementById('change-next');if(prev)prev.addEventListener('click',function(){{page=Math.max(1,page-1);draw();}});if(next)next.addEventListener('click',function(){{page+=1;draw();}});draw();}})();
             document.getElementById('preview-export').addEventListener('click',function(){{var ids=chosen(),dupes=document.getElementById('include-duplicates').checked;preview.hidden=false;preview.textContent='Preparing preview...';fetch('/admin/api/outbound/pulls/preview?run_ids='+ids.join(',')+'&include_duplicates='+(dupes?'1':'0'))
               .then(function(r){{return r.json();}}).then(function(d){{var names=(d.sample||[]).map(function(x){{return x.brand||x.domain;}}).filter(Boolean).join(', ');preview.innerHTML='<b>'+d.exported_companies+' companies in this file</b> from '+d.selected_pulls+' pulls · '+d.source_rows+' source rows · '+d.duplicates_removed+' duplicates removed'+(d.unavailable_pulls?' · '+d.unavailable_pulls+' older pulls unavailable':'')+(names?'<br><small>Sample: '+esc(names)+'</small>':'')+'.';detail.textContent=d.exported_companies+' companies · '+d.duplicates_removed+' duplicates removed';}})
               .catch(function(){{preview.textContent='Preview could not be prepared. Your selection is still here.';}});}});
@@ -1455,6 +1543,9 @@ _LEADS_CSS = """
   .ld-table { border-collapse:collapse; width:100%; background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden; }
   .ld-table th, .ld-table td { text-align:left; padding:9px 12px; border-bottom:1px solid #f0f0f3; font-size:13px; white-space:nowrap; }
   .ld-table th { background:#fafafa; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; }
+  .ld-sort { appearance:none; border:0; background:transparent; color:inherit; font:inherit; letter-spacing:inherit; text-transform:inherit; cursor:pointer; padding:8px 0; min-height:44px; }
+  .ld-sort[aria-sort="ascending"]::after { content:" \\2191"; }
+  .ld-sort[aria-sort="descending"]::after { content:" \\2193"; }
   .ld-scroll { max-width:100%; overflow-x:auto; }
   .ld-A{color:#0a7d33;font-weight:800} .ld-B{color:#b54708;font-weight:800} .ld-C{color:#6b7280;font-weight:800}
   .ld-note { margin:12px 0 0; font-size:14px; color:rgba(43,54,68,.7); }
@@ -1497,6 +1588,14 @@ def outbound_leads(request: Request) -> Response:
         rows = "".join(
             f"<tr data-company='1' data-tier='{html.escape(str(l.get('tier') or ''), quote=True)}' "
             f"data-niche='{html.escape(str(l.get('niche') or ''), quote=True)}' "
+            f"data-brand='{html.escape(str(l.get('brand') or ''), quote=True)}' "
+            f"data-domain='{html.escape(str(l.get('domain') or ''), quote=True)}' "
+            f"data-country='{html.escape(str(l.get('country') or ''), quote=True)}' "
+            f"data-revenue='{int(l.get('revenue_cents') or 0)}' "
+            f"data-score='{html.escape(str(l.get('score') if l.get('score') is not None else ''), quote=True)}' "
+            f"data-recipe='{html.escape(str(l.get('recipe') or ''), quote=True)}' "
+            f"data-settings='{int(l.get('config_version') or 0)}' "
+            f"data-added='{html.escape(str(l.get('first_seen_at') or ''), quote=True)}' "
             f"data-search='{html.escape(' '.join(str(l.get(k) or '') for k in ('brand','domain','reason','recipe','country','niche')).lower(), quote=True)}'>"
             f"<td class='ld-{html.escape(str(l.get('tier') or '-'))}'>{html.escape(str(l.get('tier') or '-'))}</td>"
             f"<td>{html.escape(str(l.get('brand') or '-'))}</td>"
@@ -1510,7 +1609,7 @@ def outbound_leads(request: Request) -> Response:
             f"<td class='am-open'>{_opening_line_cell(l)}</td>"
             f"<td>{html.escape(str(l.get('recipe') or '-'))}</td>"
             f"<td>v{l.get('config_version') or 0}</td>"
-            f"<td>{html.escape(str(l.get('first_seen_at'))[:16])}</td>"
+            f"<td>{_friendly_when(l.get('first_seen_at'))}</td>"
             f"<td><a class='lo-btn' href='/admin/outbound/leak-report/"
             f"{html.escape(str(l.get('domain') or ''))}'>Leak report</a></td></tr>"
             for l in leads
@@ -1523,7 +1622,8 @@ def outbound_leads(request: Request) -> Response:
     else:
         rows = (
             "<tr><td colspan='14'>No companies stored yet. "
-            "Use Find fresh companies to create the first batch.</td></tr>"
+            "<a href='/admin/outbound/recipes'>Manage pull recipes</a> to run the morning automation "
+            "or pull a batch by hand.</td></tr>"
         )
 
     tier_line = " &middot; ".join(f"{k}: {v}" for k, v in sorted(tiers.items())) or "Not classified"
@@ -1570,9 +1670,19 @@ def outbound_leads(request: Request) -> Response:
 
         <div class="ld-scroll">
         <table class="ld-table">
-          <thead><tr><th>Tier</th><th>Brand</th><th>Domain</th><th>Niche</th><th>Country</th>
-          <th>Revenue/yr</th><th>Score</th><th>Amazon</th><th>Market</th><th>Opening line</th>
-          <th>Recipe</th><th>Settings</th><th>Sourced</th><th></th></tr></thead>
+          <thead><tr>
+          <th><button type="button" class="ld-sort" data-key="tier">Tier</button></th>
+          <th><button type="button" class="ld-sort" data-key="brand">Brand</button></th>
+          <th><button type="button" class="ld-sort" data-key="domain">Domain</button></th>
+          <th><button type="button" class="ld-sort" data-key="niche">Niche</button></th>
+          <th><button type="button" class="ld-sort" data-key="country">Country</button></th>
+          <th><button type="button" class="ld-sort" data-key="revenue">Revenue/yr</button></th>
+          <th><button type="button" class="ld-sort" data-key="score">Score</button></th>
+          <th>Amazon</th><th>Market</th><th>Opening line</th>
+          <th><button type="button" class="ld-sort" data-key="recipe">Recipe</button></th>
+          <th><button type="button" class="ld-sort" data-key="settings">Settings</button></th>
+          <th><button type="button" class="ld-sort" data-key="added">Date added</button></th>
+          <th></th></tr></thead>
           <tbody id="ld-body">{rows}</tbody>
         </table>
         </div>
@@ -1596,6 +1706,25 @@ def outbound_leads(request: Request) -> Response:
               count.textContent=visible.toLocaleString()+' compan'+(visible===1?'y':'ies')+' shown';
             }}
             q.addEventListener('input',apply); tier.addEventListener('change',apply); niche.addEventListener('change',apply);
+            var sortKey='', sortDir=1;
+            function compare(a,b){{
+              var ak=a.dataset[sortKey]||'', bk=b.dataset[sortKey]||'';
+              var an=Number(ak), bn=Number(bk);
+              if(ak!==''&&bk!==''&&String(an)!=='NaN'&&String(bn)!=='NaN'&&/^-?\\d+(\\.\\d+)?$/.test(ak)&&/^-?\\d+(\\.\\d+)?$/.test(bk)) return (an-bn)*sortDir;
+              return ak.localeCompare(bk)*sortDir;
+            }}
+            document.querySelectorAll('.ld-sort').forEach(function(btn){{
+              btn.setAttribute('aria-sort','none');
+              btn.addEventListener('click',function(){{
+                var key=btn.dataset.key;
+                if(sortKey===key) sortDir=-sortDir; else {{ sortKey=key; sortDir=1; }}
+                rows.sort(compare);
+                rows.forEach(function(row){{ row.parentNode.appendChild(row); }});
+                document.querySelectorAll('.ld-sort').forEach(function(other){{
+                  other.setAttribute('aria-sort', other===btn ? (sortDir>0?'ascending':'descending') : 'none');
+                }});
+              }});
+            }});
           }})();
         </script>
     """
@@ -2295,6 +2424,40 @@ async def outbound_release(request: Request) -> Response:
                     "sourced again on the next pull.") if released
                    else "There was nothing to release.",
     })
+
+
+@router.post("/admin/api/outbound/pull-time", response_class=JSONResponse)
+async def outbound_save_pull_time(request: Request) -> Response:
+    """Save the weekday morning pull hour. The job runs at the top of that hour, Mountain time."""
+    from sales_support_agent.services import outbound_settings as _st
+
+    form = await request.form()
+    raw = str(form.get("pull_time") or "").strip()
+    pieces = raw.split(":")
+    try:
+        hour = int(pieces[0])
+        minute = int(pieces[1]) if len(pieces) > 1 and pieces[1] != "" else 0
+    except ValueError:
+        return JSONResponse(status_code=400, content={"ok": False, "reason": "Choose a time."})
+    if hour < 0 or hour > 23:
+        return JSONResponse(status_code=400, content={"ok": False, "reason": "Choose an hour from 12:00 AM through 11:00 PM."})
+    if minute != 0:
+        return JSONResponse(status_code=400, content={"ok": False, "reason": "Pulls run at the top of the hour. Choose :00."})
+    user = get_current_user(request) or {}
+    try:
+        from sales_support_agent.models.database import get_engine
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        engine = None
+    result = _st.apply_changes(
+        engine,
+        {"morning.pull_hour": str(hour)},
+        note="Automatic pull time",
+        changed_by=str(user.get("email") or ""),
+    )
+    if result.get("ok"):
+        result["reason"] = f"Weekday pulls will run at {_pull_clock_label(hour)} Denver."
+    return JSONResponse(status_code=(200 if result.get("ok") else 400), content=result)
 
 
 @router.post("/admin/api/outbound/settings", response_class=JSONResponse)

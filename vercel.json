@@ -79,7 +79,7 @@
     },
     {
       "path": "/api/jobs/outbound-morning/run",
-      "schedule": "0 13,14 * * *"
+      "schedule": "0 * * * 1-5"
     },
     {
       "path": "/api/jobs/outbound-enrich/at-1415",

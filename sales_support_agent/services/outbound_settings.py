@@ -76,6 +76,19 @@ def ensure_tables(engine, *, force: bool = False) -> None:
     )
 
 
+def morning_pull_hour(engine, default: int = 7) -> int:
+    """Weekday pull hour in America/Denver. Invalid saved values stay on the default."""
+    raw = str(load_settings(engine).get("morning.pull_hour", default) or default)
+    token = raw.split(":", 1)[0].strip()
+    try:
+        hour = int(token)
+    except ValueError:
+        return default
+    if hour < 0 or hour > 23:
+        return default
+    return hour
+
+
 def load_settings(engine) -> dict[str, Any]:
     """Current overrides. Empty dict means 'use the shipped defaults'."""
     if engine is None:
