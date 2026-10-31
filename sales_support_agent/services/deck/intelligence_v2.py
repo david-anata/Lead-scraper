@@ -26,6 +26,7 @@ from typing import Any, Iterable
 TEMPLATE_VERSION = "intelligence_v2"
 LEGACY_TEMPLATE_VERSION = "agency_v1"
 SUPPORTED_TEMPLATE_VERSIONS = (TEMPLATE_VERSION, LEGACY_TEMPLATE_VERSION)
+DEFAULT_TEMPLATE_VERSION = LEGACY_TEMPLATE_VERSION
 DEFAULT_BOOKING_URL = "https://calendar.app.google/5TwjbbpmKaGAQuBk8"
 PLANS_FROM_LABEL = "Plans from $99/mo"
 TRIAL_LABEL = "Start your free 14-day trial"
@@ -39,7 +40,9 @@ _PLACEHOLDER_VALUES = {"", "n/a", "na", "none", "null", "0", "0.0", "$0", "$0.00
 
 def normalize_template_version(value: str | None) -> str:
     cleaned = str(value or "").strip().lower()
-    return cleaned if cleaned in SUPPORTED_TEMPLATE_VERSIONS else TEMPLATE_VERSION
+    # agency_v1 (run 1607 look, now with the #524 offer, methodology and case
+    # studies sections) is the default; intelligence_v2 stays opt-in.
+    return cleaned if cleaned in SUPPORTED_TEMPLATE_VERSIONS else DEFAULT_TEMPLATE_VERSION
 
 
 def _e(value: Any) -> str:
