@@ -4710,6 +4710,32 @@ def _has_verified_esign_artifact(session) -> bool:
     return bool(historical)
 
 
+def _control_room_arena_calendar(session: Any, cal_month: str) -> dict[str, Any] | None:
+    """Month availability for Today and Bookings. Empty when no event offering exists."""
+
+    from sales_support_agent.api.building_inquiry_workspace_router import (
+        _event_offering,
+        _parse_shown_month,
+    )
+    from sales_support_agent.integrations.building_google_calendar import (
+        BuildingGoogleCalendarClient,
+    )
+    from sales_support_agent.services.building_event_calendar import month_availability
+
+    offering = _event_offering(session)
+    if offering is None:
+        return None
+    shown = _parse_shown_month(cal_month) or datetime.now(
+        ZoneInfo("America/Denver")
+    ).date().replace(day=1)
+    return month_availability(
+        session,
+        calendar=BuildingGoogleCalendarClient(),
+        month=shown,
+        space_id=offering.space_id,
+    )
+
+
 @admin_router.get("/settings", response_class=HTMLResponse)
 @admin_router.get("/catalog", response_class=HTMLResponse)
 @admin_router.get("/contacts", response_class=HTMLResponse)
@@ -4726,6 +4752,7 @@ def building_control_room(
     lead_status: str = "open",
     lead_scope: str = "live",
     lead_sort: str = "priority",
+    cal_month: str = "",
     user: dict = Depends(require_tool("building.manage")),
 ) -> HTMLResponse:
     requested_view = request.url.path.rstrip("/").rsplit("/", 1)[-1]
@@ -5242,6 +5269,31 @@ def building_control_room(
                 ),
             },
         )
+        contact_name_by_id = {
+            row.id: str(row.full_name or "").strip() for row in contact_rows
+        }
+        inquiry_name_by_id = {
+            row.id: str(row.name or "").strip() for row in inquiry_rows
+        }
+        arena_view = None
+        if view in {"today", "bookings"}:
+            try:
+                arena_view = _control_room_arena_calendar(session, cal_month)
+            except Exception:
+                arena_view = None
+        from sales_support_agent.services.building_inquiry_workspace import (
+            render_readonly_arena_calendar,
+        )
+        arena_calendar_today = render_readonly_arena_calendar(
+            arena_view,
+            page_path="/admin/building",
+            anchor="arena-month-today",
+        )
+        arena_calendar_bookings = render_readonly_arena_calendar(
+            arena_view,
+            page_path="/admin/building/bookings",
+            anchor="arena-month-bookings",
+        )
         html_body = render_building_page(
             user=user,
             view=view,
@@ -5411,6 +5463,11 @@ def building_control_room(
                     "id": item.id,
                     "space_id": item.space_id,
                     "space_name": space_names.get(item.space_id, item.space_id),
+                    "customer_name": (
+                        contact_name_by_id.get(item.contact_id or "")
+                        or inquiry_name_by_id.get(item.inquiry_id or "")
+                        or ""
+                    ),
                     "kind": item.kind,
                     "starts_at": _mountain(item.starts_at).strftime(
                         "%b %d, %Y · %I:%M %p MT"
@@ -5694,6 +5751,8 @@ def building_control_room(
             csrf_token=building_csrf_token(user),
             notice=notice[:300],
             error=error[:300],
+            arena_calendar_today=arena_calendar_today,
+            arena_calendar_bookings=arena_calendar_bookings,
         )
         return HTMLResponse(html_body)
 

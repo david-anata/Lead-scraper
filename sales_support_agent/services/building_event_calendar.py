@@ -125,13 +125,29 @@ def _google_span(payload: dict[str, Any]) -> Optional[tuple[date, date]]:
     return None
 
 
+# Operators asked for a Sunday start. weekday() is Monday=0, so Sunday is 6.
+WEEKDAY_LABELS = (
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+)
+
+
+def _days_since_sunday(day: date) -> int:
+    return (day.weekday() + 1) % 7
+
+
 def month_grid(month: date) -> list[date]:
-    """Whole weeks covering the month, Monday first, as the page renders them."""
+    """Whole weeks covering the month, Sunday first, as the page renders them."""
 
     first = month.replace(day=1)
     last = first.replace(day=_calendar.monthrange(first.year, first.month)[1])
-    start = first - timedelta(days=first.weekday())
-    end = last + timedelta(days=(6 - last.weekday()))
+    start = first - timedelta(days=_days_since_sunday(first))
+    end = last + timedelta(days=(6 - _days_since_sunday(last)))
     return [
         start + timedelta(days=offset) for offset in range((end - start).days + 1)
     ]

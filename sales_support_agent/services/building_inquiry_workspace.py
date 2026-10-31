@@ -12,6 +12,7 @@ from sales_support_agent.services.ui_shell import render_operator_document
 from sales_support_agent.services.building_lead_intake import (
     event_qualification_missing,
 )
+from sales_support_agent.services.building_event_calendar import WEEKDAY_LABELS
 from sales_support_agent.services.building_event_journey import (
     resolve_event_next_action,
 )
@@ -43,8 +44,13 @@ DETAIL_LABELS = {
     "notes": "Event needs and notes",
     "requestedOfferingReference": "Requested offering",
     "landingPage": "Landing page",
+    "firstLandingPage": "First landing page",
+    "firstCapturedAt": "First captured at",
     "utmCampaign": "Campaign",
 }
+
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_ISO_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
 
 INTERVIEW_SECTIONS = (
     ("Event and timing", "Confirm the outcome, date choices, and complete access window.", (
@@ -109,6 +115,120 @@ def _when(value: datetime | None) -> str:
         return "Not recorded"
     local = value if value.tzinfo else value.replace(tzinfo=ZoneInfo("UTC"))
     return local.astimezone(MOUNTAIN).strftime("%b %d, %Y · %I:%M %p MT")
+
+
+def detail_label(key: str) -> str:
+    """Turn a stored submission key into the words an operator should read."""
+
+    known = DETAIL_LABELS.get(str(key))
+    if known:
+        return known
+    spaced = _CAMEL_BOUNDARY.sub(" ", str(key)).replace("_", " ").strip()
+    return spaced[:1].upper() + spaced[1:] if spaced else str(key)
+
+
+def detail_value(value: Any) -> str:
+    """Show an ISO timestamp as Mountain time. Leave ordinary text alone."""
+
+    text = str(value if value is not None else "").strip()
+    if not _ISO_TIMESTAMP.match(text):
+        return text
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    return _when(parsed)
+
+
+def month_token(value: Any) -> str:
+    """Month links use YYYY-MM, which is what the inquiry page parses."""
+
+    if isinstance(value, datetime):
+        value = value.date()
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m")
+    text = str(value or "").strip()
+    return text[:7]
+
+
+def render_readonly_arena_calendar(
+    view: dict[str, Any] | None,
+    *,
+    page_path: str,
+    anchor: str,
+) -> str:
+    """The same Arena month, read only, for Today and Bookings.
+
+    Day links stay on the inquiry that is taking the date. Here the grid is
+    only so an operator can see what is open before they open a lead.
+    """
+
+    if not view:
+        return (
+            '<p class="form-note">No event offering is set up yet, so the Arena '
+            "calendar is not available. Add one under Building settings.</p>"
+        )
+    shown = dict(view)
+
+    def href(value: Any) -> str:
+        return (
+            f"{page_path}?cal_month={_esc(month_token(value))}#{_esc(anchor)}"
+        )
+
+    headers = "".join(
+        f'<th scope="col"><abbr title="{day}">{day[:3]}</abbr></th>'
+        for day in WEEKDAY_LABELS
+    )
+    cells: list[str] = []
+    for cell in shown.get("cells", []):
+        label, tone = _DAY_STATES.get(str(cell.get("state")), ("Open", "open"))
+        classes = [f"lead-cal__day lead-cal__day--{tone}"]
+        if not cell.get("in_month"):
+            classes.append("is-outside")
+        if cell.get("is_today"):
+            classes.append("is-today")
+        if cell.get("is_past"):
+            classes.append("is-past")
+        inner = f'<span class="lead-cal__num">{_esc(cell.get("day"))}</span>'
+        note = str(cell.get("note") or "")
+        if note:
+            inner += f'<span class="lead-cal__note">{_esc(note)}</span>'
+        described = f"{cell.get('iso')} · {note or label}"
+        cells.append(
+            f'<td class="{" ".join(classes)}">'
+            f'<span title="{_esc(described)}">{inner}</span></td>'
+        )
+    weeks = "".join(
+        "<tr>" + "".join(cells[index:index + 7]) + "</tr>"
+        for index in range(0, len(cells), 7)
+    )
+    legend = "".join(
+        f'<span class="lead-cal__key lead-cal__key--{tone}">{_esc(label)}</span>'
+        for label, tone in (
+            ("Open", "open"), ("Held", "pending"), ("Booked", "booked"),
+            ("Busy elsewhere", "external"), ("Next to a full day", "headsup"),
+        )
+    )
+    warning = ""
+    if str(shown.get("calendar_status")) != "connected":
+        warning = (
+            '<p class="lead-cal__warning">The Anata Events calendar could not be '
+            "read, so only Agent's own holds are shown. An open day is not "
+            "confirmed until that calendar is reachable.</p>"
+        )
+    return (
+        f'<div class="lead-cal" id="{_esc(anchor)}">'
+        f'<div class="lead-cal__bar">'
+        f'<a class="lead-cal__nav" href="{href(shown.get("previous"))}" '
+        f'aria-label="Previous month">←</a>'
+        f'<strong>{_esc(shown.get("label"))}</strong>'
+        f'<a class="lead-cal__nav" href="{href(shown.get("next"))}" '
+        f'aria-label="Next month">→</a></div>'
+        f'<table class="lead-cal__grid" aria-label="Arena availability for '
+        f'{_esc(shown.get("label"))}"><thead><tr>{headers}</tr></thead>'
+        f"<tbody>{weeks}</tbody></table>"
+        f'<div class="lead-cal__legend">{legend}</div>{warning}</div>'
+    )
 
 
 def _clock_value(raw: Any) -> str:
@@ -185,7 +305,7 @@ def _calendar_section(
     base = f"/admin/building/inquiries/{inquiry_id}"
 
     def month_link(value: Any, label: str, arrow: str) -> str:
-        target = f"{base}?month={_esc(value)}"
+        target = f"{base}?month={_esc(month_token(value))}"
         if selected:
             target += f"&date={_esc(selected)}"
         return (
@@ -193,12 +313,10 @@ def _calendar_section(
             f'aria-label="{_esc(label)}">{arrow}</a>'
         )
 
+    shown_month = _esc(month_token(view.get("month")))
     headers = "".join(
-        f"<th scope=\"col\"><abbr title=\"{day}\">{day[:3]}</abbr></th>"
-        for day in (
-            "Monday", "Tuesday", "Wednesday", "Thursday",
-            "Friday", "Saturday", "Sunday",
-        )
+        f'<th scope="col"><abbr title="{day}">{day[:3]}</abbr></th>'
+        for day in WEEKDAY_LABELS
     )
     cells: list[str] = []
     for cell in view.get("cells", []):
@@ -223,7 +341,7 @@ def _calendar_section(
         described = f"{cell.get('iso')} · {note or label}"
         if cell.get("selectable"):
             body = (
-                f'<a href="{base}?month={_esc(view.get("month"))}'
+                f'<a href="{base}?month={shown_month}'
                 f'&date={_esc(cell.get("iso"))}#date-review" '
                 f'title="{_esc(described)}">{inner}</a>'
             )
@@ -793,7 +911,7 @@ def render_inquiry_workspace(
     submitted = [
         ("Preferred event date", data.get("preferred_date")),
         *[
-            (DETAIL_LABELS.get(str(key), str(key).replace("_", " ").title()), value)
+            (detail_label(str(key)), detail_value(value))
             for key, value in details.items()
             if key != "eventHandoff" and str(value or "").strip()
         ],

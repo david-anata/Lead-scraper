@@ -230,7 +230,7 @@ def create_assisted_inquiry_from_control_room(
     request: Request,
     kind: str = Form(...),
     name: str = Form(...),
-    email: str = Form(...),
+    email: str = Form(""),
     phone: str = Form(""),
     preferred_date: str = Form(""),
     offering_id: str = Form(""),
@@ -248,6 +248,8 @@ def create_assisted_inquiry_from_control_room(
         return _redirect(
             error="Marketplace and Eventective leads require the original message or listing reference."
         )
+    if not email.strip() and not phone.strip():
+        return _redirect(error="Add an email or a phone number.")
     identity = (
         f"{normalized_source}:{normalized_reference or uuid4()}:{email.strip().lower()}"
     )
@@ -257,8 +259,9 @@ def create_assisted_inquiry_from_control_room(
         request.state.building_inquiry_actor = _actor(user)
         # Staff intake is record creation, not customer outreach. The operator
         # can review the lead and deliberately use the workspace communication
-        # actions afterward.
+        # actions afterward. A phone number is enough when email is not known yet.
         request.state.building_inquiry_suppress_initial_delivery = True
+        request.state.building_inquiry_allow_blank_email = True
         create_inquiry(
             InquiryInput(
                 kind=kind,

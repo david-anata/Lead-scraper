@@ -286,7 +286,7 @@ def _offering_public_payload(
 class InquiryInput(BaseModel):
     kind: Literal["tour", "event", "workspace"]
     name: str = Field(min_length=1, max_length=120)
-    email: str = Field(min_length=3, max_length=255)
+    email: str = Field(default="", max_length=255)
     phone: str = Field(default="", max_length=128)
     preferred_date: date | None = None
     offering_id: str | None = Field(default=None, max_length=64)
@@ -299,7 +299,9 @@ class InquiryInput(BaseModel):
     @field_validator("email")
     @classmethod
     def valid_email(cls, value: str) -> str:
-        normalized = value.strip().lower()
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            return ""
         if not EMAIL_RE.fullmatch(normalized):
             raise ValueError("Enter a valid email address.")
         return normalized
@@ -718,6 +720,15 @@ def create_inquiry(
     _require_building_key(request, x_internal_api_key)
     if not payload.consent_to_contact:
         raise HTTPException(status_code=422, detail="Contact consent is required.")
+    staff_intake = bool(
+        getattr(request.state, "building_inquiry_allow_blank_email", False)
+    )
+    if not payload.email and not staff_intake:
+        raise HTTPException(status_code=422, detail="Enter a valid email address.")
+    if staff_intake and not payload.email and not payload.phone.strip():
+        raise HTTPException(
+            status_code=422, detail="Add an email or a phone number."
+        )
     dedupe_key = str(idempotency_key or "").strip()
     if not dedupe_key or len(dedupe_key) > 128:
         raise HTTPException(status_code=400, detail="A valid Idempotency-Key is required.")
@@ -759,17 +770,19 @@ def create_inquiry(
                     ),
                 }
 
-        recent_match = session.execute(
-            select(BuildingInquiry)
-            .where(
-                BuildingInquiry.email == payload.email,
-                BuildingInquiry.kind == payload.kind,
-                BuildingInquiry.offering_id == payload.offering_id,
-                BuildingInquiry.preferred_date == payload.preferred_date,
-                BuildingInquiry.created_at >= _now() - timedelta(minutes=15),
-            )
-            .order_by(BuildingInquiry.created_at.desc())
-        ).scalars().first()
+        recent_match = None
+        if payload.email:
+            recent_match = session.execute(
+                select(BuildingInquiry)
+                .where(
+                    BuildingInquiry.email == payload.email,
+                    BuildingInquiry.kind == payload.kind,
+                    BuildingInquiry.offering_id == payload.offering_id,
+                    BuildingInquiry.preferred_date == payload.preferred_date,
+                    BuildingInquiry.created_at >= _now() - timedelta(minutes=15),
+                )
+                .order_by(BuildingInquiry.created_at.desc())
+            ).scalars().first()
         if recent_match is not None:
             return {
                 "ok": True,
