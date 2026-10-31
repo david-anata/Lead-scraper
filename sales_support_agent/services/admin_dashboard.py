@@ -5567,8 +5567,8 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
                   <span class="intake-badge">Optional</span>
                 </span>
                 <select name="template_version">
-                  <option value="intelligence_v2" selected>Anata Intelligence (v2, default)</option>
-                  <option value="agency_v1">Agency strategy deck (v1)</option>
+                  <option value="agency_v1" selected>Agency strategy deck (default)</option>
+                  <option value="intelligence_v2">Anata Intelligence (v2)</option>
                 </select>
               </label>
               <label class="intake-label">
@@ -5682,6 +5682,24 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
                   <span>Mockup URL</span>
                 </span>
                 <input type="url" name="creative_mockup_url" placeholder="https://www.canva.com/design/..." />
+              </label>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Case study link</span>
+                  <span class="intake-badge">Optional</span>
+                </span>
+                <input type="url" name="case_study_url" placeholder="https://anatainc.com/case-studies/..." />
+                <small class="intake-help">Shown on the Case studies slide as the case study picked for this brand.</small>
+              </label>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Deck template</span>
+                  <span class="intake-badge">Optional</span>
+                </span>
+                <select name="template_version">
+                  <option value="agency_v1" selected>Agency strategy deck (default)</option>
+                  <option value="intelligence_v2">Anata Intelligence (v2)</option>
+                </select>
               </label>
             </fieldset>
             <fieldset class="offer-toggle-group">

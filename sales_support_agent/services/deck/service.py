@@ -52,6 +52,7 @@ from sales_support_agent.services.deck.brand_assets import (
 )
 from sales_support_agent.services.deck.dataset import (  # noqa: F401
     relevant_keyword_phrases,
+    pick_niche_keyword,
     DeckDataset,
     DeckGenerationResult,
     _build_advertising_summary,
@@ -766,13 +767,12 @@ class DeckGenerationService:
         )
         # Skip top-volume phrases that share no word with the listing (run
         # 1607 labelled a car air freshener "2014 gmc sierra 1500 accessories").
-        _relevant_seed = relevant_keyword_phrases(
-            _seed_phrases,
-            reference_text=" ".join(
-                str(part) for part in (getattr(hero_product, "title", ""), category_label) if part
-            ),
+        # Then prefer the most niche-specific phrase among the top-volume ones
+        # ("beaded earrings for women" over "earrings for women").
+        _seed_reference = " ".join(
+            str(part) for part in (getattr(hero_product, "title", ""), category_label) if part
         )
-        _niche_keyword_raw = _relevant_seed[0] if _relevant_seed else ""
+        _niche_keyword_raw = pick_niche_keyword(_seed_phrases, reference_text=_seed_reference)
         _competitor_brands = {
             (p.brand or "").strip()
             for p in xray_report.products
@@ -830,8 +830,9 @@ class DeckGenerationService:
             brand_name=target_brand,
             target_title=display_title,
         )
-        cro_recommendations = _build_cro_recommendations(target_row, primary_competitors)
-        creative_recommendations = _build_creative_recommendations(target_row, primary_competitors)
+        _category_text = " ".join(part for part in (resolved_category_label, category_label or "", display_title) if part)
+        cro_recommendations = _build_cro_recommendations(target_row, primary_competitors, category_text=_category_text)
+        creative_recommendations = _build_creative_recommendations(target_row, primary_competitors, category_text=_category_text)
         channel_sections = _build_channel_sections(channels)
         competitor_rows = [["Product", "ASIN", "Brand", "Price", "Revenue", "Market share", "Reviews", "BSR", "Fulfillment"]]
         for product in xray_report.products[:10]:
@@ -1414,46 +1415,24 @@ class DeckGenerationService:
             target_reference_label = _target_reference_label(target)
         recommended_plan_html = ""
         if include_recommended_plan:
-            # PR35: feature the FIRST offer card. Design has a "Recommended"
-            # pill on the lead card + sky-deep filled CTA; subsequent cards
-            # render plain with a navy filled CTA.
-            offer_html = "".join(
-                _render_offer_card(card, featured=(idx == 0))
-                for idx, card in enumerate(offer_cards)
+            # agency_v1 offer slide carrying the #524 offer content (free
+            # 14-day trial, plans from $99/mo) ahead of the operator cards.
+            from sales_support_agent.services.deck.agency_sections import render_offer_section
+            from sales_support_agent.services.deck.intelligence_v2 import resolve_cta_urls
+
+            offer_html = "".join(_render_offer_card(card, featured=False) for card in offer_cards)
+            recommended_plan_html = render_offer_section(
+                offer_cards_html=offer_html,
+                urls=resolve_cta_urls(self.settings),
+                generated=datetime.now(timezone.utc).date(),
             )
-            # PR35: Replace the legacy `.plan-grid` (3 stacked cards with
-            # eyebrow-subtle / h3 / p) with the design's `.next-steps` 3-tile
-            # horizontal grid (Step 1 = sky-deep CTA tile + 2 plain tiles).
-            _impact = html.escape(dataset.text_fields.get("expected_impact_summary") or "")
-            recommended_plan_html = f"""
-    <section class="slide slide-offers" data-screen-label="08 Proposed offers">
-      <header class="slide-head">
-        <div class="heading-stack">
-          <p class="eyebrow">Proposed offers and next step</p>
-          <h2 class="slide-title">Choose your engagement</h2>
-        </div>
-        <p class="caption">Choose full agency support with DFY, or platform access with Anata onboarding through DYI.</p>
-      </header>
-      {f'<div class="offer-grid">{offer_html}</div>' if offer_html else ""}
-      <div class="next-steps">
-        <div class="next-step cta">
-          <span class="num">Step 1</span>
-          <h4>Pick your engagement</h4>
-          <p>Choose DFY for Anata-managed execution or DYI to run the platform yourself with our onboarding.</p>
-          <a class="link" href="https://anatainc.com/contact" target="_blank" rel="noreferrer">Discuss your engagement →</a>
-        </div>
-        <div class="next-step">
-          <span class="num">Step 2</span>
-          <h4>Why now</h4>
-          <p>{_impact or "The category window is open — review density is within reach of the leaders, and the conversion mechanics are the unlock."}</p>
-        </div>
-        <div class="next-step">
-          <span class="num">Step 3</span>
-          <h4>What happens next</h4>
-          <p>DFY: align scope and schedule kickoff. DYI: confirm your platform subscription and schedule onboarding, then your team takes over execution.</p>
-        </div>
-      </div>
-    </section>"""
+        from sales_support_agent.services.deck.agency_sections import (
+            render_case_studies_section,
+            render_methodology_section,
+        )
+
+        methodology_html = render_methodology_section()
+        case_studies_html = render_case_studies_section(case_study_url)
         target_brand_display = str(target.get("brand_name") or target.get("brand") or "Prospect brand").strip()
         cover_title = _trim_text(_clean_listing_title(str(target.get("title", "") or title)), 40)
 
@@ -1752,7 +1731,7 @@ class DeckGenerationService:
         # PR33: optional sections that aren't included render as `.is-disabled`
         # rail items (30% opacity, click is a no-op) per the design handoff,
         # rather than disappearing entirely. Keeps the wayfinding stable so
-        # AEs always see the same 9-item rail across decks.
+        # AEs always see the same 11-item rail across decks.
         def _rail_item(
             href: str,
             num: str,
@@ -1789,7 +1768,9 @@ class DeckGenerationService:
             + _rail_item("sec-05", "05", "Growth plan", optional=True, disabled=not _has_growth)
             + _rail_item("sec-06", "06", "Conversion & PDP")
             + _rail_item("sec-07", "07", "Service offerings")
-            + _rail_item("sec-08", "08", "Proposed offers", optional=True, disabled=not include_recommended_plan)
+            + _rail_item("sec-08", "08", "How it works")
+            + _rail_item("sec-09", "09", "Case studies")
+            + _rail_item("sec-10", "10", "Offer & pricing", optional=True, disabled=not include_recommended_plan)
         )
 
         def _section_divider(anchor: str, num: str, eyebrow: str, head: str, thesis: str, bullets: list[str]) -> str:
@@ -1849,11 +1830,23 @@ class DeckGenerationService:
             "Five channels, one contract. Each tab shows the operating commitments we make per channel.",
             ["Amazon", "TikTok · Shopify", "3PL · Shipping OS"],
         )
+        _div_method = _section_divider(
+            "sec-08", "08", "Section · How it works",
+            "One operating loop: Sync, Analyze, Decide, Act, Confirm",
+            "How Anata Intelligence turns marketplace data into actions every day, with human approval on higher-risk changes.",
+            ["5-step loop", "Daily work", "Approval guardrails"],
+        )
+        _div_proof = _section_divider(
+            "sec-09", "09", "Section · Case studies",
+            "Brands that run on Anata",
+            "Published client results, plus the case study picked for this brand.",
+            ["Client results", "Published sources"],
+        )
         _div_offers = _section_divider(
-            "sec-08", "08", "Section · Proposed offers · Optional",
-            "If you're ready, here's what's next",
-            "Two engagement models. The recommended one aligns our incentives with your growth.",
-            ["2 offer cards", "Why now", "What happens next"],
+            "sec-10", "10", "Section · Offer & pricing · Optional",
+            "Start with the platform. Add people when you want them.",
+            "A free 14-day trial, then plans from $99/mo. Add Anata's operators for done-for-you execution.",
+            ["Free 14-day trial", "Operator add-ons", "Next steps"],
         ) if include_recommended_plan else ""
         _meta_title = html.escape(str(share_preview.get("title") or title), quote=True)
         _meta_description = html.escape(str(share_preview.get("description") or _exec_sub_text or ""), quote=True)
@@ -2114,7 +2107,15 @@ class DeckGenerationService:
     {_div_offerings}
     {offering_html}
 
-    <!-- ===== 08 PROPOSED OFFERS (optional) ===== -->
+    <!-- ===== 08 HOW IT WORKS ===== -->
+    {_div_method}
+    {methodology_html}
+
+    <!-- ===== 09 CASE STUDIES ===== -->
+    {_div_proof}
+    {case_studies_html}
+
+    <!-- ===== 10 OFFER & PRICING (optional) ===== -->
     {_div_offers}
     {recommended_plan_html}
 

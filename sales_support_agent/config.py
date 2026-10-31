@@ -175,6 +175,8 @@ class Settings:
     clickup_ap_list_id: str = "901104880724"
     clickup_ar_list_id: str = "901113065688"
     building_site_intake_key: str = ""
+    # Private deck API (/api/decks/generate). Empty = route disabled.
+    deck_api_key: str = ""
     building_public_base_url: str = "https://anatabuilding.com"
     building_default_lead_owner: str = ""
     building_response_sla_hours: int = 4
@@ -533,6 +535,7 @@ def load_settings() -> Settings:
         lead_build_url=os.getenv("LEAD_BUILD_URL", "").strip().rstrip("/"),
         sales_agent_db_url=(os.getenv("SALES_AGENT_DB_URL", "").strip() or _default_db_url()),
         internal_api_key=os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip(),
+        deck_api_key=os.getenv("DECK_API_KEY", "").strip(),
         marketing_site_intake_key=os.getenv("MARKETING_SITE_INTAKE_KEY", "").strip(),
         building_site_intake_key=(
             os.getenv("BUILDING_SITE_INTAKE_KEY", "").strip()

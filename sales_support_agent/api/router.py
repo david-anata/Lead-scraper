@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 import secrets
@@ -2941,6 +2942,66 @@ async def internal_admin_generate_deck(
         include_recommended_plan=include_recommended_plan,
         include_growth_plan=include_growth_plan,
         trigger="internal_api",
+    )
+
+
+def _enforce_deck_api_key(request: Request, provided: Optional[str]) -> None:
+    """Auth for the private deck API.
+
+    Disabled (404) until DECK_API_KEY is set; wrong/missing key -> 401.
+    Constant-time compare so the key can't be guessed byte by byte.
+    """
+    configured = getattr(request.app.state.settings, "deck_api_key", "") or ""
+    if not configured:
+        raise HTTPException(status_code=404, detail="Not found.")
+    if not provided or not hmac.compare_digest(provided.encode("utf-8"), configured.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Invalid deck API key.")
+
+
+@router.post("/api/decks/generate", response_model=ApiMessage)
+async def deck_api_generate_deck(
+    request: Request,
+    x_deck_api_key: Optional[str] = Header(default=None),
+    csv_files: list[UploadFile] = File(default=[]),
+    competitor_xray_csv: list[UploadFile] = File(default=[]),
+    target_xray_csv: Optional[UploadFile] = File(default=None),
+    keyword_xray_csv: list[UploadFile] = File(default=[]),
+    cerebro_csv: Optional[UploadFile] = File(default=None),
+    word_frequency_csv: Optional[UploadFile] = File(default=None),
+    target_product_input: str = Form(default=""),
+    channels: list[str] = Form(default=[]),
+    creative_mockup_url: str = Form(default=""),
+    case_study_url: str = Form(default=""),
+    offers: list[str] = Form(default=[]),
+    offer_payload_json: str = Form(default=""),
+    include_recommended_plan: bool = Form(default=True),
+    include_growth_plan: bool = Form(default=True),
+) -> ApiMessage:
+    """Private deck API: the admin Manual upload, behind DECK_API_KEY.
+
+    Thin entry point only. It calls the exact same `_run_generate_deck` body
+    as /admin/api/generate-deck with the same trigger, so it creates the same
+    automation_runs record, the same deck, and the run shows up in
+    Admin > Sales > Sales assets exactly like a manual upload.
+    """
+    _enforce_deck_api_key(request, x_deck_api_key)
+    return await _run_generate_deck(
+        request,
+        csv_files=csv_files,
+        competitor_xray_csv=competitor_xray_csv,
+        target_xray_csv=target_xray_csv,
+        keyword_xray_csv=keyword_xray_csv,
+        cerebro_csv=cerebro_csv,
+        word_frequency_csv=word_frequency_csv,
+        target_product_input=target_product_input,
+        channels=channels,
+        creative_mockup_url=creative_mockup_url,
+        case_study_url=case_study_url,
+        offers=offers,
+        offer_payload_json=offer_payload_json,
+        include_recommended_plan=include_recommended_plan,
+        include_growth_plan=include_growth_plan,
+        trigger="admin_dashboard",
     )
 
 

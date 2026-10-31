@@ -506,20 +506,55 @@ def _build_seo_recommendations(
     if xray_report.under_75_reviews_count:
         recommendations.append("Push harder into keyword relevance while review barriers are still low across several competitors.")
     return recommendations[:4]
-def _build_cro_recommendations(target_row: XrayProduct | None, competitors: list[XrayProduct]) -> list[str]:
+_INGREDIENT_CATEGORY_TOKENS = frozenset(
+    "supplement supplements vitamin vitamins capsule capsules gummy gummies tablet tablets softgel softgels "
+    "powder protein probiotic probiotics collagen creatine electrolyte electrolytes nootropic nootropics "
+    "burner thermogenic multivitamin herbal extract keto omega magnesium zinc melatonin ashwagandha "
+    "serum moisturizer cream lotion cleanser shampoo conditioner skincare sunscreen balm "
+    "snack snacks tea coffee drink beverage food sweetener".split()
+)
+
+
+def is_ingredient_category(*texts: str) -> bool:
+    """True when the listing sells something whose ingredients drive the buy
+    (supplements, food and drink, skin and hair care). Used to keep
+    ingredient/clinical wording out of decks for jewelry, apparel, home goods
+    and other non-consumable categories."""
+
+    tokens = set()
+    for text in texts:
+        tokens.update(re.findall(r"[a-z]+", str(text or "").lower()))
+    return bool(tokens & _INGREDIENT_CATEGORY_TOKENS)
+
+
+def _build_cro_recommendations(
+    target_row: XrayProduct | None,
+    competitors: list[XrayProduct],
+    *,
+    category_text: str = "",
+) -> list[str]:
+    ingredient_led = is_ingredient_category(category_text, target_row.title if target_row else "")
+    detail_step = "ingredient context" if ingredient_led else "product details (materials, size and fit)"
     recommendations = [
         "Simplify the above-the-fold value proposition so the primary outcome is readable in under five seconds.",
-        "Tighten the PDP information hierarchy: hero image, proof, ingredient context, usage, and trust markers should read in that order.",
+        f"Tighten the PDP information hierarchy: hero image, proof, {detail_step}, usage, and trust markers should read in that order.",
     ]
     if target_row and (target_row.review_count or 0) < 75:
         recommendations.append("Compensate for the lighter review base with stronger proof blocks, FAQ coverage, and comparison framing.")
     if competitors:
         recommendations.append(f"{_trim_text(competitors[0].title, 30)} does a better job of showing proof and hierarchy early; replicate that clarity in the first image stack.")
     return recommendations[:4]
-def _build_creative_recommendations(target_row: XrayProduct | None, competitors: list[XrayProduct]) -> list[str]:
+def _build_creative_recommendations(
+    target_row: XrayProduct | None,
+    competitors: list[XrayProduct],
+    *,
+    category_text: str = "",
+) -> list[str]:
+    ingredient_led = is_ingredient_category(category_text, target_row.title if target_row else "")
+    shots = "clinical or generic packaging shots" if ingredient_led else "plain product-on-white shots"
     recommendations = [
         "Rebuild the hero image sequence so each panel communicates one claim, one proof point, or one use case.",
-        "Add visual comparison and product-context frames instead of relying only on clinical or generic packaging shots.",
+        f"Add visual comparison and product-context frames instead of relying only on {shots}.",
     ]
     if competitors:
         recommendations.append(f"{_trim_text(competitors[0].title, 30)} uses a stronger visual proof sequence; mirror that pacing in the refreshed creative set.")
@@ -860,6 +895,74 @@ def relevant_keyword_phrases(phrases: list[str], *, reference_text: str) -> list
     return kept or list(phrases)
 
 
+# Audience words ("for women") match almost every listing in a category, so
+# they never count as evidence that a keyword is on-niche.
+_AUDIENCE_TOKENS = frozenset(
+    "women woman womens men mens man girl girls boy boys kid kids teen teens adult adults "
+    "baby babies toddler toddlers unisex lady ladies gift gifts".split()
+)
+
+
+def _niche_tokens(text: str) -> set[str]:
+    return {tok for tok in _relevance_tokens(text) if tok not in _AUDIENCE_TOKENS}
+
+
+def keyword_relevance(phrase: str, *, reference_text: str) -> int:
+    """How many meaningful listing/category words a keyword shares."""
+
+    return len(_niche_tokens(phrase) & _niche_tokens(reference_text))
+
+
+def niche_keyword_phrases(phrases: list[str], *, reference_text: str) -> list[str]:
+    """Keywords specific to this listing's niche, in their original order.
+
+    A keyword is on-niche when it shares at least two meaningful words with
+    the listing title + category label (one word for one-word keywords).
+    So for "Beaded Hoop Earrings for Women": "beaded earrings" and "hoop
+    earrings" stay, "statement earrings" and "feather earrings" go.
+    Falls back to ``relevant_keyword_phrases`` when the reference is too thin
+    to judge (fewer than three meaningful words).
+    """
+
+    reference = _niche_tokens(reference_text)
+    if len(reference) < 3:
+        return relevant_keyword_phrases(phrases, reference_text=reference_text)
+    kept = []
+    for phrase in phrases:
+        tokens = _niche_tokens(phrase)
+        if tokens and len(tokens & reference) >= min(2, len(tokens)):
+            kept.append(phrase)
+    return kept
+
+
+def pick_niche_keyword(phrases: list[str], *, reference_text: str, pool: int = 50) -> str:
+    """Main keyword: the most listing-specific phrase among the top-volume ones.
+
+    ``phrases`` arrive in search-volume order. Among the first ``pool`` we take
+    the phrase sharing the most listing/category words (minus half a point per
+    word the listing doesn't use), keeping volume order
+    on ties, so "beaded earrings for women" beats the broader "earrings for
+    women" on a beaded-earring listing.
+    """
+
+    candidates = [p for p in phrases[:pool] if str(p or "").strip()]
+    if not candidates:
+        return ""
+    best_index, best_score = 0, -1
+    for index, phrase in enumerate(candidates):
+        tokens = _niche_tokens(phrase)
+        overlap = keyword_relevance(phrase, reference_text=reference_text)
+        # Words the listing doesn't use ("half hoop" on a beaded hoop
+        # listing) point at a neighbouring niche, so they cost half a point.
+        score = overlap - 0.5 * len(tokens - _niche_tokens(reference_text)) if overlap else 0
+        if score > best_score:
+            best_index, best_score = index, score
+    if best_score <= 0:
+        relevant = relevant_keyword_phrases(candidates, reference_text=reference_text)
+        return relevant[0] if relevant else candidates[0]
+    return candidates[best_index]
+
+
 def resolve_category_label(
     *,
     user_input: str,
@@ -936,6 +1039,7 @@ def _build_search_insights(
     cerebro_report: Helium10CerebroReport | None,
     word_frequency_report: WordFrequencyReport | None,
     category_label: str = "",
+    reference_text: str = "",
 ) -> dict[str, list[str]]:
     # PR48: filter the candidate keyword pool by category relevance BEFORE
     # computing hits/misses. Without this, high-volume but off-category terms
@@ -948,9 +1052,15 @@ def _build_search_insights(
     # widening, a target with mostly-spillover top-10 (Zantrex's cerebro is a
     # good example: protein/creatine/cortisol/waist-trainer dominate the top
     # by volume) would surface only 1-2 relevant suggestions or none.
-    pool_size = 60 if category_buckets else 10
+    pool_size = 60
     raw_keywords = _build_title_targets(keyword_report, cerebro_report, pool_size=pool_size)
-    keywords = [k for k in raw_keywords if _phrase_is_category_relevant(k, category_buckets)][:10]
+    keywords = [k for k in raw_keywords if _phrase_is_category_relevant(k, category_buckets)]
+    # Keep the "missing keywords" lists on-niche: a beaded-earring listing
+    # should not be told to add "statement earrings" or "feather earrings".
+    niche_reference = " ".join(part for part in (reference_text or title, category_label) if part)
+    if niche_reference.strip():
+        keywords = niche_keyword_phrases(keywords, reference_text=niche_reference)
+    keywords = keywords[:10]
     title_lc = _clean_listing_title(title).lower()
     description_lc = _clean_listing_title(description).lower()
     copy_targets = _build_copy_targets(
@@ -962,6 +1072,9 @@ def _build_search_insights(
     # bullets/description "missing" list.
     if category_buckets:
         copy_targets = [t for t in copy_targets if _phrase_is_category_relevant(str(t.get("label", "")), category_buckets)]
+    if niche_reference.strip():
+        on_niche = set(niche_keyword_phrases([str(t.get("label", "")) for t in copy_targets], reference_text=niche_reference))
+        copy_targets = [t for t in copy_targets if str(t.get("label", "")) in on_niche]
     return {
         "title_hits": [phrase for phrase in keywords if phrase.lower() in title_lc],
         "title_misses": [phrase for phrase in keywords if phrase.lower() not in title_lc],
