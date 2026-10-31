@@ -39,7 +39,7 @@ DENVER = ZoneInfo("America/Denver")
 PITCH_POINTS = (
     "Free 14-day trial.",
     "Plans from $99/mo.",
-    "Zantrex proof: ROAS went from 2x to 3.5x.",
+    "Zantrex proof: Zantrex grew revenue 40% within 30 days on our platform.",
 )
 DISCOVERY_STEPS = (
     ("s1", "Isolate the problem"),
@@ -733,7 +733,7 @@ def fallback_notes(booking: Booking, context: dict) -> dict:
             },
             {
                 "objection": "Prepared, not raised by them: prove it works.",
-                "answer": "Zantrex proof: ROAS went from 2x to 3.5x. That is one account, not a promise for this prospect.",
+                "answer": "Zantrex proof: Zantrex grew revenue 40% within 30 days on our platform. That is one account, not a promise for this prospect.",
             },
         ],
         "next_step": (
@@ -797,7 +797,7 @@ def generate_notes(booking: Booking, context: dict) -> tuple[dict, str]:
         "If a fact is missing, write Unknown. Do not guess revenue, category, headcount, "
         "ad spend, tools, or pain. Do not use em dashes. "
         "The trial pitch must include these approved points and no other proof numbers: "
-        "Free 14-day trial. Plans from $99/mo. Zantrex proof: ROAS went from 2x to 3.5x. "
+        "Free 14-day trial. Plans from $99/mo. Zantrex proof: Zantrex grew revenue 40% within 30 days on our platform. "
         "Do not write discovery questions. The call script already has sections s1 to s13. "
         "trial_pitch must be a JSON array of strings, never one paragraph. "
         "Do not say the prospect is on Amazon unless the packet's amazon.verified is true, "
