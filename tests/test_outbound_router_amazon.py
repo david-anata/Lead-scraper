@@ -169,6 +169,9 @@ class OutboundPagesStillRenderTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("Recipes &amp; ICP", r.text)
         self.assertIn("Daily pull list", r.text)
+        self.assertIn('id="run-pager"', r.text)
+        self.assertIn("lo-tune", r.text)
+        self.assertIn("lo-col-recipe", r.text)
         self.assertIn("method='post' action='/admin/api/outbound/brands.csv?recipe=new_growth_app'", r.text)
 
     def test_brands_page_renders(self):
@@ -185,6 +188,7 @@ class OutboundPagesStillRenderTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("Daily Leads", r.text)
         self.assertIn("Weekdays · 7:00 AM Denver", r.text)
+        self.assertIn("Edit automatic pull time", r.text)
         self.assertIn("download one combined CSV", r.text)
 
 

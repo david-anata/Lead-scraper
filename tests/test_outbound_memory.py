@@ -343,6 +343,8 @@ class FullLeadRecordTests(unittest.TestCase):
         self.assertIn("Manage recipes &amp; ICP", body)
         self.assertIn("View outbound performance", body)
         self.assertIn('id="ld-search"', body)
+        self.assertIn("Date added", body)
+        self.assertIn('class="ld-sort"', body)
         self.assertIn("Companies held", body)
         self.assertIn("Average yearly sales", body)
         self.assertIn("Tier mix", body)
@@ -355,7 +357,8 @@ class FullLeadRecordTests(unittest.TestCase):
             patch("sales_support_agent.api.outbound_router.get_current_user", return_value={}),
         ):
             empty_body = outbound_leads(None).body.decode("utf-8")
-        self.assertIn("Use Find fresh companies to create the first batch", empty_body)
+        self.assertIn("Manage pull recipes", empty_body)
+        self.assertIn("/admin/outbound/recipes", empty_body)
         self.assertNotIn("No leads stored yet", empty_body)
 
 

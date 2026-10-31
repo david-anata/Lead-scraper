@@ -149,8 +149,14 @@ def cadence_to_decision(cadence: str) -> str:
     raise ValueError("choose monthly, weekly, one-time or not a bill")
 
 
-def render_charge_panel(view: Mapping[str, Any], *, action: str) -> str:
-    """The panel body. Rendered server side so it works without JavaScript."""
+def render_charge_panel(
+    view: Mapping[str, Any], *, action: str, return_to: str = ""
+) -> str:
+    """The panel body. Rendered server side so it works without JavaScript.
+
+    Each charge is a choice, not a submit. One save at the bottom writes every
+    choice together, so picking the second charge does not reload the week.
+    """
     from sales_support_agent.services.cashflow.overview import _money
 
     charges = list(view.get("charges") or [])
@@ -165,14 +171,26 @@ def render_charge_panel(view: Mapping[str, Any], *, action: str) -> str:
             + html.escape(str(view.get("state_label") or "")) + ".</p></section>"
         )
 
-    rows = "".join(_charge_row(charge, action=action) for charge in charges)
+    rows = "".join(_charge_row(charge) for charge in charges)
+    save = ""
+    if any(str(charge.get("pattern_key") or "") for charge in charges):
+        save = """
+      <div class="charge-panel__save">
+        <p class="metric-note">Choose a type for each charge you want to answer.
+        Nothing is saved until you press Save.</p>
+        <button class="btn btn-primary" type="submit">Save selected charges</button>
+      </div>"""
     return f"""
     <section class="charge-panel" aria-labelledby="charge-panel-title">
       <h2 id="charge-panel-title">{html.escape(heading)}</h2>
       <p class="metric-note">{int(view.get('count') or 0)} charge(s),
       {_money(int(view.get('total_cents') or 0))} in total. Saying what a charge
       is here is the same as tracking it under What is coming.</p>
-      <div class="charge-panel__list">{rows}</div>
+      <form method="post" action="{html.escape(action, quote=True)}" class="charge-panel__batch">
+        <input type="hidden" name="return_to" value="{html.escape(return_to, quote=True)}">
+        <div class="charge-panel__list">{rows}</div>
+        {save}
+      </form>
       <p class="charge-panel__total"><strong>{int(view.get('count') or 0)} charge(s)</strong>
       <strong>{_money(int(view.get('total_cents') or 0))}</strong></p>
     </section>"""
@@ -188,7 +206,7 @@ def _week_words(view: Mapping[str, Any]) -> str:
     )
 
 
-def _charge_row(charge: Mapping[str, Any], *, action: str) -> str:
+def _charge_row(charge: Mapping[str, Any]) -> str:
     from sales_support_agent.services.cashflow.overview import _money
 
     when = charge.get("date")
@@ -205,27 +223,35 @@ def _charge_row(charge: Mapping[str, Any], *, action: str) -> str:
         if decided else ""
     )
     key = html.escape(str(charge.get("pattern_key") or ""), quote=True)
-    buttons = "".join(
-        f'<button type="submit" name="cadence" value="{value}" '
-        f'data-finance-pattern-cadence="{value}" class="btn btn-secondary btn-sm">{label}</button>'
-        for value, label in CADENCE_CHOICES
-    ) if key else (
-        '<span class="metric-note">Cannot be named yet: the bank wording gives '
-        "no supplier to attach an answer to.</span>"
-    )
-    form = f"""
-      <form method="post" action="{action}" class="charge-panel__actions">
+    if key:
+        options = "".join(
+            f'<option value="{value}" data-finance-pattern-cadence="{value}">{label}</option>'
+            for value, label in CADENCE_CHOICES
+        )
+        controls = f"""
+      <div class="charge-panel__actions">
         <input type="hidden" name="pattern_key" value="{key}">
         <input type="hidden" name="merchant_key" value="{html.escape(str(charge.get('merchant_key') or ''), quote=True)}">
         <input type="hidden" name="vendor" value="{vendor}">
         <input type="hidden" name="amount_cents" value="{int(charge.get('amount_cents') or 0)}">
-        {buttons}
-      </form>""" if key else f'<div class="charge-panel__actions">{buttons}</div>'
+        <label>What is this?
+          <select name="cadence">
+            <option value="">Leave for later</option>
+            {options}
+          </select>
+        </label>
+      </div>"""
+    else:
+        controls = (
+            '<div class="charge-panel__actions"><span class="metric-note">'
+            "Cannot be named yet: the bank wording gives no supplier to attach "
+            "an answer to.</span></div>"
+        )
     return f"""
       <article class="charge-panel__row">
         <div class="charge-panel__head">
           <div><strong>{vendor}</strong><small>{html.escape(day)}</small></div>
           <strong class="amount-out">{_money(int(charge.get('amount_cents') or 0))}</strong>
         </div>
-        {note}{settled}{form}
+        {note}{settled}{controls}
       </article>"""

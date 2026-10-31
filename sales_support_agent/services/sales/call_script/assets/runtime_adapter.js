@@ -403,7 +403,7 @@
 })();
 
 /* ---------------------------------------------------------------------------
- * Live call module: Go live, Tape extension bridge, live state polling, coach
+ * Live call module: Start live call, Tape extension bridge, live state polling, coach
  * updates applied to the tracker, End call with automatic review and the
  * after-call steps. Renders into [data-live] at the top of the Talk flow tab.
  * ------------------------------------------------------------------------- */
@@ -687,6 +687,9 @@
     if (Date.now() - st.movePendingAt >= MOVE_HOLD_MS) { st.moveShown = st.movePending; st.movePending = null; }
     return st.moveShown;
   }
+  function startBtn() {
+    return '<div class="lv-btns lv-start"><button type="button" class="lv-btn" data-lvgolive' + (st.busy ? ' disabled' : '') + '>' + (st.busy ? 'Starting' : 'Start live call') + '</button></div>';
+  }
   function liveHTML() {
     var s = st.session, p = st.patch || {}, h = '';
     var live = s.status === 'live';
@@ -697,7 +700,8 @@
     if (st.failures >= 2) h += '<span class="lv-pill bad">Live paused, retrying</span>';
     h += '</div>';
     if (!live) {
-      h += '<p>Switch to your Meet tab, click the Tape icon (or Alt+Shift+T), then press <b>Start live call</b>.</p>';
+      h += startBtn();
+      h += '<p>Armed. Start live call sends this session to the Tape extension. If the call does not begin, switch to your Meet tab, click the Tape icon (or Alt+Shift+T), and confirm there. Chrome may require that click before it can hear the call.</p>';
       if (!extReady()) h += installHelp();
       h += '<div class="lv-btns"><button type="button" class="lv-btn sec" data-lvrearm>Send to Tape again</button><button type="button" class="lv-btn sec" data-lvend>Cancel</button></div>';
       return h;
@@ -768,16 +772,16 @@
     if (st.afterCall) {
       h += '<ul class="lv-list lv-steps">' + stepLine('Review', { ok: true, note: 'Saved to your coaching dashboard' }) + stepLine('ClickUp', st.afterCall.clickup) + stepLine('Recap', st.afterCall.recap) + stepLine('Day-10 review', st.afterCall.day10) + '</ul>';
     }
-    h += '<div class="lv-btns"><button type="button" class="lv-btn sec" data-lvnew>Go live again</button></div>';
+    h += '<div class="lv-btns"><button type="button" class="lv-btn sec" data-lvnew>Start live call</button></div>';
     return h;
   }
   function idleHTML() {
     var h = '<div class="lv-head"><span class="lv-dot" aria-hidden="true"></span><h3>Live call</h3>' + extLine() + '</div>';
-    h += '<p class="hint">Go live to have Tape listen to the Meet call. Beliefs, numbers, tie-downs and your next move update here as the prospect talks.</p>';
+    h += startBtn();
+    h += '<p class="hint">Start live call to have Tape listen to the Meet call. Beliefs, numbers, tie-downs and your next move update here as the prospect talks.</p>';
     var brief = prepBrief(CFG.state && CFG.state['ss-prep']);
     if (brief) h += '<div class="lv-card"><div class="k">Before the call</div><p>' + esc(brief).replace(/\n/g, '<br>') + '</p></div>';
     if (!st.pingTimer && !extReady()) h += installHelp();
-    h += '<div class="lv-btns"><button type="button" class="lv-btn" data-lvgolive' + (st.busy ? ' disabled' : '') + '>' + (st.busy ? 'Starting' : 'Go live') + '</button></div>';
     return h;
   }
   var lastHTML = '';

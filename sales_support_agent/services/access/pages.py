@@ -63,6 +63,8 @@ _ADMIN_STYLES = """
     overflow:hidden; margin-bottom:24px; }
   .tbl-card-header { padding:16px 22px; border-bottom:1px solid rgba(43,54,68,0.08);
     display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; }
+  [data-people-controls] label { display:grid; gap:4px; font-size:12px; font-weight:700; }
+  #people-search { min-height:44px; min-width:min(280px, 72vw); }
   .tbl-card-title { font-family:"Montserrat",sans-serif; font-weight:800;
     font-size:14px; color:#2B3644; }
   table { width:100%; border-collapse:collapse; }
@@ -353,7 +355,7 @@ def render_users_page(users: list, roles: list, *, current_user: dict,
         <span class="tbl-card-title">Requests, invites &amp; users</span>
         {pending_note}
       </div>
-      <div class="tbl-card-header" data-people-controls hidden>
+      <div class="tbl-card-header" data-people-controls>
         <label for="people-search">Search people
           <input class="form-input" id="people-search" type="search" placeholder="Name or email" aria-controls="people-rows">
         </label>
@@ -387,6 +389,30 @@ def render_users_page(users: list, roles: list, *, current_user: dict,
       </form>
     </div>
     {_history_html(history)}
+    <script>
+    (function() {{
+      var input = document.getElementById('people-search');
+      var rows = Array.prototype.slice.call(document.querySelectorAll('#people-rows tr'));
+      var empty = document.getElementById('people-empty');
+      var count = document.getElementById('people-count');
+      var clear = document.getElementById('people-clear');
+      if (!input) return;
+      function apply() {{
+        var query = input.value.trim().toLowerCase();
+        var shown = 0;
+        rows.forEach(function(row) {{
+          var match = !query || row.textContent.toLowerCase().indexOf(query) !== -1;
+          row.hidden = !match;
+          if (match) shown += 1;
+        }});
+        if (empty) empty.hidden = shown !== 0;
+        if (count) count.textContent = shown + ' shown';
+      }}
+      input.addEventListener('input', apply);
+      if (clear) clear.addEventListener('click', function() {{ input.value = ''; apply(); input.focus(); }});
+      apply();
+    }})();
+    </script>
     """
     return _shell("Access — People", body, user=current_user, active="access_users", wide=True)
 

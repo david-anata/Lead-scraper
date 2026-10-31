@@ -435,16 +435,27 @@ def run_scheduled_outbound(request: Request) -> dict:
 
     _require_scheduler_auth(request)
     now = datetime.now(ZoneInfo(_TZ))
-    if now.hour != _RUN_HOUR:
+    engine = None
+    try:
+        from sales_support_agent.models.database import get_engine
+        from sales_support_agent.services.outbound_settings import morning_pull_hour
+
+        engine = get_engine()
+        hour = morning_pull_hour(engine, _RUN_HOUR)
+    except Exception:  # noqa: BLE001 - a missing database still has to skip cleanly
+        hour = _RUN_HOUR
+        engine = None
+    if now.hour != hour:
         return {
             "status": "skipped",
-            "message": "Outbound morning routine is waiting for 7:00 AM America/Denver.",
+            "message": f"Outbound morning routine is waiting for {hour}:00 America/Denver.",
             "local_time": now.isoformat(),
         }
 
     from sales_support_agent.models.database import get_engine
 
-    engine = get_engine()
+    if engine is None:
+        engine = get_engine()
     run_key = _today(now)
     lease = claim_scheduled_job(
         engine,

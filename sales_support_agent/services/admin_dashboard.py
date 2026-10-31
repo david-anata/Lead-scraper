@@ -4426,13 +4426,13 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
     recent_deck_rows_html = "".join(
         f"""
         <tr class="deck-row" data-brand="{html.escape(_brand_from_title(str(run.get("design_title") or "")))}" data-started-at="{html.escape(str(run.get("started_at") or ""))}" data-run-id="{html.escape(str(run.get("id", "")))}">
-          <td><strong>{html.escape(_brand_from_title(str(run.get("design_title") or "")))}</strong></td>
-          <td class="muted">{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</td>
-          <td class="muted">{html.escape(str(run.get("attachment_status_label") or run.get("attachment_status") or "Unmatched"))}{f"<br><span style='font-size:11px;color:rgba(43,54,68,0.45)'>{html.escape(str(run.get('attachment_status_detail') or ''))}</span>" if str(run.get('attachment_status_detail') or '').strip() else ""}</td>
-          <td class="muted deck-cell-created">{html.escape(_format_dashboard_datetime(str(run.get("started_at") or "")) or "Today")}</td>
-          <td class="num">{_ext_views(run)}</td>
-          <td class="num">{_int_views(run)}</td>
-          <td class="deck-row-actions">
+          <td data-label="Brand"><strong>{html.escape(_brand_from_title(str(run.get("design_title") or "")))}</strong></td>
+          <td class="muted" data-label="Deck title">{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</td>
+          <td class="muted" data-label="HubSpot">{html.escape(str(run.get("attachment_status_label") or run.get("attachment_status") or "Unmatched"))}{f"<br><span style='font-size:11px;color:rgba(43,54,68,0.45)'>{html.escape(str(run.get('attachment_status_detail') or ''))}</span>" if str(run.get('attachment_status_detail') or '').strip() else ""}</td>
+          <td class="muted deck-cell-created" data-label="Created">{html.escape(_format_dashboard_datetime(str(run.get("started_at") or "")) or "Today")}</td>
+          <td class="num" data-label="Ext. views">{_ext_views(run)}</td>
+          <td class="num" data-label="Int. views">{_int_views(run)}</td>
+          <td class="deck-row-actions" data-label="Actions">
             {f'<a href="{html.escape(str(run.get("view_url") or ""))}?viewer=internal" target="_blank" rel="noreferrer" title="Open as internal preview (counts as Internal view)">Open</a>' if run.get("view_url") else ""}
             {f'<a href="{html.escape(str(run.get("view_url") or ""))}/story" target="_blank" rel="noreferrer" title="Open the markdown story companion to read through on a sales call">Story</a>' if run.get("view_url") else ""}
             {f'<button type="button" class="deck-url-copy" data-copy="{html.escape(str(run.get("view_url") or ""), quote=True)}" title="Copy share link to send to a prospect (counts as External view when they open it)">Copy share link</button>' if run.get("view_url") else ""}
@@ -4447,6 +4447,9 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
     if data.recent_deck_runs:
         recent_deck_runs_html = f"""
         <div class="deck-run-filters">
+          <label class="deck-run-search-wrap">Search
+            <input type="search" id="deck-filter-search" placeholder="Brand, ASIN, or design title" />
+          </label>
           <label>Brand
             <select id="deck-filter-brand">
               <option value="">All brands</option>
@@ -4461,9 +4464,6 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
               <option value="90">Last 90 days</option>
             </select>
           </label>
-          <label class="deck-run-search-wrap">Search
-            <input type="search" id="deck-filter-search" placeholder="Brand, ASIN, or design title…" />
-          </label>
           <label class="deck-page-size-wrap">Per page
             <select id="deck-page-size">
               <option value="10">10</option>
@@ -4477,12 +4477,12 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
             <thead>
               <tr>
                 <th class="col-brand">Brand</th>
-                <th>Deck title</th>
-                <th>HubSpot</th>
+                <th class="col-title">Deck title</th>
+                <th class="col-hubspot">HubSpot</th>
                 <th class="col-created">Created</th>
                 <th class="num col-views">Ext. views</th>
                 <th class="num col-views">Int. views</th>
-                <th class="col-actions"></th>
+                <th class="col-actions"><span class="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody id="deck-run-tbody">
@@ -4534,6 +4534,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         max-width: 1320px;
         margin: 0 auto;
         padding: 28px 24px 64px;
+        min-width: 0;
       }}
       .workspace {{
         background: var(--white);
@@ -4541,6 +4542,22 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         border-radius: 26px;
         box-shadow: 0 18px 40px var(--shadow);
         padding: 24px;
+        min-width: 0;
+        max-width: 100%;
+      }}
+      .page-header > * {{
+        min-width: 0;
+      }}
+      .sr-only {{
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
       }}
       .page-header {{
         display: grid;
@@ -5073,13 +5090,20 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         gap: 12px;
         margin-top: 18px;
       }}
-      /* Audit item 2c: filterable past-decks table */
+      /* Audit item 2c: filterable past-decks table.
+         Search is the first control, then brand. */
+      .deck-page-card,
+      .deck-run-list {{
+        min-width: 0;
+        max-width: 100%;
+      }}
       .deck-run-filters {{
         display: flex;
-        gap: 16px;
+        gap: 12px 16px;
         flex-wrap: wrap;
         margin: 18px 0 10px;
         align-items: end;
+        width: 100%;
       }}
       .deck-run-filters label {{
         display: grid;
@@ -5087,29 +5111,30 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         font-size: 12px;
         font-weight: 600;
         color: var(--dark-blue);
+        min-width: 0;
+        flex: 1 1 140px;
+      }}
+      .deck-run-filters .deck-run-search-wrap {{
+        flex: 1 1 240px;
       }}
       .deck-run-filters select,
       .deck-run-filters input {{
-        padding: 6px 10px;
+        width: 100%;
+        min-width: 0;
+        max-width: 100%;
+        min-height: 42px;
+        padding: 8px 10px;
         font-size: 13px;
         border: 1px solid rgba(43, 54, 68, 0.18);
-        border-radius: 8px;
+        border-radius: 10px;
         background: white;
         color: var(--dark-blue);
-        min-width: 140px;
-      }}
-      .deck-run-filters .deck-run-search-wrap input {{
-        min-width: 240px;
       }}
       .deck-run-table-wrap {{
-        /* PR51: removed inner-scroll cap (was max-height: 520px;
-           overflow-y: auto). With pagination, the table is bounded
-           by row count not pixel height, and dropping the inner
-           scroll lets the sticky thead anchor against the page
-           viewport — so the column headers stay visible while
-           scrolling the page itself. NOTE: keep overflow: visible
-           (the default) so sticky positioning resolves to the
-           viewport, not a clipped ancestor. */
+        /* Desktop: the table fits the card, and overflow stays visible so
+           the sticky header still anchors to the page. Narrow screens switch
+           to stacked rows in the media query below. */
+        max-width: 100%;
         border: 1px solid rgba(43, 54, 68, 0.10);
         border-radius: 10px;
       }}
@@ -5165,9 +5190,16 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
       }}
       .deck-run-table {{
         width: 100%;
+        table-layout: fixed;
         border-collapse: collapse;
         font-size: 13px;
       }}
+      .deck-run-table .col-brand {{ width: 14%; }}
+      .deck-run-table .col-title {{ width: 22%; }}
+      .deck-run-table .col-hubspot {{ width: 16%; }}
+      .deck-run-table .col-created {{ width: 14%; }}
+      .deck-run-table .col-views {{ width: 8%; }}
+      .deck-run-table .col-actions {{ width: 18%; }}
       .deck-run-table thead th {{
         position: sticky;
         top: 0;
@@ -5185,6 +5217,8 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         padding: 12px 14px;
         border-bottom: 1px solid rgba(43, 54, 68, 0.06);
         vertical-align: middle;
+        overflow-wrap: anywhere;
+        min-width: 0;
       }}
       /* PR52: zebra striping for scanability. */
       .deck-run-table tbody tr:nth-child(even) td {{
@@ -5198,12 +5232,10 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         font-variant-numeric: tabular-nums;
         white-space: nowrap;
       }}
-      /* PR52: column hints — Created stays one line, Brand keeps a sane min width. */
-      .deck-run-table .col-brand {{ min-width: 120px; }}
-      .deck-run-table .col-created {{ white-space: nowrap; min-width: 130px; }}
-      .deck-run-table .col-views {{ white-space: nowrap; min-width: 80px; }}
-      .deck-run-table .col-actions {{ width: 1%; }}
-      .deck-run-table .deck-cell-created {{ white-space: nowrap; }}
+      .deck-run-table .col-views,
+      .deck-run-table td.num {{
+        white-space: nowrap;
+      }}
       .deck-run-caption {{
         font-size: 11px;
         color: rgba(43, 54, 68, 0.68);
@@ -5215,7 +5247,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         display: flex;
         gap: 6px;
         justify-content: flex-end;
-        flex-wrap: nowrap;
+        flex-wrap: wrap;
       }}
       .deck-row-actions a,
       .deck-row-actions button {{
@@ -5502,6 +5534,81 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         }}
         .brandmark {{
           font-size: 34px;
+        }}
+        .page-title {{
+          font-size: 36px;
+        }}
+        .shell {{
+          padding-left: 16px;
+          padding-right: 16px;
+        }}
+        .workspace {{
+          padding: 16px;
+          border-radius: 16px;
+        }}
+      }}
+      /* Narrow screens: each deck is a stacked card so the page does not
+         scroll sideways. Labels come from data-label on each cell. */
+      @media (max-width: 800px) {{
+        .deck-run-table-wrap {{
+          border: 0;
+          background: transparent;
+        }}
+        .deck-run-table {{
+          table-layout: auto;
+        }}
+        .deck-run-table thead {{
+          display: none;
+        }}
+        .deck-run-table,
+        .deck-run-table tbody,
+        .deck-run-table tr,
+        .deck-run-table td {{
+          display: block;
+          width: auto;
+        }}
+        .deck-run-table tr[hidden] {{
+          display: none !important;
+        }}
+        .deck-run-table tbody tr {{
+          margin: 0 0 12px;
+          padding: 12px 14px;
+          border: 1px solid rgba(43, 54, 68, 0.10);
+          border-radius: 16px;
+          background: var(--white);
+        }}
+        .deck-run-table tbody tr:nth-child(even) td,
+        .deck-run-table tbody tr:hover td {{
+          background: transparent;
+        }}
+        .deck-run-table tbody td {{
+          display: grid;
+          grid-template-columns: 108px minmax(0, 1fr);
+          gap: 8px;
+          align-items: start;
+          padding: 6px 0;
+          border: 0;
+          white-space: normal;
+        }}
+        .deck-run-table tbody td::before {{
+          content: attr(data-label);
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+          color: rgba(43, 54, 68, 0.68);
+        }}
+        .deck-run-table td.num {{
+          text-align: left;
+        }}
+        .deck-run-table td.deck-row-actions {{
+          display: flex;
+          flex-wrap: wrap;
+          justify-content: flex-start;
+          padding-top: 8px;
+        }}
+        .deck-run-table td.deck-row-actions::before {{
+          content: none;
         }}
       }}
     </style>

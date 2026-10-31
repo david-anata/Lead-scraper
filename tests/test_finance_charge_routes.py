@@ -42,7 +42,9 @@ def books(monkeypatch):
                 record_kind="obligation", event_type="outflow", category="utilities",
                 name="Lehi City Power", vendor_or_customer="Lehi City Power",
                 description="Lehi City Power", amount_cents=89_000 + index,
-                due_date=TODAY + timedelta(days=index + 1), status="planned",
+                # Today itself stays inside the calendar window even on the last
+                # day of the month, when tomorrow is no longer loaded.
+                due_date=TODAY, status="planned",
                 confidence="confirmed", created_at=now, updated_at=now,
             )
     return engine
@@ -132,6 +134,49 @@ def test_answering_a_charge_reports_what_it_did(books):
     assert record.call_count == 1
     assert record.call_args.args[1] == "track", "monthly must write the same decision as tracking"
     assert "monthly" in _flash(response).lower()
+
+
+def test_several_charges_save_together_and_return_to_the_same_week(books):
+    client, ctx = _client()
+    try:
+        with patch(
+            "sales_support_agent.services.cashflow.bill_patterns.record_bill_pattern_decision"
+        ) as record:
+            response = client.post("/admin/finances/calendar/charges/answer", data={
+                "return_to": "/admin/finances/calendar/charges?week=2026-08-24&state=unpaid",
+                "pattern_key": ["aaaa", "bbbb", "cccc"],
+                "cadence": ["monthly", "", "weekly"],
+                "vendor": ["Power", "Skipped", "Water"],
+            })
+    finally:
+        for item in ctx:
+            item.stop()
+
+    assert response.status_code == 303
+    assert record.call_count == 2
+    assert "2 charge answers" in _flash(response)
+    location = response.headers["location"]
+    assert "week=2026-08-24" in location
+    assert "state=unpaid" in location
+
+
+def test_saving_without_a_choice_writes_nothing(books):
+    client, ctx = _client()
+    try:
+        with patch(
+            "sales_support_agent.services.cashflow.bill_patterns.record_bill_pattern_decision"
+        ) as record:
+            response = client.post("/admin/finances/calendar/charges/answer", data={
+                "pattern_key": ["aaaa"],
+                "cadence": [""],
+            })
+    finally:
+        for item in ctx:
+            item.stop()
+
+    assert response.status_code == 303
+    assert record.call_count == 0
+    assert "at least one" in _flash(response).lower()
 
 
 def test_a_bad_answer_does_not_write_anything(books):

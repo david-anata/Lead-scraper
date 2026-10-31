@@ -234,6 +234,72 @@ def _match_option_by_context(options: tuple[SelectOption, ...], *, name: str = "
     return "", ""
 
 
+def _clean_domain(raw: str) -> str:
+    value = str(raw or "").strip()
+    if "://" in value:
+        value = value.split("://", 1)[1]
+    return value.split("/", 1)[0].split("?", 1)[0].strip().lower()
+
+
+def _split_person_name(raw: str) -> tuple[str, str]:
+    parts = [part for part in str(raw or "").strip().split() if part]
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], " ".join(parts[1:])
+
+
+def _ensure_hubspot_company_and_contact(client: HubSpotClient, payload: dict[str, Any]) -> dict[str, Any]:
+    """Create a HubSpot company or contact when the form asks for a new record."""
+    updated = dict(payload)
+    company_id = str(updated.get("company_id") or updated.get("hubspot_company_id") or "").strip()
+    contact_id = str(updated.get("contact_id") or updated.get("hubspot_contact_id") or "").strip()
+    new_company = str(updated.get("new_company_name") or "").strip()
+    new_domain = _clean_domain(str(updated.get("new_company_domain") or ""))
+    new_contact_email = str(updated.get("new_contact_email") or "").strip().lower()
+    new_contact_name = str(updated.get("new_contact_name") or "").strip()
+    if not company_id and new_company:
+        properties = {"name": new_company}
+        if new_domain:
+            properties["domain"] = new_domain
+        created = client.create_company(properties)
+        company_id = str(created.get("id") or "").strip()
+        if not company_id:
+            raise ValueError("HubSpot did not return a company id.")
+        updated["company_id"] = company_id
+    elif not company_id and new_domain and not new_company:
+        raise ValueError("A new company needs a name.")
+    if not contact_id and (new_contact_email or new_contact_name):
+        if "@" not in new_contact_email:
+            raise ValueError("A new contact needs an email address.")
+        first_name, last_name = _split_person_name(new_contact_name)
+        properties = {"email": new_contact_email}
+        if first_name:
+            properties["firstname"] = first_name
+        if last_name:
+            properties["lastname"] = last_name
+        if new_company:
+            properties["company"] = new_company
+        created = client.create_contact(properties)
+        contact_id = str(created.get("id") or "").strip()
+        if not contact_id:
+            raise ValueError("HubSpot did not return a contact id.")
+        updated["contact_id"] = contact_id
+        if company_id:
+            try:
+                client.create_association(
+                    "contacts",
+                    contact_id,
+                    "companies",
+                    company_id,
+                    association_type_id=279,
+                )
+            except HubSpotAPIError:
+                logger.exception("[sales] new contact %s was created but not linked to company %s", contact_id, company_id)
+    return updated
+
+
 async def _deal_create_payload(request: Request) -> dict[str, Any]:
     if "application/json" in request.headers.get("content-type", ""):
         payload = await request.json()
@@ -417,6 +483,7 @@ def _render_create_deal_page(
         options=options.companies,
         selected=selected_company_value,
         placeholder="company",
+        required=False,
     )
     contact_select = _select_html(
         field_id="contact_id",
@@ -424,7 +491,12 @@ def _render_create_deal_page(
         options=options.contacts,
         selected=selected_contact_value,
         placeholder="contact",
+        required=False,
     )
+    new_company_name = "" if selected_company_value else company_context
+    new_company_domain = "" if selected_company_value else company_domain
+    new_contact_name = "" if selected_contact_value else contact_context
+    new_contact_email = "" if selected_contact_value else contact_email
     pipeline_stage_data = {
         pipeline.value: [
             {"value": stage.value, "label": stage.label, "detail": stage.detail}
@@ -487,8 +559,20 @@ def _render_create_deal_page(
             <div><label for="amount">Amount</label><input id="amount" name="amount" value="{v('amount')}" inputmode="decimal"></div>
           </div>
           <div class="grid">
-            <div><label for="company_id">Company</label>{company_select}<span class="hint">Shows company/domain, submits HubSpot company ID.</span></div>
-            <div><label for="contact_id">Contact</label>{contact_select}<span class="hint">Shows contact/email, submits HubSpot contact ID.</span></div>
+            <div>
+              <label for="company_id">Company</label>{company_select}<span class="hint">Pick an existing company, or create one below. The deal uses the company you pick when both are filled.</span>
+              <label for="new_company_name">New company name</label>
+              <input id="new_company_name" name="new_company_name" value="{_esc(new_company_name)}" autocomplete="organization">
+              <label for="new_company_domain">New company domain</label>
+              <input id="new_company_domain" name="new_company_domain" value="{_esc(new_company_domain)}" placeholder="bloomtowel.com" inputmode="url">
+            </div>
+            <div>
+              <label for="contact_id">Contact</label>{contact_select}<span class="hint">Pick an existing contact, or create one below.</span>
+              <label for="new_contact_name">New contact name</label>
+              <input id="new_contact_name" name="new_contact_name" value="{_esc(new_contact_name)}" autocomplete="name">
+              <label for="new_contact_email">New contact email</label>
+              <input id="new_contact_email" name="new_contact_email" type="email" value="{_esc(new_contact_email)}" autocomplete="email">
+            </div>
           </div>
           <label for="closedate">Close date</label>
           <input id="closedate" name="closedate" value="{v('closedate')}" placeholder="YYYY-MM-DD">
@@ -821,6 +905,37 @@ async def create_deal(request: Request) -> Response:
             status_code=500,
         )
 
+    client = HubSpotClient(settings)
+    if not client.is_configured:
+        msg = "HubSpot token is not configured. Set HUBSPOT_API_TOKEN or HUBSPOT_PRIVATE_APP_TOKEN in Render."
+        if _wants_json(request):
+            return JSONResponse({"ok": False, "error": msg}, status_code=503)
+        return HTMLResponse(
+            _render_create_deal_page(request, message=msg, errors=[msg], values=payload),
+            status_code=503,
+        )
+
+    try:
+        payload = _ensure_hubspot_company_and_contact(client, payload)
+        deal_request = normalize_deal_create_request(payload, rules, settings=settings)
+    except ValueError as exc:
+        message = str(exc)
+        if _wants_json(request):
+            return JSONResponse({"ok": False, "error": message}, status_code=400)
+        return HTMLResponse(
+            _render_create_deal_page(request, message=message, errors=[message], values=payload),
+            status_code=400,
+        )
+    except HubSpotAPIError as exc:
+        logger.exception("[sales] HubSpot company or contact create failed")
+        message = str(exc)[:240]
+        if _wants_json(request):
+            return JSONResponse({"ok": False, "error": message, "status_code": exc.status_code}, status_code=502)
+        return HTMLResponse(
+            _render_create_deal_page(request, message=message, errors=[message], values=payload),
+            status_code=502,
+        )
+
     validation_errors = validate_deal_create_request(deal_request, rules)
     if validation_errors:
         if _wants_json(request):
@@ -836,16 +951,6 @@ async def create_deal(request: Request) -> Response:
                 values=payload,
             ),
             status_code=400,
-        )
-
-    client = HubSpotClient(settings)
-    if not client.is_configured:
-        msg = "HubSpot token is not configured. Set HUBSPOT_API_TOKEN or HUBSPOT_PRIVATE_APP_TOKEN in Render."
-        if _wants_json(request):
-            return JSONResponse({"ok": False, "error": msg}, status_code=503)
-        return HTMLResponse(
-            _render_create_deal_page(request, message=msg, errors=[msg], values=payload),
-            status_code=503,
         )
 
     try:

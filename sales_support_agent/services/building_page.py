@@ -763,18 +763,30 @@ def render_building_page(
           </form>
         </details>'''
 
+    def inquiry_actions(item: dict[str, Any]) -> str:
+        inquiry_id = _esc(item.get("id"))
+        return (
+            f'<details class="lead-menu"><summary aria-label="Lead actions">...</summary><div class="lead-menu__panel">'
+            f'<a href="/admin/building/inquiries/{inquiry_id}">Open lead</a>'
+            f'<form method="post" action="/admin/building/inquiries/{inquiry_id}/remove">'
+            f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+            '<button class="secondary secondary--small" type="submit">Remove lead</button></form>'
+            '</div></details>'
+        )
+
     inquiry_rows = "".join(
         f"""
         <tr>
-          <td><a href="/admin/building/inquiries/{_esc(item.get('id'))}"><strong>{_esc(item.get("name"))}</strong></a><span class="sub">{_esc(item.get("email"))}</span>{original_submission(item)}</td>
+          <td><a href="/admin/building/inquiries/{_esc(item.get('id'))}"><strong>{_esc(item.get("name"))}</strong></a><span class="sub">{_esc(item.get("email"))}</span></td>
           <td>{_esc(item.get("kind"))}</td>
-          <td>{_esc(item.get("preferred_date") or "—")}{tour_handoff_action(item)}{inquiry_interview_action(item)}</td>
-          <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")} · respond by {_esc(item.get("response_due_at") or "not set")}</span>{inquiry_sequence(item)}{inquiry_lifecycle_action(item)}</td>
-          <td>{_esc(item.get("source"))}<span class="sub">{_esc((item.get("attribution") or {}).get("medium") or "direct / unknown medium")} · {_esc((item.get("attribution") or {}).get("campaign") or "no campaign")}</span><span class="sub">{_esc((item.get("attribution") or {}).get("term") or item.get("source_reference"))}</span>{_badge("Google click ID captured") if any((item.get("attribution") or {}).get(key) for key in ("gclid", "gbraid", "wbraid")) else ""}{_badge("Conversion dispatch audited") if item.get("conversion_dispatch_recorded") else ""}</td>
+          <td>{_esc(item.get("preferred_date") or "—")}</td>
+          <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")}</span></td>
+          <td>{_esc(item.get("source"))}</td>
+          <td>{inquiry_actions(item)}</td>
         </tr>
         """
         for item in inquiries
-    ) or '<tr><td colspan="5"><div class="empty"><strong>No building inquiries yet.</strong><br>New website and staff-entered leads will appear here in Agent.</div></td></tr>'
+    ) or '<tr><td colspan="6"><div class="empty"><strong>No building inquiries yet.</strong><br>New website and staff-entered leads will appear here in Agent.</div></td></tr>'
 
     inquiry_metrics = dict(analytics.get("inquiries") or {})
     workspace_funnel = dict(analytics.get("workspace_funnel") or {})
@@ -1731,6 +1743,7 @@ def render_building_page(
     .check{{display:flex;align-items:center;gap:9px;font-size:13px;}} .check input{{width:18px;min-height:18px;}} .check-stack{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;padding:11px;border:1px solid rgba(43,54,68,.14);border-radius:8px;}} .form-actions{{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid var(--border);padding-top:16px;}} .form-note{{font-size:12px;color:rgba(43,54,68,.62);line-height:1.45;}} .primary,.secondary{{min-height:42px;border:0;border-radius:8px;background:var(--ink);color:#fff;padding:0 17px;font-weight:700;cursor:pointer;}} .primary:hover{{background:#17222d;}} .secondary{{border:1px solid var(--border);background:#fff;color:var(--ink);}} .secondary--small{{min-height:34px;padding:0 11px;font-size:12px;white-space:nowrap;}} .action-stack{{display:grid;gap:7px;min-width:210px;}} .inline-send{{display:flex;gap:6px;align-items:center;}} .inline-send input{{min-height:34px;padding:7px 8px;font-size:12px;}}
     .lead-filters{{display:grid;grid-template-columns:minmax(220px,1.5fr) repeat(3,minmax(130px,.7fr)) auto auto;gap:10px;align-items:end;padding:14px 18px;border-top:1px solid var(--border);background:rgba(240,247,250,.55);}} .lead-filters label{{display:grid;gap:5px;font-size:12px;font-weight:700;}} .lead-filters .sub{{grid-column:1/-1;}}
     .row-actions{{min-width:220px;}} .row-actions summary{{cursor:pointer;font-weight:700;color:#397a9d;}} .row-actions form{{display:grid;gap:7px;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:9px;background:#f8f8f6;}} .row-actions label{{display:grid;gap:4px;}} .row-actions input,.row-actions select,.row-actions textarea{{min-height:34px;padding:7px 8px;font-size:12px;}}
+    .lead-menu{{position:relative;}} .lead-menu>summary{{list-style:none;cursor:pointer;width:44px;height:44px;display:grid;place-items:center;border:1px solid var(--border);border-radius:10px;font-weight:800;letter-spacing:.12em;}} .lead-menu>summary::-webkit-details-marker{{display:none;}} .lead-menu[open]{{z-index:3;}} .lead-menu__panel{{position:absolute;right:0;top:46px;min-width:180px;display:grid;gap:8px;padding:10px;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 28px rgba(43,54,68,.12);}} .lead-menu__panel a,.lead-menu__panel button{{min-height:40px;text-align:left;}} .lead-menu__panel form{{margin:0;}}
     .interview-workspace{{min-width:min(640px,80vw);}} .interview-grid{{grid-template-columns:repeat(2,minmax(0,1fr))!important;max-height:70vh;overflow:auto;}} .interview-grid>p,.interview-grid>button,.interview-grid>.sub{{grid-column:1/-1;}} .sequence-list{{display:grid;gap:8px;margin:10px 0 0;padding-left:20px;}} .sequence-list .sub{{display:block;}}
     .decision-list{{display:grid;gap:12px;padding:18px 20px;background:#f8fafb;}}
     .decision-card{{border:1px solid var(--border);border-radius:12px;background:#fff;overflow:hidden;}}
