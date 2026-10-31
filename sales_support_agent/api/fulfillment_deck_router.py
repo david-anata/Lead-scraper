@@ -315,6 +315,9 @@ def update_run(
     rate_minimum: str = Form(default=""),
     rate_card_note: str = Form(default=""),
     fee_waived: list[str] = Form(default=[]),
+    fee_included: list[str] = Form(default=[]),
+    fee_toggle: list[str] = Form(default=[]),
+    fee_included_form: str = Form(default=""),
     waiver_reason: str = Form(default=""),
     sales_pricing_reviewed: str = Form(default=""),
     margin_approved: str = Form(default=""),
@@ -390,7 +393,13 @@ def update_run(
         "monthly_minimum": rate_minimum,
     }
     rate_overrides = {k: v for k, raw in _rate_fields.items() if (v := _opt_float(raw)) is not None}
-    waived = {str(k).strip() for k in (fee_waived or []) if str(k).strip()}
+    checkbox_waived = {str(k).strip() for k in (fee_waived or []) if str(k).strip()}
+    if str(fee_included_form or "").strip() == "1":
+        included = {str(key).strip() for key in (fee_included or []) if str(key).strip()}
+        offered = {str(key).strip() for key in (fee_toggle or []) if str(key).strip()}
+        waived = (checkbox_waived - offered) | (offered - included)
+    else:
+        waived = checkbox_waived
     fee_rows = []
     for row in merge_fee_rows([]):
         row = dict(row)
