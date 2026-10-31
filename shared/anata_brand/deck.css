@@ -290,8 +290,8 @@ a { color: inherit; }
 /* ============================================ */
 .content {
   padding: 28px 36px 80px;
-  max-width: var(--content-max);
-  margin: 0 auto;
+  max-width: none;
+  margin: 0;
   width: 100%;
 }
 
@@ -335,7 +335,10 @@ a { color: inherit; }
 .spotlight-card::after {
   content:""; position:absolute; inset:0; pointer-events:none; opacity:0;
   border-radius:inherit;
-  background:radial-gradient(220px circle at var(--spot-x, 50%) var(--spot-y, 50%), rgba(133,187,218,.20), transparent 68%);
+  background:
+    radial-gradient(180px circle at var(--spot-x, 30%) var(--spot-y, 35%), rgba(133,187,218,.34), transparent 62%),
+    radial-gradient(150px circle at calc(var(--spot-x, 70%) + 36px) var(--spot-y, 70%), rgba(191,168,137,.30), transparent 64%),
+    radial-gradient(120px circle at var(--spot-x, 55%) calc(var(--spot-y, 40%) - 18px), rgba(210,107,54,.16), transparent 70%);
   transition:opacity 180ms ease-out;
 }
 .spotlight-card { position:relative; overflow:hidden; }
@@ -604,11 +607,12 @@ h2.slide-title {
   display: block;
 }
 .exec-product .pic .placeholder {
-  width: 80px;
-  height: 110px;
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
   background: linear-gradient(180deg, #2d3a4d 0%, #4f5e75 50%, #2d3a4d 100%);
-  border-radius: 8px;
-  position: relative;
+  border-radius: 10px;
   box-shadow: inset 0 0 0 2px rgba(255,255,255,0.1);
   display: grid;
   place-items: center;
@@ -830,8 +834,8 @@ h2.slide-title {
   grid-template-columns: repeat(3, 1fr);
   gap: 14px;
 }
-.metric-grid.cols-6 { grid-template-columns: repeat(6, 1fr); }
-.metric-grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
+.metric-grid.cols-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.metric-grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .metric {
   background: white;
   border: 1px solid var(--anata-line);
@@ -840,6 +844,7 @@ h2.slide-title {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
 }
 .metric .lab {
   font-size: 10px;
@@ -847,14 +852,17 @@ h2.slide-title {
   text-transform: uppercase;
   color: var(--anata-muted);
   font-weight: 800;
+  min-height: 2.6em;
+  line-height: 1.3;
 }
 .metric .val {
-  font-size: 24px;
+  font-size: clamp(16px, 1.5vw, 24px);
   font-weight: 800;
   color: var(--anata-ink);
   letter-spacing: -0.02em;
-  line-height: 1.05;
+  line-height: 1.15;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 .metric .sub {
   font-size: 11px;
@@ -1944,7 +1952,7 @@ h2.slide-title {
   .channel-grid { grid-template-columns: repeat(2, 1fr); }
   .ramp { grid-template-columns: repeat(2, 1fr); }
   .phase-plan-grid { grid-template-columns: 1fr; }
-  .metric-grid.cols-6 { grid-template-columns: repeat(3, 1fr); }
+  .metric-grid.cols-6 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (prefers-reduced-motion: reduce) {
