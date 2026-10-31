@@ -228,6 +228,13 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertIn("Product URL or ASIN", html)
         self.assertIn("All Helium 10 CSVs", html)
         self.assertIn("deck-run-list", html)
+        search_at = html.find('id="deck-filter-search"')
+        brand_at = html.find('id="deck-filter-brand"')
+        self.assertGreater(search_at, 0)
+        self.assertLess(search_at, brand_at)
+        self.assertIn('data-label="Brand"', html)
+        self.assertIn('data-label="Deck title"', html)
+        self.assertIn("table-layout: fixed", html)
         # Times are still rendered in Mountain time (verified by the timestamp
         # below); the "Times shown in Mountain time." caption was intentionally
         # removed from the saved-decks table.
