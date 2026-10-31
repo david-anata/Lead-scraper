@@ -2037,6 +2037,7 @@ class IntelligenceV2TemplateTests(unittest.TestCase):
     def test_cta_urls_fall_back_trial_to_booking_to_default(self) -> None:
         html, _ = self._generate()
         self.assertIn("https://calendar.app.google/5TwjbbpmKaGAQuBk8", html)
+        self.assertIn("href='https://dashboard.anatainc.com/signup'", html)
         settings = _build_settings()
         settings.marketing_booking_url = "https://book.example.com/anata"
         html, _ = self._generate(settings=settings)

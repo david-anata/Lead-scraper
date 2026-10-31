@@ -307,9 +307,12 @@ def build_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+DEFAULT_TRIAL_SIGNUP_URL = "https://dashboard.anatainc.com/signup"
+
+
 def resolve_cta_urls(settings: Any) -> dict[str, str]:
     booking = str(getattr(settings, "marketing_booking_url", "") or "").strip() or DEFAULT_BOOKING_URL
-    trial = str(getattr(settings, "trial_signup_url", "") or "").strip() or booking
+    trial = str(getattr(settings, "trial_signup_url", "") or "").strip() or DEFAULT_TRIAL_SIGNUP_URL
     return {"trial": trial, "booking": booking}
 
 
