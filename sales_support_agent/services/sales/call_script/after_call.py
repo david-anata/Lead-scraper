@@ -55,15 +55,22 @@ def agent_url() -> str:
     return (os.getenv("AGENT_PUBLIC_URL", "").strip() or "https://agent.anatainc.com").rstrip("/")
 
 
+_UNCHANGED_OUTCOMES = {"noshow", "no_show", "no-show", "no show", "cancel", "canceled", "cancelled"}
+
+
 def status_for(outcome: str, pitched: bool) -> str:
-    outcome = (outcome or "").lower()
+    """ClickUp status after a call. Empty string means leave the status unchanged."""
+    outcome = (outcome or "").strip().lower()
+    if outcome in _UNCHANGED_OUTCOMES:
+        return ""
     if outcome == "closed":
         return "won - onboarding"
     if outcome == "followup":
         return "follow up"
     if outcome == "lost":
         return "lost"
-    return "working offered" if pitched else "working qualified"
+    # A completed call with no decision yet moves the deal into negotiation.
+    return "working negotiating"
 
 
 def _txt(value: Any, limit: int = 4000) -> str:
@@ -139,9 +146,9 @@ def _clickup_step(client, tracker: SalesCallTracker, analysis: dict, offer: str)
     created = False
     if task is None:
         name = tracker.company or tracker.prospect_name or str(analysis.get("prospect") or "New lead")
-        task = client.create_task(list_id(), {"name": name, "status": status})
+        task = client.create_task(list_id(), {"name": name, **({"status": status} if status else {})})
         created = True
-    else:
+    elif status:
         client.update_task(task["id"], {"status": status})
     task_id = task["id"]
     if tracker.company and not _field_value(task, FIELD_COMPANY):
