@@ -515,9 +515,14 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             self.assertFalse(audit.after_json["provider_write"])
         sales = self.client.get("/admin/building/sales")
         self.assertEqual(sales.status_code, 200, sales.text)
-        self.assertIn("Event interview", sales.text)
-        self.assertIn("Authorized agreement signer", sales.text)
-        self.assertIn("Notifications and follow-up plan", sales.text)
+        self.assertIn("Lead actions", sales.text)
+        self.assertIn("Open lead", sales.text)
+        self.assertNotIn("Authorized agreement signer", sales.text)
+        detail = self.client.get(f"/admin/building/inquiries/{inquiry_id}")
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertIn("Event interview", detail.text)
+        self.assertIn("Authorized signer", detail.text)
+        self.assertIn("app-status", detail.text)
 
     def test_01_operator_completes_guarded_event_booking_evidence(self) -> None:
         starts = datetime.now() + timedelta(days=14)
