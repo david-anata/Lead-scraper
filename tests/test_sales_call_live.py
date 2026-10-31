@@ -318,8 +318,10 @@ class AfterCallUnitTests(unittest.TestCase):
         self.assertEqual(after_call.status_for("closed", True), "won - onboarding")
         self.assertEqual(after_call.status_for("followup", True), "follow up")
         self.assertEqual(after_call.status_for("lost", True), "lost")
-        self.assertEqual(after_call.status_for("nodecision", True), "working offered")
-        self.assertEqual(after_call.status_for("nodecision", False), "working qualified")
+        self.assertEqual(after_call.status_for("nodecision", True), "working negotiating")
+        self.assertEqual(after_call.status_for("nodecision", False), "working negotiating")
+        for o in ("noshow", "no_show", "No-Show", "cancelled", "canceled"):
+            self.assertEqual(after_call.status_for(o, True), "")
 
     def test_task_id_from_link(self) -> None:
         self.assertEqual(after_call.task_id_from_link("https://app.clickup.com/t/86b1abcd"), "86b1abcd")
