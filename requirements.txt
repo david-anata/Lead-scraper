@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+websockets>=13,<18
 pydantic
 requests
 PyJWT[crypto]>=2.8,<3.0

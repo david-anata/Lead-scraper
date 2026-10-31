@@ -36,6 +36,8 @@ from sales_support_agent.api.sales_jobs_router import router as sales_jobs_route
 from sales_support_agent.api.sales_router import router as sales_router
 from sales_support_agent.api.call_script_router import router as call_script_router
 from sales_support_agent.api.sales_call_live_router import router as sales_call_live_router
+from sales_support_agent.api.voice_router import admin_router as voice_admin_router
+from sales_support_agent.api.voice_router import router as voice_router
 from sales_support_agent.api.brand_analysis_router import (
     public_router as brand_analysis_public_router,
     router as brand_analysis_router,
@@ -289,6 +291,8 @@ def create_app() -> FastAPI:
     app.include_router(sales_jobs_router)
     app.include_router(call_script_router)
     app.include_router(sales_call_live_router)
+    app.include_router(voice_router)
+    app.include_router(voice_admin_router)
     app.include_router(sales_router)
     app.include_router(marketing_router)
     app.include_router(leads_router)
