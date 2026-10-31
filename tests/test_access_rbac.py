@@ -1398,3 +1398,22 @@ class NavAccessSafetyTests(unittest.TestCase):
         # No fulfillment tools held -> Fulfillment section must not render at all.
         self.assertNotIn("Fulfillment", nav)
         self.assertNotIn('href="/admin/fulfillment/cs/"', nav)
+
+
+class PeopleSearchTests(unittest.TestCase):
+    def test_search_filters_the_people_table_while_typing(self) -> None:
+        from sales_support_agent.services.access.pages import render_users_page
+
+        page = render_users_page(
+            [
+                {"id": "1", "email": "ada@anatainc.com", "name": "Ada", "status": "active", "permissions": []},
+                {"id": "2", "email": "grace@example.com", "name": "Grace", "status": "active", "permissions": []},
+            ],
+            [],
+            current_user={"email": "david@anatainc.com", "is_superadmin": True},
+        )
+        self.assertIn('id="people-search"', page)
+        self.assertNotIn("data-people-controls hidden", page)
+        self.assertIn("row.hidden = !match", page)
+        self.assertIn("ada@anatainc.com", page)
+        self.assertIn("grace@example.com", page)
