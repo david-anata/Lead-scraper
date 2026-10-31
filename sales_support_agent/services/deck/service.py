@@ -1869,7 +1869,7 @@ class DeckGenerationService:
 <html lang="en" data-design-system="anata-public-report-v1">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{html.escape(title)}</title>
   {_social_meta}
   {favicon_link}

@@ -1348,7 +1348,7 @@ def render_rate_sheet_html(
 <html lang="en" data-design-system="{PUBLIC_REPORT_DESIGN_VERSION}">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex">
   <title>{html.escape(title)}</title>
   <meta property="og:title" content="{html.escape(title, quote=True)}">

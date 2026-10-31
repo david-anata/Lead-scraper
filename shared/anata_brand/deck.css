@@ -2440,3 +2440,114 @@ h2.slide-title {
   /* Anchor links print without color/underline noise. */
   a { color: inherit; text-decoration: none; }
 }
+
+/* ============================================ */
+/* MOBILE (phones) — platform-wide deck layout  */
+/* Appended last so it wins the cascade over the */
+/* base grid rules above (the earlier 760px block */
+/* sits before them and was being overridden).    */
+/* Desktop (>760px) is untouched.                 */
+/* ============================================ */
+@media (max-width: 760px) {
+  html, body { overflow-x: hidden; -webkit-text-size-adjust: 100%; }
+  .app { display: block; }
+
+  /* Tap-friendly section nav: rail becomes a sticky horizontal chip bar */
+  .rail {
+    display: block;
+    position: sticky;
+    top: 0;
+    height: auto;
+    padding: calc(6px + env(safe-area-inset-top, 0px)) calc(10px + env(safe-area-inset-right, 0px)) 6px calc(10px + env(safe-area-inset-left, 0px));
+    border-right: 0;
+    border-bottom: 1px solid var(--anata-line);
+    z-index: 40;
+  }
+  .rail > *:not(.rail-list):not(.rail-progress) { display: none; }
+  .rail-progress { margin: 6px 0 0; }
+  .rail-list > li { flex: 0 0 auto; }
+  .rail-list {
+    flex-direction: row;
+    gap: 6px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+  }
+  .rail-list::-webkit-scrollbar { display: none; }
+  .rail-item {
+    flex: 0 0 auto;
+    min-height: 44px;
+    padding: 8px 14px;
+    white-space: nowrap;
+    border: 1px solid var(--anata-line);
+    border-radius: 999px;
+    font-size: 14px;
+    scroll-snap-align: start;
+  }
+
+  .content {
+    padding: 12px calc(10px + env(safe-area-inset-right, 0px)) calc(48px + env(safe-area-inset-bottom, 0px)) calc(10px + env(safe-area-inset-left, 0px));
+    min-width: 0;
+  }
+  .slide { padding: 22px 16px; border-radius: 16px; min-width: 0; overflow: hidden; scroll-margin-top: 64px; }
+  .slide *, .section-divider * { min-width: 0; }
+  .slide, .section-divider { overflow-wrap: break-word; word-break: normal; }
+
+  /* Type: readable on phones, no oversized headings */
+  .exec-title { font-size: 30px; line-height: 1.1; }
+  .exec-sub { font-size: 16px; }
+  .slide-title, .slide-head h2 { font-size: 26px !important; line-height: 1.15; }
+  .card-h { flex-wrap: wrap; gap: 4px 12px; }
+  .card-h h3 { flex: 1 1 auto; }
+  .card-h .meta { flex: 1 1 100%; text-align: left; }
+  .sd-h { font-size: 24px; }
+  .sd-num { font-size: 56px; }
+  .sd-thesis { font-size: 15px; max-width: none; }
+
+  /* Every multi-column grid stacks */
+  .exec-header, .exec-grid, .findings, .three-col, .two-col, .two-col.flip,
+  .two-col.even, .search-grid, .rec-grid, .offer-grid, .off-grid,
+  .phase-plan-grid, .next-steps, .gp-kpis, .visual-proof-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .exec-tiles, .metric-grid, .metric-grid.cols-4, .metric-grid.cols-6,
+  .margin-grid, .channel-grid, .ramp, .spend-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .visual-proof-arrow { transform: rotate(90deg); justify-self: center; }
+
+  /* Section dividers: number + heading stacked, bullets below */
+  .section-divider {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding: 20px 18px;
+    margin: 20px 0 16px;
+    scroll-margin-top: 64px;
+  }
+  .sd-bullets { flex-direction: column; gap: 6px; padding-left: 0; border-left: 0; }
+
+  /* Donut / chart cards */
+  .donut-card { grid-template-columns: 90px minmax(0, 1fr); }
+
+  /* Tables scroll inside their own box instead of being cut off */
+  .table-wrap, .market-table-full {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+  }
+  .market-table-full .tbl, .table-wrap table { min-width: 560px; width: max-content; max-width: none; }
+  .slide .tbl .num-col, .slide .tbl th { white-space: nowrap; }
+
+  /* Images scale to their container */
+  .slide img, .section-divider img, .slide svg, .slide canvas { max-width: 100%; height: auto; }
+
+  /* Small labels: floor at 11px for readability */
+  .label-tag, .lab, .num-col, .help-badge, .bubble-count, .num, .pct,
+  .ch-pill, .mix, .activation, .block-h, .tbl th, .meta, .metric-delta,
+  .cost, .muted.small, .rail-eye, .b, .bubble.sm, .slide th,
+  .slide small { font-size: 11.5px !important; }
+
+  /* Buttons / links: comfortable tap targets */
+  .slide a.cta, .slide button, .scroll-link, .rail-util { min-height: 44px; }
+}
