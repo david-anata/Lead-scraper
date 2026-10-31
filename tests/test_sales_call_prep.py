@@ -275,7 +275,7 @@ class PrepJobTests(unittest.TestCase):
         self.assertNotIn("—", slack.messages[0]["text"])
         self.assertIn("Free 14-day trial.", slack.messages[0]["text"])
         self.assertIn("Plans from $99/mo.", slack.messages[0]["text"])
-        self.assertIn("2x to 3.5x", slack.messages[0]["text"])
+        self.assertIn("grew revenue 40% within 30 days", slack.messages[0]["text"])
         self.assertEqual(gmail.drafts[0]["to"], ("david@anatainc.com",))
         self.assertTrue(gmail.drafts[0]["subject"].startswith("Call prep:"))
         self.assertEqual(gmail.sent, [])
@@ -399,7 +399,7 @@ class PrepJobTests(unittest.TestCase):
         self.assertEqual(seen["caller"], "call_prep")
         self.assertIn("Do not guess", seen["system"])
         self.assertNotIn("—", json.dumps(notes))
-        self.assertTrue(any("2x to 3.5x" in point for point in notes["trial_pitch"]))
+        self.assertTrue(any("grew revenue 40% within 30 days" in point for point in notes["trial_pitch"]))
         for point in PITCH_POINTS:
             self.assertIn(point, notes["trial_pitch"])
         self.assertEqual([step["id"] for step in notes["discovery"]], [f"s{i}" for i in range(1, 14)])
@@ -433,13 +433,13 @@ class PrepShapeTests(unittest.TestCase):
 
         booking = booking_from_event(NICK_EVENT)
         notes = _ensure_shape(
-            {"trial_pitch": "Free 14-day trial. Plans from $99/mo. Zantrex proof: ROAS went from 2x to 3.5x."},
+            {"trial_pitch": "Free 14-day trial. Plans from $99/mo. Zantrex proof: Zantrex grew revenue 40% within 30 days on our platform."},
             booking,
             {},
         )
         self.assertGreater(min(len(point) for point in notes["trial_pitch"]), 1)
         self.assertNotIn("W", notes["trial_pitch"])
-        self.assertTrue(any("2x to 3.5x" in point for point in notes["trial_pitch"]))
+        self.assertTrue(any("grew revenue 40% within 30 days" in point for point in notes["trial_pitch"]))
 
     def test_amazon_url_is_included_only_after_it_resolves(self) -> None:
         html = '<a href="https://www.amazon.com/stores/Reincorporated/page/ABC">shop</a> cdn.shopify.com'

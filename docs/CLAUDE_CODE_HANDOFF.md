@@ -170,7 +170,7 @@ Abby's reply rules (`abby.py`) already sell the $99 offer. What's left:
 
 1. **Cold sequence copy.**
    - Read the live Instantly campaign through the API (the key is in the agent's env).
-   - Rewrite every step that still pitches the old $500 offer or the free breakdown, so it leads to the $99 Intelligence trial: 14 days, no card, starts when Seller Central connects.
+   - Rewrite every step that still pitches the old $500 offer or the free breakdown, so it leads to the $99 Intelligence trial: 14-day free trial, card on file, then $99/mo Starter.
    - Keep Abby's voice, plain text, no opt-out footer (David's decision), and 4-5 steps.
    - Show David the before and after, then push it to Instantly. This is the one place to pause for his OK, because it hits real prospects.
 2. **Booked call opens prefilled.**
