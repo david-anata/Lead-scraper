@@ -121,7 +121,8 @@ _INTERESTED = ApprovedFollowup(
             body=(
                 "Hi {first_name}, {personal_line} That's exactly what the free "
                 "14-day trial is built for. Here's my calendar if a quick call works: "
-                "{booking_link}. Or I can get the trial started today. Which do you prefer?"
+                "{booking_link}. Or you can start the trial today here: "
+                "https://dashboard.anatainc.com/signup. Which do you prefer?"
             ),
         ),
         FollowupStep(

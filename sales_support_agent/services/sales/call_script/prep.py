@@ -725,7 +725,7 @@ def fallback_notes(booking: Booking, context: dict) -> dict:
         "objections": [
             {
                 "objection": "Prepared, not raised by them: we already have someone doing this.",
-                "answer": "The 14-day trial sits beside that. It is free, and it starts when Seller Central connects.",
+                "answer": "The 14-day trial sits beside that. It is free for 14 days with a card on file, then $99/mo Starter.",
             },
             {
                 "objection": "Prepared, not raised by them: $99 is too small to matter.",

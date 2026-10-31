@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 CLASSIFY_MODEL = "claude-haiku-4-5-20251001"
 DRAFT_MODEL = "claude-sonnet-4-6"
 MODEL = DRAFT_MODEL
-BOOKING_LINK = "https://app.fyxer.com/t/sales-team99/30"
+BOOKING_LINK = "https://calendar.app.google/5TwjbbpmKaGAQuBk8"
 DAVID_EMAIL = "david@anatainc.com"
 SIGNATURE = "Abby\nAccount Specialist, Anata"
 AI_DISCLOSURE = "I'm an AI account specialist on David's team."
@@ -64,8 +64,9 @@ INTEREST = {"interested": 1, "price": 1, "referral": 1, "question": 1, "opt_out"
 
 FACTS = f"""About Anata (only use these facts):
 - Anata Intelligence builds a brand's Amazon growth strategy and then runs the ad actions automatically to hit it.
-- Offer: a free 14-day trial. During it we build their Amazon strategy and test full ad automation on their account.
-- Plans start at $99 a month after the trial.
+- Offer: a free 14-day trial (card on file, nothing charged for 14 days), then the $99/mo Starter plan. Sign up: https://dashboard.anatainc.com/signup. We review results with them on day 10.
+- During the trial we build their Amazon strategy and test full ad automation on their account.
+- Never say no card is needed.
 - David Narayan is the founder and owner; he takes every call. Anata is based in Lehi, Utah.
 - Booking link for a call with David: {BOOKING_LINK}
 - The cold emails offered a short Amazon breakdown. David records a custom video for interested brands."""

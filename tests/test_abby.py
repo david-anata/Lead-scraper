@@ -671,8 +671,8 @@ def test_live_run_records_departed_notices_and_sends_nothing(engine):
         assert "Departed contact" in detail and needle in detail and "Nothing sent." in detail
 
 
-def test_prompt_uses_the_fyxer_link_signature_and_optional_founder_cc():
-    assert abby.BOOKING_LINK == "https://app.fyxer.com/t/sales-team99/30"
+def test_prompt_uses_the_booking_link_signature_and_optional_founder_cc():
+    assert abby.BOOKING_LINK == "https://calendar.app.google/5TwjbbpmKaGAQuBk8"
     assert abby.BOOKING_LINK in abby.SYSTEM
     assert "AI account specialist on David's team" in abby.SYSTEM
     assert "Never say \"virtual assistant\"" in abby.SYSTEM

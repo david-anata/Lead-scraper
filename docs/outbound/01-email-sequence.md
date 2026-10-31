@@ -1,6 +1,6 @@
 # Outbound Email Sequence — Amazon / marketplace management
 
-Lead offer: we run Amazon for consumer brands. Proof point: Zantrex, ROAS 2x to 3.5x.
+Lead offer: we run Amazon for consumer brands. Proof point: Zantrex grew revenue 40% within 30 days on our platform.
 
 This doc describes the live Instantly campaign `Anata // Claude`
 (id `56a13f93-a364-40f9-ab83-5b19a93f8eb1`). If you change one, change the other.
@@ -50,7 +50,7 @@ never renders as a gap in the sentence.
 
 {{personalization}}
 
-We run Amazon for consumer brands. Last one was Zantrex, ROAS 2x to 3.5x.
+We run Amazon for consumer brands. Zantrex grew revenue 40% within 30 days on our platform.
 
 {{RANDOM | Happy to | I can}} map out who's on your listings, what they're charging, and
 who's bidding on your brand name.
