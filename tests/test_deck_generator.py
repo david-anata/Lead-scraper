@@ -1896,8 +1896,87 @@ class _FakeMojiResearch:
 
 
 @unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for deck generator tests")
+class DeckApiKeyRouteTests(unittest.TestCase):
+    """Private deck API (/api/decks/generate, DECK_API_KEY)."""
+
+    _make_client = DeckRoutingTests._make_client
+
+    _TARGET_XRAY = (
+        b'Product Details,ASIN,URL,Image URL,Brand,Price  $,'
+        b'ASIN Revenue,ASIN Sales,BSR,Ratings,Review Count\n'
+        b'"My Target",B0TARGET01,https://amzn.com/dp/B0TARGET01,,MyBrand,29.99,$5000,200,1234,4.5,100\n'
+    )
+
+    def _client_with_deck_key(self, deck_api_key: str):
+        client, sf = self._make_client()
+        client.app.state.settings.deck_api_key = deck_api_key
+        return client, sf
+
+    def _post(self, client, path: str, headers=None):
+        return client.post(
+            path,
+            files=[
+                ("csv_files", ("target.csv", self._TARGET_XRAY, "text/csv")),
+                ("csv_files", ("competitors.csv", _xray_csv(), "text/csv")),
+            ],
+            data={
+                "target_product_input": "",
+                "category_label": "Fat Burner",
+                "case_study_url": "https://example.com/case-study",
+                "include_recommended_plan": "false",
+                "include_growth_plan": "false",
+            },
+            headers=headers or {},
+        )
+
+    def test_route_disabled_when_key_unset(self) -> None:
+        client, _sf = self._client_with_deck_key("")
+        resp = self._post(client, "/api/decks/generate", {"X-Deck-Api-Key": "anything"})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_missing_or_wrong_key_rejected(self) -> None:
+        client, sf = self._client_with_deck_key("test-deck-key")
+        self.assertEqual(self._post(client, "/api/decks/generate").status_code, 401)
+        self.assertEqual(
+            self._post(client, "/api/decks/generate", {"X-Deck-Api-Key": "wrong"}).status_code, 401
+        )
+        with session_scope(sf) as session:
+            self.assertEqual(DeckGenerationService(_build_settings(), session).list_recent_runs(), [])
+
+    def test_api_run_matches_manual_upload_and_lists_in_sales_assets(self) -> None:
+        from unittest import mock
+
+        client, sf = self._client_with_deck_key("test-deck-key")
+        api_resp = self._post(client, "/api/decks/generate", {"X-Deck-Api-Key": "test-deck-key"})
+        self.assertEqual(api_resp.status_code, 200, api_resp.text)
+        with mock.patch("sales_support_agent.api.router._is_admin_authenticated", return_value=True):
+            manual_resp = self._post(client, "/admin/api/generate-deck")
+            self.assertEqual(manual_resp.status_code, 200, manual_resp.text)
+            listing = client.get("/admin/api/deck-runs")
+        self.assertEqual(listing.status_code, 200, listing.text)
+
+        api_details, manual_details = api_resp.json()["details"], manual_resp.json()["details"]
+        self.assertEqual(set(api_details), set(manual_details))
+        for key in ("status", "output_type", "evidence_status", "market_evidence_sufficient"):
+            self.assertEqual(api_details[key], manual_details[key], key)
+
+        with session_scope(sf) as session:
+            runs = {
+                run.id: run
+                for run in session.execute(select(AutomationRun)).scalars()
+            }
+            api_run, manual_run = runs[api_details["run_id"]], runs[manual_details["run_id"]]
+            for attr in ("run_type", "trigger", "status"):
+                self.assertEqual(getattr(api_run, attr), getattr(manual_run, attr), attr)
+            self.assertEqual(set(api_run.summary_json or {}), set(manual_run.summary_json or {}))
+
+        listed_ids = [run["id"] for run in listing.json()["details"]["runs"]]
+        self.assertIn(api_details["run_id"], listed_ids)
+        self.assertIn(manual_details["run_id"], listed_ids)
+
+
 class IntelligenceV2TemplateTests(unittest.TestCase):
-    """template_version='intelligence_v2' is the default; inputs must still flow."""
+    """intelligence_v2 is opt-in (agency_v1 is the default); inputs must still flow."""
 
     def _generate(self, *, research=None, settings=None, **kwargs) -> tuple[str, dict]:
         session_factory = create_session_factory("sqlite:///:memory:")
@@ -1910,6 +1989,9 @@ class IntelligenceV2TemplateTests(unittest.TestCase):
             kwargs.setdefault("competitor_xray_csv_bytes", _xray_csv())
             kwargs.setdefault("competitor_xray_filename", "xray.csv")
             kwargs.setdefault("target_product_input", "B0TARGET01")
+            kwargs.setdefault("template_version", "intelligence_v2")
+            if kwargs["template_version"] is None:
+                del kwargs["template_version"]
             service.generate_deck(**kwargs)
         with session_scope(session_factory) as session:
             run = session.execute(
@@ -1918,8 +2000,16 @@ class IntelligenceV2TemplateTests(unittest.TestCase):
             summary = dict(run.summary_json or {})
         return str(summary.get("deck_html") or ""), summary
 
-    def test_default_template_is_intelligence_v2(self) -> None:
-        html, summary = self._generate()
+    def test_default_template_is_agency_v1(self) -> None:
+        # Default matches the agency_v1 look of run 1607; v2 is opt-in.
+        html, summary = self._generate(template_version=None)
+        self.assertEqual(summary.get("template_version"), "agency_v1")
+        self.assertIn('class="rail"', html)
+        for label in ("08 How it works", "09 Case studies", "10 Offer and pricing"):
+            self.assertIn(label, html)
+
+    def test_intelligence_v2_still_renders_when_chosen(self) -> None:
+        html, summary = self._generate(template_version="intelligence_v2")
         self.assertEqual(summary.get("template_version"), "intelligence_v2")
         self.assertIn("data-template-version='intelligence_v2'", html)
         for section in ("cover", "snapshot", "market", "search", "method", "plan", "proof", "offer", "next"):
@@ -1931,9 +2021,9 @@ class IntelligenceV2TemplateTests(unittest.TestCase):
         self.assertIn('class="rail"', html)
         self.assertNotIn("intelligence_v2", html)
 
-    def test_unknown_template_falls_back_to_v2(self) -> None:
+    def test_unknown_template_falls_back_to_agency_v1(self) -> None:
         _, summary = self._generate(template_version="nonsense")
-        self.assertEqual(summary.get("template_version"), "intelligence_v2")
+        self.assertEqual(summary.get("template_version"), "agency_v1")
 
     def test_cta_strip_on_every_slide(self) -> None:
         html, _ = self._generate()
@@ -2023,6 +2113,7 @@ class IntelligenceV2TemplateTests(unittest.TestCase):
             )
             # Proof copy ("+137% YoY") is a sourced case-study result, not a share.
             scope = _re.sub(r"<section class='slide' id='proof'.*?</section>", "", html, flags=_re.S)
+            scope = _re.sub(r'<section class="slide slide-proof".*?</section>', "", scope, flags=_re.S)
             scope = _re.sub(r"<(style|script)\b.*?</\1>", "", scope, flags=_re.S)
             shares = [float(m) for m in _re.findall(r"(\d+(?:\.\d+)?)%", scope)]
             self.assertTrue(all(s <= 100.0 for s in shares), (version, max(shares or [0])))
@@ -2056,6 +2147,7 @@ class IntelligenceV2TemplateTests(unittest.TestCase):
                 competitor_xray_csv_bytes=_xray_csv(),
                 competitor_xray_filename="xray.csv",
                 target_product_input="B0TARGET01",
+                template_version="intelligence_v2",
             )
         with session_scope(sf) as session:
             run = session.execute(select(AutomationRun)).scalar_one()
@@ -2064,3 +2156,32 @@ class IntelligenceV2TemplateTests(unittest.TestCase):
         response = client.get(f"/decks/{slug}/{run_id}/{token}")
         self.assertEqual(response.status_code, 200)
         self.assertIn("data-template-version='intelligence_v2'", response.text)
+
+
+class CategoryAwareCopyTests(unittest.TestCase):
+    TITLE = "Embera Bead Project Beaded Hoop Earrings for Women"
+
+    def test_main_keyword_prefers_niche_phrase(self) -> None:
+        from sales_support_agent.services.deck.dataset import pick_niche_keyword
+
+        phrases = ["earrings for women", "half hoop earrings", "beaded earrings for women", "statement earrings"]
+        self.assertEqual(pick_niche_keyword(phrases, reference_text=self.TITLE), "beaded earrings for women")
+
+    def test_missing_keywords_drop_off_niche_phrases(self) -> None:
+        from sales_support_agent.services.deck.dataset import niche_keyword_phrases
+
+        kept = niche_keyword_phrases(
+            ["statement earrings", "feather earrings", "black earrings for women", "beaded earrings", "hoop earrings"],
+            reference_text=self.TITLE + " Beaded Earrings",
+        )
+        self.assertEqual(kept, ["beaded earrings", "hoop earrings"])
+
+    def test_ingredient_wording_only_for_ingredient_categories(self) -> None:
+        from sales_support_agent.services.deck.dataset import _build_cro_recommendations, _build_creative_recommendations
+
+        jewelry = " ".join(_build_cro_recommendations(None, [], category_text=self.TITLE)
+                           + _build_creative_recommendations(None, [], category_text=self.TITLE))
+        self.assertNotIn("ingredient", jewelry)
+        self.assertNotIn("clinical", jewelry)
+        supplement = " ".join(_build_cro_recommendations(None, [], category_text="Fat Burner Supplement Capsules"))
+        self.assertIn("ingredient context", supplement)
