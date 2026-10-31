@@ -64,9 +64,10 @@ h1,h2,h3,.brand,.lv-head h3,.lv-card .k{font-family:var(--font-heading)}
 .side-head{padding:18px 18px 12px;border-bottom:1px solid var(--side-line)}
 .side-tools{border-bottom:1px solid var(--side-line)}
 .side-tools .tool:last-child{border-bottom:0}
-.brand{display:flex;gap:10px;align-items:center;font-weight:700;font-size:15px;line-height:1.25}
-.brand small{display:block;font-weight:400;color:var(--side-muted);font-size:13px}
-.mark{width:26px;height:26px;flex:none;background:var(--orange);clip-path:polygon(0 0,100% 100%,0 100%)}
+.brand{display:flex;gap:10px;align-items:center;font-weight:700;font-size:15px;line-height:1.25;color:inherit;text-decoration:none}
+.brand .brandmark{font-family:var(--font-heading);font-weight:800;font-size:22px;letter-spacing:-0.03em;line-height:1;color:var(--side-ink)}
+.brand .dot{color:var(--agent-blue)}
+.brand small{display:block;font-weight:400;color:var(--side-muted);font-size:13px;font-family:var(--font-body)}
 .search{position:relative;display:block;margin-top:14px}
 .search input{width:100%;font:inherit;font-size:14px;color:var(--side-ink);background:rgba(255,255,255,.07);border:1px solid var(--side-line);border-radius:8px;padding:9px 34px 9px 11px}
 .search input::placeholder{color:var(--side-muted)}
@@ -523,8 +524,8 @@ html.deck-open main{visibility:hidden}
 .dk-seg button + button{border-left:1px solid rgba(255,255,255,.35)}
 .dk-seg button[aria-pressed="true"]{background:#fff;color:var(--navy);font-weight:700}
 .dk-seg b{font-weight:700;opacity:.75}
-.dk-count{font-size:13px;color:#C2D9E6;font-variant-numeric:tabular-nums;white-space:nowrap}
-.dk-msg{flex-basis:100%;font-size:13px;color:#F9C8A5;line-height:1.4}
+.dk-count{font-size:13px;color:var(--agent-blue);font-variant-numeric:tabular-nums;white-space:nowrap}
+.dk-msg{flex-basis:100%;font-size:13px;color:var(--agent-surface-soft);line-height:1.4}
 .dk-msg[hidden]{display:none}
 .dk-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:14px 16px 16px;display:grid;gap:14px;align-content:start}
 @container (min-width:900px){.dk-body{grid-template-columns:minmax(0,1fr) 300px;align-items:start}.dk-notes{max-height:calc(100dvh - 250px);overflow-y:auto}}
@@ -696,7 +697,7 @@ html.deck-resizing,html.deck-resizing *{cursor:col-resize!important;user-select:
 .lv-dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
 .lv-dot.on{background:var(--t-red);box-shadow:0 0 0 4px var(--t-red-bg);animation:lvpulse 1.6s ease-in-out infinite}
 @keyframes lvpulse{50%{box-shadow:0 0 0 1px var(--t-red-bg)}}
-@media (prefers-reduced-motion:reduce){.lv-dot.on{animation:none}}
+@media (prefers-reduced-motion:reduce){.lv-dot.on{animation:none}.lv-bar i{animation:none;width:100%}}
 .lv-timer{font-variant-numeric:tabular-nums;font-weight:700;color:var(--ink)}
 .lv-pill{font-size:11.5px;font-weight:700;border-radius:4px;padding:2px 7px;background:var(--canvas);border:1px solid var(--line);color:var(--muted)}
 .lv-pill.ok{background:var(--t-green-bg);border-color:var(--t-green);color:var(--t-green)}
@@ -705,7 +706,8 @@ html.deck-resizing,html.deck-resizing *{cursor:col-resize!important;user-select:
 .lv p{margin:0;font-size:13.5px;line-height:1.45}
 .lv .hint{margin:0}
 .lv-btns{display:flex;gap:8px;flex-wrap:wrap}
-.lv-btn{font:inherit;font-size:13px;font-weight:700;border-radius:8px;padding:7px 12px;border:1px solid var(--navy);background:var(--navy);color:#fff;cursor:pointer}
+.lv-start{position:sticky;top:0;z-index:2;background:var(--paper);padding:2px 0 8px}
+.lv-btn{font-family:var(--font-heading);font-size:13px;font-weight:700;border-radius:var(--agent-radius-control);padding:8px 14px;min-height:42px;border:1px solid var(--navy);background:var(--navy);color:#fff;cursor:pointer}
 .lv-btn.sec{background:transparent;color:var(--ink);border-color:var(--line)}
 .lv-btn.end{background:var(--t-red);border-color:var(--t-red)}
 .lv-btn:disabled{opacity:.5;cursor:default}
@@ -752,7 +754,7 @@ nav a[data-sid].live-done .nn::after{content:"✓";font-size:12px}
 </header>
 <aside class="side" id="side" aria-label="Script navigation">
   <div class="side-head">
-    <div class="brand"><span class="mark" aria-hidden="true"></span><span>Anata<small>Discovery &amp; sales call script</small></span></div>
+    <a class="brand" href="/admin"><span class="brandmark">agent<span class="dot">.</span></span><span>Call script<small>Discovery and sales call script</small></span></a>
     <label class="search"><span class="sr">Search the script</span><input type="search" placeholder="Search the script" data-search autocomplete="off"><kbd>/</kbd></label>
     <div class="searchinfo" data-searchinfo hidden></div>
   </div>
@@ -1971,7 +1973,12 @@ nav a[data-sid].live-done .nn::after{content:"✓";font-size:12px}
       </div>
     </section>
     <section class="blk pane flowblk" id="pane-flow" role="tabpanel" aria-labelledby="tab-flow" data-pane="flow" hidden>
-      <div class="liveblk" data-live aria-live="polite"></div>
+      <div class="liveblk" data-live aria-live="polite">
+        <div class="lv">
+          <div class="lv-head"><span class="lv-dot" aria-hidden="true"></span><h3>Live call</h3></div>
+          <div class="lv-btns lv-start"><button type="button" class="lv-btn" data-lvgolive>Start live call</button></div>
+        </div>
+      </div>
       <div data-railties></div>
       <div data-flow></div>
       <div class="flow-actions">
@@ -3856,6 +3863,8 @@ nav a[data-sid].live-done .nn::after{content:"✓";font-size:12px}
   function list(){ return st.mode === 'full' ? ALL : P.list; }
   function persist(){ SS.save('ss-deck', {mode:st.mode, n:st.n, open:st.open, view:st.view}); }
   var open = false, fsOpen = false, aud = null;
+  var audChannelName = 'anata-call-present:' + ((window.__ANATA_CALL__ && window.__ANATA_CALL__.trackerId) || 'deck');
+  var audBC = null;
 
   /* ---------- Build the UI ---------- */
   var deck = document.createElement('section');
@@ -3869,7 +3878,7 @@ nav a[data-sid].live-done .nn::after{content:"✓";font-size:12px}
       '<span class="dk-title">Pitch deck</span>' +
       '<span class="dk-seg" role="group" aria-label="Which slides"><button type="button" data-mode="prospect" aria-pressed="true">For this prospect <b data-pcount></b></button><button type="button" data-mode="full" aria-pressed="false">Full deck <b>' + TOTAL + '</b></button></span>' +
       '<span class="dk-count" data-dcount aria-live="polite"></span>' +
-      '<button type="button" class="dk-btn primary" data-aud title="Open a window with just the slide, to share on screen">Audience window</button>' +
+      '<button type="button" class="dk-btn primary" data-aud title="Open a new browser tab with just the slide. This page still moves the slides.">Share tab</button>' +
       '<button type="button" class="dk-btn" data-fs title="Show the slide full screen (F)">Full screen</button>' +
       '<button type="button" class="dk-btn dk-tracker" data-dtracker>Close tracker <b data-count>' + (($('.railfab [data-count]') || {}).textContent || '0') + '</b>/7</button>' +
       '<span class="dk-msg" data-dmsg role="status" hidden></span>' +
@@ -4063,39 +4072,83 @@ nav a[data-sid].live-done .nn::after{content:"✓";font-size:12px}
     step(e.clientX < r.left + r.width / 3 ? -1 : 1);
   });
 
-  /* ---------- Audience window (pop-out to share on screen) ---------- */
+  /* ---------- Share tab (new browser tab, this page still moves the slides) ---------- */
+  function ensureAudienceChannel(){
+    if (audBC || !window.BroadcastChannel) return audBC;
+    try { audBC = new BroadcastChannel(audChannelName); } catch(e){ audBC = null; return null; }
+    audBC.onmessage = function(e){
+      var d = e.data || {};
+      if (!d || d.role !== 'presenter') return;
+      if (d.type === 'step' && (d.dir === 1 || d.dir === -1)) step(d.dir);
+      else if (d.type === 'ready') syncAudience();
+    };
+    return audBC;
+  }
+  function audWindowName(){
+    return 'anataPresent' + String((window.__ANATA_CALL__ && window.__ANATA_CALL__.trackerId) || 'deck').replace(/[^A-Za-z0-9]/g, '').slice(0, 24);
+  }
   function audOk(){ try { return !!(aud && !aud.closed && aud.document && aud.document.getElementById('s')); } catch(e){ return false; } }
   function syncAudience(){
     var b = $('[data-aud]', deck);
+    var u = abs(src(st.n));
     if (audOk()){
-      var s = aud.document.getElementById('s'), u = abs(src(st.n));
-      if (s.src !== u) s.src = u;
-      b.textContent = 'Audience window is open'; b.classList.add('live');
-    } else { aud = null; b.textContent = 'Audience window'; b.classList.remove('live'); }
+      var s = aud.document.getElementById('s');
+      if (s && s.getAttribute('src') !== u) s.src = u;
+      try { aud.document.title = 'Anata slides'; } catch(e){}
+      var ch = ensureAudienceChannel();
+      if (ch) ch.postMessage({role:'coach', type:'slide', src:u});
+      if (b){ b.textContent = 'Share tab is open'; b.classList.add('live'); }
+    } else {
+      aud = null;
+      if (b){ b.textContent = 'Share tab'; b.classList.remove('live'); }
+    }
+  }
+  function wirePresenter(w){
+    var doc = w.document, imgEl = doc.getElementById('s'), ch = null;
+    try { ch = new w.BroadcastChannel(audChannelName); } catch(e){ ch = null; }
+    if (ch){
+      ch.onmessage = function(e){
+        var d = e.data || {};
+        if (!d || d.role !== 'coach' || d.type !== 'slide' || !d.src || !imgEl) return;
+        if (imgEl.getAttribute('src') !== d.src) imgEl.src = d.src;
+      };
+    }
+    function send(dir){
+      if (ch) ch.postMessage({role:'presenter', type:'step', dir:dir});
+      else step(dir);
+    }
+    doc.addEventListener('keydown', function(e){
+      var dir = 0;
+      if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') dir = 1;
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') dir = -1;
+      if (!dir) return;
+      e.preventDefault();
+      send(dir);
+    });
+    doc.addEventListener('click', function(){ send(1); });
+    if (ch){ try { ch.postMessage({role:'presenter', type:'ready'}); } catch(e){} }
   }
   function openAudience(){
-    if (audOk()){ try { aud.focus(); } catch(e){} return; }
+    ensureAudienceChannel();
+    if (audOk()){ try { aud.focus(); } catch(e){} syncAudience(); return; }
     var w = null;
-    try { w = window.open('', 'ss-audience', 'popup=yes,width=1280,height=760'); } catch(e){ w = null; }
+    try { w = window.open('', audWindowName()); } catch(e){ w = null; }
     var ok = false;
     if (w){
       try {
+        var u = abs(src(st.n));
         w.document.open();
-        w.document.write('<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Anata</title><style>html,body{margin:0;height:100%;background:#000;overflow:hidden}img{display:block;width:100%;height:100%;object-fit:contain}</style></head><body><img id="s" alt="Presentation slide"></body></html>');
+        w.document.write('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Anata slides</title><style>html,body{margin:0;height:100%;background:#111;overflow:hidden}img{display:block;width:100%;height:100%;object-fit:contain;background:#000}</style></head><body><img id="s" alt="Presentation slide" src="' + esc(u) + '"></body></html>');
         w.document.close();
-        w.document.addEventListener('keydown', function(e){
-          if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' '){ e.preventDefault(); step(1); }
-          else if (e.key === 'ArrowLeft' || e.key === 'PageUp'){ e.preventDefault(); step(-1); }
-        });
-        w.document.addEventListener('click', function(){ step(1); });
+        wirePresenter(w);
         ok = true;
       } catch(e){ ok = false; try { w.close(); } catch(x){} }
     }
     if (ok){
       aud = w; syncAudience();
-      setMsg('Audience window opened. Share that window in Zoom or Meet, and keep this view for your notes. Arrow keys work in either window.');
+      setMsg('Share tab opened. Share that browser tab in Google Meet, and keep this page for your notes. Moving slides here moves them there.');
     } else {
-      setMsg('This view blocks pop-up windows, so the slide opened full screen instead. To present with your notes visible, open this page in its own browser tab and use Audience window there.');
+      setMsg('This view blocked the new tab, so the slide opened full screen instead. Allow tabs for this site, then use Share tab.');
       openFs();
     }
   }
