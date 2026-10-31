@@ -36,6 +36,31 @@ class LiveUiTests(unittest.TestCase):
     def test_live_copy_has_no_em_dashes(self) -> None:
         adapter = (service.ASSETS_DIR / "runtime_adapter.js").read_text(encoding="utf-8")
         self.assertNotIn("—", adapter)
+        page = (service.ASSETS_DIR / "call_script.html").read_text(encoding="utf-8")
+        self.assertNotIn("—", page)
+
+    def test_start_live_call_is_visible_before_the_prep_brief(self) -> None:
+        adapter = (service.ASSETS_DIR / "runtime_adapter.js").read_text(encoding="utf-8")
+        idle = adapter.split("function idleHTML()", 1)[1].split("function render()", 1)[0]
+        self.assertLess(idle.find("Start live call"), idle.find("prepBrief"))
+        armed = adapter.split("if (!live) {", 1)[1].split("if (!s.consentAt)", 1)[0]
+        self.assertIn("Start live call", armed)
+        self.assertIn(">Start live call</button>", self.page)
+
+    def test_share_tab_uses_a_browser_tab_and_broadcast_channel(self) -> None:
+        page = (service.ASSETS_DIR / "call_script.html").read_text(encoding="utf-8")
+        self.assertNotIn("popup=yes", page)
+        self.assertNotIn("Audience window", page)
+        self.assertIn("BroadcastChannel", page)
+        self.assertIn(">Share tab</button>", page)
+        self.assertIn("anata-call-present:", page)
+
+    def test_sidebar_uses_the_agent_wordmark(self) -> None:
+        self.assertIn('class="brandmark">agent<span class="dot">.</span>', self.page)
+        self.assertNotIn('class="mark"', self.page)
+        self.assertIn("lvfill", self.page)
+        adapter = (service.ASSETS_DIR / "runtime_adapter.js").read_text(encoding="utf-8")
+        self.assertIn("MOVE_HOLD_MS = 5000", adapter)
 
 
 if __name__ == "__main__":
