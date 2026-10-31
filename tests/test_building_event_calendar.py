@@ -27,7 +27,9 @@ from sales_support_agent.models.entities import (
 from sales_support_agent.services.building_event_calendar import (
     FULL_DAY_HOURS,
     MOUNTAIN,
+    WEEKDAY_LABELS,
     access_window,
+    month_grid,
     guest_hour_options,
     month_availability,
 )
@@ -235,6 +237,18 @@ class MonthAvailabilityTests(unittest.TestCase):
         past = [item for item in view["cells"] if item["is_past"]]
         self.assertTrue(past, "a current-month grid should contain past days")
         self.assertTrue(all(not item["selectable"] for item in past))
+
+
+class SundayWeekTests(unittest.TestCase):
+    def test_august_2026_opens_on_sunday_and_closes_on_saturday(self) -> None:
+        grid = month_grid(date(2026, 8, 1))
+        self.assertEqual(grid[0], date(2026, 7, 26))
+        self.assertEqual(grid[0].weekday(), 6)
+        self.assertEqual(grid[-1].weekday(), 5)
+        self.assertEqual(WEEKDAY_LABELS[0], "Sunday")
+        self.assertIn(date(2026, 8, 1), grid)
+        self.assertIn(date(2026, 8, 31), grid)
+        self.assertEqual(len(grid) % 7, 0)
 
 
 class GuestHourOptionTests(unittest.TestCase):

@@ -165,6 +165,20 @@ def _details_with_interview_hours(
     return effective
 
 
+def _parse_shown_month(month: str) -> date | None:
+    """Accept YYYY-MM from the calendar links, and a full date if one is pasted."""
+
+    text = str(month or "").strip()
+    if not text:
+        return None
+    try:
+        if len(text) == 7:
+            return date.fromisoformat(f"{text}-01")
+        return date.fromisoformat(text[:10]).replace(day=1)
+    except ValueError:
+        return None
+
+
 def _calendar_view(
     session: Any,
     *,
@@ -191,10 +205,7 @@ def _calendar_view(
             break
         except ValueError:
             continue
-    try:
-        shown = date.fromisoformat(f"{month}-01") if month else None
-    except ValueError:
-        shown = None
+    shown = _parse_shown_month(month)
     if shown is None:
         shown = (selected or datetime.now(MOUNTAIN).date()).replace(day=1)
 

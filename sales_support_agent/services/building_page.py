@@ -252,6 +252,8 @@ def render_building_page(
     csrf_token: str = "",
     notice: str = "",
     error: str = "",
+    arena_calendar_today: str = "",
+    arena_calendar_bookings: str = "",
 ) -> str:
     view = view if view in BUILDING_VIEWS else "today"
     page_title, page_purpose = BUILDING_VIEWS[view]
@@ -272,6 +274,10 @@ def render_building_page(
     launch_status = dict(launch_status or {})
     collections = list(collections or [])
     inquiry_filters = dict(inquiry_filters or {})
+    arena_calendar_today = arena_calendar_today or (
+        '<p class="form-note">The Arena calendar is not available yet.</p>'
+    )
+    arena_calendar_bookings = arena_calendar_bookings or arena_calendar_today
     nav = render_agent_nav(
         "building",
         user=user,
@@ -808,6 +814,7 @@ def render_building_page(
     reservation_rows = "".join(
         f"""
         <tr>
+          <td><strong>{_esc(item.get("customer_name") or "No name linked")}</strong></td>
           <td><strong>{_esc(item.get("space_name"))}</strong><span class="sub">{_esc(item.get("kind"))}</span></td>
           <td>{_esc(item.get("starts_at"))}</td>
           <td>{_badge(str(item.get("status") or "inquiry"))}</td>
@@ -1513,19 +1520,31 @@ def render_building_page(
             "next": "Triage or update the service request",
             "href": "/admin/building/operations",
         })
+    open_inquiry_stages = {"new", "responded", "qualified"}
+    inquiry_next = {
+        "new": "Respond and qualify",
+        "responded": "Finish qualification",
+        "qualified": "Review the date",
+    }
     for item in inquiries:
         lifecycle_stage = str((item.get("lifecycle") or {}).get("stage") or "new")
-        if lifecycle_stage != "new":
+        if lifecycle_stage not in open_inquiry_stages:
             continue
+        if lifecycle_stage == "new":
+            score = 95 if item.get("response_overdue") else 70
+        elif lifecycle_stage == "responded":
+            score = 62
+        else:
+            score = 58
         priority_items.append({
-            "score": 95 if item.get("response_overdue") else 65,
+            "score": score,
             "type": "Inquiry",
-            "title": item.get("name") or item.get("email"),
+            "title": item.get("name") or item.get("email") or item.get("phone") or "Unnamed lead",
             "detail": (
-                f"{item.get('kind', 'lead')} · {item.get('source', 'unknown source')}"
-                f" · respond by {item.get('response_due_at') or 'not set'}"
+                f"{lifecycle_stage.replace('_', ' ')} · {item.get('kind', 'lead')}"
+                f" · {item.get('source', 'unknown source')}"
             ),
-            "next": "Respond and qualify",
+            "next": inquiry_next[lifecycle_stage],
             "href": f"/admin/building/inquiries/{item.get('id')}",
         })
     for item in calendar_projections:
@@ -1572,10 +1591,23 @@ def render_building_page(
             "href": "/admin/building/billing",
         })
     priority_items.sort(key=lambda item: (-int(item["score"]), str(item["title"])))
+    inquiry_queue = [item for item in priority_items if item.get("type") == "Inquiry"]
+    other_queue = [item for item in priority_items if item.get("type") != "Inquiry"]
+    visible_inquiries = inquiry_queue[:40]
+    omitted_inquiries = len(inquiry_queue) - len(visible_inquiries)
+    visible_queue = visible_inquiries + other_queue[:8]
+    visible_queue.sort(key=lambda item: (-int(item["score"]), str(item["title"])))
     priority_rows = "".join(
         f"<tr><td>{_badge(str(item.get('type')))}</td><td><strong>{_esc(item.get('title'))}</strong><span class=\"sub\">{_esc(item.get('detail'))}</span></td><td><a class=\"queue-action\" href=\"{_esc(item.get('href'))}\">{_esc(item.get('next'))} →</a></td></tr>"
-        for item in priority_items[:12]
-    ) or '<tr><td colspan="3"><div class="empty"><strong>No urgent operating actions.</strong><br>New leads, failed integrations, readiness work, and service requests will appear here.</div></td></tr>'
+        for item in visible_queue
+    )
+    if omitted_inquiries:
+        priority_rows += (
+            '<tr><td colspan="3"><a class="queue-action" href="/admin/building/sales">'
+            f"{omitted_inquiries} more open leads are on Sales →</a></td></tr>"
+        )
+    if not priority_rows:
+        priority_rows = '<tr><td colspan="3"><div class="empty"><strong>No urgent operating actions.</strong><br>Open leads, failed integrations, readiness work, and service requests will appear here.</div></td></tr>'
     segment_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))} ({_esc(item.get("included_count", 0))} eligible)</option>'
         for item in segments
@@ -1656,8 +1688,36 @@ def render_building_page(
     .empty{{padding:18px 0;color:rgba(43,54,68,.62);line-height:1.55;}}
     .form-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding:20px 22px;}} .field{{display:grid;gap:6px;}} .field--wide{{grid-column:1/-1;}}
     .field-help{{color:var(--agent-ink-muted,#5d6977);font-size:12px;line-height:1.45;}}
-    details.advanced-disclosure>summary{{cursor:pointer;font-weight:600;font-size:13px;padding:6px 0;}}
+    .form-grid details.advanced-disclosure>summary,.field.advanced-disclosure>summary{{padding:6px 0;}}
     details.advanced-disclosure .form-grid{{padding:12px 0 0;}}
+    #building-performance .advanced-disclosure>.grid,#building-performance .advanced-disclosure>.table-wrap{{margin-inline:22px;}}
+    #building-performance .advanced-disclosure>.sub{{margin:0 22px 16px;}}
+    .lead-cal{{display:grid;gap:14px;padding:0 22px 18px;}}
+    .lead-cal__bar{{display:flex;align-items:center;justify-content:space-between;gap:12px;}}
+    .lead-cal__bar strong{{font:800 1rem/1 Montserrat,sans-serif;}}
+    .lead-cal__nav{{display:inline-flex;align-items:center;justify-content:center;min-width:38px;min-height:38px;border:1px solid var(--border);border-radius:8px;color:#397a9d;font-weight:800;text-decoration:none;}}
+    .lead-cal__grid{{width:100%;border-collapse:collapse;table-layout:fixed;}}
+    .lead-cal__grid th{{padding:6px 0;background:transparent;color:rgba(43,54,68,.62);font-size:11px;text-transform:uppercase;letter-spacing:.04em;text-align:center;}}
+    .lead-cal__grid abbr{{text-decoration:none;border:0;}}
+    .lead-cal__day{{padding:2px;vertical-align:top;}}
+    .lead-cal__day>span{{display:grid;gap:2px;align-content:start;min-height:58px;padding:6px;border:1px solid var(--border);border-radius:8px;}}
+    .lead-cal__num{{font-weight:800;font-size:13px;}}
+    .lead-cal__note{{color:rgba(43,54,68,.62);font-size:10px;line-height:1.25;}}
+    .lead-cal__day--pending>span{{background:#fff6e5;border-color:#e6c384;}}
+    .lead-cal__day--booked>span{{background:#eceff3;border-color:#c3cbd6;color:rgba(43,54,68,.62);}}
+    .lead-cal__day--external>span{{background:#f4f1fa;border-color:#cec3e6;color:rgba(43,54,68,.62);}}
+    .lead-cal__day--headsup>span{{background:#fffdf2;border-color:#ded7a8;}}
+    .lead-cal__day.is-outside>span{{opacity:.45;}}
+    .lead-cal__day.is-past>span{{opacity:.35;}}
+    .lead-cal__day.is-today .lead-cal__num{{color:#397a9d;}}
+    .lead-cal__legend{{display:flex;flex-wrap:wrap;gap:8px;}}
+    .lead-cal__key{{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border:1px solid var(--border);border-radius:999px;font-size:11px;font-weight:700;color:rgba(43,54,68,.62);}}
+    .lead-cal__key--pending{{background:#fff6e5;border-color:#e6c384;}}
+    .lead-cal__key--booked{{background:#eceff3;border-color:#c3cbd6;}}
+    .lead-cal__key--external{{background:#f4f1fa;border-color:#cec3e6;}}
+    .lead-cal__key--headsup{{background:#fffdf2;border-color:#ded7a8;}}
+    .lead-cal__warning{{margin:0;padding:10px 12px;border:1px solid #e6c384;border-radius:8px;background:#fff6e5;font-size:12px;}}
+    @media(max-width:600px){{.lead-cal{{padding-inline:14px;}}.lead-cal__day>span{{min-height:44px;padding:4px;}}.lead-cal__note{{display:none;}}}}
     .req{{color:#9a5a4e;font-weight:700;}}
     /* display:block, because .field is a grid and would put the asterisk on its own row. */
     .form-legend{{display:block;margin:0;color:var(--agent-ink-muted,#5d6977);font-size:12px;}}
@@ -1752,7 +1812,8 @@ def render_building_page(
     </section>
     <nav class="workspace-nav" aria-label="Building Control sections">{workspace_navigation}</nav>
     <div class="grid">
-      <section class="panel panel--wide building-view view-today" id="operator-queue"><div class="panel-head"><div><h2>Today</h2><p>The customer, revenue, readiness, and building actions that need attention first.</p></div><span class="count">{len(priority_items)} actions</span></div><div class="table-wrap"><table><thead><tr><th>Workstream</th><th>What needs attention</th><th>Next action</th></tr></thead><tbody>{priority_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-today" id="arena-calendar-today"><div class="panel-head"><div><h2>Arena calendar</h2><p>Open, held, and booked days for the month. Choosing a date still happens on the lead.</p></div></div>{arena_calendar_today}</section>
+      <section class="panel panel--wide building-view view-today" id="operator-queue"><div class="panel-head"><div><h2>Today</h2><p>The customer, revenue, readiness, and building actions that need attention first. Open sales leads stay on this list until they are won or lost.</p></div><span class="count">{len(visible_queue)} actions</span></div><div class="table-wrap"><table><thead><tr><th>Workstream</th><th>What needs attention</th><th>Next action</th></tr></thead><tbody>{priority_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-today" id="building-performance">
         <div class="panel-head"><div><h2>Building performance</h2><p>Sales, utilization, collected cash, and overdue receivables. Missing evidence stays visibly missing.</p></div><span class="count">{_esc(inquiry_metrics.get("total", 0))} inquiries</span></div>
         <div class="metrics" aria-label="Building performance summary">
@@ -1993,20 +2054,22 @@ def render_building_page(
           <input type="hidden" name="kind" value="event">
           <input type="hidden" name="source" value="staff">
           <input type="hidden" name="consent_to_contact" value="true">
-          <div class="field"><label for="lead-name">Name</label><input id="lead-name" name="name" required></div>
-          <div class="field"><label for="lead-email">Email</label><input id="lead-email" name="email" type="email" required></div>
-          <div class="field"><label for="lead-phone">Phone</label><input id="lead-phone" name="phone" type="tel"></div>
+          <p class="field field--wide form-legend" id="lead-required-note">Fields marked <span class="req">*</span> are needed. Email and phone are not both required.</p>
+          <div class="field"><label for="lead-name">Name <span class="req" aria-hidden="true">*</span></label><input id="lead-name" name="name" required aria-describedby="lead-required-note"></div>
+          <div class="field"><label for="lead-email">Email</label><input id="lead-email" name="email" type="email" aria-describedby="lead-required-note"></div>
+          <div class="field"><label for="lead-phone">Phone</label><input id="lead-phone" name="phone" type="tel" aria-describedby="lead-required-note"></div>
           <div class="field"><label for="lead-date">Preferred date</label><input id="lead-date" name="preferred_date" type="date"></div>
           <div class="field field--wide"><label for="lead-details">What do you know?</label><textarea id="lead-details" name="details" placeholder="Other possible dates, guest count, event type, budget, or anything discussed."></textarea></div>
           <div class="form-actions">
-            <span class="form-note">Adds the lead to the queue below. It does not hold a date, send an email, or subscribe the person to marketing.</span>
+            <span class="form-note">Name is required, plus an email or a phone number. Adds the lead to the queue below. It does not hold a date, send an email, or subscribe the person to marketing.</span>
             <button class="primary" type="submit">Add lead</button>
           </div>
         </form>
         </details>
       </section>
       <section class="panel panel--wide building-view view-bookings" id="review-event-date">
-        <div class="panel-head"><div><h2>Review an event date</h2><p>Create one authoritative setup-through-teardown window, conflict-check it, place a temporary Agent hold, and freeze a quote draft from approved terms. This does not send a contract, collect payment, or confirm a booking.</p></div></div>
+        <div class="panel-head"><div><h2>Review an event date</h2><p>The Arena calendar is the same one used on a lead. Create one authoritative setup-through-teardown window, conflict-check it, place a temporary Agent hold, and freeze a quote draft from approved terms. This does not send a contract, collect payment, or confirm a booking.</p></div></div>
+        {arena_calendar_bookings}
         <details class="task-creator"><summary>Review a date and prepare a hold</summary>
         <form class="form-grid" method="post" action="/admin/building/event-reviews">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
@@ -2094,7 +2157,7 @@ def render_building_page(
           <span class="sub">{_esc(inquiry_filters.get('test_count', 0))} recognized test records are hidden from the default prospect queue.</span>
         </form>
         <div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status and action</th><th>Source</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
-      <section class="panel panel--wide building-view view-bookings" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/contracts">Open contracts →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
+      <section class="panel panel--wide building-view view-bookings" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/contracts">Open contracts →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Customer</th><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-sales view-operations" id="building-tours"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-operations">
         <div class="panel-head">
