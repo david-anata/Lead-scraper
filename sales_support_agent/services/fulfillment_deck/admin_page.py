@@ -183,8 +183,10 @@ _STYLES = """
       .pricing-lines th:nth-child(2), .pricing-lines td:nth-child(2) { width: 25%; }
       .pricing-lines th:nth-child(3), .pricing-lines td:nth-child(3) { width: 25%; }
       .pricing-lines th:nth-child(4), .pricing-lines td:nth-child(4) { width: 26%; }
-      .pricing-lines__label { font-weight: 800; font-family: "Montserrat", sans-serif; font-size: 12px; }
-      .pricing-lines__sub { margin-top: 3px; color: rgba(43,54,68,0.55); font-size: 11.5px; line-height: 1.35; }
+      .pricing-lines__label { display:flex; align-items:center; gap:8px; font-weight: 800; font-family: "Montserrat", sans-serif; font-size: 12px; }
+      .info-dot { width:22px; height:22px; border-radius:999px; border:1px solid var(--border); background:#fff; color:var(--dark-blue); font:700 12px Montserrat,sans-serif; cursor:help; padding:0; line-height:20px; }
+      .pricing-include { display:flex; align-items:center; gap:6px; margin-top:8px; font-size:12px; font-weight:700; }
+      .pricing-include input { width:auto; min-width:18px; min-height:18px; }
       .pricing-cell { display:grid; gap:4px; }
       .pricing-cell label { font-size:10px; font-weight:800; font-family:"Montserrat", sans-serif; color:rgba(43,54,68,.58); letter-spacing:0; text-transform:uppercase; }
       .pricing-cell input { width:100%; min-height:36px; padding:0 10px; border-radius:8px; border:1px solid var(--border); font-size:13px; font-family:inherit; }
@@ -2065,13 +2067,24 @@ def render_rate_sheet_review_page(
     waiver_reason = _esc(str(sales_pricing.get("waiver_reason") or ""))
     pricing_reviewed = (summary.get("pricing_review") or {}).get("revision") == revision
     margin_approved = bool(sales_pricing.get("margin_approved"))
+    table_toggle_keys = {
+        "dtc_base_per_order", "dtc_additional_item", "receiving_per_pallet",
+        "receiving_precounted_box", "receiving_count_per_item",
+        "storage_short_per_pallet_mo", "storage_cubic_foot_mo", "kitting_per_unit",
+        "labeling_per_unit", "bagging_labeling_per_unit", "wholesale_per_unit",
+        "pallet_order_per_pallet", "returns_per_unit", "returns_receive_per_unit",
+        "returns_examination_per_unit", "returns_custom_steps_per_unit",
+        "monthly_tech_fee", "customer_service_monthly", "special_projects_per_hour",
+        "integration_setup_fee", "monthly_minimum", "late_fee_pct_per_7_days",
+    }
+    other_fee_rows = [row for row in fee_rows if str(row.get("fee_key") or "") not in table_toggle_keys]
     fee_checks = "".join(
         '<label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;font-weight:600;margin:6px 0">'
         f'<input type="checkbox" name="fee_waived" value="{_esc(str(row.get("fee_key") or ""))}" {"checked" if str(row.get("fee_key") or "") in waived_keys else ""} style="width:auto;margin-top:2px">'
         f'<span>{_esc(row.get("label") or row.get("fee_key"))} <span class="muted">({_esc(row.get("unit") or "")})</span></span>'
         '</label>'
-        for row in fee_rows
-    )
+        for row in other_fee_rows
+    ) or '<p class="muted">Every fee in this proposal is in the pricing table.</p>'
 
     from sales_support_agent.services.fulfillment_deck.quote import (
         BASELINE_RATES,
@@ -2209,11 +2222,47 @@ def render_rate_sheet_review_page(
     def _empty_cell(text: str = "No mapped field yet") -> str:
         return f'<div class="pricing-cell--empty">{_esc(text)}</div>'
 
+    line_fee_keys = {
+        "DTC pick & pack / order": "dtc_base_per_order",
+        "DTC additional item": "dtc_additional_item",
+        "Receiving / pallet": "receiving_per_pallet",
+        "Receiving pre-counted box": "receiving_precounted_box",
+        "Receiving counted item": "receiving_count_per_item",
+        "Storage / pallet/mo": "storage_short_per_pallet_mo",
+        "Storage / cubic foot/mo": "storage_cubic_foot_mo",
+        "Kitting / item": "kitting_per_unit",
+        "Labeling / item": "labeling_per_unit",
+        "Bagging + labeling / item": "bagging_labeling_per_unit",
+        "Wholesale / unit": "wholesale_per_unit",
+        "Pallet orders / pallet": "pallet_order_per_pallet",
+        "Returns / unit": "returns_per_unit",
+        "Return receive / unit": "returns_receive_per_unit",
+        "Return examination / unit": "returns_examination_per_unit",
+        "Return custom steps / unit": "returns_custom_steps_per_unit",
+        "Monthly tech fee": "monthly_tech_fee",
+        "Customer service / month": "customer_service_monthly",
+        "Special projects / hour": "special_projects_per_hour",
+        "Implementation & integration setup": "integration_setup_fee",
+        "Monthly minimum": "monthly_minimum",
+        "Late fee": "late_fee_pct_per_7_days",
+    }
+
     def _pricing_line(label: str, sub: str, cost: str, suggested: str, fee: str) -> str:
+        fee_key = line_fee_keys.get(label, "")
+        info = (
+            f'<button class="info-dot" type="button" title="{_esc(sub)}" aria-label="About {_esc(label)}">i</button>'
+            if sub else ""
+        )
+        toggle = ""
+        if fee_key:
+            checked = "" if fee_key in waived_keys else " checked"
+            toggle = (
+                f'<input type="hidden" name="fee_toggle" value="{_esc(fee_key)}">'
+                f'<label class="pricing-include"><input type="checkbox" name="fee_included" value="{_esc(fee_key)}"{checked}> Include</label>'
+            )
         return (
             "<tr>"
-            f'<td><div class="pricing-lines__label">{_esc(label)}</div>'
-            f'<div class="pricing-lines__sub">{_esc(sub)}</div></td>'
+            f'<td><div class="pricing-lines__label">{_esc(label)}{info}</div>{toggle}</td>'
             f"<td>{cost}</td>"
             f"<td>{suggested}</td>"
             f"<td>{fee}</td>"
@@ -2398,6 +2447,7 @@ def render_rate_sheet_review_page(
         ),
     ]
     pricing_lines_html = (
+        '<input type="hidden" name="fee_included_form" value="1">'
         '<table class="pricing-lines"><thead><tr>'
         '<th>Line item</th><th>Internal fulfillment cost</th><th>Suggested customer price</th><th>Final customer price</th>'
         '</tr></thead><tbody>'
@@ -2645,7 +2695,7 @@ def render_rate_sheet_review_page(
             <div class="review-section__body">
           <input type="hidden" name="actual_costs_form" value="1">
           {pricing_summary_html}
-          <p class="muted" style="margin-bottom:12px">Internal fulfillment costs are warehouse-only and never shown to the prospect. Final customer prices appear in the fulfillment proposal draft and go live only after publication. Leave a final price blank to use the agreement default plus any quote margin override.</p>
+          <p class="muted" style="margin-bottom:12px">Internal costs stay private. Leave a final price blank to use the agreement default. Turn Include off to drop a line, then give a reason before publishing.</p>
           {pricing_lines_html}
           <div class="field" style="margin-top:14px">
             <label for="rate_card_note">Rate card note (shown at bottom of Full Rate Card section)</label>
@@ -2663,7 +2713,8 @@ def render_rate_sheet_review_page(
           <p class="muted" style="margin-bottom:12px">Sales can waive or override any fee. Waivers are allowed, but publishing requires a reason so the proposal stays auditable.</p>
           <div class="grid2">
             <div class="field">
-              <label>Waived fees</label>
+              <label>Other waived fees</label>
+              <p class="muted">Pricing-table Include switches control the lines above. Use this list only for fees that are not in that table.</p>
               <div style="border:1px solid var(--border);border-radius:12px;padding:10px 12px;background:#fff;max-height:220px;overflow:auto">{fee_checks}</div>
             </div>
             <div>
