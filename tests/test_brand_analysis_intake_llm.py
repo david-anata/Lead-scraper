@@ -175,13 +175,13 @@ class CrossFilePeriodTests(unittest.TestCase):
     """Prior-year data living in a SEPARATE file (no year-labelled columns)
     must be recognised for YoY — the real Doggyvers case."""
 
-    def test_year_of_file_from_filename_and_title(self) -> None:
+    def test_years_of_file_from_filename_and_title(self) -> None:
         t = intake_mod._Table(source="x", header=["Profit and Loss"],
                               rows=[["January-December, 2024"], ["Net Revenue", "500000"]])
-        self.assertEqual(intake_mod._year_of_file("Financials 2024 V3.xlsx", [t]), 2024)
-        self.assertEqual(intake_mod._year_of_file("no-year.xlsx", [t]), 2024)  # from title row
-        self.assertIsNone(intake_mod._year_of_file(
-            "plain.xlsx", [intake_mod._Table(source="y", rows=[["Net Revenue", "1"]])]))
+        self.assertEqual(intake_mod._years_of_file("Financials 2024 V3.xlsx", [t]), {2024})
+        self.assertEqual(intake_mod._years_of_file("no-year.xlsx", [t]), {2024})  # from title row
+        self.assertEqual(intake_mod._years_of_file(
+            "plain.xlsx", [intake_mod._Table(source="y", rows=[["Net Revenue", "1"]])]), set())
 
     def test_separate_year_files_split_current_and_prior(self) -> None:
         cur = b"Line,Amount\nNet Revenue,1000000\nCOGS,400000\nNet Income,90000\n"

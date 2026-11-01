@@ -83,7 +83,8 @@ def _enrich_third_party_imports() -> set[str]:
                 queue.append(path)
             return
         top = name.split(".", 1)[0]
-        if top in STDLIB:
+        if top in STDLIB or top == "vercel":
+            # vercel.headers is injected by the Vercel Python runtime.
             return
         if top in LOCAL_TOP or top == "sales_support_agent":
             path = _module_path(name if top == "sales_support_agent" else top)

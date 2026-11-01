@@ -227,11 +227,15 @@ class MonthAvailabilityTests(unittest.TestCase):
 
     def test_past_days_cannot_be_picked(self) -> None:
         today = datetime.now(MOUNTAIN).date()
+        month = today.replace(day=1)
+        # The first of a month has no past day inside that month.
+        if today.day == 1:
+            month = (month - timedelta(days=1)).replace(day=1)
         with self.factory() as session:
             view = month_availability(
                 session,
                 calendar=mock.Mock(configured=False),
-                month=today.replace(day=1),
+                month=month,
                 space_id="arena",
             )
         past = [item for item in view["cells"] if item["is_past"]]

@@ -19,13 +19,13 @@ def _rows():
 
 
 def _trusted_packet():
-    packet = smart_cfo.build_ledger_packet(_rows())
+    packet = smart_cfo.build_ledger_packet(_rows(), as_of=date(2026, 7, 15))
     packet["analytical_summary"] = {"trust": {"ready": True}}
     return packet
 
 
 def test_packet_rolls_up_every_event_and_keeps_record_evidence():
-    packet = smart_cfo.build_ledger_packet(_rows())
+    packet = smart_cfo.build_ledger_packet(_rows(), as_of=date(2026, 7, 15))
     assert packet["record_count"] == 3
     assert {record_id for rollup in packet["merchant_rollups"] for record_id in rollup["record_ids"]} == {"bank-1", "bank-2", "invoice-1"}
     assert {rollup["evidence_ref"] for rollup in packet["merchant_rollups"]} == {"r1", "r2"}
@@ -37,7 +37,7 @@ def test_packet_excludes_cancelled_history_from_cfo_evidence_without_losing_the_
         "id": "cancelled-rent", "source": "clickup", "event_type": "outflow",
         "status": "cancelled", "vendor_or_customer": "Studio Rent",
         "category": "rent", "amount_cents": 4_000_000, "due_date": "2026-07-01",
-    }])
+    }], as_of=date(2026, 7, 15))
 
     assert packet["record_count"] == 3
     assert packet["excluded_terminal_count"] == 1
