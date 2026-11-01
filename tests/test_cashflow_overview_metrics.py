@@ -68,6 +68,50 @@ class TestCanonicalBalance(unittest.TestCase):
         self.assertEqual(source, "csv")
 
 
+class TestChartWindowBounds(unittest.TestCase):
+    def test_huge_daily_window_stays_within_a_year_each_way(self) -> None:
+        from sales_support_agent.services.cashflow.overview import (
+            _MAX_CHART_DAYS,
+            _build_daily_chart_data,
+        )
+
+        with (
+            patch("sales_support_agent.services.cashflow.overview.list_obligations", return_value=[]),
+            patch("sales_support_agent.models.database.kv_get_json", return_value=None),
+        ):
+            chart = _build_daily_chart_data(days_back=10_000_000, days_forward=10_000_000)
+
+        self.assertEqual(len(chart["labels"]), _MAX_CHART_DAYS * 2 + 1)
+        self.assertEqual(chart["cutoff_index"], _MAX_CHART_DAYS)
+
+    def test_huge_weekly_window_stays_within_two_years(self) -> None:
+        from sales_support_agent.services.cashflow.overview import (
+            _MAX_CHART_WEEKS,
+            _build_chart_data,
+        )
+
+        with (
+            patch("sales_support_agent.services.cashflow.overview.list_obligations", return_value=[]),
+            patch("sales_support_agent.models.database.kv_get_json", return_value=None),
+        ):
+            chart = _build_chart_data(period_weeks=10_000_000)
+
+        # Four historical weeks are always included ahead of the requested span.
+        self.assertEqual(len(chart["labels"]), _MAX_CHART_WEEKS + 4)
+
+    def test_negative_window_does_not_walk_backwards(self) -> None:
+        from sales_support_agent.services.cashflow.overview import _build_daily_chart_data
+
+        with (
+            patch("sales_support_agent.services.cashflow.overview.list_obligations", return_value=[]),
+            patch("sales_support_agent.models.database.kv_get_json", return_value=None),
+        ):
+            chart = _build_daily_chart_data(days_back=-50, days_forward=-10)
+
+        self.assertEqual(chart["labels"], [date.today().strftime("%b %d")])
+        self.assertEqual(chart["cutoff_index"], 0)
+
+
 def _make_week(net_cents: int = 0, inflow_cents: int = 0, outflow_cents: int = 0) -> SimpleNamespace:
     return SimpleNamespace(net_cents=net_cents, inflow_cents=inflow_cents, outflow_cents=outflow_cents)
 
