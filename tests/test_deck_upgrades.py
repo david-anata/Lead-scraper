@@ -26,6 +26,7 @@ try:
         _build_margin_snapshot_html,
         _label_compact_money_value,
     )
+    from sales_support_agent.services.deck.formatting import _resolve_target_price_label
     from sales_support_agent.services.deck.rendering import _aggregate_brands
     from sales_support_agent.services.product_research import EnrichedHeroProduct
 
@@ -57,6 +58,27 @@ class DeckMetricFormattingTests(unittest.TestCase):
         bucket = _aggregate_brands(products)[0]
         self.assertEqual(bucket["price_total"] / bucket["price_count"], 25.0)
         self.assertEqual(bucket["estimated_sessions"], 200)
+
+    def test_uploaded_asin_price_outranks_scrape_unless_operator_overrides_it(self) -> None:
+        uploaded, source = _resolve_target_price_label(
+            uploaded_price="$28.50",
+            uploaded_provenance="verified_asin",
+            scraped_price="$9.50",
+        )
+        self.assertEqual((uploaded, source), ("$28.50", "uploaded_xray"))
+        overridden, override_source = _resolve_target_price_label(
+            verified_price="$31.25",
+            uploaded_price="$28.50",
+            uploaded_provenance="verified_asin",
+            scraped_price="$9.50",
+        )
+        self.assertEqual((overridden, override_source), ("$31.25", "verified_aov"))
+        scraped, scraped_source = _resolve_target_price_label(
+            uploaded_price="$19.99",
+            uploaded_provenance="identity_match",
+            scraped_price="$24.00",
+        )
+        self.assertEqual((scraped, scraped_source), ("$24.00", "listing_enrichment"))
 
 
 class _FakeProductResearch:
@@ -169,6 +191,43 @@ class DeckUpgradeTests(unittest.TestCase):
         self.assertIn("15% TACOS media budget", html)
         self.assertIn("Implied TACOS", html)
         self.assertIn("24-month growth plan", html)
+
+    def test_matched_upload_price_beats_per_count_scrape(self) -> None:
+        """Slide 3 must show the Helium price for the matched ASIN.
+
+        Dixie Belle's enrichment returned the 3-pack per-count amount ($9.50)
+        and the comparison used it instead of the uploaded row.
+        """
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+
+        class _PerCountResearch(_FakeProductResearch):
+            def enrich_target_product(self, target: dict) -> EnrichedHeroProduct:
+                product = super().enrich_target_product(target)
+                return EnrichedHeroProduct(
+                    **{**product.__dict__, "price": "$9.50", "title": "Dixie Belle Nylon Brief 3-Pack"}
+                )
+
+        csv_bytes = (
+            "Product Details,ASIN,URL,Image URL,Brand,Price  $,ASIN Revenue,ASIN Sales,BSR,Ratings,Review Count\n"
+            "Hanes Women's Underwear Pack,B00FZR19OE,https://www.amazon.com/dp/B00FZR19OE,https://example.com/hanes.jpg,Hanes,11.99,1239425.14,103371,42,4.4,9725\n"
+            "Dixie Belle Nylon Brief 3-Pack,B0CZBQ7TCL,https://www.amazon.com/dp/B0CZBQ7TCL,https://example.com/dixie.jpg,Dixie Belle,28.50,41376.02,1406,82642,4.4,788\n"
+            "Molasus High Waisted,B0B27PLFYH,https://www.amazon.com/dp/B0B27PLFYH,https://example.com/molasus.jpg,Molasus,22.11,1087076.90,42540,90,4.5,1200\n"
+        ).encode("utf-8")
+        with session_scope(session_factory) as session:
+            service = DeckGenerationService(_build_settings(), session, amazon_client=_FakeAmazonClient())
+            service.product_research = _PerCountResearch()
+            service.generate_deck(
+                template_version="agency_v1",
+                competitor_xray_csv_bytes=csv_bytes,
+                competitor_xray_filename="Helium_10_Xray.csv",
+                target_product_input="B0CZBQ7TCL",
+                growth_plan_inputs={},
+            )
+        html = _deck_html(session_factory)
+        self.assertIn("$28.50", html)
+        self.assertNotIn("$9.50", html)
+        self.assertIn("+$16.51 vs best seller", html)
 
     # -- Task 1: growth plan renders for a prospect deck ------------------
     def test_growth_plan_renders_for_prospect_deck(self) -> None:

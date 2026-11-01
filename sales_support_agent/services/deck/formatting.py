@@ -504,6 +504,40 @@ def _build_price_comparison_summary(*, hero_price: str, market_average_price: fl
     if not benchmark_bits:
         return ""
     return f"The current price point is {hero_price} and compares {' '.join(benchmark_bits)}."
+
+
+_TRUSTED_UPLOAD_PROVENANCE = {"verified_asin", "candidate_asin_verified"}
+
+
+def _resolve_target_price_label(
+    *,
+    verified_price: str = "",
+    uploaded_price: str = "",
+    uploaded_provenance: str = "",
+    dedicated_target_export: bool = False,
+    scraped_price: str = "",
+) -> tuple[str, str]:
+    """Choose the price shown on the comparison slide.
+
+    An operator-entered average order value is an explicit override. Otherwise
+    an ASIN-matched Helium 10 price wins over a scraped or catalog price: the
+    upload is the row the operator reviewed, and enrichment has mistaken a
+    multipack's per-count amount for the checkout total. Scraped price is only
+    the fallback when that upload does not identify the ASIN.
+    """
+    verified = str(verified_price or "").strip()
+    if verified:
+        return verified, "verified_aov"
+    uploaded = str(uploaded_price or "").strip()
+    scraped = str(scraped_price or "").strip()
+    upload_trusted = dedicated_target_export or uploaded_provenance in _TRUSTED_UPLOAD_PROVENANCE
+    if upload_trusted and uploaded and uploaded.lower() != "n/a":
+        return uploaded, "uploaded_xray"
+    if scraped:
+        return scraped, "listing_enrichment"
+    if uploaded and uploaded.lower() != "n/a":
+        return uploaded, "uploaded_xray"
+    return "Unavailable", "unavailable"
 def _normalize_offers(values: list[str]) -> list[str]:
     allowed = {
         "channel_management": "channel_management",

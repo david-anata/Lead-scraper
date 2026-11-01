@@ -162,7 +162,17 @@ class ProductResearchService:
                 or _infer_brand_from_title(title)
             ).strip()
             description = (page_data.get("description", "") or public_page_data.get("description", "") or "").strip()
-            price = (page_data.get("price", "") or remote_catalog.get("price", "") or public_page_data.get("price", "") or "").strip()
+            unit_keys = set(page_data.get("unit_prices") or []) | set(public_page_data.get("unit_prices") or [])
+            page_price = str(page_data.get("price") or "").strip()
+            catalog_price = str(remote_catalog.get("price") or "").strip()
+            public_price = str(public_page_data.get("price") or "").strip()
+            # A blocked page can still leave the catalog client holding the
+            # per-count amount. Do not fill the checkout price with that.
+            if _price_is_unit_amount(catalog_price, unit_keys):
+                catalog_price = ""
+            if _price_is_unit_amount(public_price, unit_keys):
+                public_price = ""
+            price = (page_price or catalog_price or public_price).strip()
             dimensions = (
                 (catalog.dimensions if catalog else "")
                 or (catalog.package_dimensions if catalog else "")
@@ -446,6 +456,124 @@ def _amazon_session_get(url: str, *, attempts: int = 3) -> tuple[str, list[str]]
     return "", warnings
 
 
+_OFFSCREEN_PRICE_RE = re.compile(
+    r'<span class="a-offscreen">\s*(\$[0-9,]+(?:\.[0-9]{2})?)\s*</span>',
+    flags=re.IGNORECASE,
+)
+_PER_UNIT_LANGUAGE_RE = re.compile(
+    r"per\s+(?:count|item|unit)|/\s*(?:count|item|unit)",
+    flags=re.IGNORECASE,
+)
+_PRICE_AMOUNT_RE = re.compile(
+    r'"priceAmount"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?',
+    flags=re.IGNORECASE,
+)
+
+
+def _price_amount_key(raw: str) -> str:
+    cleaned = str(raw or "").replace("$", "").replace(",", "").strip()
+    if not cleaned:
+        return ""
+    try:
+        return f"{float(cleaned):.2f}"
+    except ValueError:
+        return ""
+
+
+def _format_checkout_price(raw: str) -> str:
+    key = _price_amount_key(raw)
+    if not key:
+        return ""
+    return f"${float(key):,.2f}"
+
+
+def _price_is_unit_amount(price: str, unit_keys: set[str]) -> bool:
+    key = _price_amount_key(price)
+    return bool(key) and key in unit_keys
+
+
+def _unit_price_keys(content: str) -> set[str]:
+    """Amounts the page explicitly labels as per count, per item, or per unit."""
+    keys: set[str] = set()
+    for key_name in ("unitPrice", "pricePerUnit", "perUnitPrice"):
+        for match in re.finditer(rf'"{key_name}"\s*:\s*\{{', content, flags=re.IGNORECASE):
+            window = content[match.end() : match.end() + 400]
+            amount = _PRICE_AMOUNT_RE.search(window)
+            if not amount:
+                continue
+            normalized = _price_amount_key(amount.group(1))
+            if normalized:
+                keys.add(normalized)
+    for match in _OFFSCREEN_PRICE_RE.finditer(content):
+        tail = content[match.end() : match.end() + 80]
+        if not _PER_UNIT_LANGUAGE_RE.search(tail):
+            continue
+        normalized = _price_amount_key(match.group(1))
+        if normalized:
+            keys.add(normalized)
+    return keys
+
+
+def _first_non_unit_amount(window: str, unit_keys: set[str]) -> str:
+    for amount in _PRICE_AMOUNT_RE.finditer(window):
+        normalized = _price_amount_key(amount.group(1))
+        if normalized and normalized not in unit_keys:
+            return _format_checkout_price(normalized)
+    return ""
+
+
+def _extract_amazon_checkout_price(content: str) -> tuple[str, set[str]]:
+    """Return the checkout total, never a multipack's per-count price.
+
+    Dixie Belle's 3-pack page exposed both $28.50 (the amount charged) and
+    $9.50 per count. Taking the first screen-reader price, or the first
+    ``priceAmount`` on the page, stored the per-count figure as the list price.
+    """
+    unit_keys = _unit_price_keys(content)
+    if not content:
+        return "", unit_keys
+
+    pay = re.search(r'"priceToPay"\s*:\s*\{', content, flags=re.IGNORECASE)
+    if pay:
+        chosen = _first_non_unit_amount(content[pay.end() : pay.end() + 800], unit_keys)
+        if chosen:
+            return chosen, unit_keys
+
+    visible = re.search(
+        r'class="[^"]*\bpriceToPay\b[^"]*"[^>]*>.{0,600}?<span class="a-offscreen">\s*(\$[0-9,]+(?:\.[0-9]{2})?)\s*</span>',
+        content,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if visible:
+        normalized = _price_amount_key(visible.group(1))
+        if normalized and normalized not in unit_keys:
+            return _format_checkout_price(normalized), unit_keys
+
+    for start in re.finditer(
+        r'<div[^>]+id="(?:corePrice|apex_desktop|buybox)[^"]*"',
+        content,
+        flags=re.IGNORECASE,
+    ):
+        region = content[start.start() : start.start() + 12000]
+        for match in _OFFSCREEN_PRICE_RE.finditer(region):
+            tail = region[match.end() : match.end() + 80]
+            if _PER_UNIT_LANGUAGE_RE.search(tail):
+                continue
+            normalized = _price_amount_key(match.group(1))
+            if normalized and normalized not in unit_keys:
+                return _format_checkout_price(normalized), unit_keys
+
+    if not _PER_UNIT_LANGUAGE_RE.search(content):
+        unique: list[str] = []
+        for raw in _OFFSCREEN_PRICE_RE.findall(content):
+            normalized = _price_amount_key(raw)
+            if normalized and normalized not in unit_keys and normalized not in unique:
+                unique.append(normalized)
+        if len(unique) == 1:
+            return _format_checkout_price(unique[0]), unit_keys
+    return "", unit_keys
+
+
 def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
     if not source_url:
         return {"warnings": ["Amazon target product URL was missing."]}
@@ -497,40 +625,7 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
             r'<meta\s+property="og:image"\s+content="([^"]+)"',
         )
     image_url = (image_url or "").replace("\\u0026", "&").replace("\\/", "/")
-    # Scope price extraction to Amazon's buy-box total. A global
-    # ``a-offscreen`` match can be a multipack's per-count value; that made a
-    # $28.50 three-pack appear as a $9.50 product and polluted AOV/margin math.
-    buy_box = _extract_first(
-        content,
-        r'<div[^>]+id="corePrice[^\"]*"[^>]*>(.*?)</div>\s*</div>',
-        r'<div[^>]+id="apex_desktop"[^>]*>(.*?)</div>\s*</div>',
-        r'<div[^>]+id="buybox"[^>]*>(.*?)</div>\s*</div>',
-    )
-    price = _extract_first(
-        buy_box,
-        r'<span[^>]+class="[^"]*a-price[^"]*"[^>]*>.*?<span class="a-offscreen">\s*([$][0-9,]+(?:\.[0-9]{2})?)\s*</span>',
-        r'<span class="a-offscreen">\s*([$][0-9,]+(?:\.[0-9]{2})?)\s*</span>',
-    ).strip()
-    if not price:
-        price = _extract_first(
-            content,
-            r'"priceToPay"\s*:\s*\{[^{}]*"priceAmount"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?',
-            r'"buyingPrice"\s*:\s*"?([$]?[0-9,]+(?:\.[0-9]{2})?)"?',
-            r'"priceAmount":"([^"]+)"',
-            r'"priceAmount":\s*([0-9]+(?:\.[0-9]+)?)',
-        ).strip()
-    if not price:
-        # Legacy/minimal pages may expose only one unscoped price. Accept it
-        # only when the document has no per-count language; multipacks must
-        # never fall back to the ambiguous global value.
-        global_prices = re.findall(
-            r'<span class="a-offscreen">\s*([$][0-9,]+(?:\.[0-9]{2})?)\s*</span>',
-            content,
-        )
-        if len(global_prices) == 1 and not re.search(r"per\s+(?:count|item|unit)|/\s*(?:count|item|unit)", content, flags=re.IGNORECASE):
-            price = global_prices[0]
-    if price and not price.startswith("$") and re.fullmatch(r"\d+(\.\d+)?", price):
-        price = f"${price}"
+    price, unit_prices = _extract_amazon_checkout_price(content)
     feature_bullets = _clean_scraped_text(
         html_lib.unescape(
             _extract_first(
@@ -598,6 +693,7 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
         "title": title,
         "image_url": image_url,
         "price": price,
+        "unit_prices": sorted(unit_prices),
         "description": description,
         "brand_name": brand_name,
         "category": category,

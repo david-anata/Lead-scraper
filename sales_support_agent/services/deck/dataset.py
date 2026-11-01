@@ -617,7 +617,7 @@ def _build_margin_snapshot_html(price_label: str) -> str:
         )
 
     tiles = (
-        _tile("List price", f"{price:,.2f}", "from the live listing")
+        _tile("List price", f"{price:,.2f}", "price used on this comparison")
         + _tile(
             "Amazon referral fee",
             f"{referral_fee:,.2f}",
@@ -1090,13 +1090,14 @@ def _build_target_opportunities(
     search_insights: dict[str, list[str]],
     market_average_price: float,
     best_seller: XrayProduct | None,
+    price_label: str = "",
 ) -> tuple[list[str], list[str]]:
     strengths: list[str] = []
     gaps: list[str] = []
     if hero_product.image_url:
         strengths.append("The listing already has a usable primary image, so the creative refresh can focus on sequencing and proof.")
     price_summary = _build_price_comparison_summary(
-        hero_price=hero_product.price,
+        hero_price=price_label or hero_product.price,
         market_average_price=market_average_price,
         best_seller_price=(best_seller.price_label if best_seller else ""),
     )
