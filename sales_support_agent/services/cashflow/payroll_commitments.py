@@ -12,6 +12,7 @@ import json
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from sales_support_agent.models.database import get_engine, upsert_cash_event
 
@@ -41,6 +42,14 @@ def _as_date(value: Any) -> date | None:
         return None
 
 
+def _missing_hr_payroll_table(exc: Exception) -> bool:
+    """True when the HR payroll table has not been migrated into this database."""
+    message = str(getattr(exc, "orig", exc)).lower()
+    return "hr_payroll_runs" in message and (
+        "no such table" in message or "does not exist" in message
+    )
+
+
 def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
     """Idempotently mirror HR obligations, never HR payment claims.
 
@@ -50,19 +59,26 @@ def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
     eligibility without touching any posted transaction.
     """
     engine = get_engine()
-    with engine.connect() as connection:
-        runs = [dict(row._mapping) for row in connection.execute(text("""
-            SELECT id, base44_id, pay_period_start, pay_period_end, pay_date,
-                   status, total_gross_cents, total_net_cents, employee_count,
-                   initiated_by, notes
-            FROM hr_payroll_runs
-            ORDER BY pay_date, id
-        """)).fetchall()]
-        existing_rows = [dict(row._mapping) for row in connection.execute(text("""
-            SELECT id, source_id, amount_cents, due_date, status, source_status,
-                   confidence, workflow_status, pay_priority, owner, archived_at
-            FROM cash_events WHERE source='hr_payroll'
-        """)).fetchall()]
+    # Finance pages and CSV upload call this on every read. A database that
+    # has not had the HR migration yet should keep working with no payroll rows.
+    try:
+        with engine.connect() as connection:
+            runs = [dict(row._mapping) for row in connection.execute(text("""
+                SELECT id, base44_id, pay_period_start, pay_period_end, pay_date,
+                       status, total_gross_cents, total_net_cents, employee_count,
+                       initiated_by, notes
+                FROM hr_payroll_runs
+                ORDER BY pay_date, id
+            """)).fetchall()]
+            existing_rows = [dict(row._mapping) for row in connection.execute(text("""
+                SELECT id, source_id, amount_cents, due_date, status, source_status,
+                       confidence, workflow_status, pay_priority, owner, archived_at
+                FROM cash_events WHERE source='hr_payroll'
+            """)).fetchall()]
+    except (OperationalError, ProgrammingError) as exc:
+        if _missing_hr_payroll_table(exc):
+            return {"synced": 0, "archived": 0}
+        raise
     existing_by_id = {str(row["id"]): row for row in existing_rows}
 
     active_ids: set[str] = set()
@@ -95,6 +111,13 @@ def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
             "Paid requires allocated posted bank evidence."
         )
         current = existing_by_id.get(event_id)
+        # upsert_cash_event stores a past pending obligation as overdue. That
+        # derived status is not a payroll edit, so a later read must not write
+        # the row again just to put pending back.
+        stored_status = str((current or {}).get("status") or "")
+        status_matches = stored_status == finance_status or (
+            finance_status == "pending" and stored_status == "overdue"
+        )
         if active and str((current or {}).get("workflow_status") or "") in {
             "paid", "partially_paid",
         }:
@@ -129,7 +152,7 @@ def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
             str(current.get("source_id") or "") == run_id,
             int(current.get("amount_cents") or 0) == net,
             _as_date(current.get("due_date")) == _as_date(run.get("pay_date")),
-            str(current.get("status") or "") == finance_status,
+            status_matches,
             str(current.get("source_status") or "") == hr_status,
             str(current.get("confidence") or "") == confidence,
             str(current.get("workflow_status") or "") == workflow_status,
@@ -178,12 +201,18 @@ def sync_hr_payroll_commitments(*, actor: str = "system") -> dict[str, int]:
 
 def active_hr_pay_dates() -> list[date]:
     """Dates where HR replaces a historical payroll prediction."""
-    with get_engine().connect() as connection:
-        values = connection.execute(text("""
-            SELECT pay_date FROM hr_payroll_runs
-            WHERE status IN ('draft', 'processing', 'partial', 'completed')
-              AND pay_date IS NOT NULL
-        """)).scalars().all()
+    engine = get_engine()
+    try:
+        with engine.connect() as connection:
+            values = connection.execute(text("""
+                SELECT pay_date FROM hr_payroll_runs
+                WHERE status IN ('draft', 'processing', 'partial', 'completed')
+                  AND pay_date IS NOT NULL
+            """)).scalars().all()
+    except (OperationalError, ProgrammingError) as exc:
+        if _missing_hr_payroll_table(exc):
+            return []
+        raise
     return [parsed for value in values if (parsed := _as_date(value)) is not None]
 
 
