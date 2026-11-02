@@ -9,6 +9,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -288,6 +289,41 @@ class TestDealBoardP1Routes(unittest.TestCase):
     def test_all_deals_empty_state_render(self) -> None:
         html = render_deal_board_page(DealBoard(), show_my=False)
         self.assertIn("Sync now", html)
+
+    def test_deal_board_error_does_not_render_the_traceback(self) -> None:
+        secret = "postgresql://anata:supersecret@db.internal/app"
+        with mock.patch(
+            "sales_support_agent.api.sales_router.build_deal_board",
+            side_effect=RuntimeError(secret),
+        ):
+            resp = self.client.get("/admin/sales/deals")
+        self.assertEqual(resp.status_code, 500)
+        self.assertNotIn("supersecret", resp.text)
+        self.assertNotIn("Traceback", resp.text)
+        self.assertIn("The error was recorded", resp.text)
+
+    def test_sales_diag_omits_database_url_and_tracebacks(self) -> None:
+        secret = "postgresql://a:secret@h/db"
+        settings = app.state.settings
+        previous = getattr(settings, "sales_agent_db_url", "")
+        try:
+            object.__setattr__(settings, "sales_agent_db_url", secret)
+            with mock.patch(
+                "sales_support_agent.services.sales.deal_board.build_deal_board",
+                side_effect=RuntimeError(secret),
+            ):
+                resp = self.client.get("/admin/sales/diag")
+        finally:
+            object.__setattr__(settings, "sales_agent_db_url", previous)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertNotIn("secret", resp.text)
+        self.assertNotIn("Traceback", resp.text)
+        self.assertNotIn("url_prefix", body.get("db", {}))
+        self.assertNotIn("db_url_prefix", body.get("state", {}))
+        self.assertTrue(body["state"]["db_url_configured"])
+        self.assertEqual(body["deal_board"]["error"], "deal_board_failed")
+        self.assertEqual(body["db"]["dialect"], "sqlite")
 
 
 if __name__ == "__main__":

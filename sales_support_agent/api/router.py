@@ -855,7 +855,6 @@ def health(request: Request) -> ApiMessage:
 def sales_diag(request: Request) -> JSONResponse:
     """Deep diagnostic for the Sales Deal Board. No sales.deals tool required —
     only an active admin session. Returns a JSON report of every component."""
-    import traceback
     from sqlalchemy import inspect as sa_inspect, text as sa_text
 
     report: dict = {}
@@ -871,9 +870,11 @@ def sales_diag(request: Request) -> JSONResponse:
             "is_superadmin": (user or {}).get("is_superadmin", False),
         }
     except Exception:
-        report["auth"] = {"error": traceback.format_exc()}
+        logger.exception("[sales-diag] auth check failed")
+        report["auth"] = {"error": "auth_check_failed"}
 
-    # 2. app.state attributes
+    # 2. app.state attributes. Never copy a connection string: the first
+    # characters of a database URL include the password.
     try:
         state = request.app.state
         report["state"] = {
@@ -886,18 +887,19 @@ def sales_diag(request: Request) -> JSONResponse:
             report["state"]["stale_deal_days"] = getattr(s, "stale_deal_days", "MISSING")
             report["state"]["hubspot_token_set"] = bool(getattr(s, "hubspot_api_token", ""))
             report["state"]["hubspot_portal_id"] = getattr(s, "hubspot_portal_id", "MISSING")
-            report["state"]["db_url_prefix"] = str(getattr(s, "sales_agent_db_url", ""))[:30]
+            report["state"]["db_url_configured"] = bool(str(getattr(s, "sales_agent_db_url", "") or "").strip())
     except Exception:
-        report["state"] = {"error": traceback.format_exc()}
+        logger.exception("[sales-diag] state check failed")
+        report["state"] = {"error": "state_check_failed"}
 
-    # 3. DB connection + table existence
+    # 3. DB connection + table existence. Dialect only — engine.url renders
+    # the username and password.
     try:
         from sales_support_agent.models.database import session_scope
         sf = request.app.state.session_factory
         engine = sf.kw.get("bind")
         report["db"] = {
             "dialect": engine.dialect.name if engine else "no engine",
-            "url_prefix": str(engine.url)[:40] if engine else "",
         }
         insp = sa_inspect(engine)
         tables = set(insp.get_table_names())
@@ -908,7 +910,8 @@ def sales_diag(request: Request) -> JSONResponse:
             for col in ("last_inbound_at", "last_meaningful_touch_at", "deal_stage_label", "is_won"):
                 report["db"][f"col_hubspot_deals.{col}"] = col in cols
     except Exception:
-        report["db"] = {"error": traceback.format_exc()}
+        logger.exception("[sales-diag] database check failed")
+        report["db"] = {"error": "database_check_failed"}
 
     # 4. build_deal_board dry run
     try:
@@ -919,7 +922,8 @@ def sales_diag(request: Request) -> JSONResponse:
             board = build_deal_board(session, stale_days=14)
         report["deal_board"] = {"ok": True, "total_open": board.total_open, "rows": len(board.rows)}
     except Exception:
-        report["deal_board"] = {"ok": False, "error": traceback.format_exc()}
+        logger.exception("[sales-diag] deal board check failed")
+        report["deal_board"] = {"ok": False, "error": "deal_board_failed"}
 
     return JSONResponse(report)
 

@@ -1033,7 +1033,6 @@ async def create_deal(request: Request) -> Response:
 
 @router.get("/deals", response_class=HTMLResponse)
 def deal_board(request: Request, my: bool = False) -> HTMLResponse:
-    import traceback
     try:
         # Kick a background refresh on load (non-blocking); render from the mirror.
         try:
@@ -1059,12 +1058,11 @@ def deal_board(request: Request, my: bool = False) -> HTMLResponse:
                 portal_id=settings.hubspot_portal_id or "",
             )
         )
-    except Exception as _exc:  # noqa: BLE001
-        _tb = traceback.format_exc()
+    except Exception:  # noqa: BLE001
         logger.exception("[sales] deal_board route error")
         return HTMLResponse(
-            f"<pre style='font-family:monospace;padding:2rem;white-space:pre-wrap'>"
-            f"Deal Board Error — check Render logs for full context.\n\n{_tb}</pre>",
+            "<pre style='font-family:monospace;padding:2rem;white-space:pre-wrap'>"
+            "Deal Board could not be loaded. The error was recorded.</pre>",
             status_code=500,
         )
 
