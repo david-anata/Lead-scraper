@@ -141,6 +141,12 @@ class ProspectSiteRedirectTests(unittest.TestCase):
         self.assertIn("Widget A", text)
         self.assertEqual(warnings, [])
 
+    def test_refuses_a_private_address_before_any_request(self) -> None:
+        with mock.patch("requests.get") as get:
+            text = intake._fetch_website("http://169.254.169.254/latest/meta-data/", [])
+        get.assert_not_called()
+        self.assertEqual(text, "")
+
     def test_refuses_a_redirect_to_a_private_or_metadata_address(self) -> None:
         for target in ("http://127.0.0.1/admin", "http://169.254.169.254/latest/meta-data/", "http://10.0.0.5/"):
             text, warnings = self._fetch([(302, target, "")])

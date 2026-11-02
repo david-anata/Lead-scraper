@@ -999,23 +999,65 @@ def _og_tag(html: str, name: str) -> str:
     return (match.group(1) or match.group(2) or "").strip()
 
 
+def _store_host(identifier: str) -> str:
+    """Hostname the visitor named, without userinfo, path, or a scheme."""
+    from urllib.parse import urlparse
+
+    raw = str(identifier or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    return str(parsed.hostname or "")[:253]
+
+
+def _read_public_store_html(url: str) -> str:
+    """GET one public storefront page.
+
+    Redirects are followed one hop at a time. A private, link-local, loopback,
+    or credentialed target — including a redirect onto one — returns "" so the
+    intake cannot be used to read an internal address.
+    """
+    from urllib.parse import urljoin
+
+    import requests
+
+    from sales_support_agent.services.public_url_guard import public_http_url
+
+    current = public_http_url(url)
+    if not current:
+        return ""
+    response = None
+    for _ in range(5):
+        response = requests.get(
+            current,
+            timeout=_IDENTITY_TIMEOUT_SECONDS,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; AnataIntake/1.0)"},
+            allow_redirects=False,
+        )
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            break
+        nxt = public_http_url(urljoin(current, str(response.headers.get("location") or "")))
+        if not nxt:
+            return ""
+        current = nxt
+    else:
+        return ""
+    if response is None or not response.ok:
+        return ""
+    return (response.text or "")[:500_000]
+
+
 def _store_identity(identifier: str) -> dict[str, str]:
     """Cheap identity lookup for a store domain: fetch the homepage and regex
     out og:site_name / og:title / og:image. Graceful empties on any failure."""
-    domain = re.sub(r"^https?://", "", identifier.strip(), flags=re.IGNORECASE).strip("/").split("/")[0]
+    domain = _store_host(identifier)
     identity = {"domain": domain, "brand_name": "", "product_title": "", "product_image": ""}
     if not domain:
         return identity
     try:
-        import requests
-
-        resp = requests.get(
-            f"https://{domain}",
-            timeout=_IDENTITY_TIMEOUT_SECONDS,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; AnataIntake/1.0)"},
-        )
-        resp.raise_for_status()
-        html = resp.text[:500_000]
+        html = _read_public_store_html(f"https://{domain}")
+        if not html:
+            return identity
         identity["brand_name"] = _og_tag(html, "site_name") or _og_tag(html, "title")
         identity["product_title"] = _og_tag(html, "title")
         identity["product_image"] = _og_tag(html, "image")
