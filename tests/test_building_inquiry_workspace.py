@@ -314,10 +314,21 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
             "sales_support_agent.api.building_inquiry_workspace_router.BuildingGoogleCalendarClient",
             return_value=calendar,
         ):
-            result = self.client.get(
-                "/admin/building/inquiries/jordan-inquiry/availability",
-                params={"dates": "2026-09-19,2026-09-26"},
-            )
+            # The prospect's dates are fixed in September 2026. Freeze "today"
+            # before them so the two-year window check does not expire the fixture.
+            class _AvailabilityDate(date):
+                @classmethod
+                def today(cls) -> date:
+                    return date(2026, 9, 1)
+
+            with mock.patch(
+                "sales_support_agent.api.building_inquiry_workspace_router.date",
+                _AvailabilityDate,
+            ):
+                result = self.client.get(
+                    "/admin/building/inquiries/jordan-inquiry/availability",
+                    params={"dates": "2026-09-19,2026-09-26"},
+                )
         self.assertEqual(result.status_code, 200, result.text)
         self.assertEqual(
             [item["status"] for item in result.json()["dates"]],
