@@ -95,6 +95,7 @@ from sales_support_agent.services.deck.formatting import (  # noqa: F401
     _normalize_offers,
     _preferred_brand_name,
     _preferred_target_title,
+    _resolve_target_price_label,
     _slugify,
     _target_reference_label,
     _title_token_set,
@@ -873,12 +874,13 @@ class DeckGenerationService:
                     verified_price = f"${verified_price_value:,.2f}"
             except (TypeError, ValueError):
                 verified_price = ""
-        target_price_label = (
-            verified_price
-            or hero_product.price
-            or (target_row.price_label if target_row else "")
-            or "Unavailable"
-        ).strip()
+        target_price_label, price_source = _resolve_target_price_label(
+            verified_price=verified_price,
+            uploaded_price=(target_row.price_label if target_row else ""),
+            uploaded_provenance=target_match.provenance,
+            dedicated_target_export=target_xray_row is not None,
+            scraped_price=hero_product.price,
+        )
         target_bsr_label = (
             (target_row.bsr_label if target_row and target_row.bsr_label != "n/a" else "")
             or _label_float(hero_product.bsr, 0)
@@ -949,6 +951,7 @@ class DeckGenerationService:
             search_insights=search_insights,
             market_average_price=xray_report.average_price or 0.0,
             best_seller=xray_report.products[0] if xray_report.products else None,
+            price_label=target_price_label,
         )
         effective_date = datetime.now(timezone.utc).date()
 
@@ -1093,6 +1096,7 @@ class DeckGenerationService:
                     "brand_name": target_brand,
                     "image_url": target_image_url,
                     "price": target_price_label,
+                    "price_source": price_source,
                     "bsr": target_bsr_label,
                     "rating": target_rating_label,
                     "review_count": target_review_count or 0,

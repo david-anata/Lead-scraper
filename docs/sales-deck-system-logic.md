@@ -76,6 +76,8 @@ The system resolves the target product, listing title, brand, image, ASIN, price
 
 For Amazon multipacks, the purchase or buy-box total is the relevant list price. A per-count price must not replace the amount the customer actually pays at checkout. Structured Amazon price data is preferred when the visible page contains both totals and unit-price language.
 
+When the target ASIN is matched in the uploaded Helium 10 export, or the operator uploaded a dedicated target export, that row's price is the comparison price. A scraped or catalog price fills in only when the upload does not identify the ASIN. An average order value typed into the growth-plan form still overrides both.
+
 ### 2. Market benchmark
 
 The market section summarizes the uploaded comparable set:
