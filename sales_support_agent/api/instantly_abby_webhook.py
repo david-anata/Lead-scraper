@@ -2,11 +2,13 @@
 
 ``POST /api/webhooks/instantly/reply`` checks the derived header, accepts only
 ``reply_received`` and ``auto_reply_received``, and returns 200 before the
-reply is handled. The five-minute poll remains the backup.
+reply is handled. Any other authenticated body, including a test ping, is also
+200. A missing or wrong header is 401. The five-minute poll remains the backup.
 
 ``/api/jobs/instantly/register-webhook`` is guarded like the other scheduler
 jobs. It is also invoked from Abby's cron once the keys exist, so a deploy
-registers the webhook without anyone copying a secret.
+registers the webhook without anyone copying a secret. The same job patches a
+stale header and resumes a webhook Instantly disabled after failed deliveries.
 """
 
 from __future__ import annotations
@@ -19,9 +21,9 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from sales_support_agent.api.outbound_jobs import _require_scheduler_auth
 from sales_support_agent.services.instantly_abby_webhook import (
     WEBHOOK_HEADER,
-    internal_api_key_from_env,
     process_reply,
     reply_state,
+    resolve_internal_api_key,
     webhook_authorized,
 )
 
@@ -32,9 +34,7 @@ job_router = APIRouter(prefix="/api/jobs/instantly", tags=["instantly-abby"])
 
 
 def _api_key(request: Request) -> str:
-    settings = getattr(request.app.state, "settings", None)
-    configured = str(getattr(settings, "internal_api_key", "") or "").strip()
-    return configured or internal_api_key_from_env()
+    return resolve_internal_api_key(getattr(request.app.state, "settings", None))
 
 
 def _settled(email_id: str) -> bool:
@@ -62,8 +62,10 @@ async def instantly_reply_webhook(request: Request, background: BackgroundTasks)
         raise HTTPException(status_code=401, detail="Invalid webhook secret.")
     try:
         payload = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail="Invalid JSON.") from exc
+    except Exception:  # noqa: BLE001
+        # Instantly disables a webhook after repeated non-2xx responses. A test
+        # ping or empty body is not a reply, and it must not count as a failure.
+        return {"status": "ignored", "reason": "payload"}
     if not isinstance(payload, dict):
         return {"status": "ignored", "reason": "payload"}
     event_type = str(payload.get("event_type") or "")
@@ -82,10 +84,10 @@ async def instantly_reply_webhook(request: Request, background: BackgroundTasks)
 
 @job_router.api_route("/register-webhook", methods=["GET", "POST"])
 def register_instantly_webhook(request: Request) -> dict[str, Any]:
-    """Register Abby's reply webhooks. Idempotent: existing hooks are kept."""
+    """Register Abby's reply webhooks and repair a stale or disabled one."""
 
     _require_scheduler_auth(request)
     from sales_support_agent.services.instantly_abby_webhook import maybe_register_abby_webhook
 
-    result = maybe_register_abby_webhook()
+    result = maybe_register_abby_webhook(settings=getattr(request.app.state, "settings", None))
     return {"status": "ok" if result.get("ok") or result.get("skipped") else "error", "registration": result}
