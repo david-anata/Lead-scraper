@@ -124,8 +124,8 @@ _SHOPIFY_PRODUCT_CAP = 12
 def _fetch_website(url: str, warnings: list) -> str:
     """Fetch + crudely de-tag a prospect website. Failure -> warning, never raises.
 
-    Redirects are followed manually, one hop at a time, with every hop re-validated by
-    :func:`public_http_url`. Handing ``allow_redirects=True`` to requests would let a
+    The first request and every redirect are checked with :func:`public_http_url`.
+    Handing ``allow_redirects=True`` to requests would let a
     prospect domain bounce us at a private or metadata address, which is the reason
     redirects were originally disabled outright. But refusing them meant the common case
     failed: almost every store redirects (apex to www, http to https, or to a locale
@@ -135,7 +135,10 @@ def _fetch_website(url: str, warnings: list) -> str:
     try:
         import requests
 
-        current = url
+        current = public_http_url(url)
+        if not current:
+            warnings.append(f"Stopped following {url}: address is not public.")
+            return ""
         resp = None
         for _ in range(_MAX_WEBSITE_REDIRECTS + 1):
             resp = requests.get(
@@ -271,12 +274,14 @@ def fetch_brand_assets(website_url: str) -> dict:
     """Scrape a prospect's logo + identity from their site, SSRF-safely.
 
     Returns ``{logo_data_uri, site_name, tagline}`` — or ``{}`` on ANY failure
-    (never raises, never blocks generation). The image fetch is restricted to
-    the SAME host the admin supplied (http upgraded to https), capped at
-    ``_MAX_LOGO_BYTES`` with an ``image/*`` content-type, and inlined as a
-    size-bounded data-URI. Logo preference: og:image -> apple-touch-icon ->
-    favicon. The tagline comes from og:site_name's description / meta
-    description / <title>, clamped to 200 chars.
+    (never raises, never blocks generation). The page itself must be a public
+    HTTPS address: loopback, private, link-local, metadata, and credentialed
+    URLs are refused before any request. The image fetch is restricted to the
+    SAME public host (http upgraded to https), capped at ``_MAX_LOGO_BYTES``
+    with an ``image/*`` content-type, and inlined as a size-bounded data-URI.
+    Logo preference: og:image -> apple-touch-icon -> favicon. The tagline comes
+    from og:site_name's description / meta description / <title>, clamped to
+    200 chars.
     """
     url = (website_url or "").strip()
     if not url:
@@ -284,9 +289,15 @@ def fetch_brand_assets(website_url: str) -> dict:
     try:
         import requests
 
-        parsed = urlparse(url if "://" in url else "https://" + url)
+        safe = public_http_url(url if "://" in url else "https://" + url)
+        if not safe:
+            return {}
+        parsed = urlparse(safe)
         if parsed.scheme == "http":
-            parsed = parsed._replace(scheme="https")
+            safe = public_http_url(parsed._replace(scheme="https").geturl())
+            if not safe:
+                return {}
+            parsed = urlparse(safe)
         if parsed.scheme != "https" or not parsed.hostname:
             return {}
         base = f"{parsed.scheme}://{parsed.netloc}"
@@ -320,15 +331,18 @@ def fetch_brand_assets(website_url: str) -> dict:
             if not raw:
                 continue
             img_url = urljoin(base + "/", raw)
-            img_parsed = urlparse(img_url)
-            # SSRF guard: only fetch images from the SAME host (or a subdomain
-            # of it), over https. No redirects to arbitrary hosts.
+            img_safe = public_http_url(img_url)
+            if not img_safe:
+                continue
+            img_parsed = urlparse(img_safe)
+            # SSRF guard: only fetch images from the SAME public host (or a
+            # subdomain of it), over https. No redirects to arbitrary hosts.
             if img_parsed.scheme != "https":
                 continue
             host = (img_parsed.hostname or "").lower()
             if host != same_host and not host.endswith("." + same_host):
                 continue
-            data_uri = _fetch_logo_data_uri(img_url)
+            data_uri = _fetch_logo_data_uri(img_safe)
             if data_uri:
                 logo_data_uri = data_uri
                 break

@@ -1004,5 +1004,66 @@ class MarketingIntakeTests(unittest.TestCase):
         self.assertIn("Call prospect and confirm the four-report handoff.", note)
 
 
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class StoreIdentityFetchTests(unittest.TestCase):
+    """The public intake echoes og tags, so a private fetch would leak them."""
+
+    def _page(self, html: str, status: int = 200, location: str = ""):
+        response = mock.Mock()
+        response.status_code = status
+        response.ok = 200 <= status < 300
+        response.text = html
+        response.headers = {"location": location} if location else {}
+        return response
+
+    def test_public_store_returns_og_tags(self) -> None:
+        html = (
+            '<meta property="og:site_name" content="GlowCo">'
+            '<meta property="og:title" content="GlowCo Serum">'
+            '<meta property="og:image" content="https://cdn.example/logo.png">'
+        )
+        with mock.patch(
+            "sales_support_agent.services.public_url_guard.public_http_url",
+            side_effect=lambda value: value,
+        ), mock.patch("requests.get", return_value=self._page(html)) as get:
+            identity = M._store_identity("https://glowco.example/shop")
+        self.assertEqual(identity["domain"], "glowco.example")
+        self.assertEqual(identity["brand_name"], "GlowCo")
+        self.assertEqual(identity["product_title"], "GlowCo Serum")
+        self.assertEqual(identity["product_image"], "https://cdn.example/logo.png")
+        self.assertFalse(get.call_args.kwargs.get("allow_redirects", True))
+
+    def test_private_and_metadata_hosts_are_not_fetched(self) -> None:
+        with mock.patch("requests.get") as get:
+            for identifier in (
+                "http://127.0.0.1/admin",
+                "http://169.254.169.254/latest/meta-data/",
+                "https://10.0.0.5/secret",
+                "https://user:password@glowco.example",
+                "file:///etc/passwd",
+            ):
+                with self.subTest(identifier=identifier):
+                    identity = M._store_identity(identifier)
+                    self.assertEqual(identity["brand_name"], "")
+                    self.assertEqual(identity["product_title"], "")
+                    self.assertEqual(identity["product_image"], "")
+            get.assert_not_called()
+
+    def test_redirect_onto_a_metadata_address_returns_no_page_content(self) -> None:
+        secret = '<meta property="og:title" content="metadata-secret">'
+        with mock.patch(
+            "sales_support_agent.services.public_url_guard.public_http_url",
+            side_effect=lambda value: "" if "169.254.169.254" in str(value) else str(value),
+        ), mock.patch(
+            "requests.get",
+            return_value=self._page("", status=302, location="http://169.254.169.254/latest/meta-data/"),
+        ) as get:
+            identity = M._store_identity("glowco.example")
+        self.assertEqual(identity["domain"], "glowco.example")
+        self.assertNotIn("metadata-secret", identity["product_title"])
+        self.assertEqual(identity["brand_name"], "")
+        get.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

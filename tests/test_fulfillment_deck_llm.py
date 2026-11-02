@@ -156,7 +156,10 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(warnings, [])
 
     def test_website_fetch_failure_warns_not_raises(self):
-        with mock.patch("requests.get", side_effect=ConnectionError("boom")):
+        with mock.patch("requests.get", side_effect=ConnectionError("boom")), mock.patch(
+            "sales_support_agent.services.fulfillment_deck.intake.public_http_url",
+            side_effect=lambda value: value,
+        ):
             context, attachments, warnings = build_extraction_context(
                 "notes here", [], "https://down.example"
             )
@@ -237,6 +240,30 @@ class IntakeAttachmentTests(unittest.TestCase):
 
 class FetchBrandAssetsTests(unittest.TestCase):
     """v7: SSRF-safe logo + identity scrape; {} on any failure."""
+
+    def setUp(self) -> None:
+        from urllib.parse import urlparse
+
+        from sales_support_agent.services.public_url_guard import (
+            public_http_url as real_public_http_url,
+        )
+
+        def _guard(value: str) -> str:
+            parsed = urlparse(str(value or ""))
+            if parsed.username is not None or parsed.password is not None:
+                return ""
+            host = parsed.hostname or ""
+            # Reserved example names stand in for a public store in these tests.
+            if host.endswith(".example"):
+                return str(value)
+            return real_public_http_url(value)
+
+        patcher = mock.patch(
+            "sales_support_agent.services.fulfillment_deck.intake.public_http_url",
+            side_effect=_guard,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     _HTML = (
         '<html><head>'
@@ -329,6 +356,27 @@ class FetchBrandAssetsTests(unittest.TestCase):
 
     def test_blank_url_returns_empty(self):
         self.assertEqual(fetch_brand_assets(""), {})
+
+    def test_private_metadata_and_credentialed_urls_are_not_fetched(self):
+        with mock.patch("requests.get") as get:
+            for target in (
+                "http://127.0.0.1/admin",
+                "http://169.254.169.254/latest/meta-data/",
+                "https://10.0.0.5/secret",
+                "https://user:password@glowco.example/logo",
+                "file:///etc/passwd",
+            ):
+                with self.subTest(url=target):
+                    self.assertEqual(fetch_brand_assets(target), {})
+            get.assert_not_called()
+
+    def test_hostname_resolving_to_a_private_network_is_not_fetched(self):
+        with mock.patch(
+            "sales_support_agent.services.public_url_guard.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("10.0.0.8", 443))],
+        ), mock.patch("requests.get") as get:
+            self.assertEqual(fetch_brand_assets("https://internal.corp"), {})
+        get.assert_not_called()
 
 
 class LlmExtractionTests(unittest.TestCase):
