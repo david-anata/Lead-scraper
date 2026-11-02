@@ -125,6 +125,25 @@ def _resolve_current_balance(
     return balance_cents, balance_as_of, balance_source
 
 
+# Chart query params are caller-controlled. A multi-year window is enough for
+# the finance view; anything larger only allocates a day or week per iteration.
+_MAX_CHART_DAYS = 366
+_MAX_CHART_WEEKS = 104
+
+
+def _bounded_chart_span(value: int, *, maximum: int) -> int:
+    """Clamp a chart window to a non-negative, finite span."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if parsed < 0:
+        return 0
+    if parsed > maximum:
+        return maximum
+    return parsed
+
+
 def _build_daily_chart_data(days_back: int = 14, days_forward: int = 42) -> dict:
     """Build day-level chart data for the cashflow bar + balance line chart.
 
@@ -143,6 +162,8 @@ def _build_daily_chart_data(days_back: int = 14, days_forward: int = 42) -> dict
     """
     from collections import defaultdict
 
+    days_back = _bounded_chart_span(days_back, maximum=_MAX_CHART_DAYS)
+    days_forward = _bounded_chart_span(days_forward, maximum=_MAX_CHART_DAYS)
     today = date.today()
     start = today - timedelta(days=days_back)
     end   = today + timedelta(days=days_forward)
@@ -277,6 +298,7 @@ def _build_chart_data(period_weeks: int = 12) -> dict:
     rather than issuing one get_events_for_range() query per future week.
     """
     today = date.today()
+    period_weeks = _bounded_chart_span(period_weeks, maximum=_MAX_CHART_WEEKS)
 
     # Single query for everything — historical CSV rows AND forward obligations.
     all_rows = list_obligations(limit=5000)
