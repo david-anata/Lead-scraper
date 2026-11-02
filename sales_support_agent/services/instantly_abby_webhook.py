@@ -2,7 +2,11 @@
 
 The shared header value is HMAC-SHA256 of the literal ``instantly-webhook``
 keyed by ``SALES_AGENT_INTERNAL_API_KEY``. No separate webhook secret is stored.
-Registration lists existing webhooks first and only creates the missing ones.
+The handler and the register job both take that key from app settings, then
+the environment. Registration lists existing webhooks first. A missing hook is
+created. An existing hook whose header does not match the current key is
+patched, and a hook Instantly disabled after failed deliveries (status -1)
+is resumed once that header is current.
 """
 
 from __future__ import annotations
@@ -22,7 +26,8 @@ WEBHOOK_MESSAGE = b"instantly-webhook"
 TARGET_URL = "https://agent.anatainc.com/api/webhooks/instantly/reply"
 ACCEPTED_EVENTS = ("reply_received", "auto_reply_received")
 MARKER_KEY = "abby_reply_webhook_v1"
-_OK_RECHECK = timedelta(hours=24)
+# Hourly, so a hook Instantly disables is repaired by the register cron.
+_OK_RECHECK = timedelta(hours=1)
 _FAIL_RECHECK = timedelta(hours=1)
 
 
@@ -38,7 +43,9 @@ def derived_webhook_secret(api_key: str) -> str:
 def presented_secret(header_value: str) -> str:
     value = (header_value or "").strip()
     if value.lower().startswith("bearer "):
-        return value[7:].strip()
+        value = value[7:].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        value = value[1:-1].strip()
     return value
 
 
@@ -52,6 +59,26 @@ def webhook_authorized(header_value: str, api_key: str) -> bool:
 
 def internal_api_key_from_env() -> str:
     return (os.getenv("SALES_AGENT_INTERNAL_API_KEY") or "").strip()
+
+
+def resolve_internal_api_key(settings: Any = None) -> str:
+    """The key both the handler and the register job derive the header from.
+
+    Settings win when the app has already loaded them. Otherwise the
+    environment is used. The two call sites must not read different sources.
+    """
+
+    configured = str(getattr(settings, "internal_api_key", "") or "").strip()
+    return configured or internal_api_key_from_env()
+
+
+def secret_fingerprint(secret: str) -> str:
+    """Short hash of the header value, safe to store on the registration marker."""
+
+    value = (secret or "").strip()
+    if not value:
+        return ""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
 def redact(value: Any) -> Any:
@@ -130,64 +157,175 @@ def _same_hook(hook: dict[str, Any], event_type: str) -> bool:
     return url == TARGET_URL.rstrip("/") and str(hook.get("event_type") or "") == event_type
 
 
-def register_abby_webhooks(client: Any, secret: str) -> dict[str, Any]:
-    """Create the two Abby webhooks. Existing url+event pairs are left in place.
+def _stored_secret(hook: dict[str, Any]) -> str:
+    headers = hook.get("headers")
+    if not isinstance(headers, dict):
+        return ""
+    for name, value in headers.items():
+        if str(name).lower() == WEBHOOK_HEADER.lower():
+            return presented_secret("" if value is None else str(value))
+    return ""
 
-    ``client`` needs ``list_webhooks()`` and ``create_webhook(payload)``, each
-    returning ``(status, body)``. The returned dict never includes the secret.
+
+def _header_matches(hook: dict[str, Any], secret: str) -> bool:
+    expected = presented_secret(secret)
+    provided = _stored_secret(hook)
+    if not expected or not provided:
+        return False
+    return hmac.compare_digest(provided, expected)
+
+
+def _webhook_disabled(hook: dict[str, Any]) -> bool:
+    """Instantly sets status to -1 after repeated non-2xx deliveries."""
+
+    status = hook.get("status")
+    if status is None or status == "":
+        return False
+    try:
+        return int(status) == -1
+    except (TypeError, ValueError):
+        return False
+
+
+def _unsupported_event(status: int, body: Any) -> bool:
+    """True when Instantly's create API rejects the event type itself.
+
+    ``auto_reply_received`` is a documented delivery event, and it is not in
+    the create-webhook enum. That 400 is not a bad header or a disabled hook.
     """
+
+    if status != 400 or not isinstance(body, dict):
+        return False
+    message = str(body.get("message") or "")
+    return "event_type" in message and "allowed values" in message
+
+
+def _empty_registration(status: int, body: Any) -> dict[str, Any]:
+    safe = redact(body)
+    return {
+        "ok": False,
+        "step": "list",
+        "status": status,
+        "error": safe,
+        "created": [],
+        "existing": [],
+        "updated": [],
+        "unsupported": [],
+        "errors": [{"event_type": "*", "status": status, "body": safe}],
+    }
+
+
+def register_abby_webhooks(client: Any, secret: str) -> dict[str, Any]:
+    """Create missing Abby webhooks and repair ones Instantly already has.
+
+    A matching url and event is left alone when its header equals ``secret``
+    and it is not disabled. A different or missing header is patched. Status
+    -1 is resumed after the header is current, via ``POST /webhooks/{id}/resume``.
+    The returned dict never includes the secret.
+    """
+
+    if not (secret or "").strip():
+        return _empty_registration(0, {"message": "missing webhook secret"})
 
     status, listed = client.list_webhooks()
     if status != 200:
-        body = redact(listed)
-        return {
-            "ok": False,
-            "step": "list",
-            "status": status,
-            "error": body,
-            "created": [],
-            "existing": [],
-            "errors": [{"event_type": "*", "status": status, "body": body}],
-        }
+        return _empty_registration(status, listed)
     existing = _items(listed)
     created: list[dict[str, Any]] = []
     kept: list[dict[str, Any]] = []
+    updated: list[dict[str, Any]] = []
+    unsupported: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     for event_type in ACCEPTED_EVENTS:
         match = next((hook for hook in existing if _same_hook(hook, event_type)), None)
-        if match is not None:
-            kept.append({
-                "id": match.get("id"),
-                "event_type": event_type,
+        if match is None:
+            create_status, create_body = client.create_webhook({
                 "target_hook_url": TARGET_URL,
+                "event_type": event_type,
+                "name": f"Abby {event_type}",
+                "campaign": None,
+                "headers": {WEBHOOK_HEADER: secret},
+            })
+            safe_body = redact(create_body)
+            if _unsupported_event(create_status, create_body):
+                unsupported.append({"event_type": event_type, "status": create_status, "body": safe_body})
+                continue
+            if create_status not in {200, 201}:
+                errors.append({"event_type": event_type, "status": create_status, "body": safe_body})
+                continue
+            created.append({
+                "id": (create_body or {}).get("id") if isinstance(create_body, dict) else None,
+                "event_type": event_type,
+                "status": create_status,
             })
             continue
-        create_status, create_body = client.create_webhook({
-            "target_hook_url": TARGET_URL,
-            "event_type": event_type,
-            "name": f"Abby {event_type}",
-            "campaign": None,
-            "headers": {WEBHOOK_HEADER: secret},
-        })
-        safe_body = redact(create_body)
-        if create_status not in {200, 201}:
-            errors.append({"event_type": event_type, "status": create_status, "body": safe_body})
+        repaired = _repair_hook(client, match, event_type, secret)
+        if repaired.get("error"):
+            errors.append(repaired["error"])
             continue
-        created.append({
-            "id": (create_body or {}).get("id") if isinstance(create_body, dict) else None,
-            "event_type": event_type,
-            "status": create_status,
-        })
+        if repaired.get("unsupported"):
+            unsupported.append(repaired["unsupported"])
+            continue
+        if repaired["summary"].get("header_updated") or repaired["summary"].get("resumed"):
+            updated.append(repaired["summary"])
+        else:
+            kept.append(repaired["summary"])
     result = {
         "ok": not errors,
         "target_hook_url": TARGET_URL,
         "created": created,
         "existing": kept,
+        "updated": updated,
+        "unsupported": unsupported,
         "errors": errors,
     }
     if errors:
         result["plan_error"] = errors
     return result
+
+
+def _repair_hook(client: Any, match: dict[str, Any], event_type: str, secret: str) -> dict[str, Any]:
+    """Patch a stale header, then resume a disabled hook. Never returns the secret."""
+
+    hook_id = str(match.get("id") or "").strip()
+    summary: dict[str, Any] = {
+        "id": match.get("id"),
+        "event_type": event_type,
+        "target_hook_url": TARGET_URL,
+    }
+    disabled = _webhook_disabled(match)
+    if not _header_matches(match, secret):
+        if not hook_id:
+            return {"error": {"event_type": event_type, "status": 0, "body": {"message": "webhook id missing"}}}
+        patch = getattr(client, "patch_webhook", None)
+        if patch is None:
+            return {"error": {"event_type": event_type, "status": 0, "body": {"message": "patch_webhook is not available"}}}
+        patch_status, patch_body = patch(hook_id, {"headers": {WEBHOOK_HEADER: secret}})
+        safe_body = redact(patch_body)
+        if patch_status not in {200, 201}:
+            return {"error": {"event_type": event_type, "status": patch_status, "body": safe_body}}
+        summary["header_updated"] = True
+        if isinstance(patch_body, dict) and patch_body.get("status") is not None:
+            disabled = _webhook_disabled(patch_body)
+    if disabled:
+        if not hook_id:
+            return {"error": {"event_type": event_type, "status": 0, "body": {"message": "webhook id missing"}}}
+        resume = getattr(client, "resume_webhook", None)
+        if resume is None:
+            return {"error": {"event_type": event_type, "status": 0, "body": {"message": "resume_webhook is not available"}}}
+        resume_status, resume_body = resume(hook_id)
+        safe_body = redact(resume_body)
+        if resume_status not in {200, 201}:
+            return {
+                "error": {
+                    "event_type": event_type,
+                    "status": resume_status,
+                    "body": safe_body,
+                    "header_updated": bool(summary.get("header_updated")),
+                },
+            }
+        summary["resumed"] = True
+    return {"summary": summary}
 
 
 def _parse_marker(raw: str) -> dict[str, Any]:
@@ -198,8 +336,16 @@ def _parse_marker(raw: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _marker_due(raw: str, now: datetime) -> bool:
+def _marker_due(raw: str, now: datetime, fingerprint: str = "") -> bool:
+    """True when the last check is stale or was for a different header value.
+
+    A marker written before the fingerprint existed is due immediately, so the
+    first run after deploy repairs a hook that was registered under an older key.
+    """
+
     data = _parse_marker(raw)
+    if fingerprint and str(data.get("secret_fingerprint") or "") != fingerprint:
+        return True
     checked = data.get("checked_at") or ""
     try:
         stamp = datetime.fromisoformat(str(checked).replace("Z", "+00:00"))
@@ -211,15 +357,16 @@ def _marker_due(raw: str, now: datetime) -> bool:
     return now - stamp >= wait
 
 
-def maybe_register_abby_webhook(now: Optional[datetime] = None) -> dict[str, Any]:
+def maybe_register_abby_webhook(now: Optional[datetime] = None, settings: Any = None) -> dict[str, Any]:
     """Register once the server has both keys. Safe to call from the Abby cron.
 
-    Missing keys skip without calling Instantly. A successful registration is
-    not repeated for 24 hours. A failure, including a plan rejection, is retried
-    after an hour and the exact Instantly body is kept on the marker.
+    Missing keys skip without calling Instantly. The header is derived from the
+    same key the webhook handler uses. A check is repeated after an hour, and
+    immediately when that key has changed. A failure, including a plan
+    rejection, keeps the Instantly body on the marker.
     """
 
-    secret_key = internal_api_key_from_env()
+    secret_key = resolve_internal_api_key(settings)
     try:
         import outbound_instantly_push as instantly_push
 
@@ -231,6 +378,8 @@ def maybe_register_abby_webhook(now: Optional[datetime] = None) -> dict[str, Any
         return {"ok": False, "skipped": True, "reason": "missing key"}
 
     now = now or datetime.now(timezone.utc)
+    header_secret = derived_webhook_secret(secret_key)
+    fingerprint = secret_fingerprint(header_secret)
     engine = None
     try:
         from sales_support_agent.models.database import get_engine
@@ -239,7 +388,7 @@ def maybe_register_abby_webhook(now: Optional[datetime] = None) -> dict[str, Any
         import outbound_suppression as suppression
 
         raw = suppression.get_cursor(engine, MARKER_KEY)
-        if raw and not _marker_due(raw, now):
+        if raw and not _marker_due(raw, now, fingerprint):
             data = _parse_marker(raw)
             return {"ok": bool(data.get("ok")), "skipped": True, "reason": "already checked", "result": redact(data)}
     except Exception:  # noqa: BLE001
@@ -247,8 +396,9 @@ def maybe_register_abby_webhook(now: Optional[datetime] = None) -> dict[str, Any
 
     import abby_runner
 
-    result = register_abby_webhooks(abby_runner.Instantly(token), derived_webhook_secret(secret_key))
+    result = register_abby_webhooks(abby_runner.Instantly(token), header_secret)
     result["checked_at"] = now.isoformat()
+    result["secret_fingerprint"] = fingerprint
     safe = redact(result)
     if engine is not None:
         try:

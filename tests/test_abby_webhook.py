@@ -17,9 +17,11 @@ from sales_support_agent.api.abby_job import router as abby_router
 from sales_support_agent.services.instantly_abby_webhook import (
     TARGET_URL,
     WEBHOOK_HEADER,
+    _marker_due,
     derived_webhook_secret,
     process_reply,
     register_abby_webhooks,
+    resolve_internal_api_key,
     webhook_authorized,
 )
 
@@ -32,8 +34,10 @@ def test_secret_is_hmac_of_the_internal_key_and_accepts_a_bearer_prefix():
     assert secret == hmac.new(b"internal-key", b"instantly-webhook", hashlib.sha256).hexdigest()
     assert webhook_authorized(secret, "internal-key")
     assert webhook_authorized(f"Bearer {secret}", "internal-key")
+    assert webhook_authorized(f'"{secret}"', "internal-key")
     assert not webhook_authorized("nope", "internal-key")
     assert not webhook_authorized(secret, "")
+    assert not webhook_authorized("", "internal-key")
 
 
 def _app():
@@ -232,7 +236,9 @@ def test_registration_does_not_create_when_the_list_call_fails():
     assert result["status"] == 402
 
 
-def test_scheduler_routes_require_the_job_guard():
+def test_scheduler_routes_require_the_job_guard(monkeypatch):
+    monkeypatch.delenv("INSTANTLY_API_KEY", raising=False)
+    monkeypatch.delenv("INSTANTLY_AI", raising=False)
     client = _app()
     assert client.post("/api/jobs/instantly/register-webhook").status_code == 401
     assert client.post("/api/jobs/abby/followups").status_code == 401
@@ -242,3 +248,209 @@ def test_scheduler_routes_require_the_job_guard():
     )
     assert allowed.status_code == 200
     assert allowed.json()["registration"]["reason"] == "missing key"
+
+
+def test_handler_and_registration_resolve_the_same_internal_key(monkeypatch):
+    monkeypatch.setenv("SALES_AGENT_INTERNAL_API_KEY", "from-env")
+    settings = SimpleNamespace(internal_api_key="from-settings")
+    assert resolve_internal_api_key(settings) == "from-settings"
+    assert resolve_internal_api_key(SimpleNamespace(internal_api_key="")) == "from-env"
+    assert derived_webhook_secret(resolve_internal_api_key(settings)) == derived_webhook_secret("from-settings")
+
+
+def test_authenticated_odd_payloads_return_200_and_missing_auth_stays_401():
+    client = _app()
+    denied = client.post(
+        "/api/webhooks/instantly/reply",
+        content=b"not-json",
+        headers={"content-type": "application/json"},
+    )
+    assert denied.status_code == 401
+    assert denied.json()["detail"] == "Invalid webhook secret."
+    ping = client.post(
+        "/api/webhooks/instantly/reply",
+        content=b"not-json",
+        headers={**_headers(), "content-type": "application/json"},
+    )
+    assert ping.status_code == 200
+    assert ping.json()["reason"] == "payload"
+    unexpected = client.post(
+        "/api/webhooks/instantly/reply",
+        headers=_headers(),
+        json={"event_type": "test", "message": "ping"},
+    )
+    assert unexpected.status_code == 200
+    assert unexpected.json()["reason"] == "event_type"
+    missing = client.post(
+        "/api/webhooks/instantly/reply",
+        headers=_headers(),
+        json={"event_type": "reply_received"},
+    )
+    assert missing.status_code == 200
+    assert missing.json()["reason"] == "missing_email_id"
+
+
+def test_marker_is_due_when_the_derived_secret_changes():
+    now = datetime(2026, 11, 2, 16, tzinfo=timezone.utc)
+    raw = json.dumps({
+        "ok": True,
+        "checked_at": "2026-11-02T15:30:00+00:00",
+        "secret_fingerprint": "old-fingerprint",
+    })
+    assert _marker_due(raw, now, "new-fingerprint")
+    assert not _marker_due(raw, now, "old-fingerprint")
+    legacy = json.dumps({"ok": True, "checked_at": "2026-11-02T15:30:00+00:00"})
+    assert _marker_due(legacy, now, "current-fingerprint")
+
+
+def test_registration_refuses_an_empty_secret_without_calling_instantly():
+    class Boom:
+        def list_webhooks(self):
+            raise AssertionError("must not list")
+
+        def create_webhook(self, _payload):
+            raise AssertionError("must not create")
+
+    result = register_abby_webhooks(Boom(), "  ")
+    assert result["ok"] is False
+    assert result["created"] == []
+
+
+_ENUM_REJECTION = {
+    "statusCode": 400,
+    "error": "Bad Request",
+    "message": "body/event_type must be equal to one of the allowed values",
+}
+
+
+class _RepairHooks:
+    def __init__(self, hook):
+        self.hooks = [hook]
+        self.calls = []
+
+    def list_webhooks(self):
+        return 200, {"items": self.hooks}
+
+    def create_webhook(self, payload):
+        self.calls.append(("create", payload["event_type"]))
+        if payload["event_type"] == "auto_reply_received":
+            return 400, dict(_ENUM_REJECTION)
+        raise AssertionError("reply_received already exists")
+
+    def patch_webhook(self, webhook_id, payload):
+        self.calls.append(("patch", webhook_id, payload["headers"][WEBHOOK_HEADER]))
+        self.hooks[0]["headers"] = payload["headers"]
+        body = dict(self.hooks[0])
+        return 200, body
+
+    def resume_webhook(self, webhook_id):
+        self.calls.append(("resume", webhook_id))
+        self.hooks[0]["status"] = 1
+        return 200, dict(self.hooks[0])
+
+
+def _reply_hook(**extra):
+    hook = {
+        "id": "wh-reply",
+        "target_hook_url": TARGET_URL,
+        "event_type": "reply_received",
+        "headers": {WEBHOOK_HEADER: "current-secret"},
+        "status": 1,
+    }
+    hook.update(extra)
+    return hook
+
+
+def test_registration_patches_a_stale_header_and_resumes_a_disabled_webhook():
+    hooks = _RepairHooks(_reply_hook(headers={WEBHOOK_HEADER: "stale-secret"}, status=-1))
+    result = register_abby_webhooks(hooks, "current-secret")
+    assert result["ok"] is True
+    assert result["created"] == []
+    assert result["existing"] == []
+    assert result["updated"] == [{
+        "id": "wh-reply",
+        "event_type": "reply_received",
+        "target_hook_url": TARGET_URL,
+        "header_updated": True,
+        "resumed": True,
+    }]
+    assert result["unsupported"][0]["event_type"] == "auto_reply_received"
+    assert result["errors"] == []
+    assert hooks.calls[:2] == [("patch", "wh-reply", "current-secret"), ("resume", "wh-reply")]
+    assert "current-secret" not in json.dumps(result)
+    assert "stale-secret" not in json.dumps(result)
+
+
+def test_registration_does_not_resume_when_the_header_patch_fails():
+    class FailPatch(_RepairHooks):
+        def patch_webhook(self, webhook_id, payload):
+            self.calls.append(("patch", webhook_id, payload["headers"][WEBHOOK_HEADER]))
+            return 500, {"message": "nope"}
+
+        def resume_webhook(self, webhook_id):
+            raise AssertionError("must not resume a hook whose header is still stale")
+
+    hooks = FailPatch(_reply_hook(headers={WEBHOOK_HEADER: "stale-secret"}, status=-1))
+    result = register_abby_webhooks(hooks, "current-secret")
+    assert result["ok"] is False
+    assert result["updated"] == []
+    assert result["errors"][0]["event_type"] == "reply_received"
+    assert result["errors"][0]["status"] == 500
+    assert hooks.calls[0] == ("patch", "wh-reply", "current-secret")
+    assert "resume" not in [call[0] for call in hooks.calls]
+    assert "current-secret" not in json.dumps(result)
+
+
+def test_registration_resumes_a_disabled_hook_whose_header_already_matches():
+    hooks = _RepairHooks(_reply_hook(status=-1))
+    result = register_abby_webhooks(hooks, "current-secret")
+    assert result["ok"] is True
+    assert result["updated"] == [{
+        "id": "wh-reply",
+        "event_type": "reply_received",
+        "target_hook_url": TARGET_URL,
+        "resumed": True,
+    }]
+    assert ("patch", "wh-reply", "current-secret") not in hooks.calls
+    assert ("resume", "wh-reply") in hooks.calls
+
+
+def test_registration_patches_when_the_stored_header_is_missing_and_keeps_case_differences():
+    missing = _RepairHooks(_reply_hook(headers=None, status=1))
+    patched = register_abby_webhooks(missing, "current-secret")
+    assert patched["updated"][0]["header_updated"] is True
+    assert "resumed" not in patched["updated"][0]
+
+    cased = _RepairHooks(_reply_hook(headers={"x-instantly-webhook-secret": "current-secret"}, status=1))
+    kept = register_abby_webhooks(cased, "current-secret")
+    assert kept["existing"][0]["event_type"] == "reply_received"
+    assert kept["updated"] == []
+    assert "patch" not in [call[0] for call in cased.calls]
+
+
+def test_registration_patches_an_active_hook_without_resuming_it():
+    hooks = _RepairHooks(_reply_hook(headers={WEBHOOK_HEADER: "stale-secret"}, status=1))
+    result = register_abby_webhooks(hooks, "current-secret")
+    assert result["ok"] is True
+    assert result["updated"][0]["header_updated"] is True
+    assert "resumed" not in result["updated"][0]
+    assert [call[0] for call in hooks.calls] == ["patch", "create"]
+
+
+def test_unsupported_auto_reply_event_does_not_fail_a_healthy_reply_hook():
+    class Hooks:
+        def list_webhooks(self):
+            return 200, {"items": []}
+
+        def create_webhook(self, payload):
+            if payload["event_type"] == "auto_reply_received":
+                return 400, dict(_ENUM_REJECTION)
+            assert payload["headers"][WEBHOOK_HEADER] == "secret-value"
+            return 200, {"id": "wh-reply", "event_type": payload["event_type"]}
+
+    result = register_abby_webhooks(Hooks(), "secret-value")
+    assert result["ok"] is True
+    assert result["created"] == [{"id": "wh-reply", "event_type": "reply_received", "status": 200}]
+    assert result["errors"] == []
+    assert result["unsupported"][0]["status"] == 400
+    assert "secret-value" not in json.dumps(result)

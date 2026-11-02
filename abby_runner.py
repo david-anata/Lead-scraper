@@ -236,6 +236,20 @@ class Instantly:
     def create_webhook(self, payload: dict) -> tuple[int, Any]:
         return self._call("POST", "webhooks", json=payload)
 
+    def patch_webhook(self, webhook_id: str, payload: dict) -> tuple[int, Any]:
+        """Replace fields on one webhook, including the delivery headers."""
+
+        if not webhook_id:
+            return 0, None
+        return self._call("PATCH", f"webhooks/{webhook_id}", json=payload)
+
+    def resume_webhook(self, webhook_id: str) -> tuple[int, Any]:
+        """Re-enable a webhook Instantly disabled after repeated delivery failures."""
+
+        if not webhook_id:
+            return 0, None
+        return self._call("POST", f"webhooks/{webhook_id}/resume")
+
 
 def _naive(value: Any) -> Optional[datetime]:
     if isinstance(value, datetime):

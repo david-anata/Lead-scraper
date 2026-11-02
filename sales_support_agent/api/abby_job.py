@@ -105,13 +105,13 @@ def _maybe_analytics_backfill() -> dict[str, Any] | None:
         return {"ok": False, "ran": False, "reason": "backfill skipped"}
 
 
-def _maybe_register_webhook() -> dict[str, Any]:
+def _maybe_register_webhook(request: Request) -> dict[str, Any]:
     """Register Abby's Instantly webhook after deploy. Missing keys skip quietly."""
 
     try:
         from sales_support_agent.services.instantly_abby_webhook import maybe_register_abby_webhook
 
-        return maybe_register_abby_webhook()
+        return maybe_register_abby_webhook(settings=getattr(request.app.state, "settings", None))
     except Exception:  # noqa: BLE001
         logger.exception("[abby] webhook registration hook failed")
         return {"ok": False, "skipped": True, "reason": "hook failed"}
@@ -125,7 +125,7 @@ def run_scheduled_abby(request: Request) -> dict:
         "status": "ok",
         "details": details,
         "enrich_via_abby": _run_enrich_after_abby(),
-        "webhook_registration": _maybe_register_webhook(),
+        "webhook_registration": _maybe_register_webhook(request),
     }
     backfill = _maybe_analytics_backfill()
     if backfill is not None:

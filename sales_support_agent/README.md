@@ -175,16 +175,23 @@ job directly. The same tick registers the Instantly reply webhook when
 registration is not already current. `POST /api/webhooks/instantly/reply`
 accepts `reply_received` and `auto_reply_received`. Instantly sends
 `X-Instantly-Webhook-Secret`, the hex HMAC-SHA256 of the literal
-`instantly-webhook` keyed by `SALES_AGENT_INTERNAL_API_KEY`. No separate
-webhook secret is stored. The route returns 200 and handles the email on the
-same `handle_email` path as the poll. Sends still follow `ABBY_MODE` and
+`instantly-webhook` keyed by `SALES_AGENT_INTERNAL_API_KEY`. The handler and
+the register job both read that key from app settings, then the environment.
+No separate webhook secret is stored. The route returns 200 before the reply
+is handled, including for a test ping or a body that is not a reply. A request
+without the header still returns 401. Sends still follow `ABBY_MODE` and
 `ABBY_DAILY_CAP`.
 
 `GET /api/jobs/instantly/register-webhook` is the same registration, guarded
 like the other scheduler jobs, and Vercel calls it hourly. It lists webhooks
-first and creates only a missing `reply_received` or `auto_reply_received`
-hook aimed at `https://agent.anatainc.com/api/webhooks/instantly/reply`. A
-plan rejection is kept on the `abby_reply_webhook_v1` sync marker.
+first and creates a missing `reply_received` hook aimed at
+`https://agent.anatainc.com/api/webhooks/instantly/reply`. If that hook's
+header is not the current derived value, the job patches it. If Instantly has
+disabled it (status -1), the job resumes it after the header is current.
+Instantly's create API rejects `auto_reply_received` as an event type, so
+those replies stay on the five-minute poll. The check repeats hourly, and
+immediately after `SALES_AGENT_INTERNAL_API_KEY` changes. A plan rejection is
+kept on the `abby_reply_webhook_v1` sync marker.
 
 Out-of-office replies schedule one follow-up for the day after the parsed
 return date, or 7 days when no date is present. Not-now replies schedule
