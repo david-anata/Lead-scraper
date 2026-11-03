@@ -3,10 +3,14 @@
 Approved by David on 2026-10-22: run into the live Instantly campaign, up to
 120 companies and 250 Prospeo credits a day.
 
-Vercel Cron calls this a few times each weekday morning. Each call takes the
-newest sourced brands that have not been enriched, finds up to two verified
-decision-makers per brand (Prospeo), writes an opening line, and adds them to
-Instantly. A recipe listed in ``RECIPE_CAMPAIGN_MAP`` goes to that campaign.
+Vercel Cron calls this a few times each weekday morning. Each call finds up
+to two verified decision-makers per brand (Prospeo), writes an opening line,
+and adds them to Instantly. Active ``outbound_campaigns`` recipes are tried
+first, oldest unenriched brand first, and each campaign stops at its own
+``daily_cap`` for the Denver day. Those campaigns are interleaved so one
+recipe does not use the whole run. ``icp_baseline``, ``social_surge``, and
+every other recipe follow. A recipe listed in ``RECIPE_CAMPAIGN_MAP`` goes
+to that campaign.
 Every other recipe uses ``OUTBOUND_INSTANTLY_CAMPAIGN_ID``. There is no
 fallback to the retired campaign. ``redo_partner`` contacts are stored and
 not pushed. A Slack summary posts after each call that did something.
@@ -263,9 +267,18 @@ def run_enrich_job(
         return out
 
     try:
+        loaded_from_library = leads is None
         if leads is None:
             from sales_support_agent.services import outbound_memory
             leads = outbound_memory.load_leads(engine, limit=1000)
+        # Signal recipes are written first each morning, so a newest-first
+        # page is mostly later baseline and social leads. Active campaigns
+        # go first, inside each remaining daily cap. Caller-supplied lists
+        # are only reordered; the library fill is for the scheduled load.
+        leads = _oe.prioritize_active_campaign_leads(
+            engine, leads, since_utc=_start_of_day_utc(now),
+            fill_from_library=loaded_from_library,
+        )
 
         report = _oe.run_enrichment(
             engine, leads, api_key=key,

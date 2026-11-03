@@ -872,6 +872,34 @@ def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_
         return 0
 
 
+def _shape_loaded_lead(raw: dict[str, Any], first_seen: Any) -> dict[str, Any]:
+    """One library row in the shape ``load_leads`` has always returned."""
+
+    lead = dict(raw)
+    try:
+        lead["signals"] = json.loads(lead.get("signals") or "[]")
+    except (ValueError, TypeError):
+        lead["signals"] = []
+    # Rows written before the Amazon check read back as "never checked"
+    # rather than as a missing key or a None the callers have to guard.
+    lead["amazon_confidence"] = _text(lead.get("amazon_confidence"))
+    lead["amazon_marketplace"] = _text(lead.get("amazon_marketplace"))
+    lead["amazon_checked_at"] = _text(lead.get("amazon_checked_at"))
+    lead["amazon_absent"] = bool(_flag(lead.get("amazon_absent")))
+    lead["amazon_sellers_unknown"] = _whole(lead.get("amazon_sellers_unknown"))
+    lead["amazon_skipped_reason"] = _text(lead.get("amazon_skipped_reason"))
+    lead["video_url"] = _text(lead.get("video_url"))
+    # Flatten the facts blob back onto the lead so leads_to_csv finds the
+    # amz_* columns exactly where a freshly built lead would have them.
+    try:
+        for key, val in (json.loads(lead.get("amazon_facts") or "{}") or {}).items():
+            lead[key] = val
+    except (ValueError, TypeError):
+        pass
+    lead["first_seen_at"] = first_seen
+    return lead
+
+
 def load_leads(engine, limit: int | None = 500) -> list[dict[str, Any]]:
     """Every sourced lead with its full record, newest first.
 
@@ -882,35 +910,71 @@ def load_leads(engine, limit: int | None = 500) -> list[dict[str, Any]]:
         return []
     try:
         rows, cols = _read_leads(engine)
-        out = []
         selected_rows = rows if limit is None else rows[:max(0, int(limit))]
-        for r in selected_rows:
-            d = dict(zip(cols, r))
-            try:
-                d["signals"] = json.loads(d.get("signals") or "[]")
-            except (ValueError, TypeError):
-                d["signals"] = []
-            # Rows written before the Amazon check read back as "never checked"
-            # rather than as a missing key or a None the callers have to guard.
-            d["amazon_confidence"] = _text(d.get("amazon_confidence"))
-            d["amazon_marketplace"] = _text(d.get("amazon_marketplace"))
-            d["amazon_checked_at"] = _text(d.get("amazon_checked_at"))
-            d["amazon_absent"] = bool(_flag(d.get("amazon_absent")))
-            d["amazon_sellers_unknown"] = _whole(d.get("amazon_sellers_unknown"))
-            d["amazon_skipped_reason"] = _text(d.get("amazon_skipped_reason"))
-            d["video_url"] = _text(d.get("video_url"))
-            # Flatten the facts blob back onto the lead so leads_to_csv finds the
-            # amz_* columns exactly where a freshly built lead would have them.
-            try:
-                for key, val in (json.loads(d.get("amazon_facts") or "{}") or {}).items():
-                    d[key] = val
-            except (ValueError, TypeError):
-                pass
-            d["first_seen_at"] = r[-1]
-            out.append(d)
-        return out
+        return [_shape_loaded_lead(dict(zip(cols, row)), row[-1]) for row in selected_rows]
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-memory] load_leads failed")
+        return []
+
+
+def load_unenriched_recipe_leads(
+    engine, recipes: Iterable[str], *, limit: int,
+) -> list[dict[str, Any]]:
+    """Oldest leads for these recipes that enrichment has not finished.
+
+    A domain is still open when it is absent from ``outbound_enriched``, or
+    when that row is only an ``INVALID_FILTERS`` miss. The enrich job uses
+    this so a signal brand written in the morning is still visible after
+    newer baseline rows fill ``load_leads``.
+    """
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for recipe in recipes:
+        name = str(recipe or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    if engine is None or not names or int(limit) <= 0:
+        return []
+    try:
+        from sales_support_agent.services.outbound_ddl import relation_exists
+
+        if not relation_exists(engine, _TABLE):
+            return []
+        enriched = relation_exists(engine, "outbound_enriched")
+        holders = ", ".join(f":r{index}" for index in range(len(names)))
+        params: dict[str, Any] = {f"r{index}": name for index, name in enumerate(names)}
+        params["n"] = int(limit)
+
+        def _query(cols: tuple[str, ...]) -> tuple[list[Any], tuple[str, ...]]:
+            done = ""
+            if enriched:
+                done = f"""
+                AND NOT EXISTS (
+                    SELECT 1 FROM outbound_enriched AS enriched_row
+                    WHERE enriched_row.domain = {_TABLE}.domain
+                      AND NOT (
+                        UPPER(COALESCE(enriched_row.reason, '')) LIKE '%INVALID_FILTERS%'
+                        AND COALESCE(enriched_row.status, '') NOT IN ('found', 'in_instantly')
+                      )
+                )
+                """
+            sql = (
+                f"SELECT {', '.join(cols)}, first_seen_at FROM {_TABLE} "
+                f"WHERE recipe IN ({holders}) {done} "
+                "ORDER BY first_seen_at ASC LIMIT :n"
+            )
+            with engine.connect() as conn:
+                return conn.execute(text(sql), params).fetchall(), cols
+
+        try:
+            rows, cols = _query(_SELECT_LEAD_COLS)
+        except Exception:  # noqa: BLE001 — table predates the Amazon columns
+            rows, cols = _query(_CORE_LEAD_COLS)
+        return [_shape_loaded_lead(dict(zip(cols, row)), row[-1]) for row in rows]
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] load_unenriched_recipe_leads failed")
         return []
 
 

@@ -360,3 +360,184 @@ def test_off_unless_explicitly_on(engine, monkeypatch):
     monkeypatch.delenv("OUTBOUND_AUTO_ENRICH")
     out, posts = run(engine)
     assert not out["ran"] and posts == []
+
+
+def _signal_caps(engine, cap):
+    import outbound_campaigns as campaigns
+    from sqlalchemy import text
+
+    campaigns.ensure_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE outbound_campaigns SET daily_cap = :c "
+            "WHERE recipe_key IN ('amz_on', 'amz_off', 'plan_upgrade', 'replatform')"
+        ), {"c": cap})
+
+
+def _library(engine, rows):
+    from sqlalchemy import text
+
+    from sales_support_agent.services.outbound_memory import record_leads
+
+    record_leads(engine, [
+        {"domain": row["domain"], "brand": row.get("brand") or row["domain"],
+         "recipe": row["recipe"], "tier": "B", "categories": "/Apparel"}
+        for row in rows
+    ])
+    with engine.begin() as conn:
+        for row in rows:
+            conn.execute(text(
+                "UPDATE outbound_contacted_domains SET first_seen_at = :t WHERE domain = :d"
+            ), {"t": row["first_seen_at"], "d": row["domain"]})
+
+
+def _calls(find):
+    seen = []
+
+    def wrapped(domain, *, api_key, max_contacts=2, **kw):
+        seen.append(domain)
+        return find(domain, api_key=api_key, max_contacts=max_contacts)
+
+    wrapped.seen = seen
+    return wrapped
+
+
+def _run_library(engine, find):
+    posts = []
+    out = job.run_enrich_job(
+        now=WEEKDAY, engine=engine, find=find, write=write, push=ok_push,
+        post_slack=posts.append, in_instantly=lambda domain: False,
+    )
+    return out, posts
+
+
+def test_active_campaign_recipes_are_enriched_before_newer_baseline(engine, monkeypatch):
+    monkeypatch.setenv("OUTBOUND_ENRICH_PER_RUN", "4")
+    _signal_caps(engine, 100)
+    _library(engine, [
+        {"domain": "on-new.com", "recipe": "amz_on", "first_seen_at": "2026-10-21 12:00:00"},
+        {"domain": "on.com", "recipe": "amz_on", "first_seen_at": "2026-10-20 08:00:00"},
+        {"domain": "off.com", "recipe": "amz_off", "first_seen_at": "2026-10-20 09:00:00"},
+        {"domain": "plus.com", "recipe": "plan_upgrade", "first_seen_at": "2026-10-20 10:00:00"},
+        {"domain": "moved.com", "recipe": "replatform", "first_seen_at": "2026-10-20 11:00:00"},
+        {"domain": "base.com", "recipe": "icp_baseline", "first_seen_at": "2026-10-22 16:00:00"},
+        {"domain": "social.com", "recipe": "social_surge", "first_seen_at": "2026-10-22 17:00:00"},
+    ])
+    find = _calls(finder)
+    out, _ = _run_library(engine, find)
+    assert out["ran"]
+    assert find.seen == ["on.com", "off.com", "plus.com", "moved.com"]
+
+
+def test_signal_leads_outside_the_newest_page_are_still_enriched(engine, monkeypatch):
+    monkeypatch.setenv("OUTBOUND_ENRICH_PER_RUN", "1")
+    _signal_caps(engine, 100)
+    rows = [
+        {"domain": f"base{index}.com", "recipe": "icp_baseline", "first_seen_at": "2026-10-22 18:00:00"}
+        for index in range(1000)
+    ]
+    rows.append({"domain": "on.com", "recipe": "amz_on", "first_seen_at": "2026-10-01 00:00:00"})
+    _library(engine, rows)
+    find = _calls(finder)
+    out, _ = _run_library(engine, find)
+    assert out["ran"]
+    assert find.seen == ["on.com"]
+
+
+def test_campaign_daily_cap_stops_before_more_of_that_recipe(engine, monkeypatch):
+    monkeypatch.setenv("OUTBOUND_ENRICH_PER_RUN", "2")
+    _signal_caps(engine, 1)
+    _library(engine, [
+        {"domain": "on.com", "recipe": "amz_on", "first_seen_at": "2026-10-20 08:00:00"},
+        {"domain": "on-2.com", "recipe": "amz_on", "first_seen_at": "2026-10-20 09:00:00"},
+        {"domain": "base.com", "recipe": "icp_baseline", "first_seen_at": "2026-10-22 16:00:00"},
+    ])
+    find = _calls(finder)
+    first, _ = _run_library(engine, find)
+    assert first["ran"]
+    assert find.seen == ["on.com", "base.com"]
+    find.seen.clear()
+    second, _ = _run_library(engine, find)
+    assert second["ran"]
+    assert find.seen == []
+    assert "on-2.com" not in oe.enriched_domains(engine)
+
+
+def test_replatform_alias_shares_the_daily_cap(engine, monkeypatch):
+    monkeypatch.setenv("OUTBOUND_ENRICH_PER_RUN", "2")
+    _signal_caps(engine, 1)
+    _library(engine, [
+        {"domain": "old.com", "recipe": "replatform", "first_seen_at": "2026-10-20 08:00:00"},
+        {"domain": "alias.com", "recipe": "replatformed", "first_seen_at": "2026-10-20 09:00:00"},
+        {"domain": "base.com", "recipe": "icp_baseline", "first_seen_at": "2026-10-22 16:00:00"},
+    ])
+    find = _calls(finder)
+    _run_library(engine, find)
+    assert find.seen == ["old.com", "base.com"]
+
+
+def test_throttled_campaign_does_not_jump_ahead_of_baseline(engine, monkeypatch):
+    from sqlalchemy import text
+
+    monkeypatch.setenv("OUTBOUND_ENRICH_PER_RUN", "1")
+    _signal_caps(engine, 100)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE outbound_campaigns SET status = 'throttled' WHERE recipe_key = 'amz_on'"
+        ))
+    _library(engine, [
+        {"domain": "on.com", "recipe": "amz_on", "first_seen_at": "2026-10-01 00:00:00"},
+        {"domain": "base.com", "recipe": "icp_baseline", "first_seen_at": "2026-10-22 16:00:00"},
+    ])
+    find = _calls(finder)
+    _run_library(engine, find)
+    assert find.seen == ["base.com"]
+
+
+def test_priority_does_not_change_push_routing_or_move_contacts(engine, monkeypatch):
+    from types import SimpleNamespace
+
+    from sqlalchemy import text
+
+    monkeypatch.setenv("OUTBOUND_ENRICH_PER_RUN", "2")
+    _signal_caps(engine, 100)
+    _library(engine, [
+        {"domain": "plus.com", "recipe": "plan_upgrade", "first_seen_at": "2026-10-20 08:00:00"},
+        {"domain": "base.com", "recipe": "icp_baseline", "first_seen_at": "2026-10-22 16:00:00"},
+    ])
+    oe.ensure_tables(engine)
+    oe._record_person(
+        engine,
+        SimpleNamespace(email="old@kept.com", domain="kept.com", first_name="Old", last_name="Lead",
+                        title="Founder", linkedin_url="", email_status="VERIFIED"),
+        "Already in the campaign.", "test",
+        {"brand": "Kept", "categories": "/Apparel", "recipe": "plan_upgrade", "tier": "B"},
+    )
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE outbound_enriched_contacts "
+            "SET pushed_at = '2026-10-01 00:00:00', campaign_id = 'already-there' "
+            "WHERE email = 'old@kept.com'"
+        ))
+    sent = []
+
+    def record(payload, cid, dry_run=False, **kwargs):
+        sent.append((cid, [lead["email"] for lead in payload]))
+        return ok_push(payload, cid, dry_run=dry_run)
+
+    posts = []
+    out = job.run_enrich_job(
+        now=WEEKDAY, engine=engine, find=finder, write=write, push=record,
+        post_slack=posts.append, in_instantly=lambda domain: False,
+    )
+    assert out["ran"] and out["pushed"] == 2
+    assert {cid: emails for cid, emails in sent} == {
+        push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]: ["a@plus.com"],
+        CAMPAIGN: ["a@base.com"],
+    }
+    assert all("old@kept.com" not in emails for _, emails in sent)
+    with engine.connect() as conn:
+        kept = conn.execute(text(
+            "SELECT campaign_id FROM outbound_enriched_contacts WHERE email = 'old@kept.com'"
+        )).scalar()
+    assert kept == "already-there"

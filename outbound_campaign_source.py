@@ -4,10 +4,13 @@ Each active campaign with filters is queried server-side. Domains already
 in ``outbound_contacted_domains`` are skipped. New leads are stored with
 that campaign's recipe key. Volume stays inside the daily company cap
 (300) and stops when the daily credit cap (1100) is already spent.
-Sourcing does not call Prospeo and does not call Instantly.
+When the active caps add up to more than that room, the room is shared
+so a later recipe such as ``replatform`` still receives leads. No
+campaign receives more than its own ``daily_cap``. Sourcing does not
+call Prospeo and does not call Instantly.
 
-The morning routine runs this before the older recipe pulls so ``amz_on``
-and ``amz_off`` are filled from these filters.
+The morning routine runs this before the older recipe pulls so the signal
+campaigns are filled from these filters before baseline.
 """
 
 from __future__ import annotations
@@ -119,6 +122,178 @@ def _ordered(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (rank.get(str(row.get("recipe_key")), len(rank)), str(row.get("recipe_key"))))
 
 
+def ordered_campaigns(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``amz_on``, ``amz_off``, ``plan_upgrade``, ``replatform``, then the rest."""
+
+    return _ordered(rows)
+
+
+def allocate_source_caps(caps: list[int], room: int) -> list[int]:
+    """Share ``room`` across campaigns without passing any campaign's cap.
+
+    Each campaign that still has cap left gets an equal share of the
+    companies still unassigned. A campaign whose remaining cap is smaller
+    than that share leaves the rest for the others. A single leftover
+    company goes to the earliest campaign that can take it. When every
+    cap fits inside ``room``, each campaign receives its full cap.
+
+    Four caps of 100 inside a room of 300 yield 75 each, so ``replatform``
+    is included. Five caps of 100 yield 60 each. The seeded 40, 40, 30,
+    and 25 still receive those full caps inside a room of 300.
+    """
+
+    remaining = max(0, int(room))
+    limits = [max(0, int(cap)) for cap in caps]
+    assigned = [0 for _ in limits]
+    while remaining > 0:
+        open_indexes = [index for index, cap in enumerate(limits) if assigned[index] < cap]
+        if not open_indexes:
+            break
+        share, extra = divmod(remaining, len(open_indexes))
+        if share == 0:
+            for index in open_indexes:
+                if remaining <= 0:
+                    break
+                assigned[index] += 1
+                remaining -= 1
+            break
+        before = remaining
+        for offset, index in enumerate(open_indexes):
+            if remaining <= 0:
+                break
+            want = share + (1 if offset < extra else 0)
+            take = min(want, limits[index] - assigned[index], remaining)
+            assigned[index] += take
+            remaining -= take
+        if remaining == before:
+            break
+    return assigned
+
+
+def _blank_pull(row: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "row": row,
+        "filters": filters,
+        "cursor": None,
+        "offset": 0,
+        "page": None,
+        "next_cursor": None,
+        "fetched_pages": 0,
+        "recorded": 0,
+        "scanned": 0,
+        "skipped_seen": 0,
+        "error": "",
+        "exhausted": not bool(filters),
+        "leads": [],
+        "attempted": False,
+    }
+
+
+def _ensure_page(state: dict[str, Any], fetch: Callable[..., Any], api_key: str) -> bool:
+    """Load the page the pull is reading. False when this recipe is done."""
+
+    page = state["page"]
+    if page is not None and state["offset"] < len(page):
+        return True
+    if state["fetched_pages"] >= _MAX_PAGES:
+        state["exhausted"] = True
+        return False
+    if page is not None:
+        if not state["next_cursor"]:
+            state["exhausted"] = True
+            return False
+        state["cursor"] = state["next_cursor"]
+        state["offset"] = 0
+    try:
+        fetched = fetch(
+            api_key, extra_params=state["filters"], cursor=state["cursor"], page_size=100,
+        )
+    except Exception as exc:  # noqa: BLE001
+        state["error"] = str(exc)[:200]
+        state["exhausted"] = True
+        logger.exception(
+            "[outbound-campaign-source] StoreLeads failed for %s", state["row"]["recipe_key"],
+        )
+        return False
+    domains, cursor, error = _domains_from(fetched)
+    state["fetched_pages"] += 1
+    if error:
+        state["error"] = error
+        state["exhausted"] = True
+        state["page"] = []
+        state["next_cursor"] = None
+        return False
+    state["page"] = domains
+    state["next_cursor"] = cursor
+    state["offset"] = 0
+    if not domains:
+        state["exhausted"] = True
+        return False
+    return True
+
+
+def _take_leads(
+    state: dict[str, Any],
+    ask: int,
+    fetch: Callable[..., Any],
+    seen: set[str],
+    api_key: str,
+) -> list[dict[str, Any]]:
+    """Take up to ``ask`` new leads, continuing a page that was only partly used."""
+
+    fresh: list[dict[str, Any]] = []
+    state["attempted"] = True
+    while len(fresh) < ask and not state["exhausted"] and not state["error"]:
+        if not _ensure_page(state, fetch, api_key):
+            break
+        page = state["page"] or []
+        while state["offset"] < len(page) and len(fresh) < ask:
+            store = page[state["offset"]]
+            state["offset"] += 1
+            state["scanned"] += 1
+            lead = _lead_from(store, str(state["row"]["recipe_key"]))
+            if lead is None:
+                continue
+            if lead["domain"] in seen:
+                state["skipped_seen"] += 1
+                continue
+            seen.add(lead["domain"])
+            fresh.append(lead)
+        if state["offset"] >= len(page) and not state["next_cursor"] and len(fresh) < ask:
+            state["exhausted"] = True
+    return fresh
+
+
+def _record_taken(
+    state: dict[str, Any],
+    fresh: list[dict[str, Any]],
+    seen: set[str],
+    record: Callable[..., int],
+) -> list[dict[str, Any]]:
+    """Persist one slice. A failed write puts those domains back."""
+
+    saved = 0
+    if fresh and not state["error"]:
+        try:
+            saved = int(record(fresh, str(state["row"]["recipe_key"])) or 0)
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-campaign-source] could not record %s", state["row"]["recipe_key"])
+            saved = 0
+        if saved <= 0:
+            state["error"] = state["error"] or "could not record leads"
+            saved = 0
+    if saved <= 0:
+        for lead in fresh:
+            seen.discard(lead["domain"])
+        if fresh or state["error"]:
+            state["exhausted"] = True
+        return []
+    kept = fresh[:saved]
+    state["recorded"] += len(kept)
+    state["leads"].extend(kept)
+    return kept
+
+
 def source_active_campaigns(
     engine: Any,
     *,
@@ -186,73 +361,60 @@ def source_active_campaigns(
             return record_leads(engine, leads, source=f"campaign:{recipe_key}")
 
     seen = set(contacted or set())
-    for row in _ordered(rows):
-        if room <= 0:
+    states = [
+        _blank_pull(row, campaigns.resolve_filters(row.get("storeleads_filters"), moment))
+        for row in ordered_campaigns(rows)
+    ]
+    while room > 0:
+        runnable = [
+            state for state in states
+            if state["filters"] and not state["exhausted"] and not state["error"]
+            and state["recorded"] < int(state["row"]["daily_cap"])
+        ]
+        if not runnable:
             break
-        filters = campaigns.resolve_filters(row.get("storeleads_filters"), moment)
-        if not filters:
+        asks = allocate_source_caps(
+            [int(state["row"]["daily_cap"]) - int(state["recorded"]) for state in runnable],
+            room,
+        )
+        if sum(asks) <= 0:
+            break
+        progressed = False
+        for state, ask in zip(runnable, asks):
+            if ask <= 0 or room <= 0:
+                continue
+            fresh = _take_leads(state, ask, fetch, seen, api_key)
+            if len(fresh) < ask:
+                state["exhausted"] = True
+            if state["error"]:
+                for lead in fresh:
+                    seen.discard(lead["domain"])
+                state["exhausted"] = True
+                progressed = True
+                continue
+            kept = _record_taken(state, fresh, seen, record)
+            room -= len(kept)
+            if kept or state["exhausted"] or state["error"] or not fresh:
+                progressed = True
+        if not progressed:
+            break
+    for state in states:
+        if not state["filters"] or not state["attempted"]:
             continue
-        cap = min(int(row["daily_cap"]), room)
-        fresh: list[dict[str, Any]] = []
-        cursor: Optional[str] = None
-        scanned = 0
-        skipped = 0
-        error = ""
-        for _page in range(_MAX_PAGES):
-            if len(fresh) >= cap:
-                break
-            try:
-                page = fetch(api_key, extra_params=filters, cursor=cursor, page_size=100)
-            except Exception as exc:  # noqa: BLE001
-                error = str(exc)[:200]
-                logger.exception("[outbound-campaign-source] StoreLeads failed for %s", row["recipe_key"])
-                break
-            domains, cursor, error = _domains_from(page)
-            if error:
-                break
-            for store in domains:
-                scanned += 1
-                lead = _lead_from(store, str(row["recipe_key"]))
-                if lead is None:
-                    continue
-                if lead["domain"] in seen:
-                    skipped += 1
-                    continue
-                seen.add(lead["domain"])
-                fresh.append(lead)
-                if len(fresh) >= cap:
-                    break
-            if not cursor:
-                break
-        saved = 0
-        if fresh and not error:
-            try:
-                saved = int(record(fresh, str(row["recipe_key"])) or 0)
-            except Exception:  # noqa: BLE001
-                logger.exception("[outbound-campaign-source] could not record %s", row["recipe_key"])
-                saved = 0
-            if saved <= 0:
-                error = error or "could not record leads"
-                saved = 0
-        if saved <= 0:
-            for lead in fresh:
-                seen.discard(lead["domain"])
-            fresh = []
-        kept = fresh[:saved] if saved else []
-        room -= len(kept)
+        kept = state["leads"]
         out["recorded"] += len(kept)
         out["leads"].extend(kept)
-        out["scanned"] += scanned
-        out["skipped_seen"] += skipped
+        out["scanned"] += int(state["scanned"])
+        out["skipped_seen"] += int(state["skipped_seen"])
         if kept:
-            out["recipes"].append(row["recipe_key"])
+            out["recipes"].append(state["row"]["recipe_key"])
         out["campaigns"].append({
-            "recipe_key": row["recipe_key"],
-            "campaign_id": row["campaign_id"],
+            "recipe_key": state["row"]["recipe_key"],
+            "campaign_id": state["row"]["campaign_id"],
             "recorded": len(kept),
-            "scanned": scanned,
-            "skipped_seen": skipped,
-            "filters": filters,
-            "error": error,
+            "scanned": int(state["scanned"]),
+            "skipped_seen": int(state["skipped_seen"]),
+            "filters": state["filters"],
+            "error": state["error"],
         })
     return out

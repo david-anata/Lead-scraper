@@ -12,6 +12,8 @@ Guarantees:
     test) but nothing is pushed to Instantly unless the caller opts in.
   * Fails open: a provider or database problem yields a report with a reason,
     never an exception into the daily job.
+  * ``run_enrichment`` keeps the caller's lead order. The daily job reorders
+    that list so active campaign recipes come first.
 """
 
 from __future__ import annotations
@@ -537,6 +539,189 @@ def enriched_since(engine, since_utc) -> dict[str, int]:
             f"SELECT COUNT(*), COALESCE(SUM(credits_used), 0) FROM {_DOMAINS} WHERE enriched_at >= :t"),
             {"t": since_utc}).fetchone()
     return {"companies": int(row[0] or 0), "credits": int(row[1] or 0)}
+
+
+def enriched_recipe_counts(engine, since_utc) -> dict[str, int]:
+    """Companies recorded since ``since_utc``, grouped by the library recipe.
+
+    The enrich job uses this so a campaign ``daily_cap`` counts work already
+    done today. A missing library counts as zero.
+    """
+
+    if engine is None:
+        return {}
+    try:
+        ensure_tables(engine)
+        from sales_support_agent.services.outbound_ddl import relation_exists
+
+        if not relation_exists(engine, "outbound_contacted_domains"):
+            return {}
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                f"""
+                SELECT COALESCE(library.recipe, ''), COUNT(*)
+                FROM {_DOMAINS} AS enriched
+                JOIN outbound_contacted_domains AS library
+                  ON library.domain = enriched.domain
+                WHERE enriched.enriched_at >= :t
+                GROUP BY COALESCE(library.recipe, '')
+                """
+            ), {"t": since_utc}).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich] could not count recipes enriched today")
+        return {}
+    return {str(recipe or ""): int(count or 0) for recipe, count in rows}
+
+
+def _recipe_names(row: dict[str, Any]) -> list[str]:
+    names = [str(row.get("recipe_key") or "").strip()]
+    names.extend(
+        part.strip() for part in str(row.get("recipe_aliases") or "").split(",") if part.strip()
+    )
+    unique: list[str] = []
+    for name in names:
+        if name and name not in unique:
+            unique.append(name)
+    return unique
+
+
+def _active_campaign_windows(engine, since_utc) -> list[dict[str, Any]]:
+    """Active campaigns with cap still left today, in source order.
+
+    Throttled, cut, and proposed rows are not given a priority window.
+    ``remaining`` is ``daily_cap`` minus companies of that recipe (and its
+    aliases) already enriched since ``since_utc``.
+    """
+
+    import outbound_campaign_source as source
+    import outbound_campaigns as campaigns
+
+    active = [
+        row for row in campaigns.list_campaigns(engine)
+        if str(row.get("status") or "") == "active" and int(row.get("daily_cap") or 0) > 0
+    ]
+    if not active:
+        return []
+    counts = enriched_recipe_counts(engine, since_utc)
+    windows = []
+    for row in source.ordered_campaigns(active):
+        names = _recipe_names(row)
+        used = sum(int(counts.get(name, 0)) for name in names)
+        windows.append({
+            "recipe_key": str(row.get("recipe_key") or ""),
+            "names": names,
+            "remaining": max(0, int(row.get("daily_cap") or 0) - used),
+        })
+    return windows
+
+
+def _seen_key(lead: dict[str, Any]) -> tuple[int, str]:
+    stamp = str(lead.get("first_seen_at") or "")
+    if not stamp:
+        return (1, "")
+    return (0, stamp)
+
+
+def _interleave(buckets: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """One lead from each bucket in turn. Empty buckets are skipped."""
+
+    pending = [list(bucket) for bucket in buckets]
+    ordered: list[dict[str, Any]] = []
+    while True:
+        advanced = False
+        for bucket in pending:
+            if not bucket:
+                continue
+            ordered.append(bucket.pop(0))
+            advanced = True
+        if not advanced:
+            return ordered
+
+
+def prioritize_active_campaign_leads(
+    engine,
+    leads: list[dict[str, Any]],
+    *,
+    since_utc,
+    fill_from_library: bool = False,
+) -> list[dict[str, Any]]:
+    """Try active campaign recipes before baseline and other recipes.
+
+    Each active campaign contributes at most its remaining ``daily_cap``
+    for the Denver day. Those leads are the oldest still unenriched, and
+    they are interleaved so one recipe does not consume the run before the
+    others. ``icp_baseline``, ``social_surge``, and every recipe that is
+    not an active campaign follow, in the order they were loaded.
+
+    ``fill_from_library`` also reads signal leads that are older than the
+    newest page ``load_leads`` returns. Push routing is not involved: this
+    only orders the enrich walk. A problem reading campaigns leaves
+    ``leads`` in its original order.
+    """
+
+    original = list(leads)
+    if engine is None:
+        return original
+    try:
+        windows = _active_campaign_windows(engine, since_utc)
+        if not windows:
+            return original
+        done = enriched_domains(engine)
+        by_recipe = {name: window for window in windows for name in window["names"]}
+        buckets: dict[str, list[dict[str, Any]]] = {window["recipe_key"]: [] for window in windows}
+        chosen: set[str] = set()
+
+        def domain_of(lead: dict[str, Any]) -> str:
+            return _contacts.normalize_domain(str(lead.get("domain") or ""))
+
+        def take(lead: dict[str, Any], window: dict[str, Any]) -> None:
+            if int(window["remaining"]) <= 0:
+                return
+            domain = domain_of(lead)
+            if not domain or domain in done or domain in chosen:
+                return
+            bucket = buckets[window["recipe_key"]]
+            if len(bucket) >= int(window["remaining"]):
+                return
+            chosen.add(domain)
+            bucket.append(lead)
+
+        if fill_from_library:
+            from sales_support_agent.services.outbound_memory import load_unenriched_recipe_leads
+
+            for window in windows:
+                if int(window["remaining"]) <= 0:
+                    continue
+                pending = load_unenriched_recipe_leads(
+                    engine, window["names"], limit=int(window["remaining"]),
+                )
+                for lead in pending:
+                    take(lead, window)
+        grouped: dict[str, list[dict[str, Any]]] = {window["recipe_key"]: [] for window in windows}
+        for lead in original:
+            window = by_recipe.get(str(lead.get("recipe") or "").strip())
+            if window is not None:
+                grouped[window["recipe_key"]].append(lead)
+        for window in windows:
+            rows = grouped[window["recipe_key"]]
+            rows.sort(key=_seen_key)
+            for lead in rows:
+                take(lead, window)
+        others: list[dict[str, Any]] = []
+        for lead in original:
+            if str(lead.get("recipe") or "").strip() in by_recipe:
+                continue
+            domain = domain_of(lead)
+            if domain and domain in chosen:
+                continue
+            if domain:
+                chosen.add(domain)
+            others.append(lead)
+        campaign_leads = _interleave([buckets[window["recipe_key"]] for window in windows])
+        return campaign_leads + others
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich] could not prioritize campaign leads")
+        return original
 
 
 MAX_ENRICH_LIST_DOMAINS = 200

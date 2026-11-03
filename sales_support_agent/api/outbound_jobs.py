@@ -278,8 +278,8 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
     daily_remaining = _DAILY_COMPANY_CAP
     import time as _time
     pull_started = _time.monotonic()
-    # Signal-campaign filters claim the daily cap first (this is what fills
-    # amz_on and amz_off). Scheduled recipes follow. Baseline stays last.
+    # Signal-campaign filters run first and share this cap (including
+    # replatform). Scheduled recipes follow. Baseline stays last.
     due = [r for r in due if r.key != "icp_baseline"] + [r for r in due if r.key == "icp_baseline"]
     if engine is not None and daily_remaining > 0:
         try:

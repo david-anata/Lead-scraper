@@ -224,6 +224,96 @@ def test_sourcing_records_the_recipe_and_skips_contacted_domains(engine):
     assert all(call.get("f:ermin") == 1_000_000 for call in calls)
 
 
+def _domains(prefix, count):
+    return [{"name": f"{prefix}{index}.com", "merchant_name": prefix, "country_code": "US"} for index in range(count)]
+
+
+def _prefix(filters):
+    if filters.get("f:last_platform"):
+        return "re"
+    if filters.get("f:plan") == "Shopify Plus":
+        return "plan"
+    if filters.get("f:scs:op") == "not":
+        return "off"
+    if filters.get("f:scs") == "Amazon":
+        return "on"
+    return "other"
+
+
+def test_seed_caps_still_fill_when_they_fit_inside_300(engine):
+    def fetch(api_key, **kwargs):
+        return SimpleNamespace(domains=_domains(_prefix(kwargs["extra_params"]), 100), next_cursor=None, error="")
+
+    out = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
+    )
+    recorded = {item["recipe_key"]: item["recorded"] for item in out["campaigns"]}
+    assert recorded == {"amz_on": 40, "amz_off": 40, "plan_upgrade": 30, "replatform": 25}
+    assert out["recorded"] == 135
+
+
+def test_company_cap_of_300_still_sources_replatform_when_caps_are_100(engine):
+    """Five daily caps of 100 do not fit in the 300 company ceiling.
+
+    Walking min(cap, room) in source order would give amz_on, amz_off, and
+    plan_upgrade 100 each and leave replatform at 0. Sharing the room keeps
+    every filtered campaign inside its own cap and inside 300.
+    """
+
+    campaigns.ensure_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE outbound_campaigns SET daily_cap = 100"))
+        conn.execute(text(
+            "UPDATE outbound_campaigns SET storeleads_filters = :filters "
+            "WHERE recipe_key = 'abby_reengage'"
+        ), {"filters": '{"f:p": "shopify"}'})
+
+    def fetch(api_key, **kwargs):
+        return SimpleNamespace(domains=_domains(_prefix(kwargs["extra_params"]), 100), next_cursor=None, error="")
+
+    four = source.allocate_source_caps([100, 100, 100, 100], source.COMPANY_CAP)
+    five = source.allocate_source_caps([100, 100, 100, 100, 100], source.COMPANY_CAP)
+    assert source.COMPANY_CAP == 300
+    assert four == [75, 75, 75, 75]
+    assert five == [60, 60, 60, 60, 60]
+    assert source.allocate_source_caps([40, 40, 30, 25], 300) == [40, 40, 30, 25]
+
+    out = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
+    )
+    recorded = {item["recipe_key"]: item["recorded"] for item in out["campaigns"]}
+    assert recorded == {
+        "amz_on": 60, "amz_off": 60, "plan_upgrade": 60, "replatform": 60, "abby_reengage": 60,
+    }
+    assert out["recorded"] == 300
+
+
+def test_unused_campaign_room_is_offered_to_the_other_caps(engine):
+    campaigns.ensure_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE outbound_campaigns SET daily_cap = 100 "
+            "WHERE recipe_key IN ('amz_on', 'amz_off', 'plan_upgrade', 'replatform')"
+        ))
+
+    def fetch(api_key, **kwargs):
+        filters = kwargs["extra_params"]
+        if filters.get("f:scs") == "Amazon" and not filters.get("f:scs:op") and "f:plan" not in filters:
+            return SimpleNamespace(domains=_domains("on", 2), next_cursor=None, error="")
+        return SimpleNamespace(domains=_domains(_prefix(filters), 100), next_cursor=None, error="")
+
+    out = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
+    )
+    recorded = {item["recipe_key"]: item["recorded"] for item in out["campaigns"]}
+    assert recorded["amz_on"] == 2
+    assert recorded["replatform"] > 0
+    assert recorded["amz_off"] == 100
+    assert recorded["plan_upgrade"] <= 100
+    assert recorded["replatform"] <= 100
+    assert out["recorded"] == 300
+
+
 def test_sourcing_stops_at_the_company_and_credit_caps(engine):
     def fetch(api_key, **kwargs):
         return SimpleNamespace(
