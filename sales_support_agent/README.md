@@ -145,8 +145,22 @@ an email, and about $10k to $20k a month, plus Amazon / not Amazon, a
 Shopify Plus plan change in the last 90 days, or a move off WooCommerce,
 Magento, or BigCommerce in the last 120 days. Domains already in
 `outbound_contacted_domains` are skipped. New companies stay inside the
-300 company and 1100 credit daily caps. Sourcing does not spend Prospeo
-credits and does not call Instantly.
+300 company and 1100 credit daily caps. Each campaign also stops at its
+own `daily_cap`. When those caps add up to more than the room left in
+the 300, the room is shared so `replatform` still receives leads. Five
+caps of 100 do not fit: `abby_reengage` has no StoreLeads filters, and
+the other four at 100 are 400. Sharing a full 300 across those four
+gives each 75. Raising the 300 ceiling to 400 would fund each sourcing cap in full
+and would leave the morning pull with no room for `social_surge` or
+`icp_baseline`. Sourcing does not spend Prospeo credits and does not
+call Instantly.
+
+The hourly enrich job tries active `outbound_campaigns` recipes first,
+oldest unenriched brand first, up to each row's remaining `daily_cap`
+(the live caps are 100). The recipes are interleaved. `icp_baseline`,
+`social_surge`, and every other recipe use whatever room is left,
+newest first. Push routing is unchanged: each recipe still goes to the
+same Instantly campaign, and a contact already in Instantly stays there.
 
 Monday at 7:00 AM America/Denver, `/api/jobs/outbound-campaign-score/at-1300`
 and `at-1400` score the previous week once `instantly_campaign_daily`
