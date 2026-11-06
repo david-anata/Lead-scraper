@@ -19,6 +19,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -39,7 +40,8 @@ STORELEADS_CURSOR_PAGES = 15
 # ---- ICP (mirrors the coded target + docs/outbound/03) -----------------------
 ICP_MIN_YEARLY_SALES_CENTS = 1_000_000_00      # ~$1M/yr floor
 ICP_MAX_YEARLY_SALES_CENTS = 20_000_000_00     # ~$20M/yr ceiling (David: "under 20M is who we want")
-ICP_ALLOWED_COUNTRIES = {"US", "GB", "UK", "CA", "AU"}
+# Company fit is US only. UK/CA/AU used to pass this set; they no longer do.
+ICP_ALLOWED_COUNTRIES = {"US"}
 ICP_ALLOWED_PLATFORMS = {"shopify"}
 
 # StoreLeads category text -> our niche label (keyword match, lowercased)
@@ -66,6 +68,74 @@ def _normalize_country(code: str) -> str:
     return "GB" if code == "UK" else code
 
 
+# Short words that must be whole words. "app" is not "apparel". "event" is not
+# "prevent". Fitness apparel stays; a fitness program does not.
+_COMPANY_FIT_EXCLUDE = re.compile(
+    r"\b(?:apps?|services?|events?)\b"
+    r"|\bmulti[\s-]?brand\b"
+    r"|\bfitness programs?\b|\bfitness class(?:es)?\b"
+    r"|\bworkout programs?\b|\bpersonal training\b",
+    re.I,
+)
+
+
+def _yearly_cents(store: dict[str, Any]) -> Optional[float]:
+    """StoreLeads yearly sales in cents, or None when the figure is missing."""
+
+    yearly = store.get("estimated_sales_yearly")
+    if isinstance(yearly, bool) or yearly is None:
+        return None
+    if isinstance(yearly, (int, float)):
+        return float(yearly)
+    if isinstance(yearly, str):
+        raw = yearly.strip().replace(",", "")
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+    return None
+
+
+def _company_text(store: dict[str, Any]) -> str:
+    parts = (
+        store.get("name") or "",
+        store.get("merchant_name") or "",
+        store.get("categories") or "",
+        store.get("tags") or "",
+        store.get("description") or "",
+        store.get("merchant_description") or "",
+    )
+    return " ".join(str(part) for part in parts).lower()
+
+
+def passes_company_fit(store: dict[str, Any]) -> bool:
+    """US own-brand physical-product companies with revenue on file.
+
+    Baseline pulls, signal pulls, and campaign sourcing all use this gate.
+    A blank country is not the US. A missing or zero sales figure is not
+    revenue data. Distributors, multi-brand resellers, services, events,
+    apps, and fitness programs are out. The niche list is the physical
+    product test.
+    """
+
+    country = _normalize_country(str(store.get("country_code") or ""))
+    if country not in ICP_ALLOWED_COUNTRIES:
+        return False
+    yearly = _yearly_cents(store)
+    if yearly is None or yearly <= 0:
+        return False
+    if not store_niche(store):
+        return False
+    text = _company_text(store)
+    if any(bad in text for bad in ICP_EXCLUDE_KEYWORDS):
+        return False
+    if _COMPANY_FIT_EXCLUDE.search(text):
+        return False
+    return True
+
+
 def store_niche(store: dict[str, Any]) -> str:
     """Return the ICP niche label for a store, or '' if it fits none."""
     text = " ".join(
@@ -87,6 +157,8 @@ def store_matches_icp(store: dict[str, Any], settings: Optional[dict[str, Any]] 
 
     The revenue band is tunable on the Lead Ops page; settings are in dollars a
     year, while StoreLeads reports cents, so the conversion happens here.
+    ``passes_company_fit`` is the shared US / own-brand / physical-product /
+    known-revenue screen used by baseline, signal, and campaign sourcing.
     """
     lo, hi = ICP_MIN_YEARLY_SALES_CENTS, ICP_MAX_YEARLY_SALES_CENTS
     if settings:
@@ -98,17 +170,15 @@ def store_matches_icp(store: dict[str, Any], settings: Optional[dict[str, Any]] 
     domain = str(store.get("name") or "").strip().lower()
     if not domain:
         return False
+    if not passes_company_fit(store):
+        return False
 
     platform = str(store.get("platform") or "").strip().lower()
     if ICP_ALLOWED_PLATFORMS and platform and platform not in ICP_ALLOWED_PLATFORMS:
         return False
 
-    country = _normalize_country(str(store.get("country_code") or ""))
-    if country and country not in ICP_ALLOWED_COUNTRIES:
-        return False
-
-    yearly = store.get("estimated_sales_yearly")
-    if isinstance(yearly, (int, float)) and yearly > 0:
+    yearly = _yearly_cents(store)
+    if yearly is not None and yearly > 0:
         if yearly < lo or yearly > hi:
             return False
 

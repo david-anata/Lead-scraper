@@ -111,8 +111,9 @@ def api_key() -> str:
 
 def build_lead(contact: dict[str, Any], lead: dict[str, Any], opener: str) -> dict[str, Any]:
     """One Instantly lead. Field names match the sequence variables:
-    {{firstName}}, {{companyName}}, {{personalization}}, {{category}}."""
+    {{firstName}}, {{companyName}}, {{personalization}}, {{category}}, {{brandAngle}}."""
     category = friendly_category(lead.get("categories") or "") or str(lead.get("niche") or "").strip().lower()
+    angle = str(contact.get("brand_angle") or lead.get("brand_angle") or "").strip()
     return {
         "email": str(contact.get("email") or "").strip().lower(),
         "first_name": str(contact.get("first_name") or "").strip(),
@@ -125,6 +126,7 @@ def build_lead(contact: dict[str, Any], lead: dict[str, Any], opener: str) -> di
             "signal": str(lead.get("recipe") or "").strip(),
             "tier": str(lead.get("tier") or "").strip(),
             "contact_title": str(contact.get("title") or "").strip(),
+            "brandAngle": angle,
         },
     }
 

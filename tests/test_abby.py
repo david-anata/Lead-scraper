@@ -669,6 +669,25 @@ def test_live_run_records_departed_notices_and_sends_nothing(engine):
         action, detail = saved[lead]
         assert action == "ignore"
         assert "Departed contact" in detail and needle in detail and "Nothing sent." in detail
+    import outbound_suppression as suppression
+    emails, domains = suppression.lists(engine)
+    for lead, _body, _needle in cases:
+        assert lead in emails
+    assert domains == set()
+
+
+def test_out_of_office_is_not_suppressed(engine):
+    import outbound_suppression as suppression
+    msg = email(1, lead="ann@huppy.com")
+    msg["body"] = {"text": "I am out of the office until Monday."}
+    msg["from_address_email"] = "ann@huppy.com"
+    runner.run(engine, client=FakeClient([msg], {msg["thread_id"]: [msg]}), campaign_id="camp",
+               now=NOW, think=abby.think)
+    emails, domains = suppression.lists(engine)
+    assert "ann@huppy.com" not in emails and domains == set()
+    with engine.connect() as conn:
+        action, detail = conn.execute(text("SELECT action, detail FROM abby_handled")).one()
+    assert action == "ignore" and "out of office" in detail.lower()
 
 
 def test_prompt_uses_the_booking_link_signature_and_optional_founder_cc():

@@ -36,10 +36,26 @@ def no_sleep(_):
 
 def test_title_rank_orders_owners_before_marketing():
     assert oc.title_rank("Co-Founder & CEO") < oc.title_rank("Head of Ecommerce")
-    assert oc.title_rank("Head of Ecommerce") < oc.title_rank("VP Marketing")
+    assert oc.title_rank("Head of Ecommerce") == oc.title_rank("VP of Marketing")
+    assert oc.title_rank("President") < oc.title_rank("Director of Amazon")
     assert oc.title_rank("Marketing Intern") is None
     assert oc.title_rank("Accountant") is None
     assert oc.title_rank("") is None
+    assert oc.title_rank("Vice President of Sales") is None
+
+
+def test_buyer_role_gate_drops_the_excluded_titles():
+    excluded = (
+        "Amazon Specialist", "Ecommerce Coordinator", "Marketing Associate",
+        "Customer Service Manager", "Project Manager", "Creative Director",
+        "Ecommerce Manager", "Art Director", "Customer Support Lead",
+    )
+    for title in excluded:
+        assert oc.title_rank(title) is None, title
+    results = [_person(f"p{i}", title) for i, title in enumerate(("Founder", *excluded, "Head of Growth"))]
+    ranked = oc.rank_candidates(results)
+    titles = [item["person"]["current_job_title"] for item in ranked]
+    assert titles == ["Founder", "Head of Growth"]
 
 
 def test_normalize_domain():

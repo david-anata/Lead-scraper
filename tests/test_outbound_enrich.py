@@ -372,3 +372,50 @@ def test_enrich_domain_list_tags_redo_partner_and_the_regular_push_skips_it(engi
 
     out = oe.push_pending(engine, "camp", dry_run=False, push=record)
     assert sent == ["a@base.com"] and out["excluded_recipes"] == 2 and out["pushed"] == 1
+
+
+def test_departed_contact_is_left_out_of_future_pushes(engine):
+    """A person already classified as having left the company is not pushed again."""
+    from sqlalchemy import text
+
+    oe.run_enrichment(
+        engine, [lead("a.com", "Acme")], api_key="k",
+        find=finder({"a.com": ["gone@a.com", "stay@a.com"]}), write=opener,
+    )
+    with engine.begin() as conn:
+        conn.execute(text(
+            """
+            CREATE TABLE abby_handled (
+                email_id TEXT PRIMARY KEY, lead TEXT, action TEXT, detail TEXT
+            )
+            """
+        ))
+        conn.execute(text(
+            "INSERT INTO abby_handled (email_id, lead, action, detail) VALUES "
+            "('e1', 'Gone@A.com', 'ignore', "
+            "'automatic reply: departed employee | Departed contact gone@a.com. Nothing sent.'), "
+            "('e2', 'stay@a.com', 'ignore', "
+            "'automatic reply: out of office | Out of office from stay@a.com. Nothing sent.')"
+        ))
+    seen = {}
+
+    def capture(payload, cid, dry_run=False, **k):
+        seen["emails"] = [row["email"] for row in payload]
+        assert row_angle_ok(payload)
+        return push.PushOutcome(attempted=len(payload), created=len(payload), dry_run=False)
+
+    out = oe.push_pending(engine, "camp", dry_run=False, push=capture)
+    assert seen["emails"] == ["stay@a.com"]
+    assert out["suppressed"] == 1 and out["pushed"] == 1
+    with engine.connect() as conn:
+        reason = conn.execute(text(
+            "SELECT skip_reason FROM outbound_enriched_contacts WHERE email = 'gone@a.com'"
+        )).scalar()
+    assert str(reason).startswith("suppressed:departed:gone@a.com")
+
+
+def row_angle_ok(payload):
+    for row in payload:
+        angle = (row.get("custom_variables") or {}).get("brandAngle", "")
+        assert "—" not in str(angle)
+    return True

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -39,24 +40,51 @@ _EXTRACT = tldextract.TLDExtract(
     fallback_to_snapshot=True,
 )
 
-# Titles we want, best first. Matching is substring, lowercase. Order is the
-# ranking: owners and founders answer cold email about tools; ecommerce and
-# Amazon leads are the next best buyer of Anata Intelligence.
+# Titles we want, best first. Founders and presidents outrank the functional
+# buyers. A director, head, or VP counts only in ecommerce, Amazon,
+# marketplaces, growth, or marketing. Matching is not a raw substring:
+# "president" must not promote "vice president", and "app" is not a title word.
 TITLE_PRIORITY: tuple[tuple[str, ...], ...] = (
     ("founder", "co-founder", "cofounder", "owner", "ceo", "chief executive", "president"),
-    ("ecommerce", "e-commerce", "amazon", "marketplace"),
-    ("growth", "marketing", "cmo", "chief marketing", "digital"),
-    ("coo", "chief operating", "operations", "general manager", "managing director"),
+    ("director", "head", "vp", "vice president", "ecommerce", "e-commerce",
+     "amazon", "marketplace", "growth", "marketing"),
 )
 
 # Searched with CONTAINS so "Co-Founder & CEO" and "Head of Ecommerce" both hit.
+# title_rank drops associates, specialists, and the other excluded roles.
 SEARCH_TITLES = [
-    "founder", "owner", "ceo", "president", "ecommerce", "e-commerce",
-    "amazon", "marketplace", "growth", "marketing", "chief operating",
+    "founder", "owner", "ceo", "chief executive", "president",
+    "head of", "director", "vice president", "vp",
+    "ecommerce", "e-commerce", "amazon", "marketplace", "growth", "marketing",
 ]
 
 # Titles that match a keyword above but are never the buyer.
-EXCLUDE_TITLES = ("intern", "assistant", "coordinator", "recruiter", "student")
+EXCLUDE_TITLES = (
+    "intern", "assistant", "coordinator", "recruiter", "student",
+    "associate", "specialist", "customer service", "customer support",
+    "project manager",
+)
+
+_EXCLUDE_RE = re.compile(
+    r"\b(?:interns?|assistants?|coordinators?|recruiters?|students?|associates?|specialists?)\b"
+    r"|\bproject managers?\b|\bproject management\b"
+    r"|\bcustomer[\s-]?service\b|\bcustomer[\s-]?support\b",
+    re.I,
+)
+_CREATIVE_RE = re.compile(
+    r"\b(?:creatives?|designers?|copywriters?|photographers?|illustrators?|videographers?|art directors?)\b",
+    re.I,
+)
+_FUNCTION_RE = re.compile(
+    r"\b(?:e[\s-]?commerce|amazon|marketplaces?|growth|marketing)\b",
+    re.I,
+)
+_VP_RE = re.compile(r"\b(?:vp|svp|evp|vice president)\b", re.I)
+_LEADER_RE = re.compile(r"\b(?:heads?|directors?|vp|svp|evp|vice president)\b", re.I)
+_TOP_RE = re.compile(
+    r"\b(?:co-?founders?|founders?|co-?owners?|owners?|ceo|chief executive|presidents?)\b",
+    re.I,
+)
 
 
 @dataclass
@@ -93,13 +121,27 @@ def _redact(text: str, secret: str) -> str:
 
 
 def title_rank(title: str) -> Optional[int]:
-    """Lower is better. None means do not contact."""
-    t = (title or "").lower()
-    if not t or any(bad in t for bad in EXCLUDE_TITLES):
+    """Lower is better. None means do not contact.
+
+    Rank 0 is founder, owner, CEO, or president (not vice president).
+    Rank 1 is a director, head, or VP of ecommerce, Amazon, marketplaces,
+    growth, or marketing. Associates, coordinators, specialists, customer
+    service, project managers, and creative-only roles are excluded.
+    """
+
+    raw = (title or "").strip()
+    low = raw.lower()
+    if not raw or any(bad in low for bad in EXCLUDE_TITLES) or _EXCLUDE_RE.search(raw):
         return None
-    for rank, keywords in enumerate(TITLE_PRIORITY):
-        if any(k in t for k in keywords):
-            return rank
+    is_vp = _VP_RE.search(raw) is not None
+    if _TOP_RE.search(raw) and not is_vp:
+        return 0
+    if _CREATIVE_RE.search(raw) and not _FUNCTION_RE.search(raw):
+        return None
+    # Rank 1 is the second TITLE_PRIORITY group: director, head, or VP
+    # in ecommerce, Amazon, marketplaces, growth, or marketing.
+    if len(TITLE_PRIORITY) > 1 and _LEADER_RE.search(raw) and _FUNCTION_RE.search(raw):
+        return 1
     return None
 
 
