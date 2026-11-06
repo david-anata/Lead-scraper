@@ -94,6 +94,8 @@ from sales_support_agent.services.deck.formatting import (  # noqa: F401
     _looks_like_raw_asin_label,
     _normalize_custom_offer_cards,
     _normalize_offers,
+    offer_payload_selects_custom_cards,
+    offers_include_trial,
     _preferred_brand_name,
     _preferred_target_title,
     _resolve_target_price_label,
@@ -140,6 +142,52 @@ from sales_support_agent.services.deck.rendering import (  # noqa: F401
 # ---------------------------------------------------------------------------
 
 _NICHE_OVERLAP_THRESHOLD = 0.30  # need 30%+ token overlap to consider niches aligned
+
+
+def market_is_xray_sample(payload: dict[str, Any], xray_report: Any) -> bool:
+    """True when market revenue and units come from an uploaded Xray export.
+
+    Rainforest digital-shelf reports set ``market_figures_source`` to
+    ``rainforest`` and also carry a discovery query. An uploaded Helium 10
+    Xray is a finite listing sample.
+    """
+    source = str((payload or {}).get("market_figures_source") or "").strip()
+    if source == "xray_sample":
+        return True
+    if source in {"rainforest", "none"}:
+        return False
+    products = getattr(xray_report, "products", None)
+    discovery = str(getattr(xray_report, "discovery_query", "") or "").strip()
+    return bool(products) and not discovery
+
+
+def market_listing_count(xray_report: Any) -> int:
+    """Listings behind the market totals. Prefers the parsed export count."""
+    count = int(getattr(xray_report, "search_results_count", 0) or 0)
+    if count > 0:
+        return count
+    return len(getattr(xray_report, "products", []) or [])
+
+
+def market_units_caption(*, listing_count: int, xray_sample: bool) -> str:
+    """Caption under the executive units tile.
+
+    An uploaded Helium 10 Xray total is an N-listing sample, not the
+    whole category's monthly unit volume.
+    """
+    if xray_sample and listing_count > 0:
+        return f"{int(listing_count)}-listing Xray sample"
+    return "monthly · category-wide"
+
+
+def market_sample_note(*, listing_count: int, xray_sample: bool) -> str:
+    """Visible market-section label for an Xray sample."""
+    if not xray_sample or listing_count <= 0:
+        return ""
+    return (
+        f"{int(listing_count)}-listing Xray sample. "
+        "Revenue and unit figures are this Helium 10 export, not the whole category."
+    )
 
 
 def _estimate_target_units(*, target_row, hero_product) -> int:
@@ -403,6 +451,16 @@ class DeckGenerationService:
                 target_price=target_price.strip(),
             )
             dataset.deck_payload["template_version"] = effective_template_version
+            dataset.deck_payload["offer_includes_trial"] = offers_include_trial(
+                offer_cards,
+                custom_payload=offer_payload_selects_custom_cards(offer_payload_json),
+            )
+            if effective_rainforest_asin:
+                dataset.deck_payload["market_figures_source"] = "rainforest"
+            elif competitor_payloads:
+                dataset.deck_payload["market_figures_source"] = "xray_sample"
+            else:
+                dataset.deck_payload["market_figures_source"] = "none"
             dataset.deck_payload["requested_channels"] = [
                 str(c).strip() for c in (channels or []) if str(c).strip()
             ]
@@ -816,7 +874,13 @@ class DeckGenerationService:
             primary_competitors = []
         market_cards = _build_market_metric_cards(xray_report, keyword_report)
         keyword_cards = _build_keyword_metric_cards(keyword_report)
-        keyword_cards.extend(_build_cerebro_metric_cards(cerebro_report, word_frequency_report))
+        keyword_cards.extend(
+            _build_cerebro_metric_cards(
+                cerebro_report,
+                word_frequency_report,
+                target_asin=resolved_target_asin,
+            )
+        )
 
         # PR47: derive niche_keyword (technical / search-volume references)
         # and the broad `category_label` (user-facing title + section headers)
@@ -1370,6 +1434,13 @@ class DeckGenerationService:
         if not isinstance(keyword_table_rows, list):
             keyword_table_rows = []
         market_ready = bool(getattr(xray_report, "market_evidence_sufficient", True))
+        _listing_count = market_listing_count(xray_report)
+        _xray_sample = market_is_xray_sample(payload, xray_report)
+        _units_caption = market_units_caption(listing_count=_listing_count, xray_sample=_xray_sample)
+        _market_sample_note = market_sample_note(listing_count=_listing_count, xray_sample=_xray_sample)
+        _include_trial = payload.get("offer_includes_trial", True)
+        if not isinstance(_include_trial, bool):
+            _include_trial = str(_include_trial).strip().lower() not in {"0", "false", "no"}
         evidence_status = str(getattr(xray_report, "evidence_status", "ready") or "ready")
         evidence_reason = str(getattr(xray_report, "market_evidence_reason", "") or "")
         _evidence_labels = {
@@ -1502,8 +1573,8 @@ class DeckGenerationService:
             target_reference_label = _target_reference_label(target)
         recommended_plan_html = ""
         if include_recommended_plan:
-            # agency_v1 offer slide carrying the #524 offer content (free
-            # 14-day trial, plans from $99/mo) ahead of the operator cards.
+            # Trial card and trial next step render only when the selected
+            # offer includes a trial. A custom Agency fee does not.
             from sales_support_agent.services.deck.agency_sections import render_offer_section
             from sales_support_agent.services.deck.intelligence_v2 import resolve_cta_urls
 
@@ -1512,6 +1583,7 @@ class DeckGenerationService:
                 offer_cards_html=offer_html,
                 urls=resolve_cta_urls(self.settings),
                 generated=datetime.now(timezone.utc).date(),
+                include_trial=_include_trial,
             )
         from sales_support_agent.services.deck.agency_sections import (
             render_case_studies_section,
@@ -1613,7 +1685,7 @@ class DeckGenerationService:
             f'<div class="exec-tile">'
             f'<p class="lab">Units sold</p>'
             f'<p class="val">{_count_short(_niche_units)}</p>'
-            f'<p class="delta">monthly · category-wide</p>'
+            f'<p class="delta">{html.escape(_units_caption)}</p>'
             f'</div>'
         ) if market_ready else (
             f'<div class="exec-tile is-primary"><p class="lab">Target price</p>'
@@ -1887,10 +1959,15 @@ class DeckGenerationService:
                 f'</div>'
             )
         # ---- Section dividers ----
+        _market_thesis = (
+            _market_sample_note
+            if _market_sample_note
+            else "A snapshot of category economics: who's selling, what they sell for, and how concentrated the revenue actually is."
+        )
         _div_market = _section_divider(
             "sec-01", "01", "Section · The market",
             f'"{category_label}" — the category at a glance' if category_label else "The category at a glance",
-            "A snapshot of category economics: who's selling, what they sell for, and how concentrated the revenue actually is.",
+            _market_thesis,
             ["6 category metrics", f"Top {min(len(getattr(xray_report, 'products', []) or []), 11)} brands", "Distribution donuts"],
         )
         _div_target = _section_divider(
@@ -1919,7 +1996,7 @@ class DeckGenerationService:
         _div_growth = _section_divider(
             "sec-05", "05", "Section · Growth plan · Optional",
             "24-month growth plan",
-            "The actions activated in each phase and the monthly traffic each channel must contribute toward the competitor benchmark.",
+            "The actions activated in each phase and the monthly traffic each channel must contribute toward the competitor benchmark. These figures are directional estimates.",
             ["4-phase roadmap", "Traffic by channel", "Competitor benchmark"],
         ) if _has_growth else ""
         _div_conversion = _section_divider(
@@ -1951,12 +2028,22 @@ class DeckGenerationService:
             "Published client results, plus the case study picked for this brand.",
             ["Client results", "Published sources"],
         )
-        _div_offers = _section_divider(
-            "sec-10", "10", "Section · Offer & pricing · Optional",
-            "Start with the platform. Add people when you want them.",
-            "A free 14-day trial, then plans from $99/mo. Add Anata's operators for done-for-you execution.",
-            ["Free 14-day trial", "Operator add-ons", "Next steps"],
-        ) if include_recommended_plan else ""
+        if include_recommended_plan and _include_trial:
+            _div_offers = _section_divider(
+                "sec-10", "10", "Section · Offer & pricing · Optional",
+                "Start with the platform. Add people when you want them.",
+                "A free 14-day trial, then plans from $99/mo. Add Anata's operators for done-for-you execution.",
+                ["Free 14-day trial", "Operator add-ons", "Next steps"],
+            )
+        elif include_recommended_plan:
+            _div_offers = _section_divider(
+                "sec-10", "10", "Section · Offer & pricing · Optional",
+                "Selected engagement",
+                "The commercial terms below are the offer selected for this brand.",
+                ["Selected offer", "Next steps"],
+            )
+        else:
+            _div_offers = ""
         _meta_title = html.escape(str(share_preview.get("title") or title), quote=True)
         _meta_description = html.escape(str(share_preview.get("description") or _exec_sub_text or ""), quote=True)
         _meta_url = html.escape(str(share_preview.get("url") or public_url or ""), quote=True)
@@ -2056,6 +2143,7 @@ class DeckGenerationService:
           <h2 class="slide-title">Summary of "{html.escape(category_label)}"</h2>
         </div>
         <p class="caption">{html.escape(dataset.text_fields.get("market_summary") or "")}</p>
+        {f'<p class="caption" data-market-sample="xray">{html.escape(_market_sample_note)}</p>' if _market_sample_note else ''}
       </header>
 
       {f'<div class="metric-grid cols-6" style="margin-bottom:22px">{market_summary_html}</div>' if market_ready else ''}

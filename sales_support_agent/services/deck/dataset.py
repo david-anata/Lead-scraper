@@ -393,12 +393,39 @@ def _build_keyword_metric_cards(keyword_report: Helium10KeywordReport | None) ->
         {"label": "Average competing products", "value": _label_float(keyword_report.average_competing_products, 0), "meta": "Competitive density"},
         {"label": "Average title density", "value": _label_float(keyword_report.average_title_density, 0), "meta": "How crowded the SERP language is"},
     ]
+def _compared_asin_count(competitor_asins: list[str], target_asin: str = "") -> int:
+    """ASINs in a Cerebro comparison: the target plus each competitor column.
+
+    Helium 10 stores the target rank in ``Position (Rank)`` and competitor
+    ranks in ASIN-named columns. Some exports also name the target itself as
+    a column. Count that ASIN once.
+    """
+    seen: set[str] = set()
+    for raw in competitor_asins:
+        asin = str(raw or "").strip().upper()
+        if asin:
+            seen.add(asin)
+    target = str(target_asin or "").strip().upper()
+    if target and target in seen:
+        return len(seen)
+    return len(seen) + 1
+
+
+def _asin_comparison_phrase(count: int) -> str:
+    """Combined label/value text for the ASIN comparison card."""
+    noun = "ASIN" if count == 1 else "ASINs"
+    return f"{_label_integer(count)} {noun} compared"
+
+
 def _build_cerebro_metric_cards(
     cerebro_report: Helium10CerebroReport | None,
     word_frequency_report: WordFrequencyReport | None,
+    target_asin: str = "",
 ) -> list[dict[str, str]]:
     cards: list[dict[str, str]] = []
     if cerebro_report:
+        compared = _compared_asin_count(list(cerebro_report.competitor_asins), target_asin)
+        comparison_phrase = _asin_comparison_phrase(compared)
         cards.extend(
             [
                 {
@@ -412,8 +439,8 @@ def _build_cerebro_metric_cards(
                     "meta": "Keywords where the target currently ranks inside positions 1-20",
                 },
                 {
-                    "label": "Competitor overlays",
-                    "value": _label_integer(len(cerebro_report.competitor_asins)),
+                    "label": comparison_phrase,
+                    "value": _label_integer(compared),
                     "meta": "ASIN columns compared against the target listing",
                 },
             ]
