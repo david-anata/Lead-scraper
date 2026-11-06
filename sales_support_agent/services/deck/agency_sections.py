@@ -94,43 +94,77 @@ def render_case_studies_section(case_study_url: str = "") -> str:
     )
 
 
-def render_offer_section(*, offer_cards_html: str, urls: dict[str, str], generated: date, impact: str = "") -> str:
+def render_offer_section(
+    *,
+    offer_cards_html: str,
+    urls: dict[str, str],
+    generated: date,
+    impact: str = "",
+    include_trial: bool = True,
+) -> str:
+    """Offer slide.
+
+    The free-trial card and the trial signup step render only when the
+    selected offer includes a trial. A custom Agency fee does not get them.
+    """
     follow_up = generated + timedelta(days=3)
     while follow_up.weekday() >= 5:
         follow_up += timedelta(days=1)
-    trial_card = (
-        '<article class="offer-card featured"><h3>Anata Intelligence · Free 14-day trial</h3>'
-        f'<p class="desc">$0 for 14 days. Then plans from $99/mo. Card on file, cancel anytime.</p>'
-        "<dl>"
-        "<div><dt>Trial</dt><dd>14 days free</dd></div>"
-        "<div><dt>After trial</dt><dd>From $99/mo</dd></div>"
-        "<div><dt>Includes</dt><dd>Profit by SKU, ad automation with approval, listing and CRO suggestions</dd></div>"
-        "<div><dt>Alerts</dt><dd>Account health, Buy Box and inventory in one view</dd></div>"
-        "</dl>"
-        '<p class="bonus">+ Kickoff call to set your guardrails</p>'
-        f'<a class="cta" href="{_e(urls["trial"])}" target="_blank" rel="noreferrer">{_e(TRIAL_LABEL)} →</a></article>'
-    )
-    return f"""
-    <section class="slide slide-offers" data-screen-label="10 Offer and pricing">
-      {_head("Offer and pricing", "Start with the platform. Add people when you want them.", "Start the free trial, or add Anata's operators for done-for-you execution.")}
-      <div class="offer-grid">{trial_card}{offer_cards_html}</div>
-      <div class="next-steps">
+    follow_up_label = _e(follow_up.strftime("%A, %B %-d"))
+    follow_up_copy = _e(impact) if impact else "We review this analysis and your first sync together."
+    booking_step = f"""
+        <div class="next-step">
+          <span class="num">Step {"3" if include_trial else "2"}</span>
+          <h4>Book a call</h4>
+          <p>Prefer to talk first? Pick a time that works.</p>
+          <a class="link" href="{_e(urls["booking"])}" target="_blank" rel="noreferrer">Book a call →</a>
+        </div>"""
+    if include_trial:
+        trial_card = (
+            '<article class="offer-card featured"><h3>Anata Intelligence · Free 14-day trial</h3>'
+            f'<p class="desc">$0 for 14 days. Then plans from $99/mo. Card on file, cancel anytime.</p>'
+            "<dl>"
+            "<div><dt>Trial</dt><dd>14 days free</dd></div>"
+            "<div><dt>After trial</dt><dd>From $99/mo</dd></div>"
+            "<div><dt>Includes</dt><dd>Profit by SKU, ad automation with approval, listing and CRO suggestions</dd></div>"
+            "<div><dt>Alerts</dt><dd>Account health, Buy Box and inventory in one view</dd></div>"
+            "</dl>"
+            '<p class="bonus">+ Kickoff call to set your guardrails</p>'
+            f'<a class="cta" href="{_e(urls["trial"])}" target="_blank" rel="noreferrer">{_e(TRIAL_LABEL)} →</a></article>'
+        )
+        heading = _head(
+            "Offer and pricing",
+            "Start with the platform. Add people when you want them.",
+            "Start the free trial, or add Anata's operators for done-for-you execution.",
+        )
+        trial_step = f"""
         <div class="next-step cta">
           <span class="num">Step 1</span>
           <h4>Sign up</h4>
           <p>Start the free 14-day trial and connect Amazon.</p>
           <a class="link" href="{_e(urls["trial"])}" target="_blank" rel="noreferrer">{_e(TRIAL_LABEL)} →</a>
-        </div>
+        </div>"""
+        follow_up_num = "2"
+    else:
+        trial_card = ""
+        heading = _head(
+            "Offer and pricing",
+            "Selected engagement",
+            "The commercial terms below are the offer selected for this brand.",
+        )
+        trial_step = ""
+        follow_up_num = "1"
+    return f"""
+    <section class="slide slide-offers" data-screen-label="10 Offer and pricing">
+      {heading}
+      <div class="offer-grid">{trial_card}{offer_cards_html}</div>
+      <div class="next-steps">
+        {trial_step}
         <div class="next-step">
-          <span class="num">Step 2</span>
-          <h4>Follow-up on {_e(follow_up.strftime("%A, %B %-d"))}</h4>
-          <p>{_e(impact) if impact else "We review this analysis and your first sync together."}</p>
+          <span class="num">Step {follow_up_num}</span>
+          <h4>Follow-up on {follow_up_label}</h4>
+          <p>{follow_up_copy}</p>
         </div>
-        <div class="next-step">
-          <span class="num">Step 3</span>
-          <h4>Book a call</h4>
-          <p>Prefer to talk first? Pick a time that works.</p>
-          <a class="link" href="{_e(urls["booking"])}" target="_blank" rel="noreferrer">Book a call →</a>
-        </div>
+        {booking_step}
       </div>
     </section>"""

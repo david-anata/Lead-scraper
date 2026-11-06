@@ -4,7 +4,10 @@ Each active campaign with filters is queried server-side. Domains already
 in ``outbound_contacted_domains`` are skipped. New leads are stored with
 that campaign's recipe key. Volume stays inside the daily company cap
 (300) and stops when the daily credit cap (1100) is already spent.
-Sourcing does not call Prospeo and does not call Instantly.
+Each campaign also stops at its own ``daily_cap``. When those caps add up
+to more than the room left in the 300, the room is shared so a later
+recipe such as ``replatform`` still receives leads. Sourcing does not
+call Prospeo and does not call Instantly.
 New domains still have to pass the company-fit gate (US, own-brand
 physical product, revenue on file, niche and exclusion screens).
 
@@ -122,6 +125,48 @@ def _ordered(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (rank.get(str(row.get("recipe_key")), len(rank)), str(row.get("recipe_key"))))
 
 
+def share_company_room(caps: list[int], room: int) -> list[int]:
+    """Split ``room`` across per-campaign caps.
+
+    When the caps fit, each campaign gets its cap. When they do not, the
+    room is split as evenly as possible without passing a cap. Earlier
+    campaigns receive a remainder of one before later ones. A campaign is
+    left at zero only when ``room`` is smaller than the number of campaigns
+    still waiting.
+
+    Five seeded campaigns at a ``daily_cap`` of 100 would be 500 companies.
+    ``abby_reengage`` has no StoreLeads filters, so it never takes room.
+    The other four at 100 are 400, which does not fit in the 300 ceiling.
+    Sharing that 300 gives each of those four 75, including ``replatform``.
+    Paying every sourcing cap in full would mean raising ``COMPANY_CAP``.
+    """
+
+    safe = [max(0, int(cap)) for cap in caps]
+    if room <= 0 or not safe:
+        return [0] * len(safe)
+    if sum(safe) <= room:
+        return safe
+    assigned = [0] * len(safe)
+    left = int(room)
+    while left > 0:
+        open_idx = [index for index, cap in enumerate(safe) if assigned[index] < cap]
+        if not open_idx:
+            break
+        share = left // len(open_idx)
+        if share == 0:
+            for index in open_idx:
+                if left <= 0:
+                    break
+                assigned[index] += 1
+                left -= 1
+            break
+        for index in open_idx:
+            take = min(safe[index] - assigned[index], share)
+            assigned[index] += take
+            left -= take
+    return assigned
+
+
 def source_active_campaigns(
     engine: Any,
     *,
@@ -190,13 +235,21 @@ def source_active_campaigns(
             return record_leads(engine, leads, source=f"campaign:{recipe_key}")
 
     seen = set(contacted or set())
-    for row in _ordered(rows):
-        if room <= 0:
-            break
+    # Recompute the share after each campaign. A recipe that finds fewer
+    # brands than its share leaves the unused room for the recipes after it.
+    pending = _ordered(rows)
+    while pending and room > 0:
+        shares = share_company_room(
+            [int(row.get("daily_cap") or 0) for row in pending], room,
+        )
+        row = pending.pop(0)
+        allowance = shares[0] if shares else 0
+        if allowance <= 0:
+            continue
         filters = campaigns.resolve_filters(row.get("storeleads_filters"), moment)
         if not filters:
             continue
-        cap = min(int(row["daily_cap"]), room)
+        cap = allowance
         fresh: list[dict[str, Any]] = []
         cursor: Optional[str] = None
         scanned = 0
