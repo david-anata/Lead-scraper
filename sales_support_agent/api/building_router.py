@@ -496,7 +496,20 @@ class RatePlanInput(BaseModel):
                 raise ValueError(
                     "Resolve blocking source conflicts before approving this rate plan."
                 )
-            if self.unit_amount_cents <= 0:
+            day_portion_amounts = [
+                int((self.commercial_terms or {}).get(key) or 0)
+                for key in (
+                    "half_day_amount_cents",
+                    "full_day_amount_cents",
+                    "full_plus_half_amount_cents",
+                    "two_full_days_amount_cents",
+                )
+            ]
+            has_day_portion_card = (
+                self.booking_unit == "day_portion"
+                and all(amount > 0 for amount in day_portion_amounts)
+            )
+            if self.unit_amount_cents <= 0 and not has_day_portion_card:
                 raise ValueError("An approved rate plan requires a positive unit price.")
             if not self.public_price_display.strip():
                 raise ValueError("An approved rate plan requires public price wording.")
@@ -521,15 +534,30 @@ class EventEstimateAddonInput(BaseModel):
 
 class EventEstimateInput(BaseModel):
     offering_id: str = Field(min_length=1, max_length=64)
-    units: int = Field(ge=1, le=168)
+    units: int | None = Field(default=None, ge=1, le=168)
     attendance: int = Field(ge=1, le=10000)
     addons: list[EventEstimateAddonInput] = Field(default_factory=list, max_length=50)
+    day_portion: str | None = Field(default=None, max_length=32)
+
+    @field_validator("day_portion")
+    @classmethod
+    def valid_day_portion(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        allowed = {"half", "full", "full_plus_half", "two_full"}
+        if value not in allowed:
+            raise ValueError(
+                "day_portion must be one of: half, full, full_plus_half, two_full."
+            )
+        return value
 
     @model_validator(mode="after")
-    def unique_addons(self) -> "EventEstimateInput":
+    def unique_addons_and_units(self) -> "EventEstimateInput":
         ids = [item.addon_id for item in self.addons]
         if len(ids) != len(set(ids)):
             raise ValueError("Each add-on may be selected only once.")
+        if self.day_portion is None and self.units is None:
+            raise ValueError("Provide units or day_portion.")
         return self
 
 
@@ -1636,6 +1664,87 @@ def upsert_rate_plan(
         return {"ok": True, "rate_plan": after}
 
 
+
+DAY_PORTION_LABELS = {
+    "half": "Half day (up to 6 hours)",
+    "full": "Full day (more than 6 hours)",
+    "full_plus_half": "Full day + second-day half",
+    "two_full": "Two full days",
+}
+
+DAY_PORTION_REPRESENTATIVE_UNITS = {
+    "half": 6,
+    "full": 12,
+    "full_plus_half": 18,
+    "two_full": 24,
+}
+
+DAY_PORTION_COMMERCIAL_KEYS = {
+    "half": "half_day_amount_cents",
+    "full": "full_day_amount_cents",
+    "full_plus_half": "full_plus_half_amount_cents",
+    "two_full": "two_full_days_amount_cents",
+}
+
+
+def _resolve_day_portion_amount(
+    plan: BuildingRatePlan,
+    day_portion: str | None,
+    units: int | None,
+) -> tuple[str | None, int, int, str]:
+    """Return (day_portion, billable_units, base_amount_cents, base_name).
+
+    Prefers explicit day_portion. For day_portion booking units without an
+    explicit portion, map representative hours to the Nov 5 2026 card.
+    Otherwise keep legacy hourly/event unit math.
+    """
+
+    terms = dict(plan.commercial_terms_json or {})
+    resolved = day_portion
+    if resolved is None and plan.booking_unit == "day_portion" and units is not None:
+        if units <= 6:
+            resolved = "half"
+        elif units <= 12:
+            resolved = "full"
+        elif units <= 18:
+            resolved = "full_plus_half"
+        else:
+            resolved = "two_full"
+
+    if resolved is not None:
+        key = DAY_PORTION_COMMERCIAL_KEYS[resolved]
+        amount = int(terms.get(key) or 0)
+        if amount <= 0:
+            # Hard-coded owner card fallback while commercial_terms are being cut over.
+            amount = {
+                "half": 150_000,
+                "full": 200_000,
+                "full_plus_half": 300_000,
+                "two_full": 350_000,
+            }[resolved]
+        return (
+            resolved,
+            DAY_PORTION_REPRESENTATIVE_UNITS[resolved],
+            amount,
+            DAY_PORTION_LABELS[resolved],
+        )
+
+    if units is None:
+        raise HTTPException(status_code=422, detail="Provide units or day_portion.")
+    billable_units = max(units, plan.minimum_units or 1)
+    if plan.unit_amount_cents <= 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Online pricing is unavailable until the current rate plan has a base amount.",
+        )
+    return (
+        None,
+        billable_units,
+        billable_units * plan.unit_amount_cents,
+        plan.name,
+    )
+
+
 @public_router.post("/event-estimates")
 def calculate_public_event_estimate(
     payload: EventEstimateInput,
@@ -1677,12 +1786,13 @@ def calculate_public_event_estimate(
                 detail="Online pricing is unavailable while tax treatment is reviewed.",
             )
 
-        billable_units = max(payload.units, plan.minimum_units)
-        base_amount = billable_units * plan.unit_amount_cents
+        resolved_day_portion, billable_units, base_amount, base_name = (
+            _resolve_day_portion_amount(plan, payload.day_portion, payload.units)
+        )
         line_items: list[dict[str, Any]] = [{
             "type": "base",
-            "name": plan.name,
-            "quantity": billable_units,
+            "name": base_name,
+            "quantity": 1 if resolved_day_portion else billable_units,
             "amount_cents": base_amount,
         }]
         allowed_addons = {
@@ -1731,6 +1841,7 @@ def calculate_public_event_estimate(
             "rate_plan_id": plan.id,
             "rate_plan_version": plan.version,
             "units": payload.units,
+            "day_portion": resolved_day_portion,
             "attendance": payload.attendance,
             "addons": [
                 {"addon_id": item.addon_id, "quantity": item.quantity}
@@ -1743,8 +1854,11 @@ def calculate_public_event_estimate(
         return {
             "estimate": {
                 "currency": plan.currency,
-                "booking_unit": plan.booking_unit,
+                "booking_unit": (
+                    "day_portion" if resolved_day_portion else plan.booking_unit
+                ),
                 "billable_units": billable_units,
+                "day_portion": resolved_day_portion,
                 "attendance": payload.attendance,
                 "line_items": line_items,
                 "subtotal_cents": subtotal_cents,
