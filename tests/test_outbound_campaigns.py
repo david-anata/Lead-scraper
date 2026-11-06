@@ -75,9 +75,9 @@ def test_seed_and_alias_routing(engine):
     campaigns.ensure_tables(engine)
     routing = campaigns.load_routing(engine)
     assert routing.available
-    assert routing.by_recipe["amz_on"] == "a333e00e-bc3b-4abf-bcbf-4e0eb126090c"
+    assert routing.by_recipe["amz_on"] == "8e0df427-1f18-43ac-b0c6-e8ea787123d7"
     assert routing.by_recipe["replatformed"] == routing.by_recipe["replatform"]
-    assert routing.by_recipe["abby_reengage"] == "8ebf1923-7ba4-4a63-96a8-adb18a58ddf6"
+    assert routing.by_recipe["abby_reengage"] == "907d32fd-d6db-4ce6-8edc-485b78cce120"
     assert "replatformed" not in routing.blocked
 
 
@@ -401,7 +401,7 @@ def test_weekly_score_proposes_and_does_not_activate_or_change_caps(engine):
         row["recipe_key"]: (row["status"], row["daily_cap"])
         for row in campaigns.list_campaigns(engine)
     }
-    amz = "a333e00e-bc3b-4abf-bcbf-4e0eb126090c"
+    amz = "8e0df427-1f18-43ac-b0c6-e8ea787123d7"
     _daily(engine, [{
         "campaign_id": amz, "day": "2026-10-20",
         "contacted": 200, "bounced": 2, "meetings": 2,
@@ -442,7 +442,7 @@ def test_weekly_score_reads_the_instantly_daily_columns(engine):
     """The analytics sync stores date, positive, unsubscribed, meetings_booked."""
 
     campaigns.ensure_tables(engine)
-    amz = "a333e00e-bc3b-4abf-bcbf-4e0eb126090c"
+    amz = "8e0df427-1f18-43ac-b0c6-e8ea787123d7"
     with engine.begin() as conn:
         conn.execute(text(
             """
@@ -482,7 +482,7 @@ def test_weekly_score_reads_the_instantly_daily_columns(engine):
 
 def test_weekly_score_does_not_judge_under_150_or_invent_a_missing_table(engine):
     campaigns.ensure_tables(engine)
-    amz = "a333e00e-bc3b-4abf-bcbf-4e0eb126090c"
+    amz = "8e0df427-1f18-43ac-b0c6-e8ea787123d7"
     _daily(engine, [{
         "campaign_id": amz, "day": "2026-10-20",
         "contacted": 149, "bounced": 0, "meetings": 0,
@@ -517,13 +517,13 @@ def test_weekly_score_notes_a_missing_abby_campaign_column(engine):
         ))
         conn.execute(text(
             "INSERT INTO instantly_campaign_daily (campaign_id, day, contacted, bounced, meetings) "
-            "VALUES ('a333e00e-bc3b-4abf-bcbf-4e0eb126090c', '2026-10-20', 200, 2, 2)"
+            "VALUES ('8e0df427-1f18-43ac-b0c6-e8ea787123d7', '2026-10-20', 200, 2, 2)"
         ))
         conn.execute(text(
             "CREATE TABLE abby_handled (email_id TEXT PRIMARY KEY, category TEXT, created_at TEXT)"
         ))
     result = score.run_weekly_score(engine, now=datetime(2026, 10, 26, 7, tzinfo=DENVER))
-    amz_score = next(item for item in result["scores"] if item["campaign_id"].startswith("a333"))
+    amz_score = next(item for item in result["scores"] if item["campaign_id"].startswith("8e0d"))
     assert "abby_handled.campaign_id" in amz_score["detail"]
     assert amz_score["action"] == "insufficient"
     assert result["proposed"] == []
