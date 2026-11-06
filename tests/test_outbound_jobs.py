@@ -70,6 +70,56 @@ class MorningRoutineTests(unittest.TestCase):
         self.assertFalse(out["ran"])
         self.assertIn("STORELEADS", out["reason"])
 
+    def test_a_weekday_with_no_filler_recipes_still_sources_signal_campaigns(self):
+        """Monday has no included filler recipe. amz_on still gets its locked share."""
+        import outbound_campaign_source as source
+        import outbound_pipeline as op
+        from sales_support_agent.api import outbound_router
+        from sales_support_agent.models import database as db
+        from sales_support_agent.services import outbound_batches, outbound_delivery, outbound_memory
+
+        engine = create_engine("sqlite://", future=True)
+        calls = {}
+
+        def fake_source(_engine, **kwargs):
+            calls["room"] = kwargs.get("company_room")
+            return {
+                "recorded": 2,
+                "leads": [{"domain": "on.com", "recipe": "amz_on", "brand": "On"}],
+                "recipes": ["amz_on"],
+                "scanned": 5,
+                "skipped_seen": 1,
+                "campaigns": [{
+                    "recipe_key": "amz_on", "recorded": 2, "scanned": 5,
+                    "skipped_seen": 1, "skipped_unfit": 0,
+                }],
+            }
+
+        real = (
+            op.load_config_from_env, db.get_engine, outbound_memory.persistence_health,
+            outbound_batches.materialize_recipes, outbound_delivery.deliver_daily_batch,
+            source.source_active_campaigns, outbound_router._amazon_checker,
+        )
+        op.load_config_from_env = lambda: ("storeleads-key", "")
+        db.get_engine = lambda: engine
+        outbound_memory.persistence_health = lambda _engine: {"ready": True}
+        outbound_batches.materialize_recipes = lambda *_args, **_kwargs: []
+        outbound_delivery.deliver_daily_batch = lambda *_a, **_k: {"email": "skipped", "slack": "skipped"}
+        source.source_active_campaigns = fake_source
+        outbound_router._amazon_checker = lambda _settings: None
+        try:
+            out = jobs.run_morning_routine(now=datetime(2026, 11, 9, 7, tzinfo=DENVER))
+        finally:
+            (
+                op.load_config_from_env, db.get_engine, outbound_memory.persistence_health,
+                outbound_batches.materialize_recipes, outbound_delivery.deliver_daily_batch,
+                source.source_active_campaigns, outbound_router._amazon_checker,
+            ) = real
+        self.assertTrue(out["ran"], out.get("reason"))
+        self.assertEqual(calls.get("room"), 300)
+        self.assertEqual(out["pulled"], 2)
+        self.assertIn("amz_on", out["recipes"])
+
     def test_a_weekend_does_nothing(self):
         """We do not pull on weekends because we do not send on weekends."""
         import outbound_pipeline as op
@@ -83,6 +133,7 @@ class MorningRoutineTests(unittest.TestCase):
             op.load_config_from_env, rx.recipes_for_day = real_cfg, real_day
         self.assertFalse(out["ran"])
         self.assertEqual(out["pulled"], 0)
+        self.assertEqual(out["reason"], "weekend")
 
     def test_the_daily_amazon_spend_is_capped(self):
         """Unbounded, this would check every brand we hold every morning and
