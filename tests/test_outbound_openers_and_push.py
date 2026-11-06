@@ -285,15 +285,83 @@ def test_replatformed_routes_to_the_same_campaign_as_replatform():
     assert push.campaign_for_recipe("replatformed") == push.campaign_for_recipe("replatform")
 
 
-def test_campaign_for_recipe_uses_the_map_then_the_default_then_the_env(monkeypatch):
-    monkeypatch.setenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", "env-campaign")
+def test_campaign_for_recipe_ignores_the_default_and_the_env(monkeypatch):
+    monkeypatch.setenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", push.LEGACY_TRIAL_CAMPAIGN_ID)
     assert push.campaign_for_recipe("plan_upgrade", "caller") == push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]
-    assert push.campaign_for_recipe("social_surge", "caller") == "caller"
+    assert push.campaign_for_recipe("social_surge", "caller") == ""
     assert push.campaign_for_recipe("  amz_off  ") == push.RECIPE_CAMPAIGN_MAP["amz_off"]
-    assert push.campaign_for_recipe("icp_baseline") == "env-campaign"
-    monkeypatch.delenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID")
-    assert push.campaign_for_recipe("icp_baseline", "") == ""
+    assert push.campaign_for_recipe("icp_baseline") == ""
+    assert push.campaign_for_recipe("icp_baseline", push.LEGACY_TRIAL_CAMPAIGN_ID) == ""
     assert push.campaign_for_recipe("abby_reengage", "") == push.RECIPE_CAMPAIGN_MAP["abby_reengage"]
+    assert push.LEGACY_TRIAL_CAMPAIGN_ID not in push.RECIPE_CAMPAIGN_MAP.values()
+
+
+def test_push_leads_refuses_trial_offer_even_on_a_dry_run():
+    out = push.push_leads([{"email": "a@b.com"}], push.LEGACY_TRIAL_CAMPAIGN_ID, dry_run=False)
+    assert out.created == 0 and out.reason == push.TRIAL_CLOSED_REASON
+    held = push.push_leads(
+        [{"email": "a@b.com"}], "71add6d5-0096-52df-a6e2-66135fbe22e4", dry_run=True,
+    )
+    assert held.created == 0 and held.reason == push.TRIAL_CLOSED_REASON
+
+
+def test_route_tokens_come_only_from_store_fields():
+    now = __import__("datetime").datetime(2026, 11, 6, tzinfo=__import__("datetime").timezone.utc)
+    plus = {
+        "plan": "Shopify Plus",
+        "last_plan_change_at": "2026-09-01T00:00:00Z",
+        "sales_channels": ["Amazon", "Etsy"],
+    }
+    assert push.ROUTE_PLAN_UPGRADE in push.route_tokens_for_store(plus, now=now)
+    assert push.ROUTE_AMZ_ON in push.route_tokens_for_store(plus, now=now)
+    assert push.ROUTE_AMZ_OFF not in push.route_tokens_for_store(plus, now=now)
+    assert push.route_tokens_for_store({"plan": "Shopify Plus"}, now=now) == []
+    assert push.route_tokens_for_store({"sales_channels": []}, now=now) == []
+    assert push.route_tokens_for_store({"sales_channels": ["Etsy"]}, now=now) == [push.ROUTE_AMZ_OFF]
+    moved = {
+        "last_platform": "woocommerce",
+        "last_platform_change_at": "2026-08-01T00:00:00Z",
+    }
+    assert push.route_tokens_for_store(moved, now=now) == [push.ROUTE_REPLATFORM]
+    assert push.route_tokens_for_store({"last_platform": "wix", "last_platform_change_at": "2026-08-01T00:00:00Z"}, now=now) == []
+
+
+def test_dry_run_keeps_held_fillers_off_trial_offer_unless_a_signal_matches():
+    """Production-shaped routing. Nothing is sent."""
+
+    blocked = {"icp_baseline", "social_surge", "churned_tool", "new_growth_app"}
+    plan = dry = push.dry_run_route_plan(
+        [
+            {"recipe": "amz_on", "signals": []},
+            {"recipe": "icp_baseline", "signals": []},
+            {"recipe": "social_surge", "signals": ["Fits our ICP, thin buying signals"]},
+            {"recipe": "icp_baseline", "signals": [push.ROUTE_PLAN_UPGRADE, push.ROUTE_AMZ_ON]},
+            {"recipe": "new_growth_app", "signals": [push.ROUTE_AMZ_ON, push.ROUTE_AMZ_OFF]},
+            {"recipe": "churned_tool", "signals": ["Upgraded their store plan recently"]},
+            {"recipe": "", "signals": []},
+        ],
+        campaign_map=dict(push.RECIPE_CAMPAIGN_MAP),
+        blocked=blocked,
+    )
+    assert plan["legacy_or_hold_targets"] == 0
+    assert push.LEGACY_TRIAL_CAMPAIGN_ID not in plan["routed"]
+    assert not set(plan["routed"]).intersection(push.HOLD_INGEST_CAMPAIGN_IDS)
+    assert plan["routed"][push.RECIPE_CAMPAIGN_MAP["amz_on"]] == 1
+    assert plan["routed"][push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]] == 2
+    assert plan["blocked"] == 3
+    assert plan["queued"] == 1
+    assert dry["routed_contacts"] == 3
+    # A hold row flipped back to active still must not receive the filler recipe.
+    pointed = dict(push.RECIPE_CAMPAIGN_MAP)
+    pointed["icp_baseline"] = "71add6d5-0096-52df-a6e2-66135fbe22e4"
+    held_open = push.dry_run_route_plan(
+        [{"recipe": "icp_baseline", "signals": []}],
+        campaign_map=pointed,
+        blocked=set(),
+    )
+    assert held_open["legacy_or_hold_targets"] == 0
+    assert held_open["queued"] == 1
+    assert held_open["routed"] == {}
 
 
 class _R:

@@ -146,10 +146,17 @@ campaigns: `amz_on` `8e0df427-1f18-43ac-b0c6-e8ea787123d7`, `amz_off`
 `d1c197e3-bf1f-4f41-bcb9-e30e73975a2c`, `abby_reengage`
 `907d32fd-d6db-4ce6-8edc-485b78cce120`. The `replatform` v2 campaign is
 completed in Instantly, so leads added there do not send until it is
-restarted. Any other recipe uses `OUTBOUND_INSTANTLY_CAMPAIGN_ID`.
-Contacts whose campaign is `cut` or `proposed` stay unpushed. Contacts
-tagged `redo_partner` are stored and left out of that push. This does not
-create, edit, or activate Instantly campaigns.
+restarted. `icp_baseline`, `social_surge`, `churned_tool`, and
+`new_growth_app` are not mapped onto a campaign. They stay queued unless
+the stored lead carries evidence for one v2 recipe (a Shopify Plus change
+in 90 days, a move off WooCommerce, Magento, or BigCommerce in 120 days,
+or a sales-channel list that does or does not include Amazon). The filler
+name alone is not evidence. `OUTBOUND_INSTANTLY_CAMPAIGN_ID` is ignored,
+including when it still names Trial Offer Oct
+(`e5f5046b-07e4-41ad-a395-79cf8766ccd0`). Cut filler hold rows stay in
+place. Contacts whose v2 campaign is `cut` or `proposed` stay unpushed.
+Contacts tagged `redo_partner` are stored and left out of that push. This
+does not create, edit, activate, or archive Instantly campaigns.
 
 The weekday morning pull sources `amz_on`, `amz_off`, `plan_upgrade`, and
 `replatform` from each row's `storeleads_filters` before the older recipes.
