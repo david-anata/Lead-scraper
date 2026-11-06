@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import html
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -356,11 +357,38 @@ class GrowthPlan:
 # ---------------------------------------------------------------------------
 
 
+_SUPPLEMENT_CATEGORY = re.compile(
+    r"\b(?:supplements?|vitamins?|probiotics?|nutraceuticals?|softgels?|capsules?|gummies|collagen|creatine|spirulina|protein\s+powder|pre-?workout|fat\s+burners?)\b",
+    re.IGNORECASE,
+)
+
+
+def conversion_rate_methodology(rate: float, *, category: str = "", listing_title: str = "") -> str:
+    """CVR source line for the growth methodology.
+
+    The supplement range is only cited when the category (or, if no category
+    was given, the listing title) is a supplement. Every other category gets
+    an assumed-conversion-rate disclosure instead of that range.
+    """
+    shown = " ".join(str(category or "").split())
+    evidence = shown or " ".join(str(listing_title or "").split())
+    if evidence and _SUPPLEMENT_CATEGORY.search(evidence):
+        return f"Conversion rate: {rate:.1f}% (form input; supplements typically 7–15% on Amazon)."
+    if shown:
+        return (
+            f"Conversion rate: {rate:.1f}% (assumed conversion rate for this plan, "
+            f"not a {shown} benchmark)."
+        )
+    return f"Conversion rate: {rate:.1f}% (assumed conversion rate, not a category benchmark)."
+
+
 def build_growth_plan(
     *,
     inputs: GrowthPlanInputs,
     target_units: int,
     top3_competitor_avg_sessions: int | None = None,
+    category: str = "",
+    listing_title: str = "",
 ) -> GrowthPlan:
     """Compute the full plan from inputs.
 
@@ -397,7 +425,11 @@ def build_growth_plan(
     shortfall_sessions = max(0, delta_sessions - total_sessions_delivered)
 
     methodology_lines = [
-        f"Conversion rate: {inputs.conversion_rate_pct:.1f}% (form input; supplements typically 7–15% on Amazon).",
+        conversion_rate_methodology(
+            inputs.conversion_rate_pct,
+            category=category,
+            listing_title=listing_title,
+        ),
         "Sponsored Products / Brands CPC: Pacvue Q1 2026 Health & Household ($2.17 avg; supplements $2.50–$7.00).",
         "Off-channel paid CPC at $0.15 reflects storefront-link traffic optimized for Amazon's external-traffic signal "
         "(lifts organic rank on adjacent keywords), NOT direct-response. Direct-to-PDP supplements CPC is "

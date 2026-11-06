@@ -18,6 +18,7 @@ from sales_support_agent.services.deck.intelligence_v2 import (
     TRIAL_LABEL,
     _LOOP,
     _present,
+    case_study_detail,
     load_case_studies,
 )
 
@@ -62,7 +63,7 @@ def render_methodology_section() -> str:
     )
 
 
-def render_case_studies_section(case_study_url: str = "") -> str:
+def render_case_studies_section(case_study_url: str = "", *, include_trial: bool = True) -> str:
     cards = []
     for study in load_case_studies():
         facts = "".join(
@@ -77,7 +78,7 @@ def render_case_studies_section(case_study_url: str = "") -> str:
         )
         cards.append(
             f'<div class="rec-card"><p class="eyebrow">{_e(study.get("name"))}</p><h3>{_e(study.get("headline"))}</h3>'
-            f'<p>{_e(study.get("detail"))}</p>{f"<ul>{facts}</ul>" if facts else ""}{link}</div>'
+            f'<p>{_e(case_study_detail(study, include_trial=include_trial))}</p>{f"<ul>{facts}</ul>" if facts else ""}{link}</div>'
         )
     extra = str(case_study_url or "").strip()
     extra_html = (
