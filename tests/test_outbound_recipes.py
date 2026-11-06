@@ -19,7 +19,7 @@ class BaseFilterTests(unittest.TestCase):
         for r in rc.RECIPES:
             p = r.params(WED)
             self.assertEqual(p["f:p"], "shopify", r.key)
-            self.assertEqual(p["f:cc"], "US,GB,CA,AU", r.key)
+            self.assertEqual(p["f:cc"], "US", r.key)
             self.assertEqual(p["f:ds"], "Active", r.key)
             self.assertEqual(p["f:tags:op"], "not", r.key)
             self.assertIn("f:ermin", p, r.key)

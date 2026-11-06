@@ -49,6 +49,7 @@ _CREATE = (
         linkedin_url TEXT,
         opener TEXT,
         opener_source TEXT,
+        brand_angle TEXT,
         brand TEXT,
         category TEXT,
         recipe TEXT,
@@ -64,6 +65,7 @@ _CREATE = (
 _PEOPLE_ALTERS = (
     f"ALTER TABLE {_PEOPLE} ADD COLUMN email_status TEXT",
     f"ALTER TABLE {_PEOPLE} ADD COLUMN skip_reason TEXT",
+    f"ALTER TABLE {_PEOPLE} ADD COLUMN brand_angle TEXT",
 )
 
 
@@ -120,18 +122,18 @@ def _record_domain(engine, domain: str, status: str, found: int, credits: int, r
 
 
 def _record_person(engine, c: _contacts.Contact, opener: str, source: str,
-                   lead: dict[str, Any]) -> None:
+                   lead: dict[str, Any], brand_angle: str = "") -> None:
     cats = lead.get("categories") or ""
     if isinstance(cats, (list, tuple)):
         cats = ", ".join(str(c) for c in cats)
     with engine.begin() as conn:
         conn.execute(text(
             f"INSERT INTO {_PEOPLE} (email, domain, first_name, last_name, title, linkedin_url, "
-            "opener, opener_source, brand, category, recipe, tier, email_status) "
-            "VALUES (:e, :d, :f, :l, :t, :u, :o, :s, :b, :cat, :r, :tier, :status) "
+            "opener, opener_source, brand_angle, brand, category, recipe, tier, email_status) "
+            "VALUES (:e, :d, :f, :l, :t, :u, :o, :s, :angle, :b, :cat, :r, :tier, :status) "
             "ON CONFLICT (email) DO NOTHING"),
             {"e": c.email, "d": c.domain, "f": c.first_name, "l": c.last_name, "t": c.title,
-             "u": c.linkedin_url, "o": opener, "s": source,
+             "u": c.linkedin_url, "o": opener, "s": source, "angle": brand_angle or "",
              "b": str(lead.get("brand") or c.domain), "cat": str(cats or lead.get("niche") or ""),
              "r": str(lead.get("recipe") or ""), "tier": str(lead.get("tier") or ""),
              "status": c.email_status or ""})
@@ -148,7 +150,7 @@ def unpushed(engine, limit: int = 500, *,
     params: dict[str, Any] = {"n": limit}
     sql = (
         "SELECT email, domain, first_name, last_name, title, opener, brand, category, "
-        f"recipe, tier FROM {_PEOPLE} WHERE pushed_at IS NULL "
+        f"recipe, tier, brand_angle FROM {_PEOPLE} WHERE pushed_at IS NULL "
         "AND COALESCE(skip_reason, '') = '' "
     )
     if excluded:
@@ -162,7 +164,7 @@ def unpushed(engine, limit: int = 500, *,
     with engine.connect() as conn:
         rows = conn.execute(text(sql), params).fetchall()
     return [dict(zip(("email", "domain", "first_name", "last_name", "title", "opener", "brand",
-                      "category", "recipe", "tier"), r)) for r in rows]
+                      "category", "recipe", "tier", "brand_angle"), r)) for r in rows]
 
 
 def _count_unpushed_recipes(engine, recipes: Iterable[str]) -> int:
@@ -243,6 +245,7 @@ def run_enrichment(
     dry_run: bool = True,
     find: Optional[Callable[..., _contacts.FindResult]] = None,
     write: Optional[Callable[..., tuple[str, str]]] = None,
+    write_angle: Optional[Callable[..., tuple[str, str]]] = None,
     push: Optional[Callable[..., _push.PushOutcome]] = None,
     deadline: Optional[float] = None,
     clock: Optional[Callable[[], float]] = None,
@@ -252,7 +255,10 @@ def run_enrichment(
     clock = clock or _time.monotonic
     find = find or _contacts.find_contacts
     write = write or _openers.write_opener
+    write_angle = write_angle or _openers.write_brand_angle
     push = push or _push.push_leads
+    _openers._OPENERS_BY_DOMAIN.clear()
+    _openers._ANGLES_BY_DOMAIN.clear()
     report = EnrichReport(dry_run=dry_run)
 
     if engine is None:
@@ -314,12 +320,14 @@ def run_enrichment(
             _record_domain(engine, domain, status, len(fresh), res.credits_used, res.reason)
             for c in fresh:
                 line, src = write(lead, {"title": c.title})
-                _record_person(engine, c, line, src, lead)
+                angle, angle_src = write_angle(lead, {"title": c.title})
+                _record_person(engine, c, line, src, lead, brand_angle=angle)
                 emails_seen.add(c.email)
                 report.contacts_found += 1
                 if len(report.samples) < 10:
                     report.samples.append({"domain": domain, "email": c.email, "title": c.title,
-                                           "opener": line, "opener_source": src})
+                                           "opener": line, "opener_source": src,
+                                           "brand_angle": angle, "brand_angle_source": angle_src})
             if fresh:
                 report.companies_with_contacts += 1
                 try:
@@ -365,10 +373,16 @@ def rewrite_openers(engine, leads: list[dict[str, Any]], *,
     for email, domain, title, brand, category, recipe, tier in rows:
         lead = by_domain.get(domain) or {"domain": domain, "brand": brand,
                                          "categories": [category], "recipe": recipe, "tier": tier}
+        domain_key = str(domain or "").strip().lower()
+        _openers._OPENERS_BY_DOMAIN.pop(domain_key, None)
+        _openers._ANGLES_BY_DOMAIN.pop(domain_key, None)
         line, src = write(lead, {"title": title})
+        angle, _angle_src = _openers.write_brand_angle(lead, {"title": title})
         with engine.begin() as conn:
-            conn.execute(text(f"UPDATE {_PEOPLE} SET opener = :o, opener_source = :s WHERE email = :e"),
-                         {"o": line, "s": src, "e": email})
+            conn.execute(text(
+                f"UPDATE {_PEOPLE} SET opener = :o, opener_source = :s, brand_angle = :a "
+                "WHERE email = :e"),
+                {"o": line, "s": src, "a": angle, "e": email})
         done += 1
         ai += src == "ai"
         if len(samples) < 12:
@@ -413,6 +427,35 @@ def _campaign_routing(engine):
         return _Fallback()
 
 
+def departed_emails(engine) -> set[str]:
+    """Emails Abby already classified as having left the company.
+
+    A missing table means Abby has not recorded anyone here. That is not a
+    reason to stop the push. A read error is the same: callers still apply
+    the suppression list, and this set is empty.
+    """
+
+    sql = (
+        "SELECT lower(lead) FROM abby_handled "
+        "WHERE lower(COALESCE(action, '')) = 'ignore' AND ("
+        "lower(COALESCE(detail, '')) LIKE '%departed contact%' "
+        "OR lower(COALESCE(detail, '')) LIKE '%departed employee%'"
+        ")"
+    )
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(sql)).fetchall()
+    except Exception:  # noqa: BLE001 - table missing, or Abby is not on this database
+        logger.debug("[outbound-enrich] departed contacts could not be read")
+        return set()
+    found: set[str] = set()
+    for row in rows:
+        email = str(row[0] or "").strip().lower()
+        if "@" in email:
+            found.add(email)
+    return found
+
+
 def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int = 500,
                  push: Optional[Callable[..., _push.PushOutcome]] = None) -> dict[str, Any]:
     """Add not-yet-pushed contacts to Instantly, one campaign per recipe group.
@@ -422,8 +465,9 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
     is empty or cannot be read, ``RECIPE_CAMPAIGN_MAP`` is the fallback.
     Every other recipe uses ``campaign_id`` when it is set, otherwise
     ``OUTBOUND_INSTANTLY_CAMPAIGN_ID``. ``redo_partner`` is left unpushed.
-    Suppressed emails and domains are left unpushed and, on a live push, marked
-    so they do not clog the queue. A contact is marked pushed only when
+    Suppressed emails and domains, departed contacts, and role inboxes are left
+    unpushed and, on a live push, marked so they do not clog the queue. A
+    contact is marked pushed only when
     Instantly accepted that campaign's batch with no errors. If the suppression
     list cannot be read, nothing is pushed.
     """
@@ -433,6 +477,17 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         pending = unpushed(engine, limit, exclude_recipes=_push.PUSH_EXCLUDED_RECIPES)
         import outbound_suppression as suppression
         allowed, blocked = suppression.partition(engine, pending)
+        left = departed_emails(engine)
+        still: list[dict[str, Any]] = []
+        for person in allowed:
+            email = str(person.get("email") or "").strip().lower()
+            if email and _contacts.is_role_mailbox(email):
+                blocked.append({**person, "suppressed_match": f"role:{email}"})
+            elif email and email in left:
+                blocked.append({**person, "suppressed_match": f"departed:{email}"})
+            else:
+                still.append(person)
+        allowed = still
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-enrich] suppression check failed")
         return _empty_push(

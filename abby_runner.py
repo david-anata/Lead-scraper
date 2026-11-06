@@ -14,7 +14,8 @@ Safety rails, all in code:
     and get no further sends. Unsure or failed drafts are held for Slack;
   * departed-employee notices and automated forwards are ignored: no reply,
     no Interested status, no David CC, no follow-up. A departed contact is
-    recorded so the brand can be tried again later;
+    recorded and suppressed from future Instantly pushes. The company can
+    still be tried later through a different person;
   * out-of-office replies are not answered now. A follow-up is scheduled
     for the day after the parsed return date, or 7 days when no date is found;
   * the same handle_email() path serves the 5-minute poll and the reply webhook.
@@ -603,6 +604,8 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
     decision = think(thread, lead_email=lead, company=info.get("company", ""),
                      first_name=info.get("first_name", ""),
                      thread_categories=_thread_categories(engine, email.get("thread_id") or ""))
+    if lead and _is_departed(decision):
+        _remember_departed(engine, lead)
 
     if decision.action == "reply" and run_mode == "live" and _sent_today(engine, now) >= cap:
         decision = abby.Decision(decision.category, "hold", reason="daily cap reached",
@@ -700,6 +703,27 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
     out["followups"] = _send_due_followups(engine, client, now, run_mode, post_slack)
     out["nudges"] = _send_nudges(engine, client, campaign_id, now, run_mode, post_slack, lead_info, cap)
     return out
+
+
+def _is_departed(decision: abby.Decision) -> bool:
+    """True when this reply was classified as someone who left the company."""
+
+    reason = str(decision.reason or "").lower()
+    note = str(decision.note or "").lower()
+    return "departed employee" in reason or note.startswith("departed contact")
+
+
+def _remember_departed(engine, email: str) -> None:
+    """Keep this address out of later pushes. Do not block the whole company."""
+
+    try:
+        import outbound_suppression as suppression
+        suppression.add(
+            engine, kind="email", value=email, reason="departed",
+            source="abby", detail="left the company", overwrite=False,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not record departed contact")
 
 
 def _remember_opt_out(engine, value: str, post_slack: Optional[Callable[[str], Any]] = None,

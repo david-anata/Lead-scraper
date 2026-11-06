@@ -27,7 +27,8 @@ from typing import Any, Callable, Optional
 
 def base_filters(settings: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """The ICP floor applied to EVERY recipe. The revenue band is tunable on the
-    Lead Ops page and takes effect on the very next pull.
+    Lead Ops page and takes effect on the very next pull. Country is the
+    United States only.
 
     StoreLeads filters on MONTHLY sales in cents, while we think in dollars per
     year, so the conversion happens here in one place.
@@ -41,7 +42,7 @@ def base_filters(settings: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     emp_hi = _int(settings, "icp.employees_max")
     return {
         "f:p": "shopify",
-        "f:cc": "US,GB,CA,AU",
+        "f:cc": "US",
         "f:cc:op": "or",
         "f:ds": "Active",                       # skip password-protected / inactive
         "f:it": "email",                        # must have a contact route

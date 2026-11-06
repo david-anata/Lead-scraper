@@ -5,6 +5,8 @@ in ``outbound_contacted_domains`` are skipped. New leads are stored with
 that campaign's recipe key. Volume stays inside the daily company cap
 (300) and stops when the daily credit cap (1100) is already spent.
 Sourcing does not call Prospeo and does not call Instantly.
+New domains still have to pass the company-fit gate (US, own-brand
+physical product, revenue on file, niche and exclusion screens).
 
 The morning routine runs this before the older recipe pulls so ``amz_on``
 and ``amz_off`` are filled from these filters.
@@ -19,6 +21,7 @@ from typing import Any, Callable, Optional
 from zoneinfo import ZoneInfo
 
 import outbound_campaigns as campaigns
+import outbound_pipeline as pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +112,7 @@ def _lead_from(store: dict[str, Any], recipe_key: str) -> Optional[dict[str, Any
         "reason": _REASONS.get(recipe_key, "They match this campaign's StoreLeads filters"),
         "signals": [recipe_key],
         "categories": store.get("categories") or "",
-        "niche": "",
+        "niche": pipeline.store_niche(store),
         "estimated_sales_yearly_cents": yearly if isinstance(yearly, (int, float)) else 0,
     }
 
@@ -145,6 +148,7 @@ def source_active_campaigns(
         "recipes": [],
         "scanned": 0,
         "skipped_seen": 0,
+        "skipped_unfit": 0,
         "campaigns": [],
         "stopped_reason": "",
     }
@@ -197,6 +201,7 @@ def source_active_campaigns(
         cursor: Optional[str] = None
         scanned = 0
         skipped = 0
+        unfit = 0
         error = ""
         for _page in range(_MAX_PAGES):
             if len(fresh) >= cap:
@@ -217,6 +222,9 @@ def source_active_campaigns(
                     continue
                 if lead["domain"] in seen:
                     skipped += 1
+                    continue
+                if not pipeline.passes_company_fit(store):
+                    unfit += 1
                     continue
                 seen.add(lead["domain"])
                 fresh.append(lead)
@@ -244,6 +252,7 @@ def source_active_campaigns(
         out["leads"].extend(kept)
         out["scanned"] += scanned
         out["skipped_seen"] += skipped
+        out["skipped_unfit"] += unfit
         if kept:
             out["recipes"].append(row["recipe_key"])
         out["campaigns"].append({
@@ -252,6 +261,7 @@ def source_active_campaigns(
             "recorded": len(kept),
             "scanned": scanned,
             "skipped_seen": skipped,
+            "skipped_unfit": unfit,
             "filters": filters,
             "error": error,
         })

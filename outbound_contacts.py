@@ -10,6 +10,8 @@ Rules this module enforces:
     never returned to a page.
   * Nothing is guessed. A candidate without a verified email is dropped, not
     padded with a pattern guess, because a bounce costs more than a missing lead.
+  * A verified role inbox (info@, sales@, noreply@, and the same list) is
+    dropped. Only a named person's address is kept.
   * Network is injectable (``post``) so every path is testable without credits.
   * Everything fails soft: a provider error yields an empty result with a reason,
     never an exception into the daily job.
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -39,24 +42,70 @@ _EXTRACT = tldextract.TLDExtract(
     fallback_to_snapshot=True,
 )
 
-# Titles we want, best first. Matching is substring, lowercase. Order is the
-# ranking: owners and founders answer cold email about tools; ecommerce and
-# Amazon leads are the next best buyer of Anata Intelligence.
+# Titles we want, best first. Founders and presidents outrank the functional
+# buyers. The second rank is a director, head, or VP in ecommerce, Amazon,
+# marketplaces, growth, or marketing, plus CMO, COO, and ecommerce managers.
+# Matching is not a raw substring: "president" must not promote "vice
+# president", and "app" is not a title word.
 TITLE_PRIORITY: tuple[tuple[str, ...], ...] = (
     ("founder", "co-founder", "cofounder", "owner", "ceo", "chief executive", "president"),
-    ("ecommerce", "e-commerce", "amazon", "marketplace"),
-    ("growth", "marketing", "cmo", "chief marketing", "digital"),
-    ("coo", "chief operating", "operations", "general manager", "managing director"),
+    ("director", "head", "vp", "vice president", "cmo", "chief marketing",
+     "coo", "chief operating", "ecommerce manager", "e-commerce manager",
+     "digital commerce manager"),
 )
 
 # Searched with CONTAINS so "Co-Founder & CEO" and "Head of Ecommerce" both hit.
+# title_rank drops associates, specialists, and the other excluded roles.
+# "coo" also matches "coordinator"; those titles are dropped after the search.
 SEARCH_TITLES = [
-    "founder", "owner", "ceo", "president", "ecommerce", "e-commerce",
-    "amazon", "marketplace", "growth", "marketing", "chief operating",
+    "founder", "owner", "ceo", "chief executive", "president",
+    "head of", "director", "vice president", "vp",
+    "ecommerce", "e-commerce", "amazon", "marketplace", "growth", "marketing",
+    "cmo", "chief marketing", "coo", "chief operating", "digital commerce",
 ]
 
+# Generic inboxes. A personal name in the local part is not on this list.
+# Dots and dashes are ignored, so customer.service@ and no-reply@ match.
+ROLE_LOCALS = frozenset({
+    "marketing", "info", "sales", "support", "hello", "contact", "team",
+    "admin", "help", "orders", "office", "ecommerce", "customerservice",
+    "noreply",
+})
+
 # Titles that match a keyword above but are never the buyer.
-EXCLUDE_TITLES = ("intern", "assistant", "coordinator", "recruiter", "student")
+EXCLUDE_TITLES = (
+    "intern", "assistant", "coordinator", "recruiter", "student",
+    "associate", "specialist", "customer service", "customer support",
+    "project manager",
+)
+
+_EXCLUDE_RE = re.compile(
+    r"\b(?:interns?|assistants?|coordinators?|recruiters?|students?|associates?|specialists?)\b"
+    r"|\bproject managers?\b|\bproject management\b"
+    r"|\bcustomer[\s-]?service\b|\bcustomer[\s-]?support\b",
+    re.I,
+)
+_CREATIVE_RE = re.compile(
+    r"\b(?:creatives?|designers?|copywriters?|photographers?|illustrators?|videographers?|art directors?)\b",
+    re.I,
+)
+_FUNCTION_RE = re.compile(
+    r"\b(?:e[\s-]?commerce|amazon|marketplaces?|growth|marketing)\b",
+    re.I,
+)
+_VP_RE = re.compile(r"\b(?:vp|svp|evp|vice president)\b", re.I)
+_LEADER_RE = re.compile(r"\b(?:heads?|directors?|vp|svp|evp|vice president)\b", re.I)
+_TOP_RE = re.compile(
+    r"\b(?:co-?founders?|founders?|co-?owners?|owners?|ceo|chief executive|presidents?)\b",
+    re.I,
+)
+_CMO_RE = re.compile(r"\b(?:cmo|chief marketing(?: officer)?)\b", re.I)
+_COO_RE = re.compile(r"\b(?:coo|chief operating(?: officer)?)\b", re.I)
+_ECOM_MANAGER_RE = re.compile(
+    r"\b(?:e[\s-]?commerce|digital[\s-]?commerce)\s+managers?\b"
+    r"|\bmanagers?\b(?:\s+\w+){0,3}\s+(?:e[\s-]?commerce|digital[\s-]?commerce)\b",
+    re.I,
+)
 
 
 @dataclass
@@ -93,14 +142,46 @@ def _redact(text: str, secret: str) -> str:
 
 
 def title_rank(title: str) -> Optional[int]:
-    """Lower is better. None means do not contact."""
-    t = (title or "").lower()
-    if not t or any(bad in t for bad in EXCLUDE_TITLES):
+    """Lower is better. None means do not contact.
+
+    Rank 0 is founder, owner, CEO, or president (not vice president).
+    Rank 1 is a director, head, or VP of ecommerce, Amazon, marketplaces,
+    growth, or marketing, and also a CMO, COO, or ecommerce manager.
+    Associates, coordinators, specialists, customer service, project
+    managers, and creative-only roles are excluded.
+    """
+
+    raw = (title or "").strip()
+    low = raw.lower()
+    if not raw or any(bad in low for bad in EXCLUDE_TITLES) or _EXCLUDE_RE.search(raw):
         return None
-    for rank, keywords in enumerate(TITLE_PRIORITY):
-        if any(k in t for k in keywords):
-            return rank
+    is_vp = _VP_RE.search(raw) is not None
+    if _TOP_RE.search(raw) and not is_vp:
+        return 0
+    if _CREATIVE_RE.search(raw) and not _FUNCTION_RE.search(raw):
+        return None
+    # Rank 1 is the second TITLE_PRIORITY group.
+    if len(TITLE_PRIORITY) > 1 and (
+        (_LEADER_RE.search(raw) and _FUNCTION_RE.search(raw))
+        or _CMO_RE.search(raw)
+        or _COO_RE.search(raw)
+        or _ECOM_MANAGER_RE.search(raw)
+    ):
+        return 1
     return None
+
+
+def is_role_mailbox(address: str) -> bool:
+    """True when the mailbox is a shared role, not a named person.
+
+    ``info@``, ``customer.service@``, and ``no-reply@`` match. ``jane.smith@``
+    does not. The check is the local part only.
+    """
+
+    local = (address or "").strip().lower().split("@", 1)[0]
+    local = local.split("+", 1)[0]
+    compact = re.sub(r"[^a-z0-9]", "", local)
+    return bool(compact) and compact in ROLE_LOCALS
 
 
 def rank_candidates(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -248,7 +329,8 @@ def find_contacts(
         return result
 
     # Enrich best-first until we have enough, trying a couple of extras since
-    # some people have no verified email.
+    # some people have no verified email. A verified role inbox is not a person.
+    skipped_role = False
     for item in ranked[: max_contacts + 3]:
         if len(result.contacts) >= max_contacts:
             break
@@ -279,6 +361,9 @@ def find_contacts(
             continue
         if not data.get("free_enrichment"):
             result.credits_used += 1
+        if is_role_mailbox(email):
+            skipped_role = True
+            continue
         result.contacts.append(Contact(
             domain=domain,
             first_name=(p.get("first_name") or "").strip(),
@@ -290,7 +375,10 @@ def find_contacts(
             email_status=status_text.upper(),
         ))
     if not result.contacts and not result.reason:
-        result.reason = "Candidates found but none had a verified email."
+        if skipped_role:
+            result.reason = "Candidates found but none had a personal verified email."
+        else:
+            result.reason = "Candidates found but none had a verified email."
     return result
 
 

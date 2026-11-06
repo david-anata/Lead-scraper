@@ -43,8 +43,42 @@ class TestIcpGate(unittest.TestCase):
     def test_wrong_country_rejected(self):
         self.assertFalse(op.store_matches_icp(_store(country_code="DE")))
 
-    def test_uk_is_normalized_and_allowed(self):
-        self.assertTrue(op.store_matches_icp(_store(country_code="UK")))
+    def test_uk_is_outside_company_fit(self):
+        self.assertFalse(op.store_matches_icp(_store(country_code="UK")))
+        self.assertFalse(op.passes_company_fit(_store(country_code="GB")))
+        self.assertFalse(op.passes_company_fit(_store(country_code="CA")))
+        self.assertFalse(op.passes_company_fit(_store(country_code="AU")))
+        self.assertFalse(op.passes_company_fit(_store(country_code="")))
+
+    def test_missing_revenue_is_outside_company_fit(self):
+        self.assertFalse(op.passes_company_fit(_store(estimated_sales_yearly=None)))
+        self.assertFalse(op.store_matches_icp(_store(estimated_sales_yearly=0)))
+        self.assertFalse(op.passes_company_fit(_store(estimated_sales_yearly="")))
+
+    def test_company_fit_keeps_own_brand_physical_goods(self):
+        self.assertTrue(op.passes_company_fit(_store(
+            categories="Apparel & Accessories", merchant_name="Happy Apparel",
+        )))
+        self.assertEqual(op.store_niche(_store(
+            categories="Apparel & Accessories", merchant_name="Happy Apparel",
+        )), "apparel_accessories")
+
+    def test_company_fit_rejects_distributors_resellers_and_non_products(self):
+        self.assertFalse(op.passes_company_fit(_store(tags="authorized distributor")))
+        self.assertFalse(op.passes_company_fit(_store(merchant_name="Multi-Brand Beauty")))
+        self.assertFalse(op.passes_company_fit(_store(tags="reseller")))
+        self.assertFalse(op.passes_company_fit(_store(categories="Beauty Services")))
+        self.assertFalse(op.passes_company_fit(_store(merchant_name="Summer Events", categories="Gifts")))
+        self.assertFalse(op.passes_company_fit(_store(merchant_name="Glow App")))
+        self.assertFalse(op.passes_company_fit(_store(
+            categories="Health & Wellness", tags="fitness program",
+        )))
+        self.assertFalse(op.store_matches_icp(_store(categories="Beauty Services")))
+
+    def test_company_fit_does_not_require_the_email_screen(self):
+        store = _store(contact_info=[])
+        self.assertTrue(op.passes_company_fit(store))
+        self.assertFalse(op.store_matches_icp(store))
 
     def test_excluded_keyword_rejected(self):
         self.assertFalse(op.store_matches_icp(_store(tags="dropshipping, print on demand")))

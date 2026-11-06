@@ -182,6 +182,19 @@ def test_push_pending_falls_back_when_the_table_cannot_be_read(engine, monkeypat
     assert sent == {push.RECIPE_CAMPAIGN_MAP["amz_off"]: ["a@off.com"]}
 
 
+def _fit_store(name, **over):
+    row = {
+        "name": name,
+        "merchant_name": str(name).split(".")[0].title(),
+        "country_code": "US",
+        "categories": "Beauty & Skincare",
+        "estimated_sales_yearly": 5_000_000_00,
+        "tags": "",
+    }
+    row.update(over)
+    return row
+
+
 def test_sourcing_records_the_recipe_and_skips_contacted_domains(engine):
     from sales_support_agent.services.outbound_memory import load_leads, record_leads
 
@@ -192,16 +205,23 @@ def test_sourcing_records_the_recipe_and_skips_contacted_domains(engine):
         calls.append(kwargs["extra_params"])
         filters = kwargs["extra_params"]
         if filters.get("f:scs:op") == "not":
-            domains = [{"name": "off.com", "merchant_name": "Off", "country_code": "US"}]
+            domains = [
+                _fit_store("off.com"),
+                _fit_store("uk-off.com", country_code="GB"),
+                _fit_store("distro.com", tags="distributor"),
+                _fit_store("norow.com", estimated_sales_yearly=None),
+            ]
         elif filters.get("f:scs") == "Amazon" and "f:plan" not in filters and "f:last_platform" not in filters:
             domains = [
-                {"name": "on.com", "merchant_name": "On", "country_code": "US"},
-                {"name": "seen.com", "merchant_name": "Seen", "country_code": "US"},
+                _fit_store("on.com"),
+                _fit_store("seen.com"),
+                _fit_store("events.com", merchant_name="City Events", categories="Gifts"),
+                _fit_store("app.com", merchant_name="Glow App"),
             ]
         elif filters.get("f:plan") == "Shopify Plus":
-            domains = [{"name": "plus.com", "merchant_name": "Plus", "country_code": "US"}]
+            domains = [_fit_store("plus.com"), _fit_store("services.com", categories="Beauty Services")]
         elif "f:last_platform" in filters:
-            domains = [{"name": "moved.com", "merchant_name": "Moved", "country_code": "US"}]
+            domains = [_fit_store("moved.com"), _fit_store("multi.com", merchant_name="Multi-Brand Home")]
         else:
             domains = []
         return SimpleNamespace(domains=domains, next_cursor=None, error="")
@@ -217,6 +237,9 @@ def test_sourcing_records_the_recipe_and_skips_contacted_domains(engine):
     assert by_domain["seen.com"] == "old"
     assert out["skipped_seen"] >= 1
     assert "seen.com" not in {lead["domain"] for lead in out["leads"]}
+    blocked = {"uk-off.com", "distro.com", "norow.com", "events.com", "app.com", "services.com", "multi.com"}
+    assert blocked.isdisjoint({lead["domain"] for lead in out["leads"]})
+    assert out["skipped_unfit"] >= len(blocked)
     sent_keys = set().union(*(call.keys() for call in calls))
     assert sent_keys <= campaigns.CONFIRMED_FILTERS
     assert any(call.get("f:scs:op") == "not" for call in calls)
@@ -227,7 +250,7 @@ def test_sourcing_records_the_recipe_and_skips_contacted_domains(engine):
 def test_sourcing_stops_at_the_company_and_credit_caps(engine):
     def fetch(api_key, **kwargs):
         return SimpleNamespace(
-            domains=[{"name": f"{index}.com", "merchant_name": "Brand"} for index in range(10)],
+            domains=[_fit_store(f"brand{index}.com") for index in range(10)],
             next_cursor=None, error="",
         )
 

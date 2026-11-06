@@ -36,10 +36,76 @@ def no_sleep(_):
 
 def test_title_rank_orders_owners_before_marketing():
     assert oc.title_rank("Co-Founder & CEO") < oc.title_rank("Head of Ecommerce")
-    assert oc.title_rank("Head of Ecommerce") < oc.title_rank("VP Marketing")
+    assert oc.title_rank("Head of Ecommerce") == oc.title_rank("VP of Marketing")
+    assert oc.title_rank("President") < oc.title_rank("Director of Amazon")
     assert oc.title_rank("Marketing Intern") is None
     assert oc.title_rank("Accountant") is None
     assert oc.title_rank("") is None
+    assert oc.title_rank("Vice President of Sales") is None
+
+
+def test_buyer_role_gate_drops_the_excluded_titles():
+    excluded = (
+        "Amazon Specialist", "Ecommerce Coordinator", "Marketing Associate",
+        "Customer Service Manager", "Project Manager", "Creative Director",
+        "Art Director", "Customer Support Lead", "Marketing Manager",
+    )
+    for title in excluded:
+        assert oc.title_rank(title) is None, title
+    results = [_person(f"p{i}", title) for i, title in enumerate(("Founder", *excluded, "Head of Growth"))]
+    ranked = oc.rank_candidates(results)
+    titles = [item["person"]["current_job_title"] for item in ranked]
+    assert titles == ["Founder", "Head of Growth"]
+
+
+def test_cmo_coo_and_ecommerce_managers_rank_with_functional_buyers():
+    second = oc.title_rank("VP of Marketing")
+    assert second == 1
+    for title in (
+        "CMO", "Chief Marketing Officer", "COO", "Chief Operating Officer",
+        "Ecommerce Manager", "E-commerce Manager", "Digital Commerce Manager",
+        "Senior Ecommerce Manager", "Manager of Ecommerce",
+    ):
+        assert oc.title_rank(title) == second, title
+    assert oc.title_rank("Founder") < second
+    assert oc.title_rank("CEO") < oc.title_rank("COO")
+    assert oc.title_rank("Operations Manager") is None
+    assert oc.title_rank("Founder & CMO") == 0
+
+
+def test_role_mailbox_is_not_a_personal_address():
+    for local in (
+        "marketing", "info", "sales", "support", "hello", "contact", "team",
+        "admin", "help", "orders", "office", "ecommerce", "customerservice", "noreply",
+    ):
+        assert oc.is_role_mailbox(f"{local}@brand.com"), local
+        assert oc.is_role_mailbox(f"  {local.title()}@Brand.com  ")
+    assert oc.is_role_mailbox("customer.service@brand.com")
+    assert oc.is_role_mailbox("no-reply@brand.com")
+    assert oc.is_role_mailbox("e-commerce@brand.com")
+    assert oc.is_role_mailbox("info+news@brand.com")
+    assert not oc.is_role_mailbox("jane.smith@brand.com")
+    assert not oc.is_role_mailbox("jane@brand.com")
+    assert not oc.is_role_mailbox("jane@info.com")
+
+
+def test_find_contacts_skips_role_mailboxes_and_keeps_a_verified_person():
+    results = [_person("p1", "Founder"), _person("p2", "Ecommerce Manager")]
+    enrich = {
+        "p1": _enriched("p1", "Inbox", "info@brand.com", title="Founder"),
+        "p2": _enriched("p2", "Jane", "jane.smith@brand.com", title="Ecommerce Manager"),
+    }
+    found = oc.find_contacts("brand.com", api_key="k" * 20, post=make_post(results, enrich), sleep=no_sleep)
+    assert [c.email for c in found.contacts] == ["jane.smith@brand.com"]
+    assert found.credits_used == 3  # search plus both revealed emails
+
+
+def test_only_a_role_mailbox_is_not_a_contact():
+    results = [_person("p1", "Founder")]
+    enrich = {"p1": _enriched("p1", "Inbox", "noreply@brand.com", title="Founder")}
+    found = oc.find_contacts("brand.com", api_key="k" * 20, post=make_post(results, enrich), sleep=no_sleep)
+    assert found.contacts == []
+    assert "personal" in found.reason
 
 
 def test_normalize_domain():

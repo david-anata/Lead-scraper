@@ -6,6 +6,7 @@ import outbound_openers as op
 
 def setup_function():
     op._OPENERS_BY_DOMAIN.clear()
+    op._ANGLES_BY_DOMAIN.clear()
 
 LEAD = {"brand": "Huppy", "domain": "huppy.com", "niche": "oral care",
         "reason": "launched a new product line", "recipe": "new_growth_app", "tier": "A",
@@ -62,10 +63,13 @@ def test_fallback_never_contains_digits_even_if_reason_does():
 
 
 def test_build_lead_maps_instantly_fields():
-    lead = push.build_lead(CONTACT, LEAD, "Hello line")
+    contact = {**CONTACT, "brand_angle": "Anata helps oral care brands grow."}
+    lead = push.build_lead(contact, LEAD, "Hello line")
     assert lead["email"] == "ann@huppy.com"
     assert lead["company_name"] == "Huppy" and lead["personalization"] == "Hello line"
     assert lead["custom_variables"]["category"] == "health & beauty"
+    assert lead["custom_variables"]["brandAngle"] == "Anata helps oral care brands grow."
+    assert "—" not in lead["custom_variables"]["brandAngle"]
 
 
 def test_push_is_dry_run_by_default_and_calls_nothing():
@@ -134,9 +138,9 @@ def test_template_tics_rejected():
 
 
 def test_retry_once_then_accept():
-    lines = iter(["I noticed Huppy is building something special.", "Huppy sells toothpaste tabs."])
+    lines = iter(["I noticed Huppy is building something special.", "Huppy sells oral care."])
     line, src = op.write_opener(LEAD, CONTACT, llm=lambda p: next(lines))
-    assert src == "ai" and line == "Huppy sells toothpaste tabs."
+    assert src == "ai" and line == "Huppy sells oral care."
 
 
 def test_category_slugs_become_plain_words_and_product_wins():
@@ -194,6 +198,52 @@ def test_absent_brand_never_claims_amazon():
 def test_confirmed_amazon_product_allows_the_claim():
     line, source = op.write_opener({**LEAD, "amz_product": "toothpaste tabs", "amz_confidence": "high"}, CONTACT, llm=lambda p: "Huppy lists toothpaste tabs on Amazon.")
     assert source == "ai" and "Amazon" in line
+
+
+def test_opener_is_empty_when_nothing_solid():
+    bare = {"brand": "Huppy", "domain": "empty.com"}
+    line, source = op.write_opener(bare, CONTACT, llm=lambda p: "Huppy sells to consumers online.")
+    assert line == "" and source == "none"
+    assert op.fallback_line("Huppy") == ""
+
+
+def test_brand_angle_uses_a_known_fact_and_not_an_unconfirmed_amazon():
+    angle, source = op.write_brand_angle(LEAD, CONTACT, llm=lambda p: "Anata helps Huppy grow on Amazon.")
+    assert source == "fallback"
+    assert "amazon" not in angle.lower()
+    assert "—" not in angle
+    assert angle
+
+
+def test_brand_angle_names_amazon_only_when_the_product_is_confirmed():
+    lead = {**LEAD, "domain": "tabs.com", "amz_product": "toothpaste tabs", "amz_confidence": "high"}
+    angle, source = op.write_brand_angle(
+        lead, CONTACT, llm=lambda p: "Anata helps Huppy grow toothpaste tabs on Amazon.",
+    )
+    assert source == "ai" and "Amazon" in angle and "toothpaste tabs" in angle
+
+
+def test_brand_angle_falls_back_to_a_category_line():
+    lead = {"brand": "Huppy", "domain": "cat.com", "niche": "oral care", "categories": ["oral care"]}
+    angle, source = op.write_brand_angle(lead, CONTACT, llm=lambda p: "Anata helps Huppy dominate retail.")
+    assert source == "fallback"
+    assert angle == "Anata helps oral care brands grow."
+
+
+def test_brand_angle_uses_scraped_product_without_calling_amazon():
+    html = '<meta property="og:title" content="Toothpaste tabs">'
+    lead = {"brand": "Huppy", "domain": "site.com", "site_html": html}
+    line, _source = op.write_opener(lead, CONTACT, llm=lambda _p: "Huppy is big on Amazon.")
+    angle, _angle_source = op.write_brand_angle(lead, CONTACT)
+    assert "amazon" not in line.lower()
+    assert "Toothpaste tabs" in line
+    assert "amazon" not in angle.lower()
+    assert "Toothpaste tabs" in angle
+
+
+def test_brand_angle_is_empty_without_a_category():
+    angle, source = op.write_brand_angle({"brand": "Huppy", "domain": "none.com"}, CONTACT)
+    assert angle == "" and source == "none"
 
 
 def test_friendly_category():
