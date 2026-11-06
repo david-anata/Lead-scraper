@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import html
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -356,11 +357,85 @@ class GrowthPlan:
 # ---------------------------------------------------------------------------
 
 
+_SUPPLEMENT_CATEGORY = re.compile(
+    r"\b(?:supplements?|vitamins?|probiotics?|nutraceuticals?|softgels?|capsules?|gummies|collagen|creatine|spirulina|protein\s+powder|pre-?workout|fat\s+burners?)\b",
+    re.IGNORECASE,
+)
+_HEALTH_CATEGORY = re.compile(
+    r"\bhealth\b|\bpersonal\s+care\b|\bbeauty\b|health\s*(?:&|and)\s*household",
+    re.IGNORECASE,
+)
+
+_SUPPLEMENT_ON_CHANNEL_CPC = (
+    "Sponsored Products / Brands CPC: Pacvue Q1 2026 Health & Household ($2.17 avg; supplements $2.50–$7.00)."
+)
+_SUPPLEMENT_OFF_CHANNEL_CPC = (
+    "Off-channel paid CPC at $0.15 reflects storefront-link traffic optimized for Amazon's external-traffic signal "
+    "(lifts organic rank on adjacent keywords), NOT direct-response. Direct-to-PDP supplements CPC is "
+    "~$1.20–$1.81 (WordStream 2025 / Digital Applied 2026) and is modeled separately when ROAS-on-the-click is the objective."
+)
+_NEUTRAL_ON_CHANNEL_CPC = (
+    "Sponsored Products / Brands CPC is a planning assumption for this category. "
+    "No published category CPC benchmark is applied."
+)
+_NEUTRAL_OFF_CHANNEL_CPC = (
+    "Off-channel paid CPC is a planning assumption for storefront-link traffic, "
+    "not a direct-to-product-page category benchmark. No published category CPC figure is applied."
+)
+
+
+def conversion_rate_methodology(rate: float, *, category: str = "", listing_title: str = "") -> str:
+    """CVR source line for the growth methodology.
+
+    The supplement range is only cited when the category (or, if no category
+    was given, the listing title) is a supplement. Every other category gets
+    an assumed-conversion-rate disclosure instead of that range.
+    """
+    shown = " ".join(str(category or "").split())
+    evidence = shown or " ".join(str(listing_title or "").split())
+    if evidence and _SUPPLEMENT_CATEGORY.search(evidence):
+        return f"Conversion rate: {rate:.1f}% (form input; supplements typically 7–15% on Amazon)."
+    if shown:
+        return (
+            f"Conversion rate: {rate:.1f}% (assumed conversion rate for this plan, "
+            f"not a {shown} benchmark)."
+        )
+    return f"Conversion rate: {rate:.1f}% (assumed conversion rate, not a category benchmark)."
+
+
+def category_uses_supplement_cpc(*, category: str = "", listing_title: str = "") -> bool:
+    """True when Health & Household or supplement CPC citations apply.
+
+    A named category wins over the listing title, matching the conversion-rate
+    rule. There is no apparel or other category CPC source in this repo, so
+    everything else is a planning assumption.
+    """
+    shown = " ".join(str(category or "").split())
+    evidence = shown or " ".join(str(listing_title or "").split())
+    if not evidence:
+        return False
+    return bool(_SUPPLEMENT_CATEGORY.search(evidence) or _HEALTH_CATEGORY.search(evidence))
+
+
+def cpc_methodology_lines(*, category: str = "", listing_title: str = "") -> tuple[str, str]:
+    """On-channel and off-channel CPC lines for Sources & methodology.
+
+    Supplement and health categories keep the published Pacvue and WordStream
+    citations. Other categories get a neutral planning-assumption line with
+    no invented CPC figure or source.
+    """
+    if category_uses_supplement_cpc(category=category, listing_title=listing_title):
+        return _SUPPLEMENT_ON_CHANNEL_CPC, _SUPPLEMENT_OFF_CHANNEL_CPC
+    return _NEUTRAL_ON_CHANNEL_CPC, _NEUTRAL_OFF_CHANNEL_CPC
+
+
 def build_growth_plan(
     *,
     inputs: GrowthPlanInputs,
     target_units: int,
     top3_competitor_avg_sessions: int | None = None,
+    category: str = "",
+    listing_title: str = "",
 ) -> GrowthPlan:
     """Compute the full plan from inputs.
 
@@ -384,9 +459,14 @@ def build_growth_plan(
 
     delta_sessions = max(0, goal_sessions - current_sessions)
 
+    supplement_cpc = category_uses_supplement_cpc(category=category, listing_title=listing_title)
+    on_channel_cpc_line, off_channel_cpc_line = cpc_methodology_lines(
+        category=category,
+        listing_title=listing_title,
+    )
     channels = [
         _build_organic_channel(inputs, delta_sessions),
-        _build_on_channel_paid_channel(inputs, delta_sessions),
+        _build_on_channel_paid_channel(inputs, delta_sessions, supplement_or_health=supplement_cpc),
         _build_off_channel_paid_channel(inputs, delta_sessions),
         _build_affiliate_channel(inputs, delta_sessions, cvr),
         _build_retargeting_channel(inputs, delta_sessions, cvr, current_sessions),
@@ -397,11 +477,13 @@ def build_growth_plan(
     shortfall_sessions = max(0, delta_sessions - total_sessions_delivered)
 
     methodology_lines = [
-        f"Conversion rate: {inputs.conversion_rate_pct:.1f}% (form input; supplements typically 7–15% on Amazon).",
-        "Sponsored Products / Brands CPC: Pacvue Q1 2026 Health & Household ($2.17 avg; supplements $2.50–$7.00).",
-        "Off-channel paid CPC at $0.15 reflects storefront-link traffic optimized for Amazon's external-traffic signal "
-        "(lifts organic rank on adjacent keywords), NOT direct-response. Direct-to-PDP supplements CPC is "
-        "~$1.20–$1.81 (WordStream 2025 / Digital Applied 2026) and is modeled separately when ROAS-on-the-click is the objective.",
+        conversion_rate_methodology(
+            inputs.conversion_rate_pct,
+            category=category,
+            listing_title=listing_title,
+        ),
+        on_channel_cpc_line,
+        off_channel_cpc_line,
         "DSP CPM: Sequence Commerce / Amazon Ads 2026 ($5–$25 typical).",
         "Retargeting CTR lift, ROAS: Sequence Commerce 2026; Tinuiti Q1 2026 Digital Ads Benchmark.",
         "TikTok Shop creator commission: Shortform Nation 2026 (US average 13%).",
@@ -476,7 +558,12 @@ def _build_organic_channel(inputs: GrowthPlanInputs, delta: int) -> GrowthChanne
     )
 
 
-def _build_on_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> GrowthChannel:
+def _build_on_channel_paid_channel(
+    inputs: GrowthPlanInputs,
+    delta: int,
+    *,
+    supplement_or_health: bool = False,
+) -> GrowthChannel:
     sessions = _alloc(delta, inputs.mix_on_channel_paid)
     cost = sessions * inputs.on_channel_cpc
     aov = inputs.average_order_value or 0.0
@@ -489,7 +576,11 @@ def _build_on_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> Grow
         sessions=sessions,
         monthly_cost=cost,
         detail=f"@ ${inputs.on_channel_cpc:,.2f} CPC",
-        source_label="Source: Pacvue Q1 2026 Health & Household",
+        source_label=(
+            "Source: Pacvue Q1 2026 Health & Household"
+            if supplement_or_health
+            else "Planning assumption. No category CPC benchmark is applied."
+        ),
         first_active_phase=1,
         campaign_description=(
             f"Sponsored Products on top-30 niche keywords @ ${inputs.on_channel_cpc:,.2f} CPC, "
