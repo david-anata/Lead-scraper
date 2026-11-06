@@ -25,6 +25,7 @@ from sales_support_agent.services.deck.growth_plan import (
     GrowthPlanInputs,
     build_growth_plan,
     conversion_rate_methodology,
+    cpc_methodology_lines,
 )
 from sales_support_agent.services.deck.intelligence_v2 import case_study_detail, load_case_studies
 
@@ -128,6 +129,53 @@ class ConversionRateCitationTests(unittest.TestCase):
         self.assertNotIn("supplements typically", named)
 
 
+class CpcCitationTests(unittest.TestCase):
+    def test_non_supplement_category_does_not_cite_supplement_cpc(self) -> None:
+        on_channel, off_channel = cpc_methodology_lines(category="Merino ski socks, Clothing & Accessories")
+        self.assertIn("planning assumption", on_channel)
+        self.assertIn("planning assumption", off_channel)
+        for line in (on_channel, off_channel):
+            self.assertNotIn("Pacvue", line)
+            self.assertNotIn("WordStream", line)
+            self.assertNotIn("Digital Applied", line)
+            self.assertNotIn("Health & Household", line)
+            self.assertNotIn("supplements", line.lower())
+            self.assertNotRegex(line, r"\$\d")
+
+        plan = build_growth_plan(
+            inputs=GrowthPlanInputs(conversion_rate_pct=15.0, goal_monthly_sessions=1000, cogs_per_unit=4.0),
+            target_units=3,
+            category="Clothing & Accessories",
+            listing_title="spirulina capsules",
+        )
+        joined = " ".join(plan.methodology_lines)
+        self.assertNotIn("Pacvue", joined)
+        self.assertNotIn("WordStream", joined)
+        self.assertNotIn("Digital Applied", joined)
+        self.assertNotIn("$2.17", joined)
+        self.assertNotIn("$1.20", joined)
+        self.assertIn("planning assumption", joined)
+        on_channel_card = next(channel for channel in plan.channels if channel.key == "on_channel_paid")
+        self.assertNotIn("Pacvue", on_channel_card.source_label)
+        self.assertIn("Planning assumption", on_channel_card.source_label)
+
+    def test_supplement_and_health_categories_keep_published_cpc_sources(self) -> None:
+        for category in ("spirulina supplements", "Health & Household", "Beauty, Health, and Personal Care"):
+            on_channel, off_channel = cpc_methodology_lines(category=category)
+            self.assertIn("Pacvue Q1 2026 Health & Household", on_channel)
+            self.assertIn("supplements $2.50", on_channel)
+            self.assertIn("WordStream 2025", off_channel)
+            self.assertIn("Digital Applied 2026", off_channel)
+
+    def test_blank_category_uses_the_title_then_stays_neutral(self) -> None:
+        on_channel, _off_channel = cpc_methodology_lines(listing_title="blue spirulina capsules")
+        self.assertIn("Pacvue", on_channel)
+        neutral_on, neutral_off = cpc_methodology_lines()
+        self.assertIn("planning assumption", neutral_on)
+        self.assertIn("planning assumption", neutral_off)
+        self.assertNotIn("Pacvue", neutral_on + neutral_off)
+
+
 try:
     from sqlalchemy import select
     from sales_support_agent.models.database import create_session_factory, init_database, session_scope
@@ -177,6 +225,10 @@ class CategoryCopyDeckTests(unittest.TestCase):
         self.assertNotIn("trial users get", html)
         self.assertIn("assumed conversion rate", html)
         self.assertNotIn("supplements typically 7", html)
+        self.assertNotIn("Pacvue", html)
+        self.assertNotIn("WordStream", html)
+        self.assertNotIn("Digital Applied", html)
+        self.assertIn("planning assumption", html)
 
 
 if __name__ == "__main__":
