@@ -1213,6 +1213,8 @@ class DeckGenerationService:
                     inputs=inputs_obj,
                     target_units=target_units_int,
                     top3_competitor_avg_sessions=competitor_benchmark_sessions,
+                    category=resolved_category_label,
+                    listing_title=display_title,
                 )
             else:
                 warnings.append(
@@ -1249,6 +1251,7 @@ class DeckGenerationService:
                     "dimensions": target_dimensions,
                     "description": hero_product.description,
                     "type": text_fields["hero_product_type"],
+                    "category": str(getattr(target_row, "category", "") or ""),
                     "comparison_mode": target_state,
                     "match_provenance": target_match.provenance,
                     "match_confidence": target_match.confidence,
@@ -1403,7 +1406,19 @@ class DeckGenerationService:
         # Renders nothing when no price is available; every derived figure is
         # labeled "estimated" (CLAUDE.md: no invented facts).
         from sales_support_agent.services.deck.dataset import _build_margin_snapshot_html
-        margin_snapshot_html = _build_margin_snapshot_html(str(target.get("price", "") or ""))
+        margin_snapshot_html = _build_margin_snapshot_html(
+            str(target.get("price", "") or ""),
+            category=" ".join(
+                part
+                for part in (
+                    str(target.get("category") or ""),
+                    str(target.get("type") or ""),
+                    str(payload.get("category_label") or ""),
+                )
+                if str(part).strip()
+            ),
+            title=str(target.get("title") or ""),
+        )
 
         # PR-C2.5: terminal advisement CTA. Present on the result page whenever
         # MARKETING_BOOKING_URL is configured. Calm copy, no em-dashes.
@@ -1591,7 +1606,7 @@ class DeckGenerationService:
         )
 
         methodology_html = render_methodology_section()
-        case_studies_html = render_case_studies_section(case_study_url)
+        case_studies_html = render_case_studies_section(case_study_url, include_trial=_include_trial)
         target_brand_display = str(target.get("brand_name") or target.get("brand") or "Prospect brand").strip()
         cover_title = _trim_text(_clean_listing_title(str(target.get("title", "") or title)), 40)
 

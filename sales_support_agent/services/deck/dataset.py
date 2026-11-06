@@ -645,14 +645,102 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Margin snapshot (PR-C2.2)
 # ---------------------------------------------------------------------------
-# Amazon's published referral rate is 15% for most categories. FBA fulfillment
-# fees depend on the unit's size tier and weight, which the deck pipeline does
-# not reliably have, so we never fabricate an FBA dollar figure. We render the
-# referral estimate and margin-before-fulfillment when a price is present, and
-# clearly label every derived number as an estimate. When price is missing the
-# whole block renders nothing (CLAUDE.md: missing inputs render nothing).
+# Referral fees follow Amazon's US category schedule (percentages unchanged
+# for 2025 and 2026). Clothing & Accessories is 5% at or under $15, 10% above
+# $15 through $20, and 17% above $20, on the whole price. When the listing
+# text does not match a published fee category, 15% is labeled as an assumed
+# rate for the category we actually have. FBA fulfillment fees depend on size
+# tier and weight, which this pipeline does not reliably have, so we never
+# fabricate an FBA dollar figure. When price is missing the whole block
+# renders nothing.
 
-_AMAZON_REFERRAL_RATE = 0.15  # Amazon's published standard referral rate, most categories
+_ASSUMED_REFERRAL_RATE = 0.15
+_REFERRAL_MINIMUM = 0.30
+
+# (pattern, Amazon fee-category name, (max inclusive price, whole-price rate))
+_REFERRAL_FEE_RULES: tuple[tuple[re.Pattern[str], str, tuple[tuple[float, float], ...]], ...] = (
+    (
+        re.compile(
+            r"\b(?:socks?|apparel|clothing|shirts?|pants|dresses|jackets?|sweaters?|hoodies?|beanies?|gloves?|underwear|leggings|jeans|scarves|scarfs|activewear|knitwear)\b"
+            r"|clothing\s*(?:&|and)\s*accessories",
+            re.IGNORECASE,
+        ),
+        "Clothing & Accessories",
+        ((15.0, 0.05), (20.0, 0.10), (float("inf"), 0.17)),
+    ),
+    (
+        re.compile(r"\b(?:footwear|shoes|sneakers|boots)\b", re.IGNORECASE),
+        "Footwear",
+        ((float("inf"), 0.15),),
+    ),
+    (
+        re.compile(
+            r"\b(?:supplements?|vitamins?|probiotics?|nutraceuticals?|softgels?|capsules?|gummies|collagen|creatine|spirulina|protein\s+powder|pre-?workout|fat\s+burners?|beauty|personal\s+care)\b",
+            re.IGNORECASE,
+        ),
+        "Beauty, Health, and Personal Care",
+        ((10.0, 0.08), (float("inf"), 0.15)),
+    ),
+    (
+        re.compile(r"\b(?:grocery|gourmet|snacks?)\b", re.IGNORECASE),
+        "Grocery and Gourmet",
+        ((15.0, 0.08), (float("inf"), 0.15)),
+    ),
+    (
+        re.compile(r"\b(?:baby|infant|diapers?)\b", re.IGNORECASE),
+        "Baby Products",
+        ((10.0, 0.08), (float("inf"), 0.15)),
+    ),
+)
+
+
+def _match_referral_rule(text: str) -> tuple[str, tuple[tuple[float, float], ...]] | None:
+    blob = str(text or "")
+    if not blob.strip():
+        return None
+    for pattern, name, bands in _REFERRAL_FEE_RULES:
+        if pattern.search(blob):
+            return name, bands
+    return None
+
+
+def _rate_for_price(price: float, bands: tuple[tuple[float, float], ...]) -> float:
+    for ceiling, rate in bands:
+        if price <= ceiling:
+            return rate
+    return bands[-1][1]
+
+
+def _referral_band_note(name: str, price: float, rate: float) -> str:
+    pct = f"{rate * 100:.0f}%"
+    if name == "Clothing & Accessories":
+        if price <= 15:
+            band = "for items at or under $15"
+        elif price <= 20:
+            band = "for items over $15 through $20"
+        else:
+            band = "for items over $20"
+        return f"estimated at {pct}, Amazon's Clothing & Accessories referral fee {band}"
+    return f"estimated at {pct}, Amazon's {name} referral fee"
+
+
+def resolve_amazon_referral_fee(price: float, *, category: str = "", title: str = "") -> tuple[float, str, str]:
+    """Return (rate, fee-category name or '', caption).
+
+    Category text wins over the listing title. An unmatched category keeps
+    the 15% assumption and names that category in the caption.
+    """
+    matched = _match_referral_rule(category) or _match_referral_rule(title)
+    if matched is None:
+        shown = _trim_text(" ".join(str(category or "").split()), 80)
+        if shown:
+            caption = f"estimated at 15%, an assumed rate for category {shown}"
+        else:
+            caption = "estimated at 15%, an assumed rate. No Amazon fee category was identified."
+        return _ASSUMED_REFERRAL_RATE, "", caption
+    name, bands = matched
+    rate = _rate_for_price(price, bands)
+    return rate, name, _referral_band_note(name, price, rate)
 
 
 def _parse_price_value(price_label: str) -> float:
@@ -669,19 +757,24 @@ def _parse_price_value(price_label: str) -> float:
         return 0.0
 
 
-def _build_margin_snapshot_html(price_label: str) -> str:
+def _build_margin_snapshot_html(price_label: str, *, category: str = "", title: str = "") -> str:
     """Render an honest margin snapshot from the target's list price.
 
-    Every derived figure is labeled 'estimated'. Amazon's 15% referral rate is
-    a published standard, not an invented number. FBA fulfillment is NOT
-    estimated (size/weight dependent and not available), so we surface it as a
-    call-time item rather than a fabricated figure. Returns '' when no price.
+    The referral fee uses Amazon's published rate for the listing's fee
+    category when the category or title matches one. Otherwise the 15% figure
+    is labeled as an assumed rate for the category text we have. FBA
+    fulfillment is not estimated. Returns '' when no price.
     """
     price = _parse_price_value(price_label)
     if price <= 0:
         return ""
-    referral_fee = price * _AMAZON_REFERRAL_RATE
-    margin_before_fulfillment = price - referral_fee
+    rate, _fee_category, fee_caption = resolve_amazon_referral_fee(price, category=category, title=title)
+    referral_fee = round(price * rate, 2)
+    minimum_applied = referral_fee < _REFERRAL_MINIMUM
+    if minimum_applied:
+        referral_fee = _REFERRAL_MINIMUM
+        fee_caption = f"{fee_caption}. Amazon's $0.30 per-item minimum applies"
+    margin_before_fulfillment = round(price - referral_fee, 2)
 
     def _tile(lab: str, val: str, sub: str) -> str:
         return (
@@ -697,7 +790,7 @@ def _build_margin_snapshot_html(price_label: str) -> str:
         + _tile(
             "Amazon referral fee",
             f"{referral_fee:,.2f}",
-            "estimated at 15%, Amazon's published rate",
+            fee_caption,
         )
         + _tile(
             "Margin before fulfillment",
