@@ -414,6 +414,29 @@ def test_departed_contact_is_left_out_of_future_pushes(engine):
     assert str(reason).startswith("suppressed:departed:gone@a.com")
 
 
+def test_role_mailbox_is_left_out_of_the_push(engine):
+    from sqlalchemy import text
+
+    oe.run_enrichment(
+        engine, [lead("box.com", "Boxed")], api_key="k",
+        find=finder({"box.com": ["info@box.com", "jane.smith@box.com"]}), write=opener,
+    )
+    seen = {}
+
+    def capture(payload, cid, dry_run=False, **k):
+        seen["emails"] = [row["email"] for row in payload]
+        return push.PushOutcome(attempted=len(payload), created=len(payload), dry_run=False)
+
+    out = oe.push_pending(engine, "camp", dry_run=False, push=capture)
+    assert seen["emails"] == ["jane.smith@box.com"]
+    assert out["suppressed"] == 1 and out["pushed"] == 1
+    with engine.connect() as conn:
+        reason = conn.execute(text(
+            "SELECT skip_reason FROM outbound_enriched_contacts WHERE email = 'info@box.com'"
+        )).scalar()
+    assert str(reason).startswith("suppressed:role:info@box.com")
+
+
 def row_angle_ok(payload):
     for row in payload:
         angle = (row.get("custom_variables") or {}).get("brandAngle", "")

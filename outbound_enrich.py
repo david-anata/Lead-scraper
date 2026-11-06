@@ -465,8 +465,9 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
     is empty or cannot be read, ``RECIPE_CAMPAIGN_MAP`` is the fallback.
     Every other recipe uses ``campaign_id`` when it is set, otherwise
     ``OUTBOUND_INSTANTLY_CAMPAIGN_ID``. ``redo_partner`` is left unpushed.
-    Suppressed emails and domains are left unpushed and, on a live push, marked
-    so they do not clog the queue. A contact is marked pushed only when
+    Suppressed emails and domains, departed contacts, and role inboxes are left
+    unpushed and, on a live push, marked so they do not clog the queue. A
+    contact is marked pushed only when
     Instantly accepted that campaign's batch with no errors. If the suppression
     list cannot be read, nothing is pushed.
     """
@@ -480,7 +481,9 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         still: list[dict[str, Any]] = []
         for person in allowed:
             email = str(person.get("email") or "").strip().lower()
-            if email and email in left:
+            if email and _contacts.is_role_mailbox(email):
+                blocked.append({**person, "suppressed_match": f"role:{email}"})
+            elif email and email in left:
                 blocked.append({**person, "suppressed_match": f"departed:{email}"})
             else:
                 still.append(person)
