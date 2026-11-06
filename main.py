@@ -3292,12 +3292,28 @@ def import_leads_to_instantly(rows: list[dict[str, Any]], settings: Settings) ->
         logger.warning("[Instantly] import skipped: INSTANTLY_API_KEY missing")
         return {"status": "skipped", "reason": "missing_api_key", "created_count": 0, "skipped_count": 0}
 
+    import outbound_instantly_push as _instantly_push
+
     rows_by_campaign: dict[str, list[dict[str, Any]]] = {}
+    held_closed = 0
     for row in rows:
         campaign_id = str(row.get("campaign_id", "")).strip() or settings.instantly_campaign_id
         if not campaign_id:
             continue
+        if _instantly_push._closed_to_new_leads(campaign_id):
+            held_closed += 1
+            continue
         rows_by_campaign.setdefault(campaign_id, []).append(row)
+    if not rows_by_campaign:
+        logger.info("[Instantly] import skipped closed campaign rows=%s", held_closed)
+        return {
+            "status": "skipped",
+            "reason": "trial_offer_closed" if held_closed else "missing_campaign_id",
+            "created_count": 0,
+            "skipped_count": held_closed,
+            "total_sent": 0,
+            "campaign_results": [],
+        }
 
     created_count = 0
     skipped_count = 0

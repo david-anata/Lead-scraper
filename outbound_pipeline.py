@@ -444,6 +444,11 @@ def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
     check was skipped, switched off, or never run, the StoreLeads reason stands.
     """
     scored = score_store(store, now=now)
+    signals = list(scored["signals"])
+    import outbound_instantly_push as _push
+    for token in _push.route_tokens_for_store(store, now=now):
+        if token not in signals:
+            signals.append(token)
     lead = {
         "domain": str(store.get("name") or "").strip().lower(),
         "brand": str(store.get("merchant_name") or store.get("name") or "").strip(),
@@ -452,7 +457,7 @@ def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
         "tier": scored["tier"],
         "score": scored["score"],
         "reason": scored["reason"],
-        "signals": scored["signals"],
+        "signals": signals,
         "estimated_sales_yearly_cents": store.get("estimated_sales_yearly"),
         "categories": store.get("categories"),
         "apps": store.get("apps"),
@@ -522,7 +527,8 @@ _STORELEADS_FIELDS = ",".join((
     "estimated_sales_yearly", "categories", "tags", "contact_info", "apps",
     # Richer fields the signal scorer reads (docs/outbound/08).
     "technologies", "monthly_app_spend", "last_plan_change_at", "last_platform",
-    "plan", "created_at", "features", "employee_count",
+    "last_platform_change_at", "plan", "created_at", "features", "employee_count",
+    "sales_channels",
 ))
 
 
