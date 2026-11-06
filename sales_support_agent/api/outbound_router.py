@@ -2777,10 +2777,8 @@ async def outbound_enrich_test(request: Request) -> Response:
         import outbound_instantly_push as _ip
         from sales_support_agent.models.database import get_engine
 
-        campaign = (str(form.get("campaign_id") or "").strip()
-                    or _ip.configured_campaign_id())
-        if not campaign:
-            logger.error("[outbound-enrich] %s", _ip.MISSING_CAMPAIGN_MESSAGE)
+        # A form campaign id is not a dump destination. push_pending routes
+        # by recipe and stored signals, and refuses Trial Offer Oct.
         live = str(form.get("dry_run") or "true").lower() == "false"
         try:
             n = max(1, min(int(str(form.get("limit") or 50)), 500))
@@ -2788,15 +2786,12 @@ async def outbound_enrich_test(request: Request) -> Response:
             n = 50
         try:
             out = await run_in_threadpool(
-                lambda: _oe.push_pending(get_engine(), campaign, dry_run=not live, limit=n))
+                lambda: _oe.push_pending(get_engine(), "", dry_run=not live, limit=n))
         except Exception as exc:  # noqa: BLE001
             logger.exception("[outbound-enrich] push failed")
             return JSONResponse(status_code=500, content={"ok": False, "reason": type(exc).__name__})
-        if not campaign and not out.get("campaigns"):
-            reason = out.get("note") if out.get("excluded_recipes") else _ip.MISSING_CAMPAIGN_MESSAGE
-            return JSONResponse(status_code=400, content={
-                "ok": False, "reason": reason, "campaign_id": campaign, **out})
-        return JSONResponse(content={"ok": not out["errors"], "campaign_id": campaign, **out})
+        used = [row.get("campaign_id") for row in out.get("campaigns") or [] if row.get("campaign_id")]
+        return JSONResponse(content={"ok": not out["errors"], "campaign_id": used[0] if len(used) == 1 else "", "campaign_ids": used, **out})
     if _ENRICH_TEST.get("running"):
         return JSONResponse(status_code=409, content={"ok": False, "reason": "A test is already running."})
     if not _oc.load_contact_config():

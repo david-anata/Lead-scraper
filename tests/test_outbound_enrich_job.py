@@ -38,8 +38,8 @@ def env(monkeypatch):
         monkeypatch.delenv(n, raising=False)
 
 
-def leads(n):
-    return [{"domain": f"d{i}.com", "brand": f"D{i}", "categories": "/Apparel"} for i in range(n)]
+def leads(n, recipe="amz_on"):
+    return [{"domain": f"d{i}.com", "brand": f"D{i}", "categories": "/Apparel", "recipe": recipe} for i in range(n)]
 
 
 def finder(domain, *, api_key, max_contacts=2, **kw):
@@ -57,14 +57,15 @@ def ok_push(payload, cid, dry_run=False, **k):
 
 def run(engine, n=10, **kw):
     posts = []
-    out = job.run_enrich_job(now=kw.pop("now", WEEKDAY), engine=engine, leads=leads(n),
+    rows = kw.pop("lead_rows", None)
+    out = job.run_enrich_job(now=kw.pop("now", WEEKDAY), engine=engine, leads=rows if rows is not None else leads(n),
                              find=kw.pop("find", finder), write=write, push=kw.pop("push", ok_push),
                              post_slack=posts.append,
                              in_instantly=kw.pop("in_instantly", lambda d: False), **kw)
     return out, posts
 
 
-def test_runs_pushes_to_configured_campaign_and_posts_slack(engine):
+def test_runs_pushes_to_the_v2_recipe_and_posts_slack(engine):
     seen = {}
 
     def record(payload, cid, dry_run=False, **k):
@@ -73,8 +74,11 @@ def test_runs_pushes_to_configured_campaign_and_posts_slack(engine):
 
     out, posts = run(engine, push=record)
     assert out["ran"] and out["pushed"] == 10
-    assert out["campaign_id"] == CAMPAIGN
-    assert seen["campaign_id"] == CAMPAIGN
+    assert out["campaign_id"] == ""
+    assert out["default_campaign_ignored"] is True
+    assert seen["campaign_id"] == push.RECIPE_CAMPAIGN_MAP["amz_on"]
+    assert CAMPAIGN not in posts[0]
+    assert push.LEGACY_TRIAL_CAMPAIGN_ID not in posts[0]
     assert push.LIVE_CAMPAIGN_ID not in posts[0]
     assert len(posts) == 1 and "Added to Instantly: 10" in posts[0]
 
@@ -94,23 +98,28 @@ def test_missing_default_still_pushes_a_mapped_recipe(engine, monkeypatch):
         find=finder, write=write, push=record, post_slack=posts.append,
         in_instantly=lambda d: False,
     )
-    assert out["ran"] and out["pushed"] == 1 and out["campaign_missing"]
+    assert out["ran"] and out["pushed"] == 1 and out["campaign_missing"] is False
     assert seen == [push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]]
-    assert any(push.MISSING_CAMPAIGN_MESSAGE in post for post in posts)
+    assert not any(push.MISSING_CAMPAIGN_MESSAGE in post for post in posts)
     assert push.LIVE_CAMPAIGN_ID not in "".join(posts)
+    assert push.LEGACY_TRIAL_CAMPAIGN_ID not in "".join(posts)
 
 
-def test_missing_campaign_skips_push_logs_and_alerts(engine, monkeypatch, caplog):
-    monkeypatch.delenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID")
+def test_stale_trial_default_does_not_receive_filler_leads(engine, monkeypatch, caplog):
+    monkeypatch.setenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", push.LEGACY_TRIAL_CAMPAIGN_ID)
     called = []
     with caplog.at_level("ERROR"):
-        out, posts = run(engine, push=lambda *a, **k: called.append(1))
-    assert out["ran"] and out["pushed"] == 0 and out["campaign_missing"]
+        out, posts = run(
+            engine,
+            lead_rows=[{"domain": f"d{i}.com", "brand": f"D{i}", "categories": "/Apparel", "recipe": "icp_baseline"} for i in range(10)],
+            push=lambda *a, **k: called.append(a[1] if len(a) > 1 else k.get("campaign_id")),
+        )
+    assert out["ran"] and out["pushed"] == 0 and out["campaign_missing"] is False
     assert out["campaign_id"] == ""
     assert called == []
-    assert push.LIVE_CAMPAIGN_ID not in "".join(posts)
-    assert any(push.MISSING_CAMPAIGN_MESSAGE in post for post in posts)
-    assert "OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset" in caplog.text
+    assert push.LEGACY_TRIAL_CAMPAIGN_ID not in "".join(posts)
+    assert "Queued, no matching v2 campaign: 10" in posts[0]
+    assert "OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset" not in caplog.text
     assert len(oe.unpushed(engine)) == 10
 
 
@@ -434,13 +443,15 @@ def test_enrich_job_tries_campaign_recipes_before_newer_baseline(engine, monkeyp
     assert by_campaign[push.RECIPE_CAMPAIGN_MAP["amz_off"]] == ["a@amzoff0.com"]
     assert by_campaign[push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]] == ["a@planup0.com"]
     assert by_campaign[push.RECIPE_CAMPAIGN_MAP["replatform"]] == ["a@replat0.com"]
-    assert by_campaign[CAMPAIGN] == [f"a@{baseline[-1]}"]
+    assert CAMPAIGN not in by_campaign
+    assert push.LEGACY_TRIAL_CAMPAIGN_ID not in by_campaign
+    sent_emails = [email for emails in by_campaign.values() for email in emails]
+    assert f"a@{baseline[-1]}" not in sent_emails
     assert set(by_campaign) == {
         push.RECIPE_CAMPAIGN_MAP["amz_on"],
         push.RECIPE_CAMPAIGN_MAP["amz_off"],
         push.RECIPE_CAMPAIGN_MAP["plan_upgrade"],
         push.RECIPE_CAMPAIGN_MAP["replatform"],
-        CAMPAIGN,
     }
 
 
