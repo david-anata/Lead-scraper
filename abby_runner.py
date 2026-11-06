@@ -27,7 +27,7 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 import requests
 from sqlalchemy import text
@@ -59,10 +59,11 @@ _DDL = (
 )
 
 
-# The trial campaign and the five signal campaigns. ABBY_CAMPAIGN_IDS
-# overrides this list. AGENT SDR and Re-engage are always watched in
-# addition to whatever the env var names.
+# "Anata // Trial Offer // Oct 2026". Not a row in outbound_campaigns.
+# ABBY_CAMPAIGN_IDS replaces the outbound list below. AGENT SDR and
+# Re-engage are always watched in addition to whatever that env var names.
 TRIAL_CAMPAIGN_ID = "e5f5046b-07e4-41ad-a395-79cf8766ccd0"
+# Completed v1 campaigns. Late replies still arrive on these ids.
 SIGNAL_CAMPAIGN_IDS = (
     "a333e00e-bc3b-4abf-bcbf-4e0eb126090c",
     "45a521a0-68e2-439f-9622-1672f9ede214",
@@ -70,23 +71,81 @@ SIGNAL_CAMPAIGN_IDS = (
     "d12b5512-d34c-4331-841f-8e59263f5b5e",
     "8ebf1923-7ba4-4a63-96a8-adb18a58ddf6",
 )
+# Scoring proposals are not Instantly campaigns.
+_PROPOSAL_STATUS = "proposed"
 
 
-def watched_campaign_ids(reengage_ids: Optional[list[str]] = None) -> list[str]:
-    """Campaigns Abby reads. Trial and the signal campaigns are the default extras; SDR and Re-engage stay."""
-    import outbound_instantly_push as ip
-
-    raw = os.getenv("ABBY_CAMPAIGN_IDS")
-    if raw is None or not raw.strip():
-        extras = [TRIAL_CAMPAIGN_ID, *SIGNAL_CAMPAIGN_IDS]
-    else:
-        extras = [part.strip() for part in raw.split(",") if part.strip()]
-    ordered = [ip.LIVE_CAMPAIGN_ID, *(reengage_ids or []), *extras]
+def _unique(campaign_ids: Iterable[Any]) -> list[str]:
     seen: list[str] = []
-    for campaign_id in ordered:
+    for campaign_id in campaign_ids:
+        campaign_id = str(campaign_id or "").strip()
         if campaign_id and campaign_id not in seen:
             seen.append(campaign_id)
     return seen
+
+
+def outbound_watch_ids(engine: Any) -> list[str]:
+    """Instantly campaign ids stored on ``outbound_campaigns``.
+
+    Empty when the table is missing, empty, or unreadable, so the caller
+    keeps the static list. ``proposed`` rows are ideas, not campaigns.
+    Every other status is included, including ``cut``, so a completed
+    campaign still has its replies read.
+    """
+
+    if engine is None:
+        return []
+    try:
+        import outbound_campaigns as campaigns
+
+        rows = campaigns.list_campaigns(engine)
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not read outbound campaigns")
+        return []
+    return _unique(
+        row.get("campaign_id")
+        for row in rows
+        if str(row.get("status") or "") != _PROPOSAL_STATUS
+    )
+
+
+def static_watch_ids() -> list[str]:
+    """Trial Offer, the v2 recipe campaigns, and the v1 ids.
+
+    This is the list Abby uses when ``outbound_campaigns`` cannot be read.
+    The same ids stay on the list when the table can be read, so a missing
+    row does not drop a known campaign.
+    """
+
+    import outbound_instantly_push as ip
+
+    return _unique((
+        TRIAL_CAMPAIGN_ID,
+        *ip.RECIPE_CAMPAIGN_MAP.values(),
+        *SIGNAL_CAMPAIGN_IDS,
+    ))
+
+
+def watched_campaign_ids(
+    reengage_ids: Optional[list[str]] = None,
+    engine: Any = None,
+) -> list[str]:
+    """Campaigns Abby reads.
+
+    AGENT SDR and Re-engage are always first. When ``ABBY_CAMPAIGN_IDS`` is
+    unset, the rest is every non-proposed ``outbound_campaigns`` row plus
+    ``static_watch_ids``. A new row is watched on the next run. An empty or
+    unreadable table leaves the static ids in place.
+    """
+
+    import outbound_instantly_push as ip
+
+    raw = os.getenv("ABBY_CAMPAIGN_IDS")
+    if raw is not None and raw.strip():
+        extras = [part.strip() for part in raw.split(",") if part.strip()]
+    else:
+        extras = [*static_watch_ids(), *outbound_watch_ids(engine)]
+    return _unique((ip.LIVE_CAMPAIGN_ID, *(reengage_ids or []), *extras))
 
 
 def mode() -> str:
