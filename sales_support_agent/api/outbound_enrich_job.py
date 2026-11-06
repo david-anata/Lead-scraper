@@ -11,9 +11,11 @@ newest first. It finds up to two verified decision-makers per brand
 (Prospeo), writes an opening line, and adds them to Instantly. A recipe
 listed in ``RECIPE_CAMPAIGN_MAP`` goes to that campaign. The enrich order
 does not change that routing and does not move a contact already in Instantly.
-Every other recipe uses ``OUTBOUND_INSTANTLY_CAMPAIGN_ID``. There is no
-fallback to the retired campaign. ``redo_partner`` contacts are stored and
-not pushed. A Slack summary posts after each call that did something.
+Filler recipes are queued unless stored signals prove a v2 recipe.
+``OUTBOUND_INSTANTLY_CAMPAIGN_ID`` is not a destination, even when it still
+names Trial Offer Oct. There is no fallback to the retired campaign.
+``redo_partner`` contacts are stored and not pushed. A Slack summary posts
+after each call that did something.
 
 Limits, all overridable with env vars. Defaults are the approved caps, so a
 deploy changes nothing until the env vars are set:
@@ -128,12 +130,10 @@ def summary_text(result: dict[str, Any]) -> str:
         lines.append(f"Skipped, on our suppression list: {rep['suppressed']}")
     if rep.get("stopped_reason"):
         lines.append(f"Stopped: {rep['stopped_reason']}")
-    if result.get("campaign_missing"):
-        if result.get("pushed"):
-            lines.append(
-                "Unmapped recipes were not pushed: OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset.")
-        else:
-            lines.append("Instantly push skipped: OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset.")
+    queued = int((result.get("report") or {}).get("queued") or 0)
+    if queued:
+        lines.append(
+            f"Queued, no matching v2 campaign: {queued}. Trial Offer is not used.")
     if result.get("push_problem"):
         lines.append(f"Instantly problem: {result.get('push_note', '')}")
     bounce = result.get("bounce_today") or {}
@@ -255,13 +255,15 @@ def run_enrich_job(
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-enrich-job] could not summarize bounces")
     push_on = _ip.push_enabled()
-    campaign = _ip.configured_campaign_id()
-    campaign_missing = not campaign
-    out["campaign_missing"] = campaign_missing
-    out["campaign_id"] = campaign
-    if campaign_missing:
-        logger.error("[outbound-enrich-job] %s", _ip.MISSING_CAMPAIGN_MESSAGE)
-        _notify_slack(post_slack, _ip.MISSING_CAMPAIGN_MESSAGE)
+    # The env value is reported only as ignored. It is not passed into the push.
+    ignored_default = _ip.configured_campaign_id()
+    out["campaign_missing"] = False
+    out["campaign_id"] = ""
+    out["default_campaign_ignored"] = bool(ignored_default)
+    if _ip.is_legacy_trial_campaign(ignored_default):
+        logger.info(
+            "[outbound-enrich-job] OUTBOUND_INSTANTLY_CAMPAIGN_ID names Trial Offer Oct and is ignored."
+        )
     if company_room <= 0 or credit_room <= 0:
         out["reason"] = "daily cap reached"
         return out
@@ -282,9 +284,9 @@ def run_enrich_job(
             max_companies=min(company_room, _int_env("OUTBOUND_ENRICH_PER_RUN", DEFAULT_PER_RUN)),
             max_contacts=_int_env("OUTBOUND_ENRICH_MAX_CONTACTS", DEFAULT_MAX_CONTACTS),
             credit_budget=credit_room,
-            # A missing default campaign still pushes mapped recipes. Unmapped
-            # contacts stay queued until OUTBOUND_INSTANTLY_CAMPAIGN_ID is set.
-            campaign_id=campaign, dry_run=not push_on,
+            # campaign_id is not a fallback destination. Mapped recipes and
+            # signal-matched fillers are the only pushes.
+            campaign_id="", dry_run=not push_on,
             find=find, write=write, push=push,
             deadline=time.monotonic() + _TIME_BUDGET_SECONDS,
             # Never touch a company Clay (or anything else) already put in Instantly.
@@ -295,22 +297,19 @@ def run_enrich_job(
         out["reason"] = "run failed"
         return out
 
-    if campaign_missing and not report.pushed:
-        report.push_note = _ip.MISSING_CAMPAIGN_MESSAGE
-    elif campaign_missing:
-        report.push_note = f"{report.push_note} {_ip.MISSING_CAMPAIGN_MESSAGE}".strip()
     out.update(
         ran=True, report=report.as_dict(), pushed=report.pushed,
-        push_enabled=push_on and (not campaign_missing or report.pushed > 0),
+        push_enabled=push_on,
         push_note=report.push_note,
         push_problem=bool(
-            push_on and not campaign_missing
+            push_on
             and report.contacts_found and not report.pushed
-            and report.suppressed < report.contacts_found
+            and report.suppressed + report.queued < report.contacts_found
         ),
         credits_today=today["credits"] + report.credits_used,
-        campaign_id=campaign,
-        campaign_missing=campaign_missing,
+        campaign_id="",
+        campaign_missing=False,
+        default_campaign_ignored=bool(ignored_default),
         bounce_today=bounce_today,
     )
 
