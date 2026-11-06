@@ -79,6 +79,24 @@ class DeckMetricFormattingTests(unittest.TestCase):
             scraped_price="$24.00",
         )
         self.assertEqual((scraped, scraped_source), ("$24.00", "listing_enrichment"))
+        # A stated DTC price corrects a homepage scrape even when an upload is present.
+        dtc, dtc_source = _resolve_target_price_label(
+            operator_price="20",
+            dtc_target=True,
+            uploaded_price="$99.00",
+            dedicated_target_export=True,
+            scraped_price="$99.00",
+        )
+        self.assertEqual((dtc, dtc_source), ("$20.00", "operator_price"))
+        # On an Amazon target the ASIN-matched upload still outranks that field.
+        amazon, amazon_source = _resolve_target_price_label(
+            operator_price="$20",
+            dtc_target=False,
+            uploaded_price="$28.50",
+            uploaded_provenance="verified_asin",
+            scraped_price="$99.00",
+        )
+        self.assertEqual((amazon, amazon_source), ("$28.50", "uploaded_xray"))
 
 
 class _FakeProductResearch:

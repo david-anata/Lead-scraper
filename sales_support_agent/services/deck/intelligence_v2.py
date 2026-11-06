@@ -209,6 +209,11 @@ def _requested_channels(payload: dict[str, Any]) -> list[str]:
     return [labels.get(str(c), str(c)) for c in raw if str(c).strip()]
 
 
+def _launch_mode(payload: dict[str, Any]) -> bool:
+    """True when the prospect has no Amazon listing to narrate."""
+    return str((payload.get("target") or {}).get("comparison_mode") or "") == "concept_only"
+
+
 def build_findings(payload: dict[str, Any]) -> list[dict[str, str]]:
     """Top 3 findings, each with its number and the source of that number."""
 
@@ -240,6 +245,7 @@ def build_findings(payload: dict[str, Any]) -> list[dict[str, str]]:
                 }
             )
     misses = list((payload.get("search_insights") or {}).get("title_misses") or [])
+    launch = _launch_mode(payload)
     if misses and keywords:
         findings.append(
             {
@@ -249,11 +255,15 @@ def build_findings(payload: dict[str, Any]) -> list[dict[str, str]]:
                     else f"{len(misses)} high-volume searches are missing from the title"
                 ),
                 "detail": "Starting with: " + ", ".join(misses[:3]) + ".",
-                "source": f"{kw_source} compared with the live listing title",
+                "source": (
+                    f"{kw_source} compared with the product title"
+                    if launch
+                    else f"{kw_source} compared with the live listing title"
+                ),
             }
         )
     target = dict(payload.get("target") or {})
-    if len(findings) < 3 and _present(target.get("review_count")) and _present(target.get("rating")):
+    if len(findings) < 3 and _present(target.get("review_count")) and _present(target.get("rating")) and not launch:
         findings.append(
             {
                 "headline": f"{_int(target.get('review_count'))} reviews at {target.get('rating')} stars",
@@ -280,7 +290,12 @@ def build_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
     growth_plan = payload.get("growth_plan")
     tacos = float(getattr(growth_plan, "tacos_target_pct", 0) or 0) if growth_plan is not None else 0.0
 
-    day1 = ["Connect Amazon so Anata Intelligence syncs sales, ads and listing data."]
+    launch = _launch_mode(payload)
+    day1 = [
+        "Prepare the launch page. Amazon sync starts once the brand is live on the marketplace."
+        if launch
+        else "Connect Amazon so Anata Intelligence syncs sales, ads and listing data."
+    ]
     if misses:
         day1.append("Listing suggestions queued for review: add " + ", ".join(misses) + " to the title.")
     if copy_misses:
@@ -363,7 +378,15 @@ def _cover(payload: dict[str, Any], brand: str, findings: list[dict[str, str]], 
         "<div class='slide-inner'>"
         f"<p class='eyebrow light'><span>01</span>Brand analysis · {_e(generated.strftime('%B %-d, %Y'))}</p>"
         f"<h1>{_e(brand)} <em>x</em> Anata Intelligence</h1>"
-        + (f"<p class='lede'>What we found in {_e(category)} on Amazon, and what the first 14 days would look like.</p>" if category else "")
+        + (
+            (
+                f"<p class='lede'>What the Amazon category shows for a { _e(brand) } market entry, and what the first 14 days of launch prep would look like. { _e(brand) } is not an Amazon seller.</p>"
+                if _launch_mode(payload)
+                else f"<p class='lede'>What we found in {_e(category)} on Amazon, and what the first 14 days would look like.</p>"
+            )
+            if category
+            else ""
+        )
         + f"<div class='findings'>{cards}</div>"
         "<div class='offer-pill'><strong>The offer:</strong> a free 14-day trial of Anata Intelligence, card on file, cancel anytime. Plans from $99/mo after that.</div>"
         f"</div>{_cta_strip(urls)}</section>"
@@ -386,8 +409,14 @@ def _snapshot(payload: dict[str, Any], link_check: dict[str, Any] | None, urls: 
         if amazon_urls
         else "<span class='muted'>Amazon presence: not verified</span>"
     )
+    launch = _launch_mode(payload)
+    fact_fields = (
+        (("Product reviewed", "title"), ("Price", "price"))
+        if launch
+        else (("Listing reviewed", "title"), ("ASIN", "asin"), ("Price", "price"), ("Rating", "rating"), ("Reviews", "review_count"), ("Best Sellers Rank", "bsr"))
+    )
     facts = []
-    for label, key in (("Listing reviewed", "title"), ("ASIN", "asin"), ("Price", "price"), ("Rating", "rating"), ("Reviews", "review_count"), ("Best Sellers Rank", "bsr")):
+    for label, key in fact_fields:
         value = target.get(key)
         if key == "review_count":
             value = _int(value)
@@ -396,9 +425,14 @@ def _snapshot(payload: dict[str, Any], link_check: dict[str, Any] | None, urls: 
     image = str(target.get("image_url") or "").strip()
     image_html = f"<img class='hero-img' src='{_e(image)}' alt='{_e(target.get('title'))}' loading='lazy' onerror=\"this.remove()\" />" if image else ""
     channels = _requested_channels(payload)
+    fact_source = (
+        "Product inputs supplied for this market-entry brief. This brand is not an Amazon seller."
+        if launch
+        else "Amazon listing data for the ASIN or URL provided"
+    )
     body = (
         "<div class='two'>"
-        f"<div><dl class='facts'>{''.join(facts)}</dl>{_source('Amazon listing data for the ASIN or URL provided') if facts else ''}"
+        f"<div><dl class='facts'>{''.join(facts)}</dl>{_source(fact_source) if facts else ''}"
         f"<div class='links'><p><strong>Website</strong><br>{site_html}</p><p><strong>Amazon</strong><br>{amazon_html}</p>"
         "<p class='src'>Links appear only when our system opened them during this analysis.</p></div>"
         + (f"<p><strong>Channels in scope:</strong> {_e(', '.join(channels))}</p>" if channels else "")
@@ -487,17 +521,27 @@ def _search(payload: dict[str, Any], urls: dict[str, str]) -> str:
     gaps = [f"Missing from the title: {phrase}" for phrase in list(insights.get("title_misses") or [])[:4]]
     gaps += [f"Not covered in bullets or description: {label}" for label in list(insights.get("copy_misses") or [])[:3]]
     gaps += [str(item) for item in list(payload.get("cro_recommendations") or [])[:2]]
-    gap_html = f"<h3>Listing and PDP gaps</h3>{_list(gaps)}" if gaps else ""
+    launch = _launch_mode(payload)
+    gap_html = (
+        f"<h3>{'Launch-page gaps' if launch else 'Listing and PDP gaps'}</h3>{_list(gaps)}"
+        if gaps
+        else ""
+    )
     mockup = str(payload.get("creative_mockup_url") or "").strip()
     mockup_html = (
-        f"<p class='resource'><a href='{_e(mockup)}' target='_blank' rel='noreferrer'>View the creative concept we drafted for this listing</a></p>"
+        f"<p class='resource'><a href='{_e(mockup)}' target='_blank' rel='noreferrer'>View the creative concept we drafted for this {'launch' if launch else 'listing'}</a></p>"
         if mockup
         else ""
     )
     if not (kw_html or word_html or gap_html):
         gap_html = "<p class='muted'>Upload Cerebro, keyword or word frequency files to fill this section.</p>"
     body = f"<div class='two'><div>{kw_html}{word_html}</div><div>{gap_html}{mockup_html}</div></div>"
-    return _slide(4, "search", "Search behavior and listing gaps", "How shoppers search, and where the listing misses", body, urls)
+    search_heading = (
+        "How shoppers search, and where a launch page should compete"
+        if _launch_mode(payload)
+        else "How shoppers search, and where the listing misses"
+    )
+    return _slide(4, "search", "Search behavior and listing gaps", search_heading, body, urls)
 
 
 _LOOP = (
@@ -597,13 +641,13 @@ def _offer(payload: dict[str, Any], urls: dict[str, str]) -> str:
     return _slide(8, "offer", "Offer and pricing", "Start with the platform. Add people when you want them.", body, urls)
 
 
-def _next(urls: dict[str, str], generated: date) -> str:
+def _next(urls: dict[str, str], generated: date, *, launch_mode: bool = False) -> str:
     follow_up = generated + timedelta(days=3)
     while follow_up.weekday() >= 5:
         follow_up += timedelta(days=1)
     steps = (
         "<ol class='next'>"
-        f"<li><strong>Sign up</strong><p>Start the free 14-day trial and connect Amazon.</p><a href='{_e(urls['trial'])}' target='_blank' rel='noreferrer'>{TRIAL_LABEL}</a></li>"
+        f"<li><strong>Sign up</strong><p>{'Start the free 14-day trial. Amazon connects once the brand is live on the marketplace.' if launch_mode else 'Start the free 14-day trial and connect Amazon.'}</p><a href='{_e(urls['trial'])}' target='_blank' rel='noreferrer'>{TRIAL_LABEL}</a></li>"
         f"<li><strong>Follow-up on {_e(follow_up.strftime('%A, %B %-d'))}</strong><p>We review this analysis and your first sync together.</p></li>"
         f"<li><strong>Book a call</strong><p>Prefer to talk first? Pick a time that works.</p><a href='{_e(urls['booking'])}' target='_blank' rel='noreferrer'>Book a call</a></li>"
         "</ol>"
@@ -709,7 +753,7 @@ def render_intelligence_v2_deck(
         _plan(payload, urls),
         _proof(payload, urls),
         _offer(payload, urls),
-        _next(urls, generated_on),
+        _next(urls, generated_on, launch_mode=_launch_mode(payload)),
     ]
     nav = "".join(
         f"<a href='#{key}'>{label}</a>"

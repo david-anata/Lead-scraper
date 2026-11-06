@@ -86,6 +86,7 @@ from sales_support_agent.services.deck.formatting import (  # noqa: F401
     _clean_listing_title,
     _format_channel_label,
     _format_display_date,
+    _format_operator_price,
     _infer_brand_from_title,
     _is_generic_brand_name,
     _label_float,
@@ -232,6 +233,51 @@ def _detect_niche_mismatch(
     )
 
 
+def _select_target_xray_row(report: Helium10XrayReport, *, asin: str) -> tuple[XrayProduct | None, str]:
+    """Choose the prospect row from an uploaded target Xray.
+
+    A one-row export is the prospect. A multi-row file uploaded in the
+    target slot (parent plus children, or a category export) must use the
+    row whose ASIN matches ``target_product_input``. The first row is not
+    a safe default: run 3829 treated the first row, MONTALE, as Habibi.
+    When the operator named an ASIN and it is not in the file, no row is
+    used, so a competitor cannot become the prospect.
+    """
+    products = list(report.products)
+    if not products:
+        return None, ""
+    if len(products) == 1:
+        return products[0], ""
+    normalized = str(asin or "").strip()
+    if normalized:
+        match = report.find_by_asin(normalized)
+        if match is not None:
+            return match, ""
+        return None, (
+            "Target Xray has multiple rows and none match the target ASIN, "
+            "so no row was used as the prospect."
+        )
+    return products[0], ""
+
+
+def _deck_short_name(*, title: str, brand: str, explicit_brand: str) -> str:
+    """Variant token for the deck title and slug.
+
+    An operator-supplied brand replaces a scraped title fragment. Habibi NY
+    was rendering as ``H HABIBI White x anata`` because the homepage title's
+    first tokens became the brand and the short name. When the supplied
+    brand is not the start of that scraped title, drop the short name.
+    """
+    short_name = extract_short_product_name(title=title, brand=brand)
+    supplied = str(explicit_brand or "").strip()
+    if not supplied:
+        return short_name
+    title_clean = _clean_listing_title(title or "")
+    if title_clean.lower().startswith(supplied.lower()):
+        return short_name
+    return ""
+
+
 class DeckGenerationService:
     def __init__(
         self,
@@ -287,6 +333,8 @@ class DeckGenerationService:
         rainforest_asin: str = "",
         template_version: str = "",
         brand_website: str = "",
+        brand_name: str = "",
+        target_price: str = "",
     ) -> DeckGenerationResult:
         from sales_support_agent.services.deck.intelligence_v2 import normalize_template_version
 
@@ -330,6 +378,8 @@ class DeckGenerationService:
                 "requested_channels": [str(c) for c in (channels or [])],
                 "category_label": category_label.strip(),
                 "brand_website": brand_website.strip(),
+                "brand_name": brand_name.strip(),
+                "target_price": target_price.strip(),
             },
         )
         try:
@@ -349,6 +399,8 @@ class DeckGenerationService:
                 growth_plan_inputs=growth_plan_inputs,
                 category_label=category_label.strip(),
                 rainforest_asin=effective_rainforest_asin,
+                brand_name=brand_name.strip(),
+                target_price=target_price.strip(),
             )
             dataset.deck_payload["template_version"] = effective_template_version
             dataset.deck_payload["requested_channels"] = [
@@ -613,6 +665,8 @@ class DeckGenerationService:
         growth_plan_inputs: dict[str, Any] | None = None,
         category_label: str = "",
         rainforest_asin: str = "",
+        brand_name: str = "",
+        target_price: str = "",
     ) -> DeckDataset:
         # ------------------------------------------------------------------
         # Digital Shelf path: build xray_report from Rainforest API instead
@@ -671,14 +725,20 @@ class DeckGenerationService:
         # ASIN isn't in the page-one competitor set, SP-API enrichment
         # isn't configured, and every target metric ends up "Unavailable".
         target_xray_row = None
+        target_xray_warnings: list[str] = []
+        explicit_brand = str(brand_name or "").strip()
         if target_xray_csv_bytes:
             try:
                 target_xray_report = parse_xray_csvs([target_xray_csv_bytes])
-                if target_xray_report.products:
-                    target_xray_row = target_xray_report.products[0]
+                target_xray_row, selection_warning = _select_target_xray_row(
+                    target_xray_report,
+                    asin=parsed_target.get("asin", ""),
+                )
+                if selection_warning:
+                    target_xray_warnings.append(selection_warning)
             except RuntimeError as exc:
                 # Surface as a warning so the deck still renders.
-                pass  # Will be added to warnings list below
+                target_xray_warnings.append(str(exc))
 
         keyword_report = parse_keyword_csvs([content for _, content in keyword_xray_csv_payloads])
         try:
@@ -694,7 +754,9 @@ class DeckGenerationService:
             warnings.append(str(exc))
             word_frequency_report = None
         hero_product = self.product_research.enrich_target_product(parsed_target)
-        warnings = [*warnings, *xray_report.warnings, *hero_product.warnings]
+        warnings = [*warnings, *target_xray_warnings, *xray_report.warnings, *hero_product.warnings]
+        if str(target_price or "").strip() and not _format_operator_price(target_price):
+            warnings.append("target_price was not a positive number and was ignored.")
         if keyword_report:
             warnings.extend(keyword_report.warnings)
         if cerebro_report:
@@ -718,13 +780,18 @@ class DeckGenerationService:
             warnings.append(mismatch_warning)
 
         verified_target_asin = (parsed_target["asin"] or hero_product.asin).strip()
+        # Website / concept-only brands are not on Amazon. Do not score the
+        # competitor export against the homepage title: a fuzzy or candidate
+        # hit would narrate a competitor as the prospect.
+        launch_source = parsed_target["source_type"] == "website"
         target_match = _find_target_row(
             xray_report,
-            asin=verified_target_asin,
-            candidate_asin=hero_product.candidate_asin,
+            asin="" if launch_source else verified_target_asin,
+            candidate_asin="" if launch_source else hero_product.candidate_asin,
             source_url=hero_product.source_url or parsed_target["source_url"],
             title=hero_product.title or parsed_target["product_name"],
-            brand_name=hero_product.brand_name or parsed_target.get("brand_name", ""),
+            brand_name=explicit_brand or hero_product.brand_name or parsed_target.get("brand_name", ""),
+            allow_fuzzy=not launch_source,
         )
         target_row = target_match.product
         # If the user uploaded a separate Target Xray CSV, that row wins —
@@ -805,11 +872,14 @@ class DeckGenerationService:
             parsed_target["product_name"],
             parsed_target["asin"],
         )
-        target_brand = _preferred_brand_name(
-            hero_product.brand_name,
-            target_row.brand if target_row else "",
-            parsed_target.get("brand_name", ""),
-        )
+        if explicit_brand:
+            target_brand = explicit_brand
+        else:
+            target_brand = _preferred_brand_name(
+                hero_product.brand_name,
+                target_row.brand if target_row else "",
+                parsed_target.get("brand_name", ""),
+            )
         display_title = _clean_listing_title(target_title)
         if _looks_like_raw_asin_label(display_title):
             fallback_phrase = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else ""
@@ -819,10 +889,15 @@ class DeckGenerationService:
                 display_title = f"{target_brand} product"
             else:
                 display_title = "Target product"
-        if _is_generic_brand_name(target_brand):
+        if not explicit_brand and _is_generic_brand_name(target_brand):
             inferred_brand = _infer_brand_from_title(display_title)
             if inferred_brand:
                 target_brand = inferred_brand
+        short_name = _deck_short_name(
+            title=target_title,
+            brand=target_brand,
+            explicit_brand=explicit_brand,
+        )
         seo_recommendations = _build_seo_recommendations(
             keyword_report,
             cerebro_report,
@@ -876,6 +951,8 @@ class DeckGenerationService:
                 verified_price = ""
         target_price_label, price_source = _resolve_target_price_label(
             verified_price=verified_price,
+            operator_price=target_price,
+            dtc_target=parsed_target["source_type"] == "website",
             uploaded_price=(target_row.price_label if target_row else ""),
             uploaded_provenance=target_match.provenance,
             dedicated_target_export=target_xray_row is not None,
@@ -943,6 +1020,7 @@ class DeckGenerationService:
             pass
 
         target_state = _resolve_target_state(parsed_target["source_type"], target_row=target_row, hero_product=hero_product)
+        launch_mode = target_state == "concept_only"
         target_strengths, target_gaps = _build_target_opportunities(
             comparison_mode=target_state,
             brand_name=target_brand,
@@ -952,6 +1030,7 @@ class DeckGenerationService:
             market_average_price=xray_report.average_price or 0.0,
             best_seller=xray_report.products[0] if xray_report.products else None,
             price_label=target_price_label,
+            dtc_price=price_source == "operator_price" and parsed_target["source_type"] == "website",
         )
         effective_date = datetime.now(timezone.utc).date()
 
@@ -978,23 +1057,25 @@ class DeckGenerationService:
             "report_generated_date": _format_display_date(effective_date),
             "reporting_period": _format_display_date(effective_date),
             "market_summary": _build_market_summary(target_brand, xray_report, keyword_report),
-            "executive_summary": _build_executive_summary(display_title, target_brand, xray_report, keyword_report),
+            "executive_summary": _build_executive_summary(
+                display_title, target_brand, xray_report, keyword_report, launch_mode=launch_mode,
+            ),
             "cro_summary": " ".join(cro_recommendations[:2]),
             "seo_summary": " ".join(seo_recommendations[:2]),
             "creative_summary": " ".join(creative_recommendations[:2]),
-            "advertising_summary": _build_advertising_summary(xray_report, keyword_report),
-            "recommended_plan_summary": _build_plan_summary(offer_cards, channels),
+            "advertising_summary": _build_advertising_summary(xray_report, keyword_report, launch_mode=launch_mode),
+            "recommended_plan_summary": _build_plan_summary(offer_cards, channels, launch_mode=launch_mode),
             "expected_impact_summary": _build_expected_impact_summary(xray_report),
             "why_anata_summary": _build_why_anata_summary(channels),
             # PR49: include the variant short-name (e.g. "Black", "Skinnystix")
             # alongside the brand so decks generated for different SKUs of the
             # same brand are distinguishable from the title alone.
             "deck_title": (
-                f"{target_brand} {extract_short_product_name(title=target_title, brand=target_brand)} x anata strategy deck"
+                f"{target_brand} {short_name} x anata strategy deck"
                 .replace("  ", " ")
                 .strip(" -")
             ),
-            "deck_short_name": extract_short_product_name(title=target_title, brand=target_brand),
+            "deck_short_name": short_name,
             "target_asin": resolved_target_asin,
             "target_rating": target_rating_label,
             "target_review_count": str(target_review_count or ""),
@@ -1202,6 +1283,7 @@ class DeckGenerationService:
         payload = dataset.deck_payload
         share_preview = share_preview or {}
         target = dict(payload.get("target", {}))
+        launch_mode = str(target.get("comparison_mode") or "") == "concept_only"
         xray_report = payload.get("xray_report")
         keyword_report = payload.get("keyword_report")
         if not isinstance(xray_report, Helium10XrayReport):
@@ -1247,6 +1329,7 @@ class DeckGenerationService:
                     growth_plan_obj,
                     target_brand=str(payload.get("target", {}).get("brand_name") or "the prospect"),
                     target_aov=_target_aov,
+                    launch_mode=launch_mode,
                 )
             else:
                 growth_plan_html = ""
@@ -1544,7 +1627,7 @@ class DeckGenerationService:
                 f'<div class="exec-tile">'
                 f'<p class="lab">Sessions today</p>'
                 f'<p class="val">{_count_short(_current_sessions) if getattr(growth_plan_obj, "current_sessions_known", False) else "Unknown"}</p>'
-                f'<p class="delta">{"estimated monthly · target" if getattr(growth_plan_obj, "current_sessions_known", False) else "Seller Central baseline required"}</p>'
+                f'<p class="delta">{"estimated monthly · target" if getattr(growth_plan_obj, "current_sessions_known", False) else ("Launch baseline — no Amazon sessions yet" if launch_mode else "Seller Central baseline required")}</p>'
                 f'</div>'
                 f'<div class="exec-tile is-primary">'
                 f'<p class="lab">Sessions · 24mo</p>'
@@ -1604,7 +1687,7 @@ class DeckGenerationService:
             f'{_target_pic_inner}'
             f'</div>'
             f'<div>'
-            f'<div class="name">{html.escape(_trim_text(_clean_listing_title(str(target.get("title", "") or "the prospect listing")), 60))}</div>'
+            f'<div class="name">{html.escape(_trim_text(_clean_listing_title(str(target.get("title", "") or ("the launch product" if launch_mode else "the prospect listing"))), 60))}</div>'
             f'<div class="meta">{" · ".join(_target_meta_bits) or "&nbsp;"}</div>'
             f'</div>'
             f'</div>'
@@ -1725,9 +1808,21 @@ class DeckGenerationService:
                 )
             )
         else:
-            _h2, _b2 = _first_text(target_gaps[1:] if len(target_gaps) > 1 else [], "Listing optimization is the unlock")
+            _h2, _b2 = _first_text(
+                target_gaps[1:] if len(target_gaps) > 1 else [],
+                "Market entry is the unlock" if launch_mode else "Listing optimization is the unlock",
+            )
             _findings_html_parts.append(
-                _finding_card("③", "The opportunity", _h2, _b2 or "Tighten the PDP and SEO foundations before scaling demand.")
+                _finding_card(
+                    "③",
+                    "The opportunity",
+                    _h2,
+                    _b2 or (
+                        "Build the launch page and search story before demand is turned on."
+                        if launch_mode
+                        else "Tighten the PDP and SEO foundations before scaling demand."
+                    ),
+                )
             )
         _findings_html = "".join(_findings_html_parts)
 
@@ -1766,11 +1861,11 @@ class DeckGenerationService:
         _rail_items_html = (
             _rail_item("summary", "★", "Executive summary", summary_class="is-summary", active=True)
             + _rail_item("sec-01", "01", "Market")
-            + _rail_item("sec-02", "02", "Target listing")
+            + _rail_item("sec-02", "02", "Market entry" if launch_mode else "Target listing")
             + _rail_item("sec-03", "03", "Competitors")
             + _rail_item("sec-04", "04", "Search behavior")
             + _rail_item("sec-05", "05", "Growth plan", optional=True, disabled=not _has_growth)
-            + _rail_item("sec-06", "06", "Conversion & PDP")
+            + _rail_item("sec-06", "06", "Launch page" if launch_mode else "Conversion & PDP")
             + _rail_item("sec-07", "07", "Service offerings")
             + _rail_item("sec-08", "08", "How it works")
             + _rail_item("sec-09", "09", "Case studies")
@@ -1799,9 +1894,14 @@ class DeckGenerationService:
             ["6 category metrics", f"Top {min(len(getattr(xray_report, 'products', []) or []), 11)} brands", "Distribution donuts"],
         )
         _div_target = _section_divider(
-            "sec-02", "02", "Section · Target listing",
-            f"Where {target_brand_display} stands today",
-            "A side-by-side of your listing against the category benchmark, with what's working and what's missing in plain English.",
+            "sec-02", "02",
+            "Section · Market entry" if launch_mode else "Section · Target listing",
+            f"Where {target_brand_display} can enter" if launch_mode else f"Where {target_brand_display} stands today",
+            (
+                "A side-by-side of the launch product against the category benchmark, with what already signals well and what has to be built before market entry."
+                if launch_mode
+                else "A side-by-side of your listing against the category benchmark, with what's working and what's missing in plain English."
+            ),
             ["Comparison panel", "What's working", "What's missing"],
         )
         _div_competitors = _section_divider(
@@ -1823,9 +1923,14 @@ class DeckGenerationService:
             ["4-phase roadmap", "Traffic by channel", "Competitor benchmark"],
         ) if _has_growth else ""
         _div_conversion = _section_divider(
-            "sec-06", "06", "Section · Conversion & PDP",
-            "Where the listing needs to improve",
-            "Visual proof of what the benchmark does that you don't, plus prioritized CRO + creative recommendations.",
+            "sec-06", "06",
+            "Section · Launch page" if launch_mode else "Section · Conversion & PDP",
+            "What to build before launch" if launch_mode else "Where the listing needs to improve",
+            (
+                "What the category benchmark already does, and what this brand still has to build. Nothing here assumes an Amazon listing."
+                if launch_mode
+                else "Visual proof of what the benchmark does that you don't, plus prioritized CRO + creative recommendations."
+            ),
             ["Visual benchmark", "CRO recs", "Creative recs"],
         )
         _div_offerings = _section_divider(
@@ -2004,7 +2109,7 @@ class DeckGenerationService:
 
     <!-- ===== 02 TARGET LISTING ===== -->
     {_div_target}
-    <section class="slide" data-screen-label="02 Target listing">
+    <section class="slide" data-screen-label="{'02 Market entry' if launch_mode else '02 Target listing'}">
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">{'Market entry benchmark' if launch_mode else 'Target listing opportunities'}</p>
@@ -2067,11 +2172,11 @@ class DeckGenerationService:
 
     <!-- ===== 06 CONVERSION ===== -->
     {_div_conversion}
-    <section class="slide slide-conversion" data-screen-label="06 Conversion and PDP">
+    <section class="slide slide-conversion" data-screen-label="{'06 Launch page' if launch_mode else '06 Conversion and PDP'}">
       <header class="slide-head">
         <div class="heading-stack">
-          <p class="eyebrow">Conversion &amp; PDP</p>
-          <h2 class="slide-title">Where the listing needs to improve</h2>
+          <p class="eyebrow">{'Launch page' if launch_mode else 'Conversion &amp; PDP'}</p>
+          <h2 class="slide-title">{'What to build before launch' if launch_mode else 'Where the listing needs to improve'}</h2>
         </div>
         <p class="caption">{html.escape(dataset.text_fields.get("cro_summary") or "")}</p>
       </header>
@@ -2079,7 +2184,7 @@ class DeckGenerationService:
       <div class="two-col">
         <div class="takeaway">
           <p class="lab">What this means</p>
-          <p class="h">PDP mechanics, not the product, are the unlock.</p>
+          <p class="h">{'The launch page is still ahead of this brand.' if launch_mode else 'PDP mechanics, not the product, are the unlock.'}</p>
           <p>{html.escape((dataset.text_fields.get("expected_impact_summary") or "Closing CRO + creative gaps lifts conversion without changing product, price, or supply chain. The benchmark sets the ceiling — copy what's working.")[:300])}</p>
         </div>
         <div>
@@ -2089,6 +2194,7 @@ class DeckGenerationService:
               cro_recommendations=cro_recommendations,
               creative_recommendations=creative_recommendations,
               missing_image_asset=no_product_image,
+              launch_mode=launch_mode,
           )}
         </div>
       </div>

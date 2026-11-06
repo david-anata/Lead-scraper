@@ -709,7 +709,7 @@ def _money(value: float) -> str:
 
 
 
-def _render_growth_ramp(plan: GrowthPlan) -> str:
+def _render_growth_ramp(plan: GrowthPlan, *, launch_mode: bool = False) -> str:
     """Print-friendly per-phase ramp showing how sessions accumulate from
     `current_sessions` to `goal_sessions` as channels come online phase by
     phase. Each step shows: phase label, channels NEW this phase, cumulative
@@ -740,7 +740,12 @@ def _render_growth_ramp(plan: GrowthPlan) -> str:
         else 0
     )
     today_value = f"{current:,}" if plan.current_sessions_known else "Unknown"
-    today_delta = "starting point" if plan.current_sessions_known else "Seller Central data needed"
+    if plan.current_sessions_known:
+        today_delta = "starting point"
+    elif launch_mode:
+        today_delta = "launch baseline"
+    else:
+        today_delta = "Seller Central data needed"
     steps_html.append(
         "<li class='ramp-step is-today'>"
         "<span class='num'>Today</span>"
@@ -842,6 +847,7 @@ def render_growth_plan_section(
     *,
     target_brand: str,
     target_aov: float = 0.0,
+    launch_mode: bool = False,
 ) -> str:
     """Emit the HTML for the single 'Growth plan synopsis' slide."""
     # PR55: shorter caption — the original packed three concepts (units→CVR
@@ -857,6 +863,11 @@ def render_growth_plan_section(
         gap_caption = (
             f"{html.escape(target_brand)} needs +{plan.delta_sessions:,} monthly sessions "
             f"across up to 24 months and 5 channels to reach the competitor benchmark."
+        )
+    elif launch_mode:
+        gap_caption = (
+            f"There is no Amazon session baseline for {html.escape(target_brand)}. "
+            "The plan below is a market-entry scenario, not a record of existing marketplace sales."
         )
     else:
         gap_caption = (
@@ -874,7 +885,11 @@ def render_growth_plan_section(
         f"<p class='val'>{plan.current_sessions:,}</p>"
         f"<p class='sub'>= {plan.target_units:,} units ÷ {plan.cvr_pct:.1f}% CVR</p>"
         if plan.current_sessions_known
-        else "<p class='val'>Unknown</p><p class='sub'>Seller Central sessions or verified units required</p>"
+        else (
+            "<p class='val'>Unknown</p><p class='sub'>No Amazon sessions yet — launch baseline</p>"
+            if launch_mode
+            else "<p class='val'>Unknown</p><p class='sub'>Seller Central sessions or verified units required</p>"
+        )
     )
     kpi_strip = (
         "<div class='gp-kpis'>"
@@ -935,7 +950,7 @@ def render_growth_plan_section(
     # interactive-only (didn't help the print path). PR56 then deleted
     # the orphaned `_render_funnel_*` helpers entirely (see git history
     # if you ever want them back).
-    ramp_html = _render_growth_ramp(plan)
+    ramp_html = _render_growth_ramp(plan, launch_mode=launch_mode)
     phase_execution_html = _render_phase_execution(plan)
 
     # PR32: spend-summary strip at the bottom — replaces the simpler

@@ -486,7 +486,13 @@ def _extract_listing_copy_points(description: str, *, limit: int = 4) -> list[st
         if len(bullets) >= limit:
             break
     return bullets
-def _build_price_comparison_summary(*, hero_price: str, market_average_price: float, best_seller_price: str) -> str:
+def _build_price_comparison_summary(
+    *,
+    hero_price: str,
+    market_average_price: float,
+    best_seller_price: str,
+    dtc_price: bool = False,
+) -> str:
     hero_value = _coerce_number(hero_price or "")
     if hero_value is None:
         return ""
@@ -503,15 +509,32 @@ def _build_price_comparison_summary(*, hero_price: str, market_average_price: fl
         benchmark_bits.append(f"against the best seller at {_label_money_value(best_value)}")
     if not benchmark_bits:
         return ""
-    return f"The current price point is {hero_price} and compares {' '.join(benchmark_bits)}."
+    # DTC commentary names the direct-to-consumer price so a homepage scrape
+    # cannot be read as the brand's Amazon price.
+    lead = "The DTC price" if dtc_price else "The current price point"
+    return f"{lead} is {hero_price} and compares {' '.join(benchmark_bits)}."
 
 
 _TRUSTED_UPLOAD_PROVENANCE = {"verified_asin", "candidate_asin_verified"}
 
 
+def _format_operator_price(value: str) -> str:
+    """Normalize an operator-entered price (``20``, ``$20``, ``20.00``) to ``$20.00``.
+
+    Returns ``""`` when the value is blank or not a positive number so a bad
+    field does not replace a real price.
+    """
+    number = _coerce_number(str(value or ""))
+    if number is None or number <= 0:
+        return ""
+    return _label_money_value(number)
+
+
 def _resolve_target_price_label(
     *,
     verified_price: str = "",
+    operator_price: str = "",
+    dtc_target: bool = False,
     uploaded_price: str = "",
     uploaded_provenance: str = "",
     dedicated_target_export: bool = False,
@@ -519,20 +542,29 @@ def _resolve_target_price_label(
 ) -> tuple[str, str]:
     """Choose the price shown on the comparison slide.
 
-    An operator-entered average order value is an explicit override. Otherwise
-    an ASIN-matched Helium 10 price wins over a scraped or catalog price: the
-    upload is the row the operator reviewed, and enrichment has mistaken a
-    multipack's per-count amount for the checkout total. Scraped price is only
-    the fallback when that upload does not identify the ASIN.
+    An operator-entered average order value is an explicit override. On a
+    website / DTC target, ``operator_price`` (the ``target_price`` form field)
+    is the next override: a homepage scrape has priced a launch brand at the
+    wrong number (HENOSIS, $99 instead of $20). Otherwise an ASIN-matched
+    Helium 10 price wins over a scraped or catalog price. The upload is the
+    row the operator reviewed, and enrichment has mistaken a multipack's
+    per-count amount for the checkout total. Scraped price is only the
+    fallback when that upload does not identify the ASIN. An operator price
+    still beats that scrape on Amazon decks.
     """
     verified = str(verified_price or "").strip()
     if verified:
         return verified, "verified_aov"
+    operator = _format_operator_price(operator_price)
     uploaded = str(uploaded_price or "").strip()
     scraped = str(scraped_price or "").strip()
     upload_trusted = dedicated_target_export or uploaded_provenance in _TRUSTED_UPLOAD_PROVENANCE
+    if dtc_target and operator:
+        return operator, "operator_price"
     if upload_trusted and uploaded and uploaded.lower() != "n/a":
         return uploaded, "uploaded_xray"
+    if operator:
+        return operator, "operator_price"
     if scraped:
         return scraped, "listing_enrichment"
     if uploaded and uploaded.lower() != "n/a":
