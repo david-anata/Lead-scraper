@@ -110,7 +110,8 @@ def _render_cerebro_rank_summary(cerebro_report: Helium10CerebroReport | None) -
         ("Rank 6–10", "win", 0, 0),
         ("Rank 11–20", "mid", 0, 0),
         ("Rank 21–50", "mid", 0, 0),
-        ("Unranked", "miss", 0, 0),
+        # Position 0, a missing rank, and any rank past 50 share this bucket.
+        ("Not ranked in top 50", "miss", 0, 0),
     ]
     for keyword in cerebro_report.keywords:
         rank = keyword.target_rank
@@ -128,17 +129,18 @@ def _render_cerebro_rank_summary(cerebro_report: Helium10CerebroReport | None) -
         label, tier, count, proxy = buckets[i]
         buckets[i] = (label, tier, count + 1, proxy + volume)
     # PR39: bar widths normalized against the largest RANKED bucket
-    # (excluding Unranked) so the ranked tiers actually have visible
-    # widths instead of being dwarfed by 17,000+ unranked keywords.
-    # Unranked still gets a full-width bar but in sand color so it
-    # reads as "the gap to attack" rather than a competing data point.
+    # (excluding "Not ranked in top 50") so the ranked tiers actually
+    # have visible widths instead of being dwarfed by keywords outside
+    # the top 50. That bucket still gets a full-width bar but in sand
+    # color so it reads as "the gap to attack" rather than a competing
+    # data point.
     ranked_counts = [count for _, _, count, _ in buckets[:4]]
     max_ranked = max(ranked_counts) if any(ranked_counts) else 1
     rows_html: list[str] = []
     for label, tier, count, proxy in buckets:
         if tier == "miss":
-            # Unranked → always full-width sand bar (it IS the biggest bucket;
-            # de-emphasize via color, not width-vs-others).
+            # Outside the top 50 → always full-width sand bar (it IS the
+            # biggest bucket; de-emphasize via color, not width-vs-others).
             bar_pct = 100
         else:
             bar_pct = max(2, int(round((count / max_ranked) * 100))) if count else 0

@@ -466,6 +466,77 @@ def _normalize_custom_offer_cards(*, offer_payload_json: str, offers: list[str])
             return cards
     fallback = _build_offer_cards(offers)
     return fallback or _default_offer_cards()
+
+
+_TRIAL_OFFER_TEXT = re.compile(
+    r"\b(?:free\s+trial|14[-\s]?day(?:\s+free)?\s+trial|trial\s+plan|includes?\s+(?:a\s+)?trial|start(?:\s+your)?\s+(?:free\s+)?trial)\b",
+    re.IGNORECASE,
+)
+
+
+def _coerce_offer_flag(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y"}:
+        return True
+    if text in {"0", "false", "no", "n"}:
+        return False
+    return None
+
+
+def _card_includes_trial(card: dict[str, Any]) -> bool:
+    """True when this offer card is a free-trial plan.
+
+    An explicit includes_trial / include_trial / has_trial flag wins. Otherwise
+    the card copy has to name a trial. A custom Agency fee does not.
+    """
+    for key in ("includes_trial", "include_trial", "has_trial"):
+        if key in card:
+            flag = _coerce_offer_flag(card.get(key))
+            if flag is not None:
+                return flag
+    blob = " ".join(
+        str(card.get(key) or "")
+        for key in ("title", "description", "price", "bonus", "cta_text", "price_label")
+    )
+    return bool(_TRIAL_OFFER_TEXT.search(blob))
+
+
+def offer_payload_selects_custom_cards(offer_payload_json: str) -> bool:
+    """True when the caller sent at least one enabled offer card as JSON."""
+    payload = str(offer_payload_json or "").strip()
+    if not payload:
+        return False
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(parsed, list):
+        return False
+    for raw_card in parsed:
+        if not isinstance(raw_card, dict):
+            continue
+        if not bool(raw_card.get("enabled", True)):
+            continue
+        title = _normalize_offer_text(raw_card.get("title"))
+        description = _normalize_offer_text(raw_card.get("description"))
+        if title or description:
+            return True
+    return False
+
+
+def offers_include_trial(cards: list[dict[str, Any]], *, custom_payload: bool) -> bool:
+    """Whether the offer section should render the free-trial plan.
+
+    The built-in DFY/DYI pitch still includes the platform trial. A custom
+    payload includes it only when a selected card is a trial.
+    """
+    if any(_card_includes_trial(card) for card in cards):
+        return True
+    return not custom_payload
 def _extract_listing_copy_points(description: str, *, limit: int = 4) -> list[str]:
     cleaned = _clean_listing_title(description)
     cleaned = re.sub(r"(?i)^about this item[:\s-]*", "", cleaned)

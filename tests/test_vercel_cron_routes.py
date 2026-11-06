@@ -83,7 +83,8 @@ def test_outbound_enrich_crons_are_single_hour_and_match_the_handler() -> None:
     for path, item in by_path.items():
         if path.startswith("/api/jobs/outbound-enrich/"):
             assert "," not in item["schedule"]
-    assert len(config["crons"]) == 25
+    # Weekday stale-lead cron is paused; the other schedules stay.
+    assert len(config["crons"]) == 24
     assert len(config["crons"]) <= 100
 
 

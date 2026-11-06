@@ -4,12 +4,14 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 
+import outbound_campaigns as campaigns
 import outbound_contacts as oc
 import outbound_enrich as oe
 import outbound_instantly_push as push
 from sales_support_agent.api import outbound_enrich_job as job
+from sales_support_agent.services import outbound_memory as memory
 
 TZ = ZoneInfo("America/Denver")
 WEEKDAY = datetime(2026, 10, 22, 8, 15, tzinfo=TZ)   # Thursday
@@ -354,6 +356,190 @@ def test_failed_instantly_check_never_contacts(engine):
     rep = out["report"]
     assert rep["companies_tried"] == 0 and out["pushed"] == 0
     assert "Could not check Instantly" in rep["stopped_reason"]
+
+
+def _stamp(engine, domain, when):
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE outbound_contacted_domains SET first_seen_at = :t WHERE domain = :d"),
+            {"t": when, "d": domain},
+        )
+
+
+def _store_recipe(engine, recipe, count, day):
+    slug = {
+        "amz_on": "amzon",
+        "amz_off": "amzoff",
+        "plan_upgrade": "planup",
+        "replatform": "replat",
+        "replatformed": "replated",
+        "icp_baseline": "baseline",
+        "social_surge": "social",
+    }[recipe]
+    rows = [
+        {"domain": f"{slug}{index}.com", "brand": slug, "recipe": recipe, "categories": "Apparel"}
+        for index in range(count)
+    ]
+    memory.record_leads(engine, rows)
+    for index, row in enumerate(rows):
+        _stamp(engine, row["domain"], f"{day} 08:{index:02d}:00")
+    return [row["domain"] for row in rows]
+
+
+def _cap(engine, recipe, cap):
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE outbound_campaigns SET daily_cap = :cap WHERE recipe_key = :recipe"),
+            {"cap": cap, "recipe": recipe},
+        )
+
+
+def _run_loaded(engine, **kw):
+    posts = []
+    out = job.run_enrich_job(
+        now=kw.pop("now", WEEKDAY), engine=engine,
+        find=kw.pop("find", finder), write=write, push=kw.pop("push", ok_push),
+        post_slack=posts.append, in_instantly=kw.pop("in_instantly", lambda d: False),
+        **kw,
+    )
+    return out, posts
+
+
+def test_enrich_job_tries_campaign_recipes_before_newer_baseline(engine, monkeypatch):
+    monkeypatch.setenv("OUTBOUND_ENRICH_PER_RUN", "5")
+    campaigns.ensure_tables(engine)
+    for recipe in ("amz_on", "amz_off", "plan_upgrade", "replatform"):
+        _cap(engine, recipe, 1)
+        _store_recipe(engine, recipe, 3, "2026-10-01")
+    _store_recipe(engine, "social_surge", 8, "2026-11-04")
+    baseline = _store_recipe(engine, "icp_baseline", 8, "2026-11-05")
+    tried = []
+    sent = []
+
+    def find(domain, *, api_key, max_contacts=2, **kw):
+        tried.append(domain)
+        return finder(domain, api_key=api_key, max_contacts=max_contacts)
+
+    def record(payload, cid, dry_run=False, **k):
+        sent.append((cid, [item["email"] for item in payload]))
+        return ok_push(payload, cid, dry_run=dry_run)
+
+    out, _posts = _run_loaded(engine, find=find, push=record)
+    assert out["ran"]
+    assert tried == [
+        "amzon0.com", "amzoff0.com", "planup0.com", "replat0.com", baseline[-1],
+    ]
+    by_campaign = {cid: emails for cid, emails in sent}
+    assert by_campaign[push.RECIPE_CAMPAIGN_MAP["amz_on"]] == ["a@amzon0.com"]
+    assert by_campaign[push.RECIPE_CAMPAIGN_MAP["amz_off"]] == ["a@amzoff0.com"]
+    assert by_campaign[push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]] == ["a@planup0.com"]
+    assert by_campaign[push.RECIPE_CAMPAIGN_MAP["replatform"]] == ["a@replat0.com"]
+    assert by_campaign[CAMPAIGN] == [f"a@{baseline[-1]}"]
+    assert set(by_campaign) == {
+        push.RECIPE_CAMPAIGN_MAP["amz_on"],
+        push.RECIPE_CAMPAIGN_MAP["amz_off"],
+        push.RECIPE_CAMPAIGN_MAP["plan_upgrade"],
+        push.RECIPE_CAMPAIGN_MAP["replatform"],
+        CAMPAIGN,
+    }
+
+
+def test_enrich_job_reaches_signal_brands_outside_the_newest_page(engine, monkeypatch):
+    monkeypatch.setenv("OUTBOUND_ENRICH_PER_RUN", "2")
+    campaigns.ensure_tables(engine)
+    for recipe in ("amz_on", "amz_off", "plan_upgrade", "replatform"):
+        _cap(engine, recipe, 100)
+    _store_recipe(engine, "amz_on", 2, "2026-10-01")
+    _store_recipe(engine, "replatform", 2, "2026-10-01")
+    _store_recipe(engine, "icp_baseline", 6, "2026-11-05")
+    _store_recipe(engine, "social_surge", 6, "2026-11-04")
+
+    original = memory.load_leads
+
+    def only_newer_recipes(engine, limit=500):
+        rows = original(engine, limit=limit)
+        return [row for row in rows if row.get("recipe") in {"icp_baseline", "social_surge"}]
+
+    monkeypatch.setattr(memory, "load_leads", only_newer_recipes)
+    tried = []
+
+    def find(domain, *, api_key, max_contacts=2, **kw):
+        tried.append(domain)
+        return finder(domain, api_key=api_key, max_contacts=max_contacts)
+
+    out, _posts = _run_loaded(engine, find=find)
+    assert out["ran"]
+    assert tried == ["amzon0.com", "replat0.com"]
+
+
+def test_campaign_cap_already_used_today_lets_baseline_follow(engine, monkeypatch):
+    monkeypatch.setenv("OUTBOUND_ENRICH_PER_RUN", "3")
+    campaigns.ensure_tables(engine)
+    for recipe in ("amz_on", "amz_off", "plan_upgrade", "replatform"):
+        _cap(engine, recipe, 0)
+    _cap(engine, "amz_on", 2)
+    domains = _store_recipe(engine, "amz_on", 4, "2026-10-01")
+    baseline = _store_recipe(engine, "icp_baseline", 4, "2026-11-05")
+    oe.ensure_tables(engine)
+    oe._record_domain(engine, domains[0], "found", 1, 1, "already enriched")
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE outbound_enriched SET enriched_at = '2026-10-22 16:00:00' WHERE domain = :d"),
+            {"d": domains[0]},
+        )
+    tried = []
+
+    def find(domain, *, api_key, max_contacts=2, **kw):
+        tried.append(domain)
+        return finder(domain, api_key=api_key, max_contacts=max_contacts)
+
+    out, _posts = _run_loaded(engine, find=find)
+    assert out["ran"]
+    assert tried == ["amzon1.com", baseline[-1], baseline[-2]]
+
+
+def test_replatformed_alias_counts_against_the_replatform_cap(engine):
+    campaigns.ensure_tables(engine)
+    for recipe in ("amz_on", "amz_off", "plan_upgrade", "replatform"):
+        _cap(engine, recipe, 0)
+    _cap(engine, "replatform", 1)
+    memory.record_leads(engine, [
+        {"domain": "oldmove.com", "brand": "Old", "recipe": "replatformed"},
+        {"domain": "newmove.com", "brand": "New", "recipe": "replatform"},
+        {"domain": "base.com", "brand": "Base", "recipe": "icp_baseline"},
+    ])
+    _stamp(engine, "oldmove.com", "2026-10-01 08:00:00")
+    _stamp(engine, "newmove.com", "2026-10-01 09:00:00")
+    _stamp(engine, "base.com", "2026-11-05 12:00:00")
+    oe.ensure_tables(engine)
+    oe._record_domain(engine, "oldmove.com", "found", 1, 1, "done")
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE outbound_enriched SET enriched_at = '2026-10-22 16:00:00' WHERE domain = 'oldmove.com'")
+        )
+    ordered = oe.order_leads_for_enrich(
+        engine, memory.load_leads(engine, limit=1000),
+        since_utc=datetime(2026, 10, 22, 6, 0, 0),
+    )
+    assert [lead["domain"] for lead in ordered][0] == "base.com"
+    assert "newmove.com" in [lead["domain"] for lead in ordered]
+
+
+def test_cut_campaign_stays_behind_baseline(engine):
+    campaigns.ensure_tables(engine)
+    for recipe in ("amz_on", "amz_off", "plan_upgrade", "replatform"):
+        _cap(engine, recipe, 100)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE outbound_campaigns SET status = 'cut' WHERE recipe_key = 'plan_upgrade'"
+        ))
+    _store_recipe(engine, "plan_upgrade", 2, "2026-10-01")
+    baseline = _store_recipe(engine, "icp_baseline", 1, "2026-11-05")
+    ordered = oe.order_leads_for_enrich(
+        engine, memory.load_leads(engine, limit=1000),
+        since_utc=datetime(2026, 10, 22, 6, 0, 0),
+    )
+    assert ordered[0]["domain"] == baseline[0]
 
 
 def test_off_unless_explicitly_on(engine, monkeypatch):

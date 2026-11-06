@@ -233,6 +233,178 @@ class EnrichReport:
         }
 
 
+def companies_enriched_by_recipe(engine, since_utc, recipes: Iterable[str]) -> dict[str, int]:
+    """Companies enriched since ``since_utc`` whose stored recipe is in ``recipes``.
+
+    A failed ``INVALID_FILTERS`` row does not count. The same domain can be
+    searched again, and it should not use up a campaign's daily cap.
+    """
+
+    wanted = {str(recipe).strip() for recipe in recipes if str(recipe).strip()}
+    if engine is None or not wanted:
+        return {}
+    try:
+        ensure_tables(engine)
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                """
+                SELECT d.recipe, COALESCE(e.status, ''), COALESCE(e.reason, '')
+                FROM outbound_enriched e
+                JOIN outbound_contacted_domains d ON d.domain = e.domain
+                WHERE e.enriched_at >= :t
+                """
+            ), {"t": since_utc}).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich] could not count enriched recipes")
+        return {}
+    counts: dict[str, int] = {}
+    for recipe, status, reason in rows:
+        name = str(recipe or "").strip()
+        if name not in wanted:
+            continue
+        if "INVALID_FILTERS" in str(reason).upper() and str(status) not in {"found", "in_instantly"}:
+            continue
+        counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def _recipe_names(row: dict[str, Any]) -> list[str]:
+    names = [str(row.get("recipe_key") or "").strip()]
+    names.extend(
+        part.strip() for part in str(row.get("recipe_aliases") or "").split(",") if part.strip()
+    )
+    return [name for name in names if name]
+
+
+def _interleave(buckets: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """One lead from each bucket, in turn, until every bucket is empty."""
+
+    rows = [list(bucket) for bucket in buckets if bucket]
+    cursors = [0] * len(rows)
+    ordered: list[dict[str, Any]] = []
+    while True:
+        advanced = False
+        for index, bucket in enumerate(rows):
+            cursor = cursors[index]
+            if cursor >= len(bucket):
+                continue
+            ordered.append(bucket[cursor])
+            cursors[index] = cursor + 1
+            advanced = True
+        if not advanced:
+            return ordered
+
+
+def order_leads_for_enrich(engine, leads: list[dict[str, Any]], *, since_utc) -> list[dict[str, Any]]:
+    """Active campaign recipes first, then the rest of ``leads``.
+
+    Each active ``outbound_campaigns`` row with a positive ``daily_cap``
+    contributes its oldest not-yet-enriched brands, up to the cap minus
+    companies of that recipe (and its aliases) already enriched since
+    ``since_utc``. Campaigns are interleaved so one recipe cannot spend
+    the whole run. Baseline, social, and every other recipe keep the
+    order they arrived in. ``leads`` from ``load_leads`` is newest first.
+
+    Older signal brands are loaded from the lead table. They are not
+    limited to the newest page, which is where ``icp_baseline`` and
+    ``social_surge`` were crowding them out.
+
+    This does not change which Instantly campaign a recipe is pushed to,
+    and it does not update or move a contact already in Instantly.
+    """
+
+    general = list(leads or [])
+    try:
+        return _order_leads_for_enrich(engine, general, since_utc=since_utc)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich] could not put campaign recipes first")
+        return general
+
+
+def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc) -> list[dict[str, Any]]:
+    import outbound_campaign_source as source
+    import outbound_campaigns as campaigns
+
+    rows = [
+        row for row in campaigns.list_campaigns(engine)
+        if row.get("status") == "active" and int(row.get("daily_cap") or 0) > 0
+    ]
+    if not rows:
+        return general
+    ordered_rows = source._ordered(rows)
+    owner: dict[str, str] = {}
+    names_by_campaign: dict[str, list[str]] = {}
+    for row in ordered_rows:
+        names = _recipe_names(row)
+        names_by_campaign[str(row["recipe_key"])] = names
+        for name in names:
+            owner.setdefault(name, str(row["recipe_key"]))
+    if not owner:
+        return general
+
+    from sales_support_agent.services import outbound_memory
+
+    counts = companies_enriched_by_recipe(engine, since_utc, owner.keys())
+    try:
+        ensure_tables(engine)
+        done = enriched_domains(engine)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich] could not read enriched domains for ordering")
+        done = set()
+    stored = outbound_memory.load_leads_by_recipe(engine, owner.keys(), oldest_first=True)
+    merged: dict[str, dict[str, Any]] = {}
+    for lead in stored:
+        domain = _contacts.normalize_domain(str(lead.get("domain") or ""))
+        if domain:
+            merged.setdefault(domain, lead)
+    for lead in general:
+        domain = _contacts.normalize_domain(str(lead.get("domain") or ""))
+        recipe = str(lead.get("recipe") or "").strip()
+        if domain and recipe in owner:
+            merged.setdefault(domain, lead)
+
+    buckets: dict[str, list[dict[str, Any]]] = {str(row["recipe_key"]): [] for row in ordered_rows}
+    candidates = sorted(
+        merged.values(),
+        key=lambda lead: (str(lead.get("first_seen_at") or "9999"), str(lead.get("domain") or "")),
+    )
+    for lead in candidates:
+        domain = _contacts.normalize_domain(str(lead.get("domain") or ""))
+        if not domain or domain in done:
+            continue
+        campaign_key = owner.get(str(lead.get("recipe") or "").strip())
+        if campaign_key and campaign_key in buckets:
+            buckets[campaign_key].append(lead)
+    for row in ordered_rows:
+        key = str(row["recipe_key"])
+        used = sum(counts.get(name, 0) for name in names_by_campaign.get(key, []))
+        remaining = max(0, int(row.get("daily_cap") or 0) - used)
+        buckets[key] = buckets[key][:remaining]
+
+    priority = _interleave([buckets[str(row["recipe_key"])] for row in ordered_rows])
+    seen: set[str] = set()
+    ordered: list[dict[str, Any]] = []
+    for lead in priority:
+        domain = _contacts.normalize_domain(str(lead.get("domain") or ""))
+        if not domain or domain in seen:
+            continue
+        seen.add(domain)
+        ordered.append(lead)
+    campaign_count = len(ordered)
+    for lead in general:
+        domain = _contacts.normalize_domain(str(lead.get("domain") or ""))
+        if domain and domain in seen:
+            continue
+        if domain:
+            seen.add(domain)
+        ordered.append(lead)
+    logger.info(
+        "[outbound-enrich] campaign recipes first: %s, then %s other brands",
+        campaign_count, len(ordered) - campaign_count,
+    )
+    return ordered
+
+
 def run_enrichment(
     engine,
     leads: list[dict[str, Any]],

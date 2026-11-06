@@ -46,10 +46,6 @@
       "schedule": "0 * * * *"
     },
     {
-      "path": "/api/vercel-cron/stale-leads",
-      "schedule": "0 15 * * 1-5"
-    },
-    {
       "path": "/api/vercel-cron/gmail-sync",
       "schedule": "*/15 * * * *"
     },

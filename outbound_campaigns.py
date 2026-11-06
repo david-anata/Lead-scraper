@@ -95,7 +95,7 @@ _BASE_FILTERS: dict[str, Any] = {
 # Aliases is a comma-separated list. replatformed shares the replatform row.
 SEED_ROWS: tuple[dict[str, Any], ...] = (
     {
-        "campaign_id": "a333e00e-bc3b-4abf-bcbf-4e0eb126090c",
+        "campaign_id": "8e0df427-1f18-43ac-b0c6-e8ea787123d7",
         "name": "amz_on|standard|us_amazon_10_20k",
         "recipe_key": "amz_on",
         "recipe_aliases": "",
@@ -104,7 +104,7 @@ SEED_ROWS: tuple[dict[str, Any], ...] = (
         "template_ref": "amz_on",
     },
     {
-        "campaign_id": "45a521a0-68e2-439f-9622-1672f9ede214",
+        "campaign_id": "138a162d-6654-4916-9959-20c11e31214b",
         "name": "amz_off|standard|us_not_amazon_10_20k",
         "recipe_key": "amz_off",
         "recipe_aliases": "",
@@ -113,7 +113,7 @@ SEED_ROWS: tuple[dict[str, Any], ...] = (
         "template_ref": "amz_off",
     },
     {
-        "campaign_id": "1937c21a-89c4-458f-a949-306f90ae6258",
+        "campaign_id": "4dc10f79-f7c9-43c5-9c3e-5e28e9cf4c72",
         "name": "plan_upgrade|standard|us_plus_90d",
         "recipe_key": "plan_upgrade",
         "recipe_aliases": "",
@@ -126,7 +126,7 @@ SEED_ROWS: tuple[dict[str, Any], ...] = (
         "template_ref": "plan_upgrade",
     },
     {
-        "campaign_id": "d12b5512-d34c-4331-841f-8e59263f5b5e",
+        "campaign_id": "d1c197e3-bf1f-4f41-bcb9-e30e73975a2c",
         "name": "replatform|standard|us_woo_magento_bc_120d",
         "recipe_key": "replatform",
         "recipe_aliases": "replatformed",
@@ -140,7 +140,7 @@ SEED_ROWS: tuple[dict[str, Any], ...] = (
         "template_ref": "replatformed",
     },
     {
-        "campaign_id": "8ebf1923-7ba4-4a63-96a8-adb18a58ddf6",
+        "campaign_id": "907d32fd-d6db-4ce6-8edc-485b78cce120",
         "name": "abby_reengage|standard|prior_thread",
         "recipe_key": "abby_reengage",
         "recipe_aliases": "",

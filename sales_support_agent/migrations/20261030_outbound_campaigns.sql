@@ -41,12 +41,14 @@ CREATE TABLE IF NOT EXISTS outbound_campaign_scores (
 -- name is signal|offer|target. replatformed is an alias, not a sixth campaign.
 -- Filters are confirmed List Domains parameters. _relative_days is resolved
 -- in the app and is never sent to StoreLeads.
+-- Campaign ids below are the v2 Instantly campaigns. ON CONFLICT does not
+-- rewrite a row that is already there, so cut v1 rows stay cut.
 INSERT INTO outbound_campaigns (
     campaign_id, name, recipe_key, recipe_aliases, storeleads_filters,
     status, daily_cap, template_ref
 ) VALUES
 (
-    'a333e00e-bc3b-4abf-bcbf-4e0eb126090c',
+    '8e0df427-1f18-43ac-b0c6-e8ea787123d7',
     'amz_on|standard|us_amazon_10_20k',
     'amz_on',
     '',
@@ -56,7 +58,7 @@ INSERT INTO outbound_campaigns (
     'amz_on'
 ),
 (
-    '45a521a0-68e2-439f-9622-1672f9ede214',
+    '138a162d-6654-4916-9959-20c11e31214b',
     'amz_off|standard|us_not_amazon_10_20k',
     'amz_off',
     '',
@@ -66,7 +68,7 @@ INSERT INTO outbound_campaigns (
     'amz_off'
 ),
 (
-    '1937c21a-89c4-458f-a949-306f90ae6258',
+    '4dc10f79-f7c9-43c5-9c3e-5e28e9cf4c72',
     'plan_upgrade|standard|us_plus_90d',
     'plan_upgrade',
     '',
@@ -76,7 +78,7 @@ INSERT INTO outbound_campaigns (
     'plan_upgrade'
 ),
 (
-    'd12b5512-d34c-4331-841f-8e59263f5b5e',
+    'd1c197e3-bf1f-4f41-bcb9-e30e73975a2c',
     'replatform|standard|us_woo_magento_bc_120d',
     'replatform',
     'replatformed',
@@ -86,7 +88,7 @@ INSERT INTO outbound_campaigns (
     'replatformed'
 ),
 (
-    '8ebf1923-7ba4-4a63-96a8-adb18a58ddf6',
+    '907d32fd-d6db-4ce6-8edc-485b78cce120',
     'abby_reengage|standard|prior_thread',
     'abby_reengage',
     '',

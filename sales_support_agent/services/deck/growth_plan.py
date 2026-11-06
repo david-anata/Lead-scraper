@@ -28,6 +28,13 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONVERSION_RATE_PCT: float = 15.0
+
+# Visible on the growth slide itself. A category label is not a substitute.
+DIRECTIONAL_ESTIMATES_NOTE = (
+    "Directional estimates. Session, unit, and revenue figures in this growth model "
+    "are planning assumptions drawn from the listing sample and the stated conversion rate. "
+    "They are not a forecast or a guarantee."
+)
 DEFAULT_GOAL_MULTIPLIER: float = 3.0  # if user doesn't set a goal, multiply current sessions by this
 
 # Channel mix defaults (must sum to 100). Mirrors the napkin-math the user
@@ -999,6 +1006,7 @@ def render_growth_plan_section(
           <h2 class="slide-title">Closing the gap</h2>
         </div>
         <p class="caption">{gap_caption}</p>
+        <p class="caption" data-model-note="directional">{html.escape(DIRECTIONAL_ESTIMATES_NOTE)}</p>
       </header>
       {kpi_strip}
       {ramp_html}

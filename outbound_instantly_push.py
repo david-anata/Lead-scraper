@@ -38,13 +38,17 @@ DEFAULT_PROTECTED: tuple[str, ...] = ()
 # Contacts whose recipe column is one of these go to that Instantly campaign.
 # Anything else uses the caller's campaign id, then OUTBOUND_INSTANTLY_CAMPAIGN_ID.
 # This is a code map on purpose: no new env var and no schema change.
+# These are the v2 campaigns. The completed v1 ids are not a fallback.
+# push_pending prefers an active outbound_campaigns row over this map.
+# replatform v2 is status completed in Instantly, so leads added there do
+# not send until that campaign is restarted.
 RECIPE_CAMPAIGN_MAP: dict[str, str] = {
-    "amz_on": "a333e00e-bc3b-4abf-bcbf-4e0eb126090c",
-    "amz_off": "45a521a0-68e2-439f-9622-1672f9ede214",
-    "plan_upgrade": "1937c21a-89c4-458f-a949-306f90ae6258",
-    "replatform": "d12b5512-d34c-4331-841f-8e59263f5b5e",
-    "replatformed": "d12b5512-d34c-4331-841f-8e59263f5b5e",
-    "abby_reengage": "8ebf1923-7ba4-4a63-96a8-adb18a58ddf6",
+    "amz_on": "8e0df427-1f18-43ac-b0c6-e8ea787123d7",
+    "amz_off": "138a162d-6654-4916-9959-20c11e31214b",
+    "plan_upgrade": "4dc10f79-f7c9-43c5-9c3e-5e28e9cf4c72",
+    "replatform": "d1c197e3-bf1f-4f41-bcb9-e30e73975a2c",
+    "replatformed": "d1c197e3-bf1f-4f41-bcb9-e30e73975a2c",
+    "abby_reengage": "907d32fd-d6db-4ce6-8edc-485b78cce120",
 }
 
 # Partner-list contacts are stored for a separate pass and stay out of push_pending.

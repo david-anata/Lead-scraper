@@ -75,9 +75,9 @@ def test_seed_and_alias_routing(engine):
     campaigns.ensure_tables(engine)
     routing = campaigns.load_routing(engine)
     assert routing.available
-    assert routing.by_recipe["amz_on"] == "a333e00e-bc3b-4abf-bcbf-4e0eb126090c"
+    assert routing.by_recipe["amz_on"] == "8e0df427-1f18-43ac-b0c6-e8ea787123d7"
     assert routing.by_recipe["replatformed"] == routing.by_recipe["replatform"]
-    assert routing.by_recipe["abby_reengage"] == "8ebf1923-7ba4-4a63-96a8-adb18a58ddf6"
+    assert routing.by_recipe["abby_reengage"] == "907d32fd-d6db-4ce6-8edc-485b78cce120"
     assert "replatformed" not in routing.blocked
 
 
@@ -247,6 +247,88 @@ def test_sourcing_records_the_recipe_and_skips_contacted_domains(engine):
     assert all(call.get("f:ermin") == 1_000_000 for call in calls)
 
 
+def test_share_company_room_pays_caps_that_fit_and_splits_when_they_do_not():
+    assert source.share_company_room([40, 40, 30, 25], 300) == [40, 40, 30, 25]
+    assert source.share_company_room([100, 100, 100, 100], 300) == [75, 75, 75, 75]
+    assert source.share_company_room([100, 100, 100, 100, 100], 300) == [60, 60, 60, 60, 60]
+    assert source.share_company_room([100, 100, 100, 100], 1) == [1, 0, 0, 0]
+
+
+def _domains_for(filters, count):
+    if filters.get("f:scs:op") == "not":
+        prefix = "off"
+    elif filters.get("f:plan") == "Shopify Plus":
+        prefix = "plus"
+    elif filters.get("f:last_platform"):
+        prefix = "moved"
+    elif filters.get("f:scs") == "Amazon":
+        prefix = "on"
+    else:
+        prefix = "other"
+    return [_fit_store(f"{prefix}{index}.com") for index in range(count)]
+
+
+def test_sourcing_pays_each_seed_cap_when_the_room_can_hold_them(engine):
+    def fetch(api_key, **kwargs):
+        return SimpleNamespace(domains=_domains_for(kwargs["extra_params"], 80), next_cursor=None, error="")
+
+    out = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
+    )
+    recorded = {item["recipe_key"]: item["recorded"] for item in out["campaigns"]}
+    assert recorded == {"amz_on": 40, "amz_off": 40, "plan_upgrade": 30, "replatform": 25}
+    assert out["recorded"] == 135
+
+
+def test_sourcing_at_cap_100_still_gives_replatform_leads(engine):
+    """Five live caps of 100 do not fit in the 300 company ceiling.
+
+    abby_reengage has no StoreLeads filters, so it takes none of the room.
+    The other four at 100 are 400. A first-come walk would stop before
+    replatform. The room is shared instead: 75 each.
+    """
+
+    campaigns.ensure_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE outbound_campaigns SET daily_cap = 100"))
+
+    def fetch(api_key, **kwargs):
+        return SimpleNamespace(domains=_domains_for(kwargs["extra_params"], 120), next_cursor=None, error="")
+
+    out = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
+    )
+    recorded = {item["recipe_key"]: item["recorded"] for item in out["campaigns"]}
+    assert "abby_reengage" not in recorded
+    assert recorded == {"amz_on": 75, "amz_off": 75, "plan_upgrade": 75, "replatform": 75}
+    assert out["recorded"] == 300
+    assert all(item["recorded"] <= 100 for item in out["campaigns"])
+
+
+def test_sourcing_gives_unused_share_to_later_recipes(engine):
+    campaigns.ensure_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE outbound_campaigns SET daily_cap = 100"))
+
+    def fetch(api_key, **kwargs):
+        filters = kwargs["extra_params"]
+        count = 1 if (
+            filters.get("f:scs") == "Amazon"
+            and filters.get("f:scs:op") != "not"
+            and "f:plan" not in filters
+            and "f:last_platform" not in filters
+        ) else 120
+        return SimpleNamespace(domains=_domains_for(filters, count), next_cursor=None, error="")
+
+    out = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
+    )
+    recorded = {item["recipe_key"]: item["recorded"] for item in out["campaigns"]}
+    assert recorded["amz_on"] == 1
+    assert recorded["replatform"] == 99
+    assert out["recorded"] == 300
+
+
 def test_sourcing_stops_at_the_company_and_credit_caps(engine):
     def fetch(api_key, **kwargs):
         return SimpleNamespace(
@@ -319,7 +401,7 @@ def test_weekly_score_proposes_and_does_not_activate_or_change_caps(engine):
         row["recipe_key"]: (row["status"], row["daily_cap"])
         for row in campaigns.list_campaigns(engine)
     }
-    amz = "a333e00e-bc3b-4abf-bcbf-4e0eb126090c"
+    amz = "8e0df427-1f18-43ac-b0c6-e8ea787123d7"
     _daily(engine, [{
         "campaign_id": amz, "day": "2026-10-20",
         "contacted": 200, "bounced": 2, "meetings": 2,
@@ -360,7 +442,7 @@ def test_weekly_score_reads_the_instantly_daily_columns(engine):
     """The analytics sync stores date, positive, unsubscribed, meetings_booked."""
 
     campaigns.ensure_tables(engine)
-    amz = "a333e00e-bc3b-4abf-bcbf-4e0eb126090c"
+    amz = "8e0df427-1f18-43ac-b0c6-e8ea787123d7"
     with engine.begin() as conn:
         conn.execute(text(
             """
@@ -400,7 +482,7 @@ def test_weekly_score_reads_the_instantly_daily_columns(engine):
 
 def test_weekly_score_does_not_judge_under_150_or_invent_a_missing_table(engine):
     campaigns.ensure_tables(engine)
-    amz = "a333e00e-bc3b-4abf-bcbf-4e0eb126090c"
+    amz = "8e0df427-1f18-43ac-b0c6-e8ea787123d7"
     _daily(engine, [{
         "campaign_id": amz, "day": "2026-10-20",
         "contacted": 149, "bounced": 0, "meetings": 0,
@@ -435,13 +517,13 @@ def test_weekly_score_notes_a_missing_abby_campaign_column(engine):
         ))
         conn.execute(text(
             "INSERT INTO instantly_campaign_daily (campaign_id, day, contacted, bounced, meetings) "
-            "VALUES ('a333e00e-bc3b-4abf-bcbf-4e0eb126090c', '2026-10-20', 200, 2, 2)"
+            "VALUES ('8e0df427-1f18-43ac-b0c6-e8ea787123d7', '2026-10-20', 200, 2, 2)"
         ))
         conn.execute(text(
             "CREATE TABLE abby_handled (email_id TEXT PRIMARY KEY, category TEXT, created_at TEXT)"
         ))
     result = score.run_weekly_score(engine, now=datetime(2026, 10, 26, 7, tzinfo=DENVER))
-    amz_score = next(item for item in result["scores"] if item["campaign_id"].startswith("a333"))
+    amz_score = next(item for item in result["scores"] if item["campaign_id"].startswith("8e0d"))
     assert "abby_handled.campaign_id" in amz_score["detail"]
     assert amz_score["action"] == "insufficient"
     assert result["proposed"] == []
