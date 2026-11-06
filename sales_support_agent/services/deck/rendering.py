@@ -968,6 +968,7 @@ def render_visual_proof_panel(
     cro_recommendations: list[str],
     creative_recommendations: list[str],
     missing_image_asset: str = "",
+    launch_mode: bool = False,
 ) -> str:
     """Audit item 7: side-by-side visual proof panel for the
     "Where the listing needs to improve" slide.
@@ -978,8 +979,9 @@ def render_visual_proof_panel(
     instead of just text bullets telling them what to fix.
     """
     target_image = str(target.get("image_url") or "").strip()
-    target_brand = str(target.get("brand_name") or "Your listing").strip()
-    target_title = str(target.get("title") or target.get("asin") or "Your listing").strip()
+    unnamed = "The product" if launch_mode else "Your listing"
+    target_brand = str(target.get("brand_name") or unnamed).strip()
+    target_title = str(target.get("title") or target.get("asin") or unnamed).strip()
 
     bs_image = ""
     bs_brand = "Best seller"
@@ -1014,7 +1016,7 @@ def render_visual_proof_panel(
         "<figure class='visual-proof-card visual-proof-target'>"
         f"<div class='visual-proof-thumb'>{_media(target_image)}</div>"
         "<figcaption>"
-        f"<span class='eyebrow-subtle'>Your listing today</span>"
+        f"<span class='eyebrow-subtle'>{'Launch product' if launch_mode else 'Your listing today'}</span>"
         f"<strong>{html.escape(_trim_text(target_title, 48))}</strong>"
         f"<span class='muted'>{html.escape(target_brand)}</span>"
         "</figcaption>"

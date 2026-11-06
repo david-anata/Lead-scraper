@@ -2186,3 +2186,251 @@ class CategoryAwareCopyTests(unittest.TestCase):
         self.assertNotIn("clinical", jewelry)
         supplement = " ".join(_build_cro_recommendations(None, [], category_text="Fat Burner Supplement Capsules"))
         self.assertIn("ingredient context", supplement)
+
+
+def _xray_row(title: str, asin: str, brand: str, price: str) -> str:
+    return (
+        f'"{title}",{asin},https://www.amazon.com/dp/{asin},https://example.com/{asin}.jpg,'
+        f"{brand},{price},10000,400,1200,4.4,80,Fragrance,US,Standard,FBA,3 x 2 x 2 in,1 lb"
+    )
+
+
+def _competitor_xray(*rows: str) -> bytes:
+    header = (
+        "Product Details,ASIN,URL,Image URL,Brand,Price  $,ASIN Revenue,ASIN Sales,BSR,"
+        "Ratings,Review Count,Category,Seller Country/Region,Size Tier,Fulfillment,Dimensions,Weight"
+    )
+    return (header + "\n" + "\n".join(rows) + "\n").encode("utf-8")
+
+
+def _latest_summary(session_factory) -> dict:
+    with session_scope(session_factory) as session:
+        run = session.execute(
+            select(AutomationRun).where(AutomationRun.run_type == "deck_generation")
+        ).scalar_one()
+        return dict(run.summary_json or {})
+
+
+class _LaunchHeroResearch:
+    """Homepage scrape that would otherwise name the deck from the title tokens."""
+
+    def enrich_target_product(self, target: dict) -> EnrichedHeroProduct:
+        return EnrichedHeroProduct(
+            asin="",
+            candidate_asin="B0MONTALE1",
+            brand_name="H HABIBI White",
+            title="H HABIBI White Eau de Parfum",
+            source_url=target.get("source_url", "") or "https://habibiny.com",
+            description="A white floral perfume.",
+            price="$99.00",
+            dimensions="",
+            image_url="https://example.com/habibi.jpg",
+            product_type="Eau de Parfum",
+            bsr=None,
+            rating=None,
+            review_count=None,
+            identity_source="website",
+            market_metrics_source="",
+            tags=(),
+            warnings=(),
+        )
+
+
+class _BlankHeroResearch:
+    def enrich_target_product(self, target: dict) -> EnrichedHeroProduct:
+        return EnrichedHeroProduct(
+            asin=str(target.get("asin") or ""),
+            candidate_asin="",
+            brand_name="",
+            title="",
+            source_url=target.get("source_url", ""),
+            description="",
+            price="",
+            dimensions="",
+            image_url="",
+            product_type="",
+            bsr=None,
+            rating=None,
+            review_count=None,
+            identity_source="",
+            market_metrics_source="",
+            tags=(),
+            warnings=(),
+        )
+
+
+@unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for deck generation tests")
+class DeckGenerateLaunchFixesTests(unittest.TestCase):
+    """brand_name, target_price, launch-brand matching, and multi-row target Xray."""
+
+    def _service(self, session, research):
+        service = DeckGenerationService(_build_settings(), session, amazon_client=_FakeAmazonClient())
+        service.product_research = research
+        return service
+
+    def _lookalike_competitors(self) -> bytes:
+        return _competitor_xray(
+            _xray_row("H HABIBI White Eau de Parfum", "B0MONTALE1", "MONTALE", "130.00"),
+            _xray_row("Rose Musk", "B0RIVAL001", "Rival Musk", "48.00"),
+            _xray_row("Amber Oud", "B0RIVAL002", "Rival Oud", "55.00"),
+        )
+
+    def test_brand_name_and_target_price_drive_launch_deck(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        with session_scope(session_factory) as session:
+            service = self._service(session, _LaunchHeroResearch())
+            without = service.generate_deck(
+                competitor_xray_csv_bytes=self._lookalike_competitors(),
+                competitor_xray_filename="competitors.csv",
+                target_product_input="https://habibiny.com",
+                growth_plan_inputs={},
+            )
+        bare = _latest_summary(session_factory)
+        self.assertIn("H HABIBI White", bare["design_title"])
+        self.assertNotIn("Habibi NY", bare["design_title"])
+
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        with session_scope(session_factory) as session:
+            service = self._service(session, _LaunchHeroResearch())
+            result = service.generate_deck(
+                competitor_xray_csv_bytes=self._lookalike_competitors(),
+                competitor_xray_filename="competitors.csv",
+                target_product_input="https://habibiny.com",
+                brand_name="Habibi NY",
+                target_price="20",
+                growth_plan_inputs={},
+                template_version="agency_v1",
+            )
+        summary = _latest_summary(session_factory)
+        html = str(summary.get("deck_html") or "")
+        story = str(summary.get("story_markdown") or "")
+        self.assertEqual(result.design_title, "Habibi NY x anata strategy deck")
+        self.assertTrue(summary["deck_slug"].startswith("habibi-ny-x-anata-strategy-deck-"))
+        self.assertNotIn("h-habibi-white", summary["deck_slug"])
+        self.assertIn("Habibi NY", story)
+        self.assertIn("Launch product", story)
+        self.assertIn("not an Amazon seller", html)
+        self.assertIn("The DTC price is $20.00", html)
+        self.assertNotIn("$99.00", html)
+        self.assertNotIn("Your listing today", html)
+        self.assertNotIn("Your listing vs. the benchmark", html)
+        self.assertNotIn("side-by-side of your listing", html)
+        self.assertNotIn("Seller Central", html)
+        self.assertIn("Market entry", html)
+        self.assertNotEqual(summary.get("target_product_identifier"), "B0MONTALE1")
+        self.assertIn("habibiny.com", str(summary.get("target_product_identifier") or ""))
+
+    def test_website_target_skips_competitor_fuzzy_match(self) -> None:
+        from sales_support_agent.services.deck.dataset import _find_target_row
+        from sales_support_agent.services.helium10 import parse_xray_csv
+
+        report = parse_xray_csv(self._lookalike_competitors())
+        matched = _find_target_row(
+            report,
+            asin="",
+            candidate_asin="B0MONTALE1",
+            source_url="https://habibiny.com",
+            title="H HABIBI White Eau de Parfum",
+            brand_name="H HABIBI White",
+        )
+        self.assertEqual(matched.product.asin, "B0MONTALE1")
+        skipped = _find_target_row(
+            report,
+            asin="",
+            candidate_asin="B0MONTALE1",
+            source_url="https://habibiny.com",
+            title="H HABIBI White Eau de Parfum",
+            brand_name="H HABIBI White",
+            allow_fuzzy=False,
+        )
+        self.assertIsNone(skipped.product)
+
+    def test_multi_row_target_xray_prefers_input_asin(self) -> None:
+        from sales_support_agent.services.deck.service import _select_target_xray_row
+        from sales_support_agent.services.helium10 import parse_xray_csv
+
+        target_xray = _competitor_xray(
+            _xray_row("Montale Intense Cafe", "B0MONTALE1", "MONTALE", "130.00"),
+            _xray_row("Habibi White", "B0HABIBI01", "Habibi", "42.00"),
+            _xray_row("Other Musk", "B0OTHER001", "Other", "30.00"),
+        )
+        report = parse_xray_csv(target_xray)
+        chosen, warning = _select_target_xray_row(report, asin="B0HABIBI01")
+        self.assertEqual(chosen.brand, "Habibi")
+        self.assertEqual(chosen.price_label, "$42.00")
+        self.assertEqual(warning, "")
+        missed, missed_warning = _select_target_xray_row(report, asin="B0MISSING1")
+        self.assertIsNone(missed)
+        self.assertIn("none match", missed_warning)
+
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        with session_scope(session_factory) as session:
+            service = self._service(session, _BlankHeroResearch())
+            result = service.generate_deck(
+                competitor_xray_csv_bytes=_xray_csv(),
+                competitor_xray_filename="competitors.csv",
+                target_xray_csv_bytes=target_xray,
+                target_xray_filename="target.csv",
+                target_product_input="B0HABIBI01",
+                include_recommended_plan=False,
+            )
+        summary = _latest_summary(session_factory)
+        html = str(summary.get("deck_html") or "")
+        self.assertIn("Habibi", result.design_title)
+        self.assertNotIn("MONTALE", result.design_title)
+        self.assertIn("$42.00", html)
+        self.assertNotIn("MONTALE", html)
+        self.assertNotIn("$130.00", html)
+
+    def test_amazon_deck_keeps_listing_wording(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        with session_scope(session_factory) as session:
+            service = self._service(session, _FakeProductResearch())
+            service.generate_deck(
+                competitor_xray_csv_bytes=_xray_csv(),
+                competitor_xray_filename="xray.csv",
+                target_product_input="B0TARGET01",
+                template_version="agency_v1",
+            )
+        html = str(_latest_summary(session_factory).get("deck_html") or "")
+        self.assertIn("Your listing today", html)
+        self.assertIn("Your listing vs. the benchmark", html)
+
+    def test_generate_route_accepts_brand_name_and_target_price(self) -> None:
+        from unittest import mock
+        from sales_support_agent.services.product_research import ProductResearchService
+
+        routing = DeckApiKeyRouteTests()
+        routing.addCleanup = self.addCleanup
+        client, sf = routing._client_with_deck_key("test-deck-key")
+
+        def _enrich(_self, target):
+            return _LaunchHeroResearch().enrich_target_product(target)
+
+        with mock.patch.object(ProductResearchService, "enrich_target_product", _enrich):
+            response = client.post(
+                "/api/decks/generate",
+                data={
+                    "target_product_input": "https://habibiny.com",
+                    "brand_name": "Habibi NY",
+                    "target_price": "20",
+                    "category_label": "Eau de Parfum",
+                    "include_recommended_plan": "false",
+                    "include_growth_plan": "true",
+                },
+                files=[("csv_files", ("competitors.csv", self._lookalike_competitors(), "text/csv"))],
+                headers={"X-Deck-Api-Key": "test-deck-key"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["details"]["design_title"], "Habibi NY x anata strategy deck")
+        summary = _latest_summary(sf)
+        html = str(summary.get("deck_html") or "")
+        self.assertIn("The DTC price is $20.00", html)
+        self.assertIn("not an Amazon seller", html)
+        self.assertNotIn("Your listing today", html)
+        self.assertNotIn("Your listing vs. the benchmark", html)
+        self.assertNotIn("Seller Central", html)

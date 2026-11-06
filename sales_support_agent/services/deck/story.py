@@ -45,20 +45,27 @@ def _int(value: Any) -> str:
         return str(value or "—")
 
 
+def _launch_mode(payload: dict[str, Any]) -> bool:
+    """True when the prospect has no Amazon listing to narrate."""
+    return str((payload.get("target") or {}).get("comparison_mode") or "") == "concept_only"
+
+
 def _section_cover(payload: dict[str, Any], target_brand: str) -> str:
     target = payload.get("target", {}) or {}
     text_fields = payload.get("text_fields", {}) or {}
-    title = target.get("title") or "the prospect listing"
-    asin = target.get("asin") or ""
+    launch = _launch_mode(payload)
+    title = target.get("title") or ("the launch product" if launch else "the prospect listing")
+    asin = "" if launch else (target.get("asin") or "")
     niche = payload.get("niche_keyword") or ""
 
     exec_summary = text_fields.get("executive_summary") or ""
     market_summary = text_fields.get("market_summary") or ""
+    label = "Launch product" if launch else "Target listing"
 
     lines = [
         f"# {target_brand} × Anata Strategy",
         "",
-        f"**Target listing:** {title}" + (f" (ASIN `{asin}`)" if asin else ""),
+        f"**{label}:** {title}" + (f" (ASIN `{asin}`)" if asin else ""),
         f"**Niche keyword:** _{niche}_" if niche else "",
         "",
         "## Executive summary",
@@ -153,9 +160,14 @@ def _section_search(payload: dict[str, Any]) -> str:
 def _section_conversion(payload: dict[str, Any]) -> str:
     cro = list(payload.get("cro_recommendations", []) or [])
     creative = list(payload.get("creative_recommendations", []) or [])
+    launch = _launch_mode(payload)
 
     parts = [
-        "## Conversion & PDP — where the listing needs to improve",
+        (
+            "## Launch page — what to build before market entry"
+            if launch
+            else "## Conversion & PDP — where the listing needs to improve"
+        ),
         "",
     ]
     if cro:

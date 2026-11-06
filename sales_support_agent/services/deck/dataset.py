@@ -100,11 +100,23 @@ def _find_target_row(
     source_url: str,
     title: str,
     brand_name: str,
+    allow_fuzzy: bool = True,
 ) -> TargetRowMatch:
+    """Match the prospect inside a competitor Xray.
+
+    Exact ASIN match always wins. Candidate-ASIN and title/brand scoring are
+    skipped when ``allow_fuzzy`` is false. Launch brands (a website URL, no
+    Amazon listing) must not be paired with a competitor row: a homepage
+    title can score above the match threshold against a page-one product and
+    the deck then narrates that competitor as the prospect.
+    """
     if asin:
         exact = xray_report.find_by_asin(asin)
         if exact:
             return TargetRowMatch(product=exact, provenance="verified_asin", confidence=100)
+
+    if not allow_fuzzy:
+        return TargetRowMatch(product=None, provenance="", confidence=0)
 
     normalized_url = _normalize_product_url(source_url)
     normalized_title = _normalize_key(_clean_listing_title(title))
@@ -215,7 +227,8 @@ def _build_target_snapshot_text(
         )
     return (
         f"{_brand_product_reference(brand_name)} is not yet established in the current market set. "
-        "Use this deck to benchmark the product concept against niche leaders and shape the launch-ready PDP, offer, and positioning."
+        "Use this deck to benchmark the product concept against niche leaders and shape the launch page, offer, and positioning. "
+        f"{brand_name} is not an Amazon seller."
     )
 def _build_market_summary(
     brand_name: str,
@@ -240,22 +253,54 @@ def _build_executive_summary(
     brand_name: str,
     xray_report: Helium10XrayReport,
     keyword_report: Helium10KeywordReport | None,
+    *,
+    launch_mode: bool = False,
 ) -> str:
     keyword_text = ""
     if keyword_report and keyword_report.keywords:
         keyword_text = f" The leading search objective in the dataset is {keyword_report.keywords[0].phrase}."
+    if launch_mode and not xray_report.market_evidence_sufficient:
+        return (
+            f"This analysis treats {brand_name} as a market-entry brand and outlines the "
+            "first launch-page and measurement actions. Market-size and competitor-benchmark "
+            "claims are withheld until enough relevant products are verified. "
+            f"{brand_name} is not an Amazon seller."
+        )
     if not xray_report.market_evidence_sufficient:
         return (
             f"This analysis confirms {_brand_product_reference(brand_name)} and outlines the "
             "first listing and measurement actions. Market-size and competitor-benchmark "
             "claims are withheld until enough relevant products are verified."
         )
+    if launch_mode:
+        return (
+            f"This deck treats {brand_name} as a market-entry brand. It benchmarks the product concept "
+            f"against the live Amazon category and outlines the launch offer, page, and positioning. "
+            f"{brand_name} is not an Amazon seller."
+            f"{keyword_text}"
+        )
     return (
         f"This deck benchmarks {_brand_product_reference(brand_name)} against the live market set and translates the data into an offer, PDP, SEO, and service plan for {brand_name}."
         f"{keyword_text}"
     )
-def _build_advertising_summary(xray_report: Helium10XrayReport, keyword_report: Helium10KeywordReport | None) -> str:
+def _build_advertising_summary(
+    xray_report: Helium10XrayReport,
+    keyword_report: Helium10KeywordReport | None,
+    *,
+    launch_mode: bool = False,
+) -> str:
     top_keyword = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else "the primary search terms"
+    if launch_mode:
+        if not xray_report.market_evidence_sufficient:
+            return (
+                "Advertising should follow the launch page and measurement setup. "
+                "Validate category terms against qualified competitors or Helium 10 data before scaling spend. "
+                "There is no Amazon listing to clean up yet."
+            )
+        return (
+            f"Advertising should follow the launch page. Once the product is in market, lean into {top_keyword} "
+            "and the adjacent high-volume terms while the category still has low-review competitors."
+        )
     if not xray_report.market_evidence_sufficient:
         return (
             "Advertising should follow listing cleanup and measurement setup. "
@@ -264,12 +309,16 @@ def _build_advertising_summary(xray_report: Helium10XrayReport, keyword_report: 
     return (
         f"Advertising should follow listing cleanup. Once the PDP is aligned, lean into {top_keyword} and the adjacent high-volume terms while exploiting low-review competitors in the category."
     )
-def _build_plan_summary(offer_cards: list[dict[str, str]], channels: list[str]) -> str:
+def _build_plan_summary(offer_cards: list[dict[str, str]], channels: list[str], *, launch_mode: bool = False) -> str:
     if offer_cards:
         return " / ".join(str(card.get("title", "")).strip() for card in offer_cards if str(card.get("title", "")).strip())
     services = []
     if "amazon" in channels:
-        services.append("fix the Amazon PDP, imagery, and search coverage")
+        services.append(
+            "prepare the Amazon launch listing, imagery, and search coverage"
+            if launch_mode
+            else "fix the Amazon PDP, imagery, and search coverage"
+        )
     if "shopify" in channels:
         services.append("align the Shopify storefront and conversion flow")
     if "tiktok_shop" in channels:
@@ -1091,15 +1140,21 @@ def _build_target_opportunities(
     market_average_price: float,
     best_seller: XrayProduct | None,
     price_label: str = "",
+    dtc_price: bool = False,
 ) -> tuple[list[str], list[str]]:
     strengths: list[str] = []
     gaps: list[str] = []
+    launch_mode = comparison_mode == "concept_only"
     if hero_product.image_url:
-        strengths.append("The listing already has a usable primary image, so the creative refresh can focus on sequencing and proof.")
+        if launch_mode:
+            strengths.append("The product already has a usable primary image, so launch creative can focus on sequencing and proof.")
+        else:
+            strengths.append("The listing already has a usable primary image, so the creative refresh can focus on sequencing and proof.")
     price_summary = _build_price_comparison_summary(
         hero_price=price_label or hero_product.price,
         market_average_price=market_average_price,
         best_seller_price=(best_seller.price_label if best_seller else ""),
+        dtc_price=dtc_price or launch_mode,
     )
     if price_summary:
         strengths.append(price_summary)
@@ -1110,9 +1165,12 @@ def _build_target_opportunities(
     if comparison_mode == "live_unmatched":
         gaps.append("The live Amazon target was not matched in the current niche export, so the benchmark column uses the top page-one competitor while direct target data fills identity, BSR, rating, and review signals where available.")
     elif comparison_mode == "concept_only":
-        gaps.append("The prospect is not currently visible in the Amazon market set, so the benchmark column uses the top page-one competitor instead.")
+        gaps.append("The prospect is not currently visible in the Amazon market set, so the benchmark column uses the top page-one competitor instead. This brand does not sell on Amazon yet.")
     if not hero_product.description:
-        gaps.append("The current listing copy does not expose enough product-story detail; bullets and support content need to be rebuilt.")
+        if launch_mode:
+            gaps.append("The product story does not yet carry enough detail for a launch page; the offer and support content still need to be written.")
+        else:
+            gaps.append("The current listing copy does not expose enough product-story detail; bullets and support content need to be rebuilt.")
     if search_insights.get("title_misses"):
         gaps.append("Important title keywords are still missing: " + ", ".join(search_insights["title_misses"][:3]) + ".")
     if search_insights.get("copy_misses"):

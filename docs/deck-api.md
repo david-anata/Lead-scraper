@@ -21,7 +21,29 @@ random value. While it is empty the route answers **404** (disabled).
 | `category_label` | Category label, e.g. `Beaded Earrings` |
 | `case_study_url` | Case study link |
 | `csv_files` (repeat) | The 5 Helium 10 CSVs (target Xray, competitor Xray, Keyword, Cerebro, Word Frequency); types are auto-detected |
+| `brand_name` | Optional. When set, this is the deck title, slug, and narrative brand. Use it when a homepage scrape would otherwise name the deck from the first tokens of the product title (Habibi NY was rendering as `H HABIBI White x anata`). |
+| `target_price` | Optional. Positive number, with or without `$`. On a website / DTC target this is the price used in DTC pricing commentary, ahead of a homepage scrape (HENOSIS was priced at `$99` from the homepage instead of the real `$20`). On an Amazon target it corrects a scrape only when no ASIN-matched Helium 10 price is present. `growth_aov` still wins when both are sent. |
 | optional | `channels`, `creative_mockup_url`, `offers`, `offer_payload_json`, `include_recommended_plan`, `include_growth_plan`, `template_version`, growth-plan fields |
+
+Existing fields stay optional in the same way. Omitting `brand_name` and `target_price` keeps the previous title, slug, and price behavior.
+
+## Launch brands (website URL, no Amazon listing)
+
+When `target_product_input` is a website URL rather than an Amazon ASIN or URL:
+
+- Competitor Xray rows are not candidate-matched or fuzzy-matched to the prospect. A page-one product is never narrated as the brand.
+- A multi-row file sent as `target_xray_csv` uses the row whose ASIN matches `target_product_input`. The first row is used only for a one-row export, or for a multi-row file when no ASIN was provided. If an ASIN was provided and it is not in the file, no row is treated as the prospect.
+- Deck copy uses market-entry language. It does not say "Your listing" or ask anyone to confirm Seller Central sessions, and it does not describe the brand as an existing Amazon seller.
+
+```bash
+curl -X POST https://agent.anatainc.com/api/decks/generate \
+  -H "X-Deck-Api-Key: $DECK_API_KEY" \
+  -F target_product_input=https://habibiny.com \
+  -F brand_name="Habibi NY" \
+  -F target_price=20 \
+  -F category_label="Eau de Parfum" \
+  -F csv_files=@competitor_xray.csv
+```
 
 ```bash
 curl -X POST https://agent.anatainc.com/api/decks/generate \
