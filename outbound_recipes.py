@@ -418,14 +418,48 @@ PREVIOUS_PLATFORMS = (
 REPLATFORM_SORTS = ("-er,rank", "-prank,rank", "-mas,rank")
 
 
+def _replatform_queries(now: datetime, settings=None) -> list[dict[str, Any]]:
+    """One previous platform per call.
+
+    f:last_platform is mutually exclusive. The comma list with op=or is what
+    the docs describe, and it is also what scanned zero stores on the days
+    this recipe was due. One documented value per request cannot be combined
+    into an empty intersection. Email and headcount stay on the client ICP
+    gate, the same way the churn query avoids stacking them into an empty 200.
+    """
+
+    window = _iso(now - timedelta(days=_int(settings, "replatformed.window_days")))
+    sort = REPLATFORM_SORTS[now.toordinal() % len(REPLATFORM_SORTS)]
+    return [
+        {
+            "f:last_platform": platform,
+            "f:last_platform_change_at:min": window,
+            "f:it": None,
+            "f:empcmin": None,
+            "f:empcmax": None,
+            "sort": sort,
+        }
+        for platform in PREVIOUS_PLATFORMS
+    ]
+
+
 def _replatformed(now: datetime, settings=None) -> dict[str, Any]:
-    return {
-        "f:last_platform": ",".join(PREVIOUS_PLATFORMS),
-        "f:last_platform:op": "or",
-        "f:last_platform_change_at:min": _iso(
-            now - timedelta(days=_int(settings, "replatformed.window_days"))),
-        "sort": REPLATFORM_SORTS[now.toordinal() % len(REPLATFORM_SORTS)],
-    }
+    return _replatform_queries(now, settings)[0]
+
+
+def _replatform_keeps(store: dict[str, Any], now: datetime,
+                      settings: Optional[dict[str, Any]] = None) -> bool:
+    """Trust the one-platform server filter, and drop a row that contradicts it."""
+
+    platform = str(store.get("last_platform") or "").strip().lower()
+    if platform and platform not in PREVIOUS_PLATFORMS:
+        return False
+    changed = _parse_app_date(store.get("last_platform_change_at"))
+    if changed is None:
+        return True
+    days = _int(settings, "replatformed.window_days")
+    age = (now - changed).days
+    return 0 <= age <= days
 
 
 # TikTok has a documented sort (-fc30dp_10) and no documented 30-day filter.
@@ -568,7 +602,7 @@ RECIPES: tuple[Recipe, ...] = (
         label="Recently replatformed",
         reason="They moved platforms recently, so vendors are being chosen right now",
         tier="B", cadence="weekly", max_per_run=25, build=_replatformed,
-        weekdays=(2, 4),
+        client_filter=_replatform_keeps, weekdays=(2, 4), expand=_replatform_queries,
     ),
     Recipe(
         key="social_surge",

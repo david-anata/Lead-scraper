@@ -26,6 +26,39 @@ def test_copy_never_moves_and_only_no_reply():
     assert c["check_duplicates"] and c["skip_invalid_emails"]
 
 
+def test_topup_keeps_only_completed_no_reply_and_does_not_send(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    leads = [
+        {"email": "done@brand.com", "status": 3, "campaign": "old", "first_name": "Done"},
+        {"email": "done@brand.com", "status": 3, "campaign": "old"},
+        {"email": "reply@brand.com", "status": 3, "email_reply_count": 1, "campaign": "old"},
+        {"email": "nope@brand.com", "status": 3, "lt_interest_status": -1, "campaign": "old"},
+        {"email": "gone@brand.com", "status": -2, "campaign": "old"},
+        {"email": "live@brand.com", "status": 1, "campaign": "old"},
+        {"email": "held@brand.com", "status": 3, "campaign": "old"},
+        {"email": "again@brand.com", "status": 3, "campaign": re_.TARGET_CAMPAIGN_ID},
+        {"email": "trial@brand.com", "status": 3, "campaign": "e5f5046b-07e4-41ad-a395-79cf8766ccd0"},
+    ]
+    chosen = re_.select_topup(
+        leads,
+        suppressed={"held@brand.com"},
+        in_reengage=set(),
+        active_elsewhere={"busy@brand.com"},
+    )
+    assert [row["email"] for row in chosen["eligible"]] == ["done@brand.com"]
+    assert chosen["rejected"]["repeat"] == 1
+    assert chosen["rejected"]["active thread"] == 1
+    assert "negative or unsubscribed" in chosen["rejected"]
+    monday = datetime(2026, 11, 2, 7, tzinfo=ZoneInfo("America/Denver"))
+    monkeypatch.delenv("OUTBOUND_REENGAGE_TOPUP_ENABLED", raising=False)
+    called = []
+    dry = re_.run_weekly_topup(post=lambda *a, **k: called.append(1), now=monday)
+    assert dry["dry_run"] is True and dry["added"] == 0 and called == []
+    assert "not true" in dry["reason"]
+
+
 def test_copy_has_no_em_dashes_and_offer_matches_abby():
     for t in (re_.EMAIL_1, re_.EMAIL_2, re_.EMAIL_3):
         assert "—" not in t and "–" not in t

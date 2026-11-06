@@ -31,7 +31,13 @@ logger = logging.getLogger(__name__)
 COMPANY_CAP = 300
 CREDIT_CAP = 1100
 _SOURCE_ORDER = ("amz_on", "amz_off", "plan_upgrade", "replatform")
+_ENRICH_FIRST = ("amz_on", "plan_upgrade", "replatform")
 _MAX_PAGES = 5
+# About $1M a year, the ICP floor. The live amz_on row is $10k-$20k a month.
+# That band produced 4 verified buyers out of 166 enriched companies on Nov 6.
+# Raising only the ceiling reaches the ICP door. The floor, amz_off, and the
+# 300 company cap stay put. This does not write the database.
+AMZ_ON_MONTHLY_MAX_CENTS = 8_333_333
 _DENVER = ZoneInfo("America/Denver")
 
 _REASONS = {
@@ -101,7 +107,9 @@ def _domains_from(page: Any) -> tuple[list[dict[str, Any]], Optional[str], str]:
 
 
 def _lead_from(store: dict[str, Any], recipe_key: str) -> Optional[dict[str, Any]]:
-    domain = str(store.get("name") or "").strip().lower()
+    import outbound_contacts as contacts
+
+    domain = contacts.company_domain(str(store.get("name") or ""))
     if "." not in domain or " " in domain:
         return None
     yearly = store.get("estimated_sales_yearly")
@@ -118,6 +126,63 @@ def _lead_from(store: dict[str, Any], recipe_key: str) -> Optional[dict[str, Any
         "niche": pipeline.store_niche(store),
         "estimated_sales_yearly_cents": yearly if isinstance(yearly, (int, float)) else 0,
     }
+
+
+def _platform_queries(filters: dict[str, Any]) -> list[dict[str, Any]]:
+    """One List Domains query per previous platform.
+
+    f:last_platform is mutually exclusive. A comma list returned an empty
+    200 for the replatform recipe on Oct 28, Oct 30, Nov 4, and Nov 6.
+    StoreLeads documents one value, or several values with op=or. Sending
+    one documented value per call is the repair that does not invent rows.
+    """
+
+    raw = str(filters.get("f:last_platform") or "")
+    if "," not in raw:
+        return [filters]
+    queries = []
+    for platform in raw.split(","):
+        platform = platform.strip().lower()
+        if not platform:
+            continue
+        query = dict(filters)
+        query["f:last_platform"] = platform
+        query.pop("f:last_platform:op", None)
+        queries.append(query)
+    return queries or [filters]
+
+
+def _widen_amz_on(recipe_key: str, filters: dict[str, Any]) -> dict[str, Any]:
+    """Raise only the amz_on monthly ceiling, and only when it is still narrow."""
+
+    if recipe_key != "amz_on":
+        return filters
+    try:
+        current = int(filters.get("f:ermax") or 0)
+    except (TypeError, ValueError):
+        return filters
+    if current <= 0 or current >= AMZ_ON_MONTHLY_MAX_CENTS:
+        return filters
+    widened = dict(filters)
+    widened["f:ermax"] = AMZ_ON_MONTHLY_MAX_CENTS
+    return widened
+
+
+def _seen_companies(contacted: Optional[set[str]]) -> set[str]:
+    """Contacted hosts plus their company keys, so a subdomain is not a new brand."""
+
+    import outbound_contacts as contacts
+
+    seen: set[str] = set()
+    for item in contacted or set():
+        raw = str(item or "").strip().lower()
+        if not raw:
+            continue
+        seen.add(raw)
+        company = contacts.company_domain(raw)
+        if company:
+            seen.add(company)
+    return seen
 
 
 def _ordered(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -234,59 +299,66 @@ def source_active_campaigns(
         def record(leads: list[dict[str, Any]], recipe_key: str) -> int:
             return record_leads(engine, leads, source=f"campaign:{recipe_key}")
 
-    seen = set(contacted or set())
-    # Recompute the share after each campaign. A recipe that finds fewer
-    # brands than its share leaves the unused room for the recipes after it.
+    seen = _seen_companies(contacted)
+    # Shares are locked up front. A campaign that finds nothing does not
+    # hand its room to amz_off. Unused room stays inside the 300 ceiling
+    # for the recipes that follow this sourcing pass.
     pending = _ordered(rows)
-    while pending and room > 0:
-        shares = share_company_room(
-            [int(row.get("daily_cap") or 0) for row in pending], room,
-        )
-        row = pending.pop(0)
-        allowance = shares[0] if shares else 0
-        if allowance <= 0:
+    shares = share_company_room(
+        [int(row.get("daily_cap") or 0) for row in pending], room,
+    )
+    for row, allowance in zip(pending, shares):
+        allowance = min(int(allowance), room)
+        if allowance <= 0 or room <= 0:
             continue
-        filters = campaigns.resolve_filters(row.get("storeleads_filters"), moment)
+        filters = _widen_amz_on(
+            str(row["recipe_key"]),
+            campaigns.resolve_filters(row.get("storeleads_filters"), moment),
+        )
         if not filters:
             continue
         cap = allowance
         fresh: list[dict[str, Any]] = []
-        cursor: Optional[str] = None
         scanned = 0
         skipped = 0
         unfit = 0
         error = ""
-        for _page in range(_MAX_PAGES):
-            if len(fresh) >= cap:
-                break
-            try:
-                page = fetch(api_key, extra_params=filters, cursor=cursor, page_size=100)
-            except Exception as exc:  # noqa: BLE001
-                error = str(exc)[:200]
-                logger.exception("[outbound-campaign-source] StoreLeads failed for %s", row["recipe_key"])
-                break
-            domains, cursor, error = _domains_from(page)
-            if error:
-                break
-            for store in domains:
-                scanned += 1
-                lead = _lead_from(store, str(row["recipe_key"]))
-                if lead is None:
-                    continue
-                if lead["domain"] in seen:
-                    skipped += 1
-                    continue
-                if not pipeline.passes_company_fit(store):
-                    unfit += 1
-                    continue
-                seen.add(lead["domain"])
-                fresh.append(lead)
-                if len(fresh) >= cap:
+        pages_left = _MAX_PAGES
+        for variant in _platform_queries(filters):
+            cursor = None
+            while pages_left > 0 and len(fresh) < cap:
+                pages_left -= 1
+                try:
+                    page = fetch(api_key, extra_params=variant, cursor=cursor, page_size=100)
+                except Exception as exc:  # noqa: BLE001
+                    error = str(exc)[:200]
+                    logger.exception("[outbound-campaign-source] StoreLeads failed for %s", row["recipe_key"])
                     break
-            if not cursor:
+                domains, cursor, page_error = _domains_from(page)
+                if page_error:
+                    error = page_error
+                    break
+                for store in domains:
+                    scanned += 1
+                    lead = _lead_from(store, str(row["recipe_key"]))
+                    if lead is None:
+                        continue
+                    if lead["domain"] in seen:
+                        skipped += 1
+                        continue
+                    if not pipeline.passes_company_fit(store):
+                        unfit += 1
+                        continue
+                    seen.add(lead["domain"])
+                    fresh.append(lead)
+                    if len(fresh) >= cap:
+                        break
+                if not cursor:
+                    break
+            if error or len(fresh) >= cap:
                 break
         saved = 0
-        if fresh and not error:
+        if fresh:
             try:
                 saved = int(record(fresh, str(row["recipe_key"])) or 0)
             except Exception:  # noqa: BLE001

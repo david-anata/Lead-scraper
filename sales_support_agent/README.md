@@ -158,6 +158,24 @@ place. Contacts whose v2 campaign is `cut` or `proposed` stay unpushed.
 Contacts tagged `redo_partner` are stored and left out of that push. This
 does not create, edit, activate, or archive Instantly campaigns.
 
+Sourcing locks each campaign's share of the 300 company ceiling up front,
+so `amz_off` does not absorb room another campaign did not fill. Company
+identity is the registrable domain, except a `*.myshopify.com` storefront,
+which stays its own host and is not folded into `myshopify.com`. The
+`amz_on` monthly ceiling used at query time is about $1M a year when the
+stored ceiling is still the narrower $20k a month band. `amz_off` and the
+300 cap are unchanged. Replatform queries send one previous platform per
+request. Enrichment tries unenriched `amz_on`, `plan_upgrade`, and
+`replatform` before `amz_off`.
+
+Monday at 7:00 America/Denver, inside the existing morning lease, a
+completed/no-reply re-engage top-up can add leads to the existing
+`abby_reengage` campaign. It stays off until
+`OUTBOUND_REENGAGE_TOPUP_ENABLED=true`. It does not activate a campaign,
+send a reply, or read Trial Offer Oct. Unsubscribes, negative replies,
+open threads, prior re-engage members, suppressed emails, and contacts
+already pushed to another campaign are excluded.
+
 The weekday morning pull sources `amz_on`, `amz_off`, `plan_upgrade`, and
 `replatform` from each row's `storeleads_filters` before the older recipes.
 Those filters are confirmed List Domains parameters: Shopify, Active, US,

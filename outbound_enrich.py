@@ -383,7 +383,12 @@ def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc)
         remaining = max(0, int(row.get("daily_cap") or 0) - used)
         buckets[key] = buckets[key][:remaining]
 
-    priority = _interleave([buckets[str(row["recipe_key"])] for row in ordered_rows])
+    import outbound_campaign_source as _priority_source
+
+    first = [str(row["recipe_key"]) for row in ordered_rows if str(row["recipe_key"]) in _priority_source._ENRICH_FIRST]
+    first.sort(key=lambda key: _priority_source._ENRICH_FIRST.index(key))
+    later = [str(row["recipe_key"]) for row in ordered_rows if str(row["recipe_key"]) not in _priority_source._ENRICH_FIRST]
+    priority = _interleave([buckets[key] for key in first]) + _interleave([buckets[key] for key in later])
     seen: set[str] = set()
     ordered: list[dict[str, Any]] = []
     for lead in priority:

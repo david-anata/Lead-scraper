@@ -243,8 +243,12 @@ def test_sourcing_records_the_recipe_and_skips_contacted_domains(engine):
     sent_keys = set().union(*(call.keys() for call in calls))
     assert sent_keys <= campaigns.CONFIRMED_FILTERS
     assert any(call.get("f:scs:op") == "not" for call in calls)
-    assert any(call.get("f:last_platform:op") == "or" for call in calls)
+    platforms = [call.get("f:last_platform") for call in calls if call.get("f:last_platform")]
+    assert platforms == ["woocommerce", "magento", "bigcommerce"]
+    assert all("," not in platform for platform in platforms)
     assert all(call.get("f:ermin") == 1_000_000 for call in calls)
+    amz_on_max = [call.get("f:ermax") for call in calls if call.get("f:scs") == "Amazon" and "f:scs:op" not in call and "f:plan" not in call]
+    assert amz_on_max == [source.AMZ_ON_MONTHLY_MAX_CENTS]
 
 
 def test_share_company_room_pays_caps_that_fit_and_splits_when_they_do_not():
@@ -324,9 +328,8 @@ def test_sourcing_gives_unused_share_to_later_recipes(engine):
         engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
     )
     recorded = {item["recipe_key"]: item["recorded"] for item in out["campaigns"]}
-    assert recorded["amz_on"] == 1
-    assert recorded["replatform"] == 99
-    assert out["recorded"] == 300
+    assert recorded == {"amz_on": 1, "amz_off": 75, "plan_upgrade": 75, "replatform": 75}
+    assert out["recorded"] == 226
 
 
 def test_sourcing_stops_at_the_company_and_credit_caps(engine):
