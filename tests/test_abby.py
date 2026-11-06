@@ -716,20 +716,62 @@ def test_templates_sign_as_account_specialist_and_do_not_cc():
         assert abby.validate_reply("interested", body)[0]
 
 
+V2_CAMPAIGN_IDS = (
+    "8e0df427-1f18-43ac-b0c6-e8ea787123d7",
+    "138a162d-6654-4916-9959-20c11e31214b",
+    "4dc10f79-f7c9-43c5-9c3e-5e28e9cf4c72",
+    "d1c197e3-bf1f-4f41-bcb9-e30e73975a2c",
+    "907d32fd-d6db-4ce6-8edc-485b78cce120",
+)
+
+
 def test_default_watch_list_includes_the_signal_campaigns(monkeypatch):
     monkeypatch.delenv("ABBY_CAMPAIGN_IDS", raising=False)
     ids = runner.watched_campaign_ids(["reengage-id"])
     assert ids[0] == "4f118329-c07e-4279-9c08-12059f2a49f4"
     assert "reengage-id" in ids and runner.TRIAL_CAMPAIGN_ID in ids
-    for campaign_id in runner.SIGNAL_CAMPAIGN_IDS:
+    for campaign_id in (*runner.SIGNAL_CAMPAIGN_IDS, *V2_CAMPAIGN_IDS):
         assert campaign_id in ids
+    assert ids == runner.watched_campaign_ids(["reengage-id"], create_engine("sqlite://"))
     assert len(ids) == len(set(ids))
     monkeypatch.setenv("ABBY_CAMPAIGN_IDS", "custom-1")
     replaced = runner.watched_campaign_ids(["reengage-id"])
     assert runner.TRIAL_CAMPAIGN_ID not in replaced
-    for campaign_id in runner.SIGNAL_CAMPAIGN_IDS:
+    for campaign_id in (*runner.SIGNAL_CAMPAIGN_IDS, *V2_CAMPAIGN_IDS):
         assert campaign_id not in replaced
     assert "custom-1" in replaced and "reengage-id" in replaced
+
+
+def test_watch_list_includes_new_outbound_campaigns_and_skips_proposals(monkeypatch):
+    monkeypatch.delenv("ABBY_CAMPAIGN_IDS", raising=False)
+    import outbound_campaigns as campaigns
+
+    engine = create_engine("sqlite://")
+    campaigns.ensure_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO outbound_campaigns "
+            "(campaign_id, name, recipe_key, status, daily_cap) "
+            "VALUES ('new-live', 'future|standard|x', 'future', 'active', 10)"
+        ))
+        conn.execute(text(
+            "INSERT INTO outbound_campaigns "
+            "(campaign_id, name, recipe_key, status, daily_cap) "
+            "VALUES ('kept-cut', 'old|standard|x', 'old_cut', 'cut', 0)"
+        ))
+        conn.execute(text(
+            "INSERT INTO outbound_campaigns "
+            "(campaign_id, name, recipe_key, status, daily_cap) "
+            "VALUES ('only-an-idea', 'future|standard|idea', 'future_idea', 'proposed', 0)"
+        ))
+    ids = runner.watched_campaign_ids(["reengage-id"], engine)
+    assert "new-live" in ids and "kept-cut" in ids
+    assert "only-an-idea" not in ids
+    for campaign_id in (*runner.SIGNAL_CAMPAIGN_IDS, *V2_CAMPAIGN_IDS, runner.TRIAL_CAMPAIGN_ID):
+        assert campaign_id in ids
+    monkeypatch.setenv("ABBY_CAMPAIGN_IDS", "custom-1")
+    replaced = runner.watched_campaign_ids(["reengage-id"], engine)
+    assert "new-live" not in replaced and "custom-1" in replaced
 
 
 def test_watched_campaigns_keep_sdr_and_reengage_and_default_to_the_trial(monkeypatch):

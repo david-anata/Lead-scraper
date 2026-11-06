@@ -414,7 +414,7 @@ def maybe_register_abby_webhook(now: Optional[datetime] = None, settings: Any = 
     return safe
 
 
-def _watched_campaigns(client: Any) -> list[str]:
+def _watched_campaigns(client: Any, engine: Any = None) -> list[str]:
     import abby_runner
 
     reengage: list[str] = []
@@ -426,7 +426,7 @@ def _watched_campaigns(client: Any) -> list[str]:
             reengage = list(named(reengage_mod.NAME) or [])
         except Exception:  # noqa: BLE001
             logger.exception("[abby] could not resolve the re-engage campaign")
-    return abby_runner.watched_campaign_ids(reengage)
+    return abby_runner.watched_campaign_ids(reengage, engine)
 
 
 def reply_state(engine: Any, email_id: str, *, now: Optional[datetime] = None) -> str:
@@ -499,7 +499,7 @@ def process_reply(
             logger.exception("[abby] could not load the webhook email")
 
     campaign_id = str(email.get("campaign_id") or payload.get("campaign_id") or "")
-    watched = _watched_campaigns(client)
+    watched = _watched_campaigns(client, engine)
     if campaign_id and watched and campaign_id not in watched:
         return {"status": "ignored", "reason": "campaign_not_watched", "campaign_id": campaign_id}
 
