@@ -42,6 +42,44 @@ def test_recipe_migration_matches_the_code_defaults():
         assert str(recipe.max_per_run) in sql
 
 
+def test_a_missing_recipe_table_still_uses_the_code_defaults():
+    value = create_engine("sqlite://", future=True)
+    import outbound_recipes as recipes
+    saved = batches.load_recipe_definitions(value)
+    assert [item["key"] for item in saved] == [recipe.key for recipe in recipes.RECIPES]
+
+
+def test_a_recipe_read_error_does_not_revive_paused_defaults():
+    value = engine()
+    assert batches.save_recipe(value, {
+        "key": "icp_baseline", "label": "Baseline", "template_key": "icp_baseline",
+        "reason": "Paused for the test", "tier": "C", "priority": "1",
+        "weekdays": "0", "cap": "25", "active": "0", "include_in_daily": "0",
+    }, actor="qa@example.com")["ok"]
+    assert batches.materialize_recipes(value, 0, {}) == []
+
+    class Boom:
+        def __enter__(self):
+            raise RuntimeError("connection reset")
+
+        def __exit__(self, *args):
+            return False
+
+    value.connect = lambda: Boom()
+    try:
+        batches.load_recipe_definitions(value)
+    except batches.RecipeReadError:
+        pass
+    else:
+        raise AssertionError("a failed recipe read returned definitions")
+    try:
+        batches.materialize_recipes(value, 0, {})
+    except batches.RecipeReadError:
+        pass
+    else:
+        raise AssertionError("a failed recipe read revived the morning schedule")
+
+
 def test_an_empty_recipe_table_falls_back_to_the_code_defaults():
     value = engine()
     from sqlalchemy import text

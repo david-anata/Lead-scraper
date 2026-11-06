@@ -941,7 +941,11 @@ def outbound_lead_ops(request: Request) -> Response:
     tunables = _st.effective(_eng, _rx.DEFAULT_SETTINGS)
     version = _st.config_version(_eng)
     from sales_support_agent.services import outbound_batches as _batches
-    recipe_definitions = _batches.load_recipe_definitions(_eng)
+    try:
+        recipe_definitions = _batches.load_recipe_definitions(_eng)
+    except _batches.RecipeReadError:
+        logger.exception("[outbound] recipe definitions could not be read")
+        recipe_definitions = []
     recipe_definition_rows = "".join(
         f"<tr><td><b>{html.escape(item['label'])}</b><br><small>{html.escape(item['key'])}</small></td>"
         f"<td>{html.escape(item['tier'])}</td><td>{html.escape(item['weekdays'])}</td><td>{item['cap']}</td>"

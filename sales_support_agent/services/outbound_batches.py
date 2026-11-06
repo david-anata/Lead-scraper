@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
 from sqlalchemy import text
 
 from sales_support_agent.services.outbound_ddl import create_table_if_absent
+
+logger = logging.getLogger(__name__)
+
+
+class RecipeReadError(RuntimeError):
+    """The recipe table exists but could not be read.
+
+    Callers must not substitute the code defaults. Those defaults turn every
+    recipe back on, including ones an operator has paused.
+    """
 
 
 @dataclass(frozen=True)
@@ -159,12 +170,34 @@ def seed_recipes(engine: Any) -> None:
         conn.execute(sql, rows)
 
 
+def _recipe_table_missing(exc: BaseException) -> bool:
+    """True only when outbound_recipe_definitions has not been created."""
+    orig = getattr(exc, "orig", None)
+    blob = " ".join(
+        str(part)
+        for part in (
+            type(exc).__name__,
+            type(orig).__name__ if orig is not None else "",
+            exc,
+            orig or "",
+        )
+    ).lower()
+    if "outbound_recipe_definitions" not in blob:
+        return False
+    return "no such table" in blob or "does not exist" in blob or "undefinedtable" in blob
+
+
 def load_recipe_definitions(engine: Any) -> list[dict[str, Any]]:
     """Rows from outbound_recipe_definitions, or the code defaults when that is empty.
 
     An empty table (the migration has not been applied, or it created the table
     and the seed did not run) must not blank the morning schedule. A table with
     rows is authoritative, including rows an operator has paused.
+
+    A missing table still falls back to the code defaults, because there is no
+    saved pause to lose. Any other read error raises ``RecipeReadError``.
+    Substituting the defaults there would turn paused recipes back on for the
+    morning pull.
     """
     if engine is None:
         return _builtin_recipe_definitions(None)
@@ -182,8 +215,14 @@ def load_recipe_definitions(engine: Any) -> list[dict[str, Any]]:
              "version": int(r[10]), "updated_by": r[11], "updated_at": str(r[12] or "")}
             for r in rows
         ]
-    except Exception:
-        return _builtin_recipe_definitions(engine)
+    except RecipeReadError:
+        raise
+    except Exception as exc:
+        if _recipe_table_missing(exc):
+            logger.warning("[outbound-batches] recipe table is missing; using code defaults")
+            return _builtin_recipe_definitions(engine)
+        logger.exception("[outbound-batches] could not read recipe definitions")
+        raise RecipeReadError("Could not read outbound recipe definitions.") from exc
 
 
 def save_recipe(engine: Any, values: dict[str, Any], *, actor: str) -> dict[str, Any]:
