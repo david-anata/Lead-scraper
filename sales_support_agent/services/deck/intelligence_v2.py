@@ -91,6 +91,30 @@ def load_case_studies() -> tuple[dict[str, Any], ...]:
     return tuple(dict(item) for item in data.get("case_studies", []))
 
 
+def case_study_detail(study: dict[str, Any], *, include_trial: bool) -> str:
+    """Proof copy for one case study.
+
+    Trial-specific wording stays when the selected offer includes a trial.
+    Otherwise the study's trial-neutral sentence is used, so a custom Agency
+    fee does not say the prospect is getting the platform trial users get.
+    """
+    detail = str(study.get("detail") or "")
+    if include_trial:
+        return detail
+    neutral = str(study.get("detail_without_trial") or "").strip()
+    if neutral:
+        return neutral
+    return re.sub(r",?\s*the same platform trial users get", "", detail, flags=re.IGNORECASE).strip()
+
+
+def offer_includes_trial_flag(payload: dict[str, Any]) -> bool:
+    """Read the deck flag. Missing means the historical trial pitch."""
+    include_trial = payload.get("offer_includes_trial", True)
+    if isinstance(include_trial, bool):
+        return include_trial
+    return str(include_trial).strip().lower() not in {"0", "false", "no"}
+
+
 # ---------------------------------------------------------------------------
 # Market model: dedupe, shares that can never pass 100%
 # ---------------------------------------------------------------------------
@@ -594,7 +618,7 @@ def _proof(payload: dict[str, Any], urls: dict[str, str]) -> str:
         )
         cards.append(
             f"<article class='proof'><p class='proof-name'>{_e(study.get('name'))}</p><h3>{_e(study.get('headline'))}</h3>"
-            f"<p>{_e(study.get('detail'))}</p><dl class='facts'>{rows}</dl>{link}</article>"
+            f"<p>{_e(case_study_detail(study, include_trial=offer_includes_trial_flag(payload)))}</p><dl class='facts'>{rows}</dl>{link}</article>"
         )
     extra = str(payload.get("case_study_url") or "").strip()
     extra_html = (
