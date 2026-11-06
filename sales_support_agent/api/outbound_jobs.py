@@ -410,6 +410,47 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
     return out
 
 
+def _reengage_topup(now: datetime) -> dict:
+    """Monday completed/no-reply top-up. Adds leads only when explicitly enabled.
+
+    It does not activate a campaign, send a reply, or read Trial Offer leads.
+    Suppression and contacts already pushed to another campaign are excluded.
+    """
+
+    import outbound_reengage as reengage
+
+    suppressed: set[str] = set()
+    elsewhere: set[str] = set()
+    try:
+        from sqlalchemy import text
+
+        from sales_support_agent.models.database import get_engine
+        import outbound_suppression as suppression
+
+        engine = get_engine()
+        emails, _domains = suppression.lists(engine)
+        suppressed = set(emails)
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT email FROM outbound_enriched_contacts "
+                "WHERE pushed_at IS NOT NULL AND coalesce(campaign_id, '') != :campaign"
+            ), {"campaign": reengage.TARGET_CAMPAIGN_ID}).fetchall()
+        elsewhere = {str(row[0]).strip().lower() for row in rows if row and row[0]}
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-jobs] re-engage eligibility lists could not be read")
+        if reengage.topup_enabled():
+            return {"dry_run": True, "added": 0, "eligible": 0, "reason": "could not read suppression"}
+    post = None
+    if reengage.topup_enabled():
+        import requests
+
+        def post(url, **kwargs):  # type: ignore[no-redef]
+            return requests.post(url, **kwargs)
+    return reengage.run_weekly_topup(
+        post=post, suppressed=suppressed, active_elsewhere=elsewhere, now=now,
+    )
+
+
 def _require_scheduler_auth(request: Request) -> None:
     """Accept Vercel Cron auth or the existing internal scheduler key."""
 
@@ -472,6 +513,14 @@ def run_scheduled_outbound(request: Request) -> dict:
             "run_key": run_key,
         }
 
+    topup: dict = {"reason": "not Monday"}
+    if now.weekday() == 0:
+        try:
+            topup = _reengage_topup(now)
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-jobs] re-engage top-up failed")
+            topup = {"reason": "topup failed", "added": 0, "dry_run": True}
+
     try:
         if _already_ran_today(engine, now):
             result = {"ran": False, "reason": "daily marker already exists"}
@@ -497,6 +546,7 @@ def run_scheduled_outbound(request: Request) -> dict:
         return {
             "status": "skipped" if expected_skip else "ok",
             "details": result,
+            "reengage_topup": topup,
             "run_key": run_key,
         }
     except HTTPException:

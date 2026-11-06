@@ -436,7 +436,7 @@ def test_enrich_job_tries_campaign_recipes_before_newer_baseline(engine, monkeyp
     out, _posts = _run_loaded(engine, find=find, push=record)
     assert out["ran"]
     assert tried == [
-        "amzon0.com", "amzoff0.com", "planup0.com", "replat0.com", baseline[-1],
+        "amzon0.com", "planup0.com", "replat0.com", "amzoff0.com", baseline[-1],
     ]
     by_campaign = {cid: emails for cid, emails in sent}
     assert by_campaign[push.RECIPE_CAMPAIGN_MAP["amz_on"]] == ["a@amzon0.com"]

@@ -467,7 +467,7 @@ def _same_company(item: dict[str, Any], domain: str) -> bool:
     """
     import outbound_contacts as _contacts
 
-    target = _contacts.registrable_domain(domain)
+    target = _contacts.company_domain(domain)
     if not target:
         return False
     hosts = [
@@ -497,7 +497,7 @@ def domain_in_instantly(domain: str, *, key: Optional[str] = None,
     """
     key = key if key is not None else api_key()
     import outbound_contacts as _contacts
-    domain = _contacts.registrable_domain(domain)
+    domain = _contacts.company_domain(domain)
     if not key or not domain:
         return None
     post = post or requests.post

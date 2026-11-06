@@ -106,6 +106,12 @@ _ECOM_MANAGER_RE = re.compile(
     r"|\bmanagers?\b(?:\s+\w+){0,3}\s+(?:e[\s-]?commerce|digital[\s-]?commerce)\b",
     re.I,
 )
+# Amazon and marketplace managers are buyers. A generic marketing manager is not.
+_CHANNEL_MANAGER_RE = re.compile(
+    r"\b(?:amazon|marketplaces?)\s+managers?\b"
+    r"|\bmanagers?\b(?:\s+\w+){0,3}\s+(?:amazon|marketplaces?)\b",
+    re.I,
+)
 
 
 @dataclass
@@ -166,6 +172,7 @@ def title_rank(title: str) -> Optional[int]:
         or _CMO_RE.search(raw)
         or _COO_RE.search(raw)
         or _ECOM_MANAGER_RE.search(raw)
+        or _CHANNEL_MANAGER_RE.search(raw)
     ):
         return 1
     return None
@@ -229,9 +236,38 @@ def registrable_domain(value: str) -> str:
     return f"{ext.domain}.{ext.suffix}"
 
 
+# Storefront hosts on a platform are separate stores. Collapsing them to the
+# platform apex would treat every Shopify store as one company.
+PLATFORM_REGISTRABLE = frozenset({
+    "myshopify.com",
+    "shopify.com",
+    "shopifypreview.com",
+})
+
+
+def company_domain(value: str) -> str:
+    """Company key for search, storage, and dedupe.
+
+    A custom host becomes its registrable domain, so us.brand.com and
+    shop.brand.com are one company. A platform storefront such as
+    glow.myshopify.com stays that full host. The platform apex itself is
+    not a company.
+    """
+
+    host = normalize_host(value)
+    if not host:
+        return ""
+    root = registrable_domain(host)
+    if root in PLATFORM_REGISTRABLE:
+        if host == root:
+            return ""
+        return host
+    return root or host
+
+
 def normalize_domain(value: str) -> str:
-    """The domain we search, store, and dedupe on: the registrable domain."""
-    return registrable_domain(value)
+    """The domain we search, store, and dedupe on."""
+    return company_domain(value)
 
 
 def search_failure_reason(status: int, data: dict[str, Any], api_key: str) -> str:
