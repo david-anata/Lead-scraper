@@ -237,6 +237,11 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
 
     now = now or datetime.now(ZoneInfo(_TZ))
     out: dict = {"ran": False, "recipes": [], "pulled": 0, "scanned": 0, "reason": ""}
+    if now.weekday() >= 5:
+        # Render's morning cron is every day. Vercel is weekdays. Either way,
+        # Saturday and Sunday do not source. Campaign filters are not an exception.
+        out["reason"] = "weekend"
+        return out
 
     try:
         from sales_support_agent.models.database import get_engine
@@ -259,7 +264,7 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
 
     outbound_batches.ensure_tables(engine)
     due = outbound_batches.materialize_recipes(engine, now.weekday(), tunables)
-    if not due:
+    if not due and engine is None:
         out["reason"] = "nothing scheduled today"
         return out
 
@@ -302,6 +307,17 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
             daily_remaining = max(0, daily_remaining - recorded)
             out["pulled"] += recorded
             out["recipes"].extend(list(sourced.get("recipes") or []))
+        stages = []
+        for item in sourced.get("campaigns") or []:
+            stages.append(
+                f"{item.get('recipe_key')}:recorded={int(item.get('recorded') or 0)}"
+                f"/scanned={int(item.get('scanned') or 0)}"
+                f"/seen={int(item.get('skipped_seen') or 0)}"
+                f"/unfit={int(item.get('skipped_unfit') or 0)}"
+            )
+            if item.get("error"):
+                stages.append(f"{item.get('recipe_key')}:error")
+        if sourced.get("campaigns") or sourced.get("stopped_reason"):
             recipe_runs.append({
                 "recipe_key": "campaign_filters",
                 "recipe_label": "Signal campaign filters",
@@ -310,6 +326,7 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
                 "scanned": int(sourced.get("scanned") or 0),
                 "matched": recorded,
                 "skipped_seen": int(sourced.get("skipped_seen") or 0),
+                "error": (sourced.get("stopped_reason") or "; ".join(stages))[:500],
             })
 
     # 1. Pull. Fast and free; the Amazon work is deliberately not inline here,
