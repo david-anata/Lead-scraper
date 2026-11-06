@@ -483,6 +483,86 @@ class BuildingOperationsTests(unittest.TestCase):
         self.assertEqual(taxed_estimate["estimated_total_cents"], 268125)
         self.assertEqual(taxed_estimate["deposit_cents"], 50000)
 
+        retire_v3 = self.client.put(
+            "/api/internal/building/offerings/arena-events/rate-plans/arena-v3",
+            headers=self.internal_headers,
+            json={
+                "id": "arena-v3",
+                "version": 3,
+                "name": "Arena taxable plan",
+                "status": "retired",
+                "effective_from": "2026-01-01",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(retire_v3.status_code, 200, retire_v3.text)
+        day_portion_plan = self.client.put(
+            "/api/internal/building/offerings/arena-events/rate-plans/arena-v4",
+            headers=self.internal_headers,
+            json={
+                "id": "arena-v4",
+                "version": 4,
+                "name": "Arena day portion plan",
+                "status": "approved",
+                "currency": "USD",
+                "unit_amount_cents": 0,
+                "public_price_display": "Half day $1,500 · Full day $2,000",
+                "booking_unit": "day_portion",
+                "minimum_units": 1,
+                "deposit_type": "percent",
+                "deposit_percent_bps": 5000,
+                "cancellation_policy": "Full refund within 7 days of payment.",
+                "included": ["Tables", "Chairs"],
+                "addons": [{
+                    "id": "setup-reset-75",
+                    "name": "Setup reset",
+                    "amount_cents": 25000,
+                    "pricing_mode": "flat",
+                }],
+                "commercial_terms": {
+                    "half_day_amount_cents": 150000,
+                    "full_day_amount_cents": 200000,
+                    "full_plus_half_amount_cents": 300000,
+                    "two_full_days_amount_cents": 350000,
+                },
+                "tax_status": "taxable",
+                "tax_rate_bps": 745,
+                "tax_note": "Estimated tax.",
+                "approval_evidence": "pricing-review-day-portion",
+                "effective_from": "2026-01-01",
+                "approved_by": "approver@example.com",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(day_portion_plan.status_code, 200, day_portion_plan.text)
+        for portion, expected_base in (
+            ("half", 150000),
+            ("full", 200000),
+            ("full_plus_half", 300000),
+            ("two_full", 350000),
+        ):
+            response = self.client.post(
+                "/api/public/building/event-estimates",
+                json={
+                    "offering_id": "arena-events",
+                    "day_portion": portion,
+                    "attendance": 50,
+                    "addons": [],
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            estimate = response.json()["estimate"]
+            self.assertEqual(estimate["booking_unit"], "day_portion")
+            self.assertEqual(estimate["day_portion"], portion)
+            self.assertEqual(estimate["line_items"][0]["amount_cents"], expected_base)
+            tax = (expected_base * 745 + 5000) // 10000
+            self.assertEqual(estimate["estimated_tax_cents"], tax)
+            self.assertEqual(estimate["estimated_total_cents"], expected_base + tax)
+            self.assertEqual(
+                estimate["deposit_cents"],
+                ((expected_base + tax) * 5000 + 5000) // 10000,
+            )
+
     def test_inquiry_requires_secret_consent_and_idempotency(self) -> None:
         payload = {
             "kind": "event",
