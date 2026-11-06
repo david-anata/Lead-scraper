@@ -71,6 +71,9 @@ def test_cmo_coo_and_ecommerce_managers_rank_with_functional_buyers():
     assert oc.title_rank("CEO") < oc.title_rank("COO")
     assert oc.title_rank("Operations Manager") is None
     assert oc.title_rank("Founder & CMO") == 0
+    assert oc.title_rank("Amazon Manager") == second
+    assert oc.title_rank("Marketplace Manager") == second
+    assert oc.title_rank("Marketing Manager") is None
 
 
 def test_role_mailbox_is_not_a_personal_address():
@@ -116,6 +119,11 @@ def test_normalize_domain():
     assert oc.normalize_domain("costco.bowerandbranch.com") == "bowerandbranch.com"
     assert oc.normalize_domain("shop.brand.co.uk") == "brand.co.uk"
     assert oc.normalize_domain("shop.brand.com.au") == "brand.com.au"
+    assert oc.normalize_domain("us.zonedenmarkshop.com") == "zonedenmarkshop.com"
+    assert oc.normalize_domain("https://glow.myshopify.com/products") == "glow.myshopify.com"
+    assert oc.normalize_domain("other.myshopify.com") == "other.myshopify.com"
+    assert oc.company_domain("myshopify.com") == ""
+    assert oc.company_domain("glow.myshopify.com") != oc.company_domain("other.myshopify.com")
 
 
 def test_returns_two_best_verified_contacts_and_counts_credits():

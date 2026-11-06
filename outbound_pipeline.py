@@ -445,12 +445,13 @@ def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
     """
     scored = score_store(store, now=now)
     signals = list(scored["signals"])
+    import outbound_contacts as _company
     import outbound_instantly_push as _push
     for token in _push.route_tokens_for_store(store, now=now):
         if token not in signals:
             signals.append(token)
     lead = {
-        "domain": str(store.get("name") or "").strip().lower(),
+        "domain": _company.company_domain(str(store.get("name") or "")),
         "brand": str(store.get("merchant_name") or store.get("name") or "").strip(),
         "niche": store_niche(store),
         "country": _normalize_country(str(store.get("country_code") or "")),

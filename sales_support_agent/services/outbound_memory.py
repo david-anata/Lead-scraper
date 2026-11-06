@@ -393,14 +393,27 @@ def total_delivered(engine) -> int:
 
 
 def load_runs(engine, limit: int = 30) -> list[dict[str, Any]]:
-    """Most recent pulls first. Empty list when there is no database or on error."""
+    """Most recent pulls first. Empty list when there is no database or on error.
+
+    The limit is applied in SQL. Callers already discard everything past it,
+    and the morning idempotency check reads this on a short timer. A full
+    history scan gets slower every day and, if it times out, looks the same
+    as "today has not run."
+    """
     if engine is None:
         return []
     try:
+        capped = max(0, int(limit))
+    except (TypeError, ValueError):
+        capped = 0
+    try:
         with engine.connect() as conn:
-            rows = conn.execute(text(_SELECT_RUNS_SQL)).fetchall()
+            rows = conn.execute(
+                text(_SELECT_RUNS_SQL + ", id DESC LIMIT :n"),
+                {"n": capped},
+            ).fetchall()
         out = []
-        for r in rows[:limit]:
+        for r in rows:
             out.append({
                 "id": int(r[0]), "recipe": r[1], "scanned": r[2], "matched": r[3], "fresh": r[4],
                 "skipped_seen": r[5], "partial": bool(r[6]), "note": r[7], "ran_at": r[8],
@@ -614,10 +627,17 @@ def load_exports(engine, limit: int = 8) -> list[dict[str, Any]]:
     try:
         ensure_runs_table(engine)
         with engine.connect() as conn:
-            rows = conn.execute(text(f"SELECT actor,run_ids,source_rows,unique_companies,duplicates_removed,filename,exported_at FROM {_EXPORTS_TABLE} ORDER BY exported_at DESC")).fetchall()
+            rows = conn.execute(
+                text(
+                    f"SELECT actor,run_ids,source_rows,unique_companies,duplicates_removed,filename,exported_at "
+                    f"FROM {_EXPORTS_TABLE} ORDER BY exported_at DESC, id DESC LIMIT :n"
+                ),
+                {"n": max(0, int(limit))},
+            ).fetchall()
         return [{"actor": r[0], "run_ids": r[1], "source_rows": r[2], "unique_companies": r[3],
-                 "duplicates_removed": r[4], "filename": r[5], "exported_at": r[6]} for r in rows[:limit]]
+                 "duplicates_removed": r[4], "filename": r[5], "exported_at": r[6]} for r in rows]
     except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] load_exports failed")
         return []
 
 
@@ -645,11 +665,20 @@ def load_delivery_history(engine, limit: int = 8) -> list[dict[str, Any]]:
     try:
         ensure_runs_table(engine)
         with engine.connect() as conn:
-            rows = conn.execute(text(f"SELECT recipe,destination,target,status,attempted_at FROM {_DELIVERY_HISTORY_TABLE} ORDER BY attempted_at DESC")).fetchall()
+            rows = conn.execute(
+                text(
+                    f"SELECT recipe,destination,target,status,attempted_at FROM {_DELIVERY_HISTORY_TABLE} "
+                    "ORDER BY attempted_at DESC, id DESC LIMIT :n"
+                ),
+                {"n": max(0, int(limit))},
+            ).fetchall()
         return [{"recipe": r[0], "destination": r[1], "target": r[2],
-                 "status": r[3], "attempted_at": r[4]} for r in rows[:limit]]
+                 "status": r[3], "attempted_at": r[4]} for r in rows]
     except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] load_delivery_history failed")
         return []
+
+
 def ensure_table(engine, *, force: bool = False) -> None:
     if "postgres" in str(getattr(engine, "url", "")).lower() and not force:
         return
@@ -1000,13 +1029,68 @@ def update_amazon_finding(engine, domain: str, amazon: dict[str, Any] | None) ->
         return False
 
 
+def _stored_lead(cols: tuple[str, ...], row: Any) -> dict[str, Any]:
+    """One stored lead, with signals and Amazon facts flattened back out."""
+    lead = dict(zip(cols, row))
+    try:
+        lead["signals"] = json.loads(lead.get("signals") or "[]")
+    except (ValueError, TypeError):
+        lead["signals"] = []
+    lead["amazon_confidence"] = _text(lead.get("amazon_confidence"))
+    lead["amazon_marketplace"] = _text(lead.get("amazon_marketplace"))
+    lead["amazon_checked_at"] = _text(lead.get("amazon_checked_at"))
+    lead["amazon_absent"] = bool(_flag(lead.get("amazon_absent")))
+    lead["amazon_sellers_unknown"] = _whole(lead.get("amazon_sellers_unknown"))
+    lead["amazon_skipped_reason"] = _text(lead.get("amazon_skipped_reason"))
+    lead["video_url"] = _text(lead.get("video_url"))
+    try:
+        for key, val in (json.loads(lead.get("amazon_facts") or "{}") or {}).items():
+            lead[key] = val
+    except (ValueError, TypeError):
+        pass
+    lead["first_seen_at"] = row[-1]
+    return lead
+
+
+def _newest_stored_leads(engine, limit: int) -> list[dict[str, Any]]:
+    """Newest ``limit`` leads, stopped in the database.
+
+    ``load_leads`` still pages in Python so a full-library export can pass
+    ``limit=None``. The Amazon queue only needs this window, and each row
+    carries the facts JSON.
+    """
+    if engine is None:
+        return []
+    try:
+        capped = max(0, int(limit))
+    except (TypeError, ValueError):
+        capped = 0
+    params = {"n": capped}
+
+    def read(sql: str, cols: tuple[str, ...]) -> tuple[list[Any], tuple[str, ...]]:
+        with engine.connect() as conn:
+            return list(conn.execute(text(sql + " LIMIT :n"), params).fetchall()), cols
+
+    try:
+        rows, cols = read(_SELECT_LEADS_SQL, _SELECT_LEAD_COLS)
+    except Exception:  # noqa: BLE001, table predates the Amazon columns
+        try:
+            rows, cols = read(_SELECT_LEADS_CORE_SQL, _CORE_LEAD_COLS)
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-memory] could not read the Amazon queue")
+            return []
+    return [_stored_lead(cols, row) for row in rows]
+
+
 def leads_needing_amazon(engine, *, limit: int = 3, max_age_days: int = 7) -> list[dict[str, Any]]:
     """The brands worth checking next: best first, never checked or gone stale.
 
     We only look up brands we would actually email, rather than every brand we
     hold, because each one costs minutes and real money at the data provider.
+    The candidate window stays the newest 1,000 leads. The database applies
+    that window so the morning scan does not pull the whole library first.
     """
-    leads = load_leads(engine, limit=1000)
+    leads = _newest_stored_leads(engine, 1000)
     if not leads:
         return []
     cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(max_age_days or 7)))

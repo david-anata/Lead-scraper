@@ -27,7 +27,7 @@ class BaseFilterTests(unittest.TestCase):
             # Churn omits the contact and headcount filters on purpose: stacking
             # them on the single-app uninstall query returned an empty 200.
             # store_matches_icp still requires an email and the employee band.
-            if r.key == "churned_tool":
+            if r.key in {"churned_tool", "replatformed"}:
                 self.assertNotIn("f:it", p)
                 self.assertNotIn("f:empcmin", p)
                 self.assertNotIn("f:empcmax", p)
@@ -93,12 +93,17 @@ class TriggerWindowTests(unittest.TestCase):
         self.assertEqual(set(seen), set(rc.PLAN_UPGRADE_SORTS))
 
     def test_replatformed_limits_the_previous_platform(self):
-        p = rc.recipe("replatformed").params(WED)
-        self.assertTrue(p["f:last_platform_change_at:min"].startswith("2026-01-30"))
-        self.assertEqual(p["f:last_platform:op"], "or")
-        for platform in ("woocommerce", "bigcommerce", "magento", "wix", "squarespace"):
-            self.assertIn(platform, p["f:last_platform"])
-        self.assertIn(p["sort"], rc.REPLATFORM_SORTS)
+        sets = rc.recipe("replatformed").param_sets(WED)
+        self.assertEqual([item["f:last_platform"] for item in sets], list(rc.PREVIOUS_PLATFORMS))
+        for item in sets:
+            self.assertNotIn(",", item["f:last_platform"])
+            self.assertNotIn("f:last_platform:op", item)
+            self.assertNotIn("f:it", item)
+            self.assertTrue(item["f:last_platform_change_at:min"].startswith("2026-01-30"))
+            self.assertIn(item["sort"], rc.REPLATFORM_SORTS)
+        self.assertFalse(rc.recipe("replatformed").keeps(
+            {"last_platform": "shopify", "last_platform_change_at": "2026-07-01T00:00:00Z"}, WED,
+        ))
 
     def test_social_surge_does_not_send_the_undocumented_tiktok_filter(self):
         sets = rc.recipe("social_surge").param_sets(WED)

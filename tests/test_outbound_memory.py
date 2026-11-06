@@ -103,6 +103,21 @@ class RunTrackingTests(unittest.TestCase):
             m.record_run(e, recipe=f"r{i}", scanned=1, matched=1, fresh=1, skipped_seen=0)
         self.assertEqual(len(m.load_runs(e, limit=3)), 3)
 
+    def test_run_limit_keeps_the_newest(self):
+        """The cap has to be the latest pulls, not an arbitrary page of history."""
+        from sqlalchemy import text
+
+        e = self._engine()
+        for i in range(4):
+            m.record_run(e, recipe=f"r{i}", scanned=1, matched=1, fresh=1, skipped_seen=0)
+        with e.begin() as conn:
+            for i in range(4):
+                conn.execute(
+                    text("UPDATE outbound_pull_runs SET ran_at = :t WHERE recipe = :r"),
+                    {"t": f"2026-01-0{i + 1}T00:00:00", "r": f"r{i}"},
+                )
+        self.assertEqual([run["recipe"] for run in m.load_runs(e, limit=2)], ["r3", "r2"])
+
     def test_fails_open_on_bad_engine(self):
         self.assertFalse(m.record_run(object(), recipe="x", scanned=0, matched=0,
                                       fresh=0, skipped_seen=0))
@@ -441,6 +456,34 @@ class AmazonScanStorageTests(unittest.TestCase):
         m.update_amazon_finding(e, "rho.com", self._finding(checked_at=old))
         self.assertEqual([l["domain"] for l in m.leads_needing_amazon(e, limit=3, max_age_days=7)],
                          ["rho.com"])
+
+    def test_amazon_queue_ignores_leads_outside_the_newest_thousand(self):
+        """A stale brand older than the window must not jump the paid check queue.
+
+        The window is applied in SQL. An unordered LIMIT would put the oldest
+        row, old.com, back into the queue.
+        """
+        from sqlalchemy import text
+
+        e = self._e()
+        recent = datetime.now(timezone.utc).isoformat()
+        m.record_leads(e, [{"domain": "old.com", "brand": "Old", "tier": "A", "score": 99}])
+        m.record_leads(e, [
+            {"domain": f"n{i}.com", "brand": str(i), "tier": "C", "score": 1}
+            for i in range(1000)
+        ])
+        with e.begin() as conn:
+            conn.execute(
+                text("UPDATE outbound_contacted_domains SET first_seen_at = '2000-01-01' WHERE domain = 'old.com'")
+            )
+            conn.execute(
+                text(
+                    "UPDATE outbound_contacted_domains SET amazon_checked_at = :t "
+                    "WHERE domain != 'old.com'"
+                ),
+                {"t": recent},
+            )
+        self.assertEqual(m.leads_needing_amazon(e, limit=3), [])
 
 
 class FactsReachTheClayFileTests(unittest.TestCase):
