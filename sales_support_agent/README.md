@@ -131,12 +131,17 @@ Outbound contact finding (defaults are unchanged until these are set):
 `recipe` column. It reads `outbound_campaigns` (active and throttled rows,
 including the `replatformed` alias of `replatform`). When that table is
 empty or cannot be read, it uses the hardcoded
-`outbound_instantly_push.RECIPE_CAMPAIGN_MAP` (`amz_on`, `amz_off`,
-`plan_upgrade`, `replatform`, `abby_reengage`). Any other recipe uses
-`OUTBOUND_INSTANTLY_CAMPAIGN_ID`. Contacts whose campaign is `cut` or
-`proposed` stay unpushed. Contacts tagged `redo_partner` are stored and
-left out of that push. This does not create, edit, or activate Instantly
-campaigns.
+`outbound_instantly_push.RECIPE_CAMPAIGN_MAP`, which names the v2
+campaigns: `amz_on` `8e0df427-1f18-43ac-b0c6-e8ea787123d7`, `amz_off`
+`138a162d-6654-4916-9959-20c11e31214b`, `plan_upgrade`
+`4dc10f79-f7c9-43c5-9c3e-5e28e9cf4c72`, `replatform` and `replatformed`
+`d1c197e3-bf1f-4f41-bcb9-e30e73975a2c`, `abby_reengage`
+`907d32fd-d6db-4ce6-8edc-485b78cce120`. The `replatform` v2 campaign is
+completed in Instantly, so leads added there do not send until it is
+restarted. Any other recipe uses `OUTBOUND_INSTANTLY_CAMPAIGN_ID`.
+Contacts whose campaign is `cut` or `proposed` stay unpushed. Contacts
+tagged `redo_partner` are stored and left out of that push. This does not
+create, edit, or activate Instantly campaigns.
 
 The weekday morning pull sources `amz_on`, `amz_off`, `plan_upgrade`, and
 `replatform` from each row's `storeleads_filters` before the older recipes.
@@ -145,8 +150,24 @@ an email, and about $10k to $20k a month, plus Amazon / not Amazon, a
 Shopify Plus plan change in the last 90 days, or a move off WooCommerce,
 Magento, or BigCommerce in the last 120 days. Domains already in
 `outbound_contacted_domains` are skipped. New companies stay inside the
-300 company and 1100 credit daily caps. Sourcing does not spend Prospeo
-credits and does not call Instantly.
+300 company and 1100 credit daily caps. Each campaign also stops at its
+own `daily_cap`. When those caps add up to more than the room left in
+the 300, the room is shared so `replatform` still receives leads. Five
+caps of 100 do not fit: `abby_reengage` has no StoreLeads filters, and
+the other four at 100 are 400. Sharing a full 300 across those four
+gives each 75. Raising the 300 ceiling to 400 would fund each sourcing cap in full
+and would leave the morning pull with no room for `social_surge` or
+`icp_baseline`. Sourcing does not spend Prospeo credits and does not
+call Instantly.
+
+The hourly enrich job tries active `outbound_campaigns` recipes first,
+oldest unenriched brand first, up to each row's remaining `daily_cap`
+(the live caps are 100). The recipes are interleaved. `icp_baseline`,
+`social_surge`, and every other recipe use whatever room is left,
+newest first. The enrich order does not move a contact already in
+Instantly. Each recipe is still pushed from the active
+`outbound_campaigns` row, or from the v2 fallback map when that table
+cannot be read.
 
 Monday at 7:00 AM America/Denver, `/api/jobs/outbound-campaign-score/at-1300`
 and `at-1400` score the previous week once `instantly_campaign_daily`

@@ -3,10 +3,14 @@
 Approved by David on 2026-10-22: run into the live Instantly campaign, up to
 120 companies and 250 Prospeo credits a day.
 
-Vercel Cron calls this a few times each weekday morning. Each call takes the
-newest sourced brands that have not been enriched, finds up to two verified
-decision-makers per brand (Prospeo), writes an opening line, and adds them to
-Instantly. A recipe listed in ``RECIPE_CAMPAIGN_MAP`` goes to that campaign.
+Vercel Cron calls this a few times each weekday morning. Each call tries
+brands from active ``outbound_campaigns`` recipes first, oldest unenriched
+first and within that campaign's remaining ``daily_cap``, interleaved so
+one recipe cannot spend the run. Baseline and every other recipe follow,
+newest first. It finds up to two verified decision-makers per brand
+(Prospeo), writes an opening line, and adds them to Instantly. A recipe
+listed in ``RECIPE_CAMPAIGN_MAP`` goes to that campaign. The enrich order
+does not change that routing and does not move a contact already in Instantly.
 Every other recipe uses ``OUTBOUND_INSTANTLY_CAMPAIGN_ID``. There is no
 fallback to the retired campaign. ``redo_partner`` contacts are stored and
 not pushed. A Slack summary posts after each call that did something.
@@ -266,6 +270,12 @@ def run_enrich_job(
         if leads is None:
             from sales_support_agent.services import outbound_memory
             leads = outbound_memory.load_leads(engine, limit=1000)
+        # Active campaign recipes first, inside each row's daily_cap.
+        # The newest page alone is baseline and social_surge after the
+        # morning pull, which was leaving signal brands unenriched.
+        leads = _oe.order_leads_for_enrich(
+            engine, leads or [], since_utc=_start_of_day_utc(now),
+        )
 
         report = _oe.run_enrichment(
             engine, leads, api_key=key,
