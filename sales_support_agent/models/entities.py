@@ -2044,6 +2044,35 @@ class BuildingContact(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class BuildingTenantDirectoryContact(Base):
+    """One person on the Anata Building tenant directory.
+
+    This is the operational list the building manager uses for event notices,
+    quarterly lock-battery reminders, and mail-arrival alerts. It is separate
+    from ``BuildingContact``, which is the marketing and relationship CRM
+    (prospects, consent, campaigns). A company can have many directory contacts.
+    ``receives_notices`` is false for people who are stored but must not be
+    emailed, including the building owner team.
+    """
+
+    __tablename__ = "building_tenant_directory_contacts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    full_name: Mapped[str] = mapped_column(String(255), default="")
+    company_name: Mapped[str] = mapped_column(String(255), default="", index=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    phone: Mapped[str] = mapped_column(String(128), default="")
+    office_suite: Mapped[str] = mapped_column(String(128), default="")
+    august_lock: Mapped[str] = mapped_column(String(255), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    receives_notices: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    updated_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class BuildingContactMerge(Base):
     """Immutable evidence that one duplicate contact was merged into another."""
 

@@ -64,6 +64,10 @@ from sales_support_agent.api.building_service_request_router import (
 from sales_support_agent.api.building_signature_readiness_router import (
     router as building_signature_readiness_router,
 )
+from sales_support_agent.api.building_tenant_directory_router import (
+    admin_router as building_tenant_directory_admin_router,
+    internal_router as building_tenant_directory_internal_router,
+)
 
 
 BUILDING_ROUTERS = (
@@ -93,6 +97,8 @@ BUILDING_ROUTERS = (
     building_content_public_router,
     building_content_internal_router,
     building_content_admin_router,
+    building_tenant_directory_internal_router,
+    building_tenant_directory_admin_router,
 )
 
 
