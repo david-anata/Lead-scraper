@@ -246,6 +246,29 @@ class BuildingTenantDirectoryTests(unittest.TestCase):
         self.assertEqual(edited.status_code, 303, edited.text)
         self.assertIn("801-555-0190", self.client.get("/admin/building/tenants").text)
 
+        cleared_lock = self._post(
+            "/admin/building/tenants",
+            {
+                "contact_id": ada_id,
+                "full_name": "Ada Lovelace",
+                "company_name": "Analytical Engines",
+                "email": "ada@example.com",
+                "phone": "801-555-0190",
+                "office_suite": "Suite 12",
+                "august_lock_name": "Front door",
+                "receives_notices": "true",
+                "is_active": "true",
+            },
+        )
+        self.assertEqual(cleared_lock.status_code, 303, cleared_lock.text)
+        with self.factory() as session:
+            ada = (
+                session.query(BuildingTenantDirectoryContact)
+                .filter(BuildingTenantDirectoryContact.email == "ada@example.com")
+                .one()
+            )
+            self.assertEqual(ada.august_lock, "")
+
         deactivated = self._post(f"/admin/building/tenants/{ada_id}/deactivate", {})
         self.assertEqual(deactivated.status_code, 303, deactivated.text)
         active_page = self.client.get("/admin/building/tenants")
@@ -316,6 +339,31 @@ class BuildingTenantDirectoryTests(unittest.TestCase):
         self.assertNotIn("grace@example.com", bot_emails)
         self.assertNotIn("owner@example.com", bot_emails)
         self.assertEqual(bot_emails.count("pat@example.com"), 1)
+
+        crlf_csv = (
+            "name,email,company\r\n"
+            "Line Ending,line-ending@example.com,Line Co\r\n"
+        )
+        crlf_preview = self._post(
+            "/admin/building/tenants/import/preview",
+            {},
+            files={"csv_file": ("line-endings.csv", crlf_csv.replace("\r\n", "\n"), "text/csv")},
+        )
+        self.assertEqual(crlf_preview.status_code, 200, crlf_preview.text)
+        crlf_token = re.search(r'name="preview_token" value="([^"]+)"', crlf_preview.text)
+        self.assertIsNotNone(crlf_token)
+        crlf_applied = self._post(
+            "/admin/building/tenants/import/apply",
+            {"preview_token": crlf_token.group(1), "csv_text": crlf_csv},
+        )
+        self.assertEqual(crlf_applied.status_code, 303, crlf_applied.text)
+        self.assertIn("notice=", crlf_applied.headers["location"])
+        with self.factory() as session:
+            self.assertIsNotNone(
+                session.query(BuildingTenantDirectoryContact)
+                .filter(BuildingTenantDirectoryContact.email == "line-ending@example.com")
+                .one_or_none()
+            )
 
         tampered = self._post(
             "/admin/building/tenants/import/apply",

@@ -107,14 +107,21 @@ def collapse(value: str, *, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
-def lock_value(has_lock: bool, name: str) -> str:
-    """Store a blank for no lock, ``yes`` when unnamed, or the lock name."""
+def lock_value(has_lock: bool, name: str, *, checkbox_wins: bool = False) -> str:
+    """Store a blank for no lock, ``yes`` when unnamed, or the lock name.
+
+    Admin saves pass ``checkbox_wins`` so unchecking "Has an August lock"
+    clears a previously saved name. CSV import leaves the flag false and still
+    treats a supplied lock name as a lock.
+    """
 
     cleaned = collapse(name, limit=255)
     if cleaned.lower() in _FALSE_VALUES:
         cleaned = ""
     if cleaned.lower() in {"yes", "y", "true"}:
         cleaned = "yes"
+    if checkbox_wins and not has_lock:
+        return ""
     if cleaned:
         return cleaned
     return "yes" if has_lock else ""
@@ -145,7 +152,11 @@ def contact_input_from_form(form: dict[str, str]) -> dict[str, Any]:
         "email": email,
         "phone": collapse(form.get("phone", ""), limit=128),
         "office_suite": collapse(form.get("office_suite", ""), limit=128),
-        "august_lock": lock_value(_checked(form.get("has_august_lock", "")), form.get("august_lock_name", "")),
+        "august_lock": lock_value(
+            _checked(form.get("has_august_lock", "")),
+            form.get("august_lock_name", ""),
+            checkbox_wins=True,
+        ),
         "is_active": _checked(form.get("is_active", "")),
         "receives_notices": _checked(form.get("receives_notices", "")),
         "notes": notes,
@@ -404,10 +415,16 @@ def decode_csv_bytes(payload: bytes) -> str:
         return payload.decode("latin-1")
 
 
+def canonical_csv_text(csv_text: str) -> str:
+    """Use LF so a browser textarea submit cannot change the signed preview."""
+
+    return str(csv_text or "").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def parse_directory_csv(raw: str) -> tuple[list[dict[str, Any]], str]:
     """Parse a tenant or UniFi Access export. Returns rows and a file-level error."""
 
-    text = raw.lstrip("\ufeff")
+    text = canonical_csv_text(raw).lstrip("\ufeff")
     if text.startswith("sep="):
         text = text.split("\n", 1)[1] if "\n" in text else ""
     if not text.strip():
@@ -513,7 +530,8 @@ def import_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def import_preview_token(secret: str, csv_text: str) -> str:
-    return hmac.new(secret.encode("utf-8"), csv_text.encode("utf-8"), hashlib.sha256).hexdigest()
+    payload = canonical_csv_text(csv_text).encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
 
 
 def existing_emails(session: Session) -> set[str]:
