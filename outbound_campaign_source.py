@@ -303,10 +303,17 @@ def legacy_recipe_pull_reason(
         return ""
     key = str(recipe_key or "").strip()
     matches = [row for row in campaign_rows if _campaign_matches_recipe(key, row)]
-    live = [row for row in matches if _campaign_is_live(row)]
-    if live and any(row.get("storeleads_filters") for row in live):
+    # source_active_campaigns only queries status=active. A throttled row is
+    # still a live recipe, and this loop has to pull it or it is sourced nowhere.
+    active_sourced = [
+        row for row in matches
+        if str(row.get("status") or "").strip() == "active"
+        and row.get("storeleads_filters")
+        and _campaign_is_live(row)
+    ]
+    if active_sourced:
         return "active campaign filter already sources this recipe"
-    if live or _recipe_explicitly_enabled(key, settings):
+    if any(_campaign_is_live(row) for row in matches) or _recipe_explicitly_enabled(key, settings):
         return ""
     if matches:
         return "held recipe has no live campaign"
