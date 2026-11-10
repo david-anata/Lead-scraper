@@ -110,14 +110,15 @@ def _company_text(store: dict[str, Any]) -> str:
     return " ".join(str(part) for part in parts).lower()
 
 
-def passes_company_fit(store: dict[str, Any]) -> bool:
+def passes_company_fit(store: dict[str, Any], *, require_niche: bool = True) -> bool:
     """US own-brand physical-product companies with revenue on file.
 
     Baseline pulls, signal pulls, and campaign sourcing all use this gate.
     A blank country is not the US. A missing or zero sales figure is not
     revenue data. Distributors, multi-brand resellers, services, events,
     apps, and fitness programs are out. The niche list is the physical
-    product test.
+    product test. The sales-org segment passes require_niche=False because
+    any US brand qualifies there.
     """
 
     country = _normalize_country(str(store.get("country_code") or ""))
@@ -130,7 +131,7 @@ def passes_company_fit(store: dict[str, Any]) -> bool:
     yearly = _yearly_cents(store)
     if yearly is None or yearly <= 0:
         return False
-    if not store_niche(store):
+    if require_niche and not store_niche(store):
         return False
     text = _company_text(store)
     if any(bad in text for bad in ICP_EXCLUDE_KEYWORDS):

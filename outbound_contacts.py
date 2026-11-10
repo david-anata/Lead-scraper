@@ -264,12 +264,58 @@ def acceptable_first_name(name: str) -> bool:
     return True
 
 
+_SALES_EXCLUDE_RE = re.compile(
+    r"\b(?:interns?|assistants?|coordinators?|associates?)\b"
+    r"|\b(?:engineers?|engineering|developers?|designers?|design)\b"
+    r"|\b(?:human resources)\b|\bhr\b",
+    re.I,
+)
+_SALES_SENIOR_RE = re.compile(
+    r"\b(?:chief revenue officer|cro)\b"
+    r"|\b(?:vp|svp|evp|vice president|head)\s+of\s+revenue\b"
+    r"|\b(?:vp|svp|evp|vice president|head|director)s?\b(?:\s+of)?\s+sales\b"
+    r"|\bsales\s+(?:director|vp|head)\b",
+    re.I,
+)
+_SALES_ACCOUNT_RE = re.compile(
+    r"\b(?:national|key)\s+accounts?\s+(?:managers?|directors?|heads?)\b"
+    r"|\b(?:director|head|vp|vice president)\s+of\s+(?:national|key)\s+accounts?\b"
+    r"|\b(?:channel|e[\s-]?commerce|amazon|marketplace|retail)\s+sales\b"
+    r"|\b(?:amazon|marketplace|retail)\s+accounts?\s+(?:managers?|directors?)\b"
+    r"|\bsales\s+(?:managers?|representatives?|reps?)\b"
+    r"|\baccount executives?\b",
+    re.I,
+)
+
+
+def sales_title_rank(title: str) -> Optional[int]:
+    """Lower is better. None means this is not a sales-org contact.
+
+    Rank 0 is CRO or a VP, head, or director of sales. Rank 1 is national
+    or key account leadership, channel or ecommerce sales, an Amazon,
+    marketplace, or retail account manager, or a sales manager or
+    representative. Associates, interns, assistants, coordinators,
+    engineering, HR, and design stay out. A founder with no sales title
+    is not this segment.
+    """
+
+    raw = (title or "").strip()
+    if not raw or _SALES_EXCLUDE_RE.search(raw):
+        return None
+    if _SALES_SENIOR_RE.search(raw):
+        return 0
+    if _SALES_ACCOUNT_RE.search(raw):
+        return 1
+    return None
+
+
 def lead_quality_reason(
     *,
     email: str,
     first_name: str,
     title: str = "",
     require_title: bool = False,
+    recipe: str = "",
 ) -> str:
     """Why this person should not be added, or '' when they pass.
 
@@ -284,17 +330,25 @@ def lead_quality_reason(
         return "missing first name"
     present = (title or "").strip()
     if require_title or present:
-        if title_rank(present) is None:
+        if str(recipe or "").strip() == "sales_org":
+            allowed = sales_title_rank(present) is not None
+        else:
+            allowed = title_rank(present) is not None
+        if not allowed:
             return "title"
     return ""
 
 
-def rank_candidates(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def rank_candidates(
+    results: list[dict[str, Any]],
+    rank_title: Optional[Callable[[str], Optional[int]]] = None,
+) -> list[dict[str, Any]]:
     """Order search results best-first and drop people we would never email."""
+    rank_title = rank_title or title_rank
     scored: list[tuple[int, int, dict[str, Any]]] = []
     for idx, item in enumerate(results or []):
         person = (item or {}).get("person") or {}
-        rank = title_rank(person.get("current_job_title") or "")
+        rank = rank_title(person.get("current_job_title") or "")
         if rank is None or not person.get("person_id"):
             continue
         scored.append((rank, idx, item))
@@ -421,6 +475,7 @@ def find_contacts(
     post: Optional[Post] = None,
     sleep: Callable[[float], None] = time.sleep,
     pace_seconds: float = 1.1,
+    rank_title: Optional[Callable[[str], Optional[int]]] = None,
 ) -> FindResult:
     """Return up to ``max_contacts`` verified people at ``domain``."""
     domain = normalize_domain(domain)
@@ -457,7 +512,8 @@ def find_contacts(
     result.candidates_seen = len(found)
     if found and not data.get("free"):
         result.credits_used += 1
-    ranked = rank_candidates(found)
+    rank_title = rank_title or title_rank
+    ranked = rank_candidates(found, rank_title)
     if not ranked:
         result.reason = "No decision-maker found at this domain."
         return result
@@ -505,7 +561,7 @@ def find_contacts(
         if is_role_mailbox(email):
             skipped_role = True
             continue
-        if title_rank(enriched_title) is None:
+        if rank_title(enriched_title) is None:
             skipped_title = True
             continue
         if not acceptable_first_name(first_name):

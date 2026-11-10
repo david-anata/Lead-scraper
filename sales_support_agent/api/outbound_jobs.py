@@ -328,6 +328,22 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
                 "skipped_seen": int(sourced.get("skipped_seen") or 0),
                 "error": (sourced.get("stopped_reason") or "; ".join(stages))[:500],
             })
+        try:
+            sales = _source.source_sales_org(
+                engine, api_key=api_key, now=now, contacted=already,
+                company_room=daily_remaining,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-jobs] sales-org sourcing failed")
+            sales = {"recorded": 0}
+        sales_recorded = int(sales.get("recorded") or 0)
+        if sales_recorded:
+            sales_leads = list(sales.get("leads") or [])
+            all_leads.extend(sales_leads)
+            already |= {str(lead.get("domain") or "") for lead in sales_leads}
+            daily_remaining = max(0, daily_remaining - sales_recorded)
+            out["pulled"] += sales_recorded
+            out["recipes"].extend(list(sales.get("recipes") or []))
 
     # 1. Pull. Fast and free; the Amazon work is deliberately not inline here,
     #    because at minutes per brand it would never finish inside one request.

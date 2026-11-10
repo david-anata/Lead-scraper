@@ -127,6 +127,23 @@ def _closed_to_new_leads(campaign_id: Any) -> bool:
     return is_legacy_trial_campaign(campaign) or campaign in HOLD_INGEST_CAMPAIGN_IDS
 
 
+SALES_ORG_RECIPE = "sales_org"
+SALES_ORG_FLAG = "OUTBOUND_SALES_ORG_ENABLED"
+SALES_ORG_CAMPAIGN_ENV = "OUTBOUND_SALES_ORG_CAMPAIGN_ID"
+
+
+def sales_org_enabled() -> bool:
+    """The sales-org segment stays off until this is set."""
+
+    return (os.getenv(SALES_ORG_FLAG) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def sales_org_campaign_id() -> str:
+    """Instantly campaign for sales-org leads. Empty until David creates it."""
+
+    return (os.getenv(SALES_ORG_CAMPAIGN_ENV) or "").strip()
+
+
 def campaign_for_recipe(recipe: Any, default: str = "",
                         campaign_map: Optional[dict[str, str]] = None) -> str:
     """Campaign for one contact's recipe column.
@@ -138,6 +155,13 @@ def campaign_for_recipe(recipe: Any, default: str = "",
     """
 
     del default  # kept so existing callers still pass a campaign id
+    if str(recipe or "").strip() == SALES_ORG_RECIPE:
+        if not sales_org_enabled():
+            return ""
+        mapped_sales = sales_org_campaign_id()
+        if _closed_to_new_leads(mapped_sales):
+            return ""
+        return mapped_sales
     source = RECIPE_CAMPAIGN_MAP if campaign_map is None else campaign_map
     mapped = str(source.get(str(recipe or "").strip()) or "").strip()
     if _closed_to_new_leads(mapped):
@@ -266,6 +290,13 @@ def resolve_recipe_campaign(
 
     blocked_names = {str(name or "").strip() for name in (blocked or []) if str(name or "").strip()}
     name = str(recipe or "").strip()
+    if name == SALES_ORG_RECIPE:
+        if name in blocked_names:
+            return "", "blocked", ""
+        target = campaign_for_recipe(name, campaign_map=campaign_map)
+        if target:
+            return target, "routed", name
+        return "", "queued", ""
     known = set(RECIPE_CAMPAIGN_MAP)
     if campaign_map is not None:
         known.update(campaign_map)

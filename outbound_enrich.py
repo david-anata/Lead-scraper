@@ -503,7 +503,10 @@ def run_enrichment(
                 logger.exception("[outbound-enrich] could not mark %s", domain)
             continue
         report.companies_tried += 1
-        res = find(domain, api_key=api_key, max_contacts=max_contacts)
+        find_kwargs = {"api_key": api_key, "max_contacts": max_contacts}
+        if str(lead.get("recipe") or "").strip() == "sales_org":
+            find_kwargs["rank_title"] = _contacts.sales_title_rank
+        res = find(domain, **find_kwargs)
         report.credits_used += res.credits_used
         fresh = [c for c in res.contacts if c.email not in emails_seen]
         status = "found" if fresh else ("duplicate" if res.contacts else "none")
@@ -744,6 +747,7 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
                 first_name=str(person.get("first_name") or ""),
                 title=str(person.get("title") or ""),
                 require_title=True,
+                recipe=str(person.get("recipe") or ""),
             )
             country = countries.get(domain, "")
             if quality == "role mailbox":
