@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 
+from sales_support_agent.services.building_event_policy import remaining_balance_due
 from sales_support_agent.integrations.stripe_billing import (
     StripeBillingClient,
     StripeBillingError,
@@ -501,7 +502,10 @@ def prepare_event_billing(
                 "amount_cents": int(rate["security_deposit_cents"]),
                 "refundable": True,
             }
-        balance_days = int(commercial.get("balance_due_days_before_event") or 7)
+        final_due = remaining_balance_due(reservation.starts_at.date(), commercial)
+        balance_before_event = (
+            str(commercial.get("balance_due") or "") == "before_the_event"
+        )
         quote_checksum = _quote_checksum(proposal)
         required_cents = int(payment_readiness.amount_cents or 0)
         if required_cents <= 0 or required_cents > proposal.amount_cents:
@@ -514,10 +518,13 @@ def prepare_event_billing(
                     status_code=409,
                     detail="Security-deposit tax treatment is not verified as refundable.",
                 )
-        final_due = reservation.starts_at.date() - timedelta(days=balance_days)
+        if balance_before_event:
+            balance_when = f"before the event ({final_due.isoformat()})"
+        else:
+            balance_when = final_due.isoformat()
         payment_note = (
             f"Booking deposit {required_cents / 100:,.2f} due now; "
-            f"remaining event balance {balance_cents / 100:,.2f} due {final_due.isoformat()}"
+            f"remaining event balance {balance_cents / 100:,.2f} due {balance_when}"
             if payment_readiness.request_type == "deposit"
             else f"Event balance {required_cents / 100:,.2f} due now"
         )

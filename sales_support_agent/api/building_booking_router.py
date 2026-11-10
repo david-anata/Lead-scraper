@@ -15,6 +15,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, select
 
+from sales_support_agent.services.building_event_policy import review_base_charge
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAgreement,
@@ -1027,12 +1028,23 @@ def create_event_review(
                 detail="Quote readiness requires exactly one approved effective rate plan with approval evidence.",
             )
         plan = plans[0]
-        billable_units = max(payload.units, plan.minimum_units)
+        try:
+            base_quantity, base_amount, base_name, billable_units = review_base_charge(
+                booking_unit=plan.booking_unit,
+                unit_amount_cents=plan.unit_amount_cents,
+                minimum_units=plan.minimum_units,
+                commercial_terms=dict(plan.commercial_terms_json or {}),
+                guest_starts_at=payload.guest_starts_at,
+                guest_ends_at=payload.guest_ends_at,
+                units=payload.units,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         line_items: list[dict[str, Any]] = [{
             "type": "base",
-            "name": plan.name,
-            "quantity": billable_units,
-            "amount_cents": billable_units * plan.unit_amount_cents,
+            "name": base_name,
+            "quantity": base_quantity,
+            "amount_cents": base_amount,
         }]
         allowed_addons = {
             str(item.get("id") or ""): item

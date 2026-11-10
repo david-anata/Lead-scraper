@@ -942,7 +942,12 @@ def _show_unquoted(policy: Any, pricing: dict[str, Any]) -> bool:
 
 
 def _day_portion_options(pricing: dict[str, Any], *, show_unquoted: bool) -> str:
-    selected = "unquoted" if show_unquoted else str(pricing.get("day_portion") or "")
+    if str(pricing.get("pricing_model") or "") == "unquoted":
+        selected = "unquoted"
+    elif show_unquoted:
+        selected = "unquoted"
+    else:
+        selected = str(pricing.get("day_portion") or "")
     rows = ['<option value="">Match the hours</option>']
     for key, label in DAY_PORTION_LABELS.items():
         dollars = PUBLISHED_CARD_CENTS[key] / 100

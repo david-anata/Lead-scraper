@@ -13,6 +13,11 @@ from sales_support_agent.services.building_event_policy import (
     TWO_FULL_DAYS_CENTS,
     evaluate_event_request,
     quote_duration,
+    remaining_balance_due,
+    review_base_charge,
+)
+from sales_support_agent.services.building_inquiry_workspace import (
+    _day_portion_options,
 )
 
 
@@ -145,6 +150,75 @@ class ScheduleRuleTests(unittest.TestCase):
         self.assertFalse(decision.rejected)
         self.assertEqual(decision.venue_cents, HALF_DAY_CENTS)
         self.assertTrue(decision.review_required)
+
+
+class ReviewAndBillingFixesTests(unittest.TestCase):
+    def test_a_zero_unit_day_card_still_prices_the_hold(self) -> None:
+        start = datetime(2026, 11, 14, 17, 0, tzinfo=MOUNTAIN)
+        end = datetime(2026, 11, 14, 23, 0, tzinfo=MOUNTAIN)
+        quantity, amount, name, addon_units = review_base_charge(
+            booking_unit="day_portion",
+            unit_amount_cents=0,
+            minimum_units=1,
+            commercial_terms={"half_day_amount_cents": 150_000},
+            guest_starts_at=start,
+            guest_ends_at=end,
+            units=6,
+        )
+        self.assertEqual(quantity, 1)
+        self.assertEqual(amount, HALF_DAY_CENTS)
+        self.assertIn("Half day", name)
+        self.assertEqual(addon_units, 6)
+
+    def test_an_eight_hour_window_on_the_retired_hourly_plan_is_a_full_day(self) -> None:
+        start = datetime(2026, 11, 14, 10, 0, tzinfo=MOUNTAIN)
+        end = datetime(2026, 11, 14, 18, 0, tzinfo=MOUNTAIN)
+        _quantity, amount, _name, _units = review_base_charge(
+            booking_unit="hour",
+            unit_amount_cents=17_500,
+            minimum_units=6,
+            commercial_terms=None,
+            guest_starts_at=start,
+            guest_ends_at=end,
+            units=8,
+        )
+        self.assertEqual(amount, FULL_DAY_CENTS)
+
+    def test_a_custom_plan_still_multiplies_its_own_unit_price(self) -> None:
+        start = datetime(2026, 11, 14, 17, 0, tzinfo=MOUNTAIN)
+        end = datetime(2026, 11, 14, 21, 0, tzinfo=MOUNTAIN)
+        quantity, amount, _name, _units = review_base_charge(
+            booking_unit="event",
+            unit_amount_cents=250_000,
+            minimum_units=1,
+            commercial_terms=None,
+            guest_starts_at=start,
+            guest_ends_at=end,
+            units=1,
+        )
+        self.assertEqual((quantity, amount), (1, 250_000))
+
+    def test_the_new_card_is_due_before_the_event_not_seven_days_prior(self) -> None:
+        event_day = date(2026, 11, 20)
+        self.assertEqual(
+            remaining_balance_due(
+                event_day, {"balance_due": "before_the_event", "balance_due_days_before_event": None}
+            ),
+            event_day,
+        )
+        self.assertEqual(
+            remaining_balance_due(event_day, {"balance_due_days_before_event": 7}),
+            date(2026, 11, 13),
+        )
+        self.assertEqual(remaining_balance_due(event_day, {}), date(2026, 11, 13))
+
+    def test_a_saved_unquoted_price_stays_selected(self) -> None:
+        html = _day_portion_options(
+            {"pricing_model": "unquoted", "day_portion": "", "updated_by": "d@a.com"},
+            show_unquoted=False,
+        )
+        self.assertIn('value="unquoted" selected', html)
+        self.assertNotIn('value="" selected', html)
 
 
 if __name__ == "__main__":

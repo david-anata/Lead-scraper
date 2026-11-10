@@ -523,6 +523,81 @@ def _alcohol_yes(alcohol: str, text: str) -> bool:
     return "open bar" in text
 
 
+_PORTION_TERM_KEYS = {
+    "half": "half_day_amount_cents",
+    "full": "full_day_amount_cents",
+    "full_plus_half": "full_plus_half_amount_cents",
+    "two_full": "two_full_days_amount_cents",
+}
+_PORTION_UNITS = {"half": 6, "full": 12, "full_plus_half": 18, "two_full": 24}
+
+
+def plan_uses_day_card(*, booking_unit: str, unit_amount_cents: int) -> bool:
+    """True for the published day card and for the retired $175 hourly plan."""
+
+    return booking_unit == "day_portion" or (
+        booking_unit == "hour" and int(unit_amount_cents or 0) == LEGACY_HOURLY_RATE_CENTS
+    )
+
+
+def review_base_charge(
+    *,
+    booking_unit: str,
+    unit_amount_cents: int,
+    minimum_units: int,
+    commercial_terms: dict[str, Any] | None,
+    guest_starts_at: datetime,
+    guest_ends_at: datetime,
+    units: int,
+) -> tuple[int, int, str, int]:
+    """Return quantity, amount, line name, and the unit count add-ons use.
+
+    A day-card plan stores ``unit_amount_cents`` as 0. Multiplying that by
+    the hours produces an empty quote and the hold is refused. The guest
+    window is priced from the card instead. Any other plan keeps
+    units times its unit amount.
+    """
+
+    if not plan_uses_day_card(
+        booking_unit=booking_unit, unit_amount_cents=unit_amount_cents
+    ):
+        billable = max(int(units or 0), int(minimum_units or 1))
+        amount = billable * max(0, int(unit_amount_cents or 0))
+        return billable, amount, "Venue rental", billable
+    portion = portion_for_span(guest_starts_at, guest_ends_at)
+    if portion is None:
+        portion = portion_for_hours(units)
+    if portion is None:
+        raise ValueError(
+            "This length is not on the published card. The team will put "
+            "together pricing."
+        )
+    terms = dict(commercial_terms or {})
+    amount = int(terms.get(_PORTION_TERM_KEYS[portion]) or 0)
+    if amount <= 0:
+        amount = PUBLISHED_CARD_CENTS[portion]
+    return 1, amount, DAY_PORTION_LABELS[portion], _PORTION_UNITS[portion]
+
+
+def remaining_balance_due(event_day: date, commercial: dict[str, Any] | None) -> date:
+    """When the unpaid half is due.
+
+    The November 10 card says before the event, not seven days before. Older
+    snapshots that recorded a day count keep that count. A snapshot that
+    recorded neither falls back to seven days, which was the previous rule.
+    """
+
+    terms = dict(commercial or {})
+    if str(terms.get("balance_due") or "") == "before_the_event":
+        return event_day
+    raw = terms.get("balance_due_days_before_event")
+    if isinstance(raw, bool) or raw is None or raw == "":
+        days = 7
+    else:
+        days = max(0, int(raw))
+    return event_day - timedelta(days=days)
+
+
 def attendance_count(value: Any) -> int | None:
     digits = "".join(ch for ch in str(value or "") if ch.isdigit())
     if not digits:
