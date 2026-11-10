@@ -453,15 +453,15 @@ def run_weekly_topup(*, post: Any = None, suppressed: Optional[set[str]] = None,
         countries = {}
         for name, row in found.items():
             code = str((row or {}).get("country_code") or "").strip().upper()
-            key = contacts.company_domain(name) or name
-            countries[key] = code
+            domain_key = contacts.company_domain(name) or name
+            countries[domain_key] = code
     else:
         import outbound_contacts as contacts
 
         countries = {}
         for name, code in (lookup_countries(domains) or {}).items():
-            key = contacts.company_domain(str(name)) or str(name).strip().lower()
-            countries[key] = str(code or "").strip().upper()
+            domain_key = contacts.company_domain(str(name)) or str(name).strip().lower()
+            countries[domain_key] = str(code or "").strip().upper()
     if domains and not countries:
         out["dry_run"] = False
         out["reason"] = "StoreLeads returned no country"

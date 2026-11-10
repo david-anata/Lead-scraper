@@ -260,20 +260,74 @@ def render_sample(leads: list[dict[str, Any]]) -> str:
     return "\n".join(blocks).rstrip() + "\n"
 
 
-def _domains_from(path: str) -> list[str]:
+def _targets_from(lines: list[str]) -> list[dict[str, str]]:
+    """One target per line. An email is kept. A bare domain is looked up later."""
+
+    targets: list[dict[str, str]] = []
+    for raw in lines:
+        text = raw.strip().lower()
+        if not text or text.startswith("#"):
+            continue
+        email = ""
+        domain = text
+        if "@" in text:
+            email = text.split(",", 1)[0].strip()
+            rest = text.split(",", 1)[1].strip() if "," in text else ""
+            domain = rest or email.split("@", 1)[1]
+        else:
+            domain = text.split(",", 1)[0].strip()
+        if domain:
+            targets.append({"email": email, "domain": domain})
+    return targets
+
+
+def _domains_from(path: str) -> list[dict[str, str]]:
     with open(path, encoding="utf-8") as handle:
-        return [line.strip().lower() for line in handle if line.strip() and not line.startswith("#")]
+        return _targets_from(handle.readlines())
 
 
-def _dry_run(domains: list[str]) -> dict[str, Any]:
+def attach_campaign_emails(rows: list[dict[str, Any]], leads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fill a missing email from campaign leads on the same domain.
+
+    A row that already has an email is unchanged. A domain with several
+    leads becomes one row per lead. A domain with no lead is left out.
+    """
+
+    by_domain: dict[str, list[str]] = {}
+    for lead in leads:
+        email = str(lead.get("email") or "").strip().lower()
+        if "@" not in email:
+            continue
+        domain = email.split("@", 1)[1]
+        by_domain.setdefault(domain, [])
+        if email not in by_domain[domain]:
+            by_domain[domain].append(email)
+    attached: list[dict[str, Any]] = []
+    for row in rows:
+        email = str(row.get("email") or "").strip().lower()
+        if email:
+            attached.append({**row, "email": email})
+            continue
+        domain = str(row.get("domain") or "").strip().lower()
+        for match in by_domain.get(domain, []):
+            attached.append({**row, "email": match})
+    return attached
+
+
+def _dry_run(targets: list[dict[str, str]], *, lookup: Any = None) -> dict[str, Any]:
     import outbound_pipeline as pipeline
 
-    key = (os.getenv("STORELEADS_API_KEY") or "").strip()
-    if not key:
-        return {"ok": False, "reason": "STORELEADS_API_KEY is not set", "rows": []}
-    found = pipeline.lookup_domains(key, domains)
+    store_key = (os.getenv("STORELEADS_API_KEY") or "").strip()
+    domains = [item["domain"] for item in targets if item.get("domain")]
+    if lookup is None:
+        if not store_key:
+            return {"ok": False, "reason": "STORELEADS_API_KEY is not set", "rows": []}
+        found = pipeline.lookup_domains(store_key, domains)
+    else:
+        found = lookup(domains) or {}
     rows = []
-    for domain in domains:
+    for target in targets:
+        domain = target["domain"]
         store = found.get(domain) or {}
         country = str(store.get("country_code") or "").strip().upper()
         lead = {
@@ -286,6 +340,7 @@ def _dry_run(domains: list[str]) -> dict[str, Any]:
         }
         opener, angle, phrases = _lines(lead, rich=True)
         rows.append({
+            "email": target.get("email") or "",
             "domain": domain,
             "country": country,
             "us": country == "US",
@@ -296,41 +351,89 @@ def _dry_run(domains: list[str]) -> dict[str, Any]:
     return {"ok": True, "reason": "dry run", "rows": rows}
 
 
-def _apply(rows: list[dict[str, Any]], campaign_id: str) -> dict[str, Any]:
+def _campaign_leads(api_key: str, campaign_id: str) -> list[dict[str, Any]]:
+    """Leads already in the re-engage campaign. Read only."""
+
+    import requests
+
+    found: list[dict[str, Any]] = []
+    body: dict[str, Any] = {"campaign": campaign_id, "limit": 100}
+    for _page in range(30):
+        response = requests.post(
+            "https://api.instantly.ai/api/v2/leads/list",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=body,
+            timeout=30,
+        )
+        if response.status_code != 200:
+            break
+        payload = response.json() or {}
+        found.extend(item for item in (payload.get("items") or []) if isinstance(item, dict))
+        nxt = str(payload.get("next_starting_after") or "").strip()
+        if not nxt:
+            break
+        body["starting_after"] = nxt
+    return found
+
+
+def _apply(
+    rows: list[dict[str, Any]],
+    campaign_id: str,
+    *,
+    campaign_leads: list[dict[str, Any]] | None = None,
+    list_leads: Any = None,
+    patch_lead: Any = None,
+    find_lead: Any = None,
+) -> dict[str, Any]:
     """Update personalization on existing Instantly leads. Not the default."""
 
     import requests
 
-    key = (os.getenv("INSTANTLY_API_KEY") or os.getenv("INSTANTLY_AI") or "").strip()
-    if not key:
+    api_key = (os.getenv("INSTANTLY_API_KEY") or os.getenv("INSTANTLY_AI") or "").strip()
+    if not api_key and patch_lead is None:
         return {"ok": False, "reason": "Instantly API key is not set", "updated": 0}
     if any(not row.get("email") for row in rows):
-        return {
-            "ok": False,
-            "reason": "Apply needs an email on every row. A domain-only dry run does not update Instantly.",
-            "updated": 0,
-        }
+        leads = campaign_leads
+        if leads is None and list_leads is not None:
+            leads = list_leads(campaign_id)
+        if leads is None:
+            leads = _campaign_leads(api_key, campaign_id)
+        rows = attach_campaign_emails(rows, leads or [])
+    rows = [row for row in rows if row.get("email")]
+    if not rows:
+        return {"ok": False, "reason": "No campaign lead matched these domains.", "updated": 0}
     updated = 0
     errors = []
     for row in rows:
         if not row.get("us") or not row.get("opener"):
             continue
-        listed = requests.post(
-            "https://api.instantly.ai/api/v2/leads/list",
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json={"campaign": campaign_id, "contacts": [row["email"]], "limit": 10},
-            timeout=30,
-        )
-        if listed.status_code != 200:
-            errors.append(f"list {listed.status_code}")
-            continue
-        for item in (listed.json() or {}).get("items") or []:
+        if find_lead is not None:
+            items = list(find_lead(row["email"]) or [])
+        else:
+            listed = requests.post(
+                "https://api.instantly.ai/api/v2/leads/list",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"campaign": campaign_id, "contacts": [row["email"]], "limit": 10},
+                timeout=30,
+            )
+            if listed.status_code != 200:
+                errors.append(f"list {listed.status_code}")
+                continue
+            items = list((listed.json() or {}).get("items") or [])
+        for item in items:
             lead_id = str(item.get("id") or "")
             if not lead_id:
                 continue
+            if patch_lead is not None:
+                status = int(patch_lead(lead_id, row) or 0)
+                if status < 300:
+                    updated += 1
+                else:
+                    errors.append(f"patch {status}")
+                continue
             patched = requests.patch(
                 f"https://api.instantly.ai/api/v2/leads/{lead_id}",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
                     "personalization": row["opener"],
                     "custom_variables": {"brandAngle": row["brand_angle"]},
@@ -358,10 +461,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {args.sample}")
         return 0
     if args.domains_file:
-        domains = _domains_from(args.domains_file)
+        targets = _domains_from(args.domains_file)
     else:
-        domains = [line.strip().lower() for line in sys.stdin if line.strip()]
-    result = _dry_run(domains)
+        targets = _targets_from(sys.stdin.readlines())
+    result = _dry_run(targets)
     print(json.dumps({key: value for key, value in result.items() if key != "rows"}, indent=2))
     for row in result.get("rows") or []:
         print(json.dumps(row))

@@ -108,7 +108,7 @@ def test_topup_moves_one_record_and_does_not_copy_a_negative_or_a_role(monkeypat
 
     def post(url, **kwargs):
         body = kwargs.get("json") or {}
-        calls.append((url, body))
+        calls.append((url, body, kwargs.get("headers") or {}))
         if url.endswith("/leads/list"):
             campaign = body.get("campaign")
             if campaign == reengage.TARGET_CAMPAIGN_ID:
@@ -140,11 +140,13 @@ def test_topup_moves_one_record_and_does_not_copy_a_negative_or_a_role(monkeypat
     )
     assert result["moved"] == 1
     assert result["added"] == 0
-    move = next(body for url, body in calls if url == reengage.MOVE_URL)
+    move_call = next(item for item in calls if item[0] == reengage.MOVE_URL)
+    move = move_call[1]
+    assert move_call[2].get("Authorization") == "Bearer test-key"
     assert move["copy_leads"] is False
     assert move["ids"] == ["keep"]
     assert move["to_campaign_id"] == reengage.TARGET_CAMPAIGN_ID
-    assert all(body.get("skip_if_in_workspace") is not False for _url, body in calls)
+    assert all(body.get("skip_if_in_workspace") is not False for _url, body, _headers in calls)
     assert "negative or unsubscribed" in result["rejected"]
     assert "role mailbox" in result["rejected"]
     assert "missing first name" in result["rejected"]
@@ -212,6 +214,36 @@ def test_personalization_stays_off_until_the_flag_and_then_stays_factual(monkeyp
         assert "—" not in line and "–" not in line
         assert not any(char.isdigit() for char in line)
     assert "fourteen" in after or "Klaviyo" in after
+
+
+def test_backfill_apply_keeps_the_email_and_matches_a_domain_to_a_campaign_lead():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "backfill_reengage", "scripts/backfill_reengage_personalization.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    targets = module._targets_from(["ada@brand.com", "other.com"])
+    assert targets[0] == {"email": "ada@brand.com", "domain": "brand.com"}
+    assert targets[1]["email"] == ""
+    patched: list[tuple[str, str]] = []
+    result = module._apply(
+        [
+            {"email": "ada@brand.com", "domain": "brand.com", "us": True,
+             "opener": "Ada sells soap.", "brand_angle": "Anata helps Ada grow."},
+            {"email": "", "domain": "other.com", "us": True,
+             "opener": "Other sells soap.", "brand_angle": "Anata helps Other grow."},
+        ],
+        "camp",
+        campaign_leads=[{"email": "sam@other.com"}],
+        find_lead=lambda email: [{"id": "id-" + email, "email": email}],
+        patch_lead=lambda lead_id, row: patched.append((lead_id, row["email"])) or 200,
+    )
+    assert result["ok"] is True
+    assert result["updated"] == 2
+    assert {email for _lead_id, email in patched} == {"ada@brand.com", "sam@other.com"}
 
 
 def test_non_us_profile_is_not_required_for_the_flag_off_opener():
