@@ -207,13 +207,101 @@ def test_personalization_stays_off_until_the_flag_and_then_stays_factual(monkeyp
     after, source = openers.write_opener(after_lead)
     angle, _angle_source = openers.write_brand_angle(after_lead)
     assert source == "fallback"
-    assert "Klaviyo" in after
+    assert after.startswith("Saw RICH Hair Care")
+    assert "retail stores" in after
     assert "Amazon" in after
-    assert "is based in Philadelphia" in openers.collect_facts(after_lead).rich_phrases
+    assert "Meta" in after and "Google" in after
+    assert "does not sell" not in after.lower()
+    assert not angle.lower().startswith("anata helps")
+    assert angle != after
+    assert "is based in Philadelphia" in openers.store_fact_phrases(after_lead)
     for line in (after, angle):
         assert "—" not in line and "–" not in line
         assert not any(char.isdigit() for char in line)
-    assert "fourteen" in after or "Klaviyo" in after
+        assert "http" not in line.lower() and "www." not in line.lower()
+
+
+def test_rich_lines_sound_like_a_person_and_never_lead_with_a_negative(monkeypatch):
+    monkeypatch.delenv(openers.RICH_PERSONALIZATION_FLAG, raising=False)
+    off_amazon = {
+        "brand": "North Trampoline",
+        "domain": "northtrampoline.com",
+        "recipe": "amz_off",
+        "categories": "sports",
+        "amazon_absent": True,
+        "rich_personalization": True,
+        "store_profile": {
+            "store_locator_page": "https://northtrampoline.com/pages/stores",
+            "apps": [{"name": "Klaviyo: Email Marketing"}],
+            "technologies": ["Facebook Pixel"],
+        },
+    }
+    opener, _source = openers.write_opener(off_amazon)
+    angle, _angle_source = openers.write_brand_angle(off_amazon)
+    assert "does not" not in opener.lower()
+    assert "does not sell" not in angle.lower()
+    assert "retail stores" in opener
+    assert "Meta" in opener
+    assert not angle.lower().startswith("anata helps")
+    assert angle != opener
+    assert openers._repeats(angle, opener) is False
+
+    thin = {
+        "brand": "North Trampoline",
+        "domain": "northtrampoline.com",
+        "recipe": "amz_off",
+        "categories": "sports",
+        "amazon_absent": True,
+        "rich_personalization": True,
+        "store_profile": {},
+    }
+    openers._OPENERS_BY_DOMAIN.clear()
+    openers._ANGLES_BY_DOMAIN.clear()
+    thin_line, _source = openers.write_opener(thin)
+    thin_angle, _angle_source = openers.write_brand_angle(thin)
+    assert thin_line.startswith("Saw North Trampoline in sports.")
+    assert "does not" not in thin_line.lower()
+    assert "category where Amazon demand" in thin_line
+    assert not thin_angle.lower().startswith("anata helps")
+    assert thin_angle != thin_line
+    for line in (opener, angle, thin_line, thin_angle):
+        assert "—" not in line and "–" not in line
+        assert not any(char.isdigit() for char in line)
+        assert "http" not in line.lower() and "www." not in line.lower()
+
+    ads_lead = {
+        "brand": "Wove Made",
+        "domain": "wovemade.com",
+        "recipe": "replatformed",
+        "categories": "/Toys & Hobbies/Arts & Crafts",
+        "signals": ["They moved platforms in the last 90 days", "Runs Meta and Google ads"],
+        "rich_personalization": True,
+        "store_profile": {"apps": ["Affirm pay over time messaging"]},
+    }
+    openers._OPENERS_BY_DOMAIN.clear()
+    openers._ANGLES_BY_DOMAIN.clear()
+    ads_line, _source = openers.write_opener(ads_lead)
+    ads_angle, _angle_source = openers.write_brand_angle(ads_lead)
+    assert "Meta" in ads_line and "Google" in ads_line
+    assert "does not" not in ads_line.lower()
+    assert "platform" in ads_angle.lower()
+    assert not ads_angle.lower().startswith("anata helps")
+
+    quiet = {
+        "brand": "Krazy Kreations",
+        "domain": "krazykreations.us",
+        "recipe": "replatformed",
+        "categories": "/Toys & Hobbies/Arts & Crafts",
+        "signals": ["No ad pixel found"],
+        "rich_personalization": True,
+        "store_profile": {},
+    }
+    openers._OPENERS_BY_DOMAIN.clear()
+    openers._ANGLES_BY_DOMAIN.clear()
+    quiet_line, _source = openers.write_opener(quiet)
+    assert "does not" not in quiet_line.lower()
+    assert "pixel" not in quiet_line.lower()
+    assert "platform" in quiet_line.lower()
 
 
 def test_backfill_apply_keeps_the_email_and_matches_a_domain_to_a_campaign_lead():

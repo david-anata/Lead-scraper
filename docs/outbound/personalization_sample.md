@@ -1,266 +1,356 @@
 # Personalization sample
 
-Before and after for leads named in the Nov 9, 2026 audit.
-Before is what today's builder writes from the facts still stored on the lead.
-An empty before line means we did not have a category or recipe sentence, not that Instantly sent a blank.
-After is the deterministic line with OUTBOUND_RICH_PERSONALIZATION_ENABLED on.
-Counts are words. No line contains a digit or an em dash.
-Rows marked dropped would not be emailed. The line is here so the wording can be reviewed.
-abby_reengage rows stay empty until the dry-run backfill has a StoreLeads profile.
-This file did not call Instantly or change any lead.
+Before is the current builder with OUTBOUND_RICH_PERSONALIZATION_ENABLED off.
+After is the new builder with that flag forced on for the row only. The flag stays off in the environment.
+In Instantly now is the opener and brandAngle already stored on the pushed contact. It is not rewritten here.
 
-## amz_on: indrek@richhaircare.com
+This pass did not call StoreLeads or Instantly, and it did not change any lead.
+STORELEADS_API_KEY is not in the Vercel project env for anata-agent-staging, and it is not set in this environment.
+The Instantly key is on that project, but the decrypted value was not returned, so current campaign membership could not be re-listed.
+Rows are contacts our database still has as pushed to the five current campaign ids, with no skip reason.
+Country is US where that field is stored. Non-US hosts were left out.
+Facts come from the StoreLeads payload already saved on the pull: category, app names, country, and signal text the pull recorded.
+amz_on and amz_off rows below have category and country only. No retail page, ad pixel, or review app was stored, so the after line is the category fallback. It does not say the brand is off Amazon.
+abby_reengage has no rows in outbound_enriched_contacts. Two US brands that replied inside that campaign still have a stored pull. The other replies in that campaign have no stored profile, so no line was written for them.
 
-Brand: RICH Hair Care
+No line below was given a digit, an em dash, or a URL.
 
-Note: StoreLeads bulk lookup in the Nov 9 audit. Category was not in that lookup, so the before line is empty.
+## amz_on
 
-Before personalization: (empty)
+### lovevery.com
 
-Before brandAngle: (empty)
+Brand: Lovevery
 
-Facts the new builder would use: sells on Amazon, is sold in retail stores, uses Klaviyo, runs ads on Meta, runs ads on Google, moved from WooCommerce in September, sells fourteen products, is based in Philadelphia
+Facts used: nursery and playroom. Stored category also includes education and toys. No app list was stored for this domain. Amazon confidence on the contact is blank, so the line does not say they sell on Amazon.
 
-After personalization: RICH Hair Care sells on Amazon, is sold in retail stores, and uses Klaviyo.
+In Instantly now: Lovevery sells jobs & education.
 
-After brandAngle: Anata helps RICH Hair Care grow. The brand sells on Amazon.
+In Instantly now brandAngle: Anata helps jobs & education brands grow.
 
-## amz_off: olle@northtrampoline.com
+Before personalization: Lovevery sells jobs & education.
 
-Brand: North Trampoline
+Before brandAngle: Anata helps jobs & education brands grow.
 
-Note: Recipe filter only. The live line in the audit was a generic catalog claim, not a fact about this brand.
+After personalization: Saw Lovevery in nursery and playroom. That is a category where Amazon demand tends to sit next to the website.
 
-Before personalization: (empty)
+After brandAngle: Nursery and playroom shoppers compare fast, so the listing has to be ready when they look.
 
-Before brandAngle: (empty)
+### chewrevgum.com
 
-Facts the new builder would use: does not sell on Amazon
+Brand: REV Gum
 
-After personalization: North Trampoline does not sell on Amazon.
+Facts used: food and drink. No app list stored. Amazon confidence blank.
 
-After brandAngle: Anata helps North Trampoline grow. The brand does not sell on Amazon.
+In Instantly now: REV Gum sells food & drink.
 
-## amz_off: dylan@r-pur.com
+In Instantly now brandAngle: Anata helps food & drink brands like REV Gum understand consumer demand and optimize product positioning for sustainable growth.
 
-Brand: R-Pur
+Before personalization: REV Gum sells food & drink.
 
-Note: Recipe filter only.
+Before brandAngle: Anata helps food & drink brands grow.
 
-Before personalization: (empty)
+After personalization: Saw REV Gum in food and drink. That is a category where Amazon demand tends to sit next to the website.
 
-Before brandAngle: (empty)
+After brandAngle: Food and drink shoppers compare fast, so the listing has to be ready when they look.
 
-Facts the new builder would use: does not sell on Amazon
+### hazelicious.com
 
-After personalization: R-Pur does not sell on Amazon.
+Brand: Hazelicious
 
-After brandAngle: Anata helps R-Pur grow. The brand does not sell on Amazon.
+Facts used: candy and sweets. No app list stored. Amazon confidence blank.
 
-## amz_off: marla@bbqing.com
+In Instantly now: Your candy and sweets brand has room to scale beyond current distribution channels.
 
-Brand: BBQing
+In Instantly now brandAngle: (empty)
 
-Note: Title E-commerce Merchandise Associate. The title gate drops this contact. Copy is shown for review only.
+Before personalization: Hazelicious sells food & drink.
 
-Before personalization: (empty)
+Before brandAngle: Anata helps food & drink brands grow.
 
-Before brandAngle: (empty)
+After personalization: Saw Hazelicious in candy and sweets. That is a category where Amazon demand tends to sit next to the website.
 
-Facts the new builder would use: does not sell on Amazon
+After brandAngle: Candy and sweets shoppers compare fast, so the listing has to be ready when they look.
 
-After personalization: BBQing does not sell on Amazon.
+### pureandcimple.com
 
-After brandAngle: Anata helps BBQing grow. The brand does not sell on Amazon.
+Brand: Pure & Cimple
 
-## amz_off: sappho@helloryse.com
+Facts used: skin and nail care. A second stored category is vitamins and supplements. No app list stored. Amazon confidence blank.
 
-Brand: Helloryse
+In Instantly now: Your skincare and nail care line has room to expand reach across new retail channels that reward direct-to-consumer brands.
 
-Note: Title Marketing & Support Associate. The title gate drops this contact. Copy is shown for review only.
+In Instantly now brandAngle: (empty)
 
-Before personalization: (empty)
+Before personalization: Pure & Cimple sells beauty & fitness.
 
-Before brandAngle: (empty)
+Before brandAngle: Anata helps beauty & fitness brands grow.
 
-Facts the new builder would use: does not sell on Amazon
+After personalization: Saw Pure & Cimple in skin and nail care. That is a category where Amazon demand tends to sit next to the website.
 
-After personalization: Helloryse does not sell on Amazon.
+After brandAngle: Shoppers in that category compare fast, so the listing has to be ready when they look.
 
-After brandAngle: Anata helps Helloryse grow. The brand does not sell on Amazon.
+## amz_off
 
-## amz_off: dayana@moxielash.com
+These four were pushed on the apex domain. The US country flag is stored on the matching US host (usa. or us.). No StoreLeads app, ad, or retail field was saved for them, so the hook is the category, framed as Amazon demand next to the site.
 
-Brand: MoxieLash
+### rivieras.com
 
-Note: Recipe filter only. Title was E-Commerce and Marketing Operations, which is not a buyer title.
+Brand: Rivieras USA
 
-Before personalization: (empty)
+Facts used: footwear. US host on file: usa.rivieras.com.
 
-Before brandAngle: (empty)
+In Instantly now: Your apparel brand's direct-to-consumer channel deserves the same strategic attention as your wholesale partnerships.
 
-Facts the new builder would use: does not sell on Amazon
+In Instantly now brandAngle: Apparel brands grow by building community around their values, and Anata helps you reach customers who share yours.
 
-After personalization: MoxieLash does not sell on Amazon.
+Before personalization: Rivieras USA sells apparel.
 
-After brandAngle: Anata helps MoxieLash grow. The brand does not sell on Amazon.
+Before brandAngle: Anata helps apparel brands grow.
 
-## plan_upgrade: jennifer@kitbetter.com
+After personalization: Saw Rivieras USA in footwear. That is a category where Amazon demand tends to sit next to the website.
 
-Brand: Kitbetter
+After brandAngle: Footwear shoppers compare fast, so the listing has to be ready when they look.
 
-Note: Recipe signal only. The audit gave both Jennifer and Grace the same plan-upgrade line.
+### glo910.com
 
-Before personalization: Kitbetter recently upgraded their store plan.
+Brand: GLO USA
 
-Before brandAngle: Anata helps Kitbetter grow after a recent plan upgrade.
+Facts used: face and body care. US host on file: usa.glo910.com.
 
-Facts the new builder would use: is on Shopify Plus
+In Instantly now: GLO USA LLC sells beauty & fitness.
 
-After personalization: Kitbetter is on Shopify Plus.
+In Instantly now brandAngle: Anata helps beauty & fitness brands grow.
 
-After brandAngle: Anata helps Kitbetter grow. The brand is on Shopify Plus.
+Before personalization: GLO USA sells beauty & fitness.
 
-## plan_upgrade: grace@kitbetter.com
+Before brandAngle: Anata helps beauty & fitness brands grow.
 
-Brand: Kitbetter
+After personalization: Saw GLO USA in face and body care. That is a category where Amazon demand tends to sit next to the website.
 
-Note: Same brand as Jennifer. One opener per domain.
+After brandAngle: Shoppers in that category compare fast, so the listing has to be ready when they look.
 
-Before personalization: Kitbetter recently upgraded their store plan.
+### water.io
 
-Before brandAngle: Anata helps Kitbetter grow after a recent plan upgrade.
+Brand: Water.io
 
-Facts the new builder would use: is on Shopify Plus
+Facts used: beverages. US host on file: us.water.io.
 
-After personalization: Kitbetter is on Shopify Plus.
+In Instantly now: Water.io sells food & drink.
 
-After brandAngle: Anata helps Kitbetter grow. The brand is on Shopify Plus.
+In Instantly now brandAngle: Anata helps food & drink brands grow.
 
-## plan_upgrade: cammie@rockflowerpaper.com
+Before personalization: Water.io sells food & drink.
 
-Brand: Rockflowerpaper
+Before brandAngle: Anata helps food & drink brands grow.
 
-Note: Recipe signal only.
+After personalization: Saw Water.io in beverages. That is a category where Amazon demand tends to sit next to the website.
 
-Before personalization: Rockflowerpaper recently upgraded their store plan.
+After brandAngle: Beverages shoppers compare fast, so the listing has to be ready when they look.
 
-Before brandAngle: Anata helps Rockflowerpaper grow after a recent plan upgrade.
+### bbqing.com
 
-Facts the new builder would use: is on Shopify Plus
+Brand: BBQing.com USA
 
-After personalization: Rockflowerpaper is on Shopify Plus.
+Facts used: yard and patio. US host on file: usa.bbqing.com.
 
-After brandAngle: Anata helps Rockflowerpaper grow. The brand is on Shopify Plus.
+In Instantly now: Your yard and patio category is competitive, and most brands miss optimization opportunities across their listings and ad spend.
 
-## replatform: jaine@aurahome.com.au
+In Instantly now brandAngle: (empty)
 
-Brand: Aura Home
+Before personalization: BBQing.com USA sells home & garden.
 
-Note: Would be dropped. The audit found this store outside the US. Previous platform was not in the audit, so the line uses the recipe fact only.
+Before brandAngle: Anata helps home & garden brands grow.
 
-Before personalization: Aura Home recently moved their store to a new platform.
+After personalization: Saw BBQing.com USA in yard and patio. That is a category where Amazon demand tends to sit next to the website.
 
-Before brandAngle: Anata helps Aura Home grow after a recent platform move.
+After brandAngle: Yard and patio shoppers compare fast, so the listing has to be ready when they look.
 
-Facts the new builder would use: recently moved their store to a new platform
+## plan_upgrade
 
-After personalization: Aura Home recently moved their store to a new platform.
+App names are the ones stored on the pull. A plan upgrade is used in the angle when the opener already used the review app.
 
-After brandAngle: Anata helps Aura Home grow. The brand recently moved their store to a new platform.
+### benibeca.com
 
-## replatform: lucie@thecheesesociety.co.uk
+Brand: Benibeca
 
-Brand: The Cheese Society
+Facts used: Judge.me reviews, swimwear. Klaviyo is also installed and was left for the angle to avoid repeating the opener. The angle uses the plan upgrade instead, because that is the recipe fact.
 
-Note: Would be dropped. UK store. Previous platform was not in the audit.
+In Instantly now: Benibeca recently upgraded their store plan.
 
-Before personalization: The Cheese Society recently moved their store to a new platform.
+In Instantly now brandAngle: Benibeca's store upgrade signals readiness to scale apparel sales, and Anata can accelerate that growth through data-driven strategies.
 
-Before brandAngle: Anata helps The Cheese Society grow after a recent platform move.
+Before personalization: Benibeca recently upgraded their store plan.
 
-Facts the new builder would use: recently moved their store to a new platform
+Before brandAngle: Anata helps Benibeca grow after a recent plan upgrade.
 
-After personalization: The Cheese Society recently moved their store to a new platform.
+After personalization: Saw Benibeca with Judge.me reviews in swimwear, so shoppers are already talking about the products.
 
-After brandAngle: Anata helps The Cheese Society grow. The brand recently moved their store to a new platform.
+After brandAngle: A plan upgrade is a build moment, and the marketplace listing has to keep up with the site.
 
-## replatform: sigourney@beauticate.com
+### drinkhappyviking.com
 
-Brand: Beauticate
+Brand: Happy Viking
 
-Note: Recipe signal only. Previous platform was not in the audit.
+Facts used: Okendo reviews, vitamins and supplements. Recharge subscriptions and Klaviyo are also installed. The angle uses Recharge because the opener already used Okendo.
 
-Before personalization: Beauticate recently moved their store to a new platform.
+In Instantly now: Your recent store plan upgrade suggests you're ready to scale your health and nutrition brand beyond your current reach.
 
-Before brandAngle: Anata helps Beauticate grow after a recent platform move.
+In Instantly now brandAngle: (empty)
 
-Facts the new builder would use: recently moved their store to a new platform
+Before personalization: Happy Viking recently upgraded their store plan.
 
-After personalization: Beauticate recently moved their store to a new platform.
+Before brandAngle: Anata helps Happy Viking grow after a recent plan upgrade.
 
-After brandAngle: Anata helps Beauticate grow. The brand recently moved their store to a new platform.
+After personalization: Saw Happy Viking with Okendo reviews in vitamins and supplements, so shoppers are already talking about the products.
 
-## abby_reengage: sunny@sunnyskorean.com
+After brandAngle: Subscriptions only hold if the listing price stays steady for the next order.
 
-Brand: Sunny's Korean
+### joybees.com
 
-Note: No StoreLeads profile yet. The backfill dry-run fills this.
+Brand: Joybees
 
-Before personalization: (empty)
+Facts used: Stamped reviews, footwear. Klaviyo is also installed. A store-locator app is installed too. That app name is not treated as proof of retail stores.
 
-Before brandAngle: (empty)
+In Instantly now: Your recent store plan upgrade suggests you're scaling apparel operations and could benefit from smarter inventory and demand planning.
 
-Facts the new builder would use: (none on file)
+In Instantly now brandAngle: Joybees' store upgrade shows readiness to scale, and Anata accelerates apparel growth through data-driven strategies.
 
-After personalization: (empty)
+Before personalization: Joybees recently upgraded their store plan.
 
-After brandAngle: (empty)
+Before brandAngle: Anata helps Joybees grow after a recent plan upgrade.
 
-## abby_reengage: fischer@xviveaudio.com
+After personalization: Saw Joybees with Stamped reviews in footwear, so shoppers are already talking about the products.
 
-Brand: Xvive
+After brandAngle: A plan upgrade is a build moment, and the marketplace listing has to keep up with the site.
 
-Note: No StoreLeads profile yet. Positive reply on Nov 5.
+### casekoo.com
 
-Before personalization: (empty)
+Brand: CASEKOO
 
-Before brandAngle: (empty)
+Facts used: Judge.me reviews, mobile and wireless accessories. Klaviyo is also installed.
 
-Facts the new builder would use: (none on file)
+In Instantly now: Your store plan upgrade suggests you're scaling operations, and we help consumer electronics brands optimize their direct-to-consumer performance.
 
-After personalization: (empty)
+In Instantly now brandAngle: Anata helps CASEKOO grow after a recent plan upgrade.
 
-After brandAngle: (empty)
+Before personalization: CASEKOO recently upgraded their store plan.
 
-## abby_reengage: ducmai@ichooseglobal.com
+Before brandAngle: Anata helps CASEKOO grow after a recent plan upgrade.
 
-Brand: iChoose Global
+After personalization: Saw CASEKOO with Judge.me reviews in mobile and wireless accessories, so shoppers are already talking about the products.
 
-Note: No StoreLeads profile yet. The duplicate lead is why positives landed on the old campaign.
+After brandAngle: A plan upgrade is a build moment, and the marketplace listing has to keep up with the site.
 
-Before personalization: (empty)
+## replatform
 
-Before brandAngle: (empty)
+### barbellvoodoo.com
 
-Facts the new builder would use: (none on file)
+Brand: Barbell VooDoo
 
-After personalization: (empty)
+Facts used: Recharge subscriptions, Klaviyo. Stored signal: they moved platforms recently. A separate signal says ad or affiliate apps are installed. It does not name a network, so the line does not say Meta or Google.
 
-After brandAngle: (empty)
+In Instantly now: Your apparel store's platform migration is the perfect moment to optimize how you're reaching customers across channels.
 
-## amz_off: coziya@coziya-outdoor.com
+In Instantly now brandAngle: Barbell VooDoo's platform move is the perfect moment to optimize your apparel storefront for maximum conversions.
 
-Brand: Coziya
+Before personalization: Barbell VooDoo recently moved their store to a new platform.
 
-Note: Would be dropped. StoreLeads country is EE. Facts are from the Nov 9 bulk lookup, so the line shows what the builder would have said.
+Before brandAngle: Anata helps Barbell VooDoo grow after a recent platform move.
 
-Before personalization: (empty)
+After personalization: Saw Barbell VooDoo running Recharge subscriptions and Klaviyo, so repeat purchase and email demand are already in place.
 
-Before brandAngle: (empty)
+After brandAngle: A platform move is when the Amazon listing has to be rebuilt with the new site, not left behind.
 
-Facts the new builder would use: does not sell on Amazon, uses Klaviyo, is growing on TikTok, sells twelve products, has Trustpilot reviews, is based in Tallinn
+### wovemade.com
 
-After personalization: Coziya does not sell on Amazon, uses Klaviyo, and is growing on TikTok.
+Brand: Wove Made
 
-After brandAngle: Anata helps Coziya grow. The brand does not sell on Amazon.
+Facts used: Meta and Google ads, arts and crafts. The ad fact is the stored signal "Runs Meta and Google ads", not a guessed pixel. Stored signal also says they moved platforms recently. Wedding is a second category and was not used.
+
+In Instantly now: Wove Made recently moved their store to a new platform.
+
+In Instantly now brandAngle: Anata helps Wove Made grow after a recent platform move.
+
+Before personalization: Wove Made recently moved their store to a new platform.
+
+Before brandAngle: Anata helps Wove Made grow after a recent platform move.
+
+After personalization: Saw Wove Made running Meta and Google ads in arts and crafts, so paid demand is already there to meet on Amazon.
+
+After brandAngle: A platform move is when the Amazon listing has to be rebuilt with the new site, not left behind.
+
+### krazykreations.us
+
+Brand: Krazy Kreations
+
+Facts used: platform move, arts and crafts. Stored signal includes "No ad pixel found". That negative is not the hook.
+
+In Instantly now: Krazy Kreations recently moved their store to a new platform.
+
+In Instantly now brandAngle: Anata helps Krazy Kreations grow after a recent platform move.
+
+Before personalization: Krazy Kreations recently moved their store to a new platform.
+
+Before brandAngle: Anata helps Krazy Kreations grow after a recent platform move.
+
+After personalization: Saw Krazy Kreations moving the store onto a new platform in arts and crafts, so listings get rebuilt and Amazon gets a fresh look.
+
+After brandAngle: The listing has to match the new site once that move is done.
+
+### repriswines.com
+
+Brand: Repris Wines
+
+Facts used: platform move, alcoholic beverages.
+
+In Instantly now: Repris Wines recently moved their store to a new platform.
+
+In Instantly now brandAngle: Anata helps Repris Wines grow after a recent platform move.
+
+Before personalization: Repris Wines recently moved their store to a new platform.
+
+Before brandAngle: Anata helps Repris Wines grow after a recent platform move.
+
+After personalization: Saw Repris Wines moving the store onto a new platform in alcoholic beverages, so listings get rebuilt and Amazon gets a fresh look.
+
+After brandAngle: The listing has to match the new site once that move is done.
+
+## abby_reengage
+
+Only two of the people who have replied in this campaign have a stored US StoreLeads pull. The others have no profile on file, so they are not given a line.
+
+### jaxkelly.com
+
+Brand: JaxKelly
+
+Facts used: Yotpo reviews, clothing accessories. Klaviyo and Faire are also installed. Faire is not treated as retail stores.
+
+In Instantly now: How are you managing inventory across your accessory SKUs on Amazon right now?
+
+In Instantly now brandAngle: (empty)
+
+Before personalization: JaxKelly sells apparel.
+
+Before brandAngle: Anata helps apparel brands grow.
+
+After personalization: Saw JaxKelly with Yotpo reviews in clothing accessories, so shoppers are already talking about the products.
+
+After brandAngle: Clothing accessories shoppers compare fast, so the listing has to be ready when they look.
+
+### matatraders.com
+
+Brand: Mata Traders
+
+Facts used: Judge.me reviews, apparel. Klaviyo is also installed.
+
+In Instantly now: Your collection of handcrafted home goods and apparel has such a distinct point of view - are you currently running Amazon Ads, or is that still untapped territory for you?
+
+In Instantly now brandAngle: (empty)
+
+Before personalization: Mata Traders sells apparel.
+
+Before brandAngle: Anata helps apparel brands grow.
+
+After personalization: Saw Mata Traders with Judge.me reviews in apparel, so shoppers are already talking about the products.
+
+After brandAngle: Apparel shoppers compare fast, so the listing has to be ready when they look.

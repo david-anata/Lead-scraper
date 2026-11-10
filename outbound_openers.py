@@ -12,7 +12,9 @@ Hard rules, enforced in code not just in the prompt:
   * No digits, so a made-up number can never reach a prospect.
   * No links, no email addresses, no cliches, no questions.
   * No category slugs and no unverified claims.
-  * Amazon is named only when the Amazon check confirmed the product.
+  * A confirmed Amazon product can be named. A rich line may also name Amazon
+    as the marketplace opportunity when a positive StoreLeads fact supports it.
+    Never use "does not sell on Amazon" as the hook.
   * One or two short sentences, capped by length.
 """
 
@@ -173,6 +175,28 @@ def _fact_phrase(value: Any) -> str:
     return _usable(raw, allow_amazon=False)
 
 
+def _specific_category(value: Any) -> str:
+    """Prefer the most specific category segment we can say in plain words."""
+
+    paths = [path for path in str(value or "").split(",") if path.strip()]
+    broad = {"apparel", "beauty", "health", "home", "food", "electronics", "sports", "toys"}
+    weak = {"jobs", "education", "business", "industrial"}
+
+    def usable(phrase: str) -> bool:
+        words = phrase.split()
+        if not words or words[0] in weak:
+            return False
+        return not (len(words) == 1 and words[0] in broad)
+
+    for path in paths:
+        segments = [phrase for piece in path.split("/") if (phrase := _category_phrase(piece))]
+        specific = [phrase for phrase in segments if usable(phrase)]
+        if specific:
+            return specific[-1].replace(" & ", " and ")
+    fallback = _category_phrase(value)
+    return fallback.replace(" & ", " and ") if fallback else ""
+
+
 def _category_phrase(value: Any) -> str:
     words = plain_category(str(value or ""))
     if not words:
@@ -216,10 +240,15 @@ class LeadFacts:
     signal: str = ""
     extra_anchors: tuple[str, ...] = ()
     rich_phrases: tuple[str, ...] = ()
+    rich_opener: str = ""
+    rich_angle: str = ""
 
     @property
     def solid(self) -> bool:
-        return bool(self.amazon_product or self.product or self.category or self.signal or self.rich_phrases)
+        return bool(
+            self.amazon_product or self.product or self.category or self.signal
+            or self.rich_phrases or self.rich_opener
+        )
 
 
 RICH_PERSONALIZATION_FLAG = "OUTBOUND_RICH_PERSONALIZATION_ENABLED"
@@ -272,6 +301,23 @@ def _month_name(value: Any) -> str:
     return ""
 
 
+def _signal_text(lead: dict[str, Any]) -> str:
+    raw = lead.get("signals") or ""
+    if isinstance(raw, (list, tuple)):
+        raw = " ".join(str(item) for item in raw)
+    return str(raw).lower()
+
+
+def _label_text(items: Any) -> str:
+    parts: list[str] = []
+    for item in items or []:
+        if isinstance(item, dict):
+            parts.append(str(item.get("name") or item.get("title") or ""))
+        else:
+            parts.append(str(item))
+    return " ".join(parts).lower()
+
+
 def _profile_of(lead: dict[str, Any]) -> dict[str, Any]:
     raw = lead.get("store_profile")
     if isinstance(raw, str):
@@ -314,17 +360,13 @@ def store_fact_phrases(lead: dict[str, Any]) -> list[str]:
     if "amazon" in channels and not absent:
         phrases.append("sells on Amazon")
     recipe = str(lead.get("recipe") or "").strip()
-    if recipe == "amz_off" and "amazon" not in channels:
-        phrases.append("does not sell on Amazon")
-    elif recipe == "amz_on" and "sells on Amazon" not in phrases and not absent:
+    if recipe == "amz_on" and "sells on Amazon" not in phrases and not absent and "amazon" in channels:
         phrases.append("sells on Amazon")
 
     if str(profile.get("retailer_page") or "").strip() or str(profile.get("store_locator_page") or "").strip():
         phrases.append("is sold in retail stores")
 
-    labels = " ".join(
-        str(item) for item in ((profile.get("apps") or []) + (profile.get("technologies") or []))
-    ).lower()
+    labels = _label_text((profile.get("apps") or []) + (profile.get("technologies") or []))
     compact = labels.replace(".", "")
     if "klaviyo" in compact:
         phrases.append("uses Klaviyo")
@@ -412,6 +454,353 @@ def store_fact_phrases(lead: dict[str, Any]) -> list[str]:
     return ordered
 
 
+def _join_names(names: list[str]) -> str:
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return f"{', '.join(names[:-1])}, and {names[-1]}"
+
+
+def _ad_phrase(names: list[str]) -> str:
+    joined = _join_names(names)
+    if not joined:
+        return ""
+    return joined + " ads"
+
+
+def rich_observations(lead: dict[str, Any]) -> dict[str, Any]:
+    """Positive StoreLeads facts only. A missing Amazon channel is not a fact we state."""
+
+    profile = _profile_of(lead)
+    labels = _label_text((profile.get("apps") or []) + (profile.get("technologies") or []))
+    channels = [str(item).strip().lower() for item in (profile.get("sales_channels") or [])]
+    ads: list[str] = []
+    if any(token in labels for token in ("facebook pixel", "meta pixel", "facebook ads")):
+        ads.append("Meta")
+    if "google ads" in labels or "google adwords" in labels:
+        ads.append("Google")
+    if "tiktok pixel" in labels or "tiktok ads" in labels:
+        ads.append("TikTok")
+    signal_text = _signal_text(lead)
+    if "no ad pixel" not in signal_text:
+        if "meta and google" in signal_text or "google and meta" in signal_text:
+            for name in ("Meta", "Google"):
+                if name not in ads:
+                    ads.append(name)
+        elif "runs meta" in signal_text or "meta ads" in signal_text:
+            if "Meta" not in ads:
+                ads.append("Meta")
+        elif "runs google" in signal_text or "google ads" in signal_text:
+            if "Google" not in ads:
+                ads.append("Google")
+    social: list[str] = []
+    social_names = {
+        "tiktok": "TikTok", "youtube": "YouTube", "instagram": "Instagram",
+        "pinterest": "Pinterest", "twitter": "Twitter",
+    }
+    for item in profile.get("contact_info") or []:
+        if not isinstance(item, dict):
+            continue
+        label = social_names.get(str(item.get("type") or "").lower())
+        try:
+            delta = float(item.get("followers_30d") or 0)
+        except (TypeError, ValueError):
+            delta = 0
+        if label and delta > 0 and label not in social:
+            social.append(label)
+    product = profile.get("most_recently_published_product")
+    if not isinstance(product, dict):
+        product = {}
+    title = _fact_phrase(product.get("title"))
+    month = _month_name(product.get("published_at") or profile.get("max_product_published_at"))
+    new_product = ""
+    if title and month:
+        new_product = _no_digits(f"{title} in {month}")
+    elif title:
+        new_product = title
+    elif month:
+        new_product = f"a new product in {month}"
+    platform_names = {
+        "woocommerce": "WooCommerce", "magento": "Magento",
+        "bigcommerce": "BigCommerce", "shopify": "Shopify",
+    }
+    raw_platform = _no_digits(str(profile.get("last_platform") or ""))
+    previous = platform_names.get(raw_platform.lower(), raw_platform)
+    moved = ""
+    if previous:
+        moved_month = _month_name(profile.get("last_platform_change_at"))
+        moved = f"{previous} in {moved_month}" if moved_month else previous
+    trust = profile.get("trustpilot") if isinstance(profile.get("trustpilot"), dict) else {}
+    try:
+        reviews = int((trust or {}).get("review_count") or 0)
+    except (TypeError, ValueError):
+        reviews = 0
+    compact = labels.replace(".", "")
+    review_app = ""
+    for app_name, token in (
+        ("Yotpo", "yotpo"), ("Judge.me", "judgeme"), ("Okendo", "okendo"),
+        ("Stamped", "stamped"), ("Loox", "loox"),
+    ):
+        if token in compact:
+            review_app = app_name
+            break
+    subscription = ""
+    for app_name, token in (("Recharge", "recharge"), ("Smartrr", "smartrr"), ("Skio", "skio")):
+        if token in compact:
+            subscription = app_name
+            break
+    cats = lead.get("categories") or ""
+    if isinstance(cats, (list, tuple)):
+        cats = ", ".join(str(item) for item in cats[:3])
+    category = _specific_category(cats) or _specific_category(lead.get("niche") or "")
+    confidence = str(lead.get("amz_confidence") or lead.get("amazon_confidence") or "").strip().lower()
+    absent_raw = lead.get("amazon_absent")
+    if isinstance(absent_raw, str):
+        absent = absent_raw.strip().lower() in {"1", "true", "yes"}
+    else:
+        absent = bool(absent_raw)
+    signal = str(lead.get("recipe") or "").strip()
+    if signal not in {"plan_upgrade", "replatform", "replatformed"}:
+        signal = ""
+    city = _no_digits(str(profile.get("city") or ""))
+    if city and len(city.split()) > 3:
+        city = ""
+    return {
+        "brand": str(lead.get("brand") or lead.get("domain") or "").strip() or "This brand",
+        "retail": bool(str(profile.get("retailer_page") or "").strip() or str(profile.get("store_locator_page") or "").strip()),
+        "amazon": (not absent) and ("amazon" in channels or confidence == "high"),
+        "ads": ads,
+        "social": social,
+        "reviews": reviews > 0,
+        "review_app": review_app,
+        "subscription": subscription,
+        "signal": signal,
+        "new_product": new_product,
+        "count_words": _count_words(profile.get("product_count")),
+        "plus": "plus" in str(profile.get("plan") or "").lower(),
+        "moved": moved,
+        "city": city,
+        "category": category,
+        "klaviyo": "klaviyo" in labels.replace(".", ""),
+    }
+
+
+def _why_for(obs: dict[str, Any], *, retail: bool, amazon: bool, ads: bool, social: bool) -> str:
+    if amazon and (ads or retail):
+        return "that demand is already showing up in more than one place"
+    if ads and not amazon:
+        return "paid demand is already there to meet on Amazon"
+    if social and retail:
+        return "that kind of demand usually shows up on Amazon too"
+    if social:
+        return "that attention is worth meeting on Amazon"
+    if retail:
+        return "the product is already proven beyond the website"
+    return "there is demand worth meeting on the marketplace side"
+
+
+def _repeats(line: str, other: str) -> bool:
+    words = clean(line).lower().split()
+    hay = clean(other).lower()
+    for size in (5, 4):
+        for index in range(0, max(0, len(words) - size + 1)):
+            chunk = " ".join(words[index:index + size])
+            if chunk and chunk in hay:
+                return True
+    return False
+
+
+def human_opener(obs: dict[str, Any]) -> tuple[str, list[str]]:
+    """One or two sentences a person could have written. No negative Amazon hook."""
+
+    brand = obs["brand"]
+    ads = _ad_phrase(list(obs["ads"]))
+    social = _join_names(list(obs["social"]))
+    used: list[str] = []
+    clause = ""
+    why = ""
+    if obs["retail"] and obs["amazon"] and ads:
+        clause = f"in retail stores and on Amazon while running {ads}"
+        why = _why_for(obs, retail=True, amazon=True, ads=True, social=False)
+        used = ["retail stores", "Amazon", ads]
+    elif obs["amazon"] and ads:
+        clause = f"on Amazon while running {ads}"
+        why = _why_for(obs, retail=False, amazon=True, ads=True, social=False)
+        used = ["Amazon", ads]
+    elif obs["retail"] and ads:
+        clause = f"in retail stores while running {ads}"
+        why = _why_for(obs, retail=True, amazon=False, ads=True, social=False)
+        used = ["retail stores", ads]
+    elif obs["social"] and obs["retail"]:
+        clause = f"growing on {social} and sold in retail stores"
+        why = _why_for(obs, retail=True, amazon=False, ads=False, social=True)
+        used = [f"growing on {social}", "retail stores"]
+    elif obs["social"]:
+        clause = f"growing on {social}"
+        why = _why_for(obs, retail=False, amazon=False, ads=False, social=True)
+        used = [f"growing on {social}"]
+    elif ads and obs["category"]:
+        clause = f"running {ads} in {obs['category']}"
+        why = _why_for(obs, retail=False, amazon=False, ads=True, social=False)
+        used = [ads, obs["category"]]
+    elif ads:
+        clause = f"running {ads}"
+        why = _why_for(obs, retail=False, amazon=False, ads=True, social=False)
+        used = [ads]
+    elif obs["retail"] and obs["category"]:
+        clause = f"in retail stores, selling {obs['category']}"
+        why = _why_for(obs, retail=True, amazon=False, ads=False, social=False)
+        used = ["retail stores", obs["category"]]
+    elif obs["retail"]:
+        clause = "in retail stores"
+        why = _why_for(obs, retail=True, amazon=False, ads=False, social=False)
+        used = ["retail stores"]
+    elif obs["reviews"] and obs["category"]:
+        clause = f"with Trustpilot reviews in {obs['category']}"
+        why = "shoppers are already talking about the products"
+        used = ["Trustpilot reviews", obs["category"]]
+    elif obs["reviews"]:
+        clause = "with Trustpilot reviews"
+        why = "shoppers are already talking about the products"
+        used = ["Trustpilot reviews"]
+    elif obs["new_product"] and (ads or obs["retail"] or obs["amazon"]):
+        extra = ads or ("retail stores" if obs["retail"] else "Amazon")
+        clause = f"add {obs['new_product']} while running {extra}" if ads else f"add {obs['new_product']} with {extra} already in place"
+        why = "the catalog is moving at the same time as the demand"
+        used = [obs["new_product"], extra]
+    elif obs["plus"]:
+        clause = "on Shopify Plus"
+        why = "the store is in a build moment and the marketplace side has to keep up"
+        used = ["Shopify Plus"]
+    elif obs["moved"]:
+        clause = f"move off {obs['moved']}"
+        why = "listings and ads get rebuilt and Amazon gets a fresh look"
+        used = [obs["moved"]]
+    elif obs["count_words"] and obs["count_words"] != "zero" and obs["category"]:
+        clause = f"with a catalog of {obs['count_words']} products in {obs['category']}"
+        why = "that is a set a team can merchandise tightly"
+        used = [f"{obs['count_words']} products", obs["category"]]
+    elif obs["amazon"] and obs["category"]:
+        clause = f"selling on Amazon in {obs['category']}"
+        why = "price and the buy box are already part of how the number moves"
+        used = ["Amazon", obs["category"]]
+    elif obs["amazon"]:
+        clause = "selling on Amazon"
+        why = "price and the buy box are already part of how the number moves"
+        used = ["Amazon"]
+    elif obs["review_app"] and obs["category"]:
+        clause = f"with {obs['review_app']} reviews in {obs['category']}"
+        why = "shoppers are already talking about the products"
+        used = [f"{obs['review_app']} reviews", obs["category"]]
+    elif obs["review_app"]:
+        clause = f"with {obs['review_app']} reviews"
+        why = "shoppers are already talking about the products"
+        used = [f"{obs['review_app']} reviews"]
+    elif obs["subscription"] and obs["klaviyo"]:
+        clause = f"running {obs['subscription']} subscriptions and Klaviyo"
+        why = "repeat purchase and email demand are already in place"
+        used = [f"{obs['subscription']} subscriptions", "Klaviyo"]
+    elif obs["subscription"] and obs["category"]:
+        clause = f"running {obs['subscription']} subscriptions in {obs['category']}"
+        why = "repeat purchase is already part of the business"
+        used = [f"{obs['subscription']} subscriptions", obs["category"]]
+    elif obs["signal"] == "plan_upgrade" and obs["category"]:
+        clause = f"upgrading the store plan in {obs['category']}"
+        why = "the site is in a build moment and the marketplace side has to keep up"
+        used = ["store plan upgrade", obs["category"]]
+    elif obs["signal"] == "plan_upgrade":
+        clause = "upgrading the store plan"
+        why = "the site is in a build moment and the marketplace side has to keep up"
+        used = ["store plan upgrade"]
+    elif obs["signal"] in {"replatform", "replatformed"} and obs["category"]:
+        clause = f"moving the store onto a new platform in {obs['category']}"
+        why = "listings get rebuilt and Amazon gets a fresh look"
+        used = ["platform move", obs["category"]]
+    elif obs["signal"] in {"replatform", "replatformed"}:
+        clause = "moving the store onto a new platform"
+        why = "listings get rebuilt and Amazon gets a fresh look"
+        used = ["platform move"]
+    elif obs["klaviyo"] and obs["category"]:
+        clause = f"running Klaviyo in {obs['category']}"
+        why = "email demand is already there to meet on Amazon"
+        used = ["Klaviyo", obs["category"]]
+    elif obs["klaviyo"]:
+        clause = "running Klaviyo"
+        why = "email demand is already there to meet on Amazon"
+        used = ["Klaviyo"]
+    elif obs["city"] and obs["category"]:
+        clause = f"in {obs['city']}, selling {obs['category']}"
+        why = "that is a category where Amazon demand tends to sit next to the website"
+        used = [obs["city"], obs["category"]]
+    elif obs["category"]:
+        line = (
+            f"Saw {brand} in {obs['category']}. "
+            "That is a category where Amazon demand tends to sit next to the website."
+        )
+        usable = _usable(line, allow_amazon=True, max_words=MAX_WORDS)
+        return (usable, [obs["category"]]) if usable else ("", [])
+    else:
+        return "", []
+    line = f"Saw {brand} {clause}, so {why}."
+    usable = _usable(line, allow_amazon=True, max_words=MAX_WORDS)
+    if usable:
+        return usable, used
+    shorter = _usable(f"Saw {brand} {clause}.", allow_amazon=True, max_words=MAX_WORDS)
+    return (shorter, used) if shorter else ("", [])
+
+
+def human_angle(obs: dict[str, Any], opener: str) -> str:
+    """A second line that does not restate the opener and does not pitch 'Anata helps X grow'."""
+
+    candidates: list[str] = []
+    if obs["retail"] and "retail" not in opener.lower():
+        candidates.append("Retail distribution is a sign the product can hold a price, which is what the buy box depends on.")
+    if obs["ads"] and not any(name.lower() in opener.lower() for name in obs["ads"]):
+        candidates.append("Ad spend works harder when the listing price holds.")
+    if obs["social"] and not any(name.lower() in opener.lower() for name in obs["social"]):
+        candidates.append("That social attention fades if the listing is not ready when someone searches the brand.")
+    if obs["reviews"] and "trustpilot" not in opener.lower():
+        candidates.append("Those reviews are the proof a listing needs when a shopper compares prices.")
+    if obs["review_app"] and obs["review_app"].lower() not in opener.lower():
+        candidates.append("Those reviews are the proof a listing needs when a shopper compares prices.")
+    if obs["subscription"] and obs["subscription"].lower() not in opener.lower():
+        candidates.append("Subscriptions only hold if the listing price stays steady for the next order.")
+    if obs["signal"] == "plan_upgrade" and "plan" not in opener.lower():
+        candidates.append("A plan upgrade is a build moment, and the marketplace listing has to keep up with the site.")
+    elif obs["signal"] in {"replatform", "replatformed"} and "platform" not in opener.lower():
+        candidates.append("A platform move is when the Amazon listing has to be rebuilt with the new site, not left behind.")
+    elif obs["signal"] in {"replatform", "replatformed"}:
+        candidates.append("The listing has to match the new site once that move is done.")
+    if obs["new_product"] and obs["new_product"].split()[0].lower() not in opener.lower():
+        candidates.append("A new product is the moment the listing and the ads have to say the same thing.")
+    if obs["plus"] and "plus" not in opener.lower():
+        candidates.append("A Plus plan is a lot of store to run if the marketplace side is still manual.")
+    if obs["moved"] and obs["moved"].split()[0].lower() not in opener.lower():
+        candidates.append("A platform move is when the Amazon listing has to be rebuilt with the new site, not left behind.")
+    if obs["count_words"] and obs["count_words"] not in opener.lower():
+        candidates.append(f"A catalog of {obs['count_words']} products is a manageable set to keep priced.")
+    if obs["amazon"] and "amazon" not in opener.lower():
+        candidates.append("Being on Amazon means the buy box is part of the number, not a side project.")
+    if obs["category"]:
+        candidates.append(f"{obs['category'].capitalize()} shoppers compare fast, so the listing has to be ready when they look.")
+        candidates.append("Shoppers in that category compare fast, so the listing has to be ready when they look.")
+    if obs["klaviyo"] and "klaviyo" not in opener.lower():
+        candidates.append("Email demand only pays off if the listing is ready when someone searches the brand.")
+    candidates.append("Price and the buy box are where that demand gets kept or given away.")
+    for line in candidates:
+        if line.lower().startswith("anata helps"):
+            continue
+        if _repeats(line, opener):
+            continue
+        usable = _usable(line, allow_amazon="amazon" in line.lower(), max_words=ANGLE_MAX_WORDS)
+        if usable:
+            return usable
+    return ""
+
+
 def _compose(brand: str, phrases: list[str]) -> str:
     if len(phrases) == 1:
         return f"{brand} {phrases[0]}."
@@ -455,9 +844,17 @@ def collect_facts(lead: dict[str, Any]) -> LeadFacts:
     if signal not in RECIPE_FACTS:
         signal = ""
     rich: tuple[str, ...] = ()
+    rich_opener = ""
+    rich_angle = ""
     if rich_personalization_enabled(lead):
-        rich = tuple(store_fact_phrases(lead))
-    return LeadFacts(brand, amazon_product, product, category, signal, extras, rich)
+        observations = rich_observations(lead)
+        rich_opener, used = human_opener(observations)
+        if rich_opener:
+            rich_angle = human_angle(observations, rich_opener)
+            rich = tuple(used)
+    return LeadFacts(
+        brand, amazon_product, product, category, signal, extras, rich, rich_opener, rich_angle,
+    )
 
 
 def _anchors(facts: LeadFacts) -> list[str]:
@@ -486,6 +883,8 @@ def opener_line(facts: LeadFacts) -> str:
     """Deterministic opener. Empty when we have no product, signal, or category."""
 
     brand = _named(facts.brand)
+    if facts.rich_opener:
+        return facts.rich_opener
     if facts.amazon_product:
         line = _usable(f"{brand} lists {facts.amazon_product} on Amazon.", allow_amazon=True)
         if line:
@@ -514,6 +913,8 @@ def brand_angle_line(facts: LeadFacts) -> str:
     """Tie one known fact to how Anata helps. Category is the neutral fallback."""
 
     brand = _named(facts.brand)
+    if facts.rich_angle:
+        return facts.rich_angle
     if facts.amazon_product:
         line = _usable(
             f"Anata helps {brand} grow {facts.amazon_product} on Amazon.",
@@ -680,6 +1081,8 @@ def write_opener(
 
     if not facts.solid:
         return finish("", "none")
+    if facts.rich_opener:
+        return finish(facts.rich_opener, "fallback")
     model = _resolve_llm(llm, api_key, system=_SYSTEM)
     if model is not None:
         prompt = _build_prompt(facts, closing="Write the opening statement now.")
@@ -724,6 +1127,8 @@ def write_brand_angle(
 
     if not facts.solid:
         return finish("", "none")
+    if facts.rich_angle:
+        return finish(facts.rich_angle, "fallback")
     model = _resolve_llm(llm, api_key, system=_ANGLE_SYSTEM)
     if model is not None:
         prompt = _build_prompt(facts, closing="Write the growth line now.")
