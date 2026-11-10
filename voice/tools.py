@@ -11,11 +11,12 @@ import json
 from typing import Any
 
 from voice.calendar_availability import CalendarAvailability
-from voice.knowledge import building_facts, published_addons, published_rates
+from voice.knowledge import anata_inc_facts, building_facts, published_addons, published_rates
 from voice.screening import (
     ScreenInput,
     apply_forward_availability,
     decide,
+    is_agency_lead,
     looks_like_solicitation,
     normalize_category,
 )
@@ -39,18 +40,24 @@ TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "get_building_facts",
-        "description": "Return the address, workspace options, parking, tours, and what else is in the building. No office prices are included.",
+        "description": "Return the address, workspace options and published workspace prices (Bullpen desk, warehouse), parking, tours, tenant mail and battery rules, and what else is in the building. Private office prices are not published.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "type": "function",
+        "name": "get_anata_inc_facts",
+        "description": "Return anata Inc. facts: Amazon and marketplace marketing services, fulfillment and FBA prep, Anata Intelligence and Shipping OS software, published software plan prices, and how to qualify the caller. Use before answering any agency, fulfillment, or software question.",
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "type": "function",
         "name": "check_event_date",
-        "description": "Check one Arena date against the events calendar. date is YYYY-MM-DD. style is business, party, or unsure.",
+        "description": "Check one Arena date against the events calendar. date is YYYY-MM-DD. style is business for a small business meeting (for example a BNI chapter), large for a big event such as a 200-person conference, party for a loud or social event, or unsure.",
         "parameters": {
             "type": "object",
             "properties": {
                 "date": {"type": "string", "description": "YYYY-MM-DD"},
-                "style": {"type": "string", "enum": ["business", "party", "unsure"]},
+                "style": {"type": "string", "enum": ["business", "large", "party", "unsure"]},
             },
             "required": ["date"],
         },
@@ -69,6 +76,13 @@ TOOLS: list[dict[str, Any]] = [
                 "event_date": {"type": "string", "description": "YYYY-MM-DD if known"},
                 "guest_count": {"type": "string"},
                 "event_or_interest_type": {"type": "string"},
+                "business_line": {
+                    "type": "string",
+                    "enum": ["event", "workspace", "agency", "fulfillment", "software", "tenant", "other"],
+                    "description": "Which part of Anata the call is about.",
+                },
+                "marketplaces": {"type": "string", "description": "Agency callers: where they sell, e.g. Amazon, TikTok Shop, Shopify."},
+                "revenue_range": {"type": "string", "description": "Agency callers: rough annual or monthly sales range they gave."},
                 "notes": {"type": "string"},
             },
             "required": [],
@@ -77,7 +91,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "request_transfer",
-        "description": "Ask to connect the caller to a person. The server may decline. Use only for emergencies, urgent tenant issues, known customers who need someone now, or qualified event or lease prospects who want to talk now.",
+        "description": "Ask to connect the caller to a person. The server may decline. Use only for emergencies, urgent tenant issues, known customers who need someone now, or qualified event, workspace, agency, or fulfillment prospects who want to talk now.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -97,6 +111,10 @@ TOOLS: list[dict[str, Any]] = [
                 "event_date": {"type": "string"},
                 "guest_count": {"type": "string"},
                 "event_or_interest_type": {"type": "string"},
+                "business_line": {
+                    "type": "string",
+                    "enum": ["event", "workspace", "agency", "fulfillment", "software", "tenant", "other"],
+                },
             },
             "required": ["category", "reason", "wants_live_person"],
         },
@@ -121,6 +139,11 @@ TOOLS: list[dict[str, Any]] = [
                 "event_date": {"type": "string"},
                 "guest_count": {"type": "string"},
                 "event_or_interest_type": {"type": "string"},
+                "business_line": {
+                    "type": "string",
+                    "enum": ["event", "workspace", "agency", "fulfillment", "software", "tenant", "other"],
+                    "description": "Which part of Anata the call is about.",
+                },
                 "notes": {"type": "string"},
             },
             "required": ["category", "summary", "callback_needed"],
@@ -158,10 +181,15 @@ def execute_tool(
         return published_addons()
     if name == "get_building_facts":
         return building_facts()
+    if name == "get_anata_inc_facts":
+        return anata_inc_facts()
     if name == "check_event_date":
         return calendar.check(str(args.get("date") or session.event_date), str(args.get("style") or "unsure"))
     if name == "save_caller_details":
-        if session.category == "other":
+        line = session.business_line.strip().casefold()
+        if line == "tenant" and session.category in {"other", "lead"}:
+            session.category = "tenant"
+        elif session.category == "other" and line != "other":
             session.category = "lead"
         return {"saved": True, "fields": session.lead_fields()}
     if name == "request_transfer":
@@ -205,6 +233,7 @@ def _transfer(
                 args.get("event_or_interest_type") or session.event_or_interest_type
             ),
             known_numbers=known_numbers,
+            business_line=str(args.get("business_line") or session.business_line),
         )
     )
     decision = apply_forward_availability(decision, bool(settings.forward_to_number))
@@ -227,7 +256,8 @@ def _finish(args: dict[str, Any], session: CallSession) -> dict[str, Any]:
             str(args.get("notes") or ""),
         )
     )
-    if looks_like_solicitation(blob):
+    agency_lead = is_agency_lead(category, session.business_line)
+    if looks_like_solicitation(blob, agency_lead=agency_lead):
         category = "spam"
     # Solicitation always wins. A prior spam or vendor decision is not loosened
     # into a lead by the goodbye tool.
@@ -267,6 +297,13 @@ def session_update_event(settings: Settings, instructions: str) -> dict[str, Any
                             "Arena",
                             "Lehi",
                             "Bullpen",
+                            "BNI",
+                            "anata Inc",
+                            "Anata Intelligence",
+                            "Shipping OS",
+                            "FBA",
+                            "TikTok Shop",
+                            "Eventective",
                         ],
                     },
                 },

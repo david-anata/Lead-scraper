@@ -4,7 +4,17 @@ import re
 
 from voice.audio import mulaw_frames
 from voice.calendar_availability import CalendarAvailability
-from voice.knowledge import KNOWLEDGE_PATH, RENTAL_RATES, load_knowledge_text, published_rates
+from voice.knowledge import (
+    ANATA_INTELLIGENCE_PLANS,
+    FRONT_DESK_PATH,
+    INC_KNOWLEDGE_PATH,
+    KNOWLEDGE_PATH,
+    RENTAL_RATES,
+    anata_inc_facts,
+    load_knowledge_text,
+    published_rates,
+)
+from voice.prompts import build_instructions
 from voice.leads import build_inquiry_row, inquiry_kind, should_create_inquiry
 from voice.lines import LineContext
 from voice.notify import should_text_about_call
@@ -26,21 +36,62 @@ def _session(**overrides: object) -> CallSession:
     return session
 
 
+def _dollars(text: str) -> set[int]:
+    return {int(match.replace(",", "")) for match in re.findall(r"\$(\d[\d,]*)", text)}
+
+
 def test_knowledge_file_contains_the_published_rental_rates_and_no_extras() -> None:
-    text = load_knowledge_text()
+    text = KNOWLEDGE_PATH.read_text(encoding="utf-8")
     assert KNOWLEDGE_PATH.is_file()
-    for amount in (1500, 2000, 3000, 3500, 250, 400, 550, 75, 125):
+    for amount in (1500, 2000, 3000, 3500, 1000, 250, 400, 550, 75, 125, 150):
         assert f"${amount:,}" in text
-    amounts = {int(match.replace(",", "")) for match in re.findall(r"\$(\d[\d,]*)", text)}
-    assert amounts == {1500, 2000, 3000, 3500, 250, 400, 550, 75, 125}
+    assert _dollars(text) == {1500, 2000, 1000, 3000, 3500, 250, 400, 550, 75, 125, 150, 2, 4}
     assert "1657 N. State Street" in text
     assert "5:00 p.m. to 11:00 p.m." in text
     assert "8:00 a.m. to midnight" in text
     assert "8:00 a.m. to 10:00 p.m." in text
     assert "do not take trash out" in text
+    assert "BNI" in text
+    assert "$175" not in text
     rates = published_rates()
     assert rates["half_day_up_to_6_hours_usd"] == RENTAL_RATES["half_day_up_to_6_hours_usd"] == 1500
     assert "not reserved" in str(rates["confirmation"]).lower() or "confirmed only" in str(rates["confirmation"]).lower()
+
+
+def test_anata_inc_knowledge_has_only_published_prices_and_says_agency() -> None:
+    text = INC_KNOWLEDGE_PATH.read_text(encoding="utf-8")
+    assert _dollars(text) == {1, 20, 99, 199, 399, 999}
+    assert "Agency plan" in text
+    assert "portfolio plan" not in text.replace("Never say Portfolio plan", "").casefold()
+    assert "Do not quote any fulfillment fee" in text
+    facts = anata_inc_facts()
+    assert facts["software"]["agency_from_usd_per_month"] == ANATA_INTELLIGENCE_PLANS["agency_from_usd_per_month"] == 999
+
+
+def test_front_desk_rules_cover_every_line_and_the_closed_topics() -> None:
+    text = FRONT_DESK_PATH.read_text(encoding="utf-8")
+    assert _dollars(text) == set()
+    for line_id in ("main:", "front_desk:", "anata_services:", "gabe_line:", "val_line:", "test:"):
+        assert line_id in text
+    for topic in ("Fondell", "forbearance", "billing disputes", "Never give out a personal or cell number"):
+        assert topic in text
+    combined = load_knowledge_text()
+    assert combined.index("# Front desk rules") < combined.index("# Anata Building knowledge") < combined.index("# anata Inc. knowledge")
+
+
+def test_prompt_names_both_businesses_and_the_line_id() -> None:
+    prompt = build_instructions(_session())
+    assert "anata Inc." in prompt
+    assert "Line id: anata" in prompt
+    assert "Never negotiate" in prompt
+    assert "get_anata_inc_facts" in prompt
+
+
+def test_agency_lead_is_not_a_building_inquiry() -> None:
+    agency = _session(category="lead", business_line="agency", company="Northwind Supplements")
+    assert should_create_inquiry(agency) is False
+    event = _session(category="lead", business_line="event", event_date="2026-12-01")
+    assert should_create_inquiry(event) is True
 
 
 def test_sms_replies_quote_published_rates_and_do_not_confirm_a_booking() -> None:

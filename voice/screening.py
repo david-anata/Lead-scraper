@@ -42,6 +42,20 @@ SOLICITATION_PHRASES = (
     "insurance quote",
 )
 
+# Words an Amazon or ecommerce brand also uses when it asks anata Inc. for
+# help. They only count as a pitch when the call is not an agency lead.
+AGENCY_SHARED_PHRASES = frozenset(
+    {
+        "marketing agency",
+        "marketing services",
+        "lead generation",
+        "increase your revenue",
+        "increase your sales",
+        "social media management",
+    }
+)
+AGENCY_LINES = frozenset({"agency", "fulfillment", "software"})
+
 EMERGENCY_PHRASES = (
     "fire",
     "flood",
@@ -99,6 +113,7 @@ class ScreenInput:
     event_or_interest_type: str = ""
     known_numbers: frozenset[str] = frozenset()
     forward_configured: bool = True
+    business_line: str = ""
 
 
 @dataclass(frozen=True)
@@ -121,9 +136,20 @@ def _blob(*parts: str) -> str:
     return " ".join(part.strip().casefold() for part in parts if part and part.strip())
 
 
-def looks_like_solicitation(text: str) -> bool:
+def is_agency_lead(category: str, business_line: str) -> bool:
+    return (category or "").strip().casefold() == "lead" and (
+        (business_line or "").strip().casefold() in AGENCY_LINES
+    )
+
+
+def looks_like_solicitation(text: str, *, agency_lead: bool = False) -> bool:
     haystack = f" {text.casefold()} "
-    return any(phrase in haystack for phrase in SOLICITATION_PHRASES)
+    phrases = (
+        (phrase for phrase in SOLICITATION_PHRASES if phrase not in AGENCY_SHARED_PHRASES)
+        if agency_lead
+        else SOLICITATION_PHRASES
+    )
+    return any(phrase in haystack for phrase in phrases)
 
 
 def looks_like_emergency(text: str) -> bool:
@@ -159,7 +185,8 @@ def decide(screen: ScreenInput) -> ScreenDecision:
 
     text = _blob(screen.reason, screen.notes, screen.event_or_interest_type)
     category = normalize_category(screen.category)
-    if looks_like_solicitation(text) or category == "spam":
+    agency_lead = is_agency_lead(category, screen.business_line)
+    if looks_like_solicitation(text, agency_lead=agency_lead) or category == "spam":
         return ScreenDecision(
             allow_transfer=False,
             category="spam",

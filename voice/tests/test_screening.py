@@ -180,3 +180,48 @@ def test_missing_forward_number_turns_an_approval_into_a_message() -> None:
     assert decision.allow_transfer is True
     assert blocked.allow_transfer is False
     assert blocked.action == "message"
+
+
+def test_a_brand_asking_for_marketing_services_is_a_lead_not_spam() -> None:
+    from voice.screening import ScreenInput, decide
+
+    brand = decide(
+        ScreenInput(
+            category="lead",
+            reason="Our Amazon brand needs marketing services and PPC help",
+            wants_live_person=True,
+            qualified_opportunity=True,
+            caller_name="Ana Ruiz",
+            company="Northwind Supplements",
+            event_or_interest_type="Amazon advertising",
+            business_line="agency",
+        )
+    )
+    assert brand.allow_transfer is True
+    assert brand.category == "lead"
+
+    pitch = decide(
+        ScreenInput(
+            category="lead",
+            reason="We are a marketing agency offering marketing services to you",
+            wants_live_person=True,
+            qualified_opportunity=True,
+            caller_name="Sam",
+            company="Growth Co",
+        )
+    )
+    assert pitch.allow_transfer is False
+    assert pitch.category == "spam"
+
+    seo = decide(
+        ScreenInput(
+            category="lead",
+            reason="We can get you ranking on Google with SEO",
+            wants_live_person=True,
+            qualified_opportunity=True,
+            caller_name="Sam",
+            company="Rank Co",
+            business_line="agency",
+        )
+    )
+    assert seo.allow_transfer is False

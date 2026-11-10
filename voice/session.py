@@ -33,6 +33,9 @@ class CallSession:
     event_date: str = ""
     guest_count: str = ""
     event_or_interest_type: str = ""
+    business_line: str = ""
+    marketplaces: str = ""
+    revenue_range: str = ""
     summary: str = ""
     action: str = ""
     callback_needed: bool = True
@@ -60,6 +63,9 @@ class CallSession:
             "event_date": "event_date",
             "guest_count": "guest_count",
             "event_or_interest_type": "event_or_interest_type",
+            "business_line": "business_line",
+            "marketplaces": "marketplaces",
+            "revenue_range": "revenue_range",
             "reason": "reason",
             "summary": "summary",
         }
@@ -97,6 +103,9 @@ class CallSession:
             "event_date": self.event_date,
             "guest_count": self.guest_count,
             "type": self.event_or_interest_type,
+            "business_line": self.business_line,
+            "marketplaces": self.marketplaces,
+            "revenue_range": self.revenue_range,
             "notes": self.notes,
             "reason": self.reason,
         }

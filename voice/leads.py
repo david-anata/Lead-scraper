@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 INQUIRY_CATEGORIES = frozenset({"lead"})
+# anata Inc. leads (marketing, fulfillment, software) are not building
+# inquiries. They stay in call_log and the after-call text.
+NON_BUILDING_LINES = frozenset({"agency", "fulfillment", "software"})
 
 
 class HttpClient(Protocol):
@@ -68,6 +71,8 @@ def should_create_inquiry(session: CallSession) -> bool:
     """
 
     if session.category in {"spam", "vendor"}:
+        return False
+    if session.business_line.strip().casefold() in NON_BUILDING_LINES:
         return False
     if session.category in INQUIRY_CATEGORIES:
         return True

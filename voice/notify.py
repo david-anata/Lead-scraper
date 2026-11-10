@@ -94,6 +94,9 @@ def call_summary_text(session: CallSession) -> str:
         for value in (
             lead["name"],
             lead["company"],
+            lead["business_line"],
+            lead["marketplaces"],
+            lead["revenue_range"],
             lead["email"],
             lead["event_date"],
             f"{lead['guest_count']} guests" if lead["guest_count"] else "",

@@ -1,9 +1,10 @@
-"""Published Anata Building facts.
+"""Published Anata Building and anata Inc. facts.
 
 Rates and rules in this module are the only numbers the tools may speak.
-They were checked against anatabuilding.com on November 10, 2026, including
-the Arena policies page effective November 5, 2026. Office prices and live
-availability are not published, so they are absent on purpose.
+They were checked against anatabuilding.com and anatainc.com on November 10,
+2026, including the Arena policies page effective November 5, 2026. Private
+office prices, marketing fees, fulfillment fees, and live availability are not
+published, so they are absent on purpose.
 """
 
 from __future__ import annotations
@@ -14,7 +15,12 @@ from zoneinfo import ZoneInfo
 
 
 DENVER = ZoneInfo("America/Denver")
-KNOWLEDGE_PATH = Path(__file__).resolve().parent / "data" / "anata_building.md"
+DATA_DIR = Path(__file__).resolve().parent / "data"
+KNOWLEDGE_PATH = DATA_DIR / "anata_building.md"
+INC_KNOWLEDGE_PATH = DATA_DIR / "anata_inc.md"
+FRONT_DESK_PATH = DATA_DIR / "front_desk.md"
+# Order matters: the front desk rules refer to the other two.
+KNOWLEDGE_FILES = (FRONT_DESK_PATH, KNOWLEDGE_PATH, INC_KNOWLEDGE_PATH)
 
 PUBLISHED_PHONE = "(801) 386-8104"
 PUBLISHED_EMAIL = "hello@anatainc.com"
@@ -33,6 +39,22 @@ RENTAL_RATES = {
     "utah_tax_percent": 7.45,
 }
 
+# anatabuilding.com/spaces. Private offices are quoted on the tour.
+WORKSPACE_RATES = {
+    "bullpen_desk_from_usd_per_month": 150,
+    "warehouse_usd_per_sq_ft_low": 2,
+    "warehouse_usd_per_sq_ft_high": 4,
+}
+
+# anatainc.com/trial and /platform/anata-intelligence. Software only.
+ANATA_INTELLIGENCE_PLANS = {
+    "brand_starter_usd_per_month": 99,
+    "brand_growth_usd_per_month": 199,
+    "brand_pro_usd_per_month": 399,
+    "agency_from_usd_per_month": 999,
+    "trial_days": 14,
+}
+
 ADDON_RATES = {
     "setup_and_reset_up_to_75_guests_usd": 250,
     "setup_and_reset_76_to_150_guests_usd": 400,
@@ -48,7 +70,9 @@ ADDON_RATES = {
 
 
 def load_knowledge_text() -> str:
-    return KNOWLEDGE_PATH.read_text(encoding="utf-8")
+    """Every knowledge file, in prompt order."""
+
+    return "\n\n".join(path.read_text(encoding="utf-8").strip() for path in KNOWLEDGE_FILES) + "\n"
 
 
 def published_rates() -> dict[str, object]:
@@ -130,14 +154,30 @@ def building_facts() -> dict[str, object]:
                 "Warehouse and storage options",
             ],
             "included": "Secure access for offices, internet, utilities, mail, common areas, and on-site parking.",
-            "pricing": "No office or coworking price is published. Do not guess.",
-            "availability": "No office availability is published. Offer a tour and say the team will confirm.",
+            "bullpen_coworking": (
+                "From $150 per month for a desk in the shared open-plan office. Internet, "
+                "utilities, parking, mail room, and shared conference and call rooms included."
+            ),
+            "private_offices": (
+                "Priced by size. No published price. Quoted on the tour based on the room "
+                "and the term. Do not guess a number."
+            ),
+            "warehouse": (
+                "Warehouse South: $2 to $4 per square foot, depending on size and access. "
+                "Do not say per month or per year; the team confirms the term."
+            ),
+            "availability": "No office, desk, or warehouse availability is published. Offer a tour and say the team will confirm.",
             "larger_teams": "A single organization with more than about 20 people needs a more specific conversation.",
             "terms": "Ask about current month-to-month options. Do not promise a term.",
         },
         "also_in_the_building": (
             "Boom Fitness Culture is an independently operated gym. Do not quote gym prices "
-            "or sell memberships. A golf simulator is coming soon."
+            "or sell memberships. A golf simulator is coming soon; it is not bookable yet."
+        ),
+        "current_tenants": (
+            "Mail is dropped at the front desk and then goes to the mail room. Spare lock "
+            "batteries are at the front desk and tenants swap their own. Anything else is "
+            "a message for the team. Do not discuss rent, balances, or billing disputes."
         ),
         "parking": (
             "On-site parking is shared, not exclusive, and not guaranteed. No overnight parking. "
@@ -147,38 +187,97 @@ def building_facts() -> dict[str, object]:
     }
 
 
+def anata_inc_facts() -> dict[str, object]:
+    """anata Inc. agency, fulfillment, and software facts from anatainc.com."""
+
+    return {
+        "who": (
+            "anata Inc. is an ecommerce marketing, marketplace operations, and fulfillment "
+            "company headquartered in the Anata Building in Lehi. Amazon Ads Verified Partner, "
+            "10+ years. Typical marketing client: a brand doing about $1M to $20M a year."
+        ),
+        "marketing_services": [
+            "Amazon advertising: PPC and DSP",
+            "Amazon marketing, account, and brand management",
+            "Amazon listing optimization",
+            "TikTok Shop management and ads",
+            "Shopify marketing management",
+            "Facebook and Instagram ads",
+        ],
+        "marketing_pricing": (
+            "Not published. It starts with a free market report on anatainc.com; the team "
+            "then sends a recommended service mix and an estimated range. Do not quote a fee."
+        ),
+        "fulfillment": (
+            "Full 3PL from the Lehi warehouse: receiving, pick, pack, ship, returns, a named "
+            "account manager, Shopify, Amazon, and EDI connections, and carriers USPS, UPS, "
+            "FedEx, DHL, GLS, and UniUni. Amazon FBA prep too. Onboarding usually under two "
+            "weeks. Fees are not published; quoted after volume and product details."
+        ),
+        "software": {
+            **ANATA_INTELLIGENCE_PLANS,
+            "anata_intelligence": (
+                "Profit and ad analytics plus Amazon ad automation. Brand Starter $99, Brand "
+                "Growth $199, Brand Pro $399 a month after a 14-day trial. Agency plans start "
+                "at $999 a month. Say Agency plan, never Portfolio. Do not say whether the "
+                "trial needs a card; the team will confirm."
+            ),
+            "shipping_os": (
+                "Software for brands and 3PLs that ship in-house on Anata's negotiated carrier "
+                "rates. Its plan prices are not published here."
+            ),
+        },
+        "qualify": (
+            "Name, brand and website, marketplaces or stores, rough revenue range, what they "
+            "need, timing, email, and callback number. Do not ask for passwords."
+        ),
+        "contact": "david@anatainc.com, (801) 386-8104, anatainc.com",
+    }
+
+
+_LARGE_EVENT_HOURS = (
+    "Large events, roughly 50 or more guests, conferences, and parties, can only be "
+    "booked on weekday evenings, 5:00 p.m. to 11:00 p.m. Quiet setup may begin at "
+    "3:00 p.m., no amplified sound before 5:00 p.m., and teardown ends by 1:00 a.m. "
+    "Do not quote Saturday or Sunday hours. If they asked for a weekend or a daytime "
+    "slot, explain the rule, offer a weekday evening, and still take the lead."
+)
+
+
 def hours_guidance(on: date, style: str) -> str:
-    """Published hours for one date. Style is business, party, or unsure."""
+    """Published hours for one date. Style is business, large, party, or unsure."""
 
     kind = (style or "unsure").strip().casefold()
     weekday = on.weekday()
+    if kind in {"party", "large"}:
+        return _LARGE_EVENT_HOURS
     if kind == "business":
         return (
-            "Small business meetings can use the building in the daytime only, and only "
-            "when Anata approves the plan in advance. Do not invent the daytime hours."
+            "Daytime Arena use is only for small business meetings, such as a BNI chapter "
+            "meeting, and only when Anata approves the plan in advance. Do not invent the "
+            "daytime hours. A large event is not a daytime booking; it can only be a "
+            "weekday evening, 5:00 p.m. to 11:00 p.m."
         )
     if weekday == 5:
         return (
-            "Saturday guest events may run 8:00 a.m. to midnight, and teardown ends by "
-            "2:00 a.m. Setup and teardown still have to fit inside the booked time."
+            "These Saturday hours are not for large events. Saturday guest events may run "
+            "8:00 a.m. to midnight, and teardown ends by 2:00 a.m. A large event, about "
+            "50 or more guests, a conference, or a party, can only be a weekday evening, "
+            "5:00 p.m. to 11:00 p.m. Do not quote these Saturday hours for that."
         )
     if weekday == 6:
         return (
-            "Sunday guest events may run 8:00 a.m. to 10:00 p.m., and teardown ends by "
-            "midnight. Setup and teardown still have to fit inside the booked time."
-        )
-    if kind == "party":
-        return (
-            "Larger or louder weekday events: quiet setup may begin at 3:00 p.m., no "
-            "amplified sound before 5:00 p.m., guests 5:00 p.m. to 11:00 p.m., and "
-            "teardown ends by 1:00 a.m. Setup and teardown must fit inside the booked time."
+            "These Sunday hours are not for large events. Sunday guest events may run "
+            "8:00 a.m. to 10:00 p.m., and teardown ends by midnight. A large event, about "
+            "50 or more guests, a conference, or a party, can only be a weekday evening, "
+            "5:00 p.m. to 11:00 p.m. Do not quote these Sunday hours for that."
         )
     return (
-        "Daytime use is for small business meetings when Anata approves them. Larger or "
-        "louder weekday events run in the evening, 5:00 p.m. to 11:00 p.m., with teardown "
-        "by 1:00 a.m. Saturday guest events may run 8:00 a.m. to midnight. Sunday guest "
-        "events may run 8:00 a.m. to 10:00 p.m. Tell the caller which rule matches, and "
-        "do not invent a different clock time."
+        "Daytime use is only for small business meetings such as BNI, when Anata approves "
+        "them. Large events, roughly 50 or more guests, conferences, and parties, can only "
+        "be booked on weekday evenings, 5:00 p.m. to 11:00 p.m. Do not quote weekend hours "
+        "for a large event. If they asked for a weekend or a daytime slot, offer a weekday "
+        "evening and still take the lead."
     )
 
 

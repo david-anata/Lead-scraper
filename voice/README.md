@@ -14,8 +14,13 @@ websocket for the whole conversation.
    xAI's realtime voice API (`wss://api.x.ai/v1/realtime`, model
    `grok-voice-latest`), which is configured for `audio/pcmu` in both directions.
    Nothing is resampled.
-4. The assistant answers from `voice/data/anata_building.md`. Prices and date
-   status come back from tools, not from the model's memory.
+4. The assistant answers from three knowledge files, loaded in this order:
+   `voice/data/front_desk.md` (lines, caller types, routing, closed topics),
+   `voice/data/anata_building.md` (workspace, Arena, tenants), and
+   `voice/data/anata_inc.md` (marketing, fulfillment, software). Prices and
+   date status come back from tools, not from the model's memory. To correct
+   the assistant, edit the matching file; the tests check that no unpublished
+   dollar amount slips in.
 5. A live transfer is a Twilio call update to `<Dial>`. It runs only after the
    screening rules in `voice/screening.py` approve it. If that phone does not
    answer, Twilio hits `/voice/dial-result` and the assistant returns to take
@@ -68,6 +73,9 @@ placeholder, not a real line:
   "+15550001111": {"id": "front_desk", "label": "Anata Building front desk"}
 }
 ```
+
+Line ids the front desk rules know: `main`, `front_desk`, `anata_services`,
+`gabe_line`, `val_line`, and `test`. An unknown id is treated like `main`.
 
 The label is what the greeting says. A line labeled `Anata` is greeted as
 "Thanks for calling Anata." Any other label is greeted as "Thanks for calling
