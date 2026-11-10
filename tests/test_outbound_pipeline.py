@@ -48,7 +48,7 @@ class TestIcpGate(unittest.TestCase):
         self.assertFalse(op.passes_company_fit(_store(country_code="GB")))
         self.assertFalse(op.passes_company_fit(_store(country_code="CA")))
         self.assertFalse(op.passes_company_fit(_store(country_code="AU")))
-        self.assertFalse(op.passes_company_fit(_store(country_code="")))
+        self.assertTrue(op.passes_company_fit(_store(country_code="")))
 
     def test_missing_revenue_is_outside_company_fit(self):
         self.assertFalse(op.passes_company_fit(_store(estimated_sales_yearly=None)))

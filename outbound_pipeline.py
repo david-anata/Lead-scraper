@@ -68,6 +68,388 @@ def _normalize_country(code: str) -> str:
     return "GB" if code == "UK" else code
 
 
+# A regional storefront (usa.brand.com, us.brand.com) is not the company.
+# Its country_code is where that host sells, not where the brand is based.
+_STOREFRONT_LABELS = frozenset({
+    "us", "usa", "uk", "gb", "ca", "au", "eu", "de", "fr", "es", "it", "nl",
+    "nz", "ie", "se", "no", "dk", "be", "ch", "at", "mx", "br", "jp", "kr",
+    "en-us", "en-gb", "en-ca", "en-au", "en-nz", "fr-fr", "es-es", "de-de",
+})
+_ADDRESS_TYPES = frozenset({
+    "address", "location", "postal", "postal_address", "street", "street_address",
+})
+_COUNTRY_NAMES = (
+    ("united states of america", "US"),
+    ("united states", "US"),
+    ("u.s.a.", "US"),
+    ("u.s.", "US"),
+    ("usa", "US"),
+    ("united kingdom", "GB"),
+    ("great britain", "GB"),
+    ("england", "GB"),
+    ("scotland", "GB"),
+    ("wales", "GB"),
+    ("france", "FR"),
+    ("spain", "ES"),
+    ("canada", "CA"),
+    ("germany", "DE"),
+    ("australia", "AU"),
+    ("italy", "IT"),
+    ("mexico", "MX"),
+    ("netherlands", "NL"),
+    ("ireland", "IE"),
+    ("new zealand", "NZ"),
+    ("belgium", "BE"),
+    ("switzerland", "CH"),
+    ("austria", "AT"),
+    ("sweden", "SE"),
+    ("norway", "NO"),
+    ("denmark", "DK"),
+    ("portugal", "PT"),
+    ("japan", "JP"),
+    ("china", "CN"),
+    ("india", "IN"),
+    ("brazil", "BR"),
+    ("south korea", "KR"),
+)
+_US_REGIONS = frozenset({
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
+    "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
+    "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine",
+    "maryland", "massachusetts", "michigan", "minnesota", "mississippi",
+    "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey",
+    "new mexico", "new york", "north carolina", "north dakota", "ohio",
+    "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina",
+    "south dakota", "tennessee", "texas", "utah", "vermont", "virginia",
+    "washington", "west virginia", "wisconsin", "wyoming", "district of columbia",
+})
+_CA_REGIONS = frozenset({
+    "ontario", "quebec", "québec", "british columbia", "alberta", "manitoba",
+    "saskatchewan", "nova scotia", "new brunswick", "newfoundland and labrador",
+    "prince edward island", "northwest territories", "nunavut", "yukon",
+})
+_OTHER_REGIONS = {
+    "ile-de-france": "FR",
+    "île-de-france": "FR",
+    "alava": "ES",
+    "álava": "ES",
+    "araba": "ES",
+    "pais vasco": "ES",
+    "país vasco": "ES",
+}
+
+
+def _host_name(value: Any) -> str:
+    import outbound_contacts as contacts
+
+    return contacts.normalize_host(str(value or ""))
+
+
+def _is_storefront_host(host: str) -> bool:
+    label = host.split(".", 1)[0] if host else ""
+    return label in _STOREFRONT_LABELS
+
+
+def _record_is_primary(store: dict[str, Any]) -> bool:
+    """True when this object is the apex or cluster_best_ranked domain.
+
+    A missing name is the caller's own record, so its country_code still
+    counts. usa.brand.com and us.brand.com never do.
+    """
+
+    import outbound_contacts as contacts
+
+    host = _host_name(store.get("name"))
+    if not host:
+        return True
+    if _is_storefront_host(host):
+        return False
+    ranked = _host_name(store.get("cluster_best_ranked"))
+    primary = contacts.company_domain(ranked) or ranked or contacts.company_domain(host) or host
+    return host == primary or host == ranked
+
+
+def _country_in_text(value: Any) -> str:
+    """A country named in a headquarters location or contact address."""
+
+    raw = " ".join(str(value or "").replace("–", " ").replace("—", " ").split()).lower()
+    if not raw:
+        return ""
+    for name, code in _COUNTRY_NAMES:
+        if re.search(rf"(?<![a-z]){re.escape(name)}(?![a-z])", raw):
+            return code
+    parts = [part.strip(" .") for part in raw.split(",") if part.strip(" .")]
+    tokens = parts or [raw]
+    last = tokens[-1]
+    if last in _US_REGIONS:
+        return "US"
+    if last in _CA_REGIONS:
+        return "CA"
+    if last in _OTHER_REGIONS:
+        return _OTHER_REGIONS[last]
+    if last in {"us", "usa", "u.s.", "u.s.a."}:
+        return "US"
+    if last in {"uk", "gb"}:
+        return "GB"
+    if last in {"fr", "es"}:
+        return last.upper()
+    return ""
+
+
+def _contact_addresses(store: dict[str, Any]) -> list[str]:
+    found: list[str] = []
+    for key in ("address", "contact_address"):
+        text = str(store.get(key) or "").strip()
+        if text:
+            found.append(text)
+    for item in store.get("contact_info") or []:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "").strip().lower()
+        if kind not in _ADDRESS_TYPES:
+            continue
+        text = str(item.get("value") or item.get("address") or "").strip()
+        if text:
+            found.append(text)
+    return found
+
+
+def headquarters_verdict(store: dict[str, Any]) -> tuple[str, str]:
+    """(country code, reason). Reason is empty only when the code is US.
+
+    The code comes from the primary domain's country_code, the location
+    fields, or a contact address. A US storefront host, ships_to_countries,
+    and cluster_domains are not evidence. No evidence means unknown, which
+    is not the US.
+    """
+
+    evidence: list[tuple[str, str]] = []
+    for source, text in (
+        ("location", store.get("location")),
+        ("location", store.get("city")),
+        ("location", store.get("administrative_area_level_1")),
+    ):
+        code = _country_in_text(text)
+        if code:
+            evidence.append((code, source))
+    city = str(store.get("city") or "").strip()
+    region = str(store.get("administrative_area_level_1") or "").strip()
+    if city and region:
+        code = _country_in_text(f"{city}, {region}")
+        if code:
+            evidence.append((code, "location"))
+    for address in _contact_addresses(store):
+        code = _country_in_text(address)
+        if code:
+            evidence.append((code, "contact address"))
+    if _record_is_primary(store):
+        code = _normalize_country(str(store.get("country_code") or ""))
+        if code:
+            evidence.append((code, "primary domain country_code"))
+    foreign = [(code, source) for code, source in evidence if code != "US"]
+    if foreign:
+        code, source = foreign[0]
+        return code, f"headquarters country is {code} from {source}"
+    if any(code == "US" for code, _source in evidence):
+        return "US", ""
+    return "", "headquarters country is unknown"
+
+
+# Generic and US suffixes are not evidence of a foreign brand. .co is used
+# by US companies, so it is not treated as Colombia.
+_GENERIC_SUFFIXES = frozenset({
+    "com", "net", "org", "io", "co", "shop", "store", "xyz", "online", "site",
+    "app", "us", "biz", "info",
+})
+_CCTLD_COUNTRIES = {
+    "uk": "GB", "co.uk": "GB", "de": "DE", "ca": "CA", "fr": "FR", "es": "ES",
+    "com.au": "AU", "au": "AU", "it": "IT", "nl": "NL", "ie": "IE",
+    "co.nz": "NZ", "nz": "NZ", "se": "SE", "no": "NO", "dk": "DK", "be": "BE",
+    "ch": "CH", "at": "AT", "pt": "PT", "jp": "JP", "mx": "MX", "br": "BR",
+    "pl": "PL", "fi": "FI", "kr": "KR", "co.jp": "JP", "com.br": "BR",
+    "com.mx": "MX", "co.za": "ZA",
+}
+# Calling codes that are not the North American +1 plan. +1 is US and Canada,
+# so it is not a clear non-US phone.
+_CALLING_CODES = (
+    ("+353", "IE"), ("+351", "PT"), ("+61", "AU"), ("+64", "NZ"), ("+49", "DE"),
+    ("+44", "GB"), ("+43", "AT"), ("+41", "CH"), ("+39", "IT"), ("+34", "ES"),
+    ("+33", "FR"), ("+32", "BE"), ("+31", "NL"), ("+46", "SE"), ("+47", "NO"),
+    ("+45", "DK"), ("+81", "JP"), ("+52", "MX"), ("+55", "BR"), ("+86", "CN"),
+    ("+91", "IN"), ("+82", "KR"), ("+48", "PL"), ("+358", "FI"), ("+27", "ZA"),
+)
+
+
+def _primary_host(store: dict[str, Any]) -> str:
+    import outbound_contacts as contacts
+
+    ranked = _host_name(store.get("cluster_best_ranked"))
+    host = _host_name(store.get("name"))
+    if ranked:
+        return contacts.company_domain(ranked) or ranked
+    if host and not _is_storefront_host(host):
+        return host
+    return contacts.company_domain(host) or host
+
+
+def _cctld_country(host: str) -> str:
+    """Country of a country-code suffix, or '' for .com, .us, .io, and .co."""
+
+    labels = [part for part in host.split(".") if part]
+    if len(labels) < 2:
+        return ""
+    for size in (2, 1):
+        if len(labels) <= size:
+            continue
+        suffix = ".".join(labels[-size:])
+        if suffix in _GENERIC_SUFFIXES:
+            return ""
+        if suffix in _CCTLD_COUNTRIES:
+            return _CCTLD_COUNTRIES[suffix]
+    return ""
+
+
+def _primary_currency(store: dict[str, Any]) -> str:
+    for key in ("currency_code", "currency", "price_currency"):
+        raw = str(store.get(key) or "").strip().upper().replace("US$", "USD")
+        if raw in {"USD", "$"}:
+            return "USD"
+        if raw:
+            return raw
+    return ""
+
+
+def _phone_countries(store: dict[str, Any]) -> list[str]:
+    found: list[str] = []
+    for item in store.get("contact_info") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").strip().lower() != "phone":
+            continue
+        raw = str(item.get("value") or "")
+        digits = re.sub(r"[^\d+]", "", raw)
+        if digits.startswith("00"):
+            digits = "+" + digits[2:]
+        if not digits.startswith("+") or digits.startswith("+1"):
+            continue
+        for prefix, code in _CALLING_CODES:
+            if digits.startswith(prefix):
+                found.append(code)
+                break
+    return found
+
+
+def _locale_country(store: dict[str, Any]) -> str:
+    raw = str(store.get("language_code") or store.get("locale") or "").strip().lower().replace("_", "-")
+    if "-" not in raw:
+        return ""
+    region = raw.rsplit("-", 1)[-1]
+    if len(region) != 2 or not region.isalpha() or region == "us":
+        return ""
+    return "GB" if region == "uk" else region.upper()
+
+
+def _ship_countries(store: dict[str, Any]) -> list[str]:
+    raw = store.get("ships_to_countries") or []
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",") if part.strip()]
+    found: list[str] = []
+    for item in raw:
+        code = _normalize_country(str(item))
+        if code and code not in found:
+            found.append(code)
+    return found
+
+
+def _clear_non_us_reason(store: dict[str, Any]) -> str:
+    """Why an unknown headquarters is still clearly not a US brand.
+
+    A non-USD primary currency is enough. A country-code domain excludes
+    when a non-US phone, a matching locale, or the primary domain's
+    non-US shipping list agrees with it. USD, a bare TLD, a bare phone,
+    or no signals at all stay in.
+    """
+
+    currency = _primary_currency(store)
+    if currency and currency != "USD":
+        return f"primary currency is {currency}"
+    host = _primary_host(store)
+    tld_country = _cctld_country(host)
+    suffix = host.split(".", 1)[-1] if "." in host else host
+    phones = [code for code in _phone_countries(store) if code and code != "US"]
+    if tld_country and tld_country != "US" and phones:
+        return f".{suffix} domain and phone country {phones[0]}"
+    locale = _locale_country(store)
+    if tld_country and locale and tld_country == locale:
+        return f".{suffix} domain and language {locale}"
+    if _record_is_primary(store) and tld_country and tld_country != "US":
+        shipped = _ship_countries(store)
+        if shipped and "US" not in shipped and tld_country in shipped:
+            return f".{suffix} domain and ships to {tld_country}"
+    return ""
+
+
+def country_eligibility(store: dict[str, Any]) -> tuple[bool, str]:
+    """Whether the country gate allows this store, and the log reason.
+
+    A known non-US headquarters is excluded. A missing headquarters falls
+    back to currency, language, phone, the country TLD, and the primary
+    domain's shipping countries. The brand is kept when those are absent
+    or ambiguous. The kept reason is logged by the caller.
+    """
+
+    code, reason = headquarters_verdict(store)
+    if code == "US":
+        return True, ""
+    if code:
+        return False, reason
+    clear = _clear_non_us_reason(store)
+    if clear:
+        return False, f"headquarters country is unknown; {clear}"
+    return True, "headquarters country is unknown; kept"
+
+
+def eligibility_country_by_domain(
+    rows: dict[str, dict[str, Any]],
+) -> dict[str, tuple[str, str]]:
+    """One headquarters verdict per company, keyed by the apex domain.
+
+    A storefront row cannot outvote the primary domain. A known non-US
+    headquarters beats a US storefront flag. When every row lacks a
+    headquarters, currency, phone, and the country TLD decide. An
+    ambiguous or empty fallback is kept, and the reason says so.
+    """
+
+    import outbound_contacts as contacts
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for name, row in rows.items():
+        if not isinstance(row, dict):
+            continue
+        host = str(row.get("name") or name or "")
+        key = contacts.company_domain(host) or _host_name(host)
+        if not key:
+            continue
+        grouped.setdefault(key, []).append(row)
+    verdicts: dict[str, tuple[str, str]] = {}
+    for key, group in grouped.items():
+        decisions = [(headquarters_verdict(row), country_eligibility(row)) for row in group]
+        foreign = [hq for hq, _choice in decisions if hq[0] and hq[0] != "US"]
+        if foreign:
+            verdicts[key] = foreign[0]
+            continue
+        denied = [choice for _hq, choice in decisions if not choice[0]]
+        if denied:
+            verdicts[key] = ("", denied[0][1])
+            continue
+        domestic = [hq for hq, _choice in decisions if hq[0] == "US"]
+        if domestic:
+            verdicts[key] = domestic[0]
+            continue
+        verdicts[key] = ("", "headquarters country is unknown; kept")
+    return verdicts
+
+
 # Short words that must be whole words. "app" is not "apparel". "event" is not
 # "prevent". Fitness apparel stays; a fitness program does not.
 _COMPANY_FIT_EXCLUDE = re.compile(
@@ -113,17 +495,26 @@ def _company_text(store: dict[str, Any]) -> str:
 def passes_company_fit(store: dict[str, Any], *, require_niche: bool = True) -> bool:
     """US own-brand physical-product companies with revenue on file.
 
-    Baseline pulls, signal pulls, and campaign sourcing all use this gate.
-    A blank country is not the US. A missing or zero sales figure is not
-    revenue data. Distributors, multi-brand resellers, services, events,
-    apps, and fitness programs are out. The niche list is the physical
-    product test. The sales-org segment passes require_niche=False because
-    any US brand qualifies there.
+    Baseline pulls, signal pulls, campaign sourcing, and the sales-org
+    segment all use this gate. The country that counts is the headquarters
+    on the primary domain. A US storefront host, a shipping country, or a
+    cluster sibling does not make a foreign brand eligible. A known non-US
+    headquarters is excluded. A missing headquarters is kept unless the
+    store currency is not USD, or a country-code domain and a non-US phone
+    agree. The keep or the exclusion is logged. A missing or zero
+    sales figure is not revenue data. Distributors, multi-brand resellers,
+    services, events, apps, and fitness programs are out. The niche list
+    is the physical product test. The sales-org segment passes
+    require_niche=False because any US brand qualifies there.
     """
 
-    country = _normalize_country(str(store.get("country_code") or ""))
-    if country not in ICP_ALLOWED_COUNTRIES:
+    allowed, reason = country_eligibility(store)
+    label = store.get("name") or store.get("merchant_name") or "unknown domain"
+    if not allowed:
+        logger.info("[outbound] excluding %s: %s", label, reason)
         return False
+    if reason:
+        logger.info("[outbound] %s: %s", label, reason)
     # A brands page means the site sells other companies' brands. That is a
     # retailer, not a brand we want in these campaigns.
     if str(store.get("brands_page") or "").strip():
@@ -470,8 +861,18 @@ def _social_contacts(value: Any) -> list[dict[str, Any]]:
             "followers": item.get("followers"),
             "followers_30d": item.get("followers_30d"),
             "followers_90d": item.get("followers_90d"),
+            "description": " ".join(str(item.get("description") or "").split())[:240],
         })
     return kept[:8]
+
+
+def _review_blob(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "avg_rating": value.get("avg_rating"),
+        "review_count": value.get("review_count"),
+    }
 
 
 def store_profile(store: dict[str, Any]) -> dict[str, Any]:
@@ -485,7 +886,7 @@ def store_profile(store: dict[str, Any]) -> dict[str, Any]:
         trust = {}
     description = " ".join(str(store.get("description") or "").split())[:300]
     return {
-        "country_code": _normalize_country(str(store.get("country_code") or "")),
+        "country_code": headquarters_verdict(store)[0],
         "sales_channels": _named_list(store.get("sales_channels"), limit=8),
         "apps": _named_list(store.get("apps")),
         "technologies": _named_list(store.get("technologies")),
@@ -508,6 +909,18 @@ def store_profile(store: dict[str, Any]) -> dict[str, Any]:
             "avg_rating": trust.get("avg_rating"),
             "review_count": trust.get("review_count"),
         },
+        "yotpo": _review_blob(store.get("yotpo")),
+        "okendo": _review_blob(store.get("okendo")),
+        "judgeme": _review_blob(store.get("judgeme") or store.get("judge_me")),
+        "loox": _review_blob(store.get("loox")),
+        "title": " ".join(str(store.get("title") or "").split())[:200],
+        "merchant_name": str(store.get("merchant_name") or "").strip(),
+        "features": _named_list(store.get("features"), limit=12),
+        "sales_channel_urls": _named_list(store.get("sales_channel_urls"), limit=8),
+        "cluster_domains": _named_list(store.get("cluster_domains"), limit=8),
+        "locs": _named_list(store.get("locs"), limit=8),
+        "ships_to_countries": _named_list(store.get("ships_to_countries"), limit=12),
+        "vendor_count": store.get("vendor_count"),
         "city": str(store.get("city") or "").strip(),
         "estimated_visits": store.get("estimated_visits"),
         "product_images_created_90": store.get("product_images_created_90"),
@@ -535,7 +948,7 @@ def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
         "domain": _company.company_domain(str(store.get("name") or "")),
         "brand": str(store.get("merchant_name") or store.get("name") or "").strip(),
         "niche": store_niche(store),
-        "country": _normalize_country(str(store.get("country_code") or "")),
+        "country": headquarters_verdict(store)[0],
         "tier": scored["tier"],
         "score": scored["score"],
         "reason": scored["reason"],
@@ -621,6 +1034,13 @@ _STORELEADS_FIELDS = ",".join((
     "most_recently_published_product", "description", "title",
     "retailer_page", "store_locator_page", "brands_page", "trustpilot",
     "city", "estimated_visits", "product_images_created_90",
+    # Headquarters, not a regional host. ships_to_countries and
+    # cluster_domains are requested so they are on the record, and they
+    # are never used to decide that a brand is US.
+    "location", "administrative_area_level_1", "cluster_best_ranked",
+    "cluster_domains", "ships_to_countries", "currency_code", "language_code",
+    "vendor_count", "features", "locs", "sales_channel_urls",
+    "yotpo", "okendo", "judgeme", "loox",
 ))
 STORELEADS_BULK_URL = f"{STORELEADS_BASE_URL}{STORELEADS_DOMAIN_PATH}/bulk"
 

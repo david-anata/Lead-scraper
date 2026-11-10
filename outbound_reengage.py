@@ -10,7 +10,10 @@ unsubscribed, or bounced is never moved or added.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 NAME = "Re-engage // New Offer (Oct 2026)"
 SOURCE_CAMPAIGNS = (
@@ -170,7 +173,9 @@ def rejection_reason(lead: dict[str, Any], *, suppressed: set[str],
         return "already in re-engage"
     if campaign == "e5f5046b-07e4-41ad-a395-79cf8766ccd0":
         return "trial offer left unchanged"
-    if "country_code" in lead or "country" in lead:
+    if lead.get("hq_unknown_kept"):
+        pass
+    elif "country_code" in lead or "country" in lead:
         code = str(lead.get("country_code") if lead.get("country_code") is not None else lead.get("country") or "").strip().upper()
         if code == "UK":
             code = "GB"
@@ -440,6 +445,7 @@ def run_weekly_topup(*, post: Any = None, suppressed: Optional[set[str]] = None,
         for item in collected if "@" in str(item.get("email") or "")
     })
     countries: dict[str, str] = {}
+    kept_unknown: set[str] = set()
     if lookup_countries is None:
         import os
 
@@ -450,14 +456,15 @@ def run_weekly_topup(*, post: Any = None, suppressed: Optional[set[str]] = None,
             out["dry_run"] = False
             out["reason"] = "StoreLeads country could not be checked"
             return out
-        import outbound_contacts as contacts
-
         found = pipeline.lookup_domains(store_key, domains)
-        countries = {}
-        for name, row in found.items():
-            code = str((row or {}).get("country_code") or "").strip().upper()
-            domain_key = contacts.company_domain(name) or name
+        for domain_key, (code, reason) in pipeline.eligibility_country_by_domain(found).items():
+            if "unknown; kept" in reason:
+                kept_unknown.add(domain_key)
+                logger.info("[outbound-reengage] %s: %s", domain_key, reason)
+                continue
             countries[domain_key] = code
+            if code != "US":
+                logger.info("[outbound-reengage] excluding %s: %s", domain_key, reason)
     else:
         import outbound_contacts as contacts
 
@@ -465,7 +472,7 @@ def run_weekly_topup(*, post: Any = None, suppressed: Optional[set[str]] = None,
         for name, code in (lookup_countries(domains) or {}).items():
             domain_key = contacts.company_domain(str(name)) or str(name).strip().lower()
             countries[domain_key] = str(code or "").strip().upper()
-    if domains and not countries:
+    if domains and not countries and not kept_unknown:
         out["dry_run"] = False
         out["reason"] = "StoreLeads returned no country"
         return out
@@ -473,6 +480,9 @@ def run_weekly_topup(*, post: Any = None, suppressed: Optional[set[str]] = None,
 
     for item in collected:
         domain = contacts.company_domain(_email_domain(str(item.get("email") or "")))
+        if domain in kept_unknown:
+            item["hq_unknown_kept"] = True
+            continue
         item["country_code"] = countries.get(domain, "")
     chosen = select_topup(
         collected, suppressed=suppressed, in_reengage=in_reengage, active_elsewhere=elsewhere,

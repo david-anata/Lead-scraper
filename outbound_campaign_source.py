@@ -116,7 +116,7 @@ def _lead_from(store: dict[str, Any], recipe_key: str) -> Optional[dict[str, Any
     return {
         "domain": domain,
         "brand": str(store.get("merchant_name") or store.get("name") or domain).strip(),
-        "country": str(store.get("country_code") or "").strip().upper(),
+        "country": pipeline.headquarters_verdict(store)[0],
         "recipe": recipe_key,
         "tier": "B",
         "score": 0,
