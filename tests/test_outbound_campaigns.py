@@ -122,7 +122,7 @@ def test_push_pending_uses_the_table_and_holds_cut_recipes(engine):
         engine,
         SimpleNamespace(email="a@plan.com", domain="plan.com", first_name="A", last_name="B",
                         title="Founder", linkedin_url="", email_status=""),
-        "Plan upgraded.", "test",
+        "Plan sells a glass bottle.", "test",
         {"brand": "Plan", "categories": "", "recipe": "plan_upgrade", "tier": "B"},
     )
     sent = {}
@@ -146,7 +146,7 @@ def test_push_pending_falls_back_when_the_table_is_empty(engine):
         engine,
         SimpleNamespace(email="a@plan.com", domain="plan.com", first_name="A", last_name="B",
                         title="Founder", linkedin_url="", email_status=""),
-        "Plan upgraded.", "test",
+        "Plan sells a glass bottle.", "test",
         {"brand": "Plan", "categories": "", "recipe": "plan_upgrade", "tier": "B"},
     )
     sent = {}

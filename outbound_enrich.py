@@ -513,19 +513,35 @@ def run_enrichment(
         try:
             _record_domain(engine, domain, status, len(fresh), res.credits_used, res.reason)
             for c in fresh:
-                opener_lead = lead
-                if _openers.rich_personalization_enabled():
-                    try:
-                        from sales_support_agent.services.outbound_memory import load_store_profiles
+                profile: dict[str, Any] = {}
+                try:
+                    from sales_support_agent.services.outbound_memory import load_store_profiles
 
-                        profile = load_store_profiles(engine, [domain]).get(domain) or {}
-                    except Exception:  # noqa: BLE001
-                        profile = {}
-                    if profile:
-                        opener_lead = {**lead, "store_profile": profile, "rich_personalization": True}
+                    profile = load_store_profiles(engine, [domain]).get(domain) or {}
+                except Exception:  # noqa: BLE001
+                    profile = {}
+                if not profile and isinstance(lead.get("store_profile"), dict):
+                    profile = lead["store_profile"]
+                opener_lead = {**lead, "store_profile": profile}
+                if profile and _openers.rich_personalization_enabled():
+                    opener_lead["rich_personalization"] = True
                 line, src = write(opener_lead, {"title": c.title})
                 angle, angle_src = write_angle(opener_lead, {"title": c.title})
+                shop_line, shop_angle = _openers.shopper_lines(opener_lead)
+                if shop_line and _openers.opener_hold_reason(line, opener_lead):
+                    line, src = shop_line, "shopper"
+                    angle, angle_src = shop_angle, "shopper" if shop_angle else "none"
+                if _openers.angle_is_filler(angle):
+                    angle, angle_src = "", "none"
+                hold = _openers.opener_hold_reason(line, opener_lead)
+                if hold:
+                    logger.info(
+                        "[outbound-enrich] holding %s at %s: %s",
+                        c.email, domain, hold,
+                    )
                 _record_person(engine, c, line, src, lead, brand_angle=angle)
+                if hold:
+                    _set_opener_hold(engine, c.email, hold)
                 emails_seen.add(c.email)
                 report.contacts_found += 1
                 if len(report.samples) < 10:
@@ -593,6 +609,86 @@ def rewrite_openers(engine, leads: list[dict[str, Any]], *,
         if len(samples) < 12:
             samples.append({"brand": brand, "title": title, "opener": line, "source": src})
     return {"rewritten": done, "ai": ai, "fallback": done - ai, "samples": samples}
+
+
+def _count_opener_holds(engine) -> int:
+    """Contacts still waiting because the opener is not shopper-visible."""
+
+    if engine is None:
+        return 0
+    try:
+        with engine.connect() as conn:
+            found = conn.execute(text(
+                f"SELECT COUNT(*) FROM {_PEOPLE} WHERE pushed_at IS NULL "
+                "AND COALESCE(skip_reason, '') LIKE :prefix"
+            ), {"prefix": _openers.OPENER_HOLD_PREFIX + "%"}).scalar()
+    except Exception:  # noqa: BLE001
+        return 0
+    return int(found or 0)
+
+
+def _set_opener_hold(engine, email: str, reason: str) -> None:
+    """Leave the contact unpushed, with a reason the next run can read."""
+
+    stored = f"{_openers.OPENER_HOLD_PREFIX} {reason}"[:200]
+    with engine.begin() as conn:
+        conn.execute(text(
+            f"UPDATE {_PEOPLE} SET skip_reason = :r WHERE email = :e AND pushed_at IS NULL"
+        ), {"r": stored, "e": email})
+
+
+def release_held_openers(engine) -> int:
+    """Send a held contact forward once a shopper-visible fact exists.
+
+    A missing profile table leaves the hold in place. Nothing is pushed here.
+    """
+
+    if engine is None:
+        return 0
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                f"SELECT email, domain, brand, category, recipe, tier FROM {_PEOPLE} "
+                "WHERE pushed_at IS NULL AND COALESCE(skip_reason, '') LIKE :prefix"
+            ), {"prefix": _openers.OPENER_HOLD_PREFIX + "%"}).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich] could not read held openers")
+        return 0
+    if not rows:
+        return 0
+    profiles: dict[str, dict[str, Any]] = {}
+    try:
+        from sales_support_agent.services.outbound_memory import load_store_profiles
+
+        profiles = load_store_profiles(engine, [str(row[1] or "") for row in rows])
+    except Exception:  # noqa: BLE001
+        logger.info("[outbound-enrich] store profiles could not be read; opener holds stay")
+        profiles = {}
+    released = 0
+    for email, domain, brand, category, recipe, tier in rows:
+        domain_key = str(domain or "").strip().lower()
+        lead = {
+            "domain": domain_key, "brand": brand, "categories": category,
+            "recipe": recipe, "tier": tier,
+            "store_profile": profiles.get(domain_key) or {},
+        }
+        opener, angle = _openers.shopper_lines(lead)
+        if _openers.opener_hold_reason(opener, lead):
+            continue
+        if _openers.angle_is_filler(angle):
+            angle = ""
+        with engine.begin() as conn:
+            conn.execute(text(
+                f"UPDATE {_PEOPLE} SET opener = :o, opener_source = 'shopper', "
+                "brand_angle = :a, skip_reason = '' "
+                "WHERE email = :e AND pushed_at IS NULL"
+            ), {"o": opener, "a": angle, "e": email})
+        logger.info(
+            "[outbound-enrich] %s at %s retrying: shopper-visible opener is ready",
+            email, domain_key,
+        )
+        released += 1
+    return released
 
 
 def _mark_skipped(engine, people: list[dict[str, Any]]) -> None:
@@ -725,6 +821,10 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
     """
     push = push or _push.push_leads
     try:
+        release_held_openers(engine)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich] could not retry held openers")
+    try:
         excluded = _count_unpushed_recipes(engine, _push.PUSH_EXCLUDED_RECIPES)
         pending = unpushed(engine, limit, exclude_recipes=_push.PUSH_EXCLUDED_RECIPES)
         import outbound_suppression as suppression
@@ -777,8 +877,30 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
     signals_by_domain = _signals_for_domains(engine, (person.get("domain") for person in allowed))
     groups: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
     held = 0
+    held_copy = 0
     queued = 0
     for person in allowed:
+        copy_lead = {
+            "brand": person.get("brand"),
+            "categories": person.get("category"),
+            "recipe": person.get("recipe"),
+        }
+        copy_reason = _openers.opener_hold_reason(str(person.get("opener") or ""), copy_lead)
+        if copy_reason:
+            held_copy += 1
+            logger.info(
+                "[outbound-enrich] holding %s: %s",
+                person.get("email"), copy_reason,
+            )
+            if not dry_run:
+                _set_opener_hold(engine, str(person.get("email") or ""), copy_reason)
+            continue
+        if _openers.angle_is_filler(str(person.get("brand_angle") or "")):
+            person = {**person, "brand_angle": ""}
+            logger.info(
+                "[outbound-enrich] cleared filler brand angle for %s",
+                person.get("email"),
+            )
         recipe_name = str(person.get("recipe") or "").strip()
         domain_key = str(person.get("domain") or "").strip().lower()
         signals = list(signals_by_domain.get(domain_key) or [])
@@ -811,8 +933,12 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
             bits.append(f"Queued {queued} contacts. {_push.QUEUED_NOTE}")
         if held:
             bits.append(f"Held {held} contacts whose campaign is cut or proposed.")
+        waiting = max(held_copy, _count_opener_holds(engine))
+        if waiting:
+            bits.append(f"Held {waiting} contacts with no shopper-visible opener.")
         return _empty_push(
-            dry_run=dry_run, suppressed=len(blocked), excluded=excluded, held=held,
+            dry_run=dry_run, suppressed=len(blocked), excluded=excluded,
+            held=held + waiting,
             queued=queued, note=" ".join(bits) or "Nothing to push.",
         )
 
@@ -859,10 +985,14 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         note = f"{note} Queued {queued} contacts. {_push.QUEUED_NOTE}".strip()
     if held:
         note = f"{note} Held {held} contacts whose campaign is cut or proposed.".strip()
+    waiting = max(held_copy, _count_opener_holds(engine))
+    if waiting:
+        note = f"{note} Held {waiting} contacts with no shopper-visible opener.".strip()
     return {
         "pending": sum(len(items) for items in groups.values()),
         "pushed": pushed, "created": created, "skipped": skipped,
-        "suppressed": len(blocked), "excluded_recipes": excluded, "held": held,
+        "suppressed": len(blocked), "excluded_recipes": excluded,
+        "held": held + waiting,
         "queued": queued, "dry_run": stayed_dry, "errors": errors, "note": note,
         "preview": preview, "campaigns": campaigns,
     }

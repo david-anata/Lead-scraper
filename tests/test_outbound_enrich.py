@@ -328,7 +328,7 @@ def test_held_filler_with_a_plan_signal_routes_to_plan_upgrade(engine, monkeypat
     oe._record_person(
         engine,
         oc.Contact(domain="plus.example", first_name="A", last_name="B", email="a@plus.example", title="Founder"),
-        "They upgraded.", "test",
+        "Plus sells a glass bottle.", "test",
         {"brand": "Plus", "categories": "", "recipe": "icp_baseline", "tier": "B"},
     )
     seen = {}
@@ -474,6 +474,73 @@ def test_role_mailbox_is_left_out_of_the_push(engine):
             "SELECT skip_reason FROM outbound_enriched_contacts WHERE email = 'info@box.com'"
         )).scalar()
     assert str(reason).startswith("suppressed:role:info@box.com")
+
+
+def test_category_filler_is_held_and_retried_when_a_product_fact_exists(engine, monkeypatch):
+    """A category slogan is not sent. A later product fact releases the same contact."""
+    from sqlalchemy import text
+
+    from sales_support_agent.services import outbound_memory as memory
+
+    monkeypatch.setattr(
+        "sales_support_agent.services.llm_client.llm_available",
+        lambda **_kwargs: False,
+    )
+    sent: list[list[str]] = []
+
+    def capture(payload, cid, dry_run=False, **k):
+        sent.append([str(row.get("personalization") or "") for row in payload])
+        return push.PushOutcome(attempted=len(payload), created=len(payload), dry_run=False)
+
+    food = lead("food.com", "Kalm")
+    food["categories"] = "Food & Drink"
+    food["niche"] = "food and drink"
+    result = oe.run_enrichment(
+        engine, [food], api_key="k", find=finder({"food.com": ["ada@food.com"]}),
+        dry_run=False, push=capture,
+    )
+    assert sent == []
+    assert result.pushed == 0
+    assert "shopper-visible opener" in result.push_note
+    assert oe.unpushed(engine) == []
+    with engine.connect() as conn:
+        reason = conn.execute(text(
+            "SELECT skip_reason FROM outbound_enriched_contacts WHERE email = 'ada@food.com'"
+        )).scalar()
+    assert str(reason).startswith("held:opener:")
+    assert "category filler" in str(reason)
+
+    assert memory.save_store_profiles(engine, [{
+        "domain": "food.com",
+        "store_profile": {
+            "merchant_name": "Kalm",
+            "most_recently_published_product": {"title": "Green Chile Salsa"},
+            "description": "Roasted green chile salsa",
+        },
+    }]) == 1
+    again = oe.push_pending(engine, "camp", dry_run=False, push=capture)
+    assert again["pushed"] == 1
+    assert sent and "Green Chile Salsa" in sent[-1][0]
+    assert "http" not in sent[-1][0].lower() and "www." not in sent[-1][0].lower()
+    assert "shopify" not in sent[-1][0].lower()
+    with engine.connect() as conn:
+        cleared = conn.execute(text(
+            "SELECT skip_reason FROM outbound_enriched_contacts WHERE email = 'ada@food.com'"
+        )).scalar()
+    assert cleared in ("", None)
+
+
+def test_missing_store_profile_table_keeps_the_lead(engine, monkeypatch):
+    from sales_support_agent.services import outbound_memory as memory
+
+    monkeypatch.setattr(memory, "profile_table_ready", lambda *_args, **_kwargs: False)
+    saved = memory.record_leads(engine, [{
+        "domain": "kept.com", "brand": "Kept", "recipe": "amz_on",
+        "store_profile": {"description": "Green chile salsa"},
+    }])
+    assert saved == 1
+    assert memory.load_leads(engine)[0]["domain"] == "kept.com"
+    assert memory.load_store_profiles(engine, ["kept.com"]) == {}
 
 
 def row_angle_ok(payload):
