@@ -209,27 +209,42 @@ def _record_is_primary(store: dict[str, Any]) -> bool:
     return host == primary or host == ranked
 
 
+# These phrases contain a country or nation word. They have to win over that
+# shorter name, and they are not street names.
+_COMPOUND_PLACES = (
+    ("new south wales", "AU"),
+    ("new mexico", "US"),
+    ("new england", "US"),
+)
+
+
 def _country_in_text(value: Any) -> str:
-    """A country named in a headquarters location or contact address."""
+    """A country named in a headquarters location or contact address.
+
+    Compound places are read first, so New Mexico is not Mexico and New
+    England is not England. An explicit country then wins over a US state
+    that only appears inside a street name. State names count when they are
+    their own comma-separated part, as in "Seattle, Washington".
+    """
 
     raw = " ".join(str(value or "").replace("–", " ").replace("—", " ").split()).lower()
     if not raw:
         return ""
-    for name, code in _PLACE_PHRASES:
+    for name, code in _COMPOUND_PLACES:
         if re.search(rf"(?<![a-z]){re.escape(name)}(?![a-z])", raw):
             return code
     for name, code in _COUNTRY_NAMES:
         if re.search(rf"(?<![a-z]){re.escape(name)}(?![a-z])", raw):
             return code
     parts = [part.strip(" .") for part in raw.split(",") if part.strip(" .")]
-    tokens = parts or [raw]
-    last = tokens[-1]
-    if last in _US_REGIONS:
-        return "US"
-    if last in _CA_REGIONS:
-        return "CA"
-    if last in _OTHER_REGIONS:
-        return _OTHER_REGIONS[last]
+    for part in reversed(parts):
+        if part in _US_REGIONS:
+            return "US"
+        if part in _CA_REGIONS:
+            return "CA"
+        if part in _OTHER_REGIONS:
+            return _OTHER_REGIONS[part]
+    last = parts[-1] if parts else raw
     if last in {"us", "usa", "u.s.", "u.s.a."}:
         return "US"
     if last in {"uk", "gb"}:
@@ -264,14 +279,18 @@ def _delaware_registration(text: str) -> bool:
     """
 
     raw = " ".join(str(text or "").replace("–", " ").replace("—", " ").split()).lower()
-    if not raw or "new england" in raw:
+    if not raw or "new england" in raw or "new mexico" in raw:
         return False
-    if not re.search(r"(?<![a-z])(?:delaware|de)(?![a-z])", raw):
+    parts = [part.strip(" .") for part in raw.split(",") if part.strip(" .")]
+    has_delaware = any(part in {"delaware", "de"} for part in parts) or bool(
+        re.search(r"(?<![a-z])delaware(?![a-z])", raw)
+    )
+    if not has_delaware:
         return False
-    for region in _US_REGIONS:
-        if region == "delaware":
-            continue
-        if re.search(rf"(?<![a-z]){re.escape(region)}(?![a-z])", raw):
+    for part in parts:
+        if part in _US_REGIONS and part != "delaware":
+            return False
+        if part in _CA_REGIONS or part in _OTHER_REGIONS:
             return False
     return True
 
@@ -1511,6 +1530,7 @@ def run_storeleads_to_clay(
                            page, len(result.leads), exc)
             result.partial = True
             break
+        stopped_early = False
         if not stores:
             if cursor_key and requested and not stale_reset:
                 stale_reset = True
@@ -1559,10 +1579,15 @@ def run_storeleads_to_clay(
             result.leads.append(lead)
             result.fresh += 1
             if result.fresh >= max_new:
+                stopped_early = True
                 break
         if use_cursor and cursor_key:
-            save_storeleads_cursor(engine, cursor_key, cursor or "")
-        if use_cursor and not cursor:
+            # A full page advances. Stopping because the cap filled keeps the
+            # cursor for this page so the unread stores are still read later.
+            save_storeleads_cursor(
+                engine, cursor_key, (requested if stopped_early else cursor) or "",
+            )
+        if stopped_early or (use_cursor and not cursor):
             break
 
     # Rank hottest first so Tier A brands lead the CSV / the push.

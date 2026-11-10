@@ -354,6 +354,39 @@ class TestCursorPagination(unittest.TestCase):
         self.assertEqual([call["cursor"] for call in seen], [None, "next-1"])
         self.assertTrue(all(call["page_size"] == op.STORELEADS_PAGE_SIZE for call in seen))
 
+    def test_stopping_mid_page_keeps_that_pages_cursor(self):
+        from sqlalchemy import create_engine
+
+        engine = create_engine("sqlite://")
+        calls = []
+
+        def fetch_result(api_key, *, cursor=None, page_size=100, extra_params=None, **kw):
+            calls.append(cursor)
+            if cursor is None:
+                return op.StoreLeadsPage([_store(name="a.com")], next_cursor="page-2")
+            return op.StoreLeadsPage(
+                [_store(name=f"later{i}.com") for i in range(4)],
+                next_cursor="page-3",
+            )
+
+        first = op.run_storeleads_to_clay(
+            api_key="x", clay_webhook_url="", processed_domains=set(),
+            max_new=2, max_pages=5, throttle_seconds=0,
+            fetch_result=fetch_result, engine=engine,
+        )
+        self.assertEqual([lead["domain"] for lead in first.leads], ["a.com", "later0.com"])
+        key = op.storeleads_cursor_key("list", None)
+        self.assertEqual(op.load_storeleads_cursor(engine, key), "page-2")
+
+        calls.clear()
+        second = op.run_storeleads_to_clay(
+            api_key="x", clay_webhook_url="", processed_domains={"a.com", "later0.com"},
+            max_new=2, max_pages=5, throttle_seconds=0,
+            fetch_result=fetch_result, engine=engine,
+        )
+        self.assertEqual(calls[0], "page-2")
+        self.assertIn("later1.com", [lead["domain"] for lead in second.leads])
+
 
 class TestRecipeFanOut(unittest.TestCase):
     def test_churn_falls_back_to_removed_at_when_the_server_filter_is_empty(self):

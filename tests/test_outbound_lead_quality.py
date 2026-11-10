@@ -614,3 +614,17 @@ def test_delaware_registration_is_not_us_hq_and_foreign_storefronts_are_excluded
     )
     assert pipeline.headquarters_verdict(parent) == ("US", "")
     assert pipeline.passes_company_fit(parent)
+
+    street = _hq_store(
+        "london-soap.co.uk", merchant_name="London Soap", country_code="GB",
+        location="123 Washington Street, London, United Kingdom",
+        contact_info=[{"type": "address", "value": "123 Washington Street, London, United Kingdom"}],
+    )
+    verdict, reason = pipeline.headquarters_verdict(street)
+    assert verdict == "GB", (verdict, reason)
+    assert not pipeline.passes_company_fit(street)
+    seattle = _hq_store(
+        "seattle.com", merchant_name="Seattle Soap",
+        location="Seattle, Washington",
+    )
+    assert pipeline.headquarters_verdict(seattle) == ("US", "")
