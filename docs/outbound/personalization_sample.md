@@ -1,5 +1,10 @@
 # Personalization sample
 
+The approved voice is in personalization_style.md. The rows below are the
+earlier template comparison, not a live model pass. A fresh StoreLeads
+sample needs STORELEADS_API_KEY, which is not set on anata-agent-staging.
+
+
 Before is the current builder with OUTBOUND_RICH_PERSONALIZATION_ENABLED off.
 After is the new builder with that flag forced on for the row only. The flag stays off in the environment.
 In Instantly now is the opener and brandAngle already stored on the pushed contact. It is not rewritten here.

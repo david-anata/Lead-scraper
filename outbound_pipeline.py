@@ -861,8 +861,18 @@ def _social_contacts(value: Any) -> list[dict[str, Any]]:
             "followers": item.get("followers"),
             "followers_30d": item.get("followers_30d"),
             "followers_90d": item.get("followers_90d"),
+            "description": " ".join(str(item.get("description") or "").split())[:240],
         })
     return kept[:8]
+
+
+def _review_blob(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "avg_rating": value.get("avg_rating"),
+        "review_count": value.get("review_count"),
+    }
 
 
 def store_profile(store: dict[str, Any]) -> dict[str, Any]:
@@ -899,6 +909,18 @@ def store_profile(store: dict[str, Any]) -> dict[str, Any]:
             "avg_rating": trust.get("avg_rating"),
             "review_count": trust.get("review_count"),
         },
+        "yotpo": _review_blob(store.get("yotpo")),
+        "okendo": _review_blob(store.get("okendo")),
+        "judgeme": _review_blob(store.get("judgeme") or store.get("judge_me")),
+        "loox": _review_blob(store.get("loox")),
+        "title": " ".join(str(store.get("title") or "").split())[:200],
+        "merchant_name": str(store.get("merchant_name") or "").strip(),
+        "features": _named_list(store.get("features"), limit=12),
+        "sales_channel_urls": _named_list(store.get("sales_channel_urls"), limit=8),
+        "cluster_domains": _named_list(store.get("cluster_domains"), limit=8),
+        "locs": _named_list(store.get("locs"), limit=8),
+        "ships_to_countries": _named_list(store.get("ships_to_countries"), limit=12),
+        "vendor_count": store.get("vendor_count"),
         "city": str(store.get("city") or "").strip(),
         "estimated_visits": store.get("estimated_visits"),
         "product_images_created_90": store.get("product_images_created_90"),
@@ -1017,6 +1039,8 @@ _STORELEADS_FIELDS = ",".join((
     # are never used to decide that a brand is US.
     "location", "administrative_area_level_1", "cluster_best_ranked",
     "cluster_domains", "ships_to_countries", "currency_code", "language_code",
+    "vendor_count", "features", "locs", "sales_channel_urls",
+    "yotpo", "okendo", "judgeme", "loox",
 ))
 STORELEADS_BULK_URL = f"{STORELEADS_BASE_URL}{STORELEADS_DOMAIN_PATH}/bulk"
 

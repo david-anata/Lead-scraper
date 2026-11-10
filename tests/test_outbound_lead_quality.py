@@ -207,10 +207,7 @@ def test_personalization_stays_off_until_the_flag_and_then_stays_factual(monkeyp
     after, source = openers.write_opener(after_lead)
     angle, _angle_source = openers.write_brand_angle(after_lead)
     assert source == "fallback"
-    assert after.startswith("Saw RICH Hair Care")
-    assert "retail stores" in after
-    assert "Amazon" in after
-    assert "Meta" in after and "Google" in after
+    assert "Klaviyo" not in after and "Meta" not in after and "pixel" not in after.lower()
     assert "does not sell" not in after.lower()
     assert not angle.lower().startswith("anata helps")
     assert angle != after
@@ -240,11 +237,9 @@ def test_rich_lines_sound_like_a_person_and_never_lead_with_a_negative(monkeypat
     angle, _angle_source = openers.write_brand_angle(off_amazon)
     assert "does not" not in opener.lower()
     assert "does not sell" not in angle.lower()
-    assert "retail stores" in opener
-    assert "Meta" in opener
+    assert "meta" not in opener.lower() and "pixel" not in opener.lower()
     assert not angle.lower().startswith("anata helps")
     assert angle != opener
-    assert openers._repeats(angle, opener) is False
 
     thin = {
         "brand": "North Trampoline",
@@ -259,11 +254,8 @@ def test_rich_lines_sound_like_a_person_and_never_lead_with_a_negative(monkeypat
     openers._ANGLES_BY_DOMAIN.clear()
     thin_line, _source = openers.write_opener(thin)
     thin_angle, _angle_source = openers.write_brand_angle(thin)
-    assert thin_line.startswith("Saw North Trampoline in sports.")
-    assert "does not" not in thin_line.lower()
-    assert "category where Amazon demand" in thin_line
-    assert not thin_angle.lower().startswith("anata helps")
-    assert thin_angle != thin_line
+    assert thin_line == ""
+    assert thin_angle == ""
     for line in (opener, angle, thin_line, thin_angle):
         assert "—" not in line and "–" not in line
         assert not any(char.isdigit() for char in line)
@@ -282,9 +274,9 @@ def test_rich_lines_sound_like_a_person_and_never_lead_with_a_negative(monkeypat
     openers._ANGLES_BY_DOMAIN.clear()
     ads_line, _source = openers.write_opener(ads_lead)
     ads_angle, _angle_source = openers.write_brand_angle(ads_lead)
-    assert "Meta" in ads_line and "Google" in ads_line
-    assert "does not" not in ads_line.lower()
-    assert "platform" in ads_angle.lower()
+    assert "meta" not in ads_line.lower() and "google" not in ads_line.lower()
+    assert "moved" not in ads_line.lower() and "platform" not in ads_line.lower()
+    assert "platform" not in ads_angle.lower()
     assert not ads_angle.lower().startswith("anata helps")
 
     quiet = {
@@ -299,9 +291,8 @@ def test_rich_lines_sound_like_a_person_and_never_lead_with_a_negative(monkeypat
     openers._OPENERS_BY_DOMAIN.clear()
     openers._ANGLES_BY_DOMAIN.clear()
     quiet_line, _source = openers.write_opener(quiet)
-    assert "does not" not in quiet_line.lower()
     assert "pixel" not in quiet_line.lower()
-    assert "platform" in quiet_line.lower()
+    assert "moved" not in quiet_line.lower() and "upgraded" not in quiet_line.lower()
 
 
 def test_a_lone_product_is_kept_and_a_review_app_is_not_called_reviews(monkeypatch):
@@ -322,12 +313,9 @@ def test_a_lone_product_is_kept_and_a_review_app_is_not_called_reviews(monkeypat
     line, source = openers.write_opener(product_only)
     angle, _angle_source = openers.write_brand_angle(product_only)
     facts = openers.collect_facts(product_only)
-    assert source == "fallback"
-    assert facts.solid
-    assert "Cedar Soap" in line and "October" in line
-    assert line
-    assert not angle.lower().startswith("anata helps")
-    assert "reviews" not in line.lower()
+    assert "Cedar Soap" in facts.rich_phrases[0]
+    assert source == "none"
+    assert line == "" and angle == ""
 
     installed = {
         "brand": "Example",
@@ -340,14 +328,35 @@ def test_a_lone_product_is_kept_and_a_review_app_is_not_called_reviews(monkeypat
     openers._ANGLES_BY_DOMAIN.clear()
     app_line, _source = openers.write_opener(installed)
     app_angle, _angle_source = openers.write_brand_angle(installed)
-    assert "Yotpo" in app_line
-    assert "reviews" not in app_line.lower()
+    assert "yotpo" not in app_line.lower()
     assert "talking" not in app_line.lower()
-    assert "those reviews" not in app_angle.lower()
-    assert "already talking" not in app_angle.lower()
+    assert not app_angle.lower().startswith("anata helps")
     for text in (line, angle, app_line, app_angle):
         assert "—" not in text and "–" not in text
         assert not any(char.isdigit() for char in text)
+
+
+def test_style_validator_rejects_digits_dashes_urls_tech_and_low_ratings():
+    from outbound_personalization import style_violation
+
+    assert style_violation("Parents leave thousands of reviews.") == ""
+    assert style_violation("Plans start at $99.") == "digit"
+    assert style_violation("A smart bottle — with coaching.") == "em dash"
+    assert style_violation("See https://brand.com/pages for it.") == "url"
+    assert style_violation("Anata helps Joybees grow.", role="angle") == "anata helps"
+    assert style_violation(
+        "They upgraded to Shopify Plus.", recipe="plan_upgrade",
+    ) == "tech or backend change"
+    assert style_violation(
+        "They moved off WooCommerce.", recipe="replatform",
+    ) == "tech or backend change"
+    assert style_violation("Reviews average three stars.") == "low rating"
+    assert style_violation(
+        "Reviews average close to five stars.", high_rating=True,
+    ) == ""
+    assert style_violation(
+        "Reviews average close to five stars.", high_rating=False,
+    ) == "low rating"
 
 
 def test_backfill_apply_keeps_the_email_and_matches_a_domain_to_a_campaign_lead():

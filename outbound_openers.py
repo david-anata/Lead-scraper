@@ -858,16 +858,10 @@ def collect_facts(lead: dict[str, Any]) -> LeadFacts:
     rich_opener = ""
     rich_angle = ""
     if rich_personalization_enabled(lead):
-        observations = rich_observations(lead)
-        rich_opener, used = human_opener(observations)
-        if not rich_opener:
-            phrases = store_fact_phrases(lead)
-            allow_amazon = any("amazon" in phrase.lower() for phrase in phrases)
-            rich_opener = rich_sentence(observations["brand"], phrases, allow_amazon=allow_amazon)
-            used = list(phrases[:1])
-        if rich_opener:
-            rich_angle = human_angle(observations, rich_opener)
-            rich = tuple(used)
+        from outbound_personalization import fact_sheet
+
+        sheet = fact_sheet(lead)
+        rich = tuple(sheet.facts)
     return LeadFacts(
         brand, amazon_product, product, category, signal, extras, rich, rich_opener, rich_angle,
     )
@@ -1045,6 +1039,25 @@ def _resolve_llm(
     return llm
 
 
+def _ensure_rich(
+    lead: dict[str, Any],
+    *,
+    llm: Optional[Callable[[str], str]],
+    api_key: Optional[str],
+) -> None:
+    """Fill both caches from one model pass. The flag-off path never calls this."""
+
+    domain = _domain_key(lead)
+    if domain and domain in _OPENERS_BY_DOMAIN and domain in _ANGLES_BY_DOMAIN:
+        return
+    from outbound_personalization import generate
+
+    opener, angle, source = generate(lead, llm=llm, api_key=api_key)
+    if domain:
+        _OPENERS_BY_DOMAIN[domain] = (opener, source if opener else "none")
+        _ANGLES_BY_DOMAIN[domain] = (angle, source if angle else "none")
+
+
 def _from_model(
     llm: Callable[[str], str],
     prompt: str,
@@ -1083,6 +1096,8 @@ def write_opener(
     empty when we have no confirmed product, recipe signal, or category.
     """
 
+    if rich_personalization_enabled(lead):
+        _ensure_rich(lead, llm=llm, api_key=api_key)
     domain = _domain_key(lead)
     if domain and domain in _OPENERS_BY_DOMAIN:
         return _OPENERS_BY_DOMAIN[domain]
@@ -1129,6 +1144,8 @@ def write_brand_angle(
     either. ``contact`` is ignored so every person at the company shares it.
     """
 
+    if rich_personalization_enabled(lead):
+        _ensure_rich(lead, llm=llm, api_key=api_key)
     domain = _domain_key(lead)
     if domain and domain in _ANGLES_BY_DOMAIN:
         return _ANGLES_BY_DOMAIN[domain]
