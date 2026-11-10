@@ -51,7 +51,7 @@ yourself. The TwiML sets these:
 
 - `POST /voice/dial-result` — after the forward ends
 - `POST /voice/whisper` — spoken only to the on-call phone
-- `GET /voice/media` — Media Stream websocket (`wss://` on the same host)
+- `GET /voice/media` — Media Stream websocket (`wss://` on the same host, no query string). The stream token is a `<Parameter>`, because Twilio does not accept query parameters on a Stream URL.
 
 `GET /health` is the Render health check. It returns 200 even when secrets are
 still missing, and lists the missing variable names. It does not list values.

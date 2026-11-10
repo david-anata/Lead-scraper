@@ -12,6 +12,8 @@ Webhook paths, all POST unless noted:
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from typing import Any
 
@@ -162,7 +164,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         reply = reply_to_sms(body) if settings.sms_autoreply else ""
         notified = False
         if settings.notify_sms_number:
-            notified = request.app.state.twilio.send_sms(
+            notified = await asyncio.to_thread(
+                request.app.state.twilio.send_sms,
                 from_number=dialed,
                 to_number=settings.notify_sms_number,
                 body=sms_forward_text(
@@ -173,7 +176,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     category=category,
                 ),
             )
-        request.app.state.store.save_sms(
+        await asyncio.to_thread(
+            request.app.state.store.save_sms,
             message_sid=form.get("MessageSid", ""),
             caller_number=caller,
             dialed_number=dialed,
@@ -187,31 +191,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.websocket("/voice/media")
     async def media(websocket: WebSocket) -> None:
         settings = websocket.app.state.settings
-        token = websocket.query_params.get("token", "")
-        ok, call_sid, resume = valid_stream_token(token, settings.twilio_auth_token)
-        if settings.validate_signatures and not ok:
-            await websocket.close(code=1008)
-            return
-        if not settings.validate_signatures and not ok:
-            await websocket.close(code=1008)
-            return
         signature = websocket.headers.get("x-twilio-signature", "")
         if settings.validate_signatures and signature:
             signed = public_request_url(
                 _ws_base(_base_from_settings(settings)),
                 websocket.url.path,
-                websocket.url.query,
+                "",
             )
             if not valid_signature(signed, [], signature, settings.twilio_auth_token):
                 await websocket.close(code=1008)
                 return
         await websocket.accept()
+        start = await _read_stream_start(websocket)
+        token = ""
+        started_call = ""
+        if start:
+            body = start.get("start") or {}
+            started_call = str(body.get("callSid") or "")
+            token = str((body.get("customParameters") or {}).get("token") or "")
+        ok, call_sid, resume = valid_stream_token(token, settings.twilio_auth_token)
+        if not ok or started_call != call_sid:
+            await websocket.close(code=1008)
+            return
         sessions: SessionStore = websocket.app.state.sessions
         session = sessions.get(call_sid)
         if session is None:
             session = sessions.put(
                 CallSession(
-                    call_sid=call_sid or "unknown",
+                    call_sid=call_sid,
                     caller_number="",
                     dialed_number="",
                     line=LineContext(id="anata", label="Anata"),
@@ -228,9 +235,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             calendar=websocket.app.state.calendar,
             websocket=websocket,
         )
-        await bridge.run()
+        await bridge.run(start)
 
     return app
+
+
+async def _read_stream_start(websocket: WebSocket, timeout: float = 8.0) -> dict[str, Any] | None:
+    """Read Twilio's `start` message. The token arrives there, not on the URL."""
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return None
+        try:
+            incoming = await asyncio.wait_for(websocket.receive(), timeout=remaining)
+        except asyncio.TimeoutError:
+            return None
+        if incoming.get("type") == "websocket.disconnect":
+            return None
+        raw = incoming.get("text")
+        if not raw:
+            continue
+        try:
+            message = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if message.get("event") == "start":
+            return message
 
 
 def _ws_base(http_base: str) -> str:

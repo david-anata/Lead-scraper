@@ -70,7 +70,9 @@ def test_recording_notice_is_off_unless_enabled() -> None:
     assert RECORDING_NOTICE not in quiet
     assert "<Recording" not in quiet
     assert RECORDING_NOTICE in loud
-    assert 'url="wss://voice.example.com/voice/media?token=' in quiet
+    assert 'url="wss://voice.example.com/voice/media"' in quiet
+    assert "media?token=" not in quiet
+    assert '<Parameter name="token" value="' in quiet
     assert "audio/pcmu" not in quiet
 
 
@@ -82,4 +84,6 @@ def test_resume_does_not_repeat_the_recording_notice() -> None:
         resume="message",
     )
     assert RECORDING_NOTICE not in xml
-    assert "/voice/media?token=" in xml
+    assert 'url="wss://voice.example.com/voice/media"' in xml
+    assert "media?token=" not in xml
+    assert '<Parameter name="token" value="' in xml

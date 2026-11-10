@@ -131,13 +131,38 @@ def test_inbound_webhook_rejects_a_bad_signature_and_accepts_a_good_one() -> Non
         headers={"X-Twilio-Signature": signature},
     )
     assert good.status_code == 200
-    assert "wss://voice.example.com/voice/media?token=" in good.text
+    assert 'url="wss://voice.example.com/voice/media"' in good.text
+    assert "media?token=" not in good.text
+    assert '<Parameter name="token" value="' in good.text
     assert "This call may be recorded" not in good.text
     health = client.get("/health")
     assert health.status_code == 200
     assert health.json()["calls_ready"] is True
     assert "12345" not in health.text
     assert "+14155550199" not in health.text
+
+
+def test_media_socket_rejects_a_start_without_a_valid_token() -> None:
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    app = create_app(_settings())
+    client = TestClient(app)
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/voice/media") as socket:
+            socket.send_json({"event": "connected"})
+            socket.send_json(
+                {
+                    "event": "start",
+                    "start": {
+                        "callSid": "CA123",
+                        "streamSid": "MZ1",
+                        "customParameters": {"token": "not-a-real-token"},
+                    },
+                }
+            )
+            socket.receive_text()
 
 
 def test_sms_autoreply_is_off_by_default_and_still_forwards() -> None:

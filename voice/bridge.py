@@ -63,7 +63,9 @@ class CallBridge:
         self._response_done = False
         self._continuing = False
 
-    async def run(self) -> None:
+    async def run(self, start_message: dict[str, Any] | None = None) -> None:
+        if start_message:
+            await self._on_twilio(start_message)
         xai_task = asyncio.create_task(self._xai_loop())
         limit_task = asyncio.create_task(self._max_duration())
         try:

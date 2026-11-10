@@ -72,7 +72,13 @@ def main() -> None:
     print(inbound.text)
     print(f"spam transfer={spam.allow_transfer} category={spam.category}")
     print(f"emergency transfer={emergency.allow_transfer} category={emergency.category}")
-    if health.status_code != 200 or inbound.status_code != 200 or "/voice/media?token=" not in inbound.text:
+    if (
+        health.status_code != 200
+        or inbound.status_code != 200
+        or 'url="ws://localhost:8090/voice/media"' not in inbound.text
+        or '<Parameter name="token" value="' not in inbound.text
+        or "media?token=" in inbound.text
+    ):
         raise SystemExit(1)
     if spam.allow_transfer or not emergency.allow_transfer:
         raise SystemExit(1)

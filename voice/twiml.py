@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from urllib.parse import urlencode
 from xml.sax.saxutils import escape
 
 from voice.security import mint_stream_token
@@ -45,15 +44,22 @@ def _ws_base(http_base: str) -> str:
     return http_base
 
 
-def stream_url(settings: Settings, http_base: str, call_sid: str, resume: str) -> str:
-    token = mint_stream_token(call_sid, resume, settings.twilio_auth_token)
-    query = urlencode({"token": token})
-    return f"{_ws_base(http_base)}/voice/media?{query}"
+def media_ws_url(http_base: str) -> str:
+    """Twilio does not allow query parameters on a Stream URL."""
+
+    return f"{_ws_base(http_base)}/voice/media"
 
 
-def connect_stream(url: str) -> str:
-    safe = escape(url, {'"': "&quot;"})
-    return f'<Connect><Stream url="{safe}"/></Connect>'
+def connect_stream(url: str, token: str) -> str:
+    """Pass the stream token as a custom parameter, which arrives in `start`."""
+
+    safe_url = escape(url, {'"': "&quot;"})
+    safe_token = escape(token, {'"': "&quot;"})
+    return (
+        f'<Connect><Stream url="{safe_url}">'
+        f'<Parameter name="token" value="{safe_token}"/>'
+        "</Stream></Connect>"
+    )
 
 
 def inbound_twiml(
@@ -73,7 +79,8 @@ def inbound_twiml(
         parts.append(
             "<Start><Recording channels=\"mono\" trim=\"do-not-trim\"/></Start>"
         )
-    parts.append(connect_stream(stream_url(settings, http_base, call_sid, resume)))
+    token = mint_stream_token(call_sid, resume, settings.twilio_auth_token)
+    parts.append(connect_stream(media_ws_url(http_base), token))
     return xml_response(*parts)
 
 
