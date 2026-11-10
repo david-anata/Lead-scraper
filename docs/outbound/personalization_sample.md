@@ -173,7 +173,7 @@ App names are the ones stored on the pull. A plan upgrade is used in the angle w
 
 Brand: Benibeca
 
-Facts used: Judge.me reviews, swimwear. Klaviyo is also installed and was left for the angle to avoid repeating the opener. The angle uses the plan upgrade instead, because that is the recipe fact.
+Facts used: Judge.me, swimwear. Judge.me is installed. That is not proof of reviews, so the line does not say shoppers have already reviewed the products. Klaviyo is also installed. The angle uses the plan upgrade.
 
 In Instantly now: Benibeca recently upgraded their store plan.
 
@@ -183,7 +183,7 @@ Before personalization: Benibeca recently upgraded their store plan.
 
 Before brandAngle: Anata helps Benibeca grow after a recent plan upgrade.
 
-After personalization: Saw Benibeca with Judge.me reviews in swimwear, so shoppers are already talking about the products.
+After personalization: Saw Benibeca running Judge.me in swimwear, so the store is set up to collect what shoppers say.
 
 After brandAngle: A plan upgrade is a build moment, and the marketplace listing has to keep up with the site.
 
@@ -191,7 +191,7 @@ After brandAngle: A plan upgrade is a build moment, and the marketplace listing 
 
 Brand: Happy Viking
 
-Facts used: Okendo reviews, vitamins and supplements. Recharge subscriptions and Klaviyo are also installed. The angle uses Recharge because the opener already used Okendo.
+Facts used: Okendo, vitamins and supplements. Okendo is installed, not a count of reviews. Recharge subscriptions and Klaviyo are also installed. The angle uses Recharge.
 
 In Instantly now: Your recent store plan upgrade suggests you're ready to scale your health and nutrition brand beyond your current reach.
 
@@ -201,7 +201,7 @@ Before personalization: Happy Viking recently upgraded their store plan.
 
 Before brandAngle: Anata helps Happy Viking grow after a recent plan upgrade.
 
-After personalization: Saw Happy Viking with Okendo reviews in vitamins and supplements, so shoppers are already talking about the products.
+After personalization: Saw Happy Viking running Okendo in vitamins and supplements, so the store is set up to collect what shoppers say.
 
 After brandAngle: Subscriptions only hold if the listing price stays steady for the next order.
 
@@ -209,7 +209,7 @@ After brandAngle: Subscriptions only hold if the listing price stays steady for 
 
 Brand: Joybees
 
-Facts used: Stamped reviews, footwear. Klaviyo is also installed. A store-locator app is installed too. That app name is not treated as proof of retail stores.
+Facts used: Stamped, footwear. Stamped is installed, not a count of reviews. Klaviyo is also installed. A store-locator app is installed too. That app name is not treated as proof of retail stores.
 
 In Instantly now: Your recent store plan upgrade suggests you're scaling apparel operations and could benefit from smarter inventory and demand planning.
 
@@ -219,7 +219,7 @@ Before personalization: Joybees recently upgraded their store plan.
 
 Before brandAngle: Anata helps Joybees grow after a recent plan upgrade.
 
-After personalization: Saw Joybees with Stamped reviews in footwear, so shoppers are already talking about the products.
+After personalization: Saw Joybees running Stamped in footwear, so the store is set up to collect what shoppers say.
 
 After brandAngle: A plan upgrade is a build moment, and the marketplace listing has to keep up with the site.
 
@@ -227,7 +227,7 @@ After brandAngle: A plan upgrade is a build moment, and the marketplace listing 
 
 Brand: CASEKOO
 
-Facts used: Judge.me reviews, mobile and wireless accessories. Klaviyo is also installed.
+Facts used: Judge.me, mobile and wireless accessories. Judge.me is installed, not a count of reviews. Klaviyo is also installed.
 
 In Instantly now: Your store plan upgrade suggests you're scaling operations, and we help consumer electronics brands optimize their direct-to-consumer performance.
 
@@ -237,7 +237,7 @@ Before personalization: CASEKOO recently upgraded their store plan.
 
 Before brandAngle: Anata helps CASEKOO grow after a recent plan upgrade.
 
-After personalization: Saw CASEKOO with Judge.me reviews in mobile and wireless accessories, so shoppers are already talking about the products.
+After personalization: Saw CASEKOO running Judge.me in mobile and wireless accessories, so the store is set up to collect what shoppers say.
 
 After brandAngle: A plan upgrade is a build moment, and the marketplace listing has to keep up with the site.
 
@@ -323,7 +323,7 @@ Only two of the people who have replied in this campaign have a stored US StoreL
 
 Brand: JaxKelly
 
-Facts used: Yotpo reviews, clothing accessories. Klaviyo and Faire are also installed. Faire is not treated as retail stores.
+Facts used: Yotpo, clothing accessories. Yotpo is installed, not a count of reviews. Klaviyo and Faire are also installed. Faire is not treated as retail stores.
 
 In Instantly now: How are you managing inventory across your accessory SKUs on Amazon right now?
 
@@ -333,7 +333,7 @@ Before personalization: JaxKelly sells apparel.
 
 Before brandAngle: Anata helps apparel brands grow.
 
-After personalization: Saw JaxKelly with Yotpo reviews in clothing accessories, so shoppers are already talking about the products.
+After personalization: Saw JaxKelly running Yotpo in clothing accessories, so the store is set up to collect what shoppers say.
 
 After brandAngle: Clothing accessories shoppers compare fast, so the listing has to be ready when they look.
 
@@ -341,7 +341,7 @@ After brandAngle: Clothing accessories shoppers compare fast, so the listing has
 
 Brand: Mata Traders
 
-Facts used: Judge.me reviews, apparel. Klaviyo is also installed.
+Facts used: Judge.me, apparel. Judge.me is installed, not a count of reviews. Klaviyo is also installed.
 
 In Instantly now: Your collection of handcrafted home goods and apparel has such a distinct point of view - are you currently running Amazon Ads, or is that still untapped territory for you?
 
@@ -351,6 +351,6 @@ Before personalization: Mata Traders sells apparel.
 
 Before brandAngle: Anata helps apparel brands grow.
 
-After personalization: Saw Mata Traders with Judge.me reviews in apparel, so shoppers are already talking about the products.
+After personalization: Saw Mata Traders running Judge.me in apparel, so the store is set up to collect what shoppers say.
 
 After brandAngle: Apparel shoppers compare fast, so the listing has to be ready when they look.

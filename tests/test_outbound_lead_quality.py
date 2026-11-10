@@ -304,6 +304,52 @@ def test_rich_lines_sound_like_a_person_and_never_lead_with_a_negative(monkeypat
     assert "platform" in quiet_line.lower()
 
 
+def test_a_lone_product_is_kept_and_a_review_app_is_not_called_reviews(monkeypatch):
+    monkeypatch.delenv(openers.RICH_PERSONALIZATION_FLAG, raising=False)
+    product_only = {
+        "brand": "Example",
+        "domain": "example-soap.com",
+        "rich_personalization": True,
+        "store_profile": {
+            "most_recently_published_product": {
+                "title": "Cedar Soap",
+                "published_at": "2026-10-02T00:00:00Z",
+            },
+        },
+    }
+    openers._OPENERS_BY_DOMAIN.clear()
+    openers._ANGLES_BY_DOMAIN.clear()
+    line, source = openers.write_opener(product_only)
+    angle, _angle_source = openers.write_brand_angle(product_only)
+    facts = openers.collect_facts(product_only)
+    assert source == "fallback"
+    assert facts.solid
+    assert "Cedar Soap" in line and "October" in line
+    assert line
+    assert not angle.lower().startswith("anata helps")
+    assert "reviews" not in line.lower()
+
+    installed = {
+        "brand": "Example",
+        "domain": "example-yotpo.com",
+        "categories": "hair care",
+        "rich_personalization": True,
+        "store_profile": {"apps": ["Yotpo"]},
+    }
+    openers._OPENERS_BY_DOMAIN.clear()
+    openers._ANGLES_BY_DOMAIN.clear()
+    app_line, _source = openers.write_opener(installed)
+    app_angle, _angle_source = openers.write_brand_angle(installed)
+    assert "Yotpo" in app_line
+    assert "reviews" not in app_line.lower()
+    assert "talking" not in app_line.lower()
+    assert "those reviews" not in app_angle.lower()
+    assert "already talking" not in app_angle.lower()
+    for text in (line, angle, app_line, app_angle):
+        assert "—" not in text and "–" not in text
+        assert not any(char.isdigit() for char in text)
+
+
 def test_backfill_apply_keeps_the_email_and_matches_a_domain_to_a_campaign_lead():
     import importlib.util
 

@@ -668,7 +668,7 @@ def human_opener(obs: dict[str, Any]) -> tuple[str, list[str]]:
         used = ["Trustpilot reviews"]
     elif obs["new_product"] and (ads or obs["retail"] or obs["amazon"]):
         extra = ads or ("retail stores" if obs["retail"] else "Amazon")
-        clause = f"add {obs['new_product']} while running {extra}" if ads else f"add {obs['new_product']} with {extra} already in place"
+        clause = f"adding {obs['new_product']} while running {extra}" if ads else f"adding {obs['new_product']} with {extra} already in place"
         why = "the catalog is moving at the same time as the demand"
         used = [obs["new_product"], extra]
     elif obs["plus"]:
@@ -692,13 +692,13 @@ def human_opener(obs: dict[str, Any]) -> tuple[str, list[str]]:
         why = "price and the buy box are already part of how the number moves"
         used = ["Amazon"]
     elif obs["review_app"] and obs["category"]:
-        clause = f"with {obs['review_app']} reviews in {obs['category']}"
-        why = "shoppers are already talking about the products"
-        used = [f"{obs['review_app']} reviews", obs["category"]]
+        clause = f"running {obs['review_app']} in {obs['category']}"
+        why = "the store is set up to collect what shoppers say"
+        used = [obs["review_app"], obs["category"]]
     elif obs["review_app"]:
-        clause = f"with {obs['review_app']} reviews"
-        why = "shoppers are already talking about the products"
-        used = [f"{obs['review_app']} reviews"]
+        clause = f"running {obs['review_app']}"
+        why = "the store is set up to collect what shoppers say"
+        used = [obs["review_app"]]
     elif obs["subscription"] and obs["klaviyo"]:
         clause = f"running {obs['subscription']} subscriptions and Klaviyo"
         why = "repeat purchase and email demand are already in place"
@@ -723,6 +723,14 @@ def human_opener(obs: dict[str, Any]) -> tuple[str, list[str]]:
         clause = "moving the store onto a new platform"
         why = "listings get rebuilt and Amazon gets a fresh look"
         used = ["platform move"]
+    elif obs["new_product"] and obs["category"]:
+        clause = f"adding {obs['new_product']} in {obs['category']}"
+        why = "the catalog is still moving"
+        used = [obs["new_product"], obs["category"]]
+    elif obs["new_product"]:
+        clause = f"adding {obs['new_product']}"
+        why = "the catalog is still moving"
+        used = [obs["new_product"]]
     elif obs["klaviyo"] and obs["category"]:
         clause = f"running Klaviyo in {obs['category']}"
         why = "email demand is already there to meet on Amazon"
@@ -764,8 +772,8 @@ def human_angle(obs: dict[str, Any], opener: str) -> str:
         candidates.append("That social attention fades if the listing is not ready when someone searches the brand.")
     if obs["reviews"] and "trustpilot" not in opener.lower():
         candidates.append("Those reviews are the proof a listing needs when a shopper compares prices.")
-    if obs["review_app"] and obs["review_app"].lower() not in opener.lower():
-        candidates.append("Those reviews are the proof a listing needs when a shopper compares prices.")
+    if obs["review_app"] and obs["review_app"].lower() not in opener.lower() and not obs["reviews"]:
+        candidates.append("A review tool pays off when the listing is ready for the same shopper.")
     if obs["subscription"] and obs["subscription"].lower() not in opener.lower():
         candidates.append("Subscriptions only hold if the listing price stays steady for the next order.")
     if obs["signal"] == "plan_upgrade" and "plan" not in opener.lower():
@@ -775,7 +783,10 @@ def human_angle(obs: dict[str, Any], opener: str) -> str:
     elif obs["signal"] in {"replatform", "replatformed"}:
         candidates.append("The listing has to match the new site once that move is done.")
     if obs["new_product"] and obs["new_product"].split()[0].lower() not in opener.lower():
-        candidates.append("A new product is the moment the listing and the ads have to say the same thing.")
+        if obs["ads"]:
+            candidates.append("A new product is the moment the listing and the ads have to say the same thing.")
+        else:
+            candidates.append("A new product is the moment the listing has to match what the site just added.")
     if obs["plus"] and "plus" not in opener.lower():
         candidates.append("A Plus plan is a lot of store to run if the marketplace side is still manual.")
     if obs["moved"] and obs["moved"].split()[0].lower() not in opener.lower():
@@ -849,6 +860,11 @@ def collect_facts(lead: dict[str, Any]) -> LeadFacts:
     if rich_personalization_enabled(lead):
         observations = rich_observations(lead)
         rich_opener, used = human_opener(observations)
+        if not rich_opener:
+            phrases = store_fact_phrases(lead)
+            allow_amazon = any("amazon" in phrase.lower() for phrase in phrases)
+            rich_opener = rich_sentence(observations["brand"], phrases, allow_amazon=allow_amazon)
+            used = list(phrases[:1])
         if rich_opener:
             rich_angle = human_angle(observations, rich_opener)
             rich = tuple(used)
