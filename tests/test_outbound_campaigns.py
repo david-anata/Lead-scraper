@@ -435,6 +435,8 @@ def test_held_recipes_are_not_pulled_unless_explicitly_enabled():
     ) == ""
     assert source.legacy_recipe_pull_reason("icp_baseline", rows, {}) == ""
     assert "already sources" in source.legacy_recipe_pull_reason("plan_upgrade", rows, {})
+    throttled = {**live, "status": "throttled"}
+    assert source.legacy_recipe_pull_reason("plan_upgrade", [throttled], {}) == ""
     assert "already sources" in source.legacy_recipe_pull_reason("replatformed", [{
         **live, "recipe_key": "replatform", "recipe_aliases": "replatformed",
     }], {})
