@@ -345,6 +345,34 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
             out["pulled"] += sales_recorded
             out["recipes"].extend(list(sales.get("recipes") or []))
 
+    catalog = None
+    if engine is not None:
+        try:
+            import outbound_campaigns as _campaigns
+
+            catalog = _campaigns.list_campaigns(engine)
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-jobs] could not read campaigns for the recipe gate")
+            catalog = None
+    if catalog:
+        import outbound_campaign_source as _gate
+
+        allowed_due = []
+        for recipe in due:
+            skip_reason = _gate.legacy_recipe_pull_reason(recipe.key, catalog, tunables)
+            if not skip_reason:
+                allowed_due.append(recipe)
+                continue
+            logger.info("[outbound-jobs] skipping %s: %s", recipe.key, skip_reason)
+            recipe_runs.append({
+                "recipe_key": recipe.key,
+                "recipe_label": recipe.label,
+                "status": "skipped",
+                "fresh": 0,
+                "error": skip_reason,
+            })
+        due = allowed_due
+
     # 1. Pull. Fast and free; the Amazon work is deliberately not inline here,
     #    because at minutes per brand it would never finish inside one request.
     for recipe in due:

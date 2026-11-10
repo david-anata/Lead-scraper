@@ -233,6 +233,86 @@ def share_company_room(caps: list[int], room: int) -> list[int]:
     return assigned
 
 
+def _campaign_names(row: dict[str, Any]) -> set[str]:
+    names = {str(row.get("recipe_key") or "").strip()}
+    names.update(
+        part.strip()
+        for part in str(row.get("recipe_aliases") or "").split(",")
+        if part.strip()
+    )
+    names.discard("")
+    return names
+
+
+def _campaign_matches_recipe(recipe_key: str, row: dict[str, Any]) -> bool:
+    names = _campaign_names(row)
+    if recipe_key in names:
+        return True
+    paired = {"replatform": "replatformed", "replatformed": "replatform"}
+    return paired.get(recipe_key, "") in names
+
+
+def _campaign_is_live(row: dict[str, Any]) -> bool:
+    """Active or throttled, with room, and not a filler hold marker."""
+
+    status = str(row.get("status") or "").strip()
+    if status not in {"active", "throttled"}:
+        return False
+    try:
+        cap = int(row.get("daily_cap") or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    if cap <= 0:
+        return False
+    campaign_id = str(row.get("campaign_id") or "").strip()
+    import outbound_instantly_push as push
+
+    if campaign_id in push.HOLD_INGEST_CAMPAIGN_IDS:
+        return False
+    if "|hold|" in str(row.get("name") or "").lower():
+        return False
+    return True
+
+
+def _recipe_explicitly_enabled(recipe_key: str, settings: Optional[dict[str, Any]]) -> bool:
+    """True only when an operator saved this recipe as enabled.
+
+    A missing key is not an override. Held recipes stay off unless that
+    setting is present and true.
+    """
+
+    if not settings or f"{recipe_key}.enabled" not in settings:
+        return False
+    return str(settings.get(f"{recipe_key}.enabled")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def legacy_recipe_pull_reason(
+    recipe_key: str,
+    campaign_rows: Optional[list[dict[str, Any]]],
+    settings: Optional[dict[str, Any]] = None,
+) -> str:
+    """Why the morning recipe loop must not call StoreLeads. Empty means pull.
+
+    ``None`` means the campaign catalog could not be read, so the saved
+    schedule still runs. A held, cut, or proposed row is skipped. A live
+    row that already has filters is pulled by ``source_active_campaigns``
+    and is not queried again here.
+    """
+
+    if campaign_rows is None:
+        return ""
+    key = str(recipe_key or "").strip()
+    matches = [row for row in campaign_rows if _campaign_matches_recipe(key, row)]
+    live = [row for row in matches if _campaign_is_live(row)]
+    if live and any(row.get("storeleads_filters") for row in live):
+        return "active campaign filter already sources this recipe"
+    if live or _recipe_explicitly_enabled(key, settings):
+        return ""
+    if matches:
+        return "held recipe has no live campaign"
+    return ""
+
+
 def source_active_campaigns(
     engine: Any,
     *,

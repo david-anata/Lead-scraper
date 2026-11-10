@@ -399,6 +399,48 @@ def test_amz_off_resumes_past_pages_already_read_and_stops_at_five(engine):
     assert len(calls["off"]) == source._MAX_PAGES
 
 
+def test_held_recipes_are_not_pulled_unless_explicitly_enabled():
+    held = {
+        "recipe_key": "churned_tool",
+        "recipe_aliases": "",
+        "status": "cut",
+        "daily_cap": 0,
+        "campaign_id": "a04a958c-6546-5ba0-a97d-586446d2b580",
+        "name": "churned_tool|hold|no_trial_offer_ingest",
+        "storeleads_filters": {"f:p": "shopify"},
+    }
+    growth = {
+        "recipe_key": "new_growth_app",
+        "recipe_aliases": "",
+        "status": "cut",
+        "daily_cap": 0,
+        "campaign_id": "593df58d-f073-51c0-9cc9-b475a50a6a79",
+        "name": "new_growth_app|hold|no_trial_offer_ingest",
+        "storeleads_filters": {"f:p": "shopify"},
+    }
+    live = {
+        "recipe_key": "plan_upgrade",
+        "recipe_aliases": "",
+        "status": "active",
+        "daily_cap": 30,
+        "campaign_id": push.RECIPE_CAMPAIGN_MAP["plan_upgrade"],
+        "name": "plan_upgrade|standard|us_plus_90d",
+        "storeleads_filters": {"f:plan": "Shopify Plus"},
+    }
+    rows = [held, growth, live]
+    assert source.legacy_recipe_pull_reason("churned_tool", rows, {}) == "held recipe has no live campaign"
+    assert source.legacy_recipe_pull_reason("new_growth_app", rows, {}) == "held recipe has no live campaign"
+    assert source.legacy_recipe_pull_reason(
+        "churned_tool", rows, {"churned_tool.enabled": "true"},
+    ) == ""
+    assert source.legacy_recipe_pull_reason("icp_baseline", rows, {}) == ""
+    assert "already sources" in source.legacy_recipe_pull_reason("plan_upgrade", rows, {})
+    assert "already sources" in source.legacy_recipe_pull_reason("replatformed", [{
+        **live, "recipe_key": "replatform", "recipe_aliases": "replatformed",
+    }], {})
+    assert source.legacy_recipe_pull_reason("churned_tool", None, {}) == ""
+
+
 def test_judge_requires_150_contacted_and_does_not_change_volume():
     assert campaigns.judge_metrics(149, 5, 1, 1, 0) == (False, "insufficient")
     assert campaigns.judge_metrics(200, None, 1, 1, 0) == (False, "insufficient")
