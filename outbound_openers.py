@@ -145,11 +145,13 @@ def validate(text: str, *, allow_amazon: bool = True, max_words: int = MAX_WORDS
     return True, ""
 
 
-def plain_category(value: str) -> str:
+def plain_category(value: Any) -> str:
     """Turn category slugs and path fragments into words."""
 
+    from outbound_personalization import as_text
+
     seen: list[str] = []
-    for piece in re.split(r"[,/|]", str(value or "")):
+    for piece in re.split(r"[,/|]", as_text(value)):
         slug = piece.strip().lower().replace("-", "_").replace(" ", "_").strip("_")
         if not slug or slug in {"and", "the"}:
             continue
@@ -552,10 +554,10 @@ def rich_observations(lead: dict[str, Any]) -> dict[str, Any]:
         if token in compact:
             subscription = app_name
             break
-    cats = lead.get("categories") or ""
-    if isinstance(cats, (list, tuple)):
-        cats = ", ".join(str(item) for item in cats[:3])
-    category = _specific_category(cats) or _specific_category(lead.get("niche") or "")
+    from outbound_personalization import as_text as _as_text
+
+    cats = _as_text(lead.get("categories"))
+    category = _specific_category(cats) or _specific_category(_as_text(lead.get("niche")))
     confidence = str(lead.get("amz_confidence") or lead.get("amazon_confidence") or "").strip().lower()
     absent_raw = lead.get("amazon_absent")
     if isinstance(absent_raw, str):
@@ -741,15 +743,8 @@ def human_opener(obs: dict[str, Any]) -> tuple[str, list[str]]:
         used = ["Klaviyo"]
     elif obs["city"] and obs["category"]:
         clause = f"in {obs['city']}, selling {obs['category']}"
-        why = "that is a category where Amazon demand tends to sit next to the website"
+        why = "shoppers there already know the brand"
         used = [obs["city"], obs["category"]]
-    elif obs["category"]:
-        line = (
-            f"Saw {brand} in {obs['category']}. "
-            "That is a category where Amazon demand tends to sit next to the website."
-        )
-        usable = _usable(line, allow_amazon=True, max_words=MAX_WORDS)
-        return (usable, [obs["category"]]) if usable else ("", [])
     else:
         return "", []
     line = f"Saw {brand} {clause}, so {why}."
@@ -845,10 +840,10 @@ def collect_facts(lead: dict[str, Any]) -> LeadFacts:
     product = _scraped_product(lead)
     if product and amazon_product and product.lower() == amazon_product.lower():
         product = ""
-    cats = lead.get("categories") or ""
-    if isinstance(cats, (list, tuple)):
-        cats = ", ".join(str(item) for item in cats[:3])
-    category = _category_phrase(cats) or _category_phrase(lead.get("niche") or "")
+    from outbound_personalization import as_text as _as_text
+
+    cats = _as_text(lead.get("categories"))
+    category = _category_phrase(cats) or _category_phrase(_as_text(lead.get("niche")))
     niche = _category_phrase(lead.get("niche") or "")
     extras = tuple(item for item in (niche,) if item and item != category)
     signal = str(lead.get("recipe") or "").strip()
@@ -1052,7 +1047,7 @@ def _ensure_rich(
         return
     from outbound_personalization import generate
 
-    opener, angle, source = generate(lead, llm=llm, api_key=api_key)
+    opener, angle, source, _reason = generate(lead, llm=llm, api_key=api_key)
     if domain:
         _OPENERS_BY_DOMAIN[domain] = (opener, source if opener else "none")
         _ANGLES_BY_DOMAIN[domain] = (angle, source if angle else "none")

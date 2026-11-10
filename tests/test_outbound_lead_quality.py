@@ -205,12 +205,9 @@ def test_personalization_stays_off_until_the_flag_and_then_stays_factual(monkeyp
     openers._OPENERS_BY_DOMAIN.clear()
     openers._ANGLES_BY_DOMAIN.clear()
     after, source = openers.write_opener(after_lead)
-    angle, _angle_source = openers.write_brand_angle(after_lead)
-    assert source == "fallback"
-    assert "Klaviyo" not in after and "Meta" not in after and "pixel" not in after.lower()
-    assert "does not sell" not in after.lower()
-    assert not angle.lower().startswith("anata helps")
-    assert angle != after
+    angle, angle_source = openers.write_brand_angle(after_lead)
+    assert source == "none" and angle_source == "none"
+    assert after == "" and angle == ""
     assert "is based in Philadelphia" in openers.store_fact_phrases(after_lead)
     for line in (after, angle):
         assert "—" not in line and "–" not in line
@@ -233,13 +230,10 @@ def test_rich_lines_sound_like_a_person_and_never_lead_with_a_negative(monkeypat
             "technologies": ["Facebook Pixel"],
         },
     }
-    opener, _source = openers.write_opener(off_amazon)
-    angle, _angle_source = openers.write_brand_angle(off_amazon)
-    assert "does not" not in opener.lower()
-    assert "does not sell" not in angle.lower()
-    assert "meta" not in opener.lower() and "pixel" not in opener.lower()
-    assert not angle.lower().startswith("anata helps")
-    assert angle != opener
+    opener, opener_source = openers.write_opener(off_amazon)
+    angle, angle_source = openers.write_brand_angle(off_amazon)
+    assert opener == "" and angle == ""
+    assert opener_source == "none" and angle_source == "none"
 
     thin = {
         "brand": "North Trampoline",
@@ -339,7 +333,14 @@ def test_a_lone_product_is_kept_and_a_review_app_is_not_called_reviews(monkeypat
 def test_style_validator_rejects_digits_dashes_urls_tech_and_low_ratings():
     from outbound_personalization import style_violation
 
-    assert style_violation("Parents leave thousands of reviews.") == ""
+    assert style_violation(
+        "Parents leave thousands of reviews and then look for the same product on Amazon."
+    ) == ""
+    assert style_violation("Too short.") == "too short"
+    assert style_violation("A line with  a doubled space in it.") == "repr or placeholder"
+    assert style_violation("The catalog is ['apparel'] and nothing else.") == "repr or placeholder"
+    assert style_violation("The value was None and that cannot send.") == "repr or placeholder"
+    assert style_violation("Hello {{firstName}} this line is long enough to count.") == "repr or placeholder"
     assert style_violation("Plans start at $99.") == "digit"
     assert style_violation("A smart bottle — with coaching.") == "em dash"
     assert style_violation("See https://brand.com/pages for it.") == "url"
@@ -357,6 +358,62 @@ def test_style_validator_rejects_digits_dashes_urls_tech_and_low_ratings():
     assert style_violation(
         "Reviews average close to five stars.", high_rating=False,
     ) == "low rating"
+
+
+def test_raw_storeleads_files_produce_no_line_without_a_model(monkeypatch):
+    import json
+    from pathlib import Path
+
+    import outbound_personalization as personalization
+    from outbound_pipeline import country_eligibility
+
+    monkeypatch.setattr(
+        "sales_support_agent.services.llm_client.llm_available", lambda **_kwargs: False,
+    )
+    recipes = {
+        "lovevery.com": "amz_on", "chewrevgum.com": "amz_on",
+        "hazelicious.com": "amz_on", "pureandcimple.com": "amz_on",
+        "rivieras.com": "amz_off", "glo910.com": "amz_off",
+        "water.io": "amz_off", "bbqing.com": "amz_off",
+        "benibeca.com": "plan_upgrade", "drinkhappyviking.com": "plan_upgrade",
+        "joybees.com": "plan_upgrade", "casekoo.com": "plan_upgrade",
+        "barbellvoodoo.com": "replatform", "wovemade.com": "replatform",
+        "krazykreations.us": "replatform", "repriswines.com": "replatform",
+        "jaxkelly.com": "abby_reengage", "matatraders.com": "abby_reengage",
+    }
+    non_us = {
+        "rivieras.com": "FR", "glo910.com": "ES",
+        "benibeca.com": "MX", "bbqing.com": "CA",
+    }
+    folder = Path("tests/fixtures/sl_raw")
+    files = sorted(folder.glob("*.json"))
+    assert len(files) == 18
+    for path in files:
+        payload = json.loads(path.read_text())
+        store = payload["domain"]
+        domain = path.stem
+        lead = {
+            "domain": domain,
+            "brand": store.get("merchant_name") or domain,
+            "recipe": recipes[domain],
+            "categories": store.get("categories"),
+            "store": store,
+            "rich_personalization": True,
+        }
+        opener, angle, source, reason = personalization.generate(lead, llm=None, api_key="")
+        assert opener == "" and angle == "" and source == "none", domain
+        assert reason, domain
+        blob = " ".join(personalization.fact_sheet(lead).facts)
+        assert "['" not in blob and "{'" not in blob and "[" not in blob, domain
+        allowed, country_reason = country_eligibility(store)
+        if domain in non_us:
+            assert allowed is False, domain
+            assert non_us[domain] in country_reason
+            assert non_us[domain] in reason or reason in {"multi-brand retailer", "restricted category"}
+        if domain == "repriswines.com":
+            assert reason == "restricted category"
+        if domain == "bbqing.com":
+            assert personalization.fact_sheet(lead).blocked == "multi-brand retailer"
 
 
 def test_backfill_apply_keeps_the_email_and_matches_a_domain_to_a_campaign_lead():

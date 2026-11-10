@@ -4,9 +4,10 @@
 When it is on, the opener and brandAngle come from the model, using a
 shopper-visible fact sheet from the StoreLeads record and the examples
 below. The code then checks the lines. A thin record, a restricted
-category such as wine, or a high vendor count (a multi-brand retailer)
-gets no lines and is flagged. If the model line fails a check, the
-fallback is a plain category sentence, or nothing when that is not safe.
+category such as wine, a high vendor count, a non-US headquarters, a
+missing model, or a line that fails a check gets no opener and no
+angle. The campaign then keeps the copy it already had. There is no
+category-sentence substitute.
 
 The StoreLeads key the code reads is `STORELEADS_API_KEY`. It is not set
 on the Vercel project anata-agent-staging. Do not invent another name.

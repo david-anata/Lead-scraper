@@ -369,8 +369,9 @@ def dry_run_route_plan(
 def friendly_category(raw: Any) -> str:
     """StoreLeads paths ("/Home & Garden/Gardening & Landscaping, /Business & ...")
     become the words the email reads: "gardening & landscaping"."""
-    if isinstance(raw, (list, tuple)):
-        raw = ", ".join(str(r) for r in raw)
+    from outbound_personalization import as_text
+
+    raw = as_text(raw)
     paths = [p.strip() for p in str(raw or "").split(",") if p.strip()]
     if not paths:
         return ""

@@ -628,7 +628,9 @@ def _company_text(store: dict[str, Any]) -> str:
         store.get("description") or "",
         store.get("merchant_description") or "",
     )
-    return " ".join(str(part) for part in parts).lower()
+    from outbound_personalization import as_text
+
+    return " ".join(as_text(part) for part in parts).lower()
 
 
 def passes_company_fit(store: dict[str, Any], *, require_niche: bool = True) -> bool:
@@ -1178,7 +1180,7 @@ _STORELEADS_FIELDS = ",".join((
     # are never used to decide that a brand is US.
     "location", "administrative_area_level_1", "cluster_best_ranked",
     "cluster_domains", "ships_to_countries", "currency_code", "language_code",
-    "vendor_count", "features", "locs", "sales_channel_urls",
+    "vendor_count", "locs", "sales_channel_urls",
     "yotpo", "okendo", "judgeme", "loox",
 ))
 STORELEADS_BULK_URL = f"{STORELEADS_BASE_URL}{STORELEADS_DOMAIN_PATH}/bulk"
