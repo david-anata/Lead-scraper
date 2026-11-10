@@ -1,50 +1,58 @@
 """Sales-org segment. Draft only. Nothing here creates an Instantly campaign.
 
 The recipe stays off until OUTBOUND_SALES_ORG_ENABLED is true and
-OUTBOUND_SALES_ORG_CAMPAIGN_ID is set to a campaign David creates after
-he approves this copy. A person already in the workspace is not copied:
-the shared push uses skip_if_in_workspace true.
+OUTBOUND_SALES_ORG_CAMPAIGN_ID is set to a campaign David creates.
+A person already in the workspace is not copied: the shared push uses
+skip_if_in_workspace true.
+
+Cold steps have no URL. The booking link is only for Abby's reply after
+someone responds.
 """
 
 from __future__ import annotations
 
-from sales_support_agent.abby_followups import DEFAULT_BOOKING_LINK, SIGNATURE
+from outbound_cold_sequence import require_no_cold_urls
 
 RECIPE = "sales_org"
-BOOKING_LINK = DEFAULT_BOOKING_LINK
+SIGNATURE = "Abby\nAccount Specialist, Anata"
 
-# Three steps, threaded, same shape as the re-engage v2 sequence.
-# Email 1 carries the one link. Steps 2 and 3 do not.
-EMAIL_1_SUBJECT = "{{RANDOM | amazon and the number | quick note | {{companyName}} on Amazon}}"
-EMAIL_1 = """{{RANDOM | Hi | Hey}} {{firstName}},
+EMAIL_1_SUBJECT = "{{companyName}} growth idea"
+EMAIL_1 = """Hi {{firstName}},
 
 {{personalization}}
 
 {{brandAngle}}
 
-Amazon is one channel a sales team can use to hit the number. We build the strategy and run the ad actions, with an eye on incremental revenue, price, and the buy box. You can try it free for 14 days. After that, plans start at $99 a month.
+At a lot of brands, Amazon sits with sales, and it's one of the quickest places to add revenue against the number. We handle the strategy and the day-to-day ads, and we keep an eye on price and the buy box so growth doesn't come at the cost of margin. You can try it free for 14 days, and plans start at $99 a month after that.
 
-{{RANDOM | Open to a quick intro with David | Want me to send a short strategy deck}}?
+Open to a quick intro with David, or should I send a short strategy deck for {{companyName}}?
 
-""" + BOOKING_LINK + """
+Abby
+Account Specialist, Anata"""
 
-""" + SIGNATURE
+EMAIL_2 = """Hi {{firstName}},
 
-EMAIL_2 = """{{firstName}}, short version: free for 14 days, then plans from $99 a month. The work is incremental revenue, holding price, and protecting the buy box.
+Quick follow-up. If Amazon is part of how {{companyName}} hits its number, we can usually find revenue that's being left on the table, whether that's listings, ads, or price and buy box issues. It's free to try for 14 days, then plans start at $99 a month.
 
-{{RANDOM | Worth a quick intro with David | Should I send the short deck}}?
+Would a quick intro with David help, or should I send over a short strategy deck?
 
-""" + SIGNATURE
+Abby
+Account Specialist, Anata"""
 
-EMAIL_3 = """Last one from me. If Amazon is not how {{companyName}} hits the number right now, no worries. If it is, reply and I will set up the intro or send the deck.
+EMAIL_3 = """Hi {{firstName}},
 
-""" + SIGNATURE
+I'll leave it here. If Amazon isn't a priority for {{companyName}} right now, no worries at all. If it is, just reply "intro" or "deck" and I'll take care of the rest.
+
+Abby
+Account Specialist, Anata"""
 
 STEPS = (
     {"delay": 3, "subject": EMAIL_1_SUBJECT, "body": EMAIL_1},
     {"delay": 4, "subject": "", "body": EMAIL_2},
     {"delay": 1, "subject": "", "body": EMAIL_3},
 )
+
+require_no_cold_urls(list(STEPS))
 
 
 def sequence_text() -> str:

@@ -44,11 +44,14 @@ def to_html(text: str) -> str:
 
 def campaign_body(live: dict[str, Any]) -> dict[str, Any]:
     """Same inboxes, schedule and safety settings as the live campaign."""
+    from outbound_cold_sequence import require_no_cold_urls
+
     steps = [
         {"type": "email", "delay": 3, "variants": [{"subject": EMAIL_1_SUBJECT, "body": to_html(EMAIL_1)}]},
         {"type": "email", "delay": 4, "variants": [{"subject": "", "body": to_html(EMAIL_2)}]},
         {"type": "email", "delay": 1, "variants": [{"subject": "", "body": to_html(EMAIL_3)}]},
     ]
+    require_no_cold_urls(steps)
     sched = live.get("campaign_schedule") or {}
     return {
         "name": NAME,

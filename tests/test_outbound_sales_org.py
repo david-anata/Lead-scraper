@@ -120,22 +120,27 @@ def test_sales_org_brand_does_not_need_a_category_and_still_must_be_us():
     )
 
 
-def test_sequence_keeps_the_offer_one_link_and_abby_signature():
-    text = sales.sequence_text()
-    assert "—" not in text and "–" not in text
+def test_sequence_matches_davids_approved_copy_and_has_no_urls():
+    from outbound_cold_sequence import check_cold_steps
+
+    assert sales.EMAIL_1_SUBJECT == "{{companyName}} growth idea"
+    assert sales.EMAIL_1.startswith("Hi {{firstName}},")
     assert "{{personalization}}" in sales.EMAIL_1
     assert "{{brandAngle}}" in sales.EMAIL_1
-    assert "14 days" in text and "$99" in text
-    assert "quick intro with David" in text
-    assert "strategy deck" in text or "short deck" in text
-    assert "buy box" in text
-    assert text.count(sales.BOOKING_LINK) == 1
-    assert sales.EMAIL_2.count("http") == 0
-    assert sales.EMAIL_3.count("http") == 0
-    assert text.rstrip().endswith("Abby\nAccount Specialist, Anata")
+    assert "You can try it free for 14 days, and plans start at $99 a month after that." in sales.EMAIL_1
+    assert 'reply "intro" or "deck"' in sales.EMAIL_3
+    assert [step["delay"] for step in sales.STEPS[:2]] == [3, 4]
     assert sales.STEPS[1]["subject"] == ""
     assert sales.STEPS[2]["subject"] == ""
+    assert check_cold_steps(list(sales.STEPS)) == []
+    for step in sales.STEPS:
+        assert "http://" not in step["body"] and "https://" not in step["body"]
+        assert "www." not in step["body"] and "www." not in step["subject"]
+    assert sales.sequence_text().rstrip().endswith("Abby\nAccount Specialist, Anata")
+    assert "—" not in sales.sequence_text() and "–" not in sales.sequence_text()
     draft = open("docs/outbound/18-sales-org-sequence.md", encoding="utf-8").read()
-    assert sales.BOOKING_LINK in draft
-    assert "OUTBOUND_SALES_ORG_CAMPAIGN_ID" in draft
+    assert sales.EMAIL_1 in draft
+    assert sales.EMAIL_2 in draft
+    assert sales.EMAIL_3 in draft
+    assert "https://" not in draft and "http://" not in draft and "www." not in draft
     assert "—" not in draft and "–" not in draft

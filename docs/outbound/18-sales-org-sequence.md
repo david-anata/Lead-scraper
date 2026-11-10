@@ -1,31 +1,25 @@
-# Sales-org sequence (draft)
+# Sales-org sequence
 
-Not created in Instantly. David approves this copy before anyone makes the campaign.
+David approved this copy. It is not created in Instantly yet. The segment stays off until `OUTBOUND_SALES_ORG_ENABLED` is true and `OUTBOUND_SALES_ORG_CAMPAIGN_ID` is set.
 
-The segment is off unless `OUTBOUND_SALES_ORG_ENABLED` is true. The campaign id stays empty in `OUTBOUND_SALES_ORG_CAMPAIGN_ID` until that campaign exists. Leads route only there. A person already in another campaign is skipped, not copied.
-
-Same offer as the other v2 recipes: free 14-day trial, then plans from $99 a month. One link, on the first email only. Signed Abby, Account Specialist, Anata. `{{personalization}}` and `{{brandAngle}}` are the current variables. The opener itself still cannot contain a digit.
-
-Structure matches the re-engage v2 sequence: three emails, the first subject is spintax, the next two leave the subject blank so they thread.
+No URLs in any step. The booking link is sent only in a reply after a prospect responds. Delays are 3 days, then 4 days. Emails 2 and 3 have a blank subject so they thread.
 
 ## Email 1
 
-Subject: `{{RANDOM | amazon and the number | quick note | {{companyName}} on Amazon}}`
+Subject: `{{companyName}} growth idea`
 
 Delay before the next email: 3 days.
 
 ```
-{{RANDOM | Hi | Hey}} {{firstName}},
+Hi {{firstName}},
 
 {{personalization}}
 
 {{brandAngle}}
 
-Amazon is one channel a sales team can use to hit the number. We build the strategy and run the ad actions, with an eye on incremental revenue, price, and the buy box. You can try it free for 14 days. After that, plans start at $99 a month.
+At a lot of brands, Amazon sits with sales, and it's one of the quickest places to add revenue against the number. We handle the strategy and the day-to-day ads, and we keep an eye on price and the buy box so growth doesn't come at the cost of margin. You can try it free for 14 days, and plans start at $99 a month after that.
 
-{{RANDOM | Open to a quick intro with David | Want me to send a short strategy deck}}?
-
-https://calendar.app.google/5TwjbbpmKaGAQuBk8
+Open to a quick intro with David, or should I send a short strategy deck for {{companyName}}?
 
 Abby
 Account Specialist, Anata
@@ -38,9 +32,11 @@ Subject: blank, so it threads.
 Delay before the next email: 4 days.
 
 ```
-{{firstName}}, short version: free for 14 days, then plans from $99 a month. The work is incremental revenue, holding price, and protecting the buy box.
+Hi {{firstName}},
 
-{{RANDOM | Worth a quick intro with David | Should I send the short deck}}?
+Quick follow-up. If Amazon is part of how {{companyName}} hits its number, we can usually find revenue that's being left on the table, whether that's listings, ads, or price and buy box issues. It's free to try for 14 days, then plans start at $99 a month.
+
+Would a quick intro with David help, or should I send over a short strategy deck?
 
 Abby
 Account Specialist, Anata
@@ -51,7 +47,9 @@ Account Specialist, Anata
 Subject: blank, so it threads.
 
 ```
-Last one from me. If Amazon is not how {{companyName}} hits the number right now, no worries. If it is, reply and I will set up the intro or send the deck.
+Hi {{firstName}},
+
+I'll leave it here. If Amazon isn't a priority for {{companyName}} right now, no worries at all. If it is, just reply "intro" or "deck" and I'll take care of the rest.
 
 Abby
 Account Specialist, Anata
