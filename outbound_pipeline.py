@@ -255,14 +255,169 @@ def headquarters_verdict(store: dict[str, Any]) -> tuple[str, str]:
     return "", "headquarters country is unknown"
 
 
+# Generic and US suffixes are not evidence of a foreign brand. .co is used
+# by US companies, so it is not treated as Colombia.
+_GENERIC_SUFFIXES = frozenset({
+    "com", "net", "org", "io", "co", "shop", "store", "xyz", "online", "site",
+    "app", "us", "biz", "info",
+})
+_CCTLD_COUNTRIES = {
+    "uk": "GB", "co.uk": "GB", "de": "DE", "ca": "CA", "fr": "FR", "es": "ES",
+    "com.au": "AU", "au": "AU", "it": "IT", "nl": "NL", "ie": "IE",
+    "co.nz": "NZ", "nz": "NZ", "se": "SE", "no": "NO", "dk": "DK", "be": "BE",
+    "ch": "CH", "at": "AT", "pt": "PT", "jp": "JP", "mx": "MX", "br": "BR",
+    "pl": "PL", "fi": "FI", "kr": "KR", "co.jp": "JP", "com.br": "BR",
+    "com.mx": "MX", "co.za": "ZA",
+}
+# Calling codes that are not the North American +1 plan. +1 is US and Canada,
+# so it is not a clear non-US phone.
+_CALLING_CODES = (
+    ("+353", "IE"), ("+351", "PT"), ("+61", "AU"), ("+64", "NZ"), ("+49", "DE"),
+    ("+44", "GB"), ("+43", "AT"), ("+41", "CH"), ("+39", "IT"), ("+34", "ES"),
+    ("+33", "FR"), ("+32", "BE"), ("+31", "NL"), ("+46", "SE"), ("+47", "NO"),
+    ("+45", "DK"), ("+81", "JP"), ("+52", "MX"), ("+55", "BR"), ("+86", "CN"),
+    ("+91", "IN"), ("+82", "KR"), ("+48", "PL"), ("+358", "FI"), ("+27", "ZA"),
+)
+
+
+def _primary_host(store: dict[str, Any]) -> str:
+    import outbound_contacts as contacts
+
+    ranked = _host_name(store.get("cluster_best_ranked"))
+    host = _host_name(store.get("name"))
+    if ranked:
+        return contacts.company_domain(ranked) or ranked
+    if host and not _is_storefront_host(host):
+        return host
+    return contacts.company_domain(host) or host
+
+
+def _cctld_country(host: str) -> str:
+    """Country of a country-code suffix, or '' for .com, .us, .io, and .co."""
+
+    labels = [part for part in host.split(".") if part]
+    if len(labels) < 2:
+        return ""
+    for size in (2, 1):
+        if len(labels) <= size:
+            continue
+        suffix = ".".join(labels[-size:])
+        if suffix in _GENERIC_SUFFIXES:
+            return ""
+        if suffix in _CCTLD_COUNTRIES:
+            return _CCTLD_COUNTRIES[suffix]
+    return ""
+
+
+def _primary_currency(store: dict[str, Any]) -> str:
+    for key in ("currency_code", "currency", "price_currency"):
+        raw = str(store.get(key) or "").strip().upper().replace("US$", "USD")
+        if raw in {"USD", "$"}:
+            return "USD"
+        if raw:
+            return raw
+    return ""
+
+
+def _phone_countries(store: dict[str, Any]) -> list[str]:
+    found: list[str] = []
+    for item in store.get("contact_info") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").strip().lower() != "phone":
+            continue
+        raw = str(item.get("value") or "")
+        digits = re.sub(r"[^\d+]", "", raw)
+        if digits.startswith("00"):
+            digits = "+" + digits[2:]
+        if not digits.startswith("+") or digits.startswith("+1"):
+            continue
+        for prefix, code in _CALLING_CODES:
+            if digits.startswith(prefix):
+                found.append(code)
+                break
+    return found
+
+
+def _locale_country(store: dict[str, Any]) -> str:
+    raw = str(store.get("language_code") or store.get("locale") or "").strip().lower().replace("_", "-")
+    if "-" not in raw:
+        return ""
+    region = raw.rsplit("-", 1)[-1]
+    if len(region) != 2 or not region.isalpha() or region == "us":
+        return ""
+    return "GB" if region == "uk" else region.upper()
+
+
+def _ship_countries(store: dict[str, Any]) -> list[str]:
+    raw = store.get("ships_to_countries") or []
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",") if part.strip()]
+    found: list[str] = []
+    for item in raw:
+        code = _normalize_country(str(item))
+        if code and code not in found:
+            found.append(code)
+    return found
+
+
+def _clear_non_us_reason(store: dict[str, Any]) -> str:
+    """Why an unknown headquarters is still clearly not a US brand.
+
+    A non-USD primary currency is enough. A country-code domain excludes
+    when a non-US phone, a matching locale, or the primary domain's
+    non-US shipping list agrees with it. USD, a bare TLD, a bare phone,
+    or no signals at all stay in.
+    """
+
+    currency = _primary_currency(store)
+    if currency and currency != "USD":
+        return f"primary currency is {currency}"
+    host = _primary_host(store)
+    tld_country = _cctld_country(host)
+    suffix = host.split(".", 1)[-1] if "." in host else host
+    phones = [code for code in _phone_countries(store) if code and code != "US"]
+    if tld_country and tld_country != "US" and phones:
+        return f".{suffix} domain and phone country {phones[0]}"
+    locale = _locale_country(store)
+    if tld_country and locale and tld_country == locale:
+        return f".{suffix} domain and language {locale}"
+    if _record_is_primary(store) and tld_country and tld_country != "US":
+        shipped = _ship_countries(store)
+        if shipped and "US" not in shipped and tld_country in shipped:
+            return f".{suffix} domain and ships to {tld_country}"
+    return ""
+
+
+def country_eligibility(store: dict[str, Any]) -> tuple[bool, str]:
+    """Whether the country gate allows this store, and the log reason.
+
+    A known non-US headquarters is excluded. A missing headquarters falls
+    back to currency, language, phone, the country TLD, and the primary
+    domain's shipping countries. The brand is kept when those are absent
+    or ambiguous. The kept reason is logged by the caller.
+    """
+
+    code, reason = headquarters_verdict(store)
+    if code == "US":
+        return True, ""
+    if code:
+        return False, reason
+    clear = _clear_non_us_reason(store)
+    if clear:
+        return False, f"headquarters country is unknown; {clear}"
+    return True, "headquarters country is unknown; kept"
+
+
 def eligibility_country_by_domain(
     rows: dict[str, dict[str, Any]],
 ) -> dict[str, tuple[str, str]]:
     """One headquarters verdict per company, keyed by the apex domain.
 
-    A storefront row cannot outvote the primary domain. Non-US evidence
-    beats a US storefront flag. Shipping countries and cluster siblings
-    are ignored because headquarters_verdict never reads them.
+    A storefront row cannot outvote the primary domain. A known non-US
+    headquarters beats a US storefront flag. When every row lacks a
+    headquarters, currency, phone, and the country TLD decide. An
+    ambiguous or empty fallback is kept, and the reason says so.
     """
 
     import outbound_contacts as contacts
@@ -278,13 +433,20 @@ def eligibility_country_by_domain(
         grouped.setdefault(key, []).append(row)
     verdicts: dict[str, tuple[str, str]] = {}
     for key, group in grouped.items():
-        found = [headquarters_verdict(row) for row in group]
-        foreign = [item for item in found if item[0] and item[0] != "US"]
+        decisions = [(headquarters_verdict(row), country_eligibility(row)) for row in group]
+        foreign = [hq for hq, _choice in decisions if hq[0] and hq[0] != "US"]
         if foreign:
             verdicts[key] = foreign[0]
             continue
-        domestic = [item for item in found if item[0] == "US"]
-        verdicts[key] = domestic[0] if domestic else ("", "headquarters country is unknown")
+        denied = [choice for _hq, choice in decisions if not choice[0]]
+        if denied:
+            verdicts[key] = ("", denied[0][1])
+            continue
+        domestic = [hq for hq, _choice in decisions if hq[0] == "US"]
+        if domestic:
+            verdicts[key] = domestic[0]
+            continue
+        verdicts[key] = ("", "headquarters country is unknown; kept")
     return verdicts
 
 
@@ -336,22 +498,23 @@ def passes_company_fit(store: dict[str, Any], *, require_niche: bool = True) -> 
     Baseline pulls, signal pulls, campaign sourcing, and the sales-org
     segment all use this gate. The country that counts is the headquarters
     on the primary domain. A US storefront host, a shipping country, or a
-    cluster sibling does not make a foreign brand eligible. An unknown
-    headquarters is excluded and the reason is logged. A missing or zero
+    cluster sibling does not make a foreign brand eligible. A known non-US
+    headquarters is excluded. A missing headquarters is kept unless the
+    store currency is not USD, or a country-code domain and a non-US phone
+    agree. The keep or the exclusion is logged. A missing or zero
     sales figure is not revenue data. Distributors, multi-brand resellers,
     services, events, apps, and fitness programs are out. The niche list
     is the physical product test. The sales-org segment passes
     require_niche=False because any US brand qualifies there.
     """
 
-    country, reason = headquarters_verdict(store)
-    if country not in ICP_ALLOWED_COUNTRIES:
-        logger.info(
-            "[outbound] excluding %s: %s",
-            store.get("name") or store.get("merchant_name") or "unknown domain",
-            reason,
-        )
+    allowed, reason = country_eligibility(store)
+    label = store.get("name") or store.get("merchant_name") or "unknown domain"
+    if not allowed:
+        logger.info("[outbound] excluding %s: %s", label, reason)
         return False
+    if reason:
+        logger.info("[outbound] %s: %s", label, reason)
     # A brands page means the site sells other companies' brands. That is a
     # retailer, not a brand we want in these campaigns.
     if str(store.get("brands_page") or "").strip():
@@ -853,7 +1016,7 @@ _STORELEADS_FIELDS = ",".join((
     # cluster_domains are requested so they are on the record, and they
     # are never used to decide that a brand is US.
     "location", "administrative_area_level_1", "cluster_best_ranked",
-    "cluster_domains", "ships_to_countries",
+    "cluster_domains", "ships_to_countries", "currency_code", "language_code",
 ))
 STORELEADS_BULK_URL = f"{STORELEADS_BASE_URL}{STORELEADS_DOMAIN_PATH}/bulk"
 

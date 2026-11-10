@@ -88,7 +88,7 @@ def test_company_fit_rejects_non_us_and_retailers():
     assert not pipeline.passes_company_fit({**base, "country_code": "CA"})
     assert not pipeline.passes_company_fit({**base, "country_code": "GB"})
     assert not pipeline.passes_company_fit({**base, "country_code": "EE"})
-    assert not pipeline.passes_company_fit({**base, "country_code": ""})
+    assert pipeline.passes_company_fit({**base, "country_code": ""})
     assert not pipeline.passes_company_fit({**base, "brands_page": "https://brand.example/pages/brands"})
 
 
@@ -438,8 +438,8 @@ def test_us_storefront_does_not_make_a_foreign_headquarters_eligible(caplog):
     code, reason = pipeline.headquarters_verdict(flag_only)
     assert code == ""
     assert reason == "headquarters country is unknown"
-    assert not pipeline.passes_company_fit(flag_only)
-    assert "headquarters country is unknown" in caplog.text
+    assert pipeline.passes_company_fit(flag_only)
+    assert "headquarters country is unknown; kept" in caplog.text
 
     rows = {store["name"]: store for store in leaked}
     verdicts = pipeline.eligibility_country_by_domain(rows)
@@ -469,7 +469,55 @@ def test_us_storefront_does_not_make_a_foreign_headquarters_eligible(caplog):
     assert pipeline.store_matches_icp(domestic)
 
 
-def test_non_us_profile_is_not_required_for_the_flag_off_opener():
+def _unknown_hq(**extra: object) -> dict:
+    store = {
+        "name": "brand.com",
+        "merchant_name": "Brand",
+        "platform": "shopify",
+        "country_code": "",
+        "estimated_sales_yearly": 5_000_000_00,
+        "categories": "Beauty",
+        "tags": "",
+        "contact_info": [{"type": "email", "value": "hi@brand.com"}],
+    }
+    store.update(extra)
+    return store
+
+
+def test_missing_headquarters_is_kept_unless_the_fallback_is_clearly_foreign(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    usd = _unknown_hq(currency_code="USD")
+    assert pipeline.headquarters_verdict(usd)[0] == ""
+    assert pipeline.passes_company_fit(usd)
+    assert pipeline.passes_company_fit(usd, require_niche=False)
+    assert "headquarters country is unknown; kept" in caplog.text
+
+    caplog.clear()
+    bare = _unknown_hq()
+    assert pipeline.passes_company_fit(bare)
+    assert pipeline.store_matches_icp(bare)
+    assert "headquarters country is unknown; kept" in caplog.text
+
+    caplog.clear()
+    euro = _unknown_hq(name="brand.de", currency_code="EUR", price_currency="EUR")
+    sterling = _unknown_hq(
+        name="brand.co.uk", currency_code="GBP",
+        contact_info=[{"type": "phone", "value": "+44 20 7946 0958"}],
+    )
+    assert not pipeline.passes_company_fit(euro)
+    assert not pipeline.passes_company_fit(euro, require_niche=False)
+    assert not pipeline.store_matches_icp(euro)
+    assert not pipeline.passes_company_fit(sterling)
+    assert "primary currency is EUR" in caplog.text
+    assert "primary currency is GBP" in caplog.text
+    phone_only = _unknown_hq(
+        name="shop.co.uk", country_code="", currency_code="",
+        contact_info=[{"type": "phone", "value": "+44 20 7946 0958"}],
+    )
+    assert not pipeline.passes_company_fit(phone_only)
+    assert "phone country GB" in caplog.text
     store = {
         "name": "coziya-outdoor.com", "merchant_name": "Coziya",
         "country_code": "EE", "categories": "Home",
