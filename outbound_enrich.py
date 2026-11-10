@@ -205,6 +205,7 @@ class EnrichReport:
     skipped_already_enriched: int = 0
     skipped_in_instantly: int = 0
     skipped_check_failed: int = 0
+    skipped_not_us: int = 0
     stopped_reason: str = ""
     pushed: int = 0
     suppressed: int = 0
@@ -229,6 +230,7 @@ class EnrichReport:
             "skipped_already_enriched": self.skipped_already_enriched,
             "skipped_in_instantly": self.skipped_in_instantly,
             "skipped_check_failed": self.skipped_check_failed,
+            "skipped_not_us": self.skipped_not_us,
             "stopped_reason": self.stopped_reason, "pushed": self.pushed,
             "suppressed": self.suppressed, "queued": self.queued,
             "push_note": self.push_note, "samples": self.samples[:10],
@@ -490,6 +492,16 @@ def run_enrichment(
                 except Exception:  # noqa: BLE001
                     logger.exception("[outbound-enrich] could not mark %s", domain)
                 continue
+        country = str(lead.get("country") or lead.get("country_code") or "").strip().upper()
+        if country == "UK":
+            country = "GB"
+        if country and country != "US":
+            report.skipped_not_us += 1
+            try:
+                _record_domain(engine, domain, "not_us", 0, 0, "StoreLeads country is not US.")
+            except Exception:  # noqa: BLE001
+                logger.exception("[outbound-enrich] could not mark %s", domain)
+            continue
         report.companies_tried += 1
         res = find(domain, api_key=api_key, max_contacts=max_contacts)
         report.credits_used += res.credits_used
@@ -498,8 +510,18 @@ def run_enrichment(
         try:
             _record_domain(engine, domain, status, len(fresh), res.credits_used, res.reason)
             for c in fresh:
-                line, src = write(lead, {"title": c.title})
-                angle, angle_src = write_angle(lead, {"title": c.title})
+                opener_lead = lead
+                if _openers.rich_personalization_enabled():
+                    try:
+                        from sales_support_agent.services.outbound_memory import load_store_profiles
+
+                        profile = load_store_profiles(engine, [domain]).get(domain) or {}
+                    except Exception:  # noqa: BLE001
+                        profile = {}
+                    if profile:
+                        opener_lead = {**lead, "store_profile": profile, "rich_personalization": True}
+                line, src = write(opener_lead, {"title": c.title})
+                angle, angle_src = write_angle(opener_lead, {"title": c.title})
                 _record_person(engine, c, line, src, lead, brand_angle=angle)
                 emails_seen.add(c.email)
                 report.contacts_found += 1
@@ -706,10 +728,30 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         allowed, blocked = suppression.partition(engine, pending)
         left = departed_emails(engine)
         still: list[dict[str, Any]] = []
+        domains = [str(person.get("domain") or "") for person in allowed]
+        try:
+            from sales_support_agent.services.outbound_memory import countries_for
+
+            countries = countries_for(engine, domains)
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-enrich] country lookup failed")
+            countries = {}
         for person in allowed:
             email = str(person.get("email") or "").strip().lower()
-            if email and _contacts.is_role_mailbox(email):
+            domain = str(person.get("domain") or "").strip().lower()
+            quality = _contacts.lead_quality_reason(
+                email=email,
+                first_name=str(person.get("first_name") or ""),
+                title=str(person.get("title") or ""),
+                require_title=True,
+            )
+            country = countries.get(domain, "")
+            if quality == "role mailbox":
                 blocked.append({**person, "suppressed_match": f"role:{email}"})
+            elif quality:
+                blocked.append({**person, "suppressed_match": quality})
+            elif country and country != "US":
+                blocked.append({**person, "suppressed_match": f"country:{country}"})
             elif email and email in left:
                 blocked.append({**person, "suppressed_match": f"departed:{email}"})
             else:

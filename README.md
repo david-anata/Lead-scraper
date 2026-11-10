@@ -33,6 +33,8 @@ Optional:
 
 - `INSTANTLY_CAMPAIGN_ID`: included in the generated Instantly CSV rows as the campaign ID field
 - `INSTANTLY_API_KEY`: when set with `INSTANTLY_CAMPAIGN_ID`, the app also pushes accepted leads directly into the Instantly campaign API
+- `OUTBOUND_REENGAGE_TOPUP_ENABLED`: Monday re-engage top-up. Off unless set to `true`. A live run moves an existing Instantly lead into abby_reengage instead of creating a second record.
+- `OUTBOUND_RICH_PERSONALIZATION_ENABLED`: richer StoreLeads opener lines. Off unless set to `true`. Leave it off until the sample in `docs/outbound/personalization_sample.md` is approved. Apply `sales_support_agent/migrations/20261110_outbound_store_profiles.sql` before turning it on.
 - `INSTANTLY_AI`: supported as an alias for `INSTANTLY_API_KEY` if your existing deployment already uses that env var name
 - `HEYREACH_API_KEY`: when set with `HEYREACH_CAMPAIGN_ID`, the app also pushes accepted leads with valid LinkedIn URLs directly into HeyReach
 - `HEYREACH_CAMPAIGN_ID`: HeyReach campaign that receives accepted leads; the campaign should be launched once in HeyReach before API adds are used

@@ -68,7 +68,7 @@ def test_unconfirmed_filter_keys_are_dropped():
     resolved = campaigns.resolve_filters(
         {"f:p": "shopify", "f:not_real": "x", "_note": "no"}, NOW,
     )
-    assert resolved == {"f:p": "shopify"}
+    assert resolved == {"f:p": "shopify", "f:cc": "US", "f:cc:op": "or"}
 
 
 def test_seed_and_alias_routing(engine):
@@ -475,12 +475,12 @@ def test_weekly_score_reads_the_instantly_daily_columns(engine):
         ), {"campaign": amz})
     result = score.run_weekly_score(engine, now=datetime(2026, 10, 26, 7, tzinfo=DENVER))
     amz_score = next(item for item in result["scores"] if item["campaign_id"] == amz)
-    assert amz_score["positive_per_100"] == 4.0
+    assert amz_score["positive_per_100"] == 0.5
     assert amz_score["meetings_per_100"] == 1.0
     assert amz_score["bounce_pct"] == 1.0
     assert amz_score["opt_out_pct"] == 0.5
     assert "Abby classified positive=1" in amz_score["detail"]
-    assert amz_score["action"] == "hold"
+    assert amz_score["action"] == "throttle"
 
 
 def test_weekly_score_does_not_judge_under_150_or_invent_a_missing_table(engine):

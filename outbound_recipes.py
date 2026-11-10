@@ -225,6 +225,10 @@ class Recipe:
         sets = []
         for extra in extras:
             merged = {**base_filters(settings), **(extra or {})}
+            # An expanded query may set f:cc to None to drop a filter. Country
+            # is not one of those. US, with or, is required on every recipe.
+            merged["f:cc"] = "US"
+            merged["f:cc:op"] = "or"
             sets.append({
                 key: value for key, value in merged.items()
                 if value is not None and not str(key).startswith("_")

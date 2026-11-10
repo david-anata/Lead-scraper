@@ -679,10 +679,109 @@ def load_delivery_history(engine, limit: int = 8) -> list[dict[str, Any]]:
         return []
 
 
+_PROFILE_TABLE = "outbound_store_profiles"
+_CREATE_PROFILE_SQL = f"""
+CREATE TABLE IF NOT EXISTS {_PROFILE_TABLE} (
+    domain TEXT PRIMARY KEY,
+    profile TEXT NOT NULL DEFAULT '{{}}',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+
+def ensure_profile_table(engine) -> None:
+    """Best-effort. Vercel Postgres uses the SQL migration instead."""
+
+    if engine is None:
+        return
+    if "postgres" in str(getattr(engine, "url", "")).lower():
+        return
+    from sales_support_agent.services.outbound_ddl import create_table_if_absent
+
+    create_table_if_absent(engine, _CREATE_PROFILE_SQL, _PROFILE_TABLE)
+
+
+def save_store_profiles(engine, leads: Iterable[dict[str, Any]]) -> int:
+    """Store compact StoreLeads facts. Failure leaves the lead rows in place."""
+
+    rows = []
+    for lead in leads:
+        domain = _norm(lead.get("domain"))
+        profile = lead.get("store_profile")
+        if not domain or not isinstance(profile, dict) or not profile:
+            continue
+        rows.append({"domain": domain, "profile": json.dumps(profile, sort_keys=True)})
+    if not rows or engine is None:
+        return 0
+    try:
+        ensure_profile_table(engine)
+        with engine.begin() as conn:
+            conn.execute(text(
+                f"INSERT INTO {_PROFILE_TABLE} (domain, profile) VALUES (:domain, :profile) "
+                "ON CONFLICT (domain) DO UPDATE SET profile = excluded.profile"
+            ), rows)
+        return len(rows)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] store profiles were not saved")
+        return 0
+
+
+def countries_for(engine, domains: Iterable[str]) -> dict[str, str]:
+    """Stored StoreLeads country by domain. Missing table or column yields {}."""
+
+    wanted = [_norm(item) for item in domains if _norm(item)]
+    if not wanted or engine is None:
+        return {}
+    try:
+        placeholders = ",".join(f":d{i}" for i in range(len(wanted)))
+        params = {f"d{i}": domain for i, domain in enumerate(wanted)}
+        with engine.connect() as conn:
+            found = conn.execute(text(
+                f"SELECT domain, country FROM {_TABLE} WHERE domain IN ({placeholders})"
+            ), params).fetchall()
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[str, str] = {}
+    for domain, country in found:
+        code = str(country or "").strip().upper()
+        if code == "UK":
+            code = "GB"
+        if code:
+            out[_norm(domain)] = code
+    return out
+
+
+def load_store_profiles(engine, domains: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """Domain to profile. Empty when the table is missing."""
+
+    wanted = [_norm(item) for item in domains if _norm(item)]
+    if not wanted or engine is None:
+        return {}
+    try:
+        placeholders = ",".join(f":d{i}" for i in range(len(wanted)))
+        params = {f"d{i}": domain for i, domain in enumerate(wanted)}
+        with engine.connect() as conn:
+            found = conn.execute(text(
+                f"SELECT domain, profile FROM {_PROFILE_TABLE} WHERE domain IN ({placeholders})"
+            ), params).fetchall()
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for domain, raw in found:
+        try:
+            parsed = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            parsed = {}
+        if isinstance(parsed, dict):
+            out[_norm(domain)] = parsed
+    return out
+
+
 def ensure_table(engine, *, force: bool = False) -> None:
     if "postgres" in str(getattr(engine, "url", "")).lower() and not force:
         return
     create_table_if_absent(engine, _CREATE_SQL, _TABLE)
+    ensure_profile_table(engine)
     for stmt in _ALTERS:
         try:
             with engine.begin() as conn:
@@ -916,12 +1015,14 @@ def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_
 
     De-dupes by domain within the batch; existing domains are left as-is.
     Best-effort: returns 0 on error rather than raising."""
-    payload = _lead_payload(leads, source=source, config_version=config_version)
+    lead_list = list(leads)
+    payload = _lead_payload(lead_list, source=source, config_version=config_version)
     if not payload:
         return 0
     try:
         ensure_table(engine)
         _write_leads(engine, payload)
+        save_store_profiles(engine, lead_list)
         return len(payload)
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-memory] record_leads failed; %s leads not saved", len(payload))

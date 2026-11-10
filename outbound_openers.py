@@ -215,10 +215,224 @@ class LeadFacts:
     category: str = ""
     signal: str = ""
     extra_anchors: tuple[str, ...] = ()
+    rich_phrases: tuple[str, ...] = ()
 
     @property
     def solid(self) -> bool:
-        return bool(self.amazon_product or self.product or self.category or self.signal)
+        return bool(self.amazon_product or self.product or self.category or self.signal or self.rich_phrases)
+
+
+RICH_PERSONALIZATION_FLAG = "OUTBOUND_RICH_PERSONALIZATION_ENABLED"
+_MONTHS = (
+    "", "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+_SMALL_COUNTS = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+    "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+)
+
+
+def rich_personalization_enabled(lead: Optional[dict[str, Any]] = None) -> bool:
+    """New opener facts stay off until this is turned on.
+
+    A lead may force the flag for a before and after sample. Production
+    leads do not set that key, so the environment variable decides.
+    """
+
+    if isinstance(lead, dict) and "rich_personalization" in lead:
+        return bool(lead.get("rich_personalization"))
+    return (os.getenv(RICH_PERSONALIZATION_FLAG) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _count_words(value: Any) -> str:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if number < 0 or number > 40:
+        return ""
+    if number <= 20:
+        return _SMALL_COUNTS[number]
+    tens, ones = divmod(number, 10)
+    ten_name = {2: "twenty", 3: "thirty", 4: "forty"}[tens]
+    if ones == 0:
+        return ten_name
+    return f"{ten_name} {_SMALL_COUNTS[ones]}"
+
+
+def _month_name(value: Any) -> str:
+    match = re.search(r"(\d{4})-(\d{2})", str(value or ""))
+    if not match:
+        return ""
+    month = int(match.group(2))
+    if 1 <= month <= 12:
+        return _MONTHS[month]
+    return ""
+
+
+def _profile_of(lead: dict[str, Any]) -> dict[str, Any]:
+    raw = lead.get("store_profile")
+    if isinstance(raw, str):
+        try:
+            import json
+            raw = json.loads(raw)
+        except ValueError:
+            raw = {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _no_digits(phrase: str) -> str:
+    text = clean(phrase).strip(" .")
+    if not text or re.search(r"\d", text):
+        return ""
+    return text
+
+
+def store_fact_phrases(lead: dict[str, Any]) -> list[str]:
+    """Factual clauses from a StoreLeads profile. No digits, no invented claims."""
+
+    profile = _profile_of(lead)
+    if not profile:
+        return []
+    phrases: list[str] = []
+    product = profile.get("most_recently_published_product")
+    if not isinstance(product, dict):
+        product = {}
+    title = _fact_phrase(product.get("title"))
+    month = _month_name(product.get("published_at") or profile.get("max_product_published_at"))
+    if title and month:
+        phrases.append(_no_digits(f"added {title} in {month}"))
+    elif title:
+        phrases.append(_no_digits(f"added {title}"))
+    elif month:
+        phrases.append(f"added a new product in {month}")
+
+    channels = [str(item).strip().lower() for item in (profile.get("sales_channels") or [])]
+    absent = bool(lead.get("amazon_absent"))
+    if "amazon" in channels and not absent:
+        phrases.append("sells on Amazon")
+    recipe = str(lead.get("recipe") or "").strip()
+    if recipe == "amz_off" and "amazon" not in channels:
+        phrases.append("does not sell on Amazon")
+    elif recipe == "amz_on" and "sells on Amazon" not in phrases and not absent:
+        phrases.append("sells on Amazon")
+
+    if str(profile.get("retailer_page") or "").strip() or str(profile.get("store_locator_page") or "").strip():
+        phrases.append("is sold in retail stores")
+
+    labels = " ".join(
+        str(item) for item in ((profile.get("apps") or []) + (profile.get("technologies") or []))
+    ).lower()
+    compact = labels.replace(".", "")
+    if "klaviyo" in compact:
+        phrases.append("uses Klaviyo")
+    for app_name, token in (
+        ("Yotpo", "yotpo"), ("Okendo", "okendo"), ("Judge.me", "judgeme"),
+        ("Stamped", "stamped"), ("Loox", "loox"),
+    ):
+        if token in compact:
+            phrases.append(f"uses {app_name}")
+            break
+    if "facebook pixel" in labels or "meta pixel" in labels or "facebook ads" in labels:
+        phrases.append("runs ads on Meta")
+    if "google ads" in labels or "google adwords" in labels:
+        phrases.append("runs ads on Google")
+    if "tiktok pixel" in labels or "tiktok ads" in labels:
+        phrases.append("runs ads on TikTok")
+
+    social_names = {
+        "tiktok": "TikTok", "youtube": "YouTube", "instagram": "Instagram",
+        "pinterest": "Pinterest", "twitter": "Twitter",
+    }
+    for item in profile.get("contact_info") or []:
+        if not isinstance(item, dict):
+            continue
+        label = social_names.get(str(item.get("type") or "").lower())
+        try:
+            delta = float(item.get("followers_30d") or 0)
+        except (TypeError, ValueError):
+            delta = 0
+        if label and delta > 0:
+            phrases.append(f"is growing on {label}")
+
+    platform_names = {
+        "woocommerce": "WooCommerce", "magento": "Magento",
+        "bigcommerce": "BigCommerce", "shopify": "Shopify",
+    }
+    raw_platform = _no_digits(str(profile.get("last_platform") or ""))
+    previous = platform_names.get(raw_platform.lower(), raw_platform)
+    if previous:
+        moved = _month_name(profile.get("last_platform_change_at"))
+        if moved:
+            phrases.append(f"moved from {previous} in {moved}")
+        else:
+            phrases.append(f"previously ran on {previous}")
+
+    plan = str(profile.get("plan") or "")
+    if "plus" in plan.lower():
+        phrases.append("is on Shopify Plus")
+    elif recipe == "plan_upgrade":
+        phrases.append("recently upgraded their store plan")
+    if recipe in {"replatform", "replatformed"}:
+        phrases.append("recently moved their store to a new platform")
+
+    counted = _count_words(profile.get("product_count"))
+    if counted and counted != "zero":
+        phrases.append(f"sells {counted} products")
+
+    trust = profile.get("trustpilot") if isinstance(profile.get("trustpilot"), dict) else {}
+    try:
+        reviews = int((trust or {}).get("review_count") or 0)
+    except (TypeError, ValueError):
+        reviews = 0
+    if reviews > 0:
+        phrases.append("has Trustpilot reviews")
+
+    try:
+        photos = int(profile.get("product_images_created_90") or 0)
+    except (TypeError, ValueError):
+        photos = 0
+    if photos > 0:
+        phrases.append("added new product photos recently")
+
+    city = _no_digits(str(profile.get("city") or ""))
+    if city and len(city.split()) <= 3:
+        phrases.append(f"is based in {city}")
+
+    description = _fact_phrase(profile.get("description"))
+    if description and description.lower() not in str(lead.get("brand") or "").lower():
+        phrases.append(f"sells {description}")
+
+    ordered: list[str] = []
+    for phrase in phrases:
+        if phrase and phrase not in ordered:
+            ordered.append(phrase)
+    return ordered
+
+
+def _compose(brand: str, phrases: list[str]) -> str:
+    if len(phrases) == 1:
+        return f"{brand} {phrases[0]}."
+    if len(phrases) == 2:
+        return f"{brand} {phrases[0]} and {phrases[1]}."
+    return f"{brand} {', '.join(phrases[:-1])}, and {phrases[-1]}."
+
+
+def rich_sentence(brand: str, phrases: list[str], *, allow_amazon: bool, max_words: int = MAX_WORDS) -> str:
+    """The longest factual sentence that still passes the opener rules."""
+
+    picked: list[str] = []
+    for phrase in phrases:
+        trial = picked + [phrase]
+        if _usable(_compose(brand, trial), allow_amazon=allow_amazon, max_words=max_words):
+            picked = trial
+        if len(picked) >= 3:
+            break
+    if not picked:
+        return ""
+    return _usable(_compose(brand, picked), allow_amazon=allow_amazon, max_words=max_words)
 
 
 def collect_facts(lead: dict[str, Any]) -> LeadFacts:
@@ -240,7 +454,10 @@ def collect_facts(lead: dict[str, Any]) -> LeadFacts:
     signal = str(lead.get("recipe") or "").strip()
     if signal not in RECIPE_FACTS:
         signal = ""
-    return LeadFacts(brand, amazon_product, product, category, signal, extras)
+    rich: tuple[str, ...] = ()
+    if rich_personalization_enabled(lead):
+        rich = tuple(store_fact_phrases(lead))
+    return LeadFacts(brand, amazon_product, product, category, signal, extras, rich)
 
 
 def _anchors(facts: LeadFacts) -> list[str]:
@@ -248,6 +465,7 @@ def _anchors(facts: LeadFacts) -> list[str]:
     if facts.signal:
         found.append(RECIPE_FACTS[facts.signal])
         found.append(_ANGLE_AFTER[facts.signal])
+    found.extend(facts.rich_phrases)
     return [item for item in found if item]
 
 
@@ -270,6 +488,11 @@ def opener_line(facts: LeadFacts) -> str:
     brand = _named(facts.brand)
     if facts.amazon_product:
         line = _usable(f"{brand} lists {facts.amazon_product} on Amazon.", allow_amazon=True)
+        if line:
+            return line
+    if facts.rich_phrases:
+        allow_amazon = any("amazon" in phrase.lower() for phrase in facts.rich_phrases)
+        line = rich_sentence(brand, list(facts.rich_phrases), allow_amazon=allow_amazon)
         if line:
             return line
     if facts.product:
@@ -295,6 +518,14 @@ def brand_angle_line(facts: LeadFacts) -> str:
         line = _usable(
             f"Anata helps {brand} grow {facts.amazon_product} on Amazon.",
             allow_amazon=True, max_words=ANGLE_MAX_WORDS,
+        )
+        if line:
+            return line
+    if facts.rich_phrases:
+        allow_amazon = any("amazon" in phrase.lower() for phrase in facts.rich_phrases)
+        line = _usable(
+            f"Anata helps {brand} grow. The brand {facts.rich_phrases[0]}.",
+            allow_amazon=allow_amazon, max_words=ANGLE_MAX_WORDS,
         )
         if line:
             return line
@@ -358,6 +589,8 @@ def _build_prompt(facts: LeadFacts, *, closing: str) -> str:
         lines.append(f"Recent signal: {RECIPE_FACTS[facts.signal]}")
     if facts.category:
         lines.append(f"What they sell: {facts.category}")
+    for phrase in facts.rich_phrases:
+        lines.append(f"Fact: {phrase}")
     return "\n".join(lines) + "\n\n" + closing
 
 
@@ -373,7 +606,12 @@ def _call_anthropic(prompt: str, api_key: str, *, system: str = _SYSTEM) -> str:
 
 
 def _domain_key(lead: dict[str, Any]) -> str:
-    return str(lead.get("domain") or "").strip().lower()
+    domain = str(lead.get("domain") or "").strip().lower()
+    if not domain:
+        return ""
+    if rich_personalization_enabled(lead):
+        return domain + "|rich"
+    return domain
 
 
 def _resolve_llm(

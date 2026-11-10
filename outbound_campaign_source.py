@@ -125,6 +125,7 @@ def _lead_from(store: dict[str, Any], recipe_key: str) -> Optional[dict[str, Any
         "categories": store.get("categories") or "",
         "niche": pipeline.store_niche(store),
         "estimated_sales_yearly_cents": yearly if isinstance(yearly, (int, float)) else 0,
+        "store_profile": pipeline.store_profile(store),
     }
 
 

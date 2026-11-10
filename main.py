@@ -2692,10 +2692,11 @@ def collect_domains(
 # ========= APOLLO =========
 def is_personal_email(email: str) -> bool:
     normalized_email = email.strip().lower()
-    if not normalized_email:
+    if not normalized_email or "@" not in normalized_email:
         return False
+    import outbound_contacts
 
-    return not any(normalized_email.startswith(prefix) for prefix in GENERIC_EMAIL_PREFIXES)
+    return not outbound_contacts.is_role_mailbox(normalized_email)
 
 
 def extract_contact_email(contact: dict[str, Any]) -> str:
@@ -3050,16 +3051,22 @@ def build_csv_rows(
                 continue
             if not email_matches_store(email, domain):
                 continue
+            import outbound_contacts
+
+            first_name, last_name = split_full_name(full_name)
+            role = clean_role_name(contact.get("title", "") or "")
+            if outbound_contacts.lead_quality_reason(
+                email=email, first_name=first_name, title=role, require_title=True,
+            ):
+                continue
             if email in seen_emails_global:
                 continue
 
             seen_emails_global.add(email)
             accepted_for_domain += 1
 
-            first_name, last_name = split_full_name(full_name)
             linkedin_url = contact.get("linkedin_url", "") or ""
             store_title = clean_company_name(store.get("title", "") or "")
-            role = clean_role_name(contact.get("title", "") or "")
             department = derive_department(role)
             platform = clean_platform_name(store.get("platform", "") or "")
             location = build_location_name(
