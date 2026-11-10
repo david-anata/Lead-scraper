@@ -1,9 +1,9 @@
 """Read money the way an operator types it.
 
 The rate-plan form asked for cents. On 2026-07-31 David typed `4` into a field
-labelled "Internal unit price (cents)" for a room that rents at $175 an hour.
-Saving that would have priced The Arena at four cents. Nobody types cents; the
-form should not have asked for them.
+labelled "Internal unit price (cents)" for a room. Saving that would have
+priced the room at four cents. Nobody types cents; the form should not have
+asked for them.
 
 These helpers accept what a person actually writes, including a dollar sign,
 thousands separators and stray spaces, and refuse anything ambiguous rather
@@ -16,7 +16,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 
 # Above this, the operator almost certainly pasted cents into a dollars field
-# or fat-fingered a zero. The Arena is $175/hour; nothing here is $1m a unit.
+# or fat-fingered a zero. Nothing in this building is $1m a unit.
 MAX_REASONABLE_DOLLARS = Decimal("1000000")
 
 

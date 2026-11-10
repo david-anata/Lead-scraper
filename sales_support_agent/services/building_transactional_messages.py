@@ -30,7 +30,13 @@ TEMPLATES: dict[str, dict[str, str | int]] = {
     "quote_sent": {
         "version": 1,
         "subject": "Your Anata Building event quote",
-        "lead": "Your event quote is ready for review. Your date is not booked yet.",
+        "lead": (
+            "Your event quote is ready for review. Your date is not booked yet. "
+            "50% of the quoted total books the date and the rest is due before "
+            "the event. There is no security deposit and no upfront cleaning fee. "
+            "If you cancel within 7 days of paying, that payment is refunded in "
+            "full. After that, the paid 50% is forfeited."
+        ),
     },
     "agreement_signed": {
         "version": 1,

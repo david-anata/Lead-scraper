@@ -7,19 +7,27 @@ CSRF-protected action requiring `building.pricing.manage` and the typed phrase
 
 ## Draft baseline
 
-- 6,000 square feet and maximum public capacity 200
-- $175 per hour
-- six-hour minimum ($1,050)
-- required $250 cleaning fee
-- 50% deposit holds the date
-- balance due 15 days before the event
-- setup and teardown are add-ons with prices requiring operator input
-- overtime is hourly, but remains non-calculable until a numeric rate is
-  explicitly approved
-- tax treatment remains `review_required`
+Updated November 10, 2026:
 
-The draft does not supply cancellation language and therefore cannot pass the
-existing approval gate until that policy is reviewed.
+- 6,000 square feet and maximum public capacity 200
+- Half day (up to 6 hours) $1,500
+- Full day $2,000
+- Full day plus a half day $3,000
+- Two full days $3,500
+- No hourly rate
+- No security deposit and no upfront cleaning fee
+- 50% books the date; the remaining 50% is due before the event
+- Full refund within 7 days of payment; after that the paid 50% is forfeited
+- Weekday business events are not auto-quoted
+- Parties are weekends only: Saturday 8:00 AM to midnight, Sunday 8:00 AM to
+  10:00 PM, except New Year's Eve
+- Booked time includes setup and teardown
+- Extensions beyond the booked window are quoted separately
+- Utah tax is 7.45% and is not included in the day rates
+
+The draft includes the November 10, 2026 cancellation language: a full refund
+within 7 days of payment, and forfeiture of the paid 50% after that. Approval
+still requires the saved launch decisions and any blocking provider conflicts.
 
 ## Evidence and conflicts
 

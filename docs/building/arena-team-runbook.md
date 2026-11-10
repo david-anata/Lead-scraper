@@ -108,8 +108,10 @@ the date is real.
 Confirm the alcohol plan, security, and running schedule **14 days out**. After
 that deadline, changes to any of those need written approval.
 
-Balance and the $500 security deposit are due **seven days out**. No access
-until everything has cleared.
+There is no security deposit and no upfront cleaning fee. 50% books the date.
+The remaining 50% is due before the event. No setup access until that second
+half has cleared. A cancellation within 7 days of payment is refunded in full.
+After that, the paid 50% is forfeited.
 
 ---
 

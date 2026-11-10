@@ -21,6 +21,7 @@ try:
         ARENA_CANCELLATION_POLICY,
         ensure_arena_commercial_draft,
         reconcile_approved_arena_tax,
+        refresh_canonical_arena_event_policy,
     )
     from sales_support_agent.services.building_launch_readiness import (
         launch_decision_id,
@@ -85,25 +86,35 @@ class ArenaRatePlanSeedTests(unittest.TestCase):
             self.assertEqual(len(plans), 1)
             row = plans[0]
             self.assertEqual(row.status, "draft")
-            self.assertEqual(row.unit_amount_cents, 17_500)
-            self.assertEqual(row.minimum_units, 6)
+            self.assertEqual(row.booking_unit, "day_portion")
+            self.assertEqual(row.unit_amount_cents, 0)
+            self.assertEqual(row.minimum_units, 1)
             self.assertEqual(row.deposit_percent_bps, 5_000)
             self.assertEqual(row.cancellation_policy, ARENA_CANCELLATION_POLICY)
+            self.assertIsNone(
+                row.commercial_terms_json["balance_due_days_before_event"]
+            )
             self.assertEqual(
-                row.commercial_terms_json["balance_due_days_before_event"], 7
+                row.commercial_terms_json["half_day_amount_cents"], 150_000
+            )
+            self.assertEqual(
+                row.commercial_terms_json["full_day_amount_cents"], 200_000
+            )
+            self.assertEqual(
+                row.commercial_terms_json["full_plus_half_amount_cents"], 300_000
+            )
+            self.assertEqual(
+                row.commercial_terms_json["two_full_days_amount_cents"], 350_000
             )
             self.assertEqual(
                 row.commercial_terms_json["security_deposit"]["amount_cents"],
-                50_000,
+                0,
             )
-            self.assertEqual(
-                row.commercial_terms_json["overtime"]["amount_cents"],
-                17_500,
-            )
+            self.assertIsNone(row.commercial_terms_json["overtime"]["amount_cents"])
             self.assertEqual(row.tax_status, "taxable")
             self.assertEqual(row.tax_rate_bps, 745)
             self.assertIn("transaction date", row.tax_note)
-            self.assertIn("Refundable security deposits are not taxable", row.tax_note)
+            self.assertIn("no security deposit", row.tax_note.lower())
             self.assertTrue(
                 all(
                     item["status"] == "provider_remediation_required"
@@ -118,6 +129,106 @@ class ArenaRatePlanSeedTests(unittest.TestCase):
             ).scalar_one()
             self.assertFalse(audit.after_json["provider_write"])
             self.assertFalse(audit.after_json["published"])
+
+    def test_refresh_updates_the_named_plan_and_leaves_other_plans(self) -> None:
+        self._catalog()
+        with self.factory() as session:
+            session.add(
+                BuildingRatePlan(
+                    id="arena-events-owner-commercial-v1",
+                    offering_id="arena-events",
+                    version=1,
+                    name="Arena owner-reconciled commercial draft",
+                    status="approved",
+                    currency="USD",
+                    unit_amount_cents=17_500,
+                    public_price_display="$175/hour · 6-hour minimum",
+                    booking_unit="hour",
+                    minimum_units=6,
+                    deposit_type="percent",
+                    deposit_percent_bps=5_000,
+                    cancellation_policy="All payments are non-refundable.",
+                    included_json=["Two hours of self-service setup access"],
+                    addons_json=[{
+                        "id": "cleaning",
+                        "name": "Required routine cleaning",
+                        "pricing_mode": "flat",
+                        "amount_cents": 25_000,
+                    }],
+                    commercial_terms_json={
+                        "security_deposit": {"amount_cents": 50_000},
+                    },
+                    source_evidence_json=[],
+                    conflicts_json=[{
+                        "id": "tidycal-deposit",
+                        "status": "provider_remediated",
+                    }],
+                    tax_status="taxable",
+                    tax_rate_bps=745,
+                    tax_note="old",
+                    effective_from=date(2026, 8, 1),
+                    approved_by="david@anatainc.com",
+                    created_by="seed",
+                )
+            )
+            session.add(
+                BuildingRatePlan(
+                    id="operator-plan",
+                    offering_id="arena-events",
+                    version=2,
+                    name="Operator draft",
+                    status="draft",
+                    currency="USD",
+                    unit_amount_cents=99,
+                    public_price_display="Custom",
+                    booking_unit="hour",
+                    minimum_units=1,
+                    deposit_type="percent",
+                    deposit_percent_bps=0,
+                    cancellation_policy="",
+                    included_json=[],
+                    addons_json=[],
+                    commercial_terms_json={},
+                    source_evidence_json=[],
+                    conflicts_json=[],
+                    tax_status="review_required",
+                    tax_rate_bps=0,
+                    tax_note="",
+                    effective_from=date(2026, 9, 1),
+                    created_by="operator",
+                )
+            )
+            session.commit()
+
+        self.assertEqual(
+            refresh_canonical_arena_event_policy(
+                self.factory, actor="david@anatainc.com"
+            ),
+            "updated",
+        )
+        self.assertEqual(
+            refresh_canonical_arena_event_policy(self.factory),
+            "already_current",
+        )
+        with self.factory() as session:
+            plan = session.get(
+                BuildingRatePlan, "arena-events-owner-commercial-v1"
+            )
+            other = session.get(BuildingRatePlan, "operator-plan")
+            self.assertEqual(plan.status, "approved")
+            self.assertEqual(plan.approved_by, "david@anatainc.com")
+            self.assertEqual(plan.booking_unit, "day_portion")
+            self.assertEqual(
+                plan.commercial_terms_json["half_day_amount_cents"], 150_000
+            )
+            self.assertEqual(
+                plan.commercial_terms_json["security_deposit"]["amount_cents"], 0
+            )
+            self.assertEqual(
+                plan.conflicts_json[0]["status"], "provider_remediated"
+            )
+            self.assertEqual(other.unit_amount_cents, 99)
+            self.assertEqual(other.public_price_display, "Custom")
 
     def test_fails_closed_without_verified_arena_catalog(self) -> None:
         self.assertEqual(

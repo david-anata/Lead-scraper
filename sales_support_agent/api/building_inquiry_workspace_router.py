@@ -29,6 +29,9 @@ from sales_support_agent.models.entities import (
 )
 from sales_support_agent.services.admin_nav import render_agent_nav
 from sales_support_agent.services.auth_deps import require_tool
+from sales_support_agent.services.building_event_policy import (
+    evaluate_event_request,
+)
 from sales_support_agent.services.building_event_calendar import (
     access_window,
     clock_label,
@@ -245,10 +248,15 @@ def _calendar_view(
     guest_end = _clock_value(details.get("guestEndTime")) or (
         open_values[-1] if open_values else options[-1]["value"]
     )
+    def _picked(value: str) -> time:
+        if str(value).startswith("24"):
+            return time(0, 0)
+        return time(int(str(value)[:2]))
+
     setup, guests_in, guests_out, teardown = access_window(
         selected,
-        time(int(guest_start[:2])),
-        time(int(guest_end[:2])),
+        _picked(guest_start),
+        _picked(guest_end),
     )
 
     def stamp(value: datetime) -> str:
@@ -1340,13 +1348,18 @@ def _take_the_date(
         if offering is None:
             return "", "No event offering exists to book against."
         offering_id, space_id = offering.id, offering.space_id
-        pricing = dict((inquiry.payload_json or {}).get("_pricing") or {})
-        interview = dict((inquiry.payload_json or {}).get("_event_interview") or {})
+        payload = dict(inquiry.payload_json or {})
+        pricing = dict(payload.get("_pricing") or {})
+        interview = dict(payload.get("_event_interview") or {})
+        details = {
+            key: value
+            for key, value in payload.items()
+            if not str(key).startswith("_")
+        }
         assigned_owner = str(inquiry.assigned_owner or "").strip()
 
-    # The operator picks a day and the guest hours; setup and teardown are the
-    # approved two-hour buffers, so there is nothing to retype and nothing to
-    # put out of order.
+    # The operator picks the booked window. Setup and teardown sit inside it.
+    # There are no complimentary hours on either side.
     try:
         event_day = date.fromisoformat(str(form.get("event_date") or "").strip())
     except ValueError:
@@ -1354,11 +1367,17 @@ def _take_the_date(
     clock: list[time] = []
     for field in ("guest_start_time", "guest_end_time"):
         raw = str(form.get(field) or "").strip()
+        if raw in {"24:00", "24:00:00"}:
+            clock.append(time(0, 0))
+            continue
         try:
             clock.append(time.fromisoformat(raw))
         except ValueError:
             return "", "Choose when guests arrive and when they leave."
-    if clock[0] == clock[1]:
+    if clock[0] == clock[1] and str(form.get("guest_end_time") or "") not in {
+        "24:00",
+        "24:00:00",
+    }:
         return "", "Guests cannot arrive and leave at the same time."
     setup, guest_start, guest_end, teardown = access_window(
         event_day, clock[0], clock[1]
@@ -1372,6 +1391,25 @@ def _take_the_date(
             "event interview, then try again."
         )
     attendance = int(attendance_text or "1")
+    decision = evaluate_event_request(
+        event_date=event_day,
+        guest_start=str(form.get("guest_start_time") or ""),
+        guest_end=str(form.get("guest_end_time") or ""),
+        event_type=str(
+            interview.get("event_format")
+            or interview.get("event_purpose")
+            or details.get("eventType")
+            or details.get("event_type")
+            or ""
+        ),
+        attendance=attendance,
+        alcohol=str(interview.get("alcohol") or details.get("alcohol") or ""),
+        notes=str(
+            interview.get("special_requests") or details.get("notes") or ""
+        ),
+    )
+    if decision.rejected:
+        return "", decision.message
 
     reservation_id = f"event-{uuid4().hex[:12]}"
     hours = max(1, int(pricing.get("hours") or 1))

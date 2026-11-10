@@ -175,7 +175,7 @@ class BuildingLaunchReadinessTests(unittest.TestCase):
             page.text,
         )
         self.assertIn(
-            "Owner approved $175 per full overtime hour",
+            "There is no published hourly overtime rate.",
             page.text,
         )
         self.assertIn(

@@ -26,6 +26,13 @@ from sales_support_agent.services.building_launch_readiness import (
     arena_rate_plan_decision_blockers,
     sync_arena_effective_date_decision,
 )
+from sales_support_agent.services.building_event_policy import (
+    DAY_PORTION_LABELS as POLICY_DAY_PORTION_LABELS,
+    LEGACY_HOURLY_RATE_CENTS,
+    PUBLISHED_CARD_CENTS,
+    evaluate_event_request,
+    portion_for_hours,
+)
 from sales_support_agent.services.building_lead_intake import (
     advance_follow_up_sequence,
     build_follow_up_sequence,
@@ -538,6 +545,12 @@ class EventEstimateInput(BaseModel):
     attendance: int = Field(ge=1, le=10000)
     addons: list[EventEstimateAddonInput] = Field(default_factory=list, max_length=50)
     day_portion: str | None = Field(default=None, max_length=32)
+    event_date: date | None = None
+    guest_start: str = Field(default="", max_length=16)
+    guest_end: str = Field(default="", max_length=16)
+    event_type: str = Field(default="", max_length=120)
+    alcohol: str = Field(default="", max_length=120)
+    notes: str = Field(default="", max_length=1000)
 
     @field_validator("day_portion")
     @classmethod
@@ -1665,12 +1678,7 @@ def upsert_rate_plan(
 
 
 
-DAY_PORTION_LABELS = {
-    "half": "Half day (up to 6 hours)",
-    "full": "Full day (more than 6 hours)",
-    "full_plus_half": "Full day + second-day half",
-    "two_full": "Two full days",
-}
+DAY_PORTION_LABELS = dict(POLICY_DAY_PORTION_LABELS)
 
 DAY_PORTION_REPRESENTATIVE_UNITS = {
     "half": 6,
@@ -1687,6 +1695,55 @@ DAY_PORTION_COMMERCIAL_KEYS = {
 }
 
 
+def _plan_uses_published_card(plan: BuildingRatePlan) -> bool:
+    """True when this plan is the Arena day card or the retired $175 hourly card."""
+
+    return plan.booking_unit == "day_portion" or (
+        plan.booking_unit == "hour"
+        and int(plan.unit_amount_cents or 0) == LEGACY_HOURLY_RATE_CENTS
+    )
+
+
+def _unquoted_estimate(
+    plan: BuildingRatePlan,
+    decision: Any,
+    *,
+    attendance: int,
+) -> dict[str, Any]:
+    """A weekday business request: the team prices it, the estimator does not."""
+
+    return {
+        "currency": plan.currency,
+        "quotable": False,
+        "rejected": False,
+        "auto_confirm": False,
+        "review_required": decision.review_required,
+        "event_kind": decision.kind,
+        "message": decision.message,
+        "questions": list(decision.questions),
+        "booking_unit": plan.booking_unit,
+        "billable_units": 0,
+        "day_portion": None,
+        "attendance": attendance,
+        "line_items": [],
+        "subtotal_cents": None,
+        "estimated_tax_cents": None,
+        "estimated_total_cents": None,
+        "deposit_cents": None,
+        "tax_note": plan.tax_note,
+        "is_binding": False,
+        "rate_plan": {
+            "id": plan.id,
+            "version": plan.version,
+            "effective_from": plan.effective_from.isoformat(),
+            "effective_until": (
+                plan.effective_until.isoformat() if plan.effective_until else None
+            ),
+            "approved": True,
+        },
+    }
+
+
 def _resolve_day_portion_amount(
     plan: BuildingRatePlan,
     day_portion: str | None,
@@ -1700,28 +1757,27 @@ def _resolve_day_portion_amount(
     """
 
     terms = dict(plan.commercial_terms_json or {})
+    uses_day_card = plan.booking_unit == "day_portion" or (
+        plan.booking_unit == "hour"
+        and int(plan.unit_amount_cents or 0) == LEGACY_HOURLY_RATE_CENTS
+    )
     resolved = day_portion
-    if resolved is None and plan.booking_unit == "day_portion" and units is not None:
-        if units <= 6:
-            resolved = "half"
-        elif units <= 12:
-            resolved = "full"
-        elif units <= 18:
-            resolved = "full_plus_half"
-        else:
-            resolved = "two_full"
+    if resolved is None and uses_day_card and units is not None:
+        resolved = portion_for_hours(units)
+        if resolved is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This length is not on the published card. The team will "
+                    "put together pricing."
+                ),
+            )
 
     if resolved is not None:
         key = DAY_PORTION_COMMERCIAL_KEYS[resolved]
         amount = int(terms.get(key) or 0)
         if amount <= 0:
-            # Hard-coded owner card fallback while commercial_terms are being cut over.
-            amount = {
-                "half": 150_000,
-                "full": 200_000,
-                "full_plus_half": 300_000,
-                "two_full": 350_000,
-            }[resolved]
+            amount = PUBLISHED_CARD_CENTS[resolved]
         return (
             resolved,
             DAY_PORTION_REPRESENTATIVE_UNITS[resolved],
@@ -1786,8 +1842,37 @@ def calculate_public_event_estimate(
                 detail="Online pricing is unavailable while tax treatment is reviewed.",
             )
 
+        decision = None
+        if payload.event_date is not None:
+            decision = evaluate_event_request(
+                event_date=payload.event_date,
+                guest_start=payload.guest_start,
+                guest_end=payload.guest_end,
+                event_type=payload.event_type,
+                attendance=payload.attendance,
+                alcohol=payload.alcohol,
+                notes=payload.notes,
+                hours=payload.units,
+                day_portion=payload.day_portion,
+            )
+            if decision.rejected:
+                raise HTTPException(status_code=422, detail=decision.message)
+            if not decision.quotable:
+                return {
+                    "estimate": _unquoted_estimate(
+                        plan, decision, attendance=payload.attendance
+                    )
+                }
+
+        portion_hint = payload.day_portion
+        if (
+            decision is not None
+            and decision.day_portion
+            and _plan_uses_published_card(plan)
+        ):
+            portion_hint = decision.day_portion
         resolved_day_portion, billable_units, base_amount, base_name = (
-            _resolve_day_portion_amount(plan, payload.day_portion, payload.units)
+            _resolve_day_portion_amount(plan, portion_hint, payload.units)
         )
         line_items: list[dict[str, Any]] = [{
             "type": "base",
@@ -1867,6 +1952,12 @@ def calculate_public_event_estimate(
                 "deposit_cents": min(deposit_cents, estimated_total_cents),
                 "tax_note": plan.tax_note,
                 "is_binding": False,
+                "quotable": True,
+                "auto_confirm": False,
+                "review_required": bool(decision and decision.review_required),
+                "event_kind": decision.kind if decision else "",
+                "message": decision.message if decision else "",
+                "questions": list(decision.questions) if decision else [],
                 "calculation_fingerprint": fingerprint,
                 "rate_plan": {
                     "id": plan.id,

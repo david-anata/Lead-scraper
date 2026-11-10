@@ -146,7 +146,8 @@ class ArenaAgreementSeedTests(unittest.TestCase):
             self.assertIsNotNone(template)
             self.assertEqual(template.status, "in_review")
             self.assertEqual(template.contract_type, "event")
-            self.assertIn("$175 per paid venue hour", template.body_markdown)
+            self.assertIn("$1,500", template.body_markdown)
+            self.assertNotIn("$175 per paid venue hour", template.body_markdown)
             self.assertIn("{{customer_name}}", template.body_markdown)
             self.assertFalse(template.approval_evidence)
             audits = (

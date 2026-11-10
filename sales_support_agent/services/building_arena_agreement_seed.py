@@ -90,22 +90,51 @@ def ensure_arena_review_template(
                 "version": row.version,
                 "name": row.name,
                 "contract_type": row.contract_type or "event",
-                "template_reference": row.template_reference,
             }
-            if actual_identity != expected_identity:
+            expected_without_reference = {
+                key: value
+                for key, value in expected_identity.items()
+                if key != "template_reference"
+            }
+            if actual_identity != expected_without_reference:
                 raise RuntimeError(
                     "Existing Arena agreement template conflicts with the "
                     "versioned repository artifact; create a reviewed new "
                     "version instead of overwriting it."
                 )
             if row.status in {"approved", "retired"}:
+                # An approved legal text is not rewritten in place. The
+                # repository file is the new review copy for the next version.
                 return "unchanged"
             existing_body = (row.body_markdown or "").strip()
             if existing_body and existing_body != body:
-                raise RuntimeError(
-                    "Existing Arena agreement body conflicts with the versioned "
-                    "repository artifact; deployment stopped without changes."
+                # In-review copy follows the repository artifact. November 10,
+                # 2026 replaced the hourly card, the cleaning fee, the security
+                # deposit, and the weekday 5–11 PM guest window.
+                row.body_markdown = body
+                row.template_reference = reference
+                row.merge_fields_json = merge_fields
+                row.updated_at = now
+                session.add(
+                    BuildingAuditEvent(
+                        entity_type="agreement_template",
+                        entity_id=ARENA_TEMPLATE_ID,
+                        action="arena_agreement_business_terms_policy_refreshed",
+                        actor=actor,
+                        after_json={
+                            "status": row.status,
+                            "artifact_checksum": checksum,
+                            "policy_note": (
+                                "November 10, 2026 event policy refreshed the "
+                                "in-review Arena terms."
+                            ),
+                            "legal_approval": False,
+                            "provider_write": False,
+                            "customer_delivery": False,
+                        },
+                    )
                 )
+                return "policy_refreshed"
             row.status = "in_review"
             row.body_markdown = body
             row.clauses_json = []

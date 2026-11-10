@@ -154,8 +154,8 @@ class LeadToContractTests(unittest.TestCase):
 
     def _price(self, **fields: str):
         body = {
-            "_csrf_token": self._csrf(), "hourly_rate": "175", "hours": "6",
-            "cleaning_fee": "250", "security_deposit": "500", "discount": "0",
+            "_csrf_token": self._csrf(), "day_portion": "half", "hours": "6",
+            "cleaning_fee": "0", "security_deposit": "0", "discount": "0",
             "discount_reason": "", "deposit_percent": "50",
         }
         body.update(fields)
@@ -166,7 +166,7 @@ class LeadToContractTests(unittest.TestCase):
 
     def test_01_lead_pricing_reaches_the_contract(self) -> None:
         priced = self._price(
-            hourly_rate="200", hours="8", discount="100",
+            day_portion="full", hours="8", discount="100",
             discount_reason="Repeat customer",
         )
         self.assertEqual(priced.status_code, 303, priced.text)
@@ -188,22 +188,22 @@ class LeadToContractTests(unittest.TestCase):
             quote = session.query(BuildingProposal).filter_by(
                 reservation_id="res-1"
             ).one()
-            # 8 hours x 200, plus 250 cleaning, less the 100 discount.
-            self.assertEqual(quote.amount_cents, 175_000)
+            # Full day $2,000, less the $100 discount. No cleaning fee.
+            self.assertEqual(quote.amount_cents, 190_000)
             self.assertEqual(
                 {item["type"] for item in quote.line_items_json},
-                {"base", "fee", "discount"},
+                {"base", "discount"},
             )
             snapshot = quote.rate_plan_snapshot_json
             self.assertEqual(snapshot["deposit_percent_bps"], 5_000)
-            self.assertEqual(snapshot["security_deposit_cents"], 50_000)
+            self.assertEqual(snapshot["security_deposit_cents"], 0)
 
             agreement = session.query(BuildingAgreement).filter(
                 BuildingAgreement.package_checksum != ""
             ).one()
             merged = agreement.package_snapshot_json["merge_values"]
-            self.assertEqual(merged["quote_total"], 175_000)
-            self.assertEqual(merged["deposit_amount"], 87_500)
+            self.assertEqual(merged["quote_total"], 190_000)
+            self.assertEqual(merged["deposit_amount"], 95_000)
             document = agreement.package_snapshot_json["document"]["text"]
             self.assertIn("Rosa Delgado", document)
             self.assertIn("The Arena", document)
@@ -228,10 +228,10 @@ class LeadToContractTests(unittest.TestCase):
                 item.package_snapshot_json["merge_values"]["quote_total"]
                 for item in agreements
             )
-            self.assertEqual(totals, [130_000, 175_000])
+            self.assertEqual(totals, [150_000, 190_000])
 
     def test_99_stale_agreement_is_blocked_and_offers_a_revision(self) -> None:
-        self._price(hourly_rate="225", hours="8")
+        self._price(day_portion="full_plus_half", hours="18")
         page = self.client.get("/admin/building/inquiries/lead-1")
         self.assertEqual(page.status_code, 200, page.text)
         self.assertIn("This agreement is out of date", page.text)
@@ -434,8 +434,8 @@ class LeadToContractTests(unittest.TestCase):
         )
         self.assertEqual(page.status_code, 200, page.text)
         self.assertIn("and create the contract?", page.text)
-        self.assertIn("3:00 PM", page.text)      # setup, two hours before 5pm
-        self.assertIn("12:00 AM", page.text)     # teardown, two hours after 10pm
+        self.assertIn("5:00 PM", page.text)
+        self.assertIn("10:00 PM", page.text)
         self.assertIn("Pick a different date", page.text)
 
     def test_03b_a_clash_is_refused_unless_the_owner_authorises_it(self) -> None:
@@ -608,14 +608,14 @@ class LeadToContractTests(unittest.TestCase):
             session.query(BuildingProposal).filter_by(
                 reservation_id=reservation.id
             ).one()
-            # Setup and teardown are the approved two-hour buffers, derived
-            # rather than retyped, so guests at 5pm means doors open at 3pm.
+            # Booked time includes setup and teardown. Guests at 5pm means
+            # the building window starts at 5pm, not two hours earlier.
             local_setup = _mountain(reservation.starts_at)
             local_guests = _mountain(reservation.guest_starts_at)
             local_end = _mountain(reservation.ends_at)
             self.assertEqual(local_guests.hour, 17)
-            self.assertEqual(local_setup.hour, 15)
-            self.assertEqual(local_end.hour, 0)
+            self.assertEqual(local_setup.hour, 17)
+            self.assertEqual(local_end.hour, 22)
             self.assertEqual(local_setup.date(), event_day)
 
     def test_05_an_out_of_order_window_is_refused(self) -> None:
@@ -690,7 +690,7 @@ class LeadToContractTests(unittest.TestCase):
                 _mountain(reservation.guest_ends_at).date(),
                 event_day + timedelta(days=1),
             )
-            self.assertEqual(_mountain(reservation.ends_at).hour, 3)
+            self.assertEqual(_mountain(reservation.ends_at).hour, 1)
 
     def test_06_an_unqualified_lead_can_still_take_its_date(self) -> None:
         """The date panel used to render only for qualified leads, so the one

@@ -24,13 +24,14 @@ from sales_support_agent.integrations.building_google_calendar import (
     BuildingCalendarAdapter,
 )
 from sales_support_agent.models.entities import BuildingReservation
+from sales_support_agent.services.building_event_policy import guest_hour_bounds
 
 MOUNTAIN = ZoneInfo("America/Denver")
 
-#: Hours of building time added before guests arrive and after they leave.
-#: Approved Arena commercial terms include two self-service hours on each side.
-SETUP_BUFFER_HOURS = 2
-TEARDOWN_BUFFER_HOURS = 2
+#: Booked time includes setup and teardown. The November 10, 2026 policy
+#: removed the old complimentary two hours on each side.
+SETUP_BUFFER_HOURS = 0
+TEARDOWN_BUFFER_HOURS = 0
 
 #: Setup through teardown at or beyond this length is a full day, and a full day
 #: makes its neighbours a judgement call rather than a free date.
@@ -49,6 +50,9 @@ BOOKED_STATUSES = frozenset({
 RELEASED_STATUSES = frozenset({"cancelled", "expired", "move_out"})
 
 #: Guest arrival and departure are chosen from whole hours.
+#: Saturday runs through midnight and Sunday stops at 10 PM. Weekdays stay
+#: open here so a business meeting can be scheduled; party hours are enforced
+#: by building_event_policy.
 FIRST_GUEST_HOUR = 8
 LAST_GUEST_HOUR = 23
 
@@ -300,19 +304,22 @@ def guest_hour_options(
             if cursor.date() == day:
                 taken.add(cursor.hour)
             cursor += timedelta(hours=1)
+    first, last = guest_hour_bounds(day)
     return [
         {
-            "value": f"{hour:02d}:00",
+            "value": "24:00" if hour == 24 else f"{hour:02d}:00",
             "label": clock_label(hour),
-            "taken": hour in taken,
+            "taken": hour in taken and hour != 24,
         }
-        for hour in range(FIRST_GUEST_HOUR, LAST_GUEST_HOUR + 1)
+        for hour in range(first, last + 1)
     ]
 
 
 def clock_label(hour: int) -> str:
     """"14" reads as "2:00 PM". Written out because %-I is not portable."""
 
+    if hour == 24:
+        return "12:00 AM"
     suffix = "AM" if hour < 12 else "PM"
     twelve = hour % 12 or 12
     return f"{twelve}:00 {suffix}"
