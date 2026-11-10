@@ -105,8 +105,15 @@ class _Client(abby_runner.Instantly.__bases__[0] if False else object):
         self.replies.append(kwargs)
         return 200, {"id": "sent-1"}
 
-    def set_interest(self, *_args):
+    def set_interest(self, lead, value, campaign_id):
+        self._marked = getattr(self, "_marked", [])
+        self._marked.append({
+            "email": lead, "campaign": campaign_id, "lt_interest_status": value,
+        })
         return 200
+
+    def leads_for_email(self, email):
+        return [row for row in getattr(self, "_marked", []) if row.get("email") == email]
 
     def block(self, _value):
         return 200

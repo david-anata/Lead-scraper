@@ -66,10 +66,26 @@ SEARCH_TITLES = [
 
 # Generic inboxes. A personal name in the local part is not on this list.
 # Dots and dashes are ignored, so customer.service@ and no-reply@ match.
+# Numbered and dotted variants (sales1, info.us, hello-team) are matched in
+# is_role_mailbox, not by listing every spelling here.
 ROLE_LOCALS = frozenset({
-    "marketing", "info", "sales", "support", "hello", "contact", "team",
-    "admin", "help", "orders", "office", "ecommerce", "customerservice",
-    "noreply",
+    "marketing", "info", "sales", "support", "hello", "hi", "contact", "team",
+    "admin", "help", "orders", "order", "office", "ecommerce", "customerservice",
+    "customercare", "customersupport", "noreply", "donotreply",
+    "press", "pr", "media", "wholesale", "care", "shop", "store",
+    "partnerships", "partnership", "billing", "returns", "careers", "career",
+    "jobs", "job", "accounts", "accounting", "enquiries", "enquiry",
+    "inquiries", "inquiry", "newsletter", "webmaster", "postmaster",
+    "abuse", "feedback", "reception", "frontdesk", "ops", "operations",
+    "hr", "legal", "finance", "purchasing", "procurement", "bookings",
+    "reservations", "service", "services", "mail", "email", "inbox",
+    "general", "hq", "news",
+})
+# A dotted suffix that does not make info.us or sales.uk a person.
+_ROLE_SUFFIXES = frozenset({
+    "us", "usa", "uk", "eu", "au", "ca", "nz", "de", "fr", "en", "global",
+    "intl", "international", "team", "dept", "hq", "office", "group",
+    "emea", "apac", "na", "latam",
 })
 
 # Titles that match a keyword above but are never the buyer.
@@ -112,6 +128,19 @@ _CHANNEL_MANAGER_RE = re.compile(
     r"|\bmanagers?\b(?:\s+\w+){0,3}\s+(?:amazon|marketplaces?)\b",
     re.I,
 )
+# "Product owner" is an agile role, not the owner of the company.
+_PRODUCT_OWNER_RE = re.compile(
+    r"\b(?:product|process|project|category)\s+owners?\b",
+    re.I,
+)
+# Engineering, HR, and design are not buyers, even with a seniority word.
+_NON_BUYER_RE = re.compile(
+    r"\b(?:engineers?|engineering|developers?|software)\b"
+    r"|\b(?:designers?|design)\b"
+    r"|\b(?:human resources|people ops|talent acquisition)\b"
+    r"|\bhr\b",
+    re.I,
+)
 
 
 @dataclass
@@ -147,23 +176,33 @@ def _redact(text: str, secret: str) -> str:
     return out
 
 
+def _is_company_leader(title: str) -> bool:
+    """Founder, owner, CEO, or president. Not a vice president or product owner."""
+
+    if _VP_RE.search(title):
+        return False
+    stripped = _PRODUCT_OWNER_RE.sub(" ", title)
+    return _TOP_RE.search(stripped) is not None
+
+
 def title_rank(title: str) -> Optional[int]:
     """Lower is better. None means do not contact.
 
-    Rank 0 is founder, owner, CEO, or president (not vice president).
-    Rank 1 is a director, head, or VP of ecommerce, Amazon, marketplaces,
-    growth, or marketing, and also a CMO, COO, or ecommerce manager.
-    Associates, coordinators, specialists, customer service, project
-    managers, and creative-only roles are excluded.
+    Rank 0 is founder, owner, CEO, or president (not vice president, and not
+    a product owner). Rank 1 is a director, head, or VP of ecommerce, Amazon,
+    marketplaces, growth, or marketing, and also a CMO, COO, or ecommerce,
+    Amazon, or marketplace manager. Associates, interns, assistants,
+    coordinators, engineering, HR, design, and other non-buyer roles are
+    excluded. A founder stays even when the title also says designer.
     """
 
     raw = (title or "").strip()
-    low = raw.lower()
-    if not raw or any(bad in low for bad in EXCLUDE_TITLES) or _EXCLUDE_RE.search(raw):
+    if not raw or any(bad in raw.lower() for bad in EXCLUDE_TITLES) or _EXCLUDE_RE.search(raw):
         return None
-    is_vp = _VP_RE.search(raw) is not None
-    if _TOP_RE.search(raw) and not is_vp:
+    if _is_company_leader(raw):
         return 0
+    if _NON_BUYER_RE.search(raw):
+        return None
     if _CREATIVE_RE.search(raw) and not _FUNCTION_RE.search(raw):
         return None
     # Rank 1 is the second TITLE_PRIORITY group.
@@ -178,25 +217,138 @@ def title_rank(title: str) -> Optional[int]:
     return None
 
 
+def _role_segments(local: str) -> list[str]:
+    return [part for part in re.split(r"[._\-]+", local) if part]
+
+
 def is_role_mailbox(address: str) -> bool:
     """True when the mailbox is a shared role, not a named person.
 
-    ``info@``, ``customer.service@``, and ``no-reply@`` match. ``jane.smith@``
-    does not. The check is the local part only.
+    ``info@``, ``customer.service@``, ``no-reply@``, ``sales1@``, ``info.us@``,
+    and ``hello-team@`` match. ``jane.smith@`` and ``priya@`` do not. The
+    check is the local part only.
     """
 
     local = (address or "").strip().lower().split("@", 1)[0]
     local = local.split("+", 1)[0]
     compact = re.sub(r"[^a-z0-9]", "", local)
-    return bool(compact) and compact in ROLE_LOCALS
+    if not compact:
+        return False
+    if compact in ROLE_LOCALS:
+        return True
+    for role in ROLE_LOCALS:
+        rest = compact[len(role):]
+        if compact.startswith(role) and rest.isdigit():
+            return True
+    segments = _role_segments(local)
+    if not segments:
+        return False
+    if segments[0] in ROLE_LOCALS:
+        return True
+    if any(part in ROLE_LOCALS for part in segments) and all(
+        part in ROLE_LOCALS or part in _ROLE_SUFFIXES for part in segments
+    ):
+        return True
+    return False
 
 
-def rank_candidates(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def acceptable_first_name(name: str) -> bool:
+    """True when the value is a person's first name, not a blank or a role word."""
+
+    raw = (name or "").strip()
+    if not raw or not re.search(r"[A-Za-z]", raw):
+        return False
+    compact = re.sub(r"[^a-z]", "", raw.lower())
+    if not compact or compact in ROLE_LOCALS or compact in {"there", "friend", "hey"}:
+        return False
+    return True
+
+
+_SALES_EXCLUDE_RE = re.compile(
+    r"\b(?:interns?|assistants?|coordinators?|associates?)\b"
+    r"|\b(?:engineers?|engineering|developers?|designers?|design)\b"
+    r"|\b(?:human resources)\b|\bhr\b",
+    re.I,
+)
+_SALES_SENIOR_RE = re.compile(
+    r"\b(?:chief revenue officer|cro)\b"
+    r"|\b(?:vp|svp|evp|vice president|head)\s+of\s+revenue\b"
+    r"|\b(?:vp|svp|evp|vice president|head|director)s?\b(?:\s+of)?\s+sales\b"
+    r"|\bsales\s+(?:director|vp|head)\b",
+    re.I,
+)
+_SALES_ACCOUNT_RE = re.compile(
+    r"\b(?:national|key)\s+accounts?\s+(?:managers?|directors?|heads?)\b"
+    r"|\b(?:director|head|vp|vice president)\s+of\s+(?:national|key)\s+accounts?\b"
+    r"|\b(?:channel|e[\s-]?commerce|amazon|marketplace|retail)\s+sales\b"
+    r"|\b(?:amazon|marketplace|retail)\s+accounts?\s+(?:managers?|directors?)\b"
+    r"|\bsales\s+(?:managers?|representatives?|reps?)\b"
+    r"|\baccount executives?\b",
+    re.I,
+)
+
+
+def sales_title_rank(title: str) -> Optional[int]:
+    """Lower is better. None means this is not a sales-org contact.
+
+    Rank 0 is CRO or a VP, head, or director of sales. Rank 1 is national
+    or key account leadership, channel or ecommerce sales, an Amazon,
+    marketplace, or retail account manager, or a sales manager or
+    representative. Associates, interns, assistants, coordinators,
+    engineering, HR, and design stay out. A founder with no sales title
+    is not this segment.
+    """
+
+    raw = (title or "").strip()
+    if not raw or _SALES_EXCLUDE_RE.search(raw):
+        return None
+    if _SALES_SENIOR_RE.search(raw):
+        return 0
+    if _SALES_ACCOUNT_RE.search(raw):
+        return 1
+    return None
+
+
+def lead_quality_reason(
+    *,
+    email: str,
+    first_name: str,
+    title: str = "",
+    require_title: bool = False,
+    recipe: str = "",
+) -> str:
+    """Why this person should not be added, or '' when they pass.
+
+    A missing title is rejected only when ``require_title`` is set. A title
+    that is present must pass ``title_rank`` either way. Historical re-engage
+    rows often have no title, and that absence is not itself a rejection.
+    """
+
+    if is_role_mailbox(email):
+        return "role mailbox"
+    if not acceptable_first_name(first_name):
+        return "missing first name"
+    present = (title or "").strip()
+    if require_title or present:
+        if str(recipe or "").strip() == "sales_org":
+            allowed = sales_title_rank(present) is not None
+        else:
+            allowed = title_rank(present) is not None
+        if not allowed:
+            return "title"
+    return ""
+
+
+def rank_candidates(
+    results: list[dict[str, Any]],
+    rank_title: Optional[Callable[[str], Optional[int]]] = None,
+) -> list[dict[str, Any]]:
     """Order search results best-first and drop people we would never email."""
+    rank_title = rank_title or title_rank
     scored: list[tuple[int, int, dict[str, Any]]] = []
     for idx, item in enumerate(results or []):
         person = (item or {}).get("person") or {}
-        rank = title_rank(person.get("current_job_title") or "")
+        rank = rank_title(person.get("current_job_title") or "")
         if rank is None or not person.get("person_id"):
             continue
         scored.append((rank, idx, item))
@@ -323,6 +475,7 @@ def find_contacts(
     post: Optional[Post] = None,
     sleep: Callable[[float], None] = time.sleep,
     pace_seconds: float = 1.1,
+    rank_title: Optional[Callable[[str], Optional[int]]] = None,
 ) -> FindResult:
     """Return up to ``max_contacts`` verified people at ``domain``."""
     domain = normalize_domain(domain)
@@ -359,14 +512,20 @@ def find_contacts(
     result.candidates_seen = len(found)
     if found and not data.get("free"):
         result.credits_used += 1
-    ranked = rank_candidates(found)
+    rank_title = rank_title or title_rank
+    ranked = rank_candidates(found, rank_title)
     if not ranked:
         result.reason = "No decision-maker found at this domain."
         return result
 
     # Enrich best-first until we have enough, trying a couple of extras since
-    # some people have no verified email. A verified role inbox is not a person.
+    # some people have no verified email. The search title is not enough: the
+    # enriched title is the one we store, and it can be a weaker role than the
+    # search hit (for example "Ecommerce Manager" enriching to
+    # "E-commerce Merchandise Associate").
     skipped_role = False
+    skipped_title = False
+    skipped_name = False
     for item in ranked[: max_contacts + 3]:
         if len(result.contacts) >= max_contacts:
             break
@@ -397,15 +556,23 @@ def find_contacts(
             continue
         if not data.get("free_enrichment"):
             result.credits_used += 1
+        enriched_title = (p.get("current_job_title") or "").strip()
+        first_name = (p.get("first_name") or "").strip()
         if is_role_mailbox(email):
             skipped_role = True
             continue
+        if rank_title(enriched_title) is None:
+            skipped_title = True
+            continue
+        if not acceptable_first_name(first_name):
+            skipped_name = True
+            continue
         result.contacts.append(Contact(
             domain=domain,
-            first_name=(p.get("first_name") or "").strip(),
+            first_name=first_name,
             last_name=(p.get("last_name") or "").strip(),
             email=email,
-            title=(p.get("current_job_title") or "").strip(),
+            title=enriched_title,
             linkedin_url=(p.get("linkedin_url") or "").strip(),
             person_id=p.get("person_id") or "",
             email_status=status_text.upper(),
@@ -413,6 +580,10 @@ def find_contacts(
     if not result.contacts and not result.reason:
         if skipped_role:
             result.reason = "Candidates found but none had a personal verified email."
+        elif skipped_title:
+            result.reason = "Candidates found but none had a buyer title."
+        elif skipped_name:
+            result.reason = "Candidates found but none had a first name."
         else:
             result.reason = "Candidates found but none had a verified email."
     return result

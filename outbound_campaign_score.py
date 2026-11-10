@@ -35,7 +35,7 @@ _MEETINGS = ("meetings", "meetings_booked", "meeting_booked")
 _BOUNCE = ("bounced", "bounces", "bounce")
 _OPT_OUT = ("opt_out", "opt_outs", "unsubscribed", "optouts")
 _DAY = ("day", "stat_date", "bucket_date", "date")
-_POSITIVE_CATEGORIES = frozenset({"interested", "price", "referral", "question"})
+_POSITIVE_CATEGORIES = frozenset({"interested", "price", "referral"})
 
 
 def _columns(engine: Any, table: str) -> set[str]:
@@ -290,10 +290,13 @@ def run_weekly_score(
             contacted = int(daily.get("contacted") or 0) if daily.get("contacted") is not None else 0
             # Instantly's daily columns are the rate numerator when they
             # exist. Abby fills a rate only when that column was not synced.
-            if daily.get("positive") is not None:
-                positive_count: Optional[float] = daily.get("positive")
-            elif "campaign_id" in abby_columns:
-                positive_count = float(handled.get("positive") or 0)
+            # Instantly attributes a positive to whichever lead record it
+            # updated. Abby's log is keyed to the campaign she acted in, so
+            # that count wins whenever the column exists.
+            if "campaign_id" in abby_columns:
+                positive_count: Optional[float] = float(handled.get("positive") or 0)
+            elif daily.get("positive") is not None:
+                positive_count = daily.get("positive")
             else:
                 positive_count = None
             if daily.get("meetings") is not None:

@@ -354,7 +354,14 @@ class FakeClient:
 
     def set_interest(self, lead, value, campaign_id):
         self.interest.append((lead, value))
+        self._marked = getattr(self, "_marked", [])
+        self._marked.append({
+            "email": lead, "campaign": campaign_id, "lt_interest_status": value,
+        })
         return 200
+
+    def leads_for_email(self, email):
+        return [row for row in getattr(self, "_marked", []) if row.get("email") == email]
 
     def block(self, value):
         self.blocks.append(value)

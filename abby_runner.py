@@ -258,9 +258,32 @@ class Instantly:
         return self._call("POST", "emails/reply", json=payload)
 
     def set_interest(self, lead: str, value: int, campaign_id: str) -> int:
-        return self._call("POST", "leads/update-interest-status",
-                          json={"lead_email": lead, "interest_value": value,
-                                "campaign_id": campaign_id})[0]
+        status = self._call("POST", "leads/update-interest-status",
+                            json={"lead_email": lead, "interest_value": value,
+                                  "campaign_id": campaign_id})[0]
+        logger.info(
+            "[abby] update-interest-status status=%s campaign=%s value=%s",
+            status, campaign_id, value,
+        )
+        return status
+
+    def leads_for_email(self, email: str) -> list[dict]:
+        """Every Instantly lead record for this address, not just the first."""
+
+        if not email:
+            return []
+        found: list[dict] = []
+        body: dict[str, Any] = {"contacts": [email], "limit": 100}
+        for _ in range(10):
+            status, data = self._call("POST", "leads/list", json=body)
+            if status != 200 or not isinstance(data, dict):
+                break
+            found.extend(item for item in (data.get("items") or []) if isinstance(item, dict))
+            nxt = str(data.get("next_starting_after") or "").strip()
+            if not nxt:
+                break
+            body["starting_after"] = nxt
+        return found
 
     def block(self, value: str) -> int:
         return self._call("POST", "block-lists-entries", json={"bl_value": value})[0]
@@ -587,6 +610,69 @@ def _schedule_rows(engine, *, email: dict, decision: abby.Decision, info: dict, 
     return saved
 
 
+def _interest_value(lead: dict[str, Any]) -> Optional[int]:
+    raw = lead.get("lt_interest_status")
+    if raw is None:
+        raw = lead.get("interest_status")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _interest_on_campaign(records: list[dict], campaign_id: str) -> Optional[int]:
+    for record in records:
+        campaign = str(record.get("campaign") or record.get("campaign_id") or "").strip()
+        if campaign_id and campaign and campaign != campaign_id:
+            continue
+        if campaign_id and not campaign:
+            continue
+        value = _interest_value(record)
+        if value is not None:
+            return value
+    return None
+
+
+def confirm_interest(client: Any, lead: str, value: int, campaign_id: str,
+                     *, post_slack: Optional[Callable[[str], Any]] = None,
+                     attempts: int = 3) -> dict[str, Any]:
+    """Set interest, log the status, and re-read the lead on that campaign.
+
+    A failed status or a re-read that does not show the same value is retried.
+    After the last miss, Slack gets a short alert. The reply itself is not
+    sent again.
+    """
+
+    post_slack = post_slack or (lambda _text: None)
+    last_status = 0
+    confirmed: Optional[int] = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            last_status = int(client.set_interest(lead, value, campaign_id) or 0)
+        except Exception:  # noqa: BLE001
+            logger.exception("[abby] update-interest-status failed")
+            last_status = 0
+        records: list[dict] = []
+        if 200 <= last_status < 300 and hasattr(client, "leads_for_email"):
+            try:
+                records = list(client.leads_for_email(lead) or [])
+            except Exception:  # noqa: BLE001
+                logger.exception("[abby] could not re-read interest")
+                records = []
+            confirmed = _interest_on_campaign(records, campaign_id)
+        logger.info(
+            "[abby] interest check status=%s confirmed=%s campaign=%s value=%s attempt=%s",
+            last_status, confirmed, campaign_id, value, attempt,
+        )
+        if 200 <= last_status < 300 and confirmed == value:
+            return {"ok": True, "status": last_status, "confirmed": confirmed, "attempts": attempt}
+    post_slack(
+        f"Abby could not confirm interest {value} for {lead} on campaign {campaign_id}. "
+        f"Last response status {last_status}."
+    )
+    return {"ok": False, "status": last_status, "confirmed": confirmed, "attempts": attempts}
+
+
 def handle_email(engine, email: dict, *, client: Instantly, campaign_id: str,
                  now: Optional[datetime] = None,
                  think: Optional[Callable[..., abby.Decision]] = None,
@@ -705,7 +791,7 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
     elif decision.action == "reply" and decision.category in {"interested", "price", "question"}:
         _cancel_scheduled(engine, lead)
     if decision.interest is not None and run_mode == "live" and decision.action in {"reply", "block", "ignore", "hold"}:
-        client.set_interest(lead, decision.interest, campaign_id)
+        confirm_interest(client, lead, decision.interest, campaign_id, post_slack=post_slack)
     if decision.action == "hold":
         counts["held"] += 1
     if decision.action == "ignore":

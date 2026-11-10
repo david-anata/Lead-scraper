@@ -270,6 +270,18 @@ def outbound_scoreboard(request: Request) -> Response:
 
     instantly_key = _sb.load_instantly_key()
     board = _sb.get_scoreboard(instantly_key)
+    try:
+        from sqlalchemy import text as _text
+
+        from sales_support_agent.models.database import get_engine
+
+        with get_engine().connect() as conn:
+            abby_rows = conn.execute(_text(
+                "SELECT campaign_id, category, lead, email_id FROM abby_handled"
+            )).mappings().all()
+        _sb.apply_abby_positives(board, [dict(row) for row in abby_rows])
+    except Exception:  # noqa: BLE001
+        pass
     connection_help = ""
     if not board.connected:
         connection_help = (
@@ -306,7 +318,7 @@ def outbound_scoreboard(request: Request) -> Response:
 
     body = f"""
         <h1>Outbound performance</h1>
-        <p class="sub">What happened after companies entered outreach. Reads live from Instantly.</p>
+        <p class="sub">What happened after companies entered outreach. Sent and replies read from Instantly. Positives are counted from Abby's log, on the campaign she acted in.</p>
         {_sb.render_scoreboard_body(board)}
         {connection_help}
         {_cp.render_compliance_html(checks)}

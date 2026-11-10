@@ -51,6 +51,8 @@ class Scoreboard:
     bounces: int = 0
     booked_calls: Optional[int] = None
     niches: list[NicheRow] = field(default_factory=list)
+    positive_source: str = "instantly"
+    campaigns: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def reply_rate(self) -> Optional[float]:
@@ -69,6 +71,47 @@ class Scoreboard:
         if not self.booked_calls or not self.sent:
             return None
         return int(round(self.sent / self.booked_calls))
+
+
+ABBY_POSITIVE_CATEGORIES = frozenset({"interested", "price", "referral"})
+
+
+def abby_positive_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One positive per person per campaign, from Abby's handled log.
+
+    The campaign is the one Abby recorded on the row, not Instantly's
+    attribution. A question is not counted as a positive.
+    """
+
+    seen: set[tuple[str, str]] = set()
+    counts: dict[str, int] = {}
+    for row in rows:
+        category = str(row.get("category") or "").strip().lower()
+        if category not in ABBY_POSITIVE_CATEGORIES:
+            continue
+        campaign_id = str(row.get("campaign_id") or "").strip()
+        if not campaign_id:
+            continue
+        person = str(row.get("lead") or row.get("email_id") or "").strip().lower()
+        key = (campaign_id, person or str(id(row)))
+        if key in seen:
+            continue
+        seen.add(key)
+        counts[campaign_id] = counts.get(campaign_id, 0) + 1
+    return [
+        {"campaign_id": campaign_id, "positive": count}
+        for campaign_id, count in sorted(counts.items())
+    ]
+
+
+def apply_abby_positives(board: Scoreboard, rows: list[dict[str, Any]]) -> Scoreboard:
+    """Replace the positive total with Abby's log, keyed by campaign."""
+
+    campaigns = abby_positive_rows(rows)
+    board.campaigns = campaigns
+    board.positive = sum(int(item.get("positive") or 0) for item in campaigns)
+    board.positive_source = "abby"
+    return board
 
 
 def compute_scoreboard(
@@ -207,6 +250,24 @@ def _hero(board: Scoreboard) -> str:
     )
 
 
+def _campaign_table(board: Scoreboard) -> str:
+    if board.positive_source != "abby":
+        return ""
+    if not board.campaigns:
+        body = '<tr><td colspan="2">No Abby positives yet.</td></tr>'
+    else:
+        body = "".join(
+            f"<tr><td>{html.escape(str(row.get('campaign_id') or ''))}</td>"
+            f"<td>{int(row.get('positive') or 0)}</td></tr>"
+            for row in board.campaigns
+        )
+    return (
+        '<h2 style="font-size:15px; margin:24px 0 8px;">Positives by campaign, from Abby\'s log</h2>'
+        '<table class="ob-table"><thead><tr><th>Campaign</th><th>Positives</th></tr></thead>'
+        f"<tbody>{body}</tbody></table>"
+    )
+
+
 def render_scoreboard_body(board: Scoreboard) -> str:
     """Just the hero + tiles + niche table — no <html> wrapper. The router drops
     this into the app shell; the standalone page wraps it below."""
@@ -242,6 +303,7 @@ def render_scoreboard_body(board: Scoreboard) -> str:
   {_hero(board)}
   <div class="ob-tiles">{tiles}</div>
   {headline}
+  {_campaign_table(board)}
   <h2 style="font-size:15px; margin:24px 0 8px;">By niche (which to double down on)</h2>
   <table class="ob-table"><thead><tr><th>Niche</th><th>Sent</th><th>Positive %</th></tr></thead>
   <tbody>{niche_rows}</tbody></table>"""

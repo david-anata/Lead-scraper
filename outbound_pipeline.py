@@ -110,23 +110,28 @@ def _company_text(store: dict[str, Any]) -> str:
     return " ".join(str(part) for part in parts).lower()
 
 
-def passes_company_fit(store: dict[str, Any]) -> bool:
+def passes_company_fit(store: dict[str, Any], *, require_niche: bool = True) -> bool:
     """US own-brand physical-product companies with revenue on file.
 
     Baseline pulls, signal pulls, and campaign sourcing all use this gate.
     A blank country is not the US. A missing or zero sales figure is not
     revenue data. Distributors, multi-brand resellers, services, events,
     apps, and fitness programs are out. The niche list is the physical
-    product test.
+    product test. The sales-org segment passes require_niche=False because
+    any US brand qualifies there.
     """
 
     country = _normalize_country(str(store.get("country_code") or ""))
     if country not in ICP_ALLOWED_COUNTRIES:
         return False
+    # A brands page means the site sells other companies' brands. That is a
+    # retailer, not a brand we want in these campaigns.
+    if str(store.get("brands_page") or "").strip():
+        return False
     yearly = _yearly_cents(store)
     if yearly is None or yearly <= 0:
         return False
-    if not store_niche(store):
+    if require_niche and not store_niche(store):
         return False
     text = _company_text(store)
     if any(bad in text for bad in ICP_EXCLUDE_KEYWORDS):
@@ -433,6 +438,82 @@ def _amazon_unknown_sellers(findings: Any) -> int:
     return total
 
 
+def _named_list(value: Any, *, limit: int = 30) -> list[str]:
+    found: list[str] = []
+    items = value if isinstance(value, list) else []
+    for item in items:
+        if isinstance(item, str):
+            name = item.strip()
+        elif isinstance(item, dict):
+            name = str(item.get("name") or item.get("token") or "").strip()
+        else:
+            name = ""
+        if name and name not in found:
+            found.append(name)
+        if len(found) >= limit:
+            break
+    return found
+
+
+def _social_contacts(value: Any) -> list[dict[str, Any]]:
+    """Follower counts only. Email addresses in contact_info are not copied."""
+
+    kept: list[dict[str, Any]] = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "").strip().lower()
+        if kind not in {"tiktok", "youtube", "instagram", "pinterest", "twitter"}:
+            continue
+        kept.append({
+            "type": kind,
+            "followers": item.get("followers"),
+            "followers_30d": item.get("followers_30d"),
+            "followers_90d": item.get("followers_90d"),
+        })
+    return kept[:8]
+
+
+def store_profile(store: dict[str, Any]) -> dict[str, Any]:
+    """Compact StoreLeads facts for a later opener. Not a sentence."""
+
+    product = store.get("most_recently_published_product")
+    if not isinstance(product, dict):
+        product = {}
+    trust = store.get("trustpilot")
+    if not isinstance(trust, dict):
+        trust = {}
+    description = " ".join(str(store.get("description") or "").split())[:300]
+    return {
+        "country_code": _normalize_country(str(store.get("country_code") or "")),
+        "sales_channels": _named_list(store.get("sales_channels"), limit=8),
+        "apps": _named_list(store.get("apps")),
+        "technologies": _named_list(store.get("technologies")),
+        "contact_info": _social_contacts(store.get("contact_info")),
+        "plan": str(store.get("plan") or "").strip(),
+        "last_platform": str(store.get("last_platform") or "").strip(),
+        "last_platform_change_at": str(store.get("last_platform_change_at") or "").strip(),
+        "product_count": store.get("product_count"),
+        "avg_price_usd": store.get("avg_price_usd"),
+        "max_product_published_at": str(store.get("max_product_published_at") or "").strip(),
+        "most_recently_published_product": {
+            "title": str(product.get("title") or product.get("name") or "").strip(),
+            "published_at": str(product.get("published_at") or "").strip(),
+        },
+        "description": description,
+        "retailer_page": str(store.get("retailer_page") or "").strip(),
+        "store_locator_page": str(store.get("store_locator_page") or "").strip(),
+        "brands_page": str(store.get("brands_page") or "").strip(),
+        "trustpilot": {
+            "avg_rating": trust.get("avg_rating"),
+            "review_count": trust.get("review_count"),
+        },
+        "city": str(store.get("city") or "").strip(),
+        "estimated_visits": store.get("estimated_visits"),
+        "product_images_created_90": store.get("product_images_created_90"),
+    }
+
+
 def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
                  amazon: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Shape a matched store into the payload Clay's table expects, with the
@@ -462,6 +543,7 @@ def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
         "estimated_sales_yearly_cents": store.get("estimated_sales_yearly"),
         "categories": store.get("categories"),
         "apps": store.get("apps"),
+        "store_profile": store_profile(store),
     }
     apply_amazon(lead, amazon)
     return lead
@@ -523,6 +605,9 @@ def _retry_after_seconds(resp: "requests.Response") -> Optional[float]:
 # (apps.removed_at) can limit the object to that field and drop the categories
 # the scorer reads. last_platform is separate and is what the replatform recipe
 # is now filtering on.
+# most_recently_published_product is omitted from the default domain payload
+# and must be named here. The other names are the List Domains attributes at
+# https://storeleads.app/api (product_count, avg_price_usd, city, and so on).
 _STORELEADS_FIELDS = ",".join((
     "name", "merchant_name", "platform", "country_code",
     "estimated_sales_yearly", "categories", "tags", "contact_info", "apps",
@@ -530,7 +615,14 @@ _STORELEADS_FIELDS = ",".join((
     "technologies", "monthly_app_spend", "last_plan_change_at", "last_platform",
     "last_platform_change_at", "plan", "created_at", "features", "employee_count",
     "sales_channels",
+    # Same List Domains call. No extra request. Used for personalization and
+    # to drop retailers (brands_page).
+    "product_count", "avg_price_usd", "max_product_published_at",
+    "most_recently_published_product", "description", "title",
+    "retailer_page", "store_locator_page", "brands_page", "trustpilot",
+    "city", "estimated_visits", "product_images_created_90",
 ))
+STORELEADS_BULK_URL = f"{STORELEADS_BASE_URL}{STORELEADS_DOMAIN_PATH}/bulk"
 
 
 @dataclass
@@ -572,6 +664,11 @@ def build_storeleads_query(
             key: value for key, value in extra_params.items()
             if value is not None and not str(key).startswith("_")
         })
+    # Every list call is US only. A stored campaign row can omit f:cc, and an
+    # expanded recipe can set it to None, which used to drop the filter. The
+    # client gate still rejects a non-US row that slips through.
+    params["f:cc"] = "US"
+    params["f:cc:op"] = "or"
     return params
 
 
@@ -642,6 +739,62 @@ def fetch_storeleads_page(
         api_key, page=page, page_size=page_size, timeout=timeout,
         max_retries=max_retries, cursor=cursor, extra_params=extra_params,
     ).domains
+
+
+def lookup_domains(
+    api_key: str,
+    domains: Iterable[str],
+    *,
+    post: Optional[Callable[..., Any]] = None,
+    timeout: int = 30,
+) -> dict[str, dict[str, Any]]:
+    """Bulk Retrieve Domains, up to 100 names per call.
+
+    Returns a map of the requested domain to the StoreLeads object. A missing
+    key or a failed call returns what was already collected and does not raise.
+    This does not write to Instantly.
+    """
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for raw in domains:
+        name = str(raw or "").strip().lower()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    if not api_key or not names:
+        return {}
+    post = post or requests.post
+    found: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(names), 100):
+        chunk = names[start:start + 100]
+        try:
+            response = post(
+                STORELEADS_BULK_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"domains": chunk, "fields": _STORELEADS_FIELDS},
+                timeout=timeout,
+            )
+            status = int(getattr(response, "status_code", 0) or 0)
+            payload = response.json() if status == 200 and hasattr(response, "json") else {}
+        except Exception:  # noqa: BLE001
+            logger.warning("[outbound] StoreLeads bulk lookup failed")
+            continue
+        rows = []
+        if isinstance(payload, dict):
+            rows = payload.get("domains") or []
+        elif isinstance(payload, list):
+            rows = payload
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key = str(row.get("name") or "").strip().lower()
+            if key:
+                found[key] = row
+    return found
 
 
 def push_to_clay(webhook_url: str, leads: list[dict[str, Any]], *, timeout: int = 30) -> dict[str, Any]:

@@ -227,10 +227,10 @@ class Notice(NamedTuple):
 
 
 def is_role_address(address: str) -> bool:
-    """True for info@, sales@, support@, customerservice@, and the same local part with dots or dashes."""
-    local = (address or "").split("@", 1)[0].strip().lower()
-    compact = re.sub(r"[^a-z0-9]", "", local)
-    return bool(compact) and compact in _ROLE_LOCALS
+    """True for a shared inbox, including numbered and dotted variants."""
+    import outbound_contacts
+
+    return outbound_contacts.is_role_mailbox(address)
 
 
 def _body_text(message: Any) -> str:

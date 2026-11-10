@@ -125,6 +125,7 @@ def _lead_from(store: dict[str, Any], recipe_key: str) -> Optional[dict[str, Any
         "categories": store.get("categories") or "",
         "niche": pipeline.store_niche(store),
         "estimated_sales_yearly_cents": yearly if isinstance(yearly, (int, float)) else 0,
+        "store_profile": pipeline.store_profile(store),
     }
 
 
@@ -390,4 +391,102 @@ def source_active_campaigns(
             "filters": filters,
             "error": error,
         })
+    return out
+
+
+def source_sales_org(
+    engine: Any,
+    *,
+    api_key: str,
+    now: Optional[datetime] = None,
+    contacted: Optional[set[str]] = None,
+    company_room: Optional[int] = None,
+    fetch: Optional[Callable[..., Any]] = None,
+    record: Optional[Callable[..., int]] = None,
+) -> dict[str, Any]:
+    """Pull US brands for the sales-org segment. Off unless the flag and campaign id are set.
+
+    No category filter. Company fit still requires a US store, revenue on
+    file, and the retailer and exclusion screens. This does not create an
+    Instantly campaign and does not add a lead.
+    """
+
+    import outbound_instantly_push as push
+
+    out: dict[str, Any] = {
+        "recorded": 0, "leads": [], "recipes": [], "scanned": 0,
+        "skipped_seen": 0, "skipped_unfit": 0, "stopped_reason": "",
+    }
+    if not push.sales_org_enabled():
+        out["stopped_reason"] = "OUTBOUND_SALES_ORG_ENABLED is not true"
+        return out
+    if not push.sales_org_campaign_id():
+        out["stopped_reason"] = "OUTBOUND_SALES_ORG_CAMPAIGN_ID is empty"
+        return out
+    if engine is None:
+        out["stopped_reason"] = "no database"
+        return out
+    if not (api_key or "").strip():
+        out["stopped_reason"] = "STORELEADS_API_KEY is not set"
+        return out
+    room = 25 if company_room is None else min(25, int(company_room))
+    if room <= 0:
+        out["stopped_reason"] = "daily company cap reached"
+        return out
+    if fetch is None:
+        from outbound_pipeline import fetch_storeleads_result
+        fetch = fetch_storeleads_result
+    if record is None:
+        from sales_support_agent.services.outbound_memory import record_leads
+
+        def record(leads: list[dict[str, Any]], recipe_key: str) -> int:
+            return record_leads(engine, leads, source=f"campaign:{recipe_key}")
+    seen = _seen_companies(contacted)
+    fresh: list[dict[str, Any]] = []
+    cursor = None
+    filters = {
+        "f:p": "shopify", "f:ds": "Active", "f:it": "email",
+        "f:cc": "US", "f:cc:op": "or",
+    }
+    for _page in range(3):
+        if len(fresh) >= room:
+            break
+        try:
+            page = fetch(api_key, extra_params=filters, cursor=cursor, page_size=100)
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-campaign-source] sales-org StoreLeads failed")
+            out["stopped_reason"] = "StoreLeads failed"
+            break
+        domains, cursor, error = _domains_from(page)
+        if error:
+            out["stopped_reason"] = error
+            break
+        for store in domains:
+            out["scanned"] += 1
+            lead = _lead_from(store, "sales_org")
+            if lead is None:
+                continue
+            if lead["domain"] in seen:
+                out["skipped_seen"] += 1
+                continue
+            if not pipeline.passes_company_fit(store, require_niche=False):
+                out["skipped_unfit"] += 1
+                continue
+            seen.add(lead["domain"])
+            fresh.append(lead)
+            if len(fresh) >= room:
+                break
+        if not cursor:
+            break
+    if fresh:
+        try:
+            saved = int(record(fresh, "sales_org") or 0)
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-campaign-source] could not record sales_org")
+            saved = 0
+        kept = fresh[:saved] if saved else []
+        out["recorded"] = len(kept)
+        out["leads"] = kept
+        if kept:
+            out["recipes"] = ["sales_org"]
     return out

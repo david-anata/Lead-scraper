@@ -330,6 +330,12 @@ def resolve_filters(value: Any, now: Optional[datetime] = None) -> dict[str, Any
         except (TypeError, ValueError):
             continue
         resolved[key] = _iso(moment - timedelta(days=count))
+    if not resolved:
+        return {}
+    # The stored row is insert-only, so an older f:cc list (or a missing
+    # f:cc) would otherwise be sent as-is. Every campaign query is US.
+    resolved["f:cc"] = "US"
+    resolved["f:cc:op"] = "or"
     return resolved
 
 
