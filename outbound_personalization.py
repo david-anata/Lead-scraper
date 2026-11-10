@@ -94,6 +94,38 @@ class FactSheet:
         return not self.facts
 
 
+def as_text(value: Any) -> str:
+    """A display string. Lists, dicts, and nulls never become a Python repr."""
+
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, float):
+        if value != value:
+            return ""
+        return ""
+    if isinstance(value, int):
+        return ""
+    if isinstance(value, dict):
+        for key in ("name", "title", "value", "description"):
+            text = as_text(value.get(key))
+            if text:
+                return text
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        parts: list[str] = []
+        for item in value:
+            text = as_text(item)
+            if text and text not in parts:
+                parts.append(text)
+        return ", ".join(parts)
+    text = " ".join(str(value).replace("\x00", " ").split())
+    if text.lower() in {"none", "nan", "null"}:
+        return ""
+    if text[:1] in "{[":
+        return ""
+    return text
+
+
 def _words_for_count(value: Any) -> str:
     try:
         number = int(float(value))
@@ -198,8 +230,8 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
     """Curated shopper-visible facts. Tech and traffic stats are left out."""
 
     store = _record(lead)
-    brand = str(store.get("merchant_name") or lead.get("brand") or store.get("name") or "").strip()
-    category = str(store.get("categories") or lead.get("categories") or lead.get("niche") or "")
+    brand = as_text(store.get("merchant_name") or lead.get("brand") or store.get("name"))
+    category = as_text(store.get("categories") or lead.get("categories") or lead.get("niche"))
     recipe = str(lead.get("recipe") or "").strip()
     sheet = FactSheet(brand=brand or "This brand", category=category, recipe=recipe)
     if _RESTRICTED.search(category) or _RESTRICTED.search(brand):
@@ -215,13 +247,13 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
 
     facts: list[str] = []
     for key in ("description", "title"):
-        blurb = _clean_blurb(str(store.get(key) or ""), brand)
+        blurb = _clean_blurb(as_text(store.get(key)), brand)
         if blurb:
             facts.append(blurb)
             break
     product = store.get("most_recently_published_product")
     if isinstance(product, dict):
-        title = _clean_blurb(str(product.get("title") or ""), brand)
+        title = _clean_blurb(as_text(product.get("title")), brand)
         if title:
             facts.append(f"recent product: {title}")
     channels = _channel_names(store)
@@ -232,7 +264,7 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
         facts.append("has a store locator")
     if str(store.get("retailer_page") or "").strip():
         facts.append("sold through retailers")
-    feature_text = " ".join(str(item) for item in (store.get("features") or []))
+    feature_text = as_text(store.get("features"))
     if re.search(r"wholesale", feature_text, re.I):
         facts.append("sells wholesale")
     if re.search(r"retail|store locator", feature_text, re.I) and "has a store locator" not in facts:
@@ -245,8 +277,8 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
     for item in store.get("contact_info") or []:
         if not isinstance(item, dict):
             continue
-        kind = str(item.get("type") or "").strip()
-        bio = _clean_blurb(str(item.get("description") or ""), brand)
+        kind = as_text(item.get("type"))
+        bio = _clean_blurb(as_text(item.get("description")), brand)
         reach = _words_for_count(item.get("followers"))
         if bio:
             social_bits.append(f"{kind} bio: {bio}" if kind else bio)
@@ -255,7 +287,7 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
     facts.extend(social_bits[:3])
     abroad = []
     for item in list(store.get("ships_to_countries") or []) + list(store.get("locs") or []):
-        label = str(item or "").strip()
+        label = as_text(item)
         if label and label.upper() not in {"US", "USA"} and label not in abroad:
             abroad.append(label)
     for host in store.get("cluster_domains") or []:
@@ -309,37 +341,25 @@ def style_violation(
         return "low rating"
     if re.search(r"\bstars?\b|\brating\b", raw, re.I) and not high_rating:
         return "low rating"
+    if role == "angle" and raw.lower().startswith("anata helps"):
+        return "anata helps"
+    if any(mark in raw for mark in ("[", "]", "{", "}", "{{", "}}")):
+        return "repr or placeholder"
+    if re.search(r"\b(?:None|nan)\b", raw) or "  " in raw:
+        return "repr or placeholder"
     words = raw.split()
+    sentences = [part.strip() for part in re.split(r"[.!?]", raw) if part.strip()]
+    if any(len(part.split()) < 6 for part in sentences):
+        return "too short"
     limit = ANGLE_MAX_WORDS if role == "angle" else OPENER_MAX_WORDS
     if len(words) > limit:
         return "too long"
-    if role == "angle" and raw.lower().startswith("anata helps"):
-        return "anata helps"
     if recipe:
         # Every recipe keeps the same ban. plan_upgrade and replatform are
         # the ones David called out; the check is not limited to them.
         if _TECH.search(raw) or _BACKEND.search(raw):
             return "tech or backend change"
     return ""
-
-
-def _category_lines(sheet: FactSheet) -> tuple[str, str]:
-    from outbound_openers import _category_phrase
-
-    category = _category_phrase(sheet.category) or ""
-    brand = sheet.brand or "This brand"
-    if not category or _RESTRICTED.search(category):
-        return "", ""
-    opener = (
-        f"Saw {brand} in {category}. "
-        "That is a category where Amazon demand tends to sit next to the website."
-    )
-    angle = f"{category[:1].upper()}{category[1:]} shoppers compare fast, so the listing has to be ready when they look."
-    if style_violation(opener, role="opener", recipe=sheet.recipe, high_rating=False):
-        return "", ""
-    if style_violation(angle, role="angle", recipe=sheet.recipe, high_rating=False):
-        return "", ""
-    return opener, angle
 
 
 def _prompt(sheet: FactSheet) -> str:
@@ -400,20 +420,25 @@ def generate(
     *,
     llm: Optional[Callable[[str], str]] = None,
     api_key: Optional[str] = None,
-) -> tuple[str, str, str]:
-    """Return (opener, angle, source). Source is ai, fallback, or none.
+) -> tuple[str, str, str, str]:
+    """Return (opener, angle, source, reason).
 
-    Thin, restricted, and multi-brand records get no lines. A failed model
-    line falls back to a category sentence when the category itself is safe.
+    Source is ``ai`` or ``none``. There is no category template. A missing
+    model, a failed line, a non-US headquarters, or a thin record leaves both
+    lines empty so the campaign keeps its existing default copy.
     """
 
+    from outbound_pipeline import country_eligibility
+
+    store = _record(lead)
+    allowed, country_reason = country_eligibility(store)
+    if not allowed:
+        logger.info("[outbound-personalization] %s flagged: %s", store.get("name"), country_reason)
+        return "", "", "none", country_reason
     sheet = fact_sheet(lead)
     if sheet.blocked:
-        logger.info(
-            "[outbound-personalization] %s flagged: %s",
-            sheet.brand, sheet.blocked,
-        )
-        return "", "", "none"
+        logger.info("[outbound-personalization] %s flagged: %s", sheet.brand, sheet.blocked)
+        return "", "", "none", sheet.blocked
     prompt = _prompt(sheet)
     model = llm
     if model is None:
@@ -421,25 +446,25 @@ def generate(
 
         if llm_available(api_key=api_key):
             model = lambda text: _call_model(text, api_key)  # noqa: E731
-    if model is not None:
-        why = ""
-        for _attempt in range(2):
-            try:
-                opener, angle = _parse_pair(model(prompt))
-            except Exception:  # noqa: BLE001
-                logger.exception("[outbound-personalization] model call failed")
-                break
-            why = style_violation(
-                opener, role="opener", recipe=sheet.recipe, high_rating=sheet.high_rating,
-            ) or style_violation(
-                angle, role="angle", recipe=sheet.recipe, high_rating=sheet.high_rating,
-            )
-            if opener and angle and not why and opener.strip() != angle.strip():
-                return opener, angle, "ai"
-            prompt = prompt + f"\n\nRejected ({why or 'empty'}). Write a different pair that follows every rule."
-        logger.info("[outbound-personalization] model line rejected (%s)", why or "empty")
-    opener, angle = _category_lines(sheet)
-    if opener and angle:
-        return opener, angle, "fallback"
-    logger.info("[outbound-personalization] %s flagged: no safe line", sheet.brand)
-    return "", "", "none"
+    if model is None:
+        logger.info("[outbound-personalization] %s flagged: model unavailable", sheet.brand)
+        return "", "", "none", "model unavailable"
+    why = ""
+    for _attempt in range(2):
+        try:
+            opener, angle = _parse_pair(model(prompt))
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-personalization] model call failed")
+            why = "model unavailable"
+            break
+        why = style_violation(
+            opener, role="opener", recipe=sheet.recipe, high_rating=sheet.high_rating,
+        ) or style_violation(
+            angle, role="angle", recipe=sheet.recipe, high_rating=sheet.high_rating,
+        )
+        if opener and angle and not why and opener.strip() != angle.strip():
+            return opener, angle, "ai", ""
+        prompt = prompt + f"\n\nRejected ({why or 'empty'}). Write a different pair that follows every rule."
+    reason = f"model line rejected: {why or 'empty'}"
+    logger.info("[outbound-personalization] %s flagged: %s", sheet.brand, reason)
+    return "", "", "none", reason
