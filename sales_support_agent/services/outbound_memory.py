@@ -687,6 +687,51 @@ CREATE TABLE IF NOT EXISTS {_PROFILE_TABLE} (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
+_profile_missing_logged = False
+
+
+def _profile_relation_missing(exc: BaseException) -> bool:
+    """True when Postgres or SQLite is telling us the profile table is absent."""
+
+    orig = getattr(exc, "orig", None)
+    blob = " ".join(
+        str(part) for part in (type(exc).__name__, type(orig).__name__ if orig is not None else "", exc, orig or "")
+    ).lower()
+    if _PROFILE_TABLE not in blob and "store_profiles" not in blob:
+        return False
+    return "does not exist" in blob or "no such table" in blob or "undefinedtable" in blob
+
+
+def _warn_profile_table_missing() -> None:
+    """One warning per process. A missing table must not look like a lost lead."""
+
+    global _profile_missing_logged
+    if _profile_missing_logged:
+        return
+    _profile_missing_logged = True
+    logger.warning(
+        "[outbound-memory] outbound_store_profiles is missing; "
+        "leads were kept and openers wait for shopper-visible facts. "
+        "Apply sales_support_agent/migrations/20261110_outbound_store_profiles.sql."
+    )
+
+
+def profile_table_ready(engine, *, warn: bool = False) -> bool:
+    """False when the migration has not been applied. Never raises."""
+
+    if engine is None:
+        return False
+    from sales_support_agent.services.outbound_ddl import relation_exists
+
+    try:
+        ready = relation_exists(engine, _PROFILE_TABLE)
+    except Exception:  # noqa: BLE001
+        if warn:
+            _warn_profile_table_missing()
+        return False
+    if not ready and warn:
+        _warn_profile_table_missing()
+    return ready
 
 
 def ensure_profile_table(engine) -> None:
@@ -715,14 +760,19 @@ def save_store_profiles(engine, leads: Iterable[dict[str, Any]]) -> int:
         return 0
     try:
         ensure_profile_table(engine)
+        if not profile_table_ready(engine, warn=True):
+            return 0
         with engine.begin() as conn:
             conn.execute(text(
                 f"INSERT INTO {_PROFILE_TABLE} (domain, profile) VALUES (:domain, :profile) "
                 "ON CONFLICT (domain) DO UPDATE SET profile = excluded.profile"
             ), rows)
         return len(rows)
-    except Exception:  # noqa: BLE001
-        logger.exception("[outbound-memory] store profiles were not saved")
+    except Exception as exc:  # noqa: BLE001
+        if _profile_relation_missing(exc):
+            _warn_profile_table_missing()
+        else:
+            logger.exception("[outbound-memory] store profiles were not saved")
         return 0
 
 
@@ -755,7 +805,7 @@ def load_store_profiles(engine, domains: Iterable[str]) -> dict[str, dict[str, A
     """Domain to profile. Empty when the table is missing."""
 
     wanted = [_norm(item) for item in domains if _norm(item)]
-    if not wanted or engine is None:
+    if not wanted or engine is None or not profile_table_ready(engine):
         return {}
     try:
         placeholders = ",".join(f":d{i}" for i in range(len(wanted)))
@@ -764,7 +814,9 @@ def load_store_profiles(engine, domains: Iterable[str]) -> dict[str, dict[str, A
             found = conn.execute(text(
                 f"SELECT domain, profile FROM {_PROFILE_TABLE} WHERE domain IN ({placeholders})"
             ), params).fetchall()
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if _profile_relation_missing(exc):
+            _warn_profile_table_missing()
         return {}
     out: dict[str, dict[str, Any]] = {}
     for domain, raw in found:

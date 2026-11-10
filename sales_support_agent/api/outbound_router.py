@@ -498,6 +498,7 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "",
             dry_run=True,
             recipe=chosen,
             settings=tunables,
+            engine=engine,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[outbound] StoreLeads CSV build failed")
@@ -1506,7 +1507,7 @@ async def outbound_push_to_clay(request: Request) -> Response:
         result = _op.run_recipe_pull(
             api_key=api_key, clay_webhook_url="", processed_domains=already,
             max_new=chosen.cap(tunables) if chosen else 25, dry_run=True,
-            recipe=chosen, settings=tunables,
+            recipe=chosen, settings=tunables, engine=engine,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[outbound] pull before Clay push failed")

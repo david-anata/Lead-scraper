@@ -246,6 +246,38 @@ def test_brand_angle_is_empty_without_a_category():
     assert angle == "" and source == "none"
 
 
+def test_category_filler_urls_and_backend_are_not_sendable():
+    filler = op.opener_hold_reason(
+        "Kalm sells food & drink.",
+        {"brand": "Kalm", "categories": "Food & Drink"},
+    )
+    assert "category filler" in filler
+    assert "url" in op.opener_hold_reason("See https://kalm.co/salsa today.", {"brand": "Kalm"})
+    assert "backend" in op.opener_hold_reason(
+        "Kalm recently upgraded their store plan.", {"brand": "Kalm"},
+    )
+    assert op.opener_hold_reason(
+        "Kalm sells Green Chile Salsa.",
+        {"brand": "Kalm", "categories": "Food & Drink"},
+    ) == ""
+    assert op.angle_is_filler("Anata helps food & drink brands grow.")
+    opener, angle = op.shopper_lines({
+        "brand": "Kalm",
+        "domain": "food.com",
+        "categories": "Food & Drink",
+        "store_profile": {
+            "most_recently_published_product": {"title": "Green Chile Salsa"},
+            "description": "Roasted green chile salsa",
+            "plan": "Shopify Plus",
+            "apps": ["Klaviyo"],
+            "store_locator_page": "https://food.com/pages/stores",
+        },
+    })
+    assert "Green Chile Salsa" in opener
+    assert "http" not in opener.lower() and "klaviyo" not in opener.lower()
+    assert "shopify" not in opener.lower() and "shopify" not in angle.lower()
+
+
 def test_friendly_category():
     assert push.friendly_category("/Business & Industrial/Agriculture & Forestry, /Home & Garden/Gardening & Landscaping") == "gardening & landscaping"
     assert push.friendly_category("/Apparel") == "apparel"

@@ -120,6 +120,63 @@ class MorningRoutineTests(unittest.TestCase):
         self.assertEqual(out["pulled"], 2)
         self.assertIn("amz_on", out["recipes"])
 
+    def test_a_held_recipe_does_not_spend_a_storeleads_call(self):
+        """churned_tool is on the weekday schedule and still must not be pulled."""
+        import outbound_campaign_source as source
+        import outbound_campaigns as campaigns
+        import outbound_pipeline as op
+        from sales_support_agent.api import outbound_router
+        from sales_support_agent.models import database as db
+        from sales_support_agent.services import outbound_batches, outbound_delivery, outbound_memory
+
+        engine = create_engine("sqlite://", future=True)
+        calls = []
+        held = SimpleNamespace(key="churned_tool", label="Just dropped a growth tool", cap=lambda _settings: 30)
+        allowed = SimpleNamespace(key="social_surge", label="Social following spiking", cap=lambda _settings: 5)
+
+        def pull(**kwargs):
+            calls.append(kwargs["recipe"].key)
+            return op.PipelineResult(dry_run=True)
+
+        real = (
+            op.load_config_from_env, op.run_recipe_pull, db.get_engine,
+            outbound_memory.persistence_health, outbound_batches.materialize_recipes,
+            outbound_delivery.deliver_daily_batch, source.source_active_campaigns,
+            source.source_sales_org, campaigns.list_campaigns, outbound_router._amazon_checker,
+        )
+        op.load_config_from_env = lambda: ("storeleads-key", "")
+        op.run_recipe_pull = pull
+        db.get_engine = lambda: engine
+        outbound_memory.persistence_health = lambda _engine: {"ready": True}
+        outbound_batches.materialize_recipes = lambda *_args, **_kwargs: [held, allowed]
+        outbound_delivery.deliver_daily_batch = lambda *_a, **_k: {"email": "skipped", "slack": "skipped"}
+        source.source_active_campaigns = lambda *_a, **_k: {
+            "recorded": 0, "leads": [], "recipes": [], "campaigns": [],
+        }
+        source.source_sales_org = lambda *_a, **_k: {"recorded": 0}
+        campaigns.list_campaigns = lambda _engine: [{
+            "recipe_key": "churned_tool",
+            "recipe_aliases": "",
+            "status": "cut",
+            "daily_cap": 0,
+            "campaign_id": "a04a958c-6546-5ba0-a97d-586446d2b580",
+            "name": "churned_tool|hold|no_trial_offer_ingest",
+            "storeleads_filters": {"f:p": "shopify"},
+        }]
+        outbound_router._amazon_checker = lambda _settings: None
+        try:
+            out = jobs.run_morning_routine(now=datetime(2026, 11, 10, 7, tzinfo=DENVER))
+        finally:
+            (
+                op.load_config_from_env, op.run_recipe_pull, db.get_engine,
+                outbound_memory.persistence_health, outbound_batches.materialize_recipes,
+                outbound_delivery.deliver_daily_batch, source.source_active_campaigns,
+                source.source_sales_org, campaigns.list_campaigns, outbound_router._amazon_checker,
+            ) = real
+        self.assertTrue(out["ran"], out.get("reason"))
+        self.assertEqual(calls, ["social_surge"])
+        self.assertNotIn("churned_tool", calls)
+
     def test_a_weekend_does_nothing(self):
         """We do not pull on weekends because we do not send on weekends."""
         import outbound_pipeline as op

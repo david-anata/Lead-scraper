@@ -1176,3 +1176,156 @@ def write_brand_angle(
             logger.exception("[outbound-openers] brand angle AI call failed, using fallback")
     line = brand_angle_line(facts)
     return finish(line, "fallback" if line else "none")
+
+
+# A held contact stays out of Instantly until a later push can replace this.
+OPENER_HOLD_PREFIX = "held:opener:"
+
+# Backend facts are recipe context. They are not a cold-email sentence.
+_BACKEND_COPY = re.compile(
+    r"\b(?:shopify|woocommerce|woo commerce|magento|bigcommerce|big commerce|"
+    r"klaviyo|yotpo|okendo|judge\.?me|loox|recharge|pixel|shopify plus|"
+    r"upgraded|platform|app install|growth app|store plan|"
+    r"moved (?:their|from|off)|previously ran on)\b",
+    re.I,
+)
+_COPY_URL = re.compile(r"https?://|www\.", re.I)
+_CATEGORY_SENTENCE = re.compile(r"^(.+?) sells ([^.]+)\.$", re.I)
+_ANATA_CATEGORY = re.compile(r"^anata helps .+ brands grow\.?$", re.I)
+_SAW_CATEGORY = re.compile(r"^saw .+ in .+\.", re.I)
+
+
+def _category_phrases(lead: dict[str, Any]) -> set[str]:
+    """Category wording the filler sentence would use. Not a product name."""
+
+    found: set[str] = set()
+    raw_values = (
+        lead.get("categories"), lead.get("category"), lead.get("niche"),
+    )
+    for raw in raw_values:
+        for phrase in (_category_phrase(raw), _specific_category(raw)):
+            text = phrase.lower().replace("&", "and")
+            text = " ".join(text.split())
+            if text:
+                found.add(text)
+    try:
+        from outbound_instantly_push import friendly_category
+
+        friendly = friendly_category(lead.get("categories") or lead.get("category") or "")
+    except Exception:  # noqa: BLE001
+        friendly = ""
+    if friendly:
+        found.add(" ".join(friendly.lower().replace("&", "and").split()))
+    return found
+
+
+def _normalized_sale(opener: str) -> str:
+    match = _CATEGORY_SENTENCE.fullmatch((opener or "").strip())
+    if not match:
+        return ""
+    return " ".join(match.group(2).lower().replace("&", "and").split())
+
+
+def opener_hold_reason(opener: str, lead: Optional[dict[str, Any]] = None) -> str:
+    """Why this opener must not be sent. Empty when it can go to Instantly.
+
+    A category sentence, a URL, or a backend detail is not a shopper-visible
+    fact. The contact stays unpushed and a later run can replace the line.
+    """
+
+    text = (opener or "").strip()
+    if not text:
+        return "no shopper-visible opener"
+    if _COPY_URL.search(text):
+        return "opener contains a url"
+    if _BACKEND_COPY.search(text):
+        return "opener names backend technology instead of a shopper-visible fact"
+    if _ANATA_CATEGORY.match(text):
+        return "opener is a category filler with no shopper-visible fact"
+    if _SAW_CATEGORY.match(text) and "category where" in text.lower():
+        return "opener is a category filler with no shopper-visible fact"
+    sold = _normalized_sale(text)
+    if sold and sold in _category_phrases(lead or {}):
+        return "opener is a category filler with no shopper-visible fact"
+    return ""
+
+
+def angle_is_filler(angle: str) -> bool:
+    """True when brandAngle would ship a category slogan, a URL, or backend tech."""
+
+    text = (angle or "").strip()
+    if not text:
+        return False
+    if _ANATA_CATEGORY.match(text) or _COPY_URL.search(text) or _BACKEND_COPY.search(text):
+        return True
+    return False
+
+
+def _shopper_sentence(brand: str, fact: str) -> str:
+    """One email sentence from a shopper-visible fact. Empty when it is not one."""
+
+    raw = " ".join((fact or "").split())
+    low = raw.lower()
+    if not raw:
+        return ""
+    if low.startswith("sells on ") or low.startswith("has shoppers") or low.startswith("offers a subscribe"):
+        return ""
+    if low.startswith("recent product:"):
+        title = raw.split(":", 1)[1].strip()
+        return _usable(f"{brand} sells {title}.", allow_amazon=False)
+    if "reviews average" in low or low.startswith("reviews "):
+        return _usable(f"{brand} {raw}.", allow_amazon=False)
+    if low in {"has a store locator", "sold through retailers", "sold in stores"}:
+        return _usable(f"{brand} is sold in retail stores.", allow_amazon=False)
+    if low == "sells wholesale":
+        return _usable(f"{brand} sells through wholesale.", allow_amazon=False)
+    if " bio:" in low or low.endswith("followers"):
+        return _usable(f"{brand} {raw}.", allow_amazon=False)
+    if len(raw.split()) >= 4 and not _BACKEND_COPY.search(raw) and not _COPY_URL.search(raw):
+        sentence = raw if raw.endswith(".") else f"{raw}."
+        if sentence.lower().startswith(brand.lower()):
+            return _usable(sentence, allow_amazon=False)
+        return _usable(f"{brand} sells {sentence[0].lower() + sentence[1:]}", allow_amazon=False)
+    return ""
+
+
+def shopper_lines(lead: dict[str, Any]) -> tuple[str, str]:
+    """(opener, angle) using only products, story, reviews, retail, or social.
+
+    Category labels, platforms, plans, apps, pixels, and URLs are not used.
+    Both strings are empty when the record has no shopper-visible fact.
+    """
+
+    from outbound_personalization import fact_sheet
+
+    sheet = fact_sheet(lead)
+    if sheet.blocked or not sheet.facts:
+        return "", ""
+    brand = _named(str(lead.get("brand") or sheet.brand or ""))
+    opener = ""
+    angle = ""
+    preferred = []
+    rest = []
+    for fact in sheet.facts:
+        low = fact.lower()
+        if low.startswith("recent product") or "reviews average" in low or low in {
+            "has a store locator", "sold through retailers", "sold in stores", "sells wholesale",
+        } or " bio:" in low or low.endswith("followers"):
+            preferred.append(fact)
+        else:
+            rest.append(fact)
+    for fact in preferred + rest:
+        sentence = _shopper_sentence(brand, fact)
+        if not sentence or _BACKEND_COPY.search(sentence) or _COPY_URL.search(sentence):
+            continue
+        if opener_hold_reason(sentence, lead):
+            continue
+        if not opener:
+            opener = sentence
+            continue
+        if sentence.lower() != opener.lower():
+            angle = sentence
+            break
+    if angle_is_filler(angle):
+        angle = ""
+    return opener, angle

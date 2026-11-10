@@ -122,7 +122,7 @@ def test_push_pending_uses_the_table_and_holds_cut_recipes(engine):
         engine,
         SimpleNamespace(email="a@plan.com", domain="plan.com", first_name="A", last_name="B",
                         title="Founder", linkedin_url="", email_status=""),
-        "Plan upgraded.", "test",
+        "Plan sells a glass bottle.", "test",
         {"brand": "Plan", "categories": "", "recipe": "plan_upgrade", "tier": "B"},
     )
     sent = {}
@@ -146,7 +146,7 @@ def test_push_pending_falls_back_when_the_table_is_empty(engine):
         engine,
         SimpleNamespace(email="a@plan.com", domain="plan.com", first_name="A", last_name="B",
                         title="Founder", linkedin_url="", email_status=""),
-        "Plan upgraded.", "test",
+        "Plan sells a glass bottle.", "test",
         {"brand": "Plan", "categories": "", "recipe": "plan_upgrade", "tier": "B"},
     )
     sent = {}
@@ -362,6 +362,83 @@ def test_sourcing_stops_at_the_company_and_credit_caps(engine):
     assert stopped["recorded"] == 0
     assert stopped["stopped_reason"] == "daily credit cap reached"
     assert calls == []
+
+
+def test_amz_off_resumes_past_pages_already_read_and_stops_at_five(engine):
+    """A later morning continues after the saved cursor and still requests five pages."""
+
+    calls: dict[str, list] = {}
+
+    def fetch(api_key, **kwargs):
+        filters = kwargs["extra_params"]
+        if filters.get("f:scs:op") == "not":
+            label = "off"
+        else:
+            label = "other"
+        calls.setdefault(label, []).append(kwargs.get("cursor"))
+        step = len(calls[label])
+        return SimpleNamespace(
+            domains=[_fit_store(f"{label}-{step}.example")],
+            next_cursor=f"{label}-{step}",
+            error="",
+        )
+
+    first = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
+    )
+    assert len(calls["off"]) == source._MAX_PAGES
+    assert calls["off"][0] is None
+    assert calls["off"] == [None, "off-1", "off-2", "off-3", "off-4"]
+    assert first["recorded"] > 0
+
+    calls.clear()
+    source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
+    )
+    assert calls["off"][0] == "off-5"
+    assert len(calls["off"]) == source._MAX_PAGES
+
+
+def test_held_recipes_are_not_pulled_unless_explicitly_enabled():
+    held = {
+        "recipe_key": "churned_tool",
+        "recipe_aliases": "",
+        "status": "cut",
+        "daily_cap": 0,
+        "campaign_id": "a04a958c-6546-5ba0-a97d-586446d2b580",
+        "name": "churned_tool|hold|no_trial_offer_ingest",
+        "storeleads_filters": {"f:p": "shopify"},
+    }
+    growth = {
+        "recipe_key": "new_growth_app",
+        "recipe_aliases": "",
+        "status": "cut",
+        "daily_cap": 0,
+        "campaign_id": "593df58d-f073-51c0-9cc9-b475a50a6a79",
+        "name": "new_growth_app|hold|no_trial_offer_ingest",
+        "storeleads_filters": {"f:p": "shopify"},
+    }
+    live = {
+        "recipe_key": "plan_upgrade",
+        "recipe_aliases": "",
+        "status": "active",
+        "daily_cap": 30,
+        "campaign_id": push.RECIPE_CAMPAIGN_MAP["plan_upgrade"],
+        "name": "plan_upgrade|standard|us_plus_90d",
+        "storeleads_filters": {"f:plan": "Shopify Plus"},
+    }
+    rows = [held, growth, live]
+    assert source.legacy_recipe_pull_reason("churned_tool", rows, {}) == "held recipe has no live campaign"
+    assert source.legacy_recipe_pull_reason("new_growth_app", rows, {}) == "held recipe has no live campaign"
+    assert source.legacy_recipe_pull_reason(
+        "churned_tool", rows, {"churned_tool.enabled": "true"},
+    ) == ""
+    assert source.legacy_recipe_pull_reason("icp_baseline", rows, {}) == ""
+    assert "already sources" in source.legacy_recipe_pull_reason("plan_upgrade", rows, {})
+    assert "already sources" in source.legacy_recipe_pull_reason("replatformed", [{
+        **live, "recipe_key": "replatform", "recipe_aliases": "replatformed",
+    }], {})
+    assert source.legacy_recipe_pull_reason("churned_tool", None, {}) == ""
 
 
 def test_judge_requires_150_contacted_and_does_not_change_volume():
