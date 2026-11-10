@@ -536,3 +536,81 @@ def test_missing_headquarters_is_kept_unless_the_fallback_is_clearly_foreign(cap
     profile = pipeline.store_profile(store)
     assert profile["country_code"] == "EE"
     assert "most_recently_published_product" in profile
+
+
+def _hq_store(name: str, **extra: object) -> dict:
+    store = {
+        "name": name,
+        "merchant_name": str(extra.pop("merchant_name", name.split(".")[0])),
+        "platform": "shopify",
+        "country_code": "US",
+        "estimated_sales_yearly": 5_000_000_00,
+        "categories": "Food",
+        "tags": "",
+        "currency_code": "USD",
+    }
+    store.update(extra)
+    return store
+
+
+def test_new_mexico_and_new_england_are_us_headquarters():
+    kalm = _hq_store(
+        "mykalm.co", merchant_name="MyKalm", country_code="MX",
+        city="Albuquerque", administrative_area_level_1="New Mexico",
+        location="Albuquerque, New Mexico",
+    )
+    assert pipeline.headquarters_verdict(kalm) == ("US", "")
+    assert pipeline.passes_company_fit(kalm)
+
+    made = _hq_store(
+        "madeinnewmexico.com", merchant_name="Made in New Mexico",
+        location="New Mexico",
+    )
+    assert pipeline.headquarters_verdict(made)[0] == "US"
+    assert pipeline.passes_company_fit(made)
+
+    england = _hq_store(
+        "harbor.com", merchant_name="Harbor Soap",
+        location="Portland, New England",
+    )
+    assert pipeline.headquarters_verdict(england) == ("US", "")
+    assert pipeline.passes_company_fit(england)
+
+
+def test_delaware_registration_is_not_us_hq_and_foreign_storefronts_are_excluded(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    registered = _hq_store(
+        "brand.com", merchant_name="Brand",
+        city="Wilmington", administrative_area_level_1="Delaware",
+        location="1209 North Orange Street, Wilmington, Delaware",
+        contact_info=[{"type": "address", "value": "1209 North Orange Street, Wilmington, DE"}],
+    )
+    assert pipeline.headquarters_verdict(registered)[0] == ""
+    assert pipeline.passes_company_fit(registered)
+    assert "headquarters country is unknown; kept" in caplog.text
+
+    foreign = (
+        ("tweezerman.com.au", "Tweezerman Australia", "AU"),
+        ("goodevas.se", "Goodevas", "SE"),
+        ("decotvframes.ca", "Deco TV Frames", "CA"),
+        ("sparkpaws.fr", "Sparkpaws", "FR"),
+    )
+    for domain, merchant, code in foreign:
+        store = _hq_store(
+            domain, merchant_name=merchant,
+            city="Wilmington", administrative_area_level_1="Delaware",
+            location="Wilmington, Delaware",
+        )
+        verdict, reason = pipeline.headquarters_verdict(store)
+        assert verdict == code, (domain, verdict, reason)
+        assert not pipeline.passes_company_fit(store), domain
+
+    parent = _hq_store(
+        "tweezerman.com.au", merchant_name="Tweezerman",
+        city="Port Washington", administrative_area_level_1="New York",
+        location="Port Washington, New York",
+    )
+    assert pipeline.headquarters_verdict(parent) == ("US", "")
+    assert pipeline.passes_company_fit(parent)

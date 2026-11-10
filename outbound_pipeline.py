@@ -136,7 +136,47 @@ _OTHER_REGIONS = {
     "araba": "ES",
     "pais vasco": "ES",
     "país vasco": "ES",
+    "new south wales": "AU",
 }
+
+
+def _place_phrases() -> tuple[tuple[str, str], ...]:
+    """Longest place names first, so 'new mexico' is not read as Mexico."""
+
+    items = [(name, "US") for name in _US_REGIONS]
+    items.append(("new england", "US"))
+    items.extend((name, "CA") for name in _CA_REGIONS)
+    items.extend(_OTHER_REGIONS.items())
+    items.sort(key=lambda item: len(item[0]), reverse=True)
+    return tuple(items)
+
+
+_PLACE_PHRASES = _place_phrases()
+
+# Country nouns used as a store name ("Tweezerman Australia"). Adjectives are
+# left out so a product word does not become a headquarters.
+_STORE_NAME_COUNTRIES = (
+    ("new zealand", "NZ"),
+    ("australia", "AU"),
+    ("sweden", "SE"),
+    ("canada", "CA"),
+    ("france", "FR"),
+    ("germany", "DE"),
+    ("united kingdom", "GB"),
+    ("britain", "GB"),
+    ("ireland", "IE"),
+    ("mexico", "MX"),
+    ("spain", "ES"),
+    ("italy", "IT"),
+    ("netherlands", "NL"),
+    ("japan", "JP"),
+    ("korea", "KR"),
+    ("brazil", "BR"),
+)
+_US_NAME_MASKS = (
+    "new mexico", "new england", "new york", "new hampshire", "new jersey",
+    "new orleans",
+)
 
 
 def _host_name(value: Any) -> str:
@@ -175,6 +215,9 @@ def _country_in_text(value: Any) -> str:
     raw = " ".join(str(value or "").replace("–", " ").replace("—", " ").split()).lower()
     if not raw:
         return ""
+    for name, code in _PLACE_PHRASES:
+        if re.search(rf"(?<![a-z]){re.escape(name)}(?![a-z])", raw):
+            return code
     for name, code in _COUNTRY_NAMES:
         if re.search(rf"(?<![a-z]){re.escape(name)}(?![a-z])", raw):
             return code
@@ -214,13 +257,66 @@ def _contact_addresses(store: dict[str, Any]) -> list[str]:
     return found
 
 
+def _delaware_registration(text: str) -> bool:
+    """True when the only US place in the text is Delaware.
+
+    A registered-agent address is not the brand's headquarters.
+    """
+
+    raw = " ".join(str(text or "").replace("–", " ").replace("—", " ").split()).lower()
+    if not raw or "new england" in raw:
+        return False
+    if not re.search(r"(?<![a-z])(?:delaware|de)(?![a-z])", raw):
+        return False
+    for region in _US_REGIONS:
+        if region == "delaware":
+            continue
+        if re.search(rf"(?<![a-z]){re.escape(region)}(?![a-z])", raw):
+            return False
+    return True
+
+
+def _location_is_delaware_only(store: dict[str, Any]) -> bool:
+    texts = [str(store.get(key) or "") for key in (
+        "location", "city", "administrative_area_level_1", "address", "contact_address",
+    )]
+    texts.extend(_contact_addresses(store))
+    saw_delaware = False
+    for text in texts:
+        if not str(text or "").strip():
+            continue
+        if _delaware_registration(text):
+            saw_delaware = True
+            continue
+        if _country_in_text(text) == "US":
+            return False
+    return saw_delaware
+
+
+def _foreign_store_name(store: dict[str, Any]) -> str:
+    """Country implied by a store name such as 'Tweezerman Australia'."""
+
+    text = f"{store.get('merchant_name') or ''} {store.get('title') or ''}".lower()
+    text = " ".join(text.replace("–", " ").replace("—", " ").split())
+    if re.search(r"(?<![a-z])new zealand(?![a-z])", text):
+        return "NZ"
+    for phrase in _US_NAME_MASKS:
+        text = text.replace(phrase, " ")
+    for label, code in _STORE_NAME_COUNTRIES:
+        if label == "new zealand":
+            continue
+        if re.search(rf"(?<![a-z]){re.escape(label)}(?![a-z])", text):
+            return code
+    return ""
+
+
 def headquarters_verdict(store: dict[str, Any]) -> tuple[str, str]:
     """(country code, reason). Reason is empty only when the code is US.
 
-    The code comes from the primary domain's country_code, the location
-    fields, or a contact address. A US storefront host, ships_to_countries,
-    and cluster_domains are not evidence. No evidence means unknown, which
-    is not the US.
+    A real location wins. 'New Mexico' and 'New England' are US places.
+    A Delaware registration address is not a headquarters. A US
+    country_code does not outvote a foreign country-code domain or a
+    clearly foreign store name. No evidence means unknown.
     """
 
     evidence: list[tuple[str, str]] = []
@@ -229,29 +325,48 @@ def headquarters_verdict(store: dict[str, Any]) -> tuple[str, str]:
         ("location", store.get("city")),
         ("location", store.get("administrative_area_level_1")),
     ):
+        if _delaware_registration(str(text or "")):
+            continue
         code = _country_in_text(text)
         if code:
             evidence.append((code, source))
     city = str(store.get("city") or "").strip()
     region = str(store.get("administrative_area_level_1") or "").strip()
     if city and region:
-        code = _country_in_text(f"{city}, {region}")
-        if code:
-            evidence.append((code, "location"))
+        combined = f"{city}, {region}"
+        if not _delaware_registration(combined):
+            code = _country_in_text(combined)
+            if code:
+                evidence.append((code, "location"))
     for address in _contact_addresses(store):
+        if _delaware_registration(address):
+            continue
         code = _country_in_text(address)
         if code:
             evidence.append((code, "contact address"))
-    if _record_is_primary(store):
-        code = _normalize_country(str(store.get("country_code") or ""))
-        if code:
-            evidence.append((code, "primary domain country_code"))
     foreign = [(code, source) for code, source in evidence if code != "US"]
     if foreign:
         code, source = foreign[0]
         return code, f"headquarters country is {code} from {source}"
     if any(code == "US" for code, _source in evidence):
         return "US", ""
+
+    host = _primary_host(store)
+    tld_country = _cctld_country(host)
+    suffix = host.split(".", 1)[-1] if "." in host else host
+    name_country = _foreign_store_name(store)
+    if _record_is_primary(store):
+        code = _normalize_country(str(store.get("country_code") or ""))
+        if code == "US" and tld_country and tld_country != "US":
+            return tld_country, f"headquarters country is {tld_country} from .{suffix} domain"
+        if code == "US" and name_country:
+            return name_country, f"headquarters country is {name_country} from store name"
+        if code == "US" and not _location_is_delaware_only(store):
+            return "US", ""
+        if code and code != "US":
+            return code, f"headquarters country is {code} from primary domain country_code"
+    if name_country:
+        return name_country, f"headquarters country is {name_country} from store name"
     return "", "headquarters country is unknown"
 
 
@@ -386,6 +501,11 @@ def _clear_non_us_reason(store: dict[str, Any]) -> str:
         shipped = _ship_countries(store)
         if shipped and "US" not in shipped and tld_country in shipped:
             return f".{suffix} domain and ships to {tld_country}"
+    if tld_country and tld_country != "US":
+        return f".{suffix} domain is a {tld_country} storefront"
+    named = _foreign_store_name(store)
+    if named:
+        return f"store name reads as {named}"
     return ""
 
 
