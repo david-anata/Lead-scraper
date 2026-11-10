@@ -529,6 +529,40 @@ due, has not been approved, or Stripe is not configured.
 Browser writes are same-origin and session-token protected; consequential
 changes retain the signed-in operator in the audit trail.
 
+### Building tenant directory
+
+`/admin/building/tenants` is the operational directory for people in the
+building. It is separate from CRM contacts: those records track prospects,
+consent, and campaigns, and the live relationship list is prospects rather than
+a suite-and-lock roster. Each directory row is one person, so a company can
+have several contacts. Fields are name, company, email, phone, office or suite,
+August lock (blank, `yes`, or a lock name), active, notes, and whether the
+person receives building notices. Notices default on. Store the Fondell
+Industrial and Boulder Ranch owner team with notices off.
+
+The page lists, searches, adds, edits, and deactivates contacts. CSV import
+accepts a header row close to `name, email, phone, company, office`, including
+a UniFi Access user export (`First Name`, `Last Name`, `Email`, `User Group`).
+The preview marks duplicates by email and writes nothing until the operator
+confirms. Confirming adds only new emails.
+
+Active contacts with notices on are available to the building manager bot at:
+
+`GET /api/internal/building/tenant-directory/notice-recipients`
+
+Send `X-Internal-Api-Key` with the same `SALES_AGENT_INTERNAL_API_KEY` used by
+the other Building internal routes. The JSON body is `count`, `emails`, and
+`recipients` (name, company, email, phone, office, August lock). The same
+payload is available to a signed-in building operator at
+`GET /admin/building/tenants/notice-recipients`, which the Copy notice
+recipients button uses.
+
+The table is created by
+`supabase/migrations/20261110205000_building_tenant_directory.sql`. The
+migration is additive: it creates `building_tenant_directory_contacts` and does
+not change existing tables. Apply it before using the page on a database that
+skips boot-time schema changes.
+
 ### Building public content and publication readiness
 
 `/admin/building/content` is the review workspace for lifestyle media, tenant

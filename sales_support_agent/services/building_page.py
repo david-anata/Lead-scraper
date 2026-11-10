@@ -1984,7 +1984,7 @@ def render_building_page(
         </div>
       </details>
       <section class="panel building-view view-contacts">
-        <div class="panel-head"><div><h2>Add a customer relationship</h2><p>One person can be a tenant, prospect, event host, or community member without duplication.</p></div></div>
+        <div class="panel-head"><div><h2>Add a customer relationship</h2><p>One person can be a tenant, prospect, event host, or community member without duplication. Office, lock, and building-notice contacts live in the <a href="/admin/building/tenants">tenant directory</a>.</p></div></div>
         <details class="task-creator"><summary>Add a person or relationship</summary>
         <form class="form-grid" method="post" action="/admin/building/contacts">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">

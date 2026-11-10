@@ -73,6 +73,7 @@ _NAV_SECTIONS = [
     ]),
     _NavSection("building", "Building", "building", [
         _NavSubpage("building.manage", "Today", "/admin/building", "building"),
+        _NavSubpage("building.manage", "Tenants", "/admin/building/tenants", "building_tenants"),
         _NavSubpage("building.manage", "Contracts", "/admin/building/contracts", "building_contracts"),
         _NavSubpage("building.content.manage", "Website content", "/admin/building/content", "building_content"),
     ]),
@@ -665,7 +666,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "finance"
     if active == "content":
         primary_active = "content"
-    if active == "building":
+    if active == "building" or active.startswith("building_"):
         primary_active = "building"
     if active in {"advertising", "advertising_audit", "advertising_clients", "advertising_profit_calculator", "advertising_bulk_profitability"}:
         primary_active = "advertising"
