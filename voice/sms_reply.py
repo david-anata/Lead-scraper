@@ -11,18 +11,21 @@ from voice.screening import looks_like_solicitation
 
 
 RATES = (
-    "Arena rental, plus 7.45% Utah tax: half day up to 6 hours $1,500; "
+    "Weekend and party Arena rental, plus 7.45% Utah tax: half day up to 6 hours $1,500; "
     "full day over 6 hours $2,000; full day plus a half day $3,000; "
-    "two full days $3,500. 50% reserves the date after the agreement is signed "
+    "two full days $3,500. Weekday business events are priced by the team. "
+    "50% reserves the date after the agreement is signed "
     "and the payment clears. 50% is due before the event. No security deposit. "
     "This text does not reserve a date."
 )
 
 HOURS = (
-    "Daytime is for small business meetings when Anata approves them. "
-    "Larger weekday events run 5:00 p.m. to 11:00 p.m. "
+    "Front desk and visitors: 9:00 a.m. to 4:00 p.m. "
+    "Weekdays are for business events. "
+    "Large events and parties are weekends only. "
     "Saturday events may run 8:00 a.m. to midnight. "
     "Sunday events may run 8:00 a.m. to 10:00 p.m. "
+    "New Year's Eve is allowed on a weekday. "
     "Setup and teardown fit inside the booked time."
 )
 

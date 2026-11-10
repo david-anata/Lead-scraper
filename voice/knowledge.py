@@ -159,13 +159,13 @@ def building_facts() -> dict[str, object]:
                 "utilities, parking, mail room, and shared conference and call rooms included."
             ),
             "private_offices": (
-                "Priced by size. No published price. Quoted on the tour based on the room "
-                "and the term. Do not guess a number."
+                "The price depends on availability. Do not quote an office price. "
+                "Warmly invite them to tour."
             ),
             "warehouse": (
-                "Warehouse South: $2 to $4 per square foot, depending on size and access. "
-                "Do not say per month or per year; the team confirms the term."
+                "Warehouse South: $2 to $4 per square foot per month, depending on size and access."
             ),
+            "visitor_hours": "Front desk and visitor hours are 9:00 a.m. to 4:00 p.m.",
             "availability": "No office, desk, or warehouse availability is published. Offer a tour and say the team will confirm.",
             "larger_teams": "A single organization with more than about 20 people needs a more specific conversation.",
             "terms": "Ask about current month-to-month options. Do not promise a term.",
@@ -218,13 +218,12 @@ def anata_inc_facts() -> dict[str, object]:
             **ANATA_INTELLIGENCE_PLANS,
             "anata_intelligence": (
                 "Profit and ad analytics plus Amazon ad automation. Brand Starter $99, Brand "
-                "Growth $199, Brand Pro $399 a month after a 14-day trial. Agency plans start "
-                "at $999 a month. Say Agency plan, never Portfolio. Do not say whether the "
-                "trial needs a card; the team will confirm."
+                "Growth $199, Brand Pro $399 a month after a 14-day trial. The trial requires a "
+                "card. Agency plans start at $999 a month. Say Agency plan, never Portfolio."
             ),
             "shipping_os": (
-                "Software for brands and 3PLs that ship in-house on Anata's negotiated carrier "
-                "rates. Its plan prices are not published here."
+                "Shipping OS is free. The owner controls carrier charges through a "
+                "customizable wallet they top up. It does not require sending inventory to Anata."
             ),
         },
         "qualify": (
@@ -235,13 +234,22 @@ def anata_inc_facts() -> dict[str, object]:
     }
 
 
-_LARGE_EVENT_HOURS = (
-    "Large events, roughly 50 or more guests, conferences, and parties, can only be "
-    "booked on weekday evenings, 5:00 p.m. to 11:00 p.m. Quiet setup may begin at "
-    "3:00 p.m., no amplified sound before 5:00 p.m., and teardown ends by 1:00 a.m. "
-    "Do not quote Saturday or Sunday hours. If they asked for a weekend or a daytime "
-    "slot, explain the rule, offer a weekday evening, and still take the lead."
+_WEEKEND_LARGE = (
+    "Large events and big parties are weekends only. Saturday guest events may run "
+    "8:00 a.m. to midnight, teardown by 2:00 a.m. Sunday guest events may run "
+    "8:00 a.m. to 10:00 p.m., teardown by midnight. Use the published half-day and "
+    "full-day rates. Do not offer a weekday evening. A big party still goes to the "
+    "team to review."
 )
+_BUSINESS_HOURS = (
+    "Weekdays are for business events only: meetings, workshops, BNI, and corporate "
+    "events. Front desk and visitor hours are 9:00 a.m. to 4:00 p.m. Do not quote a "
+    "price. Say the team will put together pricing, collect the details, and offer a tour."
+)
+
+
+def _new_years_eve(on: date) -> bool:
+    return on.month == 12 and on.day == 31
 
 
 def hours_guidance(on: date, style: str) -> str:
@@ -249,36 +257,43 @@ def hours_guidance(on: date, style: str) -> str:
 
     kind = (style or "unsure").strip().casefold()
     weekday = on.weekday()
-    if kind in {"party", "large"}:
-        return _LARGE_EVENT_HOURS
     if kind == "business":
+        return _BUSINESS_HOURS
+    if kind in {"party", "large"}:
+        if _new_years_eve(on):
+            return (
+                "New Year's Eve is allowed even on a weekday. Do not invent the hours; "
+                "the team confirms them. Use the published party rates and take the lead "
+                "for team review."
+            )
+        if weekday == 5:
+            return (
+                "Saturday fits a large event. Guest events may run 8:00 a.m. to midnight, "
+                "and teardown ends by 2:00 a.m. Use the published party rates. A big party "
+                "still goes to the team to review."
+            )
+        if weekday == 6:
+            return (
+                "Sunday fits a large event. Guest events may run 8:00 a.m. to 10:00 p.m., "
+                "and teardown ends by midnight. Use the published party rates. A big party "
+                "still goes to the team to review."
+            )
         return (
-            "Daytime Arena use is only for small business meetings, such as a BNI chapter "
-            "meeting, and only when Anata approves the plan in advance. Do not invent the "
-            "daytime hours. A large event is not a daytime booking; it can only be a "
-            "weekday evening, 5:00 p.m. to 11:00 p.m."
+            _WEEKEND_LARGE
+            + " This date is a weekday and is not New Year's Eve, so offer Saturday or "
+            "Sunday and still take the lead."
         )
     if weekday == 5:
         return (
-            "These Saturday hours are not for large events. Saturday guest events may run "
-            "8:00 a.m. to midnight, and teardown ends by 2:00 a.m. A large event, about "
-            "50 or more guests, a conference, or a party, can only be a weekday evening, "
-            "5:00 p.m. to 11:00 p.m. Do not quote these Saturday hours for that."
+            "Saturday guest events may run 8:00 a.m. to midnight, and teardown ends by "
+            "2:00 a.m. Large events and parties belong on the weekend at the published rates."
         )
     if weekday == 6:
         return (
-            "These Sunday hours are not for large events. Sunday guest events may run "
-            "8:00 a.m. to 10:00 p.m., and teardown ends by midnight. A large event, about "
-            "50 or more guests, a conference, or a party, can only be a weekday evening, "
-            "5:00 p.m. to 11:00 p.m. Do not quote these Sunday hours for that."
+            "Sunday guest events may run 8:00 a.m. to 10:00 p.m., and teardown ends by "
+            "midnight. Large events and parties belong on the weekend at the published rates."
         )
-    return (
-        "Daytime use is only for small business meetings such as BNI, when Anata approves "
-        "them. Large events, roughly 50 or more guests, conferences, and parties, can only "
-        "be booked on weekday evenings, 5:00 p.m. to 11:00 p.m. Do not quote weekend hours "
-        "for a large event. If they asked for a weekend or a daytime slot, offer a weekday "
-        "evening and still take the lead."
-    )
+    return _BUSINESS_HOURS
 
 
 def parse_iso_date(value: str) -> date | None:

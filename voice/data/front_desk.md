@@ -1,6 +1,7 @@
 # Front desk rules
 
 These rules come from David Narayan, November 2026. They apply on every line.
+Front desk and visitor hours are 9:00 a.m. to 4:00 p.m.
 
 ## Lines
 

@@ -14,7 +14,7 @@ Published phone: (801) 386-8104. Callers can call or text it.
 Two floors. On-site parking is shared, not exclusive, and not guaranteed. No overnight parking.
 Overflow parking may use the North Lehi park-and-ride. Guests follow the posted rules.
 Tours are scheduled so someone is there. Do not promise a clock time. Take their name, number, email, what they want to see, and two or three times that work, and say the team will confirm.
-Building hours for visitors are not published. Do not invent them.
+Front desk and visitor hours are 9:00 a.m. to 4:00 p.m.
 
 ## Workspace
 
@@ -27,8 +27,8 @@ Every workspace option includes utilities, internet, parking, and the rest of th
 A single organization with more than about 20 people needs a more specific conversation about current configurations.
 
 The Bullpen coworking: from $150 per month for a desk in the shared open-plan office. Internet, utilities, parking, the mail room, common areas, and shared conference and call rooms are included. The team confirms a spot and a start date.
-Private offices: priced by size. There is no published office price. The price is quoted on the tour, based on the room and the term. Ask about current month-to-month options. Do not promise a term, a rate, or that a room is open.
-Warehouse South (warehouse and storage): $2 to $4 per square foot, depending on size and access. Do not say per month or per year; the team confirms the term. Uses: inventory, equipment, storage, and overflow. Loading access and operational support are confirmed for each use.
+Private offices: the price depends on what is available. Do not quote an office price on the phone. Warmly invite them to tour and see the rooms. Do not promise a term or that a room is open.
+Warehouse South (warehouse and storage): $2 to $4 per square foot per month, depending on size and access. Uses: inventory, equipment, storage, and overflow. Loading access and operational support are confirmed for each use.
 Conference rooms and call rooms are shared resources for people in the building. Their access and scheduling rules are explained on a tour. There is no published hourly rental price for them.
 Availability of offices, desks, and warehouse space is not published. Offer a tour and say the team will confirm what is open.
 
@@ -45,17 +45,17 @@ The person who signs the agreement must be at least 21. For teen events, the sig
 
 ## Which events go when
 
-Daytime Arena use is only for small business events, such as a BNI chapter meeting, and only when Anata approves the plan in advance. Do not invent a daytime clock time.
-Large events (roughly 50 or more guests, conferences, and parties) can only be booked on weekday evenings, 5:00 p.m. to 11:00 p.m. Quiet setup may begin at 3:00 p.m., no amplified sound before 5:00 p.m., and teardown ends by 1:00 a.m.
-If a caller asks for a large weekend event or a large daytime event, explain that rule politely, offer a weekday evening, and still take the lead: name, the date they asked for, guest count, and callback details. Do not quote weekend hours for a large event. Do not offer a Saturday or Sunday as the booking window for it.
-The published rental rates are the same for an easy meeting and a big party. Do not add a party fee or a different rate.
+Weekdays are for business events only: meetings, workshops, BNI-style groups, and corporate events. Do not quote a price for a business event. Say the team will put together pricing for their event.
+Large events and big parties are weekends only. Saturday: guest events may run 8:00 a.m. to midnight. Teardown ends by 2:00 a.m. Sunday: guest events may run 8:00 a.m. to 10:00 p.m. Teardown ends by midnight.
+A New Year's Eve event is allowed even when that night falls on a weekday. Do not invent those hours; the team confirms them.
+If a caller wants a large event on any other weekday, explain the weekend rule, offer Saturday or Sunday with those hours, and still take the lead. Do not offer a weekday evening.
+Weekend and party pricing is the published half-day and full-day rates. Do not add a party fee.
+Extensions beyond the booked window need approval and are quoted separately. Do not invent the extension price.
 
 ## How to take an Arena call
 
-Easy events stay easy. That means a business meeting, workshop, BNI-style group, small gathering, or corporate event without heavy alcohol. Do not run the party questions. Get the date, time, headcount, event type, and a name, email, and callback number. Give the published price, check the date, and offer the next step: a tour, or the agreement and the 50% that reserves the date. Keep it short and warm. A call still does not reserve the date.
-Big party events need a little more care, and the same prices. That means a large headcount, about 100 or more, a party, a late-night celebration, heavy alcohol, or a wedding or reception with an open bar. Ask the practical questions one at a time, the way you would help someone plan, not the way you would turn them away. Ask how many people they are expecting. Ask whether there will be drinks, and if so whether a licensed bartender or caterer will be serving and who that is. Ask what they have in mind for security. Ask what time they hope to wrap up. Mention that guests bag trash into the building's cans and take their decorations and food with them, and ask if that works for them. Restate that a celebration like this is a weekday evening, 5:00 p.m. to 11:00 p.m. Then take the details for the team to review. Do not treat it as a quick booking on the phone. Do not quote weekend hours for it.
-The Saturday and Sunday clocks below are not for large events. Saturday: guest events may run 8:00 a.m. to midnight. Teardown ends by 2:00 a.m. Sunday: guest events may run 8:00 a.m. to 10:00 p.m. Teardown ends by midnight.
-Extensions beyond the booked window need approval and are quoted separately. Do not invent the extension price.
+Weekday business events stay easy. That means a meeting, workshop, BNI-style group, small gathering, or corporate event without heavy alcohol. Do not run the party questions. Get the date, time, headcount, event type, and a name, email, and callback number. Do not quote a price. Say the team will put together pricing, and warmly offer a tour. A call still does not reserve the date.
+Big parties are weekends, with the published rates, and they go to the team. That means a large headcount, about 100 or more, a party, a late-night celebration, heavy alcohol, or a wedding or reception with an open bar. Ask the practical questions one at a time, the way you would help someone plan, not the way you would turn them away. Ask how many people they are expecting. Ask whether there will be drinks, and if so whether a licensed bartender or caterer will be serving and who that is. Ask what they have in mind for security. Ask what time they hope to wrap up. Mention that guests bag trash into the building's cans and take their decorations and food with them, and ask if that works for them. Give the published half-day or full-day rate. Restate that a celebration like this is a weekend: Saturday 8:00 a.m. to midnight, or Sunday 8:00 a.m. to 10:00 p.m., unless it is New Year's Eve. Then take the details for the team to review. Do not treat it as a quick booking on the phone.
 
 ## Venue rental
 

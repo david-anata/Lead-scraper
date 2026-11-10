@@ -47,8 +47,8 @@ Brand Growth, $199: 1 workspace, 4 channels, 5 seats, 500 AI credits a month.
 Brand Pro, $399: 1 workspace, 6 channels, 10 seats, 2,500 AI credits a month.
 Agency plans, for several brands or client workspaces in one account, start at $999 a month and are set up with the team. Always say Agency plan. Never say Portfolio plan.
 Annual billing saves two months. There are no automatic overage charges. Anata Intelligence is included for brands with an active Anata management engagement.
-The website is not consistent about whether the trial needs a card. Do not answer that; say the team will confirm.
-Anata Shipping OS: software for brands and 3PLs that keep fulfillment in-house. It rate-shops the major carriers on Anata's negotiated rates, prints labels from the caller's own warehouse, and syncs orders and inventory across channels. Using it does not mean sending inventory to Anata. Software plan prices for Shipping OS are not published here; the team will confirm.
+The 14-day trial requires a card.
+Anata Shipping OS is free. It is software for brands and 3PLs that keep fulfillment in-house. It rate-shops the major carriers on Anata's negotiated rates, prints labels from the caller's own warehouse, and syncs orders and inventory across channels. Using it does not mean sending inventory to Anata. The owner controls carrier charges through a customizable wallet they top up.
 Existing software users with a login or billing problem: take a message for the team.
 
 ## Qualifying an agency or fulfillment caller

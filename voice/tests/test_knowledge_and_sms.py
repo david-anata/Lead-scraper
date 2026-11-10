@@ -47,9 +47,11 @@ def test_knowledge_file_contains_the_published_rental_rates_and_no_extras() -> N
         assert f"${amount:,}" in text
     assert _dollars(text) == {1500, 2000, 1000, 3000, 3500, 250, 400, 550, 75, 125, 150, 2, 4}
     assert "1657 N. State Street" in text
-    assert "5:00 p.m. to 11:00 p.m." in text
+    assert "5:00 p.m. to 11:00 p.m." not in text
     assert "8:00 a.m. to midnight" in text
     assert "8:00 a.m. to 10:00 p.m." in text
+    assert "9:00 a.m. to 4:00 p.m." in text
+    assert "$2 to $4 per square foot per month" in text
     assert "do not take trash out" in text
     assert "BNI" in text
     assert "$175" not in text
@@ -64,6 +66,9 @@ def test_anata_inc_knowledge_has_only_published_prices_and_says_agency() -> None
     assert "Agency plan" in text
     assert "portfolio plan" not in text.replace("Never say Portfolio plan", "").casefold()
     assert "Do not quote any fulfillment fee" in text
+    assert "trial requires a card" in text
+    assert "Shipping OS is free" in text
+    assert "customizable wallet" in text
     facts = anata_inc_facts()
     assert facts["software"]["agency_from_usd_per_month"] == ANATA_INTELLIGENCE_PLANS["agency_from_usd_per_month"] == 999
 
@@ -104,8 +109,11 @@ def test_sms_replies_quote_published_rates_and_do_not_confirm_a_booking() -> Non
     assert "$1,500" in rates
     assert "$2,000" in rates
     assert "does not reserve" in rates
+    assert "priced by the team" in rates
     assert "can't confirm a date" in booked
-    assert "5:00 p.m." in hours
+    assert "8:00 a.m. to midnight" in hours
+    assert "9:00 a.m. to 4:00 p.m." in hours
+    assert "5:00 p.m. to 11:00 p.m." not in hours
 
 
 def test_spam_calls_are_not_texted_and_sms_summaries_always_can_be() -> None:
