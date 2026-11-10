@@ -10,7 +10,10 @@ unsubscribed, or bounced is never moved or added.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 NAME = "Re-engage // New Offer (Oct 2026)"
 SOURCE_CAMPAIGNS = (
@@ -450,14 +453,12 @@ def run_weekly_topup(*, post: Any = None, suppressed: Optional[set[str]] = None,
             out["dry_run"] = False
             out["reason"] = "StoreLeads country could not be checked"
             return out
-        import outbound_contacts as contacts
-
         found = pipeline.lookup_domains(store_key, domains)
         countries = {}
-        for name, row in found.items():
-            code = str((row or {}).get("country_code") or "").strip().upper()
-            domain_key = contacts.company_domain(name) or name
+        for domain_key, (code, reason) in pipeline.eligibility_country_by_domain(found).items():
             countries[domain_key] = code
+            if code != "US":
+                logger.info("[outbound-reengage] excluding %s: %s", domain_key, reason)
     else:
         import outbound_contacts as contacts
 

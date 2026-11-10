@@ -380,6 +380,95 @@ def test_backfill_apply_keeps_the_email_and_matches_a_domain_to_a_campaign_lead(
     assert {email for _lead_id, email in patched} == {"ada@brand.com", "sam@other.com"}
 
 
+def _foreign_storefront(name: str, apex: str, **hq: str) -> dict:
+    """A US host for a brand whose headquarters are somewhere else.
+
+    country_code US, ships_to_countries, and cluster_domains are the signals
+    that used to let the brand through. They are not headquarters.
+    """
+
+    return {
+        "name": name,
+        "merchant_name": apex.split(".")[0],
+        "platform": "shopify",
+        "country_code": "US",
+        "cluster_best_ranked": apex,
+        "cluster_domains": [apex, name],
+        "ships_to_countries": ["US", "CA", "GB"],
+        "estimated_sales_yearly": 5_000_000_00,
+        "categories": "/Apparel/Footwear",
+        "tags": "",
+        "contact_info": [{"type": "email", "value": f"hello@{apex}"}],
+        **hq,
+    }
+
+
+def test_us_storefront_does_not_make_a_foreign_headquarters_eligible(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    leaked = [
+        _foreign_storefront(
+            "usa.rivieras.com", "rivieras.com",
+            city="Montreuil", location="Montreuil, France",
+            administrative_area_level_1="Ile-de-France",
+            contact_address="Montreuil, France",
+        ),
+        _foreign_storefront(
+            "usa.glo910.com", "glo910.com",
+            city="Vitoria-Gasteiz", location="Vitoria-Gasteiz, Spain",
+            contact_info=[{"type": "address", "value": "Vitoria-Gasteiz, Spain"}],
+        ),
+        _foreign_storefront(
+            "us.bbqing.com", "bbqing.com",
+            city="Ottawa", location="Ottawa, Ontario, Canada",
+            administrative_area_level_1="Ontario",
+        ),
+    ]
+    for store in leaked:
+        assert not pipeline.passes_company_fit(store)
+        assert not pipeline.passes_company_fit(store, require_niche=False)
+        assert not pipeline.store_matches_icp(store)
+    text = caplog.text
+    assert "headquarters country is FR" in text
+    assert "headquarters country is ES" in text
+    assert "headquarters country is CA" in text
+
+    flag_only = _foreign_storefront("usa.rivieras.com", "rivieras.com")
+    code, reason = pipeline.headquarters_verdict(flag_only)
+    assert code == ""
+    assert reason == "headquarters country is unknown"
+    assert not pipeline.passes_company_fit(flag_only)
+    assert "headquarters country is unknown" in caplog.text
+
+    rows = {store["name"]: store for store in leaked}
+    verdicts = pipeline.eligibility_country_by_domain(rows)
+    assert verdicts["rivieras.com"][0] == "FR"
+    assert verdicts["glo910.com"][0] == "ES"
+    assert verdicts["bbqing.com"][0] == "CA"
+
+    domestic = {
+        "name": "lovevery.com",
+        "merchant_name": "Lovevery",
+        "platform": "shopify",
+        "country_code": "US",
+        "cluster_best_ranked": "lovevery.com",
+        "cluster_domains": ["lovevery.com", "usa.lovevery.com"],
+        "ships_to_countries": ["US", "CA", "GB"],
+        "city": "San Francisco",
+        "location": "San Francisco, California",
+        "administrative_area_level_1": "California",
+        "estimated_sales_yearly": 5_000_000_00,
+        "categories": "Toys",
+        "tags": "",
+        "contact_info": [{"type": "email", "value": "hi@lovevery.com"}],
+    }
+    assert pipeline.headquarters_verdict(domestic) == ("US", "")
+    assert pipeline.passes_company_fit(domestic)
+    assert pipeline.passes_company_fit(domestic, require_niche=False)
+    assert pipeline.store_matches_icp(domestic)
+
+
 def test_non_us_profile_is_not_required_for_the_flag_off_opener():
     store = {
         "name": "coziya-outdoor.com", "merchant_name": "Coziya",
