@@ -115,8 +115,10 @@ def build_inquiry_row(session: CallSession, *, owner: str) -> dict[str, Any]:
         "callSid": session.call_sid,
         "line": session.line.label,
         "_lifecycle": {"stage": "new"},
-        "_follow_up_sequence": _follow_up(received),
     }
+    if session.line.source.strip():
+        details["source"] = session.line.source.strip()
+    details["_follow_up_sequence"] = _follow_up(received)
     if kind == "event":
         details["_event_interview"] = {
             "event_format": session.event_or_interest_type,
@@ -250,6 +252,8 @@ class SupabaseStore:
         category: str,
         summary: str,
         sms_notified: bool,
+        line_id: str = "",
+        lead_fields: dict[str, Any] | None = None,
     ) -> None:
         if not self.configured or not message_sid:
             return
@@ -262,14 +266,14 @@ class SupabaseStore:
                 "channel": "sms",
                 "caller_number": caller_number,
                 "dialed_number": dialed_number,
-                "line_id": "",
+                "line_id": line_id,
                 "started_at": now,
                 "ended_at": now,
                 "duration_seconds": 0,
                 "transcript_summary": summary[:2000],
                 "transcript": body[:2000],
                 "category": category,
-                "lead_fields": {},
+                "lead_fields": dict(lead_fields or {}),
                 "action_taken": "sms_forwarded" if sms_notified else "sms_logged",
                 "transfer_attempted": False,
                 "transfer_outcome": "",

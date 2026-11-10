@@ -95,7 +95,7 @@ class CallSession:
         return "\n".join(lines)[:20000]
 
     def lead_fields(self) -> dict[str, str]:
-        return {
+        fields = {
             "name": self.caller_name,
             "phone": self.phone or self.caller_number,
             "email": self.email,
@@ -109,6 +109,10 @@ class CallSession:
             "notes": self.notes,
             "reason": self.reason,
         }
+        source = self.line.source.strip()
+        if source:
+            fields["source"] = source
+        return fields
 
     def duration_seconds(self, now: float | None = None) -> int:
         end = time.time() if now is None else now

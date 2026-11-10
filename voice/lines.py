@@ -22,6 +22,7 @@ class LineContext:
     id: str
     label: str
     greeting: str = ""
+    source: str = ""
 
     def spoken_greeting(self) -> str:
         if self.greeting.strip():
@@ -79,6 +80,7 @@ def parse_lines(raw: str) -> dict[str, LineContext]:
             id=str(value.get("id") or "anata").strip() or "anata",
             label=str(value.get("label") or "Anata").strip() or "Anata",
             greeting=str(value.get("greeting") or "").strip(),
+            source=str(value.get("source") or "").strip(),
         )
         token = str(key).strip()
         if token.casefold() == "default":

@@ -148,6 +148,8 @@ class PostgresLog:
         category: str,
         summary: str,
         sms_notified: bool,
+        line_id: str = "",
+        lead_fields: dict[str, Any] | None = None,
     ) -> None:
         if not self.configured or not message_sid:
             return
@@ -159,14 +161,14 @@ class PostgresLog:
             "channel": "sms",
             "caller_number": caller_number,
             "dialed_number": dialed_number,
-            "line_id": "",
+            "line_id": line_id,
             "started_at": now,
             "ended_at": now,
             "duration_seconds": 0,
             "transcript_summary": summary[:2000],
             "transcript": body[:2000],
             "category": category or "other",
-            "lead_fields": {},
+            "lead_fields": dict(lead_fields or {}),
             "action_taken": "sms_forwarded" if sms_notified else "sms_logged",
             "transfer_attempted": False,
             "transfer_outcome": "",

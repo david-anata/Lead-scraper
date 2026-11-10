@@ -80,8 +80,24 @@ def test_front_desk_rules_cover_every_line_and_the_closed_topics() -> None:
         assert line_id in text
     for topic in ("Fondell", "forbearance", "billing disputes", "Never give out a personal or cell number"):
         assert topic in text
+    assert "track_inc_*" in text
+    assert "track_eventective" in text
+    assert "Anata Building and Arena flow" in text
+    assert "anata Inc. flow" in text
     combined = load_knowledge_text()
     assert combined.index("# Front desk rules") < combined.index("# Anata Building knowledge") < combined.index("# anata Inc. knowledge")
+
+
+def test_tracking_source_is_in_the_summary_and_the_lead_fields() -> None:
+    from voice.notify import call_summary_text
+
+    session = _session()
+    session.line = LineContext(id="track_inc_fulfillment", label="Anata fulfillment", source="inc-fulfillment")
+    fields = session.lead_fields()
+    assert fields["source"] == "inc-fulfillment"
+    summary = call_summary_text(session)
+    assert "Source: inc-fulfillment" in summary
+    assert _session().lead_fields().get("source", "") == ""
 
 
 def test_prompt_names_both_businesses_and_the_line_id() -> None:

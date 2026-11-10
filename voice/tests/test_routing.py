@@ -25,6 +25,17 @@ def test_unknown_number_uses_the_default_line() -> None:
     assert line.spoken_greeting().startswith("Thanks for calling Anata.")
 
 
+def test_tracking_line_keeps_its_source() -> None:
+    raw = """
+    {"+15550002222": {"id": "track_eventective", "label": "Anata events", "source": "eventective"}}
+    """
+    line = resolve_line(raw, "+1 555 000 2222")
+    assert line.id == "track_eventective"
+    assert line.source == "eventective"
+    plain = resolve_line(LINE_MAP, "+15550001111")
+    assert plain.source == ""
+
+
 def test_bad_json_does_not_raise() -> None:
     line = resolve_line("{", "+15550001111")
     assert line.id == "anata"

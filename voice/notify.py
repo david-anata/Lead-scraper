@@ -108,10 +108,14 @@ def call_summary_text(session: CallSession) -> str:
     lines = [
         f"Anata {session.line.label} call",
         f"From: {session.caller_number or 'unknown'}",
+    ]
+    if lead.get("source"):
+        lines.append(f"Source: {one_line(lead['source'], 80)}")
+    lines.extend([
         f"Reason: {one_line(session.reason or session.summary or session.category, 160)}",
         f"Callback: {callback}",
         f"Action: {session.action or 'message'}",
-    ]
+    ])
     if bits:
         lines.append("Lead: " + one_line(" / ".join(bits), 300))
     if session.notes:
@@ -119,13 +123,23 @@ def call_summary_text(session: CallSession) -> str:
     return "\n".join(lines)[:1000]
 
 
-def sms_forward_text(*, from_number: str, to_number: str, body: str, reply_sent: bool, category: str) -> str:
+def sms_forward_text(
+    *,
+    from_number: str,
+    to_number: str,
+    body: str,
+    reply_sent: bool,
+    category: str,
+    source: str = "",
+) -> str:
     prefix = "Possible solicitation.\n" if category == "spam" else ""
     reply = "yes" if reply_sent else "no"
+    source_line = f"Source: {one_line(source, 80)}\n" if source.strip() else ""
     return (
         f"{prefix}Anata SMS\n"
         f"From: {from_number or 'unknown'}\n"
         f"To: {to_number or 'unknown'}\n"
+        f"{source_line}"
         f"Reply sent: {reply}\n"
         f"They wrote: {one_line(body, 300)}"
     )[:1000]

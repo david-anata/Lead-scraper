@@ -26,6 +26,9 @@ def build_instructions(session: CallSession) -> str:
             "Apologize once, take a message, and call finish_call."
         )
     known_text = json.dumps(known, ensure_ascii=True) if known else "nothing yet"
+    source_line = (
+        f"Source: {session.line.source.strip()}\n" if session.line.source.strip() else ""
+    )
     return f"""You are the phone receptionist for Anata in Lehi, Utah. Anata is two businesses in one building: the Anata Building (coworking, private offices, warehouse space, and the Arena event venue) and anata Inc. (Amazon and marketplace marketing, ecommerce fulfillment, and software). Find out early which one the caller needs.
 
 # Personality
@@ -71,7 +74,7 @@ If the tool says approved, say one short sentence that you are connecting them, 
 # This call
 Line: {session.line.label}
 Line id: {session.line.id}
-Caller number: {session.caller_number or "unknown"}
+{source_line}Caller number: {session.caller_number or "unknown"}
 Already captured: {known_text}
 {resume}
 

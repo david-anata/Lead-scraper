@@ -162,6 +162,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         caller = form.get("From", "")
         dialed = form.get("To", "")
         category = classify_sms(body)
+        line = resolve_line(settings.line_contexts_json, dialed)
         reply = reply_to_sms(body) if settings.sms_autoreply else ""
         notified = False
         if settings.notify_sms_number:
@@ -175,6 +176,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     body=body,
                     reply_sent=bool(reply),
                     category=category,
+                    source=line.source,
                 ),
             )
         await asyncio.to_thread(
@@ -186,6 +188,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             category=category,
             summary=body[:500],
             sms_notified=notified,
+            line_id=line.id,
+            lead_fields={"source": line.source} if line.source else {},
         )
         return Response(sms_twiml(reply), media_type=XML)
 
