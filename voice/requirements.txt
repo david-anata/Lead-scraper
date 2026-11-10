@@ -6,3 +6,4 @@ google-auth>=2.35
 python-multipart>=0.0.12
 pydantic>=2
 tzdata>=2025.2
+psycopg[binary]>=3.2

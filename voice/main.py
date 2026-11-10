@@ -22,7 +22,7 @@ from fastapi.responses import PlainTextResponse, Response
 
 from voice.bridge import CallBridge, whisper_line
 from voice.calendar_availability import CalendarAvailability
-from voice.leads import SupabaseStore
+from voice.logging_store import LoggingStore
 from voice.lifecycle import finalize_call
 from voice.lines import LineContext, resolve_line
 from voice.notify import TwilioRest, sms_forward_text
@@ -49,9 +49,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="Anata voice receptionist", docs_url=None, redoc_url=None)
     app.state.settings = current
     app.state.sessions = SessionStore()
-    app.state.store = SupabaseStore(
-        current.supabase_url,
-        current.supabase_service_key,
+    app.state.store = LoggingStore(
+        database_url=current.voice_database_url,
+        supabase_url=current.supabase_url,
+        service_key=current.supabase_service_key,
         owner=current.lead_owner,
     )
     app.state.twilio = TwilioRest(current)

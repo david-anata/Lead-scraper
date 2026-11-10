@@ -48,6 +48,7 @@ class Settings:
     recording_enabled: bool
     validate_signatures: bool
     max_call_seconds: int
+    voice_database_url: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -82,6 +83,7 @@ class Settings:
             render_external_url=_text("RENDER_EXTERNAL_URL").rstrip("/"),
             supabase_url=_text("SUPABASE_URL").rstrip("/"),
             supabase_service_key=supabase_key,
+            voice_database_url=_text("VOICE_DATABASE_URL"),
             calendar_id=calendar_id,
             google_service_account_json=service_account,
             google_delegated_subject=_text("BUILDING_GOOGLE_CALENDAR_DELEGATED_SUBJECT"),
@@ -115,10 +117,11 @@ class Settings:
             "FORWARD_TO_NUMBER": self.forward_to_number,
             "NOTIFY_SMS_NUMBER": self.notify_sms_number,
             "PUBLIC_BASE_URL": self.http_base(),
-            "SUPABASE_URL": self.supabase_url,
-            "SUPABASE_SERVICE_ROLE_KEY": self.supabase_service_key,
         }
-        return [name for name, value in required.items() if not value]
+        missing = [name for name, value in required.items() if not value]
+        if not self.logging_ready:
+            missing.append("VOICE_DATABASE_URL")
+        return missing
 
     @property
     def calls_ready(self) -> bool:
@@ -131,6 +134,8 @@ class Settings:
 
     @property
     def logging_ready(self) -> bool:
+        if self.voice_database_url:
+            return True
         return bool(self.supabase_url and self.supabase_service_key)
 
     @property

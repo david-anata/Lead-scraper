@@ -98,8 +98,9 @@ Required for the rest of the behavior:
 | --- | --- |
 | `FORWARD_TO_NUMBER` | E.164 number for approved live transfers. Not stored in the repo. |
 | `NOTIFY_SMS_NUMBER` | E.164 number that receives the after-call and inbound-SMS summary. |
-| `SUPABASE_URL` | Project URL. Same project as the building admin if leads should show there. |
-| `SUPABASE_SERVICE_ROLE_KEY` | Service role key. `SUPABASE_SERVICE_KEY` is accepted as an alias. |
+| `VOICE_DATABASE_URL` | Preferred logger. Postgres URL for the `voice_logger` role through the Supabase pooler. Include `sslmode=require`; the app forces that mode if it is missing or weaker. |
+| `SUPABASE_URL` | REST fallback. Same project as the building admin. |
+| `SUPABASE_SERVICE_ROLE_KEY` | REST fallback when `VOICE_DATABASE_URL` is empty. `SUPABASE_SERVICE_KEY` is an alias. |
 
 Optional:
 
@@ -137,6 +138,52 @@ table. A lead insert uses the columns the admin already reads: `kind`
 (`event`, `tour`, or `workspace`), `source = voice`, `payload_json.eventType`,
 `payload_json.groupSize`, and `_lifecycle.stage = new`. Spam is written to
 `call_log` only.
+
+`/health` reports `logging_ready` when either `VOICE_DATABASE_URL` or the
+service-role REST pair is set. The database URL wins. Writes run in a worker
+thread, not on the call audio loop. The Postgres path writes only
+`call_log` and `building_inquiries`. The REST path still links a contact when
+the service-role key is the writer.
+
+### Grants for `voice_logger`
+
+No sequences. `call_log.id` defaults to `gen_random_uuid()` (executable by
+public), and inquiry ids are created in the app. Both tables have row level
+security and this role does not bypass it, so the policies below are required
+or every insert is denied.
+
+```sql
+GRANT INSERT, UPDATE (
+  call_sid, channel, caller_number, dialed_number, line_id,
+  started_at, ended_at, duration_seconds, transcript_summary, transcript,
+  category, lead_fields, action_taken, transfer_attempted, transfer_outcome,
+  sms_notified, building_inquiry_id, updated_at
+) ON TABLE public.call_log TO voice_logger;
+
+GRANT INSERT (
+  id, idempotency_key, kind, source, source_reference, offering_id,
+  name, email, phone, preferred_date, status, assigned_owner, response_due_at,
+  consent_to_contact, consent_to_marketing, hubspot_contact_id, payload_json,
+  created_at, updated_at
+) ON TABLE public.building_inquiries TO voice_logger;
+
+GRANT SELECT (id, idempotency_key)
+  ON TABLE public.building_inquiries TO voice_logger;
+
+CREATE POLICY voice_logger_insert_call_log ON public.call_log
+  FOR INSERT TO voice_logger WITH CHECK (true);
+CREATE POLICY voice_logger_update_call_log ON public.call_log
+  FOR UPDATE TO voice_logger USING (true) WITH CHECK (true);
+CREATE POLICY voice_logger_insert_inquiries ON public.building_inquiries
+  FOR INSERT TO voice_logger WITH CHECK (source = 'voice');
+CREATE POLICY voice_logger_select_voice_inquiries ON public.building_inquiries
+  FOR SELECT TO voice_logger USING (source = 'voice');
+```
+
+`call_log` is not granted SELECT. `building_inquiries` is not granted UPDATE.
+Nothing else is granted: not contacts, relationships, audit events, or their
+sequences. The SELECT is only so a repeated call can find the inquiry id
+after `ON CONFLICT DO NOTHING`.
 
 If the calendar credentials are missing, or the calendar call fails, the
 assistant takes the date and says the team will confirm. It does not guess.
