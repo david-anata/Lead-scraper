@@ -1365,6 +1365,56 @@ class PipelineResult:
     storeleads_error: str = ""
 
 
+def storeleads_cursor_key(recipe_key: str, params: Optional[dict[str, Any]]) -> str:
+    """Stable id for one List Domains query.
+
+    Date-window bounds change every morning, so they are not part of the key.
+    A saved cursor then keeps walking the same filter instead of restarting.
+    """
+
+    import hashlib
+    import json
+
+    stable = {
+        str(key): value
+        for key, value in (params or {}).items()
+        if str(key) != "cursor"
+        and not str(key).endswith(":min")
+        and not str(key).endswith(":max")
+    }
+    raw = json.dumps(stable, sort_keys=True, default=str)
+    digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
+    return f"storeleads:{recipe_key or 'list'}:{digest}"
+
+
+def load_storeleads_cursor(engine: Any, key: str) -> Optional[str]:
+    """Resume token for a previous pull. Missing storage starts at the first page."""
+
+    if engine is None or not key:
+        return None
+    try:
+        import outbound_suppression as suppression
+
+        value = suppression.get_cursor(engine, key).strip()
+    except Exception:  # noqa: BLE001
+        logger.warning("[outbound] StoreLeads cursor could not be read; starting at the first page")
+        return None
+    return value or None
+
+
+def save_storeleads_cursor(engine: Any, key: str, cursor: Optional[str]) -> None:
+    """Remember the next page. A missing table does not fail the pull."""
+
+    if engine is None or not key:
+        return
+    try:
+        import outbound_suppression as suppression
+
+        suppression.set_cursor(engine, key, cursor or "")
+    except Exception:  # noqa: BLE001
+        logger.warning("[outbound] StoreLeads cursor could not be saved")
+
+
 def run_storeleads_to_clay(
     *,
     api_key: str,
@@ -1382,6 +1432,7 @@ def run_storeleads_to_clay(
     fetch_result: Optional[Callable[..., StoreLeadsPage]] = None,
     push: Optional[Callable[..., dict[str, Any]]] = None,
     amazon_check: Optional[Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = None,
+    engine: Any = None,
 ) -> PipelineResult:
     """Pull ICP brands from StoreLeads, drop already-contacted ones, push the
     rest to Clay. With dry_run=True (or no Clay webhook) nothing is pushed; the
@@ -1390,6 +1441,8 @@ def run_storeleads_to_clay(
     Paces requests (throttle_seconds between pages) to stay under StoreLeads'
     rate limit. If StoreLeads still cuts us off, returns the brands gathered so
     far and flags the result partial, instead of failing the whole pull.
+    When ``engine`` is set, the next cursor is saved and the following run
+    continues after the pages already read. The page cap does not change.
     """
     push = push or push_to_clay
     # Injected page fetchers (tests) stay on offset pages. Live pulls follow
@@ -1412,12 +1465,18 @@ def run_storeleads_to_clay(
     else:
         extra = None
 
+    cursor_key = ""
     cursor: Optional[str] = None
+    if engine is not None and use_cursor:
+        cursor_key = storeleads_cursor_key(result.recipe or "list", extra)
+        cursor = load_storeleads_cursor(engine, cursor_key)
+    stale_reset = False
     for page in range(max_pages):
         if result.fresh >= max_new:
             break
         if page > 0 and throttle_seconds:
             time.sleep(throttle_seconds)
+        requested = cursor
         try:
             if use_cursor:
                 assert fetch_result is not None
@@ -1440,6 +1499,11 @@ def run_storeleads_to_clay(
                 stores = fetch_page(api_key, page=page, extra_params=extra)
                 cursor = None
         except Exception as exc:  # noqa: BLE001 — return partial instead of failing
+            if cursor_key and requested and not stale_reset:
+                stale_reset = True
+                cursor = None
+                save_storeleads_cursor(engine, cursor_key, "")
+                continue
             response = getattr(exc, "response", None)
             result.storeleads_status = getattr(response, "status_code", "") or ""
             result.storeleads_error = str(exc)[:300]
@@ -1448,6 +1512,13 @@ def run_storeleads_to_clay(
             result.partial = True
             break
         if not stores:
+            if cursor_key and requested and not stale_reset:
+                stale_reset = True
+                cursor = None
+                save_storeleads_cursor(engine, cursor_key, "")
+                continue
+            if cursor_key:
+                save_storeleads_cursor(engine, cursor_key, "")
             break
         for store in stores:
             result.scanned += 1
@@ -1489,6 +1560,8 @@ def run_storeleads_to_clay(
             result.fresh += 1
             if result.fresh >= max_new:
                 break
+        if use_cursor and cursor_key:
+            save_storeleads_cursor(engine, cursor_key, cursor or "")
         if use_cursor and not cursor:
             break
 
@@ -1542,6 +1615,7 @@ def run_recipe_pull(
     fetch_result: Optional[Callable[..., StoreLeadsPage]] = None,
     push: Optional[Callable[..., dict[str, Any]]] = None,
     amazon_check: Optional[Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = None,
+    engine: Any = None,
 ) -> PipelineResult:
     """Run every query a recipe expands to, then one Clay push.
 
@@ -1556,7 +1630,7 @@ def run_recipe_pull(
             processed_domains=processed_domains, max_new=max_new, max_pages=max_pages,
             dry_run=dry_run, throttle_seconds=throttle_seconds, now=now, settings=settings,
             fetch_page=fetch_page, fetch_result=fetch_result, push=push,
-            amazon_check=amazon_check,
+            amazon_check=amazon_check, engine=engine,
         )
 
     sets = recipe.param_sets(now, settings)
@@ -1570,7 +1644,7 @@ def run_recipe_pull(
             max_new=max_new - combined.fresh, max_pages=max_pages, dry_run=True,
             throttle_seconds=throttle_seconds, recipe=recipe, now=now, settings=settings,
             extra_params=params, fetch_page=fetch_page, fetch_result=fetch_result,
-            push=push, amazon_check=amazon_check,
+            push=push, amazon_check=amazon_check, engine=engine,
         )
         _absorb_pull(combined, part, seen)
 
@@ -1593,6 +1667,7 @@ def run_recipe_pull(
             dry_run=True, throttle_seconds=throttle_seconds, recipe=variant, now=now,
             settings=settings, extra_params=fallback, fetch_page=fetch_page,
             fetch_result=fetch_result, push=push, amazon_check=amazon_check,
+            engine=engine,
         )
         _absorb_pull(combined, part, seen)
 

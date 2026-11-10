@@ -326,19 +326,33 @@ def source_active_campaigns(
         error = ""
         pages_left = _MAX_PAGES
         for variant in _platform_queries(filters):
-            cursor = None
+            cursor_key = pipeline.storeleads_cursor_key(str(row["recipe_key"]), variant)
+            cursor = pipeline.load_storeleads_cursor(engine, cursor_key)
+            stale_reset = False
             while pages_left > 0 and len(fresh) < cap:
                 pages_left -= 1
+                requested = cursor
                 try:
                     page = fetch(api_key, extra_params=variant, cursor=cursor, page_size=100)
                 except Exception as exc:  # noqa: BLE001
+                    if requested and not stale_reset:
+                        stale_reset = True
+                        cursor = None
+                        pipeline.save_storeleads_cursor(engine, cursor_key, "")
+                        continue
                     error = str(exc)[:200]
                     logger.exception("[outbound-campaign-source] StoreLeads failed for %s", row["recipe_key"])
                     break
                 domains, cursor, page_error = _domains_from(page)
+                if (page_error or not domains) and requested and not stale_reset:
+                    stale_reset = True
+                    cursor = None
+                    pipeline.save_storeleads_cursor(engine, cursor_key, "")
+                    continue
                 if page_error:
                     error = page_error
                     break
+                stopped_early = False
                 for store in domains:
                     scanned += 1
                     lead = _lead_from(store, str(row["recipe_key"]))
@@ -353,8 +367,14 @@ def source_active_campaigns(
                     seen.add(lead["domain"])
                     fresh.append(lead)
                     if len(fresh) >= cap:
+                        stopped_early = True
                         break
-                if not cursor:
+                # A full page advances. A cap hit mid-page keeps this cursor so
+                # the unread stores on it are still available tomorrow.
+                pipeline.save_storeleads_cursor(
+                    engine, cursor_key, (requested if stopped_early else cursor) or "",
+                )
+                if stopped_early or not cursor:
                     break
             if error or len(fresh) >= cap:
                 break
@@ -443,24 +463,38 @@ def source_sales_org(
             return record_leads(engine, leads, source=f"campaign:{recipe_key}")
     seen = _seen_companies(contacted)
     fresh: list[dict[str, Any]] = []
-    cursor = None
     filters = {
         "f:p": "shopify", "f:ds": "Active", "f:it": "email",
         "f:cc": "US", "f:cc:op": "or",
     }
+    cursor_key = pipeline.storeleads_cursor_key("sales_org", filters)
+    cursor = pipeline.load_storeleads_cursor(engine, cursor_key)
+    stale_reset = False
     for _page in range(3):
         if len(fresh) >= room:
             break
+        requested = cursor
         try:
             page = fetch(api_key, extra_params=filters, cursor=cursor, page_size=100)
         except Exception:  # noqa: BLE001
+            if requested and not stale_reset:
+                stale_reset = True
+                cursor = None
+                pipeline.save_storeleads_cursor(engine, cursor_key, "")
+                continue
             logger.exception("[outbound-campaign-source] sales-org StoreLeads failed")
             out["stopped_reason"] = "StoreLeads failed"
             break
         domains, cursor, error = _domains_from(page)
+        if (error or not domains) and requested and not stale_reset:
+            stale_reset = True
+            cursor = None
+            pipeline.save_storeleads_cursor(engine, cursor_key, "")
+            continue
         if error:
             out["stopped_reason"] = error
             break
+        stopped_early = False
         for store in domains:
             out["scanned"] += 1
             lead = _lead_from(store, "sales_org")
@@ -475,8 +509,12 @@ def source_sales_org(
             seen.add(lead["domain"])
             fresh.append(lead)
             if len(fresh) >= room:
+                stopped_early = True
                 break
-        if not cursor:
+        pipeline.save_storeleads_cursor(
+            engine, cursor_key, (requested if stopped_early else cursor) or "",
+        )
+        if stopped_early or not cursor:
             break
     if fresh:
         try:

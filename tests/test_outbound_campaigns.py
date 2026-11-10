@@ -364,6 +364,41 @@ def test_sourcing_stops_at_the_company_and_credit_caps(engine):
     assert calls == []
 
 
+def test_amz_off_resumes_past_pages_already_read_and_stops_at_five(engine):
+    """A later morning continues after the saved cursor and still requests five pages."""
+
+    calls: dict[str, list] = {}
+
+    def fetch(api_key, **kwargs):
+        filters = kwargs["extra_params"]
+        if filters.get("f:scs:op") == "not":
+            label = "off"
+        else:
+            label = "other"
+        calls.setdefault(label, []).append(kwargs.get("cursor"))
+        step = len(calls[label])
+        return SimpleNamespace(
+            domains=[_fit_store(f"{label}-{step}.example")],
+            next_cursor=f"{label}-{step}",
+            error="",
+        )
+
+    first = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
+    )
+    assert len(calls["off"]) == source._MAX_PAGES
+    assert calls["off"][0] is None
+    assert calls["off"] == [None, "off-1", "off-2", "off-3", "off-4"]
+    assert first["recorded"] > 0
+
+    calls.clear()
+    source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
+    )
+    assert calls["off"][0] == "off-5"
+    assert len(calls["off"]) == source._MAX_PAGES
+
+
 def test_judge_requires_150_contacted_and_does_not_change_volume():
     assert campaigns.judge_metrics(149, 5, 1, 1, 0) == (False, "insufficient")
     assert campaigns.judge_metrics(200, None, 1, 1, 0) == (False, "insufficient")

@@ -191,7 +191,7 @@ def _email_the_batch(engine, summary: dict, *, force: bool = False) -> bool:
         return False
 
 
-def _pull_baseline_slices(_op, _rx, api_key, already, requested, recipe, tunables, now, started):
+def _pull_baseline_slices(_op, _rx, api_key, already, requested, recipe, tunables, now, started, engine=None):
     """Run the baseline once per revenue slice until the cap or time budget is hit.
 
     Returns one combined PipelineResult so the caller records a single run."""
@@ -208,7 +208,7 @@ def _pull_baseline_slices(_op, _rx, api_key, already, requested, recipe, tunable
         part = _op.run_storeleads_to_clay(
             api_key=api_key, clay_webhook_url="", processed_domains=seen,
             max_new=requested - combined.fresh, dry_run=True,
-            recipe=sliced, settings=tunables,
+            recipe=sliced, settings=tunables, engine=engine,
         )
         combined.scanned += part.scanned
         combined.matched_icp += part.matched_icp
@@ -356,12 +356,12 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
         try:
             if recipe.key == "icp_baseline":
                 result = _pull_baseline_slices(_op, _rx, api_key, already, requested,
-                                               recipe, tunables, now, pull_started)
+                                               recipe, tunables, now, pull_started, engine)
             else:
                 result = _op.run_recipe_pull(
                     api_key=api_key, clay_webhook_url="", processed_domains=already,
                     max_new=requested, dry_run=True,
-                    recipe=recipe, settings=tunables, now=now,
+                    recipe=recipe, settings=tunables, now=now, engine=engine,
                 )
         except Exception:  # noqa: BLE001
             logger.exception("[outbound-jobs] pull failed for %s", recipe.key)
