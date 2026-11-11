@@ -96,7 +96,7 @@ def test_grader_fail_gets_one_rewrite_then_skips():
     assert calls["writer"] == 2
     assert calls["grader"] == 2
     assert result.source == "skipped:grader"
-    assert result.grader_reason == "filler"
+    assert result.grader_reason == "identical"
     assert result.line == ""
 
 
@@ -317,6 +317,126 @@ def test_reseller_and_custom_labels_survive_without_a_best_seller_order():
         get=htv, sleep=lambda _s: None, guard=lambda url: url, homepage_html="<html></html>",
     )
     assert plain["catalog_skip"] == ""
+
+
+def test_a_full_sentence_is_the_detail_and_a_pillow_line_is_kept():
+    body = (
+        "The cover zips off. "
+        "Add or remove fill until your hips, shoulders, and spine finally line up."
+    )
+    product, detail, _kind = extract_detail("SnowTouch Full-Body Pillow", body, brand="I Wanna Sleep")
+    assert product == "SnowTouch Full-Body Pillow"
+    assert detail.lower().startswith("add or remove fill")
+    assert detail.endswith("line up")
+    assert "sna" not in detail
+
+
+def test_name_plurals_and_the_brand_are_not_a_new_detail():
+    product, detail, _kind = extract_detail(
+        "Chocolate Chunk Cookie Mixes",
+        "A Chocolate Chunk Cookie Mix.",
+        brand="Autumn Sons",
+    )
+    assert detail == ""
+
+
+def test_hype_words_inside_the_brand_are_allowed():
+    facts = LineFacts(
+        brand="Pix Perfect", product="Pixel Art Kit", detail="insert the pegs into the panels",
+        recipe="amz_on",
+    )
+    assert hard_reason(
+        "The Pixel Art Kit from Pix Perfect lets you insert the pegs into the panels.",
+        facts,
+    ) == ""
+    cola = LineFacts(brand="Perfy", product="Cherry Cola", detail="turmeric", recipe="trial_offer")
+    assert hard_reason("The cherry cola looks perfect.", cola) == "hype"
+
+
+def test_an_identical_retry_is_a_fail():
+    facts = LineFacts(
+        brand="Perfy", product="Cherry Cola", detail="blood orange yuzu and turmeric",
+        detail_kind="flavor", recipe="trial_offer",
+    )
+
+    def writer(prompt):
+        assert "different sentence" in prompt or "Rejected line" not in prompt
+        return "The cherry cola has blood orange yuzu and turmeric."
+
+    def grader(_prompt):
+        assert "Source:" in _prompt
+        return json.dumps({"pass": False, "reason": "filler"})
+
+    result = compose_line(facts, writer=writer, grader=grader)
+    assert result.source == "skipped:grader"
+    assert result.grader_reason == "identical"
+
+
+def test_a_drug_claim_on_the_subject_blocks_the_brand_and_pain_does_not():
+    gel = {
+        "title": "Aloe Vera Gel",
+        "body": "Useful for wound healing, inflammation, infection, and acne scars.",
+    }
+    pillow = {
+        "title": "SnowTouch Pillow",
+        "body": "Add or remove fill until your hips, shoulders, and spine finally line up.",
+    }
+    sore = {"title": "Neck Pillow", "body": "The perfect cooling pillow for neck and back pain."}
+    assert pick_line_facts([gel], brand="Miracle of the Sea").skip == "blocked_category"
+    chosen = pick_line_facts([sore, pillow], brand="I Wanna Sleep")
+    assert chosen.skip == ""
+    assert "SnowTouch" in chosen.product
+    assert "pain" not in chosen.detail.lower()
+
+
+def test_marks_are_stripped_and_spare_parts_are_not_the_subject():
+    facts = LineFacts(
+        brand="Miracle", product="Aloe Vera Gel", detail="almond oil", recipe="replatform",
+    )
+
+    def writer(_prompt):
+        return "I like how Miracle of the Sea™ blends the gel."
+
+    def grader(_prompt):
+        return json.dumps({"pass": True, "reason": "specific"})
+
+    result = compose_line(facts, writer=writer, grader=grader)
+    assert "™" not in result.line and "®" not in result.line
+
+    vacuum = {"title": "Home Vacuum", "body": "The vacuum maps the room before it starts."}
+    brush = {"title": "W10 Side Brushes 2-pack", "product_type": "Replacement", "body": "A side brush."}
+    picked = pick_line_facts([brush, vacuum], brand="Dreame")
+    assert "Vacuum" in picked.product
+    assert pick_line_facts([brush], brand="Dreame").skip == "no_product_detail"
+
+
+def test_addon_vendors_are_ignored_and_one_custom_product_is_not_the_shop():
+    frames = [
+        {"title": "Higgins", "vendor": "Lens Replacement Page"},
+        {"title": "Jax", "vendor": "Lens Coating"},
+        {"title": "Melvin", "vendor": "Buy 1"},
+        {"title": "Orlo", "vendor": "Hip Optical"},
+    ]
+    assert pick_line_facts(frames, brand="Hip Optical").skip != "reseller"
+    chess = [
+        {"title": "Olive Wood Chess Set", "vendor": "ArtisRaw"},
+        {"title": "Olive Wood Mug", "vendor": "ArtisRaw"},
+        {"title": "Personalized Olive Wood Board", "vendor": "ArtisRaw"},
+        {"title": "Olive Wood Bowl", "vendor": "ArtisRaw"},
+    ]
+    assert pick_line_facts(chess, brand="ArtisRaw").skip != "custom"
+
+
+def test_water_io_is_not_renamed_this_brand():
+    import outbound_personalization as personalization
+
+    sheet = personalization.fact_sheet({
+        "brand": "Water.io",
+        "display_brand": "Water.io",
+        "domain": "water.io",
+    })
+    assert sheet.brand == "Water.io"
+    assert sheet.brand != "This brand"
 
 
 def test_the_default_model_is_the_fast_non_reasoning_grok():

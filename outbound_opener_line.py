@@ -72,6 +72,10 @@ _VENDOR_CATEGORY = re.compile(
     re.I,
 )
 _GENERIC_VENDOR = re.compile(r"^(?:vinyl|default|upload|builder|title)$", re.I)
+_ADDON_VENDOR = re.compile(
+    r"\b(?:lens replacement|lens coating|buy 1|buy one|add-?on|upsell)\b",
+    re.I,
+)
 _MARKETING_OPEN = re.compile(
     r"^\s*(?:embrace|elevate|experience|easily make|discover|introducing|unlock|unleash)\b",
     re.I,
@@ -180,17 +184,37 @@ def _find_phrase(text: str, phrases: tuple[str, ...]) -> str:
 
 
 def _keyword_blob(text: str) -> bool:
+    """A comma list with no sentence, not a normal product description."""
+
     raw = str(text or "").strip()
-    if not raw:
+    if not raw or "." in raw or "!" in raw:
         return False
-    if raw.count(",") >= 4 and "." not in raw:
-        return True
-    words = raw.split()
-    return len(words) >= 14 and raw.count(",") >= 3
+    return raw.count(",") >= 6
 
 
-def _product_words(product: str) -> set[str]:
-    return set(re.findall(r"[a-z0-9]+", product.lower()))
+def _word_forms(word: str) -> set[str]:
+    forms = {word}
+    if len(word) <= 2:
+        return forms
+    if word.endswith("ies") and len(word) > 4:
+        forms.add(word[:-3] + "y")
+    elif word.endswith("es") and len(word) > 3:
+        forms.add(word[:-2])
+    elif word.endswith("s") and len(word) > 3:
+        forms.add(word[:-1])
+    else:
+        forms.add(word + "s")
+        if word.endswith("y") and len(word) > 3:
+            forms.add(word[:-1] + "ies")
+    return forms
+
+
+def _known_words(*texts: str) -> set[str]:
+    known: set[str] = set()
+    for text in texts:
+        for token in re.findall(r"[a-z0-9]+", (text or "").lower()):
+            known |= _word_forms(token)
+    return known
 
 
 def _novel_words(text: str, product_words: set[str]) -> list[str]:
@@ -244,7 +268,7 @@ def _detail_from_text(text: str, product_words: set[str]) -> str:
     best = ""
     best_score = 0
     for part in re.split(r"[.!?;]", text):
-        clause = " ".join(part.strip(" -,").split()[:10])
+        clause = " ".join(part.strip(" -,").split())
         score = _score_clause(clause, product_words)
         if score > best_score:
             best = clause
@@ -252,7 +276,12 @@ def _detail_from_text(text: str, product_words: set[str]) -> str:
     return best if best_score else ""
 
 
-def extract_detail(title: str, body: str = "", _options: Optional[list[dict[str, Any]]] = None) -> tuple[str, str, str]:
+def extract_detail(
+    title: str,
+    body: str = "",
+    _options: Optional[list[dict[str, Any]]] = None,
+    brand: str = "",
+) -> tuple[str, str, str]:
     """Return (product, detail, kind) or three empty strings.
 
     The detail comes from the body only. Option values such as ``Default Title``
@@ -262,10 +291,11 @@ def extract_detail(title: str, body: str = "", _options: Optional[list[dict[str,
     product = shopper_name(title)
     if not product or not re.search(r"[A-Za-z]", product):
         return "", "", ""
-    detail = _detail_from_text(body or "", _product_words(product))
+    known = _known_words(product, brand)
+    detail = _detail_from_text(body or "", known)
     if not detail:
         return product, "", ""
-    return product, detail, _kind_for(detail, _product_words(product))
+    return product, detail, _kind_for(detail, known)
 
 
 def _tokens(text: str) -> set[str]:
@@ -299,21 +329,32 @@ def _selling_vendor(vendor: str) -> str:
     text = str(vendor or "").strip()
     if text.endswith(":"):
         text = text[:-1].strip()
-    if not text or _GENERIC_VENDOR.match(text) or _VENDOR_CATEGORY.search(text):
+    if (
+        not text
+        or _GENERIC_VENDOR.match(text)
+        or _VENDOR_CATEGORY.search(text)
+        or _ADDON_VENDOR.search(text)
+    ):
         return ""
     return text
 
 
-def custom_catalog(products: list[dict[str, Any]], brand: str) -> bool:
-    """True for a shop that sells the customer's own logo or personalized goods."""
-
-    if re.search(r"\b(?:personaliz\w*|custom)\b", brand or "", re.I):
-        return True
-    blob = " ".join(
-        f"{item.get('title') or ''} {item.get('vendor') or ''} {item.get('product_type') or ''}"
-        for item in products if isinstance(item, dict)
-    )
+def _row_is_custom(item: dict[str, Any]) -> bool:
+    blob = f"{item.get('title') or ''} {item.get('vendor') or ''} {item.get('product_type') or ''}"
     return bool(re.search(r"\b(?:personaliz\w*|monogram|logomats?|your logo)\b", blob, re.I))
+
+
+def custom_catalog(products: list[dict[str, Any]], brand: str = "") -> bool:
+    """True when at least half the rows are the customer's own goods.
+
+    One personalized chess set does not make the shop a custom shop.
+    ``brand`` is unused; the share of the rows decides.
+    """
+
+    rows = [item for item in products if isinstance(item, dict) and (item.get("title") or item.get("vendor"))]
+    if not rows:
+        return False
+    return sum(1 for item in rows if _row_is_custom(item)) / len(rows) >= 0.5
 
 
 def reseller_catalog(products: list[dict[str, Any]], brand: str) -> bool:
@@ -343,10 +384,17 @@ def pick_line_facts(
     if reseller_catalog(vendor_rows, brand):
         return LineFacts(brand=brand, recipe=recipe, skip="reseller")
     for item in catalog:
+        from outbound_product_facts import product_drug_claim, product_pain_claim, spare_part
+
+        if product_pain_claim(item) or spare_part(item):
+            continue
+        if product_drug_claim(item):
+            return LineFacts(brand=brand, recipe=recipe, skip="blocked_category")
         product, detail, kind = extract_detail(
             str(item.get("title") or ""),
             str(item.get("body") or ""),
             item.get("options") if isinstance(item.get("options"), list) else [],
+            brand=brand,
         )
         if product and detail:
             facts = LineFacts(
@@ -391,7 +439,11 @@ def hard_reason(line: str, facts: LineFacts) -> str:
         return "grounding"
     if _INVENTED.search(raw):
         return "invented action"
-    if _HYPE.search(raw):
+    hype_text = raw
+    for word in re.findall(r"[A-Za-z0-9]+", f"{facts.brand} {facts.product}"):
+        if len(word) >= 3:
+            hype_text = re.sub(rf"\b{re.escape(word)}\b", " ", hype_text, flags=re.I)
+    if _HYPE.search(hype_text):
         return "hype"
     food = re.search(r"\b(?:cola|soda|chips|cookie|tea|gum|candy|chocolate)\b", facts.product, re.I)
     if (
@@ -430,7 +482,7 @@ def hard_reason(line: str, facts: LineFacts) -> str:
     return ""
 
 
-def writer_prompt(facts: LineFacts, *, rejection: str = "") -> str:
+def writer_prompt(facts: LineFacts, *, rejection: str = "", previous: str = "") -> str:
     """A short prompt. Style lives here. The code does not score variety."""
 
     recipe = (facts.recipe or "").strip().lower().replace("_", " ")
@@ -440,7 +492,13 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "") -> str:
         campaign = "This brand is not on Amazon. The line may mention launching there, and may not say they already sell there."
     else:
         campaign = "Do not mention Amazon."
-    extra = f"\nThe previous line was rejected ({rejection}). Write a different sentence.\n" if rejection else ""
+    extra = ""
+    if rejection:
+        extra = (
+            f"\nRejected line: {previous}\n"
+            f"Reason: {rejection}\n"
+            "Write a different sentence. Do not repeat the rejected line.\n"
+        )
     return (
         f"Brand: {facts.brand}\n"
         f"Product: {facts.product}\n"
@@ -457,9 +515,11 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "") -> str:
 
 def grader_prompt(facts: LineFacts, line: str) -> str:
     return (
-        "Grade this cold-email line. Pass only when it is specific, sounds human, "
-        "and uses a detail that is not already the product name.\n"
-        f"Facts: {facts.as_text()}\n"
+        "Grade this cold-email line. Every claim in the line must be supported "
+        "by the source sentence. Fail a specific the source does not state, "
+        "and fail a detail attributed to the wrong ingredient.\n"
+        f"Product: {facts.product}\n"
+        f"Source: {facts.detail}\n"
         f"Line: {line}\n"
         "Pass:\n"
         "Love that Perfy does flavors like blood orange yuzu and turmeric.\n"
@@ -508,9 +568,11 @@ def compose_line(
         result.source = f"skipped:{facts.skip}"
         return result
 
-    def _one(rejection: str) -> tuple[str, str]:
+    def _one(rejection: str, previous: str = "") -> tuple[str, str]:
         try:
-            line = " ".join((writer(writer_prompt(facts, rejection=rejection)) or "").split())
+            line = writer(writer_prompt(facts, rejection=rejection, previous=previous)) or ""
+            line = re.sub(r"[®™]", "", line)
+            line = " ".join(line.split())
         except Exception as exc:  # noqa: BLE001
             name = exc.__class__.__name__
             if "timeout" in name.lower() or "timeout" in str(exc).lower():
@@ -549,7 +611,16 @@ def compose_line(
         result.source = f"skipped:{why}"
         result.grader_reason = why
         return result
-    line, why = _one(why)
+    retry, why = _one(why, line)
+    same = " ".join(re.sub(r"[^a-z0-9]+", " ", (retry or "").lower()).split()) == " ".join(
+        re.sub(r"[^a-z0-9]+", " ", line.lower()).split()
+    )
+    if same and why not in {
+        "grounding", "invented action", "hype", "flavor", "backend", "url",
+        "health claim", "amazon presence", "model_timeout", "model_error",
+    }:
+        why = "identical"
+    line = retry
     if not why:
         result.line = line
         result.source = "ai"

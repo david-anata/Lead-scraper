@@ -235,16 +235,24 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
     from outbound_pipeline import clean_brand_name
 
     store = _record(lead)
-    brand = clean_brand_name(
-        as_text(store.get("merchant_name") or lead.get("brand") or store.get("name"))
+    display = as_text(
+        lead.get("display_brand") or store.get("site_name") or store.get("name")
     )
+    brand = clean_brand_name(
+        as_text(store.get("merchant_name") or lead.get("brand") or store.get("name")),
+        display_name=display or lead.get("brand") or "",
+    )
+    if not brand or brand.lower() == "this brand":
+        brand = clean_brand_name(lead.get("brand") or "", display_name=display) or display
+    if brand.lower() == "this brand":
+        brand = ""
     category = as_text(store.get("categories") or lead.get("categories") or lead.get("niche"))
     recipe = str(lead.get("recipe") or "").strip()
     from outbound_openers import trial_offer_lead
 
     trial = trial_offer_lead(lead)
     sheet = FactSheet(
-        brand=brand or "This brand", category=category, recipe=recipe, trial_offer=trial,
+        brand=brand, category=category, recipe=recipe, trial_offer=trial,
     )
     if _RESTRICTED.search(category) or _RESTRICTED.search(brand):
         sheet.blocked = "restricted category"

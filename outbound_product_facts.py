@@ -178,6 +178,16 @@ _CATALOG_HEALTH = re.compile(
     re.I,
 )
 _DISEASE_WORD = re.compile(r"\b(?:cancer|diabetes|alzheimer)\b", re.I)
+_DRUG_SUBJECT = re.compile(
+    r"\b(?:wound healing|infection|inflammation|acne scars|pain relief)\b"
+    r"|\b(?:cancer|diabetes|alzheimer)\b",
+    re.I,
+)
+_PAIN_CLAIM = re.compile(r"\bpain\b", re.I)
+_SPARE_PART = re.compile(
+    r"\b(?:replacement|refill|spare|accessor(?:y|ies)|side brush(?:es)?|mop pads?)\b",
+    re.I,
+)
 _PRINT_DESIGN = re.compile(
     r"\b(?:dtf|htv|decal|decals|heat transfer|sublimation|gang sheet|iron[- ]on)\b",
     re.I,
@@ -382,10 +392,25 @@ _PRODUCT_NOUNS = {
 _last_fetch_at = 0.0
 
 
+BODY_TEXT_LIMIT = 1500
+
+
 def _text(value: Any, limit: int = 240) -> str:
     raw = html_lib.unescape(_TAG_RE.sub(" ", str(value or "")))
     raw = raw.replace("&amp;", " and ").replace("|", " ")
     return _WS_RE.sub(" ", raw).strip()[:limit]
+
+
+def _body_text(value: Any, limit: int = BODY_TEXT_LIMIT) -> str:
+    """Plain product copy, cut on a word boundary so a sentence stays whole."""
+
+    raw = _text(value, limit + 400)
+    if len(raw) <= limit:
+        return raw
+    cut = raw[:limit]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut
 
 
 def _tags(value: Any) -> list[str]:
@@ -447,7 +472,7 @@ def parse_shopify_products(payload: Any) -> list[dict[str, Any]]:
             "handle": str(raw.get("handle") or "").strip().lower(),
             "product_type": product_type,
             "tags": tags,
-            "body": _text(raw.get("body_html"), 240),
+            "body": _body_text(raw.get("body_html")),
             "options": options,
             "in_stock": _in_stock(raw),
             "vendor": _text(raw.get("vendor"), 80),
@@ -1088,17 +1113,45 @@ def skip_product_handle(handle: str) -> bool:
     return bool(_SKIP_HANDLE.search(str(handle or "").strip().lower()))
 
 
+def _product_blob(item: dict[str, Any]) -> str:
+    return " ".join((
+        str(item.get("title") or ""),
+        str(item.get("product_type") or ""),
+        str(item.get("body") or ""),
+    ))
+
+
 def product_health_claim(item: dict[str, Any]) -> bool:
     """A supplement-style claim. One of these does not block a whole shop."""
 
     if not isinstance(item, dict) or _is_print_design(item):
         return False
-    blob = " ".join((
-        str(item.get("title") or ""),
-        str(item.get("product_type") or ""),
-        str(item.get("body") or ""),
-    ))
+    blob = _product_blob(item)
     return bool(_CATALOG_HEALTH.search(blob) or _DISEASE_WORD.search(str(item.get("body") or "")))
+
+
+def product_drug_claim(item: dict[str, Any]) -> bool:
+    """Wound, infection, inflammation, acne scars, or a disease name."""
+
+    if not isinstance(item, dict) or _is_print_design(item):
+        return False
+    return bool(_DRUG_SUBJECT.search(_product_blob(item)) or _DRUG_CLAIM.search(_product_blob(item)))
+
+
+def product_pain_claim(item: dict[str, Any]) -> bool:
+    """A pain line. Skip this product as a subject. Do not block the shop."""
+
+    if not isinstance(item, dict) or _is_print_design(item):
+        return False
+    return bool(_PAIN_CLAIM.search(_product_blob(item)))
+
+
+def spare_part(item: dict[str, Any]) -> bool:
+    """A replacement or accessory, not the product the shop is known for."""
+
+    if not isinstance(item, dict):
+        return False
+    return bool(_SPARE_PART.search(f"{item.get('title') or ''} {item.get('product_type') or ''}"))
 
 
 def catalog_blocked_reason(
@@ -1171,7 +1224,7 @@ def _catalog_rows(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
         kept.append({
             "title": title,
             "product_type": kind,
-            "body": str(item.get("body") or "")[:240],
+            "body": _body_text(item.get("body") or ""),
             "tags": [str(tag) for tag in tags[:8]],
             "vendor": str(item.get("vendor") or ""),
             "options": item.get("options") if isinstance(item.get("options"), list) else [],
@@ -1232,7 +1285,7 @@ def collect_product_facts(
     if not json_rows:
         page = fetch_shopify_path(
             domain, "/collections/all?sort_by=best-selling",
-            get=get, sleep=sleep, guard=guard, accept="text/html", timeout=5, attempts=1,
+            get=get, sleep=sleep, guard=guard, accept="text/html", timeout=15, attempts=1,
         )
         handles = handles_from_html(page if isinstance(page, str) else "")
         direct = products_for_handles(
@@ -1254,7 +1307,14 @@ def collect_product_facts(
     if checked:
         from outbound_opener_line import custom_catalog, reseller_catalog
 
-        writing = [item for item in json_rows if not product_health_claim(item)]
+        writing = [
+            item for item in json_rows
+            if not product_health_claim(item) and not product_pain_claim(item)
+        ]
+        if any(not spare_part(item) for item in writing):
+            writing = [item for item in writing if not spare_part(item)]
+        elif writing and all(spare_part(item) for item in writing):
+            writing = []
         catalog = _catalog_rows(writing) if pick == "best-selling" else []
         blocked = catalog_blocked_reason(checked, brand, html)
         catalog_skip = ""

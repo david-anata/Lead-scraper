@@ -180,7 +180,11 @@ def test_catalog_fetch_is_two_calls_with_no_retry():
     assert calls[0][0].rstrip("/").endswith("slow.example")
     assert "/collections/best-sellers/" in calls[1][0]
     assert "/collections/bestsellers/" in calls[2][0]
-    assert all(timeout <= 5 for _url, timeout in calls)
+    assert all(
+        timeout <= 5 or "sort_by=best-selling" in url
+        for url, timeout in calls
+    )
+    assert all(timeout <= 15 for _url, timeout in calls)
     assert not any("products.json?limit=50" in url for url, _timeout in calls)
 
 
