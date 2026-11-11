@@ -696,6 +696,7 @@ def generate(
         brand=sheet.brand,
         recipe=sheet.recipe,
         vendors=store.get("vendors") if isinstance(store.get("vendors"), list) else None,
+        domain=str(lead.get("domain") or ""),
     )
     facts = candidates[0]
     lead["opener_facts"] = facts.as_text()

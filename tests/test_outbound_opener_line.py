@@ -112,7 +112,7 @@ def test_a_grader_timeout_is_retried_once():
     grades = {"n": 0}
 
     def writer(_prompt):
-        return "Vetiver and cedarwood coffee bar from Biggs has real coffee brewed in."
+        return "Vetiver and cedarwood in this coffee bar from Biggs is brewed for the cup."
 
     def grader(_prompt):
         grades["n"] += 1
@@ -705,7 +705,7 @@ def test_grounding_uses_the_product_nouns_not_every_title_word():
 
 def test_invented_actions_hype_and_soap_flavor_are_rejected():
     soap = LineFacts(brand="Biggs", product="Coffee Bar", detail="vetiver and cedarwood", recipe="trial_offer")
-    assert hard_reason("The coffee bar comes in a coffee flavor.", soap) == "flavor"
+    assert hard_reason("The coffee bar comes in a citrus flavor.", soap) == "flavor"
     chips = LineFacts(brand="Paramo", product="Beet Chips", detail="yacon", recipe="amz_on")
     assert hard_reason("I just bought these beet chips on Amazon.", chips) == "invented action"
     assert hard_reason("I added the beet chips to my cart.", chips) == "invented action"
@@ -992,11 +992,13 @@ def test_pass_examples_are_human_openings_and_the_writer_cannot_copy_them():
     assert "do not reuse their phrases" in written.lower()
     assert "one fact only" in written.lower()
     assert "linen apron" in written.lower()
-    cause = writer_prompt(LineFacts(
+    cause_facts = LineFacts(
         brand="Paramo", product="Beet Chips",
-        detail="2% to Save Páramos", recipe="amz_on",
-    ))
-    assert 'Nice that Paramo gives X to help Y.' in cause
+        detail="2% to Save Páramos", recipe="amz_on", domain="paramo.example",
+    )
+    cause = writer_prompt(cause_facts)
+    from outbound_opener_line import opening_for
+    assert f"{opening_for('paramo.example')} Paramo gives X to help Y." in cause
 
 
 def test_a_finish_after_a_dash_becomes_the_product_noun():
@@ -1056,3 +1058,66 @@ def test_a_grader_timeout_uses_the_remaining_budget_and_does_not_fall_back():
     assert not any(graded for _kind, graded, _timeout in seen if _kind == "write")
     assert row["hold"] == "skipped:model_timeout"
     assert row["opener"] == ""
+
+
+def test_amazon_wording_and_openings_do_not_confuse_the_writer():
+    from outbound_opener_line import opening_for
+
+    facts = LineFacts(
+        brand="Pix Perfect", product="Pixel Art Kit",
+        detail="insert the pegs into the panel", recipe="amz_on", domain="pix.example",
+    )
+    prompt = writer_prompt(facts)
+    assert "You may mention that they sell on Amazon" in prompt
+    assert "The line may say so" not in prompt
+    assert "Do not repeat a word" not in prompt
+    assert f"Open with '{opening_for('pix.example')}'" in prompt
+    seen = {opening_for(f"shop-{index}.example") for index in range(40)}
+    assert seen == {"Noticed", "Love that", "Nice that"}
+    assert opening_for("pix.example") == opening_for("PIX.example")
+
+
+def test_hashtags_lists_spec_claims_and_odd_hooks():
+    _name, detail, _kind = extract_detail(
+        "Beet Chips",
+        "2% to help #SaveTheParamos and the watershed.",
+        brand="Paramo",
+    )
+    assert "save the páramos" in detail.lower()
+    assert "savetheparamos" not in detail.lower()
+    _name, detail, _kind = extract_detail(
+        "Beet Chips",
+        "Gives 2% to help SaveTheParamos.",
+        brand="Paramo",
+    )
+    assert "save the páramos" in detail.lower()
+
+    pillow = LineFacts(
+        brand="I Wanna Sleep", product="SnowTouch Pillow",
+        detail="Add or remove fill until your hips, shoulders, and spine finally line up.",
+        recipe="amz_on",
+    )
+    bare = "Noticed the SnowTouch Pillow lets you add or remove fill until your hips shoulders and spine line up."
+    assert hard_reason(bare, pillow) == "missing commas"
+    kept = "Noticed the SnowTouch Pillow lets you add or remove fill until your hips, shoulders, and spine line up."
+    assert hard_reason(kept, pillow) == ""
+    assert hard_reason("Noticed the SnowTouch Pillow fits hips shoulders and spine.", pillow) == "missing commas"
+
+    vacuum = LineFacts(
+        brand="Dreame", product="L10s Ultra",
+        detail="cleans and dries its own mops", recipe="amz_on",
+    )
+    assert hard_reason("Noticed the L10s Ultra delivers up to 60 days of hands-free cleaning.", vacuum) == "spec claim"
+    assert hard_reason("Noticed the L10s Ultra cleans and dries its own mops.", vacuum) == ""
+    daily = LineFacts(brand="Water.io", product="Daily+", detail="personalized hydration plans", recipe="amz_off")
+    assert hard_reason("Noticed the Daily+ gives daily personalized hydration plans.", daily) == "repeated word"
+    assert hard_reason("Noticed the Daily+ sets a personalized hydration plan.", daily) == ""
+
+    _name, picked, _kind = extract_detail(
+        "SuperSupple Moisturizer",
+        "Delivers up to 60 days of moisture. Ceramide NP plus Cholesterol. Jojoba esters soften the cream.",
+        brand="Pure & Cimple",
+    )
+    assert "jojoba" in picked.lower() or "ceramide" in picked.lower()
+    assert "cholesterol" not in picked.lower()
+    assert "delivers up to" not in picked.lower()

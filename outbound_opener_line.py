@@ -8,6 +8,7 @@ URLs. A failed grade gets one rewrite, then the lead is skipped.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -143,6 +144,19 @@ _ALREADY_AMAZON = re.compile(
     re.I,
 )
 _STOP = {"the", "a", "an", "and", "with", "for", "from", "of", "by", "to"}
+_FUNCTION = _STOP | {
+    "that", "this", "these", "those", "your", "you", "its", "it", "is", "are",
+    "was", "be", "in", "on", "at", "as", "or", "if", "so", "up", "out",
+    "until", "into", "over", "than", "then", "just", "only", "not", "can",
+    "has", "have", "had", "does", "did", "but", "nor", "all",
+}
+_OPENINGS = ("Noticed", "Love that", "Nice that")
+_SPEC_CLAIM = re.compile(r"\b(?:delivers|lasts|provides|offers)\s+up\s+to\b", re.I)
+_ODD_HOOK = re.compile(r"\bcholesterol\b", re.I)
+_BETTER_HOOK = re.compile(
+    r"\b(?:jojoba|ceramide|vetiver|cedarwood|hyaluronic|collagen|ghk|yacon)\b",
+    re.I,
+)
 
 
 @dataclass
@@ -156,6 +170,7 @@ class LineFacts:
     recipe: str = ""
     skip: str = ""
     summary: str = ""
+    domain: str = ""
 
     def as_text(self) -> str:
         if self.summary:
@@ -339,10 +354,50 @@ def _kind_for(text: str, product_words: set[str]) -> str:
     return "detail"
 
 
+def opening_for(domain: str) -> str:
+    """One opening per lead, stable for the domain."""
+
+    digest = hashlib.sha256((domain or "").strip().lower().encode()).digest()
+    return _OPENINGS[digest[0] % len(_OPENINGS)]
+
+
+def _expand_tag(token: str) -> str:
+    parts = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+", token or "")
+    text = " ".join(part.lower() for part in parts if part)
+    return text.replace("paramos", "páramos")
+
+
+def _plain_hashtags(text: str) -> str:
+    """Turn #SaveTheParamos and SaveTheParamos into ordinary words."""
+
+    def from_hash(match: re.Match[str]) -> str:
+        return _expand_tag(match.group(1))
+
+    def from_camel(match: re.Match[str]) -> str:
+        token = match.group(1)
+        parts = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+", token)
+        if len(parts) < 3:
+            return token
+        return _expand_tag(token)
+
+    raw = re.sub(r"#([A-Za-z][A-Za-z0-9]+)", from_hash, str(text or ""))
+    return re.sub(r"\b([A-Z][a-z]+(?:[A-Z][a-z0-9]+)+)\b", from_camel, raw)
+
+
+def _drop_odd_hook(clause: str) -> str:
+    """Keep jojoba or ceramide when cholesterol is only sharing the sentence."""
+
+    if not (_ODD_HOOK.search(clause) and _BETTER_HOOK.search(clause)):
+        return clause
+    cleaned = re.sub(r"\bcholesterol\b", " ", clause, flags=re.I)
+    cleaned = re.sub(r"\s+(?:and|\+|plus)\s+(?:and|\+|plus)\s+", " and ", cleaned, flags=re.I)
+    return " ".join(cleaned.split())
+
+
 def _sentences(text: str) -> list[str]:
     """Clauses from a description. Domains stay intact. Bullets become sentences."""
 
-    raw = str(text or "")
+    raw = _plain_hashtags(text)
     raw = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F🟦▪•●✅✨]", "\n", raw)
     raw = re.sub(r"(?m)^\s*[-*]+\s*", "", raw)
     raw = re.sub(r"\([^)]*\)", " ", raw)
@@ -376,6 +431,8 @@ def _score_clause(clause: str, product_words: set[str]) -> int:
 
     if not clause or _MARKETING_OPEN.search(clause) or _SIZE_DETAIL.search(clause):
         return 0
+    if _SPEC_CLAIM.search(clause):
+        return 1
     novel = _novel_words(clause, product_words)
     novel_text = " ".join(novel)
     concrete = bool(
@@ -395,10 +452,14 @@ def _score_clause(clause: str, product_words: set[str]) -> int:
     if not novel and not concrete:
         return 0
     score = len(novel) or 1
-    if concrete:
+    if concrete or _BETTER_HOOK.search(clause):
         score += 6
     if _SKIN_FEEL.search(clause):
         score -= 4
+    if _ODD_HOOK.search(clause) and not _BETTER_HOOK.search(clause):
+        return 1
+    if _ODD_HOOK.search(clause):
+        score -= 3
     return score
 
 
@@ -412,7 +473,7 @@ def _detail_from_text(text: str, product_words: set[str]) -> str:
     for clause in _sentences(text):
         score = _score_clause(clause, product_words)
         if score > best_score:
-            best = clause
+            best = _drop_odd_hook(clause)
             best_score = score
     return best if best_score else ""
 
@@ -423,7 +484,7 @@ def detail_sentences(text: str, product_words: set[str]) -> list[str]:
     if not text or _keyword_blob(text):
         return []
     ranked = [
-        ( _score_clause(clause, product_words), clause)
+        (_score_clause(clause, product_words), _drop_odd_hook(clause))
         for clause in _sentences(text)
     ]
     ranked = [(score, clause) for score, clause in ranked if score]
@@ -530,6 +591,7 @@ def line_fact_candidates(
     brand: str,
     recipe: str = "",
     vendors: Optional[list[str]] = None,
+    domain: str = "",
 ) -> list[LineFacts]:
     """Detail sentences in best-seller order. A near-duplicate retry can use the next one."""
 
@@ -552,7 +614,8 @@ def line_fact_candidates(
         for detail in sentences[:2]:
             facts = LineFacts(
                 brand=brand, product=product, detail=detail,
-                detail_kind=_kind_for(detail, _known_words(product, brand)), recipe=recipe,
+                detail_kind=_kind_for(detail, _known_words(product, brand)),
+                recipe=recipe, domain=domain,
             )
             facts.summary = facts.as_text()
             found.append(facts)
@@ -642,6 +705,10 @@ def hard_reason(line: str, facts: LineFacts) -> str:
         return "hype"
     if _repeated_word(raw):
         return "repeated word"
+    if _missing_commas(raw, facts.detail):
+        return "missing commas"
+    if _SPEC_CLAIM.search(raw):
+        return "spec claim"
     food = re.search(r"\b(?:cola|soda|chips|cookie|tea|gum|candy|chocolate)\b", facts.product, re.I)
     if (
         re.search(r"\bflavou?r\b", raw, re.I)
@@ -680,22 +747,36 @@ def hard_reason(line: str, facts: LineFacts) -> str:
 
 
 def _repeated_word(line: str) -> bool:
-    """A finish or color used twice, or the same word twice in a row.
+    """The same non-stopword twice. 'the' and 'and' may repeat."""
 
-    'Oil' and 'coffee' may appear twice. 'Honed' may not.
-    """
-
-    words = re.findall(r"[a-z0-9]+", (line or "").lower())
-    for left, right in zip(words, words[1:]):
-        if left == right and len(left) >= 4 and left not in _STOP:
-            return True
     seen: set[str] = set()
-    for word in words:
-        if not _VARIANT_WORD.fullmatch(word):
+    for word in re.findall(r"[a-z0-9]+", (line or "").lower()):
+        if len(word) < 3 or word in _FUNCTION:
             continue
         if word in seen:
             return True
         seen.add(word)
+    return False
+
+
+def _missing_commas(line: str, detail: str) -> bool:
+    """A list of three or more items with the commas left out."""
+
+    parts = [part.strip() for part in (detail or "").split(",") if part.strip()]
+    if len(parts) >= 3:
+        items: list[str] = []
+        for part in parts[:-1]:
+            words = re.findall(r"[A-Za-z]{3,}", part)
+            if words:
+                items.append(words[-1].lower())
+        last = re.sub(r"^\s*and\s+", "", parts[-1], flags=re.I)
+        words = re.findall(r"[A-Za-z]{3,}", last)
+        if words:
+            items.append(words[0].lower())
+        if len(items) >= 3 and all(re.search(rf"\b{re.escape(item)}\b", line, re.I) for item in items):
+            spots = [re.search(rf"\b{re.escape(item)}\b", line, re.I).start() for item in items]
+            if spots == sorted(spots) and "," not in line[spots[0]:spots[-1]]:
+                return True
     return False
 
 
@@ -722,10 +803,11 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "", previous: str = "") 
     """A short prompt. Style lives here. The code does not score variety."""
 
     recipe = (facts.recipe or "").strip().lower().replace("_", " ")
+    opening = opening_for(facts.domain)
     if recipe == "amz on":
-        campaign = "This brand sells on Amazon. The line may say so."
+        campaign = "You may mention that they sell on Amazon. You don't have to."
     elif recipe == "amz off":
-        campaign = "This brand is not on Amazon. The line may mention launching there, and may not say they already sell there."
+        campaign = "This brand is not on Amazon. You may mention launching there. Do not say they already sell there."
     else:
         campaign = "Do not mention Amazon."
     extra = ""
@@ -738,7 +820,7 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "", previous: str = "") 
     cause = ""
     if re.search(r"\b(?:donat\w*|gives?|giving)\b|\d+\s*%", facts.detail or "", re.I):
         cause = (
-            f'Write this shape and no other: "Nice that {facts.brand} gives X to help Y." '
+            f'Write this shape and no other: "{opening} {facts.brand} gives X to help Y." '
             "Replace X with the amount in the source and Y with the cause in the source. "
             "The brand gives it, not the product.\n"
         )
@@ -749,11 +831,12 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "", previous: str = "") 
         f"{campaign}\n"
         f"Include this short product name in the line: {facts.product}. "
         "Sound like a person who just looked at it and noticed one thing. "
-        "About 20 words. Open with 'Love that', 'Noticed', or 'Nice that'. "
+        f"About 20 words. Open with '{opening}'. "
         "Use one fact only, the most specific fact in the source. Do not stack a second benefit. "
         "Use only facts that are in the source sentence. Do not add an adjective, "
         "a color, a feeling, or a sense that the source does not state. "
-        "Do not repeat a word. "
+        "Do not use a spec claim such as 'delivers up to'. "
+        "Keep the commas in a list of three or more items. "
         f"{cause}"
         "Do not copy these words even if they are in the source: mesmerizing, exquisite, "
         "stunning, breathtaking, high quality, premium, leading-edge, cutting-edge, "
@@ -844,7 +927,8 @@ def compose_line(
     hard = {
         "grounding", "invented action", "hype", "flavor", "backend", "url",
         "health claim", "amazon presence", "too long", "lowercase opening",
-        "unsupported verb", "cause actor", "repeated word", "model_timeout", "model_error",
+        "unsupported verb", "cause actor", "repeated word", "missing commas",
+        "spec claim", "model_timeout", "model_error",
     }
 
     def _attempt(candidate: LineFacts, rejection: str, previous: str) -> tuple[str, str]:

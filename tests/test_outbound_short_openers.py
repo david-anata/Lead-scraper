@@ -138,7 +138,7 @@ def test_rich_pair_over_the_max_is_regenerated_once_then_left_empty():
     ]}
 
     def llm(_prompt):
-        return "The cherry cola is a cherry soda with a bright color."
+        return "The cherry cola is a bright soda with turmeric in the can."
 
     opener, angle, source = personalization.generate(
         lead, llm=llm, grader=lambda _prompt: json.dumps({"pass": True, "reason": "specific"}),
