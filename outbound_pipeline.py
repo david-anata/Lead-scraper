@@ -1197,6 +1197,20 @@ def _shape_brand_case(text: str) -> str:
     return " ".join(_brand_token(part) for part in text.split(" ") if part)
 
 
+def _written_domain_brand(value: Any) -> str:
+    """Keep a brand written as ``Water.io`` when that is the display name."""
+
+    text = " ".join(str(value or "").split())
+    if not text or " " in text or text.lower().startswith("http"):
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,40}\.[A-Za-z]{2,8}", text):
+        return ""
+    label = text.split(".")[0].lower()
+    if label in {"www", "shop", "store", "mail"}:
+        return ""
+    return text
+
+
 def _brand_is_usable(text: str) -> bool:
     folded = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
     if not folded or len(folded) < 3:
@@ -1240,6 +1254,9 @@ def clean_brand_name(value: Any, *, display_name: Any = "") -> str:
     primary = once(value)
     if _brand_is_usable(primary):
         return primary
+    written = _written_domain_brand(display_name)
+    if written:
+        return written
     fallback = once(display_name)
     if fallback and fallback != primary and _brand_is_usable(fallback):
         return fallback

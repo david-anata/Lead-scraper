@@ -89,7 +89,14 @@ def _non_english(text: str) -> bool:
 
 _BLOCKED_CATEGORY = re.compile(
     r"\b(?:cbd|cbda|hemp|kratom|microdos\w*|psilocybin|psychedelic|"
-    r"bpc-?157|semaglutide|tirzepatide|research use only|nicotine|vapes?|vaping)\b",
+    r"bpc-?157|semaglutide|tirzepatide|research use only|nicotine|vapes?|vaping|"
+    r"lion'?s?\s*mane|lions?\s*mane|chaga|reishi|cordyceps|turkey\s*tail|amanita)\b",
+    re.I,
+)
+_MUSHROOM = re.compile(r"\bmushrooms?\b", re.I)
+_CULINARY_MUSHROOM = re.compile(
+    r"\b(?:seasoning|soup|burger|pizza|risotto|stir[- ]?fry|shiitake|porcini|"
+    r"portobello|cremini|oyster mushroom|truffle salt)\b",
     re.I,
 )
 _MOOD_MUSHROOM = re.compile(r"functional mushroom", re.I)
@@ -125,6 +132,8 @@ def blocked_category_reason(*parts: Any) -> str:
         return "blocked_category"
     if _MOOD_MUSHROOM.search(text) and _MOOD_CLAIM.search(text):
         return "blocked_category"
+    if _MUSHROOM.search(text) and not _CULINARY_MUSHROOM.search(text):
+        return "blocked_category"
     return ""
 
 
@@ -134,16 +143,19 @@ def phrase_is_natural(phrase: str) -> bool:
     raw = " ".join(str(phrase or "").split())
     if not raw or _non_english(raw) or _FOREIGN_WORD.search(raw):
         return False
-    if _PHRASE_JUNK.search(raw) or _DANGLING_END.search(raw) or _SKU_TOKEN.search(raw):
+    if _PHRASE_JUNK.search(raw) or _DANGLING_END.search(raw):
         return False
-    words = re.findall(r"[A-Za-z][A-Za-z'-]*", raw)
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", raw)
     short_ok = {
         "the", "and", "for", "gel", "mix", "oil", "tea", "bar", "hat", "bag",
-        "can", "set", "kit", "wax", "rye", "soy", "oat", "jam",
+        "can", "set", "kit", "wax", "rye", "soy", "oat", "jam", "mat", "two",
+        "dry", "wet", "hex", "mug", "cup", "tin", "cap", "lid", "pad", "of",
     }
-    if any(2 <= len(word) <= 3 and word.lower() not in short_ok for word in words):
-        return False
-    return 2 <= len(words) <= 8
+    for word in words:
+        if re.fullmatch(r"[A-Za-z]{3}", word) and word.lower() not in short_ok:
+            return False
+    letters = [word for word in words if re.search(r"[A-Za-z]", word)]
+    return 2 <= len(letters) <= 12
 
 
 def phrase_is_grounded(phrase: str, products: list[dict[str, Any]]) -> bool:
@@ -154,8 +166,8 @@ def phrase_is_grounded(phrase: str, products: list[dict[str, Any]]) -> bool:
         for item in products if isinstance(item, dict)
     ).lower()
     nouns = [
-        word.lower() for word in re.findall(r"[A-Za-z][A-Za-z'-]*", phrase or "")
-        if len(word) >= 3 and word.lower() not in _GROUND_STOP
+        word.lower() for word in re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", phrase or "")
+        if len(word) >= 2 and word.lower() not in _GROUND_STOP
     ]
     if not nouns or not blob:
         return False
@@ -167,6 +179,13 @@ def _off_core(title: str, product_type: str, core: str) -> bool:
 
     blob = f"{title} {product_type}"
     if _SKIP_ITEM.search(blob) or _LICENSED.search(blob) or _RESTRICTED_PRODUCT.search(blob):
+        return True
+    if re.search(
+        r"options[_\s-]*hidden|hidden product|\bdiscontinued\b|\bbest sellers?\b|"
+        r"\bmemberships?\b|\bsubscription only\b|\bcoupon\b|\bdiscount code\b|"
+        r"%\s*off|\bgoogle shopping\b|\b\d+\s*pack\b|\bpack of\b",
+        blob, re.I,
+    ):
         return True
     if _NOT_FOR_SALE.search(blob) or _shouted(title):
         return True
@@ -673,6 +692,20 @@ _LANG_WORDS = {
 }
 
 
+_OG_SITE = re.compile(
+    r"""<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']"""
+    r"""|<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:site_name["']""",
+    re.I,
+)
+
+
+def site_name_from_html(html: str) -> str:
+    match = _OG_SITE.search(html or "")
+    if not match:
+        return ""
+    return _text(next(group for group in match.groups() if group), 120)
+
+
 def signals_from_storefront(html: str, titles: list[str]) -> dict[str, str]:
     """Currency and language a shopper sees on the storefront."""
 
@@ -692,7 +725,44 @@ def signals_from_storefront(html: str, titles: list[str]) -> dict[str, str]:
             if len(pattern.findall(blob)) >= 2:
                 language = code
                 break
-    return {"currency_code": currency, "language_code": language}
+    return {
+        "currency_code": currency,
+        "language_code": language,
+        "site_name": site_name_from_html(html),
+    }
+
+
+_PRODUCT_LINK = re.compile(
+    r"""<a\b[^>]*href=["'](?:https?://[^"']+)?/products/([^"'?#]+)["'][^>]*>(.*?)</a>""",
+    re.I | re.S,
+)
+
+
+def products_from_collection_html(html: str) -> list[dict[str, Any]]:
+    """Product titles in the order the collection HTML lists them.
+
+    Shopify's ``products.json`` ignores ``sort_by``. The HTML collection page
+    does not, so the link order is the best-selling order.
+    """
+
+    seen: set[str] = set()
+    found: list[dict[str, Any]] = []
+    for handle, inner in _PRODUCT_LINK.findall(html or ""):
+        key = handle.strip().lower()
+        title = _text(re.sub(r"<[^>]+>", " ", inner), 160)
+        if not key or key in seen or not title or len(title) > 140:
+            continue
+        seen.add(key)
+        found.append({
+            "title": title,
+            "product_type": "",
+            "body": "",
+            "tags": [],
+            "in_stock": True,
+        })
+        if len(found) >= 12:
+            break
+    return found
 
 
 def featured_collection(html: str) -> str:
@@ -807,7 +877,7 @@ def _catalog_rows(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for item in products:
         title = str(item.get("title") or "").strip()
         kind = str(item.get("product_type") or "").strip()
-        if not title or _off_core(title, kind, core):
+        if not title or item.get("in_stock") is False or _off_core(title, kind, core):
             continue
         if _non_english(title) or _FOREIGN_WORD.search(title):
             continue
@@ -856,33 +926,29 @@ def collect_product_facts(
         )
         html = page if isinstance(page, str) else ""
     fetched: list[tuple[str, list[dict[str, Any]]]] = []
-    for method, path in (
-        ("best-selling", "/collections/all/products.json?limit=30&sort_by=best-selling"),
+    for path in (
+        "/collections/best-sellers/products.json?limit=30",
+        "/collections/bestsellers/products.json?limit=30",
     ):
         payload = fetch_shopify_path(
             domain, path, get=get, sleep=sleep, guard=guard, timeout=5, attempts=1,
         )
         rows = parse_shopify_products(payload) if isinstance(payload, dict) else []
         if rows:
-            fetched.append((method, rows))
+            fetched.append(("best-selling", rows))
+            break
     if not fetched:
-        featured = featured_collection(html)
-        if featured:
-            payload = fetch_shopify_path(
-                domain, f"/collections/{featured}/products.json?limit=30",
-                get=get, sleep=sleep, guard=guard, timeout=5, attempts=1,
-            )
-            rows = parse_shopify_products(payload) if isinstance(payload, dict) else []
-            if rows:
-                fetched.append(("featured", rows))
-    if not fetched:
-        payload = fetch_shopify_path(
-            domain, "/products.json?limit=50",
-            get=get, sleep=sleep, guard=guard, timeout=5, attempts=1,
+        page = fetch_shopify_path(
+            domain, "/collections/all?sort_by=best-selling",
+            get=get, sleep=sleep, guard=guard, accept="text/html", timeout=5, attempts=1,
         )
-        rows = parse_shopify_products(payload) if isinstance(payload, dict) else []
+        rows = products_from_collection_html(page if isinstance(page, str) else "")
         if rows:
-            fetched.append(("product_type", rows))
+            fetched.append(("best-selling", rows))
+    if not fetched:
+        rows = products_from_collection_html(html)
+        if rows:
+            fetched.append(("featured", rows))
     titles = [str(item.get("title") or "") for _method, rows in fetched for item in rows[:8]]
     signals = signals_from_storefront(html, titles)
     if fetched:

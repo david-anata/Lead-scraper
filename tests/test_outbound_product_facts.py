@@ -84,8 +84,9 @@ def test_best_selling_beats_the_first_catalog_item():
 
     def get(url, timeout, headers, allow_redirects):
         calls.append(url)
-        if "sort_by=best-selling" in url:
+        if "/collections/best-sellers/" in url:
             return _Response(200, {"products": [
+                _product("Best Sellers (12 Cans)", "Bundles"),
                 _product("Gift Card", "Gift Cards"),
                 _product("Cherry Cola (12 Cans)", "Soda"),
             ]})
@@ -110,7 +111,7 @@ def test_best_selling_beats_the_first_catalog_item():
     )
     assert facts["pick"] == "best-selling"
     assert facts["products"][0]["title"] == "Cherry Cola (12 Cans)"
-    assert any("best-selling" in url for url in calls)
+    assert any("/collections/best-sellers/" in url for url in calls)
 
 
 def test_prompt_receives_only_the_short_phrase_and_tics_are_rejected():
@@ -142,6 +143,17 @@ def test_prompt_receives_only_the_short_phrase_and_tics_are_rejected():
     assert op.variety_clash(
         "Cherry cola is the can a shopper would reach for first.",
         ["Cherry cola is the drink they already know."],
+    ) == ""
+    assert op.variety_clash(
+        "Cherry cola is the can a shopper would reach for first.",
+        [
+            "Cherry cola is the drink they already know.",
+            "Cherry cola is the one I would buy again.",
+        ],
+    ) == "repeats an opening"
+    assert op.variety_clash(
+        "The soap smells like cedar.",
+        ["The balm is strong.", "The cream is plain."],
     ) == "repeats an opening"
     assert short_product_phrase("ADOPT A FRAILEJON", "Donation", "Paramo") == ""
     assert short_product_phrase("First Baptist Church", "Doormat", "Mats") == ""
@@ -159,11 +171,16 @@ def test_catalog_fetch_is_two_calls_with_no_retry():
         "slow.example", brand="Slow", allow_storeleads=False,
         get=get, sleep=lambda _s: None, guard=lambda url: url,
     )
-    assert len(calls) == 3
+    assert [url for url, _timeout in calls][:3] == [
+        calls[0][0],
+        calls[1][0],
+        calls[2][0],
+    ]
     assert calls[0][0].rstrip("/").endswith("slow.example")
-    assert "sort_by=best-selling" in calls[1][0]
-    assert "products.json?limit=50" in calls[2][0]
+    assert "/collections/best-sellers/" in calls[1][0]
+    assert "/collections/bestsellers/" in calls[2][0]
     assert all(timeout <= 5 for _url, timeout in calls)
+    assert not any("products.json?limit=50" in url for url, _timeout in calls)
 
 
 def test_blocked_categories_skip_and_a_copper_peptide_serum_passes():
@@ -177,7 +194,19 @@ def test_blocked_categories_skip_and_a_copper_peptide_serum_passes():
     assert blocked_category_reason("Kratom powder") == "blocked_category"
     assert blocked_category_reason("Nicotine vape") == "blocked_category"
     assert blocked_category_reason("This formula can cure cancer") == "blocked_category"
+    assert blocked_category_reason("Lion's mane mushroom mocktail") == "blocked_category"
+    assert blocked_category_reason("Chaga reishi elixir") == "blocked_category"
+    assert blocked_category_reason("Mushroom mocktails") == "blocked_category"
+    assert blocked_category_reason("Porcini mushroom seasoning") == ""
     assert blocked_category_reason("Copper peptide serum", "Skincare") == ""
+    assert phrase_is_natural("24 hour gold keratin treatment")
+    assert phrase_is_natural("the Amara necklace")
+    assert phrase_is_natural("olive wood mug set of two")
+    assert phrase_is_natural("welcome mat")
+    assert phrase_is_grounded(
+        "24 hour gold",
+        [{"title": "24 Hour Gold Keratin Treatment", "product_type": "Treatment", "body": ""}],
+    )
     assert phrase_is_natural("copper peptide serum")
     assert not phrase_is_natural("the spectrum nutrition with")
     assert not phrase_is_natural("the options hidden product")

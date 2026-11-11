@@ -42,6 +42,8 @@ def _banned(text):
     assert "—" not in (text or "") and "–" not in (text or "") and " - " not in (text or "")
     assert "http" not in low and "www." not in low
     assert not op.BACKEND_LANGUAGE.search(text or "")
+    assert not op.BACKEND_LANGUAGE.search("The pixel kit is a craft product for a new shopper today.")
+    assert op.BACKEND_LANGUAGE.search("They added a facebook pixel last month.")
     for word in (
         "klaviyo", "pixel", "shopify", "woocommerce", "automation", "bid",
         "direct-to-consumer", "direct to consumer", "upgraded", "app install",
@@ -127,6 +129,7 @@ def test_company_and_first_names_are_cleaned_before_instantly():
     assert pipeline.clean_brand_name("Ananda Elixirs US") == "Ananda Elixirs"
     assert pipeline.clean_brand_name("COLORUSH US") == "Colorush"
     assert pipeline.clean_brand_name("Water.io") == ""
+    assert pipeline.clean_brand_name("Water.io", display_name="Water.io") == "Water.io"
     assert pipeline.clean_brand_name("Water.io", display_name="Water.io Smart Bottle") == "Water.io Smart Bottle" or pipeline.clean_brand_name("Water.io", display_name="Hydration Bottle") == "Hydration Bottle"
     assert pipeline.clean_brand_name("www.osgoodemarley.com") == "Osgoodemarley"
     assert pipeline.clean_brand_name("https://osgoodemarley.com/shop") == "Osgoodemarley"

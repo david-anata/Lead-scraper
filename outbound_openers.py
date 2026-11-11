@@ -76,18 +76,30 @@ def closing_clause(text: str) -> str:
     return " ".join(words[-6:])
 
 
-def variety_clash(text: str, prior: list[str]) -> str:
-    """True when this opener repeats another line's opening or closing."""
+def variety_clash(
+    text: str,
+    prior: list[str],
+    *,
+    angle: str = "",
+    angles: Optional[list[str]] = None,
+) -> str:
+    """Reject a third opener start or a third angle shape in one batch.
 
-    if not text or not prior:
-        return ""
-    opening = opening_words(text)
-    closing = closing_clause(text)
-    for old in prior:
-        if opening and opening == opening_words(old):
+    The first word and the first three words each count. Two "The ..."
+    openers are allowed. A third is not. Angle shape is the first four words.
+    """
+
+    if text and prior:
+        first = opening_words(text, 1)
+        opening = opening_words(text, 3)
+        if first and sum(1 for old in prior if opening_words(old, 1) == first) >= 2:
             return "repeats an opening"
-        if closing and closing == closing_clause(old):
-            return "repeats a closing"
+        if opening and sum(1 for old in prior if opening_words(old, 3) == opening) >= 2:
+            return "repeats an opening"
+    if angle and angles:
+        shape = opening_words(angle, 4)
+        if shape and sum(1 for old in angles if opening_words(old, 4) == shape) >= 2:
+            return "repeats an angle"
     return ""
 
 
@@ -149,7 +161,7 @@ BACKEND_LANGUAGE = re.compile(
     r"direct[- ]to[- ]consumer|direct consumer|\bdtc\b|"
     r"shopify|woocommerce|woo commerce|magento|bigcommerce|big commerce|"
     r"klaviyo|yotpo|okendo|judge\.?me|loox|recharge|skio|smartrr|"
-    r"pixels?|shopify plus|plan upgrades?|store plan|upgraded|"
+    r"(?:facebook|meta|tiktok|tracking|ad)\s+pixels?|shopify plus|plan upgrades?|store plan|upgraded|"
     r"platforms?|replatform|previously ran|moved)\b"
     r"|\b(?:in|last|this|since|during)\s+"
     r"(?:january|february|march|april|may|june|july|august|september|"

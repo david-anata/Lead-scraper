@@ -18,6 +18,10 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+
+class ModelTimeout(TimeoutError):
+    """The opener model did not answer within the lead budget."""
+
 HIGH_RATING = 4.5
 RETAILER_VENDOR_COUNT = 25
 # Same hard caps as outbound_openers. About 20 and 15 is the aim.
@@ -55,28 +59,22 @@ _SUBSCRIBE_APPS = ("recharge", "skio", "smartrr", "subscription")
 
 _EXAMPLES = """
 Opener: Your adai dosa mix caught my eye. It's not something I see from many brands.
-Angle: Listing photos of that mix would give the brand a clear first product.
+Angle: I would use one photo of the dosa mix and leave the rest of the page alone.
 
 Opener: Saw the cookie mixes at Autumn Sons. The chocolate chunk looks like the one people come back for.
-Angle: An ad can stay on the chocolate chunk and let the photo do the rest.
+Angle: The cookie mix is what I would put in the ad.
 
 Opener: Love that Perfy does flavors like blood orange yuzu instead of another plain cola.
-Angle: The listing can lead with that flavor so the image has one job.
+Angle: On Amazon, show that flavor before any other can.
 
-Opener: The clarifying shampoo is the Inova product I would tell a friend about.
-Angle: Images of that shampoo are enough for an ad.
+Opener: Inova's clarifying shampoo is the one I would tell a friend about.
+Angle: A shopper can understand the shampoo from a single listing image.
 
 Opener: RSL's shave cream is a specific thing, not a general grooming line.
-Angle: Ads for the cream can stay on one product.
-
-Opener: The copper peptide serum is a real skincare product, not a vague promise.
-Angle: A listing that shows the serum is easier to understand.
-
-Opener: On Amazon, the pillow is the I Wanna Sleep product a shopper can see first.
-Angle: The listing should open on that pillow.
+Angle: The cream is a concrete product for the first listing.
 
 Opener: Biggs and Featherbelle's bar soap has a scent a shopper can name.
-Angle: One photo of the soap is a complete ad.
+Angle: That bar soap is enough of a product to build the ad around.
 """.strip()
 
 
@@ -497,10 +495,13 @@ def _prompt(sheet: FactSheet) -> str:
         "Use only the brand and one product from the list above. "
         "Do not invent a product, a store, a result, or a number. "
         "Do not guess what shoppers will do. Do not critique the store. "
+        "Do not paraphrase the product description or list ingredients the way the label does. "
+        "Say one plain thing a person would say after looking at that product. "
         "Do not say recent, newest, I noticed, small set, easy to picture, "
         "one clear start, or simple place to start. "
+        "Do not start every opener with 'The'. "
+        "The angle must not copy one shape. Do not write 'an ad can stay on X so the photo carries the message'. "
         "Sound like a person who looked at their store. Plain and warm. "
-        "Vary the sentence shape. Do not start both lines with the brand name. "
         f"{amazon_rule}"
         "Opener: one or two short sentences, about 25 words max, and at least 6 words. "
         "Angle: one sentence of about 15 words, never more than 20, and at least 6 words. "
@@ -587,6 +588,7 @@ def generate(
     llm: Optional[Callable[[str], str]] = None,
     api_key: Optional[str] = None,
     batch: Optional[list[str]] = None,
+    angles: Optional[list[str]] = None,
 ) -> tuple[str, str, str]:
     """Return (opener, angle, source). Source is ai, fallback, or none.
 
@@ -622,6 +624,8 @@ def generate(
                 else:
                     opener, angle = _parse_pair(model(prompt))
                     phrase = ""
+            except ModelTimeout:
+                return "", "", "skipped:model_timeout"
             except Exception:  # noqa: BLE001
                 logger.exception("[outbound-personalization] model call failed")
                 break
@@ -637,12 +641,14 @@ def generate(
             ) or style_violation(
                 angle, role="angle", recipe=sheet.recipe,
                 high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
-            ) or variety_clash(opener, batch or [])
+            ) or variety_clash(opener, batch or [], angle=angle, angles=angles)
             if opener and angle and not why and opener.strip() != angle.strip():
                 if phrase:
                     lead["product_phrase"] = phrase
                 if batch is not None:
                     batch.append(opener)
+                if angles is not None and angle:
+                    angles.append(angle)
                 return opener, angle, "ai"
             prompt = (
                 prompt

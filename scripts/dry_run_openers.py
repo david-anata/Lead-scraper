@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -221,13 +222,34 @@ def lead_for(
     }
 
 
+def model_timeout_seconds() -> float:
+    """HTTP timeout for one dry-run model call. Default 30s. Override with OUTBOUND_OPENER_TIMEOUT."""
+
+    raw = (os.getenv("OUTBOUND_OPENER_TIMEOUT") or "30").strip()
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return 30.0
+
+
+def lead_budget_seconds() -> float:
+    """Wall clock for one lead, including catalog reads and the model retry."""
+
+    raw = (os.getenv("OUTBOUND_OPENER_LEAD_BUDGET") or "25").strip()
+    try:
+        return max(5.0, float(raw))
+    except ValueError:
+        return 25.0
+
+
 def compatible_llm():
     """An OpenAI-compatible chat client, or None when the env is unset.
 
     Production copy still uses the AI Gateway. This is only for a local dry run.
     ``OUTBOUND_OPENER_BASE_URL`` is the API root, for example ``https://api.x.ai/v1``.
     ``OUTBOUND_OPENER_MODEL`` is the model name. ``OUTBOUND_OPENER_API_KEY`` is
-    sent as a bearer token and is never printed.
+    sent as a bearer token and is never printed. ``OUTBOUND_OPENER_TIMEOUT`` is
+    the per-call timeout in seconds (default 30).
     """
 
     base = (os.getenv("OUTBOUND_OPENER_BASE_URL") or "").strip().rstrip("/")
@@ -236,22 +258,28 @@ def compatible_llm():
         return None
     key = (os.getenv("OUTBOUND_OPENER_API_KEY") or "").strip()
 
-    def call(prompt: str) -> str:
+    def call(prompt: str, timeout_s: Optional[float] = None) -> str:
         import requests
+
+        from outbound_personalization import ModelTimeout
 
         headers = {"Content-Type": "application/json"}
         if key:
             headers["Authorization"] = f"Bearer {key}"
-        response = requests.post(
-            f"{base}/chat/completions",
-            headers=headers,
-            json={
-                "model": model,
-                "temperature": 0.7,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=8,
-        )
+        limit = model_timeout_seconds() if timeout_s is None else timeout_s
+        try:
+            response = requests.post(
+                f"{base}/chat/completions",
+                headers=headers,
+                json={
+                    "model": model,
+                    "temperature": 0.7,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=max(0.5, limit),
+            )
+        except requests.Timeout as exc:
+            raise ModelTimeout("model timeout") from exc
         response.raise_for_status()
         payload = response.json()
         return str(payload["choices"][0]["message"]["content"] or "")
@@ -266,6 +294,8 @@ def render_row(
     display_brand: str = "",
     llm: Optional[Any] = None,
     batch: Optional[list[str]] = None,
+    angles: Optional[list[str]] = None,
+    deadline: Optional[float] = None,
 ) -> dict[str, str]:
     """One opener pair. Nothing is saved."""
 
@@ -302,7 +332,17 @@ def render_row(
     elif not facts.get("products"):
         hold = "skipped:no_product"
     else:
-        opener, angle, source = personalization.generate(lead, llm=llm, batch=batch)
+        writer = llm
+        if llm is not None and deadline is not None:
+            def writer(prompt: str, _llm=llm) -> str:
+                remaining = deadline - time.monotonic()
+                if remaining < 0.5:
+                    raise personalization.ModelTimeout("lead budget")
+                return _llm(prompt, timeout_s=min(model_timeout_seconds(), remaining))
+
+        opener, angle, source = personalization.generate(
+            lead, llm=writer, batch=batch, angles=angles,
+        )
         if source.startswith("skipped"):
             hold = source
             opener, angle = "", ""
@@ -357,7 +397,10 @@ def render_report(rows: list[dict[str, str]]) -> str:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Dry-run 20 openers from recent leads")
     parser.add_argument("--leads-file", default="")
-    parser.add_argument("--per-segment", type=int, default=4)
+    parser.add_argument(
+        "--per-segment", type=int, default=None,
+        help="Cap each segment. A leads file is read in full unless this is set.",
+    )
     parser.add_argument("--no-fetch", action="store_true")
     args = parser.parse_args(argv)
     if args.leads_file:
@@ -368,18 +411,25 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not url:
             print("SALES_AGENT_DB_URL is not set, and no --leads-file was given.", file=sys.stderr)
             return 1
-        rows = load_recent(url, per_segment=args.per_segment)
+        rows = load_recent(url, per_segment=args.per_segment or 4)
     rendered = []
     llm = compatible_llm()
     batch: list[str] = []
+    angles: list[str] = []
+    if args.leads_file:
+        cap = None if args.per_segment is None else args.per_segment * len(SEGMENTS)
+    else:
+        cap = (args.per_segment if args.per_segment is not None else 4) * len(SEGMENTS)
+    budget = lead_budget_seconds()
     for row in rows:
-        if len(rendered) >= args.per_segment * len(SEGMENTS):
+        if cap is not None and len(rendered) >= cap:
             break
         profile = _profile_from_json(row.get("lead_json") or row.get("store_profile") or {})
         if isinstance(row.get("store_profile"), dict):
             profile = {**profile, **row["store_profile"]}
         facts: dict[str, Any] = {}
         display = ""
+        started = time.monotonic()
         already = profile.get("representative_products") or profile.get("product_phrase")
         if not args.no_fetch and not already:
             domain = str(row.get("domain") or "")
@@ -390,8 +440,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 brand=str(row.get("brand") or ""),
                 allow_storeleads=False,
             )
-            display = str(facts.get("vendor") or "")
-        rendered.append(render_row(row, facts=facts, display_brand=display, llm=llm, batch=batch))
+            display = str(facts.get("site_name") or facts.get("vendor") or "")
+        rendered.append(render_row(
+            row, facts=facts, display_brand=display, llm=llm, batch=batch, angles=angles,
+            deadline=started + budget,
+        ))
     sys.stdout.write(render_report(rendered))
     return 0
 
