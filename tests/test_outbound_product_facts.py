@@ -306,6 +306,8 @@ def test_handles_join_real_products_and_ignore_link_text():
     def get(url, timeout=5, headers=None, allow_redirects=True):
         if "sort_by=best-selling" in url:
             return _Response(200, html)
+        if url.rstrip("/").endswith("/products/cookie-mix.json"):
+            return _Response(200, {"product": catalog["products"][0]})
         if "/products.json" in url:
             return _Response(200, catalog)
         if "/collections/best-sellers/" in url or "/collections/bestsellers/" in url:
@@ -418,6 +420,8 @@ def test_hemp_color_is_kept_and_a_hemp_product_is_blocked():
     def get(url, timeout=5, headers=None, allow_redirects=True):
         if "sort_by=best-selling" in url:
             return _Response(200, '<a href="/products/cc-1717">Quick view</a>')
+        if url.rstrip("/").endswith("/products/cc-1717.json"):
+            return _Response(200, {"product": catalog["products"][0]})
         if "/products.json" in url:
             return _Response(200, catalog)
         if "best-sellers" in url or "bestsellers" in url:

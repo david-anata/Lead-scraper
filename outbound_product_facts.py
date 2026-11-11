@@ -1046,6 +1046,61 @@ def _products_by_handle(
     return ordered, found
 
 
+def products_for_handles(
+    domain: str,
+    handles: list[str],
+    *,
+    get: Optional[Callable[..., Any]] = None,
+    sleep: Callable[[float], None] = time.sleep,
+    guard: Optional[Callable[[str], str]] = None,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Real product records for the best-selling handles, in that order.
+
+    Each handle is ``/products/<handle>.json``. A partial ``products.json``
+    page is not used as the join, because the handle often sits past page one.
+    """
+
+    found: list[dict[str, Any]] = []
+    for handle in handles:
+        if skip_product_handle(handle) or len(found) >= limit:
+            continue
+        payload = fetch_shopify_path(
+            domain, f"/products/{handle}.json",
+            get=get, sleep=sleep, guard=guard, timeout=5, attempts=1,
+        )
+        raw = payload.get("product") if isinstance(payload, dict) else None
+        rows = parse_shopify_products({"products": [raw]}) if isinstance(raw, dict) else []
+        found.extend(rows)
+    return found
+
+
+_SKIP_HANDLE = re.compile(
+    r"^(?:front|orlo|samples?|sample|lens-replacements?|gift-?cards?|giftcard)$"
+    r"|build|upload|gang-sheet|lens-replacement|gift-card",
+    re.I,
+)
+
+
+def skip_product_handle(handle: str) -> bool:
+    """Navigation, samples, and print-service handles are not products."""
+
+    return bool(_SKIP_HANDLE.search(str(handle or "").strip().lower()))
+
+
+def product_health_claim(item: dict[str, Any]) -> bool:
+    """A supplement-style claim. One of these does not block a whole shop."""
+
+    if not isinstance(item, dict) or _is_print_design(item):
+        return False
+    blob = " ".join((
+        str(item.get("title") or ""),
+        str(item.get("product_type") or ""),
+        str(item.get("body") or ""),
+    ))
+    return bool(_CATALOG_HEALTH.search(blob) or _DISEASE_WORD.search(str(item.get("body") or "")))
+
+
 def catalog_blocked_reason(
     products: list[dict[str, Any]],
     brand: str = "",
@@ -1059,9 +1114,12 @@ def catalog_blocked_reason(
 
     if blocked_category_reason(brand, homepage, drug=False) or hemp_is_product(brand):
         return "blocked_category"
+    health = 0
+    real = 0
     for item in products:
         if not isinstance(item, dict) or _is_print_design(item):
             continue
+        real += 1
         title = str(item.get("title") or "")
         kind = str(item.get("product_type") or "")
         body = str(item.get("body") or "")
@@ -1069,8 +1127,10 @@ def catalog_blocked_reason(
         blob = " ".join((title, kind, body, tags))
         if blocked_category_reason(blob) or hemp_is_product(title, kind, body):
             return "blocked_category"
-        if _CATALOG_HEALTH.search(blob) or _DISEASE_WORD.search(body):
-            return "blocked_category"
+        if product_health_claim(item):
+            health += 1
+    if real and health / real >= 0.5:
+        return "blocked_category"
     return ""
 
 
@@ -1169,19 +1229,21 @@ def collect_product_facts(
             block_rows = rows
             pick = "best-selling"
             break
-    handles: list[str] = []
     if not json_rows:
         page = fetch_shopify_path(
             domain, "/collections/all?sort_by=best-selling",
             get=get, sleep=sleep, guard=guard, accept="text/html", timeout=5, attempts=1,
         )
         handles = handles_from_html(page if isinstance(page, str) else "")
-        ordered, everything = _products_by_handle(
+        direct = products_for_handles(
             domain, handles, get=get, sleep=sleep, guard=guard,
         )
-        block_rows = everything or ordered
-        if handles and ordered:
-            json_rows = ordered
+        _ordered, everything = _products_by_handle(
+            domain, [], get=get, sleep=sleep, guard=guard,
+        )
+        block_rows = everything or direct
+        if direct:
+            json_rows = direct
             pick = "best-selling"
         else:
             json_rows = []
@@ -1190,17 +1252,27 @@ def collect_product_facts(
     signals = signals_from_storefront(html, titles)
     checked = block_rows or json_rows
     if checked:
-        catalog = _catalog_rows(json_rows) if pick == "best-selling" else []
+        from outbound_opener_line import custom_catalog, reseller_catalog
+
+        writing = [item for item in json_rows if not product_health_claim(item)]
+        catalog = _catalog_rows(writing) if pick == "best-selling" else []
         blocked = catalog_blocked_reason(checked, brand, html)
+        catalog_skip = ""
+        if not blocked and custom_catalog(checked, brand):
+            catalog_skip = "custom"
+        elif not blocked and reseller_catalog(checked, brand):
+            catalog_skip = "reseller"
+        vendor_rows = checked
         return {
-            "source": "products.json" if catalog and not blocked else "",
-            "pick": pick if catalog and not blocked else "",
-            "products": [] if blocked else catalog,
+            "source": "products.json" if catalog and not blocked and not catalog_skip else "",
+            "pick": pick if catalog and not blocked and not catalog_skip else "",
+            "products": [] if blocked or catalog_skip else catalog,
             "phrase": "",
             "description": "",
-            "vendor": next((str(item.get("vendor") or "") for item in json_rows if item.get("vendor")), ""),
-            "vendors": [str(item.get("vendor") or "") for item in json_rows if item.get("vendor")][:40],
+            "vendor": next((str(item.get("vendor") or "") for item in vendor_rows if item.get("vendor")), ""),
+            "vendors": [str(item.get("vendor") or "") for item in vendor_rows if item.get("vendor")][:40],
             "blocked": blocked,
+            "catalog_skip": catalog_skip,
             **signals,
         }
     if allow_storeleads:

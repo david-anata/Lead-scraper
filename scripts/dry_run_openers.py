@@ -223,13 +223,23 @@ def lead_for(
 
 
 def model_timeout_seconds() -> float:
-    """HTTP timeout for one dry-run model call. Default 8s. Override with OUTBOUND_OPENER_TIMEOUT."""
+    """HTTP timeout for the writer call. Default 8s. Override with OUTBOUND_OPENER_TIMEOUT."""
 
     raw = (os.getenv("OUTBOUND_OPENER_TIMEOUT") or "8").strip()
     try:
         return max(1.0, float(raw))
     except ValueError:
         return 8.0
+
+
+def grader_timeout_seconds() -> float:
+    """HTTP timeout for the grader. Default 15s, inside the 35s lead budget."""
+
+    raw = (os.getenv("OUTBOUND_OPENER_GRADER_TIMEOUT") or "15").strip()
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return 15.0
 
 
 def opener_model_name() -> str:
@@ -268,7 +278,7 @@ def first_call_seconds() -> float:
         return 22.0
 
 
-def compatible_llm(model: Optional[str] = None):
+def compatible_llm(model: Optional[str] = None, *, reasoning_effort: Optional[str] = None):
     """An OpenAI-compatible chat client, or None when the base URL is unset.
 
     Production copy still uses the AI Gateway. This is only for a local dry run.
@@ -295,16 +305,19 @@ def compatible_llm(model: Optional[str] = None):
             headers["Authorization"] = f"Bearer {key}"
         limit = model_timeout_seconds() if timeout_s is None else timeout_s
         response = None
+        payload = {
+            "model": chosen,
+            "temperature": 0.4,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
         for attempt in range(2):
             try:
                 response = requests.post(
                     f"{base}/chat/completions",
                     headers=headers,
-                    json={
-                        "model": chosen,
-                        "temperature": 0.4,
-                        "messages": [{"role": "user", "content": prompt}],
-                    },
+                    json=payload,
                     timeout=max(0.5, limit),
                 )
             except requests.Timeout as exc:
@@ -365,19 +378,21 @@ def render_row(
         hold = "skipped:non_us" + (f" ({detail})" if detail else "")
     elif domain_brand_mismatch(domain, str(row.get("brand") or ""), str(facts.get("vendor") or "")):
         hold = "skipped:domain_brand_mismatch"
+    elif facts.get("catalog_skip"):
+        hold = f"skipped:{facts['catalog_skip']}"
     elif not facts.get("products") and not facts.get("phrase") and not facts.get("description"):
         hold = "skipped:no_product"
     else:
-        def _bounded(client):
-            def call(prompt: str, _client=client) -> str:
-                remaining = model_timeout_seconds() if deadline is None else deadline - time.monotonic()
+        def _bounded(client, cap: float):
+            def call(prompt: str, _client=client, _cap=cap) -> str:
+                remaining = _cap if deadline is None else deadline - time.monotonic()
                 if remaining < 0.5:
                     raise personalization.ModelTimeout("lead budget")
-                return _client(prompt, timeout_s=min(model_timeout_seconds(), remaining))
+                return _client(prompt, timeout_s=min(_cap, remaining))
             return call
 
-        writer = _bounded(llm) if llm is not None else None
-        judge = _bounded(grader or llm) if (grader or llm) is not None else None
+        writer = _bounded(llm, model_timeout_seconds()) if llm is not None else None
+        judge = _bounded(grader or llm, grader_timeout_seconds()) if (grader or llm) is not None else None
         opener, angle, source = personalization.generate(lead, llm=writer, grader=judge)
         if source.startswith("skipped"):
             hold = source
@@ -456,7 +471,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         rows = load_recent(url, per_segment=args.per_segment or 4)
     rendered = []
     llm = compatible_llm(opener_model_name())
-    grader = compatible_llm(grader_model_name())
+    grader = compatible_llm(grader_model_name(), reasoning_effort="low")
     batch: list[str] = []
     angles: list[str] = []
     if args.leads_file:

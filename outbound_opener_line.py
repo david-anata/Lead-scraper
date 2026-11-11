@@ -57,10 +57,11 @@ _GENERIC_DETAIL = {
     "soap", "bar", "set", "piece", "kit", "serum", "oil",
 }
 _INVENTED = re.compile(
-    r"\bi (?:just )?(?:bought|tried|ordered)\b"
-    r"|\badded\b.{0,40}\bto my cart\b"
-    r"|\b(?:bought|ordered|tried)\b.{0,40}\bon amazon\b"
-    r"|\bon amazon\b.{0,30}\b(?:bought|ordered|cart)\b",
+    r"\bi (?:just )?(?:bought|tried|ordered|added)\b"
+    r"|\badded\b.*\bto my cart\b"
+    r"|\bmy cart\b"
+    r"|\b(?:bought|ordered|tried)\b.{0,80}\bon amazon\b"
+    r"|\bon amazon\b.{0,40}\b(?:bought|ordered|cart)\b",
     re.I,
 )
 _HYPE = re.compile(r"\b(?:perfect|amazing|obsessed)\b", re.I)
@@ -68,6 +69,20 @@ _NONFOOD = re.compile(r"\b(?:soap|candle|balm|wax|lotion)\b", re.I)
 _VENDOR_CATEGORY = re.compile(
     r"\b(?:tinted|polarized|eyeglasses|sunglasses|frames|optical|readers)\b"
     r"|^(?:women|men|kids|unisex|youth)\b",
+    re.I,
+)
+_GENERIC_VENDOR = re.compile(r"^(?:vinyl|default|upload|builder|title)$", re.I)
+_MARKETING_OPEN = re.compile(
+    r"^\s*(?:embrace|elevate|experience|easily make|discover|introducing|unlock|unleash)\b",
+    re.I,
+)
+_SIZE_DETAIL = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:inches|inch|in\.?|cm|mm|ft)\b|\(\s*\d+(?:\.\d+)?\s*cm\s*\)",
+    re.I,
+)
+_HOW_USED = re.compile(
+    r"\b(?:brewed|carved|hand[- ]?carved|infused|steeped|insert|inserted|roasted|"
+    r"ground|pressed|distilled|stitched|woven)\b",
     re.I,
 )
 _FLAVORS = (
@@ -197,52 +212,60 @@ def _kind_for(text: str, product_words: set[str]) -> str:
     return "detail"
 
 
-def _detail_from_text(text: str, product_words: set[str]) -> str:
-    """A short clause that adds a word the product name does not already use."""
+def _plain_clause(text: str) -> str:
+    raw = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200d]", " ", str(text or ""))
+    raw = re.sub(r"[🟦▪•●✅✨]", " ", raw)
+    raw = re.sub(r"(?m)^\s*[-*•]+\s*", "", raw)
+    return " ".join(raw.split())
 
+
+def _score_clause(clause: str, product_words: set[str]) -> int:
+    """Higher when the clause is an ingredient, scent, material, or use."""
+
+    if not clause or _MARKETING_OPEN.search(clause) or _SIZE_DETAIL.search(clause):
+        return 0
+    novel = _novel_words(clause, product_words)
+    if not novel:
+        return 0
+    score = len(novel)
+    if _HOW_USED.search(clause):
+        score += 6
+    if _find_phrase(clause, _MATERIALS) or _find_phrase(clause, _FLAVORS):
+        score += 4
+    return score
+
+
+def _detail_from_text(text: str, product_words: set[str]) -> str:
+    """One short phrase from the body. Not a size, a slogan, or two clauses joined."""
+
+    text = _plain_clause(text)
     if not text or _keyword_blob(text):
         return ""
-    clauses = [part.strip(" -") for part in re.split(r"[.!?;]", text) if part.strip()]
-    ranked = []
-    for clause in clauses:
-        novel = _novel_words(clause, product_words)
-        if novel:
-            ranked.append((len(novel), clause))
-    if not ranked:
-        return ""
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    chosen = [" ".join(clause.split()[:8]) for _score, clause in ranked[:2]]
-    detail = ", ".join(chosen)
-    if not _novel_words(detail, product_words):
-        return ""
-    return detail
+    best = ""
+    best_score = 0
+    for part in re.split(r"[.!?;]", text):
+        clause = " ".join(part.strip(" -,").split()[:10])
+        score = _score_clause(clause, product_words)
+        if score > best_score:
+            best = clause
+            best_score = score
+    return best if best_score else ""
 
 
-def extract_detail(title: str, body: str = "", options: Optional[list[dict[str, Any]]] = None) -> tuple[str, str, str]:
+def extract_detail(title: str, body: str = "", _options: Optional[list[dict[str, Any]]] = None) -> tuple[str, str, str]:
     """Return (product, detail, kind) or three empty strings.
 
-    The detail comes from the body or options. A word already in the
-    shopper name is not a detail on its own.
+    The detail comes from the body only. Option values such as ``Default Title``
+    and sizes are not details. A word already in the shopper name is not enough.
     """
 
     product = shopper_name(title)
     if not product or not re.search(r"[A-Za-z]", product):
         return "", "", ""
-    product_words = _product_words(product)
-    chunks = [body or ""]
-    for option in options or []:
-        if not isinstance(option, dict):
-            continue
-        name = str(option.get("name") or "")
-        values = [str(value) for value in (option.get("values") or []) if str(value).strip()]
-        if re.search(r"colou?r|size", name, re.I) and len(values) > 3:
-            continue
-        chunks.extend(values[:3])
-    details = [item for item in (_detail_from_text(chunk, product_words) for chunk in chunks) if item]
-    if not details:
+    detail = _detail_from_text(body or "", _product_words(product))
+    if not detail:
         return product, "", ""
-    detail = details[0]
-    return product, detail, _kind_for(detail, product_words)
+    return product, detail, _kind_for(detail, _product_words(product))
 
 
 def _tokens(text: str) -> set[str]:
@@ -274,7 +297,9 @@ def _selling_vendor(vendor: str) -> str:
     """A brand name. A category stuffed into the vendor field is ignored."""
 
     text = str(vendor or "").strip()
-    if not text or _VENDOR_CATEGORY.search(text):
+    if text.endswith(":"):
+        text = text[:-1].strip()
+    if not text or _GENERIC_VENDOR.match(text) or _VENDOR_CATEGORY.search(text):
         return ""
     return text
 
@@ -377,10 +402,14 @@ def hard_reason(line: str, facts: LineFacts) -> str:
         return "flavor"
     from outbound_openers import BACKEND_LANGUAGE
 
-    if BACKEND_LANGUAGE.search(raw) or re.search(
-        r"\b(?:shopify|klaviyo|woocommerce|recharge|plan upgrade|pixel)\b"
+    masked = raw
+    for word in re.findall(r"[A-Za-z0-9]+", facts.product or ""):
+        if len(word) >= 3:
+            masked = re.sub(rf"\b{re.escape(word)}\b", " ", masked, flags=re.I)
+    if BACKEND_LANGUAGE.search(masked) or re.search(
+        r"\b(?:shopify|klaviyo|woocommerce|recharge|plan upgrade)\b"
         r"|\b(?:january|february|march|april|june|july|august|september|october|november|december)\b",
-        raw, re.I,
+        masked, re.I,
     ):
         return "backend"
     if _HEALTH.search(raw):
@@ -491,17 +520,23 @@ def compose_line(
         why = hard_reason(line, facts)
         if why:
             return line, why
-        try:
-            passed, reason = parse_grade(grader(grader_prompt(facts, line)))
-        except Exception as exc:  # noqa: BLE001
-            name = exc.__class__.__name__
-            if "timeout" in name.lower() or "timeout" in str(exc).lower():
-                return line, "model_timeout"
-            return line, "model_error"
-        result.calls.append("grader")
-        if passed:
-            return line, ""
-        return line, reason or "grader"
+        why = "model_error"
+        for attempt in range(2):
+            try:
+                passed, reason = parse_grade(grader(grader_prompt(facts, line)))
+            except Exception as exc:  # noqa: BLE001
+                name = exc.__class__.__name__
+                timed_out = "timeout" in name.lower() or "timeout" in str(exc).lower()
+                result.calls.append("grader")
+                if timed_out and attempt == 0:
+                    continue
+                return line, "model_timeout" if timed_out else "model_error"
+            result.calls.append("grader")
+            if passed:
+                return line, ""
+            why = reason or "grader"
+            break
+        return line, why
 
     line, why = _one("")
     if not why:
