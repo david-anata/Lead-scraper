@@ -929,7 +929,100 @@ def test_accessories_and_no_sample_tags_survive_parse():
     assert facts["products"]
 
 
-def test_a_grader_timeout_retries_on_the_fast_model_inside_the_budget():
+def test_a_passing_rewrite_is_kept_when_it_resembles_the_rejected_line():
+    facts = LineFacts(
+        brand="Perfy", product="Variety Pack",
+        detail="Fruit Punch, Tropical Citrus, and Blood Orange Yuzu",
+        recipe="trial_offer",
+    )
+    calls = {"n": 0}
+
+    def writer(_prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "Nice that the Variety Pack from Perfy includes Fruit Punch, Tropical Citrus, and Blood Orange Yuzu today."
+        return "Nice that the Variety Pack from Perfy includes Fruit Punch, Tropical Citrus, and Blood Orange Yuzu."
+
+    def grader(prompt):
+        if "yuzu today" in prompt.lower():
+            return json.dumps({"pass": False, "reason": "extra word"})
+        return json.dumps({"pass": True, "reason": "matches facts and pass example voice"})
+
+    result = compose_line(facts, writer=writer, grader=grader)
+    assert result.source == "ai"
+    assert "tropical citrus" in result.line.lower()
+
+
+def test_automatically_is_not_backend_tech():
+    import outbound_openers as op
+
+    facts = LineFacts(
+        brand="Dreame", product="L10s Ultra",
+        detail="cleans and dries its own mops", recipe="amz_on",
+    )
+    line = "Noticed the L10s Ultra automatically cleans and dries its mops."
+    assert hard_reason(line, facts) == ""
+    assert not op.BACKEND_LANGUAGE.search(line)
+    assert not op.BACKEND_LANGUAGE.search("The automatic mop cycle is short.")
+    assert op.BACKEND_LANGUAGE.search("The automation runs overnight.")
+    assert op.BACKEND_LANGUAGE.search("The workflow sends the emails.")
+
+
+def test_grader_json_in_a_code_fence_still_parses():
+    from outbound_opener_line import parse_grade
+
+    passed, reason = parse_grade(
+        'Here is the grade:\n```json\n{"pass": true, "reason": "one plain fact"}\n```'
+    )
+    assert passed is True
+    assert reason == "one plain fact"
+
+
+def test_pass_examples_are_human_openings_and_the_writer_cannot_copy_them():
+    facts = LineFacts(
+        brand="ArtisRaw", product="Olive Wood Chess Set",
+        detail="all 32 pieces stored inside its drawer", recipe="amz_off",
+    )
+    prompt = grader_prompt(facts, "Noticed the Olive Wood Chess Set has all 32 pieces stored inside its drawer.")
+    assert "Noticed the Olive Wood Chess Set has all 32 pieces stored inside its drawer." in prompt
+    assert "Noticed Autumn Sons Baking Chocolate Chunk Cookie Mixes only need a small amount of water and oil." in prompt
+    assert "do not fail that shape as a flat catalog statement" in prompt.lower()
+    written = writer_prompt(facts)
+    assert "looks sturdy enough" not in written.lower()
+    assert "do not reuse their phrases" in written.lower()
+    assert "one fact only" in written.lower()
+    assert "linen apron" in written.lower()
+    cause = writer_prompt(LineFacts(
+        brand="Paramo", product="Beet Chips",
+        detail="2% to Save Páramos", recipe="amz_on",
+    ))
+    assert 'Nice that Paramo gives X to help Y.' in cause
+
+
+def test_a_finish_after_a_dash_becomes_the_product_noun():
+    from outbound_opener_line import shopper_name
+
+    title = (
+        "Italian Carrara White Marble Single Rocker Switch Wall Plate / "
+        "Switch Plate / Cover - Honed"
+    )
+    assert shopper_name(title) == "Carrara Marble Switch Plate"
+    assert shopper_name("Cedar Board - Honed") == "Cedar Board"
+    plate = LineFacts(
+        brand="American Tile Depot", product="Carrara Marble Switch Plate",
+        detail="Cut from Carrara marble.", recipe="plan_upgrade",
+    )
+    assert hard_reason(
+        "Nice that the Carrara marble switch plate is made from authentic Italian marble with a honed honed finish.",
+        plate,
+    ) == "hype"
+    assert hard_reason(
+        "Nice that the honed wall plate is honed from Carrara marble.",
+        plate,
+    ) == "repeated word"
+
+
+def test_a_grader_timeout_uses_the_remaining_budget_and_does_not_fall_back():
     import importlib.util
     import time
 
@@ -944,13 +1037,11 @@ def test_a_grader_timeout_retries_on_the_fast_model_inside_the_budget():
     seen = []
 
     def llm(prompt, timeout_s=30):
-        seen.append(("fast", timeout_s))
-        if prompt.startswith("Grade"):
-            return json.dumps({"pass": True, "reason": "paraphrase"})
+        seen.append(("write", prompt.startswith("Grade"), timeout_s))
         return "Nice that the cherry cola is brewed with turmeric."
 
     def slow(_prompt, timeout_s=30):
-        seen.append(("slow", timeout_s))
+        seen.append(("grade", False, timeout_s))
         raise personalization.ModelTimeout("grader")
 
     row = dry.render_row(
@@ -960,7 +1051,8 @@ def test_a_grader_timeout_retries_on_the_fast_model_inside_the_budget():
         grader=slow,
         deadline=time.monotonic() + 35,
     )
-    assert any(kind == "slow" and timeout <= 12 for kind, timeout in seen)
-    assert any(kind == "fast" and timeout <= 8 for kind, timeout in seen)
-    assert row["hold"] == ""
-    assert "cherry cola" in row["opener"].lower()
+    grades = [timeout for kind, _graded, timeout in seen if kind == "grade"]
+    assert grades and min(grades) > 20
+    assert not any(graded for _kind, graded, _timeout in seen if _kind == "write")
+    assert row["hold"] == "skipped:model_timeout"
+    assert row["opener"] == ""

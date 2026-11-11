@@ -182,7 +182,7 @@ _TRIAL_AMAZON_CLAIM = re.compile(
 # not be what the prospect reads.
 BACKEND_LANGUAGE = re.compile(
     r"\b(?:app installs?|installed an? (?:growth )?app|growth app|"
-    r"automation|automated|automatically|"
+    r"automation|automated|workflow|"
     r"bid adjustments?|bid management|bids?|"
     r"real-time optimization|real time optimization|"
     r"direct[- ]to[- ]consumer|direct consumer|\bdtc\b|"

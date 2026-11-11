@@ -24,9 +24,9 @@ FAST_MODEL = "grok-4.20-0309-non-reasoning"
 GRADER_MODEL = "grok-4.3"
 
 _EXAMPLES = """
-Love that Perfy does flavors like blood orange yuzu and turmeric.
-The olive wood mugs from ArtisRaw look sturdy enough for daily use.
-Biggs makes a coffee bar soap with ground coffee in the bar.
+Noticed the linen apron has a chest pocket deep enough for a notebook.
+Nice that the cedar cutting board is one solid piece.
+Love that the wool throw is washed so the nap stays even.
 """.strip()
 
 _FLUFF = re.compile(
@@ -43,7 +43,7 @@ _PACK = re.compile(
 _NOUN = re.compile(
     r"\b(?:cola|soda|soap|bar|serum|kit|mug|mugs|chess|bracelet|necklace|"
     r"pillow|chips|mix|cookie|shampoo|tile|oil|tea|gum|candle|balm|treatment|"
-    r"set|frame|frames)\b",
+    r"set|frame|frames|plate|plates)\b",
     re.I,
 )
 _FILLER_WORD = {
@@ -76,7 +76,7 @@ _BENEFIT_LIST = re.compile(
 _HYPE = re.compile(
     r"\b(?:perfect|amazing|obsessed|mesmerizing|exquisite|stunning|breathtaking|"
     r"premium|leading-edge|cutting-edge|elevate|luxurious|game-changer|"
-    r"elegantly|gracefully|effortlessly)\b"
+    r"elegantly|gracefully|effortlessly|authentic|genuine)\b"
     r"|\bhigh[- ]quality\b",
     re.I,
 )
@@ -186,7 +186,9 @@ def shopper_name(title: str) -> str:
     raw = raw.split(". ")[0]
     raw = _PACK.sub(" ", raw)
     halves = re.split(r"\s+[-–—]\s+", raw)
-    if len(halves) >= 2:
+    if len(halves) >= 2 and _is_variant_tail(halves[-1]):
+        raw = _noun_phrase(halves[0])
+    elif len(halves) >= 2:
         named = [half for half in halves if _NOUN.search(half)]
         raw = named[-1] if named else halves[-1]
     raw = re.sub(r"\bby\b.+$", "", raw, flags=re.I)
@@ -202,6 +204,56 @@ def shopper_name(title: str) -> str:
     if raw and raw[0].islower():
         raw = raw[0].upper() + raw[1:]
     return " ".join(raw.split())
+
+
+_VARIANT_WORD = re.compile(
+    r"^(?:honed|polished|matte|glossy|gloss|brushed|satin|natural|finish|"
+    r"black|white|gold|silver|navy|ivory|grey|gray|blue|red|green|brown|"
+    r"large|small|mini|xl|xs|oz|ml|inch|inches|cm|mm)$",
+    re.I,
+)
+_NAME_DROP = {
+    "italian", "french", "spanish", "mexican", "turkish",
+    "single", "double", "triple", "quad",
+    "rocker", "toggle", "duplex", "decora", "gfci",
+    "wall", "cover", "covers",
+    "white", "black", "gold", "silver", "ivory", "navy", "grey", "gray",
+    "honed", "polished", "matte", "glossy", "brushed", "satin", "natural",
+    "authentic", "genuine", "premium",
+}
+
+
+def _is_variant_tail(text: str) -> bool:
+    """A finish, color, or size after a dash, not the product name."""
+
+    words = re.findall(r"[A-Za-z0-9.]+", text or "")
+    if not words or len(words) > 3:
+        return False
+    if re.fullmatch(r"\d+(?:\.\d+)?", words[0]):
+        return True
+    return all(_VARIANT_WORD.fullmatch(word) for word in words)
+
+
+def _noun_phrase(raw: str) -> str:
+    """The distinguishing words plus the product noun, after a variant is cut off."""
+
+    chunks = [chunk.strip() for chunk in re.split(r"\s*/\s*", raw) if chunk.strip()]
+    source = chunks[0] if chunks else raw
+    words = [word for word in source.split() if word.lower() not in _NAME_DROP]
+    if not words:
+        return " ".join(source.split())
+    noun_at = None
+    for index, word in enumerate(words):
+        if _NOUN.search(word):
+            noun_at = index
+    if noun_at is None:
+        return " ".join(words[-4:])
+    start = noun_at
+    if start > 0:
+        start -= 1
+    head = words[:start]
+    picked = head[-2:] if len(head) > 2 else head
+    return " ".join(picked + words[start:noun_at + 1])
 
 
 def _tighten_name(raw: str) -> str:
@@ -588,6 +640,8 @@ def hard_reason(line: str, facts: LineFacts) -> str:
             hype_text = re.sub(rf"\b{re.escape(word)}\b", " ", hype_text, flags=re.I)
     if _HYPE.search(hype_text):
         return "hype"
+    if _repeated_word(raw):
+        return "repeated word"
     food = re.search(r"\b(?:cola|soda|chips|cookie|tea|gum|candy|chocolate)\b", facts.product, re.I)
     if (
         re.search(r"\bflavou?r\b", raw, re.I)
@@ -623,6 +677,26 @@ def hard_reason(line: str, facts: LineFacts) -> str:
             return "amazon presence"
         return "amazon presence"
     return ""
+
+
+def _repeated_word(line: str) -> bool:
+    """A finish or color used twice, or the same word twice in a row.
+
+    'Oil' and 'coffee' may appear twice. 'Honed' may not.
+    """
+
+    words = re.findall(r"[a-z0-9]+", (line or "").lower())
+    for left, right in zip(words, words[1:]):
+        if left == right and len(left) >= 4 and left not in _STOP:
+            return True
+    seen: set[str] = set()
+    for word in words:
+        if not _VARIANT_WORD.fullmatch(word):
+            continue
+        if word in seen:
+            return True
+        seen.add(word)
+    return False
 
 
 def _cause_miscast(line: str, facts: LineFacts) -> bool:
@@ -661,6 +735,13 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "", previous: str = "") 
             f"Reason: {rejection}\n"
             "Write a different sentence. Do not repeat the rejected line.\n"
         )
+    cause = ""
+    if re.search(r"\b(?:donat\w*|gives?|giving)\b|\d+\s*%", facts.detail or "", re.I):
+        cause = (
+            f'Write this shape and no other: "Nice that {facts.brand} gives X to help Y." '
+            "Replace X with the amount in the source and Y with the cause in the source. "
+            "The brand gives it, not the product.\n"
+        )
     return (
         f"Brand: {facts.brand}\n"
         f"Product: {facts.product}\n"
@@ -668,16 +749,19 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "", previous: str = "") 
         f"{campaign}\n"
         f"Include this short product name in the line: {facts.product}. "
         "Sound like a person who just looked at it and noticed one thing. "
-        "About 20 words. Vary the opening: 'Love that...', 'Noticed...', "
-        "'...looks sturdy enough for...', or 'Nice that...'. "
+        "About 20 words. Open with 'Love that', 'Noticed', or 'Nice that'. "
+        "Use one fact only, the most specific fact in the source. Do not stack a second benefit. "
         "Use only facts that are in the source sentence. Do not add an adjective, "
         "a color, a feeling, or a sense that the source does not state. "
-        f"If the source says the brand gives or donates, {facts.brand or 'the brand'} does it, not the product. "
+        "Do not repeat a word. "
+        f"{cause}"
         "Do not copy these words even if they are in the source: mesmerizing, exquisite, "
         "stunning, breathtaking, high quality, premium, leading-edge, cutting-edge, "
-        "elevate, luxurious, game-changer, elegantly, gracefully, effortlessly. "
+        "elevate, luxurious, game-changer, elegantly, gracefully, effortlessly, authentic, genuine. "
         "Do not claim you used or bought it.\n"
-        f"Examples of the voice, each a different shape:\n{_EXAMPLES}\n"
+        "The examples below are rhythm only, from other products. "
+        "Do not reuse their phrases unless the source says the same thing.\n"
+        f"{_EXAMPLES}\n"
         f"{extra}"
         "Return only the sentence."
     )
@@ -692,8 +776,10 @@ def grader_prompt(facts: LineFacts, line: str) -> str:
         "A sensory line such as 'leaves skin feeling fresh' is not a health claim. "
         "A medical or benefit claim, such as calming redness or easing pain, still fails. "
         "'Gentle' passes only when the source says it. A new adjective fails.\n"
-        "Voice: fail hype, filler, medical or benefit claims, ad-copy, "
-        "instruction tone, and a flat 'Product does X' catalog statement. "
+        "Voice: fail hype, filler, medical or benefit claims, ad-copy, and instruction tone. "
+        "A line that opens with 'Noticed', 'Nice that', or 'Love that' and states one plain "
+        "true fact about the named product passes. Do not fail that shape as a flat catalog statement. "
+        "A flat catalog line is a title restated with no human opening. "
         "Do not fail a sensory description the source already states.\n"
         f"Brand: {facts.brand}\n"
         f"Product: {facts.product}\n"
@@ -702,7 +788,8 @@ def grader_prompt(facts: LineFacts, line: str) -> str:
         "Pass:\n"
         "Love that Perfy does flavors like blood orange yuzu and turmeric.\n"
         "The olive wood mugs from ArtisRaw look sturdy enough for daily use.\n"
-        "Chocolate Chunk Cookie Mixes from Autumn Sons Baking need just water and oil.\n"
+        "Noticed the Olive Wood Chess Set has all 32 pieces stored inside its drawer.\n"
+        "Noticed Autumn Sons Baking Chocolate Chunk Cookie Mixes only need a small amount of water and oil.\n"
         "Fail:\n"
         "The coffee bar soap is worth a closer look.\n"
         "The Hana Ear Climber creates a mesmerizing cascade of shimmer along your ear.\n"
@@ -712,14 +799,12 @@ def grader_prompt(facts: LineFacts, line: str) -> str:
 
 
 def parse_grade(raw: str) -> tuple[bool, str]:
-    text = (raw or "").strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?", "", text).strip()
-        text = re.sub(r"```$", "", text).strip()
+    text = re.sub(r"```(?:json)?", " ", raw or "", flags=re.I)
+    text = text.replace("`", " ").strip()
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.S)
+        match = re.search(r"\{[^{}]*\}", text, re.S)
         if not match:
             return False, "grader unreadable"
         try:
@@ -759,7 +844,7 @@ def compose_line(
     hard = {
         "grounding", "invented action", "hype", "flavor", "backend", "url",
         "health claim", "amazon presence", "too long", "lowercase opening",
-        "unsupported verb", "cause actor", "model_timeout", "model_error",
+        "unsupported verb", "cause actor", "repeated word", "model_timeout", "model_error",
     }
 
     def _attempt(candidate: LineFacts, rejection: str, previous: str) -> tuple[str, str]:
@@ -803,18 +888,20 @@ def compose_line(
             result.grader_reason = "pass"
             return result
         if why in {"model_timeout", "model_error"}:
-            last_why = why
-            continue
+            result.line = ""
+            result.source = f"skipped:{why}"
+            result.grader_reason = why
+            return result
         retry, why = _attempt(candidate, why, line)
-        if retry and _similar(retry, line) > 0.85 and why not in hard:
-            last_why = "identical"
-            continue
         if not why:
             result.line = retry
             result.source = "ai"
             result.grader_pass = True
             result.grader_reason = "pass"
             return result
+        if retry and _similar(retry, line) > 0.85 and why not in hard:
+            last_why = "identical"
+            continue
         last_why = why
         result.line = ""
         result.grader_pass = False

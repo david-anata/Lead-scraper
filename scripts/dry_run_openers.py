@@ -398,39 +398,19 @@ def render_row(
 
         writer = _bounded(llm, model_timeout_seconds()) if llm is not None else None
 
-        def judge(prompt: str, timeout_s: Optional[float] = None, _slow=grader, _fast=llm) -> str:
-            """Grade on the slow model, then once on the fast model if that times out.
+        def judge(prompt: str, timeout_s: Optional[float] = None, _grader=grader, _writer=llm) -> str:
+            """Grade on the main grader with whatever lead time is left.
 
-            The first call leaves about eight seconds so the retry still fits
-            in the lead budget. One timeout does not end the lead.
+            A timeout skips the lead. There is no second model.
             """
 
-            def _left() -> float:
-                if deadline is None:
-                    return grader_timeout_seconds()
-                return deadline - time.monotonic()
-
-            def _timed_out(exc: BaseException) -> bool:
-                name = exc.__class__.__name__.lower()
-                return "timeout" in name or "timeout" in str(exc).lower()
-
-            remaining = _left()
-            if remaining < 0.5:
-                raise personalization.ModelTimeout("lead budget")
-            slow = _slow if _slow is not None and _slow is not _fast else None
-            if slow is not None and remaining >= 14:
-                try:
-                    return slow(prompt, timeout_s=min(12.0, remaining - 8))
-                except Exception as exc:  # noqa: BLE001
-                    if not _timed_out(exc):
-                        raise
-                    remaining = _left()
-                    if remaining < 0.5:
-                        raise personalization.ModelTimeout("lead budget") from exc
-            client = _fast or _slow
+            client = _grader or _writer
             if client is None:
                 raise personalization.ModelTimeout("lead budget")
-            return client(prompt, timeout_s=min(8.0, remaining))
+            remaining = grader_timeout_seconds() if deadline is None else deadline - time.monotonic()
+            if remaining < 0.5:
+                raise personalization.ModelTimeout("lead budget")
+            return client(prompt, timeout_s=remaining)
         opener, angle, source = personalization.generate(
             lead, llm=writer, grader=judge if (grader or llm) is not None else None,
         )
