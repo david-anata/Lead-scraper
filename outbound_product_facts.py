@@ -439,7 +439,19 @@ def _in_stock(raw: dict[str, Any]) -> bool:
 
 
 def _skip_product(title: str, product_type: str, tags: list[str]) -> bool:
-    blob = " ".join([title, product_type, " ".join(tags)])
+    """Gift cards, samples, and fees. An Accessories tag is not a skip.
+
+    ``No Sample`` means the item is not a sample. ``mostly_accessories`` decides
+    whether an Accessories-tagged product is the thing the shop sells.
+    """
+
+    kept_tags = [
+        tag for tag in tags
+        if not re.search(r"\bno\s+samples?\b", tag, re.I)
+        and not re.fullmatch(r"accessor(?:y|ies)", tag.strip(), re.I)
+    ]
+    kind = re.sub(r"\baccessor(?:y|ies)\b", " ", product_type or "", flags=re.I)
+    blob = " ".join([title, kind, " ".join(kept_tags)])
     return bool(_SKIP_ITEM.search(blob))
 
 

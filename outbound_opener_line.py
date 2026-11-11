@@ -75,12 +75,17 @@ _BENEFIT_LIST = re.compile(
 )
 _HYPE = re.compile(
     r"\b(?:perfect|amazing|obsessed|mesmerizing|exquisite|stunning|breathtaking|"
-    r"premium|leading-edge|cutting-edge|elevate|luxurious|game-changer)\b"
+    r"premium|leading-edge|cutting-edge|elevate|luxurious|game-changer|"
+    r"elegantly|gracefully|effortlessly)\b"
     r"|\bhigh[- ]quality\b",
     re.I,
 )
 _DIETARY = re.compile(
     r"\b(?:oil-free|gluten-free|non-gmo|vegan|sugar-free|no sugars?)\b",
+    re.I,
+)
+_SKIN_FEEL = re.compile(
+    r"\b(?:leaves skin|skin feeling|feeling fresh|astringent|slightly tight)\b",
     re.I,
 )
 _NONFOOD = re.compile(r"\b(?:soap|candle|balm|wax|lotion)\b", re.I)
@@ -185,14 +190,35 @@ def shopper_name(title: str) -> str:
         named = [half for half in halves if _NOUN.search(half)]
         raw = named[-1] if named else halves[-1]
     raw = re.sub(r"\bby\b.+$", "", raw, flags=re.I)
+    model = re.search(r"\b([A-Z]\d+[A-Za-z0-9-]*\s+[A-Z][\w'-]+)\b", raw)
+    if model:
+        return model.group(1)
     words = raw.split()
     if len(words) >= 6:
         tail = re.search(r"((?:[A-Z][\w'-]*-){1,}[\w'-]+(?:\s+[A-Z][\w'-]+){0,3})$", raw)
         if tail:
             raw = tail.group(1)
+    raw = _tighten_name(raw)
     if raw and raw[0].islower():
         raw = raw[0].upper() + raw[1:]
     return " ".join(raw.split())
+
+
+def _tighten_name(raw: str) -> str:
+    """Drop filler from a long title and keep the name a person would say."""
+
+    words = raw.split()
+    loose = {"handmade", "adjustable", "professional", "robot", "live", "edge"}
+    kept = []
+    for word in words:
+        if word.lower() in loose:
+            continue
+        if "-" in word and len(words) > 3 and not _NOUN.search(word):
+            continue
+        kept.append(word)
+    if len(kept) >= 2 and _NOUN.search(kept[-1]):
+        return " ".join(kept)
+    return " ".join(words)
 
 
 def _clean(text: str) -> str:
@@ -310,11 +336,17 @@ def _score_clause(clause: str, product_words: set[str]) -> int:
         return 0
     if _DIETARY.search(clause) and not concrete:
         return 1
+    if len(clause.split()) <= 3 and not concrete:
+        return 0
+    if _SKIN_FEEL.search(clause) and not concrete:
+        return 1
     if not novel and not concrete:
         return 0
     score = len(novel) or 1
     if concrete:
         score += 6
+    if _SKIN_FEEL.search(clause):
+        score -= 4
     return score
 
 
@@ -405,6 +437,7 @@ def _selling_vendor(vendor: str) -> str:
         or _GENERIC_VENDOR.match(text)
         or _VENDOR_CATEGORY.search(text)
         or _ADDON_VENDOR.search(text)
+        or re.fullmatch(r"[A-Z0-9][A-Z0-9-]{1,7}", text)
     ):
         return ""
     return text
@@ -488,26 +521,44 @@ def pick_line_facts(
     return line_fact_candidates(products, brand=brand, recipe=recipe, vendors=vendors)[0]
 
 
+def _name_parts(product: str, brand: str = "") -> tuple[list[str], list[str]]:
+    """Main nouns, then the other words that distinguish this product."""
+
+    brand_words = set(re.findall(r"[a-z0-9]+", (brand or "").lower()))
+    nouns: list[str] = []
+    distinctive: list[str] = []
+    for word in re.findall(r"[a-z0-9]+", (product or "").lower()):
+        if word in _STOP or word in brand_words or word.isdigit() or len(word) < 3:
+            continue
+        if _NOUN.fullmatch(word) or word in {"serum", "kit", "cola", "soap", "bar", "chips", "pillow", "vacuum"}:
+            nouns.append(word)
+        else:
+            distinctive.append(word)
+    return nouns, distinctive
+
+
 def main_nouns(product: str, brand: str = "") -> list[str]:
     """The product words a line has to include. Not the pack size or the brand."""
 
-    brand_words = set(re.findall(r"[a-z0-9]+", (brand or "").lower()))
-    words = [word for word in re.findall(r"[a-z0-9]+", (product or "").lower()) if word not in _STOP]
-    nouns: list[str] = []
-    for index, word in enumerate(words):
-        if word in brand_words or word.isdigit():
-            continue
-        if _NOUN.fullmatch(word) or word in {"serum", "kit", "cola", "soap", "bar", "chips", "pillow", "bracelet"}:
-            if index and words[index - 1] not in brand_words and words[index - 1] not in _STOP:
-                nouns.append(words[index - 1])
-            nouns.append(word)
-    if not nouns:
-        nouns = [word for word in words if len(word) >= 5 and word not in brand_words][:3]
-    seen: list[str] = []
-    for noun in nouns:
-        if noun not in seen:
-            seen.append(noun)
-    return seen[:4]
+    nouns, distinctive = _name_parts(product, brand)
+    return (nouns + distinctive)[:4]
+
+
+def _grounded(line: str, product: str, brand: str = "") -> bool:
+    """The main noun plus one distinguishing word. Not every word in the title."""
+
+    nouns, distinctive = _name_parts(product, brand)
+    low = line.lower()
+    if nouns and distinctive:
+        has_noun = any(word in low for word in nouns)
+        has_extra = any(word in low for word in distinctive) or sum(word in low for word in nouns) >= 2
+        return has_noun and has_extra
+    needed = nouns or distinctive
+    if len(needed) >= 2:
+        return sum(1 for word in needed if word in low) >= 2
+    if needed:
+        return any(word in low for word in needed)
+    return True
 
 
 def hard_reason(line: str, facts: LineFacts) -> str:
@@ -522,10 +573,13 @@ def hard_reason(line: str, facts: LineFacts) -> str:
         return "too long"
     if re.search(r"\bblends?\b", raw, re.I) and not re.search(r"\bblend", facts.detail or "", re.I):
         return "unsupported verb"
-    needed = main_nouns(facts.product, facts.brand)
-    low = raw.lower()
-    if needed and not all(token in low for token in needed):
+    cause = bool(re.search(r"\b(?:donat\w*|gives?|giving)\b|\d+\s*%", facts.detail or "", re.I))
+    brand_words = [word for word in re.findall(r"[a-z0-9]+", (facts.brand or "").lower()) if len(word) >= 4]
+    names_brand = any(word in raw.lower() for word in brand_words)
+    if not _grounded(raw, facts.product, facts.brand) and not (cause and names_brand):
         return "grounding"
+    if _cause_miscast(raw, facts):
+        return "cause actor"
     if _INVENTED.search(raw):
         return "invented action"
     hype_text = raw
@@ -571,6 +625,25 @@ def hard_reason(line: str, facts: LineFacts) -> str:
     return ""
 
 
+def _cause_miscast(line: str, facts: LineFacts) -> bool:
+    """A donation is something the brand does, not the product."""
+
+    if not re.search(r"\b(?:donat\w*|gives?|giving)\b|\d+\s*%", facts.detail or "", re.I):
+        return False
+    brand_words = [word for word in re.findall(r"[a-z0-9]+", (facts.brand or "").lower()) if len(word) >= 4]
+    low = line.lower()
+    if brand_words and not any(word in low for word in brand_words):
+        return True
+    nouns, _distinctive = _name_parts(facts.product, facts.brand)
+    if not nouns:
+        return False
+    return bool(re.search(
+        r"\b(?:" + "|".join(re.escape(word) for word in nouns) + r")\b.{0,40}\b(?:donat\w*|gives?|giving)\b",
+        line,
+        re.I,
+    ))
+
+
 def writer_prompt(facts: LineFacts, *, rejection: str = "", previous: str = "") -> str:
     """A short prompt. Style lives here. The code does not score variety."""
 
@@ -593,11 +666,16 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "", previous: str = "") 
         f"Product: {facts.product}\n"
         f"Detail: {facts.detail} ({facts.detail_kind})\n"
         f"{campaign}\n"
-        "Sound like a person who just looked at the product and noticed one thing. "
-        "About 20 words. Use a varied opening such as 'Love that...', 'Noticed...', "
+        f"Include this short product name in the line: {facts.product}. "
+        "Sound like a person who just looked at it and noticed one thing. "
+        "About 20 words. Vary the opening: 'Love that...', 'Noticed...', "
         "'...looks sturdy enough for...', or 'Nice that...'. "
-        "Do not write a flat 'Product does X' catalog statement. "
-        "Do not restate the catalog sentence or list several benefits. "
+        "Use only facts that are in the source sentence. Do not add an adjective, "
+        "a color, a feeling, or a sense that the source does not state. "
+        f"If the source says the brand gives or donates, {facts.brand or 'the brand'} does it, not the product. "
+        "Do not copy these words even if they are in the source: mesmerizing, exquisite, "
+        "stunning, breathtaking, high quality, premium, leading-edge, cutting-edge, "
+        "elevate, luxurious, game-changer, elegantly, gracefully, effortlessly. "
         "Do not claim you used or bought it.\n"
         f"Examples of the voice, each a different shape:\n{_EXAMPLES}\n"
         f"{extra}"
@@ -608,11 +686,15 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "", previous: str = "") 
 def grader_prompt(facts: LineFacts, line: str) -> str:
     return (
         "Grade this cold-email line in two checks.\n"
-        "Facts: brand and product name are known. Check only that the detail claim "
-        "is supported by the source sentence. Fail a made-up specific, a verb the "
-        "source does not support, and a detail pinned on the wrong ingredient.\n"
-        "Voice: fail hype, filler, benefit or skin or health claims, ad-copy, "
-        "instruction tone, and a flat 'Product does X' catalog statement.\n"
+        "Facts: brand and product name are known. A plain paraphrase of the source "
+        "is fine, such as 'splash' for a small amount. Fail a new fact, a new "
+        "adjective, or a verb the source does not support. "
+        "A sensory line such as 'leaves skin feeling fresh' is not a health claim. "
+        "A medical or benefit claim, such as calming redness or easing pain, still fails. "
+        "'Gentle' passes only when the source says it. A new adjective fails.\n"
+        "Voice: fail hype, filler, medical or benefit claims, ad-copy, "
+        "instruction tone, and a flat 'Product does X' catalog statement. "
+        "Do not fail a sensory description the source already states.\n"
         f"Brand: {facts.brand}\n"
         f"Product: {facts.product}\n"
         f"Source: {facts.detail}\n"
@@ -677,7 +759,7 @@ def compose_line(
     hard = {
         "grounding", "invented action", "hype", "flavor", "backend", "url",
         "health claim", "amazon presence", "too long", "lowercase opening",
-        "unsupported verb", "model_timeout", "model_error",
+        "unsupported verb", "cause actor", "model_timeout", "model_error",
     }
 
     def _attempt(candidate: LineFacts, rejection: str, previous: str) -> tuple[str, str]:
@@ -721,10 +803,8 @@ def compose_line(
             result.grader_reason = "pass"
             return result
         if why in {"model_timeout", "model_error"}:
-            result.line = ""
-            result.source = f"skipped:{why}"
-            result.grader_reason = why
-            return result
+            last_why = why
+            continue
         retry, why = _attempt(candidate, why, line)
         if retry and _similar(retry, line) > 0.85 and why not in hard:
             last_why = "identical"
@@ -744,5 +824,5 @@ def compose_line(
     result.line = ""
     result.grader_pass = False
     result.grader_reason = last_why
-    result.source = "skipped:grader"
+    result.source = f"skipped:{last_why}" if last_why in hard else "skipped:grader"
     return result

@@ -10,6 +10,7 @@ from outbound_opener_line import (
     grader_prompt,
     hard_reason,
     pick_line_facts,
+    writer_prompt,
 )
 from outbound_product_facts import blocked_category_reason, hemp_is_product
 
@@ -450,7 +451,7 @@ def test_the_grader_treats_the_brand_as_known_and_the_line_stays_short():
     prompt = grader_prompt(facts, "This Chocolate Chunk Cookie Mix from Autumn Sons Baking only needs a small amount of water and oil.")
     assert "Brand: Autumn Sons Baking" in prompt
     assert "known" in prompt.lower()
-    assert "check only" in prompt.lower()
+    assert "paraphrase" in prompt.lower()
     assert hard_reason(
         "This shampoo-style keratin treatment helps reduce frizz control volume improve manageability and enhance shine while allowing same-day rinse and same-day color service today.",
         LineFacts(brand="Inova", product="Keratin Treatment", detail="reduces frizz", recipe="trial_offer"),
@@ -523,7 +524,7 @@ def test_brush_covers_are_spares_and_an_all_accessory_list_is_labeled():
     vacuum = {"title": "L10s Ultra Robot Vacuum", "body": "The robot maps the room before it starts."}
     cover = {"title": "D10 Plus Main Brush Cover", "product_type": "Parts", "body": "A cover for the brush."}
     picked = pick_line_facts([cover, vacuum], brand="Dreame")
-    assert "Vacuum" in picked.product
+    assert picked.product == "L10s Ultra"
 
     class Response:
         def __init__(self, status, payload):
@@ -777,3 +778,189 @@ def test_without_a_best_selling_order_the_catalog_is_not_used():
     )
     assert facts["products"] == []
     assert facts["pick"] != "catalog"
+
+
+def test_grounding_accepts_the_noun_plus_one_distinguishing_word():
+    chess = LineFacts(brand="ArtisRaw", product="Olive Wood Chess Set", detail="A hidden storage drawer.", recipe="amz_off")
+    assert hard_reason("Nice that the olive wood chess set has a storage drawer.", chess) == ""
+    assert hard_reason("Nice that the chess set has a storage drawer.", chess) == ""
+    assert hard_reason("Nice that the storage drawer holds all 32 hand-turned olive wood pieces.", chess) == "grounding"
+    pillow = LineFacts(
+        brand="I Wanna Sleep", product="SnowTouch Pillow",
+        detail="Add or remove fill until your hips, shoulders, and spine finally line up.",
+        recipe="trial_offer",
+    )
+    assert hard_reason("Nice that the SnowTouch pillow lets you add or remove fill.", pillow) == ""
+    assert hard_reason("Nice that you can add or remove fill until your hips line up.", pillow) == "grounding"
+    vacuum = LineFacts(brand="Dreame", product="L10s Ultra", detail="It cleans and dries its own mops.", recipe="amz_on")
+    assert hard_reason("Nice that the L10s Ultra cleans and dries its own mops.", vacuum) == ""
+    assert hard_reason("Nice that it automatically cleans and dries its own mops.", vacuum) == "grounding"
+
+
+def test_short_names_drop_filler_and_keep_the_model():
+    from outbound_opener_line import shopper_name
+
+    assert shopper_name("Dreame L10s Ultra Robot Vacuum") == "L10s Ultra"
+    assert shopper_name("SnowTouch Adjustable Full-Body Pillow") == "SnowTouch Pillow"
+    assert shopper_name("Handmade Olive Wood Chess Set") == "Olive Wood Chess Set"
+
+
+def test_the_writer_may_only_use_the_source_and_drops_marketing_words():
+    facts = LineFacts(
+        brand="Hip Optical", product="Higgins",
+        detail="Crafted from premium acetate and stainless steel.", recipe="replatform",
+    )
+    prompt = writer_prompt(facts)
+    assert "only facts" in prompt.lower()
+    assert "Higgins" in prompt
+    for word in ("elegantly", "gracefully", "effortlessly", "premium"):
+        assert word in prompt.lower()
+    climber = LineFacts(brand="Rita", product="Hana Ear Climber", detail="ascends along the ear", recipe="replatform")
+    assert hard_reason("Noticed how the Hana Ear Climber elegantly climbs the ear.", climber) == "hype"
+    assert hard_reason("Noticed how the Hana Ear Climber gracefully climbs the ear.", climber) == "hype"
+    assert hard_reason("Noticed how the Hana Ear Climber effortlessly climbs the ear.", climber) == "hype"
+
+
+def test_a_cause_line_names_the_brand():
+    chips = LineFacts(
+        brand="Paramo", product="Beet Chips",
+        detail="2% to Save Páramos & Water For a Good Cause", recipe="amz_on",
+    )
+    prompt = writer_prompt(chips)
+    assert "Paramo" in prompt
+    assert "not the product" in prompt
+    assert hard_reason("Nice that Paramo gives 2% to help save the páramos.", chips) == ""
+    assert hard_reason("Nice that these beet chips donate 2% to save the páramos.", chips) == "cause actor"
+
+
+def test_a_three_word_fragment_is_dropped_and_scent_outranks_skin_feel():
+    assert extract_detail("superCerum", "Skin", brand="Pure & Cimple")[1] == ""
+    serum = {
+        "title": "superCerum",
+        "body": "Skin. Calming redness. Skin firming and elasticity.",
+    }
+    chips = {"title": "Beet Chips", "body": "Yacon is the root in the chip."}
+    picked = pick_line_facts([serum, chips], brand="Pure & Cimple")
+    assert "Beet" in picked.product
+    assert pick_line_facts([serum], brand="Pure & Cimple").skip == "no_product_detail"
+    _name, detail, _kind = extract_detail(
+        "Coffee Bar",
+        "Leaves skin feeling fresh and extra clean. "
+        "Fold in ground beans for a heavy-duty scrub. "
+        "Smoky vetiver and warm cedarwood.",
+        brand="Biggs",
+    )
+    assert "feeling fresh" not in detail.lower()
+    assert "vetiver" in detail.lower() or "cedarwood" in detail.lower() or "ground" in detail.lower()
+
+
+def test_the_grader_allows_paraphrase_and_sensory_lines():
+    facts = LineFacts(
+        brand="Autumn Sons Baking", product="Chocolate Chunk Cookie Mix",
+        detail="The only ingredients you need are a small amount of water and oil.",
+        recipe="amz_on",
+    )
+    prompt = grader_prompt(facts, "Noticed these mixes need a splash of water and oil.")
+    assert "splash" in prompt
+    assert "leaves skin feeling fresh" in prompt
+    assert "medical" in prompt.lower()
+    assert "gentle" in prompt.lower()
+
+
+def test_accessories_and_no_sample_tags_survive_parse():
+    from outbound_product_facts import _skip_product, collect_product_facts, parse_shopify_products
+
+    assert _skip_product("Carrara Switch Plate", "Accessories", ["Accessories", "No Sample"]) is False
+    assert _skip_product("Sample Plate", "Accessories", ["Accessories"]) is True
+    payload = {"products": [{
+        "title": "Italian Carrara White Marble Switch Plate",
+        "product_type": "Marble Wall/Switch Plate",
+        "tags": ["Accessories", "No Sample", "MATERIAL_Marble"],
+        "body_html": "Cut from Carrara marble.",
+        "variants": [{"available": True}],
+        "vendor": "OTS",
+    }]}
+    assert len(parse_shopify_products(payload)) == 1
+    plates = [
+        {
+            "title": f"{name} Switch Plate",
+            "vendor": code,
+            "product_type": "Accessories",
+            "tags": ["Accessories", "No Sample"],
+            "body": "Cut from Carrara marble.",
+        }
+        for name, code in (("Carrara", "OTS"), ("Calacatta", "ATD-DT"), ("Travertine", "LYSM"))
+    ]
+    assert pick_line_facts(plates, brand="American Tile Depot").skip != "reseller"
+
+    class Response:
+        def __init__(self, status, body):
+            self.status_code = status
+            self._body = body
+            self.text = body if isinstance(body, str) else ""
+
+        def json(self):
+            return self._body
+
+    catalog = {"products": [
+        {
+            "title": f"{name} Switch Plate",
+            "handle": name.lower(),
+            "product_type": "Marble Wall/Switch Plate",
+            "tags": ["Accessories", "No Sample"],
+            "body_html": "Cut from Carrara marble.",
+            "variants": [{"available": True}],
+            "vendor": "OTS",
+        }
+        for name in ("Carrara", "Calacatta", "Travertine")
+    ]}
+
+    def get(url, timeout=5, headers=None, allow_redirects=True):
+        if "best-sellers" in url or "bestsellers" in url:
+            return Response(200, catalog)
+        return Response(404, {})
+
+    facts = collect_product_facts(
+        "tile.example", brand="American Tile Depot", allow_storeleads=False,
+        get=get, sleep=lambda _s: None, guard=lambda url: url, homepage_html="<html></html>",
+    )
+    assert facts["catalog_skip"] != "no_bestseller_product"
+    assert facts["catalog_skip"] != "reseller"
+    assert facts["products"]
+
+
+def test_a_grader_timeout_retries_on_the_fast_model_inside_the_budget():
+    import importlib.util
+    import time
+
+    import outbound_personalization as personalization
+
+    spec = importlib.util.spec_from_file_location("dry_run_openers", "scripts/dry_run_openers.py")
+    dry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dry)
+    source = open("scripts/dry_run_openers.py", encoding="utf-8").read()
+    assert "temperature: float = 0.2" in source
+    assert "temperature=0.2" in source
+    seen = []
+
+    def llm(prompt, timeout_s=30):
+        seen.append(("fast", timeout_s))
+        if prompt.startswith("Grade"):
+            return json.dumps({"pass": True, "reason": "paraphrase"})
+        return "Nice that the cherry cola is brewed with turmeric."
+
+    def slow(_prompt, timeout_s=30):
+        seen.append(("slow", timeout_s))
+        raise personalization.ModelTimeout("grader")
+
+    row = dry.render_row(
+        {"domain": "perfy.com", "brand": "Perfy", "first_name": "Ann", "recipe": "trial_offer"},
+        facts={"source": "products.json", "products": [{"title": "Cherry Cola", "product_type": "Soda", "body": "Brewed with turmeric."}]},
+        llm=llm,
+        grader=slow,
+        deadline=time.monotonic() + 35,
+    )
+    assert any(kind == "slow" and timeout <= 12 for kind, timeout in seen)
+    assert any(kind == "fast" and timeout <= 8 for kind, timeout in seen)
+    assert row["hold"] == ""
+    assert "cherry cola" in row["opener"].lower()

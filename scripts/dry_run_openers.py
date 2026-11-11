@@ -278,7 +278,12 @@ def first_call_seconds() -> float:
         return 22.0
 
 
-def compatible_llm(model: Optional[str] = None, *, reasoning_effort: Optional[str] = None):
+def compatible_llm(
+    model: Optional[str] = None,
+    *,
+    reasoning_effort: Optional[str] = None,
+    temperature: float = 0.2,
+):
     """An OpenAI-compatible chat client, or None when the base URL is unset.
 
     Production copy still uses the AI Gateway. This is only for a local dry run.
@@ -307,7 +312,7 @@ def compatible_llm(model: Optional[str] = None, *, reasoning_effort: Optional[st
         response = None
         payload = {
             "model": chosen,
-            "temperature": 0.4,
+            "temperature": temperature,
             "messages": [{"role": "user", "content": prompt}],
         }
         if reasoning_effort:
@@ -392,8 +397,43 @@ def render_row(
             return call
 
         writer = _bounded(llm, model_timeout_seconds()) if llm is not None else None
-        judge = _bounded(grader or llm, grader_timeout_seconds()) if (grader or llm) is not None else None
-        opener, angle, source = personalization.generate(lead, llm=writer, grader=judge)
+
+        def judge(prompt: str, timeout_s: Optional[float] = None, _slow=grader, _fast=llm) -> str:
+            """Grade on the slow model, then once on the fast model if that times out.
+
+            The first call leaves about eight seconds so the retry still fits
+            in the lead budget. One timeout does not end the lead.
+            """
+
+            def _left() -> float:
+                if deadline is None:
+                    return grader_timeout_seconds()
+                return deadline - time.monotonic()
+
+            def _timed_out(exc: BaseException) -> bool:
+                name = exc.__class__.__name__.lower()
+                return "timeout" in name or "timeout" in str(exc).lower()
+
+            remaining = _left()
+            if remaining < 0.5:
+                raise personalization.ModelTimeout("lead budget")
+            slow = _slow if _slow is not None and _slow is not _fast else None
+            if slow is not None and remaining >= 14:
+                try:
+                    return slow(prompt, timeout_s=min(12.0, remaining - 8))
+                except Exception as exc:  # noqa: BLE001
+                    if not _timed_out(exc):
+                        raise
+                    remaining = _left()
+                    if remaining < 0.5:
+                        raise personalization.ModelTimeout("lead budget") from exc
+            client = _fast or _slow
+            if client is None:
+                raise personalization.ModelTimeout("lead budget")
+            return client(prompt, timeout_s=min(8.0, remaining))
+        opener, angle, source = personalization.generate(
+            lead, llm=writer, grader=judge if (grader or llm) is not None else None,
+        )
         if source.startswith("skipped"):
             hold = source
             opener, angle = "", ""
@@ -470,7 +510,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
         rows = load_recent(url, per_segment=args.per_segment or 4)
     rendered = []
-    llm = compatible_llm(opener_model_name())
+    llm = compatible_llm(opener_model_name(), temperature=0.2)
     grader = compatible_llm(grader_model_name(), reasoning_effort="low")
     batch: list[str] = []
     angles: list[str] = []
