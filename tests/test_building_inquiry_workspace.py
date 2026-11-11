@@ -592,7 +592,9 @@ class LeadPricingRouteTests(unittest.TestCase):
     def test_a_lead_opens_seeded_from_the_standard_rate(self) -> None:
         page = self.client.get("/admin/building/inquiries/lead-a")
         self.assertIn("Pricing for this event", page.text)
-        self.assertIn("175.00", page.text)
+        self.assertIn("1,500.00", page.text)
+        self.assertIn('name="day_portion"', page.text)
+        self.assertNotIn('name="hourly_rate"', page.text)
 
     def test_every_total_has_a_hook_the_live_preview_can_update(self) -> None:
         """The totals update as an operator types, from a script that finds each
@@ -621,8 +623,8 @@ class LeadPricingRouteTests(unittest.TestCase):
             "/admin/building/inquiries/lead-a/pricing",
             headers={"Origin": "http://testserver", "Sec-Fetch-Mode": "navigate"},
             follow_redirects=False,
-            data={"_csrf_token": self._csrf("lead-a"), "hourly_rate": "200",
-                  "hours": "8", "cleaning_fee": "250", "discount": "100",
+            data={"_csrf_token": self._csrf("lead-a"), "day_portion": "full",
+                  "hours": "8", "cleaning_fee": "0", "discount": "100",
                   "discount_reason": "Repeat customer", "deposit_percent": "25"},
         )
         self.assertEqual(response.status_code, 303, response.text)
@@ -630,7 +632,8 @@ class LeadPricingRouteTests(unittest.TestCase):
 
         with self.factory() as session:
             priced = session.get(BuildingInquiry, "lead-a").payload_json["_pricing"]
-            self.assertEqual(priced["hourly_rate_cents"], 20_000)
+            self.assertEqual(priced["day_portion"], "full")
+            self.assertEqual(priced["pricing_model"], "day_portion")
             self.assertEqual(priced["discount_reason"], "Repeat customer")
             # The standard is untouched.
             self.assertEqual(

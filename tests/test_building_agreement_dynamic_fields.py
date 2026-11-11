@@ -150,10 +150,14 @@ class CustomerContractTests(unittest.TestCase):
 
     def test_it_matches_the_published_policies(self) -> None:
         for needle in (
-            "$175 per full hour",
-            "$250 cleaning fee",
-            "$500 refundable security deposit",
-            "seven days before your event",
+            "$1,500 for a half day",
+            "$2,000 for a full day",
+            "$3,000 for a full day plus a half day",
+            "$3,500 for two full days",
+            "no hourly rate",
+            "no security deposit",
+            "no upfront cleaning fee",
+            "within 7 days of a payment",
             "$250 up to 75 guests",
             "$75 per hour",
             "$125 per hour",
@@ -165,7 +169,8 @@ class CustomerContractTests(unittest.TestCase):
             self.assertIn(needle, self.flat, f"published term missing: {needle}")
 
     def test_cancellation_terms_are_strict_without_a_graduated_refund_schedule(self) -> None:
-        self.assertIn("all payments are non-refundable", self.flat.lower())
+        self.assertIn("within 7 days of a payment", self.flat.lower())
+        self.assertIn("forfeited", self.flat.lower())
         self.assertIn("sole discretion", self.flat.lower())
         self.assertNotIn("30 or more days before", self.flat.lower())
         self.assertNotIn("14 to 29 days before", self.flat.lower())
@@ -260,12 +265,15 @@ class ArenaAgreementWebsiteAlignmentTests(unittest.TestCase):
     """
 
     PUBLISHED = {
-        "$175 per paid venue hour": "$175 per paid venue hour",
-        "six-hour minimum": "six-hour minimum",
-        "$250 routine cleaning": "$250 routine cleaning",
-        "50% booking deposit": "50% of venue rental",
-        "$500 refundable security deposit": "$500 refundable security deposit",
-        "balance due seven days before": "seven days before",
+        "half day rate": "$1,500",
+        "full day rate": "$2,000",
+        "full plus half": "$3,000",
+        "two full days": "$3,500",
+        "no hourly rate": "no hourly rate",
+        "no upfront cleaning fee": "no upfront cleaning fee",
+        "50% to book the date": "50% of the venue rental",
+        "no security deposit": "no security deposit",
+        "refund window": "within 7 days of a payment",
         "setup and reset tiers": "$250 for up to 75 guests",
         "A/V technician rate": "$75 per hour",
         "event labor rate": "$125 per hour",

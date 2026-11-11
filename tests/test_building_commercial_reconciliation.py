@@ -132,13 +132,13 @@ class BuildingCommercialReconciliationTests(unittest.TestCase):
         page = self.client.get("/admin/building")
         self.assertEqual(page.status_code, 200, page.text)
         for text in (
-            "$175/hour",
-            "six-hour minimum ($1,050)",
-            "$250 routine cleaning",
-            "50% booking deposit",
-            "$500 refundable security deposit",
-            "balance due seven days",
-            "$175 per full hour",
+            "Half day $1,500",
+            "full day $2,000",
+            "No hourly rate",
+            "no security deposit",
+            "no upfront cleaning fee",
+            "Weekday business events are not auto-quoted",
+            "Saturday 8:00 AM to midnight",
             # The named provider conflicts are resolved; the notice now says
             # only that conflicting booking-page copy must be corrected.
             "Correct any conflicting booking-page copy before approval.",
@@ -158,13 +158,13 @@ class BuildingCommercialReconciliationTests(unittest.TestCase):
             )
             self.assertIsNotNone(row)
             self.assertEqual(row.status, "draft")
-            self.assertEqual(row.unit_amount_cents, 17500)
-            self.assertEqual(row.minimum_units, 6)
+            self.assertEqual(row.unit_amount_cents, 0)
+            self.assertEqual(row.booking_unit, "day_portion")
+            self.assertEqual(row.minimum_units, 1)
             self.assertEqual(row.deposit_percent_bps, 5000)
             self.assertEqual(
                 [item["id"] for item in row.addons_json],
                 [
-                    "cleaning",
                     "setup-reset-75",
                     "setup-reset-150",
                     "setup-reset-200",
@@ -172,17 +172,14 @@ class BuildingCommercialReconciliationTests(unittest.TestCase):
                     "anata-event-labor",
                 ],
             )
+            self.assertIsNone(row.commercial_terms_json["overtime"]["amount_cents"])
             self.assertEqual(
-                row.commercial_terms_json["overtime"]["amount_cents"],
-                17500,
-            )
-            self.assertEqual(
-                row.commercial_terms_json["balance_due_days_before_event"],
-                7,
+                row.commercial_terms_json["half_day_amount_cents"],
+                150_000,
             )
             self.assertEqual(
                 row.commercial_terms_json["security_deposit"]["amount_cents"],
-                50000,
+                0,
             )
             self.assertFalse(row.approval_evidence)
             self.assertTrue(

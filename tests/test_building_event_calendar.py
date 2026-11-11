@@ -40,17 +40,17 @@ def _cell(view: dict, day: date) -> dict:
 
 
 class AccessWindowTests(unittest.TestCase):
-    def test_setup_and_teardown_are_two_hours_either_side(self) -> None:
+    def test_booked_time_includes_setup_and_teardown(self) -> None:
         day = date(2026, 9, 28)
         setup, guests_in, guests_out, teardown = access_window(
             day, time(17), time(22)
         )
-        self.assertEqual(setup.hour, 15)
-        self.assertEqual(guests_in.hour, 17)
-        self.assertEqual(guests_out.hour, 22)
-        self.assertEqual(teardown.hour, 0)
+        self.assertEqual(setup, guests_in)
+        self.assertEqual(teardown, guests_out)
+        self.assertEqual(setup.hour, 17)
+        self.assertEqual(teardown.hour, 22)
         self.assertEqual(setup.date(), day)
-        self.assertEqual(teardown.date(), day + timedelta(days=1))
+        self.assertEqual(teardown.date(), day)
 
     def test_an_event_ending_after_midnight_runs_into_the_next_day(self) -> None:
         day = date(2026, 9, 28)
@@ -59,7 +59,7 @@ class AccessWindowTests(unittest.TestCase):
         )
         self.assertEqual(guests_in.date(), day)
         self.assertEqual(guests_out.date(), day + timedelta(days=1))
-        self.assertGreater(teardown, guests_out)
+        self.assertEqual(teardown, guests_out)
 
 
 class MonthAvailabilityTests(unittest.TestCase):
@@ -154,9 +154,9 @@ class MonthAvailabilityTests(unittest.TestCase):
     def test_a_full_day_warns_its_neighbours_without_closing_them(self) -> None:
         """The owner chose a warning, not a wall: the day stays sellable."""
         day = self.month.replace(day=15)
-        # Guests 09:00 to 18:00 plus two-hour buffers is thirteen hours in the
-        # building, and it starts and ends on the one day.
-        self._reserve(day=day, status="confirmed", guests=(9, 18))
+        # Guests 08:00 to 20:00 is twelve hours in the building, all on one day.
+        # Booked time includes setup and teardown, so there is no extra buffer.
+        self._reserve(day=day, status="confirmed", guests=(8, 20))
         view = self._view()
         self.assertEqual(_cell(view, day)["state"], "booked")
         for neighbour in (day - timedelta(days=1), day + timedelta(days=1)):

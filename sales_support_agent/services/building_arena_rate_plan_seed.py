@@ -8,6 +8,7 @@ charges a customer.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -20,6 +21,13 @@ from sales_support_agent.models.entities import (
     BuildingRatePlan,
     BuildingSpace,
 )
+from sales_support_agent.services.building_event_policy import (
+    CANCELLATION_POLICY,
+    FULL_DAY_CENTS,
+    FULL_PLUS_HALF_CENTS,
+    HALF_DAY_CENTS,
+    TWO_FULL_DAYS_CENTS,
+)
 from sales_support_agent.services.building_launch_readiness import (
     ARENA_LAUNCH_DECISIONS,
     ARENA_RATE_PLAN_DECISION_KEYS,
@@ -28,22 +36,20 @@ from sales_support_agent.services.building_launch_readiness import (
 
 
 ARENA_RATE_PLAN_NAME = "Arena owner-reconciled commercial draft"
+ARENA_CANCELLATION_POLICY = CANCELLATION_POLICY
+ARENA_POLICY_NOTE = (
+    "November 10, 2026 event policy. Half day (up to 6 hours) $1,500, full "
+    "day $2,000, full day plus a half day $3,000, two full days $3,500. No "
+    "hourly rate, no security deposit, and no upfront cleaning fee. 50% books "
+    "the date and the rest is due before the event. A cancellation within 7 "
+    "days of payment is refunded in full; after that the paid 50% is forfeited."
+)
 ARENA_TAX_EVIDENCE = (
     "Owner/accountant approval recorded 2026-07-30; Utah State Tax Commission "
     "2026 Q3 combined sales and use tax rate chart, Lehi 25-066, effective "
     "2026-07-01."
 )
 ARENA_TIMEZONE = ZoneInfo("America/Denver")
-ARENA_CANCELLATION_POLICY = (
-    "All payments are non-refundable. A customer may request a date transfer "
-    "at least 14 days before the event, but Anata may approve or deny it in "
-    "its sole discretion based on date availability and operational "
-    "feasibility. An approved transfer may be used only once, must move the "
-    "event to an available date within six "
-    "months, and is subject to pricing current for the replacement date. Paid "
-    "amounts carry forward to the approved transferred date; otherwise "
-    "cancellation forfeits all paid amounts."
-)
 
 
 def proposed_effective_date() -> date:
@@ -69,26 +75,22 @@ def build_arena_commercial_draft(
         name=ARENA_RATE_PLAN_NAME,
         status="draft",
         currency="USD",
-        unit_amount_cents=17_500,
-        public_price_display="$175/hour · 6-hour minimum",
-        booking_unit="hour",
-        minimum_units=6,
+        unit_amount_cents=0,
+        public_price_display=(
+            "Half day $1,500 · Full day $2,000 · "
+            "Full + half $3,000 · Two full days $3,500"
+        ),
+        booking_unit="day_portion",
+        minimum_units=1,
         deposit_type="percent",
         deposit_percent_bps=5_000,
         cancellation_policy=ARENA_CANCELLATION_POLICY,
         included_json=[
-            "Two hours of self-service setup access before the event",
-            "Two hours of self-service teardown access after the event",
-            "Up to 30 tables and 200 chairs",
-            "Built-in stage and available venue A/V equipment",
+            "Tables, chairs, stage, microphones, speakers, projector, and screens",
+            "Guest Wi-Fi and the lounge",
+            "Booked time includes setup and teardown",
         ],
         addons_json=[
-            {
-                "id": "cleaning",
-                "name": "Required routine cleaning",
-                "pricing_mode": "flat",
-                "amount_cents": 25_000,
-            },
             {
                 "id": "setup-reset-75",
                 "name": "Table and chair setup/reset · up to 75 guests",
@@ -129,29 +131,63 @@ def build_arena_commercial_draft(
         commercial_terms_json={
             "venue_square_feet": 6_000,
             "maximum_public_capacity": 200,
-            "minimum_base_amount_cents": 105_000,
+            "policy_note": ARENA_POLICY_NOTE,
+            "half_day_amount_cents": HALF_DAY_CENTS,
+            "full_day_amount_cents": FULL_DAY_CENTS,
+            "full_plus_half_amount_cents": FULL_PLUS_HALF_CENTS,
+            "two_full_days_amount_cents": TWO_FULL_DAYS_CENTS,
+            "minimum_base_amount_cents": HALF_DAY_CENTS,
             "booking_deposit": {
                 "percent_bps": 5_000,
-                "non_refundable": True,
+                "non_refundable": False,
+                "refund_window_days": 7,
+                "label": "50% to book the date",
                 "holds_date_only_after_cleared_funds": True,
             },
             "security_deposit": {
-                "amount_cents": 50_000,
-                "refundable": True,
-                "damage_and_extraordinary_cleaning_deductible": True,
+                "amount_cents": 0,
+                "refundable": False,
+                "note": "No security deposit.",
             },
-            "balance_due_days_before_event": 7,
+            "cleaning_fee": {
+                "amount_cents": 0,
+                "upfront": False,
+                "note": (
+                    "No upfront cleaning fee. Extra charges apply after the "
+                    "event only if cleanup rules are not followed, or for "
+                    "damage, missing equipment, false alarms, or overtime."
+                ),
+            },
+            "balance_due": "before_the_event",
+            "balance_due_days_before_event": None,
             "ach_check_clearing_days": 7,
             "setup_teardown": {
-                "included_setup_hours": 2,
-                "included_teardown_hours": 2,
+                "included_setup_hours": 0,
+                "included_teardown_hours": 0,
+                "booked_time_includes_setup_and_teardown": True,
                 "labor_included": False,
                 "additional_time_requires_approval": True,
             },
+            "weekday_business": {
+                "auto_quote": False,
+                "message": (
+                    "Weekdays are for business events. The team will put "
+                    "together pricing and can offer a tour."
+                ),
+            },
+            "party_hours": {
+                "saturday": "08:00-24:00",
+                "sunday": "08:00-22:00",
+                "new_years_eve_any_day": True,
+            },
             "overtime": {
-                "booking_unit": "full_hour",
-                "amount_cents": 17_500,
+                "booking_unit": "quoted_separately",
+                "amount_cents": None,
                 "requires_approval": True,
+                "note": (
+                    "Extensions beyond the booked window need approval and "
+                    "are quoted separately."
+                ),
             },
             "rush_addon_fee_percent_bps": 2_000,
             "rush_window_days": 7,
@@ -165,21 +201,28 @@ def build_arena_commercial_draft(
                 "terms": [
                     "6000_square_feet",
                     "capacity_200",
-                    "175_per_hour",
-                    "6_hour_minimum",
-                    "250_cleaning",
-                    "50_percent_deposit",
+                    "half_day_1500",
+                    "full_day_2000",
+                    "full_plus_half_3000",
+                    "two_full_days_3500",
+                    "no_hourly_rate",
+                    "no_upfront_cleaning_fee",
+                    "no_security_deposit",
+                    "50_percent_to_book",
                 ],
             },
             {
-                "source": "Owner event-policy interview",
+                "source": "Owner event policy, November 10, 2026",
                 "classification": "owner_approved_business_rules",
                 "terms": [
-                    "balance_due_7_days_before",
-                    "500_security_deposit",
-                    "two_setup_hours_included",
-                    "two_teardown_hours_included",
-                    "175_full_hour_overtime",
+                    "balance_due_before_the_event",
+                    "refund_within_7_days_of_payment",
+                    "paid_half_forfeited_after_7_days",
+                    "weekday_business_not_auto_quoted",
+                    "parties_weekends_only",
+                    "saturday_8am_midnight",
+                    "sunday_8am_10pm",
+                    "new_years_eve_any_day",
                     "setup_reset_tiers",
                     "av_technician_75_hour",
                     "event_labor_125_staff_hour",
@@ -249,9 +292,9 @@ def build_arena_commercial_draft(
         tax_note=(
             "Apply the legally applicable combined rate for 1657 N. State "
             "Street, Lehi, Utah at the transaction date. The rate effective "
-            "2026-07-01 is 7.45%. Refundable security deposits are not taxable "
-            "unless retained or applied to taxable charges. Re-verify the "
-            "official Utah rate chart before a later effective period."
+            "2026-07-01 is 7.45%. Do not quote a tax-included total. There is "
+            "no security deposit. Re-verify the official Utah rate chart "
+            "before a later effective period."
         ),
         effective_from=effective_from,
         created_by=actor,
@@ -318,6 +361,105 @@ def ensure_arena_commercial_draft(
         return "created"
 
 
+def _policy_signature(plan: BuildingRatePlan) -> tuple[Any, ...]:
+    """The commercial facts the November 10 refresh is allowed to change."""
+
+    terms = dict(plan.commercial_terms_json or {})
+    security = terms.get("security_deposit")
+    security_cents = (
+        int(security.get("amount_cents") or 0) if isinstance(security, dict) else None
+    )
+    return (
+        str(plan.public_price_display or ""),
+        str(plan.booking_unit or ""),
+        int(plan.unit_amount_cents or 0),
+        int(terms.get("half_day_amount_cents") or 0),
+        int(terms.get("full_day_amount_cents") or 0),
+        int(terms.get("full_plus_half_amount_cents") or 0),
+        int(terms.get("two_full_days_amount_cents") or 0),
+        security_cents,
+        str(plan.cancellation_policy or ""),
+    )
+
+
+_POLICY_FIELDS = (
+    "unit_amount_cents",
+    "public_price_display",
+    "booking_unit",
+    "minimum_units",
+    "deposit_type",
+    "deposit_percent_bps",
+    "cancellation_policy",
+    "included_json",
+    "addons_json",
+    "commercial_terms_json",
+    "source_evidence_json",
+    "tax_note",
+)
+
+
+def refresh_canonical_arena_event_policy(
+    session_factory,
+    *,
+    actor: str = "agent-predeploy",
+) -> str:
+    """Bring the named Arena draft in line with the November 10, 2026 card.
+
+    Additive and narrow: only the plan named ``ARENA_RATE_PLAN_NAME`` on the
+    Arena offering is rewritten. Operator plans with any other name are left
+    alone. Status, approval, and already-remediated provider conflicts stay
+    as they are. The audit row records why the commercial fields changed.
+    """
+
+    with session_scope(session_factory) as session:
+        plan = session.execute(
+            select(BuildingRatePlan).where(
+                BuildingRatePlan.offering_id == "arena-events",
+                BuildingRatePlan.name == ARENA_RATE_PLAN_NAME,
+            )
+        ).scalars().first()
+        if plan is None:
+            return "no_canonical_plan"
+        fresh = build_arena_commercial_draft(
+            offering_id=plan.offering_id,
+            version=plan.version,
+            effective_from=plan.effective_from,
+            actor=actor,
+            rate_plan_id=plan.id,
+        )
+        if _policy_signature(plan) == _policy_signature(fresh):
+            return "already_current"
+        changed = [
+            field
+            for field in _POLICY_FIELDS
+            if getattr(plan, field) != getattr(fresh, field)
+        ]
+        before = {field: getattr(plan, field) for field in changed}
+        for field in changed:
+            setattr(plan, field, getattr(fresh, field))
+        plan.updated_at = datetime.now(timezone.utc)
+        session.add(
+            BuildingAuditEvent(
+                entity_type="rate_plan",
+                entity_id=plan.id,
+                action="november_2026_event_policy_applied",
+                actor=actor,
+                before_json={"fields": changed, "note": "previous commercial card"},
+                after_json={
+                    "fields": changed,
+                    "policy_note": ARENA_POLICY_NOTE,
+                    "status": plan.status,
+                    "published": False,
+                    "provider_write": False,
+                    "previous_public_price": str(
+                        before.get("public_price_display") or ""
+                    ),
+                },
+            )
+        )
+        return "updated"
+
+
 def reconcile_approved_arena_tax(
     session_factory,
     *,
@@ -380,9 +522,9 @@ def reconcile_approved_arena_tax(
         plan.tax_note = (
             "Apply the legally applicable combined rate for 1657 N. State "
             "Street, Lehi, Utah at the transaction date. The rate effective "
-            "2026-07-01 is 7.45%. Refundable security deposits are not taxable "
-            "unless retained or applied to taxable charges. Re-verify the "
-            "official Utah rate chart before a later effective period."
+            "2026-07-01 is 7.45%. Do not quote a tax-included total. There is "
+            "no security deposit. Re-verify the official Utah rate chart "
+            "before a later effective period."
         )
         plan.conflicts_json = conflicts
         plan.updated_at = now
@@ -400,8 +542,8 @@ def reconcile_approved_arena_tax(
         decision.status = "accepted_policy"
         decision.value = (
             "Tax all quoted event charges at the legally applicable combined "
-            "Lehi rate; 7.45% is effective 2026-07-01. Exclude refundable "
-            "security deposits unless retained or applied to taxable charges."
+            "Lehi rate; 7.45% is effective 2026-07-01. Do not quote a "
+            "tax-included total. There is no security deposit."
         )
         decision.evidence = ARENA_TAX_EVIDENCE
         decision.decided_by = actor

@@ -180,6 +180,40 @@ def advance_follow_up_sequence(
     return result
 
 
+def _staff_policy_note(inquiry: Any, details: dict[str, Any]) -> str:
+    """Tell the owner whether this lead is auto-quoted, reviewed, or refused."""
+
+    from sales_support_agent.services.building_event_policy import (
+        attendance_count,
+        evaluate_event_request,
+    )
+
+    preferred = getattr(inquiry, "preferred_date", None)
+    decision = evaluate_event_request(
+        event_date=preferred if hasattr(preferred, "isoformat") else None,
+        guest_start=_detail(details, "guestStartTime", "guest_start_time"),
+        guest_end=_detail(details, "guestEndTime", "guest_end_time"),
+        event_type=_detail(details, "eventType", "event_type"),
+        attendance=attendance_count(_detail(details, "groupSize", "attendance")),
+        alcohol=_detail(details, "alcohol"),
+        notes=_detail(details, "notes"),
+    )
+    if decision.rejected:
+        return f"*Hours*\n{decision.message}"
+    if decision.message.startswith("Weekdays are for business"):
+        return (
+            "*Pricing*\nDo not auto-quote. The team will put together pricing "
+            "and can offer a tour."
+        )
+    if decision.review_required:
+        questions = "; ".join(decision.questions)
+        return (
+            "*Party review*\nUse the published day rates and do not auto-confirm. "
+            f"Ask: {questions}"
+        )
+    return "*Pricing*\nEasy event. Use the published day rates. No extra screening."
+
+
 def notify_new_building_lead(settings: Any, inquiry: Any) -> dict[str, Any]:
     """Notify staff in Slack without changing whether the inquiry is accepted."""
 
@@ -214,6 +248,10 @@ def notify_new_building_lead(settings: Any, inquiry: Any) -> dict[str, Any]:
                 {"type": "mrkdwn", "text": f"*Event type*\n{event_type}"},
                 {"type": "mrkdwn", "text": f"*Attendance*\n{attendance}"},
             ],
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": _staff_policy_note(inquiry, details)},
         },
         {
             "type": "section",

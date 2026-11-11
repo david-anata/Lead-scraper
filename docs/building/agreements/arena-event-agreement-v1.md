@@ -21,9 +21,9 @@ of any organization you represent.
 | Teardown access ends | `{{teardown_ends_at}}` |
 | Expected attendance | `{{attendance}}` |
 
-Your booking includes two complimentary access hours before your event and two
-after it. Those four hours are access only. They do not include Anata setup,
-teardown, or event labor.
+Booked time includes setup and teardown. There are no complimentary hours
+outside that window. Those hours do not include Anata setup labor, teardown
+labor, or event staff unless you buy that service.
 
 Final capacity may be reduced when layout, equipment, security, accessibility,
 or fire-safety conditions require it. We will tell you before your event if that
@@ -46,13 +46,18 @@ applies.
 Where a discount is shown, the total above is already net of it. A discount
 applies to this booking only and sets no rate for any future booking.
 
-The booking deposit is non-refundable and is applied to your total. A separate
-$500 refundable security deposit and the remaining balance are due **seven days
-before your event**. If you pay by ACH or check, funds must arrive seven days
-earlier than that so they clear, and we must approve that method in advance. We
-do not accept overpayments or payments made by third-party vendors.
+Published venue rental is $1,500 for a half day (up to 6 hours), $2,000 for a
+full day, $3,000 for a full day plus a half day, and $3,500 for two full days.
+There is no hourly rate. Weekday business events are not priced from this card.
+The team puts that pricing together.
 
-**No access is provided until every required amount has cleared.** Card
+50% of the venue rental is due to book the date and is applied to your total.
+The remaining 50% is due before your event. There is no security deposit and
+no upfront cleaning fee. If you pay by ACH or check, the funds have to clear
+before the deadline, and we must approve that method in advance. We do not
+accept overpayments or payments made by third-party vendors.
+
+**No setup access is provided until the second 50% has cleared.** Card
 processing costs may be added where permitted and will be disclosed before you
 pay.
 
@@ -69,30 +74,33 @@ The policy for this booking is:
 
 `{{cancellation_policy}}`
 
-Unless the line above says otherwise, all payments are non-refundable if you
-cancel. You may request a date transfer at least 14 days before your event, but
-we may approve or deny it in our sole discretion based on date availability and
-operational feasibility. An approved transfer may be used only once, must move
-your event to an available date within six months, and is subject to pricing
-current for the replacement date. Paid amounts are credited to the approved
-replacement event. If we do not approve a transfer, or you cancel the
-replacement event, all paid amounts are forfeited. A qualifying force-majeure
-event may receive a no-fee transfer within six months, subject to availability.
+Unless the line above says otherwise: if you cancel within 7 days of a
+payment, that payment is refunded in full. If you cancel more than 7 days
+after payment, the 50% you paid to book the date is forfeited and the unpaid
+50% is not owed. You may request a date transfer at least 14 days before your
+event, but we may approve or deny it in our sole discretion based on date
+availability and operational feasibility. An approved transfer may be used
+only once, must move your event to an available date within six months, and
+is subject to pricing current for the replacement date. Paid amounts are
+credited to the approved replacement event. A qualifying force-majeure event
+may receive a no-fee transfer within six months, subject to availability.
 
 If Anata cancels for a reason within our control, we refund everything you have
 paid.
 
 ## 5. Hours
 
-- **Monday to Friday:** quiet setup from 3:00 p.m., no amplified sound before
-  5:00 p.m., guest events 5:00 to 11:00 p.m., teardown finished by 1:00 a.m.
+Weekdays are for business events only. Large events and parties are weekends
+only. New Year's Eve may be held on any day of the week. The team confirms
+those hours.
+
 - **Saturday:** guest events 8:00 a.m. to midnight, teardown finished by
   2:00 a.m.
 - **Sunday:** guest events 8:00 a.m. to 10:00 p.m., teardown finished by
   midnight.
 
-Exceptions and same-day extensions need our approval and an open schedule.
-Approved overtime is billed at $175 per full hour. We do not bill part hours.
+Extensions beyond the booked window need our approval and an open schedule.
+They are quoted separately. We do not publish an hourly extension rate.
 
 ## 6. Setup, equipment, and extra help
 
@@ -115,16 +123,14 @@ Available to purchase:
 - Linens, decor, event lighting, extra equipment, catering, and specialty
   staging are quoted separately.
 
-## 7. Cleaning, damage, and your security deposit
+## 7. Cleaning and damage
 
-The $250 cleaning fee covers routine cleaning after your event. Extraordinary
-cleaning, damage, missing equipment, false-alarm costs, and unapproved overtime
-may be deducted from your $500 security deposit. We will give you an itemized
-notice within five business days.
-
-Anything eligible is returned to your original payment method within seven
-business days after your event and our inspection. Amounts beyond the security
-deposit remain your responsibility and we may invoice them.
+There is no upfront cleaning fee and no security deposit. You bag trash into
+the building's cans and remove decorations and food you brought. If those
+rules are not followed, or if there is damage, missing equipment, a false
+alarm, or overtime, extra charges may apply. We will give you an itemized
+notice within five business days. Those amounts remain your responsibility
+and we may invoice them.
 
 Property left behind is held for seven days, after which we may donate or
 dispose of it.

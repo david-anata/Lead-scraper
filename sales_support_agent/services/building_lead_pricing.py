@@ -15,15 +15,23 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from sales_support_agent.services.building_event_policy import (
+    DAY_PORTION_LABELS,
+    LEGACY_HOURLY_RATE_CENTS,
+    RESERVATION_PERCENT_BPS,
+    quote_duration,
+)
 
-#: Owner-approved baseline, used when a lead has no pricing and no rate plan.
-DEFAULT_HOURLY_RATE_CENTS = 17_500
+
+#: Retired hourly baseline. Kept so a lead saved before November 10, 2026 can
+#: still be recognised. New quotes use the day card in building_event_policy.
+DEFAULT_HOURLY_RATE_CENTS = LEGACY_HOURLY_RATE_CENTS
 DEFAULT_MINIMUM_HOURS = 6
-DEFAULT_CLEANING_FEE_CENTS = 25_000
-DEFAULT_DEPOSIT_PERCENT_BPS = 5_000
-#: Refundable, held against damage, and returned after inspection. Separate
-#: from the booking deposit and deliberately excluded from its percentage.
-DEFAULT_SECURITY_DEPOSIT_CENTS = 50_000
+DEFAULT_CLEANING_FEE_CENTS = 0
+DEFAULT_DEPOSIT_PERCENT_BPS = RESERVATION_PERCENT_BPS
+#: No security deposit. The field stays so a manual exception can be recorded,
+#: and so an older quote that still has one is not folded into the total.
+DEFAULT_SECURITY_DEPOSIT_CENTS = 0
 MAX_ADDONS = 20
 
 
@@ -48,12 +56,16 @@ def default_pricing(rate_plan: Optional[dict[str, Any]] = None) -> dict[str, Any
     """Seed a lead from the approved plan so it opens filled in, not blank."""
 
     plan = dict(rate_plan or {})
+    hours = DEFAULT_MINIMUM_HOURS
+    portion, _amount = quote_duration(hours=hours)
     return {
         "rate_plan_id": str(plan.get("id") or ""),
-        "rate_plan_name": str(plan.get("name") or "Owner-approved baseline"),
+        "rate_plan_name": str(plan.get("name") or "November 2026 day rates"),
         "currency": str(plan.get("currency") or "USD"),
-        "hourly_rate_cents": int(plan.get("unit_amount_cents") or DEFAULT_HOURLY_RATE_CENTS),
-        "hours": int(plan.get("minimum_units") or DEFAULT_MINIMUM_HOURS),
+        "pricing_model": "day_portion",
+        "day_portion": portion or "half",
+        "hourly_rate_cents": 0,
+        "hours": hours,
         "cleaning_fee_cents": DEFAULT_CLEANING_FEE_CENTS,
         "addons": [],
         "discount_cents": 0,
@@ -69,12 +81,54 @@ def default_pricing(rate_plan: Optional[dict[str, Any]] = None) -> dict[str, Any
     }
 
 
+def _venue_cents(pricing: dict[str, Any]) -> tuple[int, str]:
+    """Price the room from the day card unless this lead is an explicit hourly override."""
+
+    model = str(pricing.get("pricing_model") or "")
+    if model == "unquoted":
+        return 0, ""
+    if model == "hourly":
+        hours = max(0, int(pricing.get("hours") or 0))
+        rate = max(0, int(pricing.get("hourly_rate_cents") or 0))
+        return hours * rate, ""
+    portion = str(pricing.get("day_portion") or "").strip()
+    days = pricing.get("days")
+    if model == "day_portion" or portion or days not in (None, ""):
+        resolved, amount = quote_duration(
+            hours=pricing.get("hours"),
+            days=None if days in (None, "") else days,
+            day_portion=portion or None,
+        )
+        return int(amount or 0), resolved or ""
+    rate = int(pricing.get("hourly_rate_cents") or 0)
+    hours = max(0, int(pricing.get("hours") or 0))
+    if rate and rate != LEGACY_HOURLY_RATE_CENTS:
+        return hours * max(rate, 0), ""
+    resolved, amount = quote_duration(hours=hours or None)
+    return int(amount or 0), resolved or ""
+
+
+def venue_label(pricing: dict[str, Any]) -> str:
+    """Customer-facing name for the venue line."""
+
+    _amount, portion = _venue_cents(pricing)
+    if portion:
+        hours = int(pricing.get("hours") or 0)
+        label = DAY_PORTION_LABELS[portion]
+        return f"{label} ({hours} hours)" if hours else label
+    hours = int(pricing.get("hours") or 0)
+    if str(pricing.get("pricing_model") or "") == "hourly" and hours:
+        return f"{hours} hour{'s' if hours != 1 else ''} of venue time"
+    if hours:
+        return f"{hours} hour{'s' if hours != 1 else ''} of venue time"
+    return "Venue rental"
+
+
 def compute_totals(pricing: dict[str, Any]) -> dict[str, int]:
     """Return the derived money for a lead. Never stored; always recomputed."""
 
     hours = max(0, int(pricing.get("hours") or 0))
-    rate = max(0, int(pricing.get("hourly_rate_cents") or 0))
-    venue = hours * rate
+    venue, _portion = _venue_cents(pricing)
     cleaning = max(0, int(pricing.get("cleaning_fee_cents") or 0))
     addons = sum(
         max(0, int(item.get("amount_cents") or 0))
@@ -112,7 +166,6 @@ def parse_pricing_form(form: Any, *, existing: dict[str, Any], actor: str) -> di
     """Build stored pricing from a submitted form, keeping what was not sent."""
 
     pricing = dict(existing or {})
-    pricing["hourly_rate_cents"] = _cents(form.get("hourly_rate"), field="Hourly rate")
     try:
         hours = int(str(form.get("hours") or "0").strip() or 0)
     except ValueError as exc:
@@ -120,6 +173,20 @@ def parse_pricing_form(form: Any, *, existing: dict[str, Any], actor: str) -> di
     if hours < 0:
         raise LeadPricingError("Hours cannot be negative.")
     pricing["hours"] = hours
+    portion = str(form.get("day_portion") or "").strip()
+    if portion == "unquoted":
+        pricing["pricing_model"] = "unquoted"
+        pricing["day_portion"] = ""
+        pricing["hourly_rate_cents"] = 0
+    elif portion in DAY_PORTION_LABELS:
+        pricing["pricing_model"] = "day_portion"
+        pricing["day_portion"] = portion
+        pricing["hourly_rate_cents"] = 0
+    else:
+        resolved, _amount = quote_duration(hours=hours)
+        pricing["pricing_model"] = "day_portion"
+        pricing["day_portion"] = resolved or ""
+        pricing["hourly_rate_cents"] = 0
     pricing["cleaning_fee_cents"] = _cents(form.get("cleaning_fee"), field="Cleaning fee")
     pricing["security_deposit_cents"] = _cents(
         form.get("security_deposit"), field="Security deposit"

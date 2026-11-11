@@ -22,20 +22,22 @@ from sales_support_agent.models.entities import (
     BuildingRatePlan,
     BuildingReservation,
 )
-from sales_support_agent.services.building_lead_pricing import compute_totals
+from sales_support_agent.services.building_lead_pricing import (
+    compute_totals,
+    venue_label,
+)
 
 
 def _line_items(pricing: dict[str, Any], totals: dict[str, int]) -> list[dict[str, Any]]:
     """Itemise the quote so an invoice can be read without the lead."""
 
     items: list[dict[str, Any]] = []
-    hours = int(pricing.get("hours") or 0)
     if totals["venue_cents"]:
         items.append({
             "type": "base",
             "name": "Venue rental",
-            "description": f"{hours} hour{'s' if hours != 1 else ''} of venue time",
-            "quantity": hours,
+            "description": venue_label(pricing),
+            "quantity": 1,
             "amount_cents": totals["venue_cents"],
         })
     if totals["cleaning_cents"]:
@@ -131,6 +133,28 @@ def _rate_snapshot(
     }
 
 
+def _terms_summary(pricing: dict[str, Any], totals: dict[str, int]) -> str:
+    """Plain commercial sentence frozen onto the quote."""
+
+    percent = int(pricing.get("deposit_percent_bps") or 0) / 100
+    summary = (
+        f"{venue_label(pricing)}. {percent:g}% is due to book the date and the "
+        "rest is due before the event. No security deposit and no upfront "
+        "cleaning fee."
+    )
+    if totals["cleaning_cents"]:
+        summary += (
+            f" Upfront cleaning of {totals['cleaning_cents'] / 100:,.2f} "
+            "was added for this lead."
+        )
+    if totals["security_deposit_cents"]:
+        summary += (
+            f" A security deposit of {totals['security_deposit_cents'] / 100:,.2f} "
+            "was recorded for this lead."
+        )
+    return summary
+
+
 def sync_quote_from_lead_pricing(
     session: Any,
     *,
@@ -180,12 +204,7 @@ def sync_quote_from_lead_pricing(
             or ""
         ),
         "rate_plan_snapshot_json": _rate_snapshot(pricing, plan, prior_snapshot),
-        "terms_summary": (
-            f"{pricing.get('hours') or 0} hours at "
-            f"{int(pricing.get('hourly_rate_cents') or 0) / 100:,.2f}, "
-            f"{int(pricing.get('deposit_percent_bps') or 0) / 100:g}% booking deposit, "
-            f"{totals['security_deposit_cents'] / 100:,.2f} refundable security deposit."
-        ),
+        "terms_summary": _terms_summary(pricing, totals),
         "updated_at": now,
     }
 

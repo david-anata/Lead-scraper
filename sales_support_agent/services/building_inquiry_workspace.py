@@ -13,6 +13,12 @@ from sales_support_agent.services.building_lead_intake import (
     event_qualification_missing,
 )
 from sales_support_agent.services.building_event_calendar import WEEKDAY_LABELS
+from sales_support_agent.services.building_event_policy import (
+    DAY_PORTION_LABELS,
+    PUBLISHED_CARD_CENTS,
+    attendance_count,
+    evaluate_event_request,
+)
 from sales_support_agent.services.building_event_journey import (
     resolve_event_next_action,
 )
@@ -587,7 +593,7 @@ def _time_picker(
             f'<strong>{_esc(window.get("setup"))}</strong> to '
             f'<strong>{_esc(window.get("teardown"))}</strong>, '
             f'guests {_esc(window.get("guests"))}. '
-            'Setup and teardown are two hours either side.</p>'
+            'Booked time includes setup and teardown. There are no complimentary hours outside this window.</p>'
         )
     # An occupied day can still be taken. It says so plainly, carries the
     # override, and the button stops pretending this is an ordinary hold.
@@ -894,6 +900,66 @@ def _journey_sections(data: dict[str, Any], *, csrf_token: str) -> str:
     return summary + agreement_section + billing_section + confirmation_section + communications_section + operations_section
 
 
+def _event_policy(data: dict[str, Any], details: dict[str, Any], interview: dict[str, Any]):
+    """How this lead should be priced and screened under the current card."""
+
+    if str(data.get("kind") or "") != "event":
+        return None
+    raw_date = str(data.get("preferred_date") or interview.get("candidate_dates") or "")
+    event_day = None
+    if raw_date[:10].count("-") == 2:
+        try:
+            from datetime import date as _date
+
+            event_day = _date.fromisoformat(raw_date[:10])
+        except ValueError:
+            event_day = None
+    return evaluate_event_request(
+        event_date=event_day,
+        guest_start=details.get("guestStartTime") or details.get("guest_start_time"),
+        guest_end=details.get("guestEndTime") or details.get("guest_end_time"),
+        event_type=str(
+            interview.get("event_format")
+            or interview.get("event_purpose")
+            or details.get("eventType")
+            or details.get("event_type")
+            or ""
+        ),
+        attendance=attendance_count(
+            interview.get("attendance") or details.get("groupSize") or details.get("attendance")
+        ),
+        alcohol=str(interview.get("alcohol") or details.get("alcohol") or ""),
+        notes=str(interview.get("special_requests") or details.get("notes") or ""),
+        hours=data.get("pricing", {}).get("hours") if isinstance(data.get("pricing"), dict) else None,
+        day_portion=str((data.get("pricing") or {}).get("day_portion") or "") or None,
+    )
+
+
+def _show_unquoted(policy: Any, pricing: dict[str, Any]) -> bool:
+    if policy is None or policy.quotable:
+        return False
+    return not str(pricing.get("updated_by") or "").strip()
+
+
+def _day_portion_options(pricing: dict[str, Any], *, show_unquoted: bool) -> str:
+    if str(pricing.get("pricing_model") or "") == "unquoted":
+        selected = "unquoted"
+    elif show_unquoted:
+        selected = "unquoted"
+    else:
+        selected = str(pricing.get("day_portion") or "")
+    rows = ['<option value="">Match the hours</option>']
+    for key, label in DAY_PORTION_LABELS.items():
+        dollars = PUBLISHED_CARD_CENTS[key] / 100
+        mark = " selected" if selected == key else ""
+        rows.append(
+            f'<option value="{key}"{mark}>{_esc(label)} · ${dollars:,.0f}</option>'
+        )
+    mark = " selected" if selected == "unquoted" else ""
+    rows.append(f'<option value="unquoted"{mark}>No automatic price</option>')
+    return "".join(rows)
+
+
 def render_inquiry_workspace(
     *,
     navigation: str,
@@ -1073,6 +1139,17 @@ def render_inquiry_workspace(
 
     pricing = dict(data.get("pricing") or {})
     totals = dict(data.get("pricing_totals") or {})
+    policy = _event_policy(data, details, interview)
+    policy_note = ""
+    if policy is not None and (policy.message or policy.questions):
+        questions = "".join(f"<li>{_esc(item)}</li>" for item in policy.questions)
+        question_block = (
+            f"<ol class=\"lead-price__questions\">{questions}</ol>" if questions else ""
+        )
+        policy_note = (
+            '<div class="app-alert app-alert--notice"><p>'
+            f"{_esc(policy.message)}</p>{question_block}</div>"
+        )
     plans = list(data.get("rate_plans") or [])
 
     def _money(cents: object) -> str:
@@ -1101,18 +1178,22 @@ def render_inquiry_workspace(
         f'<span data-total="total">{_money(totals.get("total_cents"))}</span></span></div>'
         f'<form class="lead-price" data-price-form method="post" action="/admin/building/inquiries/{_esc(data.get("id"))}/pricing">'
         f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+        f'{policy_note}'
         '<div class="lead-price__grid">'
-        f'<label>Hourly rate<input name="hourly_rate" inputmode="decimal" '
-        f'value="{_money(pricing.get("hourly_rate_cents"))}"></label>'
+        f'<label>Day length<select name="day_portion">{_day_portion_options(pricing, show_unquoted=_show_unquoted(policy, pricing))}</select></label>'
         f'<label>Hours<input name="hours" inputmode="numeric" '
         f'value="{_esc(pricing.get("hours") or 0)}"></label>'
-        f'<label>Cleaning fee<input name="cleaning_fee" inputmode="decimal" '
+        f'<label>Upfront cleaning fee<input name="cleaning_fee" inputmode="decimal" '
         f'value="{_money(pricing.get("cleaning_fee_cents"))}"></label>'
-        f'<label>Deposit %<input name="deposit_percent" inputmode="decimal" '
+        f'<label>Percent due to book the date<input name="deposit_percent" inputmode="decimal" '
         f'value="{int(pricing.get("deposit_percent_bps") or 0) / 100:g}"></label>'
         f'<label>Security deposit<input name="security_deposit" inputmode="decimal" '
         f'value="{_money(pricing.get("security_deposit_cents"))}"></label>'
         "</div>"
+        '<p class="lead-price__note">Half day $1,500 (up to 6 hours), full day $2,000, '
+        'full day plus a half day $3,000, two full days $3,500. No hourly rate. '
+        'No upfront cleaning fee and no security deposit unless you record one for this lead. '
+        '50% books the date. The rest is due before the event.</p>'
         f'<div class="lead-price__addons"><span>Add-ons</span>{addon_rows}</div>'
         '<div class="lead-price__grid">'
         f'<label>Discount<input name="discount" inputmode="decimal" '
@@ -1130,10 +1211,10 @@ def render_inquiry_workspace(
         f'<tr><td>Taxable amount after discount</td><td class="is-num" data-total="taxable">{_money(totals.get("taxable_cents"))}</td></tr>'
         f'<tr><td>Sales tax ({int(pricing.get("tax_rate_bps") or 0) / 100:g}%)</td><td class="is-num" data-total="tax">{_money(totals.get("tax_cents"))}</td></tr>'
         f'<tr class="is-total"><td>Contract total</td><td class="is-num" data-total="total">{_money(totals.get("total_cents"))}</td></tr>'
-        f'<tr><td>Booking deposit</td><td class="is-num" data-total="deposit">{_money(totals.get("deposit_cents"))}</td></tr>'
-        f'<tr><td>Security deposit <span class="lead-price__note">refundable, not part of the total</span></td>'
+        f'<tr><td>Due to book the date</td><td class="is-num" data-total="deposit">{_money(totals.get("deposit_cents"))}</td></tr>'
+        f'<tr><td>Security deposit <span class="lead-price__note">none unless recorded, not part of the total</span></td>'
         f'<td class="is-num" data-total="security">{_money(totals.get("security_deposit_cents"))}</td></tr>'
-        f'<tr class="is-total"><td>Due to book</td><td class="is-num" data-total="due">{_money(totals.get("due_to_book_cents"))}</td></tr>'
+        f'<tr class="is-total"><td>Due to book the date, plus any recorded security deposit</td><td class="is-num" data-total="due">{_money(totals.get("due_to_book_cents"))}</td></tr>'
         f'<tr><td>Balance before the event</td><td class="is-num" data-total="balance">{_money(totals.get("balance_cents"))}</td></tr>'
         "</tbody></table>"
         '<div class="lead-interview__save">'
@@ -1375,12 +1456,12 @@ def render_inquiry_workspace(
           minimumFractionDigits: 2, maximumFractionDigits: 2,
         }});
         const recompute = () => {{
-          const rate = cents('hourly_rate');
           const cleaning = cents('cleaning_fee');
           const security = cents('security_deposit');
           const discountRaw = cents('discount');
           const hoursText = String((form.elements['hours'] || {{}}).value ?? '').trim();
           const hours = hoursText === '' ? 0 : Number(hoursText);
+          const portion = String((form.elements['day_portion'] || {{}}).value ?? '');
           const percentText = String((form.elements['deposit_percent'] || {{}}).value ?? '').trim();
           const percent = percentText === '' ? 0 : Number(percentText);
           let addons = 0, broken = false;
@@ -1392,7 +1473,7 @@ def render_inquiry_workspace(
           // Say which field is wrong. Blaming "the amounts" when the deposit
           // percent is out of range sends someone hunting the wrong box.
           let wrong = '';
-          if (broken || rate === null || cleaning === null
+          if (broken || cleaning === null
               || security === null || discountRaw === null) {{
             wrong = 'Amounts need to be numbers.';
           }} else if (!Number.isInteger(hours) || hours < 0) {{
@@ -1408,7 +1489,17 @@ def render_inquiry_workspace(
             if (status) status.textContent = wrong;
             return;
           }}
-          const venue = Math.max(0, hours) * Math.max(0, rate);
+          const card = {{half: 150000, full: 200000, full_plus_half: 300000, two_full: 350000}};
+          let portionKey = portion;
+          if (!portionKey) {{
+            if (hours <= 0) portionKey = '';
+            else if (hours <= 6) portionKey = 'half';
+            else if (hours <= 12) portionKey = 'full';
+            else if (hours <= 18) portionKey = 'full_plus_half';
+            else if (hours <= 24) portionKey = 'two_full';
+            else portionKey = '';
+          }}
+          const venue = portionKey === 'unquoted' ? 0 : (card[portionKey] || 0);
           const subtotal = venue + Math.max(0, cleaning) + addons;
           const discount = Math.min(Math.max(0, discountRaw), subtotal);
           const taxable = subtotal - discount;

@@ -86,6 +86,7 @@ def main() -> None:
         from sales_support_agent.services.building_arena_rate_plan_seed import (
             ensure_arena_commercial_draft,
             reconcile_approved_arena_tax,
+            refresh_canonical_arena_event_policy,
         )
 
         access_store.seed_superadmins(
@@ -103,6 +104,15 @@ def main() -> None:
         logger.info(
             "predeploy milestone=arena_commercial_draft result=%s",
             arena_rate_plan_result,
+        )
+        arena_policy_result = refresh_canonical_arena_event_policy(
+            factory,
+            actor=configured_owner,
+        )
+        logger.info(
+            "predeploy milestone=arena_event_policy result=%s note=%s",
+            arena_policy_result,
+            "November 10 2026 day rates; no deposit; no upfront cleaning fee",
         )
         arena_tax_result = reconcile_approved_arena_tax(
             factory,

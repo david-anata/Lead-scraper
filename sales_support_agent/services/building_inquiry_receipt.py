@@ -24,17 +24,45 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def receipt_body(name: str) -> str:
+def receipt_body(name: str, inquiry: Any = None) -> str:
     """Return the owner-approved plain receipt without a booking promise."""
 
     first_name = str(name or "").strip().split(" ", 1)[0] or "there"
+    note = _policy_note(inquiry)
+    extra = f"\n\n{note}" if note else ""
     return (
         f"Hi {first_name},\n\n"
         "Thank you for your interest in hosting your event at The Arena. "
         "We received your inquiry and will review the details. "
-        "We’ll be in contact soon.\n\n"
+        "We’ll be in contact soon."
+        f"{extra}\n\n"
         "The Anata Team"
     )
+
+
+def _policy_note(inquiry: Any) -> str:
+    """Pricing and hours sentence for the auto-reply, when the inquiry has them."""
+
+    if inquiry is None:
+        return ""
+    from sales_support_agent.services.building_event_policy import (
+        attendance_count,
+        customer_receipt_note,
+        evaluate_event_request,
+    )
+
+    details = dict(getattr(inquiry, "payload_json", None) or {})
+    preferred = getattr(inquiry, "preferred_date", None)
+    decision = evaluate_event_request(
+        event_date=preferred if hasattr(preferred, "isoformat") else None,
+        guest_start=details.get("guestStartTime") or details.get("guest_start_time"),
+        guest_end=details.get("guestEndTime") or details.get("guest_end_time"),
+        event_type=str(details.get("eventType") or details.get("event_type") or ""),
+        attendance=attendance_count(details.get("groupSize") or details.get("attendance")),
+        alcohol=str(details.get("alcohol") or ""),
+        notes=str(details.get("notes") or ""),
+    )
+    return customer_receipt_note(decision)
 
 
 def receipt_delivery_ready(settings: Any) -> tuple[bool, str]:
@@ -73,7 +101,7 @@ def attempt_inquiry_receipt(
     if row is not None and row.status in {"sent", "delivered", "delivery_delayed"}:
         return _public_payload(row)
 
-    body = receipt_body(inquiry.name)
+    body = receipt_body(inquiry.name, inquiry)
     checksum = hashlib.sha256(
         f"{RECEIPT_SUBJECT}\n{body}".encode("utf-8")
     ).hexdigest()

@@ -51,16 +51,17 @@ booking deposit is calculated from that discounted total. A discount applies
 only to this booking and sets no rate for any future one. Where no discount is
 shown, the amount reads zero and the subtotal equals the quote total.
 
-The current owner-approved commercial baseline is $175 per paid venue hour with
-a six-hour minimum and a $250 routine cleaning fee. The booking deposit is 50%
-of venue rental, routine cleaning, confirmed add-ons, and estimated tax. The
-$500 refundable security deposit is separate and is excluded from the 50%
-booking-deposit calculation.
+The current owner-approved commercial baseline, effective November 10, 2026,
+is a half day (up to 6 hours) at $1,500, a full day at $2,000, a full day plus
+a second-day half day at $3,000, and two full days at $3,500. There is no
+hourly rate. There is no security deposit and no upfront cleaning fee. Weekday
+business events are not priced from this card; the team puts that pricing
+together and can offer a tour.
 
-The remaining balance and $500 security deposit are due seven days before the
-event. ACH and checks require Anata approval and must arrive seven additional
-days early so funds can clear. No building access is allowed until every
-required amount has cleared.
+50% of the venue rental is due to book the date. The remaining 50% is due
+before the event. The 50% is calculated on venue rental, confirmed add-ons,
+and estimated tax, after any discount. ACH and checks have to clear before
+the deadline. No setup access is allowed until the second 50% has cleared.
 
 Payment and signature must both be completed on the same day. Neither one alone
 secures the date. A date is confirmed only when Agent records the approved
@@ -75,7 +76,10 @@ The frozen cancellation policy for this booking is:
 
 Owner-approved policy:
 
-- All payments are non-refundable if the customer cancels.
+- If the customer cancels within 7 days of a payment, that payment is refunded
+  in full.
+- If the customer cancels more than 7 days after payment, the paid 50% is
+  forfeited and the unpaid 50% is not owed.
 - A customer may request a date transfer at least 14 days before the event, but
   Anata may approve or deny the request in its sole discretion based on date
   availability and operational feasibility.
@@ -83,8 +87,6 @@ Owner-approved policy:
   available date within six months, and is subject to pricing current for the
   replacement date. Paid amounts are credited to the approved replacement
   event.
-- If Anata does not approve a transfer, or the customer cancels the replacement
-  event, all paid amounts are forfeited.
 - A qualifying force-majeure event may receive a no-fee transfer within six
   months, subject to availability.
 - If Anata cancels for a reason within its control, customer payments are
@@ -92,21 +94,21 @@ Owner-approved policy:
 
 ## 4. Access, hours, setup, teardown, and overtime
 
-The booking includes two complimentary access hours before the paid event and
-two complimentary access hours after it. These four hours provide access only;
-no Anata setup, teardown, or event labor is included.
+Booked time includes setup and teardown. There are no complimentary hours
+outside that window. No Anata setup, teardown, or event labor is included
+unless it is purchased.
 
-- Monday–Friday: quiet setup may begin at 3:00 p.m.; no amplified sound or
-  disruptive activity before 5:00 p.m.; guest events may run 5:00–11:00 p.m.;
-  teardown must finish by 1:00 a.m.
+Weekdays are for business events only. Large events and parties are weekends
+only. New Year's Eve is allowed on any day of the week; the team confirms
+those hours.
+
 - Saturday: guest events may run 8:00 a.m.–midnight; teardown must finish by
   2:00 a.m.
 - Sunday: guest events may run 8:00 a.m.–10:00 p.m.; teardown must finish by
   midnight.
 
-Exceptions and same-day extensions require Anata approval and schedule
-availability. Approved overtime is billed at $175 per full hour. Partial-hour
-billing is not offered.
+Extensions beyond the booked window require Anata approval and are quoted
+separately. Do not invent an extension price.
 
 Without purchased setup/reset service, the customer configures the room and
 returns tables and chairs to the designated staging area. The customer or
@@ -132,15 +134,14 @@ Optional services:
 
 ## 6. Cleaning, damage, and property
 
-The $250 cleaning fee covers routine post-event cleaning. Extraordinary
-cleaning, damage, missing equipment, false-alarm costs, and overtime may be
-deducted from the $500 security deposit. Anata provides an itemized deduction
-notice within five business days. Amounts exceeding the security deposit require
-the authorization and collection language in the legally approved agreement.
+There is no upfront cleaning fee and no security deposit. Clients bag trash
+into the building's cans and remove decorations and food they brought. If
+cleanup rules are not followed, or for damage, missing equipment, false alarms,
+or overtime, extra charges may apply. Anata provides an itemized notice within
+five business days.
 
-Eligible security-deposit refunds return to the original payment method within
-seven business days after the event and inspection. Property left behind is
-held for seven days and may then be donated or disposed of.
+Property left behind is held for seven days and may then be donated or disposed
+of.
 
 ## 7. Vendors, food, and alcohol
 
@@ -205,8 +206,10 @@ retained for seven years.
 
 ## 11. Legal clauses covered by the 2026-07-31 approval
 
-This section is retained as the record of what counsel approved, not as a list
-of what is outstanding. The approval covers the final language for:
+This section is retained as the record of what counsel approved on 2026-07-31,
+not as a list of what is outstanding. The November 10, 2026 owner policy in
+sections 2 through 4 replaces the July non-refundable-deposit wording. Where
+they differ, sections 2 through 4 control. The July approval covers:
 
 - non-refundable deposit, cancellation balances, transfers, and force majeure;
 - tax and card-fee disclosures;

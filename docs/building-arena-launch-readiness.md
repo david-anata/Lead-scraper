@@ -55,11 +55,15 @@ treated as rate-plan terms.
 
 Predeploy now creates one private Arena commercial draft only when the canonical
 Arena catalog exists and no rate plan of any state exists. It preserves every
-existing operator plan. The draft records the approved $175 hourly rate,
-six-hour minimum, $250 routine cleaning, 50% booking deposit, $500 refundable
-security deposit, seven-day balance deadline, included two-hour setup and
-teardown access windows, $175 full-hour overtime, approved setup/reset tiers,
-and the minimum A/V and event-labor packages. Tax remains review-required.
+existing operator plan, then refreshes the named Arena commercial draft to the
+November 10, 2026 card. That card is half day $1,500, full day $2,000, full
+day plus a half day $3,000, and two full days $3,500. There is no hourly rate,
+no security deposit, and no upfront cleaning fee. 50% books the date and the
+rest is due before the event. Weekday business events are not auto-quoted.
+Parties stay on Saturday 8:00 AM to midnight or Sunday 8:00 AM to 10:00 PM,
+except New Year's Eve. Setup and teardown are inside the booked window.
+Extensions are quoted separately. Setup/reset tiers and the A/V and event-labor
+packages stay. Tax on the canonical draft is the 7.45% Lehi rate.
 TidyCal's deposit, balance-deadline, and placeholder-payment-link conflicts
 remain blocking until provider remediation is recorded. The proposed effective
 date is visibly draft-only. Nothing is approved, published, sent, held,
