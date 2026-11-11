@@ -358,16 +358,24 @@ def finalize_batch(engine: Any, *, batch_id: int, recipe_runs: list[dict[str, An
     total_recipe_rows = sum(int(run.get("fresh") or 0) for run in recipe_runs)
     completed = sum(1 for run in recipe_runs if run.get("status") == "complete")
     failed = sum(1 for run in recipe_runs if run.get("status") == "failed")
+    held = sum(1 for run in recipe_runs if run.get("status") == "skipped")
     partial = any(run.get("status") == "partial" for run in recipe_runs)
     status = "needs_review" if failed or partial else "ready"
-    error = "; ".join(str(run.get("error") or "") for run in recipe_runs if run.get("error"))[:500]
+    # Skip reasons are not failures. Only a failed or partial recipe is an error.
+    error = "; ".join(
+        f"{run.get('recipe_key')}: {run.get('error')}"
+        for run in recipe_runs
+        if run.get("error") and run.get("status") in {"failed", "partial"}
+    )[:500]
+    recipe_total = len(recipe_runs)
     if not _tables_available(engine):
         from sales_support_agent.services import outbound_memory
         outbound_memory.record_run_leads(engine, batch_id, ordered)
         current = _fallback_batch(engine, batch_id)
         meta = {"business_date": current.business_date, "status": status,
-                "trigger": current.trigger, "recipe_count": current.recipe_count,
+                "trigger": current.trigger, "recipe_count": recipe_total,
                 "completed_count": completed, "failed_count": failed,
+                "held_recipes": held,
                 "scanned": sum(int(run.get("scanned") or 0) for run in recipe_runs),
                 "matched": sum(int(run.get("matched") or 0) for run in recipe_runs),
                 "skipped_seen": sum(int(run.get("skipped_seen") or 0) for run in recipe_runs),
@@ -404,11 +412,12 @@ def finalize_batch(engine: Any, *, batch_id: int, recipe_runs: list[dict[str, An
                   "matched_recipes": json.dumps(matched[domain])}
                  for domain, lead in by_domain.items()])
         conn.execute(text(f"""UPDATE {_BATCHES} SET status=:status,
+            recipe_count=:recipe_count,
             completed_count=:completed,failed_count=:failed,scanned=:scanned,matched=:matched,
             skipped_seen=:skipped,unique_companies=:unique_count,duplicates_removed=:duplicates,
             artifact_csv=:artifact,artifact_filename=:filename,artifact_sha256=:checksum,
             error=:error,completed_at=CURRENT_TIMESTAMP WHERE id=:id"""),
-            {"status": status, "completed": completed, "failed": failed,
+            {"status": status, "recipe_count": recipe_total, "completed": completed, "failed": failed,
              "scanned": sum(int(run.get("scanned") or 0) for run in recipe_runs),
              "matched": sum(int(run.get("matched") or 0) for run in recipe_runs),
              "skipped": sum(int(run.get("skipped_seen") or 0) for run in recipe_runs),

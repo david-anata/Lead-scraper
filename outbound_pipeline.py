@@ -1066,6 +1066,47 @@ def store_profile(store: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_LEGAL_SUFFIX = re.compile(
+    r"(?:,|\s)+\b(?:llc|l\.l\.c|inc|incorporated|corp|corporation|co|ltd|limited|plc)\b\.?$",
+    re.I,
+)
+_STORE_WORDS = re.compile(
+    r"(?:,|\s)+\b(?:official\s+store|official\s+shop|online\s+store|flagship\s+store)\b\.?$",
+    re.I,
+)
+_TRAILING_STORE = re.compile(r"(?:,|\s)+\b(?:shop|store)\b\.?$", re.I)
+_BRAND_TLD = re.compile(r"\.(?:com|net|org|io|co|shop|store|us)$", re.I)
+_TRAILING_TAG = re.compile(r"\s*[|]\s*.*$|\s+[–—-]\s+.+$")
+
+
+def clean_brand_name(value: Any) -> str:
+    """A company name safe to put in an opener or an Instantly field.
+
+    Legal suffixes, store words, a trailing TLD, and a tagline after a
+    separator come off. ALL CAPS and all-lowercase names are title-cased.
+    Mixed case such as REV Gum or MyBevi is left as written.
+    """
+
+    text = " ".join(str(value or "").replace("—", " ").replace("–", " ").split())
+    text = _TRAILING_TAG.sub("", text).strip(" ,.")
+    if not text:
+        return ""
+    changed = True
+    while changed and text:
+        changed = False
+        for pattern in (_LEGAL_SUFFIX, _STORE_WORDS, _TRAILING_STORE, _BRAND_TLD):
+            nxt = pattern.sub("", text).strip(" ,.")
+            if nxt and nxt != text:
+                text = nxt
+                changed = True
+    if text.isupper() or text.islower():
+        text = " ".join(
+            (part[:1].upper() + part[1:].lower()) if part else ""
+            for part in text.split(" ")
+        )
+    return text
+
+
 def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
                  amazon: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Shape a matched store into the payload Clay's table expects, with the
@@ -1085,7 +1126,7 @@ def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
             signals.append(token)
     lead = {
         "domain": _company.company_domain(str(store.get("name") or "")),
-        "brand": str(store.get("merchant_name") or store.get("name") or "").strip(),
+        "brand": clean_brand_name(store.get("merchant_name") or store.get("name") or ""),
         "niche": store_niche(store),
         "country": headquarters_verdict(store)[0],
         "tier": scored["tier"],
