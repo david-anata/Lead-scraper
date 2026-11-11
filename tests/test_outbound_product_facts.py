@@ -6,8 +6,10 @@ from outbound_product_facts import (
     description_is_product,
     fetch_shopify_catalog,
     fetch_storeleads_record,
+    domain_brand_mismatch,
     natural_product_phrase,
     parse_shopify_products,
+    short_product_phrase,
     pick_representative,
     stuffed_copy_reason,
 )
@@ -61,6 +63,52 @@ def test_shopify_parse_skips_non_products_and_keeps_stock_and_body():
     assert chosen[0]["product_type"] == "Boards"
 
 
+def test_short_phrase_uses_the_core_noun_and_skips_the_wrong_product():
+    assert short_product_phrase("Cherry Cola (12 Cans)", "Soda", "Perfy") == "the cherry cola"
+    assert short_product_phrase("Ultra Slick Shave Cream", "", "RSL") == "the shave cream"
+    assert short_product_phrase("Adai Dosa Mix", "Dosa Mix", "Adukale") == "the dosa mix"
+    assert short_product_phrase("Cashmere Crew", "Cashmere Crews", "Colorush") == "the cashmere crews"
+    assert short_product_phrase("Bicycle Unicorn Playing Cards", "Cards", "Jetset Gear") == ""
+    assert short_product_phrase("Protective Bandages", "Skincare", "Miracle") == ""
+    assert domain_brand_mismatch("popfunk.com", "Jay's Juniors", "Pop Funk")
+    assert not domain_brand_mismatch("pedrogarcia.com", "Pedro García", "Pedro Garcia")
+    assert not domain_brand_mismatch("rainshadowlabs.com", "RSL", "Rain Shadow Labs")
+
+
+def test_best_selling_beats_the_first_catalog_item():
+    calls = []
+
+    def get(url, timeout, headers, allow_redirects):
+        calls.append(url)
+        if "sort_by=best-selling" in url:
+            return _Response(200, {"products": [
+                _product("Gift Card", "Gift Cards"),
+                _product("Cherry Cola (12 Cans)", "Soda"),
+            ]})
+        if url.rstrip("/").endswith("drinkperfy.com"):
+            return _Response(200, {})
+        return _Response(404, {})
+
+    facts = collect_product_facts(
+        "drinkperfy.com", brand="Perfy", allow_storeleads=False,
+        get=lambda url, **kwargs: get(url, **{k: kwargs[k] for k in ("timeout", "headers", "allow_redirects") if k in kwargs} if False else kwargs),
+        sleep=lambda _s: None, guard=lambda url: url,
+    )
+    # The lambda above is awkward. Call get directly through a wrapper.
+    del facts
+
+    def getter(url, timeout=6, headers=None, allow_redirects=True):
+        return get(url, timeout, headers or {}, allow_redirects)
+
+    facts = collect_product_facts(
+        "drinkperfy.com", brand="Perfy", allow_storeleads=False,
+        get=getter, sleep=lambda _s: None, guard=lambda url: url, homepage_html="<html lang='en'></html>",
+    )
+    assert facts["pick"] == "best-selling"
+    assert facts["phrase"] == "the cherry cola"
+    assert any("best-selling" in url for url in calls)
+
+
 def test_natural_phrase_is_lowercase_with_an_article():
     assert natural_product_phrase("Olive Wood Serving Boards", "ArtisRaw") == "the olive wood serving boards"
     assert natural_product_phrase("Olive Wood Board - Large") == "the olive wood board"
@@ -69,7 +117,7 @@ def test_natural_phrase_is_lowercase_with_an_article():
     assert natural_product_phrase("Natural Marine Extract Eric Lewis") == ""
     assert natural_product_phrase("Robot Vacuums, Smart Home") == ""
     assert natural_product_phrase("Protective Bandages MPB") == "the protective bandages"
-    assert natural_product_phrase("Aardwolf Replacement Rubber Strips rrs") == "the aardwolf replacement rubber strips"
+    assert natural_product_phrase("Aardwolf Replacement Rubber Strips rrs") == ""
     assert natural_product_phrase("Pack Chocolate Chunk Cookie Mix") == "the chocolate chunk cookie mix"
     assert natural_product_phrase("Sirculit comprimidos naturales para piernas") == ""
     assert natural_product_phrase("Certified Organic CBDA Extract") == ""

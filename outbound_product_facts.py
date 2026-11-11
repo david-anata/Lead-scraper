@@ -34,11 +34,33 @@ MIN_INTERVAL = 0.4
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 _SKIP_ITEM = re.compile(
-    r"\b(?:gift\s*cards?|samples?|shipping\s+protection|package\s+protection|"
+    r"\b(?:gift\s*cards?|samples?|trial\s+packs?|shipping\s+protection|package\s+protection|"
     r"route\s+insurance|warrant(?:y|ies)|test(?:\s+item|\s+product)?s?|"
-    r"order\s+fees?|shipping\s+fees?|handling\s+fees?|donations?)\b",
+    r"order\s+fees?|shipping\s+fees?|handling\s+fees?|donations?|"
+    r"replacements?(?:\s+parts?)?|refills?|playing\s+cards?|bundles?|"
+    r"gift\s+wrap)\b",
     re.I,
 )
+_ADDON = re.compile(
+    r"\b(?:bandanas?|bandages?|cleaning(?:\s+solutions?|\s+refills?)?|"
+    r"stickers?|keychains?|lanyards?|patches)\b",
+    re.I,
+)
+_LICENSED = re.compile(
+    r"\b(?:disney|marvel|nfl|nba|mlb|blippi|pok[eé]mon|star\s+wars|hello\s+kitty|barbie)\b",
+    re.I,
+)
+_COLOR_WORD = re.compile(
+    r"\b(?:black|white|gold|silver|ecru|mocha|grey|gray|navy|kaki|khaki|"
+    r"anthracite|rose|chestnut|powder|gloss|stretch|earth|bold|brushed)\b",
+    re.I,
+)
+_FLUFF_WORD = {
+    "ultra", "slick", "premium", "official", "best", "new", "single",
+    "packaged", "classic", "classique", "large", "small", "mini",
+}
+_PACK_WORD = {"can", "cans", "pack", "packs", "bottle", "bottles", "jar", "jars", "box", "boxes"}
+_GENERIC_TYPE = {"", "product", "products", "item", "items", "merchandise", "accessory", "accessories"}
 _RESTRICTED_PRODUCT = re.compile(
     r"\b(?:wines?|alcohol|beer|spirits|liquor|cannabis|marijuana|cbd|cbda|thc|"
     r"kush|indica|sativa|granddaddy|tobacco|vapes?)\b",
@@ -50,6 +72,85 @@ _FOREIGN_WORD = re.compile(
 )
 def _non_english(text: str) -> bool:
     return any(char.isalpha() and ord(char) > 127 for char in text)
+
+
+def _off_core(title: str, product_type: str, core: str) -> bool:
+    """True for gift cards, add-ons, licensed merch, and products off the core type."""
+
+    blob = f"{title} {product_type}"
+    if _SKIP_ITEM.search(blob) or _LICENSED.search(blob) or _RESTRICTED_PRODUCT.search(blob):
+        return True
+    if _FOREIGN_WORD.search(title) or _non_english(title):
+        return True
+    if _ADDON.search(blob) and not _ADDON.search(core or ""):
+        return True
+    return False
+
+
+def _content_words(text: str, brand: str) -> list[str]:
+    raw = _text(re.sub(r"\([^)]*\)", " ", str(text or "")), 160)
+    raw = re.split(r"\s+[–—-]\s+", raw, maxsplit=1)[0]
+    brand_words = set(re.findall(r"[a-z0-9]+", brand.lower()))
+    words: list[str] = []
+    for word in re.findall(r"[A-Za-z][A-Za-z'-]*", raw):
+        low = word.lower().strip("'")
+        if not low or len(low) < 3 or low in brand_words or low in _FLUFF_WORD or low in _PACK_WORD:
+            continue
+        if _COLOR_WORD.fullmatch(low):
+            continue
+        if re.fullmatch(r"[A-Z]{2,5}", word) and not re.search(r"[AEIOU]", word):
+            continue
+        if words and words[-1] == low:
+            continue
+        words.append(low)
+    return words
+
+
+def short_product_phrase(title: str, product_type: str = "", brand: str = "") -> str:
+    """A short noun phrase, such as ``the shave cream`` or ``the dosa mix``.
+
+    The full catalog title, a colorway, a SKU, and a foreign title are empty.
+    """
+
+    if _off_core(title, product_type, product_type):
+        return ""
+    kind = _content_words(product_type, brand)
+    if kind and len(kind) >= 2 and " ".join(kind) not in _GENERIC_TYPE and len(kind) <= 3:
+        return "the " + " ".join(kind)
+    words = _content_words(title, brand)
+    if len(words) > 3:
+        words = words[-3:]
+    if len(words) == 1 and words[0] not in _PRODUCT_NOUNS:
+        return ""
+    if not words or len(words) > 3:
+        return ""
+    return "the " + " ".join(words)
+
+
+def domain_brand_mismatch(domain: str, brand: str, vendor: str = "") -> bool:
+    """True when the domain is a different company than the brand being emailed.
+
+    ``Jay's Juniors`` on ``popfunk.com`` is a mismatch. ``Pedro García`` on
+    ``pedrogarcia.com`` is not. A short acronym matches the vendor's initials.
+    """
+
+    folded = re.sub(r"[^a-z0-9]+", " ", str(brand or "").lower()).strip()
+    tokens = [part for part in folded.split() if len(part) >= 4]
+    host = re.sub(r"[^a-z0-9]+", "", str(domain or "").split("/")[0].split(".")[0].lower())
+    vendor_folded = re.sub(r"[^a-z0-9]+", " ", str(vendor or "").lower()).strip()
+    hay = host + vendor_folded.replace(" ", "")
+    if tokens and any(token in hay for token in tokens):
+        return False
+    compact = folded.replace(" ", "")
+    if compact and len(compact) <= 4 and compact in host:
+        return False
+    initials = "".join(part[0] for part in vendor_folded.split() if part)
+    if compact and initials and compact == initials:
+        return False
+    if not tokens:
+        # A short acronym such as RSL or GLO is not proof of a different company.
+        return False
+    return True
 _STORE_WORD = re.compile(r"\b(?:stores?|shops?|official)\b", re.I)
 _SLOGAN_START = re.compile(
     r"^(?:amplifying|discovering|redefining|empowering|inspiring|celebrating|"
@@ -336,18 +437,20 @@ def _pace(sleep: Callable[[float], None], min_interval: float) -> None:
     _last_fetch_at = time.monotonic()
 
 
-def fetch_shopify_catalog(
+def fetch_shopify_path(
     domain: str,
+    path: str,
     *,
     get: Optional[Callable[..., Any]] = None,
     sleep: Callable[[float], None] = time.sleep,
     guard: Optional[Callable[[str], str]] = None,
     timeout: float = FETCH_TIMEOUT,
     min_interval: float = MIN_INTERVAL,
-) -> Optional[list[dict[str, Any]]]:
-    """Public products.json, or None on 404, 401, or a non-Shopify response.
+    accept: str = "application/json",
+) -> Any:
+    """One public Shopify URL, or None on 404, 401, or a non-Shopify response.
 
-    One retry covers a timeout or a 5xx. The key is not involved.
+    One retry covers a timeout, a 429, or a 5xx.
     """
 
     import requests
@@ -355,7 +458,7 @@ def fetch_shopify_catalog(
     host = str(domain or "").strip().lower().split("/")[0]
     if not host or " " in host or "." not in host:
         return None
-    url = f"https://{host}/products.json?limit={SHOPIFY_LIMIT}"
+    url = f"https://{host}{path}"
     if guard is None:
         from sales_support_agent.services.public_url_guard import public_http_url
 
@@ -371,29 +474,140 @@ def fetch_shopify_catalog(
             response = getter(
                 safe,
                 timeout=timeout,
-                headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+                headers={"User-Agent": USER_AGENT, "Accept": accept},
                 allow_redirects=True,
             )
         except Exception as exc:  # noqa: BLE001
             last_error = exc.__class__.__name__
             if attempt == 0:
                 continue
-            logger.info("[outbound-products] shopify catalog failed for %s (%s)", host, last_error)
+            logger.info("[outbound-products] shopify fetch failed for %s (%s)", host, last_error)
             return None
         status = int(getattr(response, "status_code", 0) or 0)
         if status in {401, 404}:
             return None
-        if status >= 500 and attempt == 0:
-            continue
+        if status in {429} or status >= 500:
+            if attempt == 0:
+                continue
+            return None
         if status != 200:
             return None
-        try:
-            payload = response.json()
-        except Exception:  # noqa: BLE001
-            return None
-        products = parse_shopify_products(payload)
-        return products or None
+        if "json" in accept:
+            try:
+                return response.json()
+            except Exception:  # noqa: BLE001
+                return None
+        return (getattr(response, "text", "") or "")[:150000]
     return None
+
+
+def fetch_shopify_catalog(
+    domain: str,
+    *,
+    get: Optional[Callable[..., Any]] = None,
+    sleep: Callable[[float], None] = time.sleep,
+    guard: Optional[Callable[[str], str]] = None,
+    timeout: float = FETCH_TIMEOUT,
+    min_interval: float = MIN_INTERVAL,
+) -> Optional[list[dict[str, Any]]]:
+    """Public products.json, or None on 404, 401, or a non-Shopify response."""
+
+    payload = fetch_shopify_path(
+        domain, f"/products.json?limit={SHOPIFY_LIMIT}",
+        get=get, sleep=sleep, guard=guard, timeout=timeout, min_interval=min_interval,
+    )
+    if not isinstance(payload, dict):
+        return None
+    products = parse_shopify_products(payload)
+    return products or None
+
+
+def _core_type(products: list[dict[str, Any]]) -> str:
+    counts: dict[str, int] = {}
+    for item in products:
+        kind = str(item.get("product_type") or "").strip()
+        if not kind or kind.lower() in _GENERIC_TYPE:
+            continue
+        counts[kind] = counts.get(kind, 0) + 1
+    if not counts:
+        return ""
+    return max(counts, key=counts.get)
+
+
+def choose_products(
+    products: list[dict[str, Any]],
+    *,
+    brand: str,
+    method: str,
+) -> dict[str, Any]:
+    """The product the brand is known for, named as a short noun phrase."""
+
+    core = _core_type(products)
+    kept: list[dict[str, Any]] = []
+    for item in products:
+        title = str(item.get("title") or "")
+        kind = str(item.get("product_type") or "")
+        if _off_core(title, kind, core):
+            continue
+        phrase = short_product_phrase(title, kind, brand)
+        if not phrase:
+            continue
+        kept.append({**item, "phrase": phrase})
+        if len(kept) >= 3:
+            break
+    if not kept:
+        return {}
+    vendor = next((str(item.get("vendor") or "") for item in kept if item.get("vendor")), "")
+    return {
+        "source": "products.json",
+        "pick": method,
+        "products": [{key: value for key, value in item.items() if key != "vendor"} for item in kept],
+        "phrase": kept[0]["phrase"],
+        "product_title": kept[0].get("title") or "",
+        "product_type": kept[0].get("product_type") or core,
+        "description": next((item.get("body") or "" for item in kept if description_is_product(item.get("body") or "")), ""),
+        "vendor": vendor,
+    }
+
+
+_CURRENCY_RE = re.compile(r'"active"\s*:\s*"([A-Z]{3})"')
+_HTML_LANG_RE = re.compile(r"<html[^>]*\blang=[\"']([a-zA-Z-]{2,10})", re.I)
+_COLLECTION_RE = re.compile(r"/collections/([a-z0-9][a-z0-9-]{2,})", re.I)
+_SKIP_COLLECTION = {"all", "frontpage", "best-sellers", "bestsellers"}
+_LANG_WORDS = {
+    "es": re.compile(r"\b(?:para|con|los|las|del|una|tratamiento|dispositivo|oferta|precio|piernas)\b", re.I),
+    "fr": re.compile(r"\b(?:pour|avec|les|des|une|pull|maille|pantalon|noir|blanc)\b", re.I),
+}
+
+
+def signals_from_storefront(html: str, titles: list[str]) -> dict[str, str]:
+    """Currency and language a shopper sees on the storefront."""
+
+    currency = ""
+    match = _CURRENCY_RE.search(html or "")
+    if match:
+        currency = match.group(1)
+    language = ""
+    lang_match = _HTML_LANG_RE.search(html or "")
+    if lang_match:
+        language = lang_match.group(1).split("-", 1)[0].lower()
+        if language == "en":
+            language = ""
+    if not language:
+        blob = " ".join(titles)
+        for code, pattern in _LANG_WORDS.items():
+            if len(pattern.findall(blob)) >= 2:
+                language = code
+                break
+    return {"currency_code": currency, "language_code": language}
+
+
+def featured_collection(html: str) -> str:
+    for match in _COLLECTION_RE.finditer(html or ""):
+        slug = match.group(1).lower()
+        if slug not in _SKIP_COLLECTION:
+            return slug
+    return ""
 
 
 def fetch_storeleads_record(
@@ -510,27 +724,51 @@ def collect_product_facts(
     dry run behaves. The dry run has no API key.
     """
 
-    empty: dict[str, Any] = {"source": "", "products": [], "phrase": "", "description": "", "vendor": ""}
-    catalog = fetch_shopify_catalog(domain, get=get, sleep=sleep, guard=guard)
-    if catalog:
-        chosen = pick_representative(catalog, limit=15)
-        phrase = ""
-        kept: list[dict[str, Any]] = []
-        for item in chosen:
-            item_phrase = natural_product_phrase(item.get("title") or "", brand)
-            if not item_phrase:
-                continue
-            kept.append({**item, "phrase": item_phrase})
-            phrase = phrase or item_phrase
-        if phrase:
-            vendor = next((str(item.get("vendor") or "") for item in kept if item.get("vendor")), "")
-            return {
-                "source": "products.json",
-                "products": [{k: v for k, v in item.items() if k != "vendor"} for item in kept],
-                "phrase": phrase,
-                "description": next((item.get("body") or "" for item in kept if description_is_product(item.get("body") or "")), ""),
-                "vendor": vendor,
-            }
+    empty: dict[str, Any] = {
+        "source": "", "products": [], "phrase": "", "description": "", "vendor": "",
+        "pick": "", "currency_code": "", "language_code": "",
+    }
+    html = homepage_html
+    if not html and fetch_homepage is not None:
+        try:
+            _pace(sleep, MIN_INTERVAL)
+            html = fetch_homepage(domain) or ""
+        except Exception:  # noqa: BLE001
+            html = ""
+    if not html:
+        page = fetch_shopify_path(
+            domain, "/", get=get, sleep=sleep, guard=guard, accept="text/html",
+        )
+        html = page if isinstance(page, str) else ""
+    ranked: list[tuple[str, str]] = [
+        ("best-selling", "/collections/all/products.json?limit=50&sort_by=best-selling"),
+        ("best-selling", "/collections/best-sellers/products.json?limit=50"),
+        ("best-selling", "/collections/bestsellers/products.json?limit=50"),
+    ]
+    featured = featured_collection(html)
+    if featured:
+        ranked.append(("featured", f"/collections/{featured}/products.json?limit=50"))
+    ranked.append(("product_type", f"/products.json?limit={SHOPIFY_LIMIT}"))
+    chosen: dict[str, Any] = {}
+    titles: list[str] = []
+    for method, path in ranked:
+        if chosen:
+            break
+        payload = fetch_shopify_path(domain, path, get=get, sleep=sleep, guard=guard)
+        products = parse_shopify_products(payload) if isinstance(payload, dict) else []
+        if products and not titles:
+            titles = [str(item.get("title") or "") for item in products[:12]]
+        if not products:
+            continue
+        if method == "product_type":
+            products = pick_representative(products, limit=30)
+        picked = choose_products(products, brand=brand, method=method)
+        if picked:
+            chosen = picked
+    signals = signals_from_storefront(html, titles)
+    if chosen:
+        chosen.update(signals)
+        return chosen
     if allow_storeleads:
         record = fetch_storeleads_record(domain, api_key=api_key, get=get)
         if record:
@@ -549,28 +787,26 @@ def collect_product_facts(
             if phrase:
                 return {
                     "source": "storeleads",
+                    "pick": "storeleads",
                     "products": kept,
                     "phrase": phrase,
                     "description": description if description_is_product(description) else "",
                     "vendor": "",
+                    **signals,
                 }
-    html = homepage_html
-    if not html and fetch_homepage is not None:
-        try:
-            _pace(sleep, MIN_INTERVAL)
-            html = fetch_homepage(domain) or ""
-        except Exception:  # noqa: BLE001
-            html = ""
     description = _og_description(html)
     phrase = phrase_from_description(description, brand)
     if phrase:
         return {
             "source": "og",
+            "pick": "og",
             "products": [],
             "phrase": phrase,
             "description": description,
             "vendor": "",
+            **signals,
         }
+    empty.update(signals)
     return empty
 
 
@@ -592,6 +828,11 @@ def apply_product_facts(profile: dict[str, Any], facts: dict[str, Any]) -> dict[
     """Copy the chosen products onto the store profile the writer already reads."""
 
     merged = dict(profile or {})
+    for key in ("currency_code", "language_code"):
+        if facts.get(key):
+            merged[key] = facts[key]
+    if facts.get("pick"):
+        merged["product_pick"] = facts["pick"]
     source = str((facts or {}).get("source") or "")
     if not source:
         return merged

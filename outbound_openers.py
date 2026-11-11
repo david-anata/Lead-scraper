@@ -409,6 +409,14 @@ def rich_personalization_enabled(lead: Optional[dict[str, Any]] = None) -> bool:
     return (os.getenv(RICH_PERSONALIZATION_FLAG) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def template_fallback_enabled(lead: Optional[dict[str, Any]] = None) -> bool:
+    """Deterministic opener templates are off unless a test or env turns them on."""
+
+    if isinstance(lead, dict) and lead.get("template_fallback"):
+        return True
+    return (os.getenv("OUTBOUND_OPENER_TEMPLATES") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _count_words(value: Any) -> str:
     try:
         number = int(value)
@@ -1603,6 +1611,8 @@ def write_opener(
         return result
 
     if not facts.solid:
+        if not template_fallback_enabled(lead):
+            return finish("", "none")
         opener, angle = idea_lines(lead)
         if domain and opener:
             _ANGLES_BY_DOMAIN[domain] = (angle, "fallback" if angle else "none")
@@ -1631,7 +1641,9 @@ def write_opener(
             if line and not opener_hold_reason(line, lead):
                 return finish(line, "ai")
         except Exception:  # noqa: BLE001 - never block a lead on the AI
-            logger.exception("[outbound-openers] AI call failed, using fallback")
+            logger.exception("[outbound-openers] AI call failed")
+    if not template_fallback_enabled(lead):
+        return finish("", "none")
     line, angle = idea_lines(lead)
     if domain and line:
         _ANGLES_BY_DOMAIN[domain] = (angle, "fallback" if angle else "none")
@@ -1667,6 +1679,8 @@ def write_brand_angle(
         return result
 
     if not facts.solid:
+        if not template_fallback_enabled(lead):
+            return finish("", "none")
         _opener, angle = idea_lines(lead)
         if angle:
             return finish(angle, "fallback")
@@ -1694,7 +1708,9 @@ def write_brand_angle(
             if line and not angle_hold_reason(line, lead) and not angle_is_filler(line):
                 return finish(line, "ai")
         except Exception:  # noqa: BLE001 - never block a lead on the AI
-            logger.exception("[outbound-openers] brand angle AI call failed, using fallback")
+            logger.exception("[outbound-openers] brand angle AI call failed")
+    if not template_fallback_enabled(lead):
+        return finish("", "none")
     _opener, line = idea_lines(lead)
     return finish(line, "fallback" if line else "none")
 

@@ -216,7 +216,7 @@ def test_personalization_stays_off_until_the_flag_and_then_stays_factual(monkeyp
     assert before_facts.rich_phrases == ()
     before, _source = openers.write_opener(lead)
     assert "Klaviyo" not in before
-    after_lead = {**lead, "rich_personalization": True}
+    after_lead = {**lead, "rich_personalization": True, "template_fallback": True}
     openers._OPENERS_BY_DOMAIN.clear()
     openers._ANGLES_BY_DOMAIN.clear()
     after, source = openers.write_opener(after_lead)
@@ -242,6 +242,7 @@ def test_rich_lines_sound_like_a_person_and_never_lead_with_a_negative(monkeypat
         "categories": "sports",
         "amazon_absent": True,
         "rich_personalization": True,
+        "template_fallback": True,
         "store_profile": {
             "store_locator_page": "https://northtrampoline.com/pages/stores",
             "apps": [{"name": "Klaviyo: Email Marketing"}],
@@ -316,6 +317,7 @@ def test_a_lone_product_is_kept_and_a_review_app_is_not_called_reviews(monkeypat
         "brand": "Example",
         "domain": "example-soap.com",
         "rich_personalization": True,
+        "template_fallback": True,
         "store_profile": {
             "most_recently_published_product": {
                 "title": "Cedar Soap",
@@ -571,6 +573,47 @@ def _hq_store(name: str, **extra: object) -> dict:
     }
     store.update(extra)
     return store
+
+
+def test_four_catalog_storefronts_are_non_us_before_copy():
+    """Martha Jackson, GLO, Rivieras, and Pedro García must not reach copy.
+
+    A StoreLeads country_code of US is not a headquarters. The .co.uk
+    domain, a non-USD catalog currency, and a non-English storefront
+    language are enough to hold the lead.
+    """
+
+    bare = {
+        "marthajackson.co.uk": ("Martha Jackson", "", ""),
+        "glo910.com": ("GLO", "", ""),
+        "rivieras.com": ("Rivieras", "", ""),
+        "pedrogarcia.com": ("Pedro García", "", ""),
+    }
+    # Without a location, currency, or language, only the ccTLD is decisive.
+    assert pipeline.copy_country_reason({
+        "name": "marthajackson.co.uk", "merchant_name": "Martha Jackson", "country_code": "US",
+    }) == "non_us"
+    for domain, (brand, _currency, _language) in bare.items():
+        if domain.endswith(".co.uk"):
+            continue
+        assert pipeline.copy_country_reason({
+            "name": domain, "merchant_name": brand, "country_code": "US",
+        }) == "", domain
+    observed = {
+        "marthajackson.co.uk": ("Martha Jackson", "GBP", "en"),
+        "glo910.com": ("GLO", "EUR", "es"),
+        "rivieras.com": ("Rivieras", "EUR", "fr"),
+        "pedrogarcia.com": ("Pedro García", "EUR", "es"),
+    }
+    for domain, (brand, currency, language) in observed.items():
+        store = {
+            "name": domain,
+            "merchant_name": brand,
+            "country_code": "US",
+            "currency_code": currency,
+            "language_code": language,
+        }
+        assert pipeline.copy_country_reason(store) == "non_us", domain
 
 
 def test_new_mexico_and_new_england_are_us_headquarters():

@@ -157,7 +157,7 @@ def test_rich_pair_over_the_max_is_regenerated_once_then_left_empty():
         return json.dumps({"opener": long_opener, "angle": short["angle"]})
 
     opener, angle, source = personalization.generate(
-        {**lead, "domain": "rich-held.com"}, llm=still_long,
+        {**lead, "domain": "rich-held.com", "template_fallback": True}, llm=still_long,
     )
     assert calls["n"] == 2 and source == "fallback"
     assert opener and "toothpaste" in opener.lower()
@@ -217,7 +217,7 @@ def test_trial_offer_never_claims_or_assumes_amazon():
         calls.append(prompt)
         return "Huppy lists toothpaste tabs on Amazon."
 
-    line, source = op.write_opener(trial, CONTACT, llm=claim_amazon)
+    line, source = op.write_opener({**trial, "template_fallback": True}, CONTACT, llm=claim_amazon)
     assert "amazon" not in line.lower()
     assert source == "fallback"
     assert len(calls) == 2

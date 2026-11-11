@@ -2619,7 +2619,8 @@ def _run_enrich_test(limit: int) -> None:
         report = _oe.run_enrichment(
             engine, leads, api_key=_oc.load_contact_config(),
             max_companies=limit, max_contacts=2, credit_budget=limit * 4,
-            campaign_id="", dry_run=True)
+            campaign_id="", dry_run=True,
+            country_signals=_oe.storefront_country_signals)
         _ENRICH_TEST.update(report=report.as_dict(), error="")
     except Exception as exc:  # noqa: BLE001
         logger.exception("[outbound-enrich] test run failed")

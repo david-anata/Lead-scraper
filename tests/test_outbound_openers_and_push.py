@@ -51,7 +51,7 @@ def test_ai_line_used_when_valid():
 
 
 def test_bad_ai_line_falls_back():
-    lead = {**LEAD, "domain": "bad-ai.com", "store_profile": {
+    lead = {**LEAD, "domain": "bad-ai.com", "template_fallback": True, "store_profile": {
         "most_recently_published_product": {"title": "Toothpaste tabs"},
     }}
     line, src = op.write_opener(lead, CONTACT, llm=lambda p: "You grew 300% - wow!")
@@ -64,7 +64,7 @@ def test_bad_ai_line_falls_back():
 def test_ai_exception_falls_back_without_raising():
     def boom(p):
         raise RuntimeError("down")
-    lead = {**LEAD, "domain": "boom.com", "store_profile": {
+    lead = {**LEAD, "domain": "boom.com", "template_fallback": True, "store_profile": {
         "description": "Mint toothpaste tabs for daily brushing",
     }}
     line, src = op.write_opener(lead, CONTACT, llm=boom)
@@ -74,7 +74,7 @@ def test_ai_exception_falls_back_without_raising():
 
 def test_no_key_no_llm_uses_fallback(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    lead = {**LEAD, "domain": "nokey.com", "store_profile": {
+    lead = {**LEAD, "domain": "nokey.com", "template_fallback": True, "store_profile": {
         "description": "Mint toothpaste tabs for daily brushing",
     }}
     line, src = op.write_opener(lead, CONTACT)
@@ -208,7 +208,7 @@ def test_unconfirmed_amazon_product_is_not_used():
         prompts.append(prompt)
         return ON_AMAZON
 
-    described = {**LEAD, "store_profile": {"description": "Mint toothpaste tabs for daily brushing"}}
+    described = {**LEAD, "template_fallback": True, "store_profile": {"description": "Mint toothpaste tabs for daily brushing"}}
     for conf in ("", "low", "medium"):
         op._OPENERS_BY_DOMAIN.clear()
         prompts.clear()
@@ -243,7 +243,7 @@ def test_opener_is_empty_when_nothing_solid():
 
 
 def test_brand_angle_uses_a_known_fact_and_not_an_unconfirmed_amazon():
-    lead = {**LEAD, "domain": "angle-fact.com", "store_profile": {
+    lead = {**LEAD, "domain": "angle-fact.com", "template_fallback": True, "store_profile": {
         "description": "Mint toothpaste tabs for daily brushing",
     }}
     angle, source = op.write_brand_angle(lead, CONTACT, llm=lambda p: "Anata helps Huppy grow on Amazon.")
@@ -271,7 +271,7 @@ def test_brand_angle_falls_back_to_a_category_line():
 
 def test_brand_angle_uses_scraped_product_without_calling_amazon():
     html = '<meta property="og:title" content="Toothpaste tabs">'
-    lead = {"brand": "Huppy", "domain": "site.com", "site_html": html}
+    lead = {"brand": "Huppy", "domain": "site.com", "site_html": html, "template_fallback": True}
     line, _source = op.write_opener(lead, CONTACT, llm=lambda _p: "Huppy is big on Amazon.")
     angle, _angle_source = op.write_brand_angle(lead, CONTACT)
     assert "amazon" not in line.lower()

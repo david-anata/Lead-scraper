@@ -393,6 +393,8 @@ def style_violation(
         return "too short"
     if sentence_count(raw) > 1:
         return "more than one sentence"
+    if re.search(r"\bfirst image\b|\bshould be the first\b", raw, re.I):
+        return "tells the brand what their first image should be"
     from outbound_openers import stuffed_copy_reason
 
     stuffed = stuffed_copy_reason(raw)
@@ -432,11 +434,16 @@ def _prompt(sheet: FactSheet) -> str:
         f"Category: {category}\n"
         "Shopper-visible facts:\n"
         f"{facts}\n\n"
-        "Write JSON with keys opener and angle. Use only the facts above. "
+        "Write JSON with keys opener and angle. Use only the brand and the facts above. "
+        "Do not invent a product, a store, or a number. "
+        "Sound like a person who looked at their store. Plain and warm. "
+        "Vary the sentence shape. Do not start both lines with the brand name. "
         f"{amazon_rule}"
-        "Opener is one sentence of about 20 words, never more than 25, in Abby's voice. "
-        "Angle is one sentence of about 15 words, never more than 20. "
-        "The angle must not repeat the opener and must not start with Anata helps. "
+        "Opener: one sentence of about 20 words, never more than 25, and at least 6 words. "
+        "Angle: one sentence of about 15 words, never more than 20, and at least 6 words. "
+        "The angle ties the brand to Amazon listings, images, or ads. "
+        "It must not restate the opener, must not start with Anata helps, "
+        "and must not tell them what their first image should be or critique the store. "
         "No digits, no em dashes, no spaced hyphens, no URLs, no hype, no questions, "
         "no category slugs, and never the words 'stood out'. "
         "No app installs, automation, bids, direct-to-consumer, platform names, "
@@ -538,10 +545,11 @@ def generate(
                 "Angle: one sentence, about 15 words, never more than 20."
             )
         logger.info("[outbound-personalization] model line rejected (%s)", why or "empty")
-    from outbound_openers import idea_lines
+    from outbound_openers import idea_lines, template_fallback_enabled
 
-    opener, angle = idea_lines(lead)
-    if opener:
-        return opener, angle, "fallback"
+    if template_fallback_enabled(lead):
+        opener, angle = idea_lines(lead)
+        if opener:
+            return opener, angle, "fallback"
     logger.info("[outbound-personalization] %s flagged: no safe line", sheet.brand)
     return "", "", "none"

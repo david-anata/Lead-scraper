@@ -329,6 +329,32 @@ def _foreign_store_name(store: dict[str, Any]) -> str:
     return ""
 
 
+def _location_country(store: dict[str, Any]) -> str:
+    """Country named in a real location or contact address, or empty."""
+
+    found: list[str] = []
+    for text in (
+        store.get("location"), store.get("city"), store.get("administrative_area_level_1"),
+    ):
+        if _delaware_registration(str(text or "")):
+            continue
+        code = _country_in_text(text)
+        if code:
+            found.append(code)
+    for address in _contact_addresses(store):
+        if _delaware_registration(address):
+            continue
+        code = _country_in_text(address)
+        if code:
+            found.append(code)
+    foreign = [code for code in found if code != "US"]
+    if foreign:
+        return foreign[0]
+    if any(code == "US" for code in found):
+        return "US"
+    return ""
+
+
 def headquarters_verdict(store: dict[str, Any]) -> tuple[str, str]:
     """(country code, reason). Reason is empty only when the code is US.
 
@@ -381,6 +407,8 @@ def headquarters_verdict(store: dict[str, Any]) -> tuple[str, str]:
         if code == "US" and name_country:
             return name_country, f"headquarters country is {name_country} from store name"
         if code == "US" and not _location_is_delaware_only(store):
+            # Reported on the Clay row. Eligibility still ignores this when
+            # there is no real location and the catalog shows a non-US brand.
             return "US", ""
         if code and code != "US":
             return code, f"headquarters country is {code} from primary domain country_code"
@@ -473,6 +501,18 @@ def _phone_countries(store: dict[str, Any]) -> list[str]:
     return found
 
 
+def _storefront_language(store: dict[str, Any]) -> str:
+    """Primary storefront language, such as ``es`` or ``fr``. English is empty."""
+
+    raw = str(store.get("language_code") or store.get("locale") or "").strip().lower().replace("_", "-")
+    if not raw:
+        return ""
+    language = raw.split("-", 1)[0]
+    if language in {"en", "us"} or len(language) != 2:
+        return ""
+    return language
+
+
 def _locale_country(store: dict[str, Any]) -> str:
     raw = str(store.get("language_code") or store.get("locale") or "").strip().lower().replace("_", "-")
     if "-" not in raw:
@@ -522,6 +562,9 @@ def _clear_non_us_reason(store: dict[str, Any]) -> str:
             return f".{suffix} domain and ships to {tld_country}"
     if tld_country and tld_country != "US":
         return f".{suffix} domain is a {tld_country} storefront"
+    language = _storefront_language(store)
+    if language:
+        return f"storefront language is {language}"
     named = _foreign_store_name(store)
     if named:
         return f"store name reads as {named}"
@@ -538,14 +581,31 @@ def country_eligibility(store: dict[str, Any]) -> tuple[bool, str]:
     """
 
     code, reason = headquarters_verdict(store)
-    if code == "US":
+    located = _location_country(store)
+    if located == "US":
         return True, ""
-    if code:
+    if located:
+        return False, f"headquarters country is {located} from location"
+    if code and code != "US":
         return False, reason
+    # A US country_code with no street or city is not a headquarters.
     clear = _clear_non_us_reason(store)
     if clear:
         return False, f"headquarters country is unknown; {clear}"
     return True, "headquarters country is unknown; kept"
+
+
+def copy_country_reason(store: dict[str, Any]) -> str:
+    """``non_us`` when this store must not be enriched or copied, else empty.
+
+    The detailed headquarters reason is logged by ``passes_company_fit``.
+    Callers run this before enrich and before an opener is written.
+    """
+
+    allowed, _reason = country_eligibility(store)
+    if allowed:
+        return ""
+    return "non_us"
 
 
 def eligibility_country_by_domain(

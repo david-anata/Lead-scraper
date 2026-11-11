@@ -25,9 +25,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import outbound_openers as openers
+import outbound_personalization as personalization
 from outbound_contacts import split_person_name
-from outbound_pipeline import clean_brand_name
-from outbound_product_facts import USER_AGENT, apply_product_facts, collect_product_facts
+from outbound_pipeline import clean_brand_name, copy_country_reason
+from outbound_product_facts import (
+    USER_AGENT,
+    apply_product_facts,
+    collect_product_facts,
+    domain_brand_mismatch,
+)
 
 TRIAL_OFFER = "e5f5046b-07e4-41ad-a395-79cf8766ccd0"
 SEGMENTS = (
@@ -231,18 +237,45 @@ def render_row(
         lead.get("brand") or "",
         display_name=lead.get("display_brand") or "",
     )
-    opener, angle, reason = openers.idea_decision(lead)
-    hold = "" if opener else (reason or "no shopper-visible fact")
+    facts = facts or {}
+    domain = str(row.get("domain") or "")
+    gate = {
+        "name": domain,
+        "merchant_name": company or row.get("brand") or "",
+        "currency_code": facts.get("currency_code") or "",
+        "language_code": facts.get("language_code") or "",
+    }
+    hold = ""
+    opener = ""
+    angle = ""
+    if not company:
+        hold = "no recognizable brand"
+    elif copy_country_reason(gate):
+        from outbound_pipeline import country_eligibility
+
+        _allowed, detail = country_eligibility(gate)
+        hold = "non_us" + (f" ({detail})" if detail else "")
+    elif domain_brand_mismatch(domain, str(row.get("brand") or ""), str(facts.get("vendor") or "")):
+        hold = "domain_brand_mismatch"
+    else:
+        opener, angle, source = personalization.generate(lead)
+        if not opener:
+            from sales_support_agent.services.llm_client import llm_available
+
+            hold = "no model" if not llm_available() else (source and "no shopper-visible fact") or "no shopper-visible fact"
+            opener, angle = "", ""
     return {
         "segment": str(row.get("segment") or _segment(row)),
         "company": company or "(no recognizable brand)",
         "first_name": first,
         "last_name": last,
-        "domain": str(row.get("domain") or ""),
+        "domain": domain,
         "opener": opener,
         "angle": angle,
-        "hold": "" if opener and not hold else hold,
-        "source": str((facts or {}).get("source") or lead.get("store_profile", {}).get("product_fact_source") or ""),
+        "hold": hold,
+        "source": str(facts.get("source") or lead.get("store_profile", {}).get("product_fact_source") or ""),
+        "pick": str(facts.get("pick") or ""),
+        "product": str(facts.get("phrase") or ""),
     }
 
 
@@ -253,7 +286,11 @@ def render_report(rows: list[dict[str, str]]) -> str:
         lines.append(f"### {index}. {row['company']} ({who}), {row['segment']}")
         lines.append(f"Domain: {row['domain']}")
         source = row.get("source") or "none"
+        pick = row.get("pick") or "none"
+        product = row.get("product") or "(none)"
         lines.append(f"Source: {source}")
+        lines.append(f"Pick: {pick}")
+        lines.append(f"Product: {product}")
         if row["opener"]:
             lines.append(f"Opener: {row['opener']}")
             lines.append(f"Angle: {row['angle'] or '(none)'}")
