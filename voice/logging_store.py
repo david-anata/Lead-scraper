@@ -68,6 +68,16 @@ class LoggingStore:
         if self.rest is not None:
             self.rest.set_sms_notified(call_sid, notified)
 
+    def resolve_caller(self, phone: str) -> dict[str, str]:
+        if self.postgres is None:
+            return {}
+        return self.postgres.resolve_caller(phone)
+
+    def probe_known_callers(self) -> bool | None:
+        if self.postgres is None:
+            return None
+        return self.postgres.probe_known_callers()
+
     def probe_logging(self) -> bool | None:
         """Privilege probe when Postgres is the writer. None means REST or unconfigured."""
 

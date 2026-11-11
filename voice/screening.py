@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from voice.known_callers import looks_like_tenant_urgent
+
 
 SOLICITATION_PHRASES = (
     "seo",
@@ -144,6 +146,8 @@ class ScreenInput:
     forward_configured: bool = True
     business_line: str = ""
     caller_asked_for_person: bool = False
+    ring_policy: str = ""
+    known_category: str = ""
 
 
 DAVID_HOLD_LINE = "Sure, let me see if I can grab him, one moment."
@@ -234,6 +238,10 @@ def decide(screen: ScreenInput) -> ScreenDecision:
     text = _blob(screen.reason, screen.notes, screen.event_or_interest_type)
     category = normalize_category(screen.category)
     agency_lead = is_agency_lead(category, screen.business_line)
+    policy = (screen.ring_policy or "").strip().casefold()
+    if policy == "always":
+        logged = category if category in {"lead", "tenant", "other", "urgent"} else "other"
+        return _approved(logged, asked_for_david=True)
     if looks_like_solicitation(text, agency_lead=agency_lead) or category == "spam":
         return ScreenDecision(
             allow_transfer=False,
@@ -243,6 +251,30 @@ def decide(screen: ScreenInput) -> ScreenDecision:
                 "Do not transfer. This is a solicitation or an unwanted sales call. "
                 "Politely decline, offer to take a short message, and do not collect "
                 "a sales pitch. Then call finish_call."
+            ),
+        )
+    if policy == "never":
+        return ScreenDecision(
+            allow_transfer=False,
+            category=category if category in {"lead", "tenant", "vendor", "other"} else "other",
+            action="message",
+            speak=(
+                "Do not transfer. Take a message for David to handle, then call finish_call. "
+                "Do not ring."
+            ),
+        )
+    if policy == "urgent_only":
+        if looks_like_tenant_urgent(text):
+            logged = "tenant" if screen.known_category == "tenant" else "urgent"
+            return _approved(logged, asked_for_david=True)
+        return ScreenDecision(
+            allow_transfer=False,
+            category="tenant" if screen.known_category == "tenant" else category,
+            action="needs_callback",
+            speak=(
+                "Do not transfer. This is not an urgent building issue. "
+                "Take the details and call finish_call with callback_needed true. "
+                "The call is logged as needs_callback."
             ),
         )
     if category == "vendor":

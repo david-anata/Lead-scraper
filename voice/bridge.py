@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 from voice.audio import mulaw_frames
 from voice.calendar_availability import CalendarAvailability
+from voice.known_callers import known_greeting
 from voice.lifecycle import begin_transfer, finalize_call
 from voice.screening import DAVID_CALLBACK_LINE
 from voice.lines import parse_known_numbers
@@ -190,7 +191,9 @@ class CallBridge:
         if self.session.resume == "message":
             text = missed_transfer_line(self.session)
         else:
-            text = self.session.line.spoken_greeting()
+            text = known_greeting(self.session) or self.session.line.spoken_greeting()
+        if self.session.ring_policy == "always" and self.session.resume != "message":
+            asyncio.create_task(self._ring_known_caller())
         await self._xai_send(
             {
                 "type": "conversation.item.create",
@@ -284,6 +287,18 @@ class CallBridge:
         await asyncio.sleep(0.6)
         await self._xai_send({"type": "response.create"})
         self._continuing = False
+
+    async def _ring_known_caller(self) -> None:
+        """Ring David for a directory caller whose policy is always. No screening."""
+
+        await asyncio.sleep(5)
+        if self._stop.is_set() or self.session.transfer_started:
+            return
+        self.session.asked_for_david = True
+        self.session.transfer_requested = True
+        if not self.session.reason:
+            self.session.reason = f"Known {self.session.known_caller_category} caller"
+        await self._start_dial()
 
     async def _dial_after_pause(self) -> None:
         await asyncio.sleep(3)

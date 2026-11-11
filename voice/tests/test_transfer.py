@@ -287,6 +287,9 @@ def test_health_logging_ready_comes_from_the_privilege_probe() -> None:
             return self
 
         def execute(self, sql: str, params: object = None) -> None:
+            if "known_callers" in sql:
+                assert "has_table_privilege(current_user, 'public.known_callers', 'SELECT')" in sql
+                return
             assert "has_table_privilege(current_user, 'public.call_log', 'SELECT')" in sql
             assert "has_column_privilege" in sql
 
@@ -305,10 +308,15 @@ def test_health_logging_ready_comes_from_the_privilege_probe() -> None:
     assert denied.status_code == 200
     assert denied.json()["logging_ready"] is False
     assert denied.json()["logging_probe"] == "denied"
+    assert denied.json()["known_callers_ready"] is False
+    assert denied.json()["known_callers_probe"] == "denied"
     assert "secret" not in denied.text
     assert "VOICE_DATABASE_URL" not in denied.json()["missing"]
     app.state.store.postgres._probe_ok = False
+    app.state.store.postgres._known_probe_ok = False
     app.state.store.postgres._connect = lambda dsn: _Probe(True)
     ready = client.get("/health")
     assert ready.json()["logging_ready"] is True
     assert ready.json()["logging_probe"] == "ok"
+    assert ready.json()["known_callers_ready"] is True
+    assert ready.json()["known_callers_probe"] == "ok"

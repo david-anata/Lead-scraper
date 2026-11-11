@@ -48,6 +48,11 @@ class CallSession:
     agent_call_sid: str = ""
     voicemail_detected: bool = False
     asked_for_david: bool = False
+    known_caller_id: str = ""
+    known_caller_name: str = ""
+    known_caller_company: str = ""
+    known_caller_category: str = ""
+    ring_policy: str = ""
     security_preference: str = ""
     turns: list[str] = field(default_factory=list)
     caller_partials: dict[str, str] = field(default_factory=dict)

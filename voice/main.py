@@ -27,6 +27,7 @@ from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import PlainTextResponse, Response
 
 from voice.bridge import CallBridge, whisper_line
+from voice.known_callers import apply_known_caller
 from voice.calendar_availability import CalendarAvailability
 from voice.logging_store import LoggingStore
 from voice.lifecycle import accept_transfer, fail_transfer, finalize_call
@@ -85,12 +86,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def health() -> dict[str, Any]:
         live = app.state.settings
         probed = app.state.store.probe_logging()
+        known = app.state.store.probe_known_callers()
         if probed is None:
             logging_ready = live.logging_ready
             logging_probe = "not_probed"
         else:
             logging_ready = probed
             logging_probe = app.state.store.postgres.probe_status
+        if known is None:
+            known_ready = False
+            known_probe = "not_probed"
+        else:
+            known_ready = known
+            known_probe = app.state.store.postgres.known_probe_status
         return {
             "status": "ok",
             "service": "anata-voice-receptionist",
@@ -100,6 +108,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "calendar_ready": live.calendar_ready,
             "sms_autoreply": live.sms_autoreply,
             "recording_enabled": live.recording_enabled,
+            "known_callers_ready": known_ready,
+            "known_callers_probe": known_probe,
             "missing": live.missing(),
         }
 
@@ -114,14 +124,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         dialed = form.get("To", "")
         if call_sid and settings.calls_ready:
             line = resolve_line(settings.line_contexts_json, dialed)
-            request.app.state.sessions.put(
-                CallSession(
-                    call_sid=call_sid,
-                    caller_number=caller,
-                    dialed_number=dialed,
-                    line=line,
-                )
+            session = CallSession(
+                call_sid=call_sid,
+                caller_number=caller,
+                dialed_number=dialed,
+                line=line,
             )
+            try:
+                row = await asyncio.to_thread(request.app.state.store.resolve_caller, caller)
+            except Exception:
+                logger.exception("Known caller lookup failed")
+                row = {}
+            apply_known_caller(session, row)
+            request.app.state.sessions.put(session)
         base = _base(request)
         xml = inbound_twiml(settings, http_base=base, call_sid=call_sid)
         return Response(xml, media_type=XML)

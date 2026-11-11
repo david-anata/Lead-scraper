@@ -190,6 +190,13 @@ GRANT INSERT, UPDATE (
 -- "permission denied for table call_log" unless this grant is present.
 GRANT SELECT ON TABLE public.call_log TO voice_logger;
 
+GRANT INSERT, UPDATE (known_caller_id, known_caller_category)
+  ON TABLE public.call_log TO voice_logger;
+
+GRANT SELECT ON TABLE public.known_callers TO voice_logger;
+GRANT INSERT (name, phone_e164, category, source)
+  ON TABLE public.known_callers TO voice_logger;
+
 GRANT INSERT (
   id, idempotency_key, kind, source, source_reference, offering_id,
   name, email, phone, preferred_date, status, assigned_owner, response_due_at,
@@ -210,6 +217,12 @@ CREATE POLICY voice_logger_insert_inquiries ON public.building_inquiries
   FOR INSERT TO voice_logger WITH CHECK (source = 'voice');
 CREATE POLICY voice_logger_select_voice_inquiries ON public.building_inquiries
   FOR SELECT TO voice_logger USING (source = 'voice');
+
+CREATE POLICY voice_logger_select_known_callers ON public.known_callers
+  FOR SELECT TO voice_logger USING (true);
+CREATE POLICY voice_logger_insert_unknown_callers ON public.known_callers
+  FOR INSERT TO voice_logger
+  WITH CHECK (category = 'unknown' AND source = 'inbound_call');
 ```
 
 `call_log` has table-level `SELECT`. Column `SELECT` on `call_sid` is not a
@@ -217,8 +230,20 @@ substitute: the upsert is `INSERT … ON CONFLICT DO UPDATE`, and with row
 level security that command needs table `SELECT` or Postgres denies the
 table. `building_inquiries` is not granted `UPDATE`. Its `SELECT` is only
 `id` and `idempotency_key`, so a repeated call can find the inquiry id after
-`ON CONFLICT DO NOTHING`. Nothing else is granted: not contacts,
-relationships, audit events, or their sequences.
+`ON CONFLICT DO NOTHING`.
+
+`known_callers` is the directory for the live line. `voice_logger` can
+`SELECT` the whole table. It can `INSERT` only `name`, `phone_e164`,
+`category`, and `source`, and the insert policy requires
+`category = 'unknown'` and `source = 'inbound_call'`. A first-time caller is
+added that way so the row can be tagged later. `ring_policy` overrides the
+category default when it is `always`, `urgent_only`, or `never`. The matched
+category and id are stored on `call_log` as `known_caller_category` and
+`known_caller_id`. `/health` reports `known_callers_ready` from a privilege
+probe of that directory, not from the table merely existing.
+
+Nothing else is granted: not contacts, relationships, audit events, or their
+sequences.
 
 If the calendar credentials are missing, or the calendar call fails, the
 assistant takes the date and says the team will confirm. It does not guess.

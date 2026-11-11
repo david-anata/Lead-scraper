@@ -198,6 +198,11 @@ def call_summary_text(session: CallSession) -> str:
         f"Callback: {callback}",
         f"Action: {session.action or 'message'}",
     ])
+    if session.known_caller_category:
+        known = session.known_caller_category
+        if session.known_caller_name:
+            known = f"{known} {session.known_caller_name}"
+        lines.append("Known caller: " + one_line(known, 80))
     if session.security_preference:
         lines.append(f"Security preference: {session.security_preference}")
     if bits:

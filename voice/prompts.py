@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 from voice.knowledge import RECOMMENDED_SECURITY_LINE, load_knowledge_text
+from voice.known_callers import known_caller_instructions
 from voice.screening import DAVID_CALLBACK_LINE, DAVID_HOLD_LINE
 from voice.session import CallSession
 
@@ -75,6 +76,7 @@ Never transfer robocalls or anyone selling something to Anata. If the tool says 
 If it says approved for anyone other than David, say you're connecting them, then stop talking.
 
 # This call
+{known_caller_instructions(session)}
 Line: {session.line.label}
 Line id: {session.line.id}
 {source_line}Caller number: {session.caller_number or "unknown"}

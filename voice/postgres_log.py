@@ -43,6 +43,8 @@ _CALL_COLUMNS = (
     "transfer_outcome",
     "sms_notified",
     "building_inquiry_id",
+    "known_caller_id",
+    "known_caller_category",
     "updated_at",
 )
 
@@ -109,6 +111,25 @@ _INQUIRY_LOOKUP = (
 _SMS_UPDATE = (
     "UPDATE public.call_log SET sms_notified = %s, updated_at = %s WHERE call_sid = %s"
 )
+_KNOWN_LOOKUP = (
+    "SELECT id::text, name, company, category, COALESCE(ring_policy, '') "
+    "FROM public.known_callers WHERE phone_e164 = %s AND active = true"
+)
+_KNOWN_INSERT = (
+    "INSERT INTO public.known_callers (name, phone_e164, category, source) "
+    "VALUES (%s, %s, 'unknown', 'inbound_call') "
+    "ON CONFLICT (phone_e164) DO NOTHING RETURNING id::text"
+)
+_KNOWN_PROBE = """
+SELECT
+  has_table_privilege(current_user, 'public.known_callers', 'SELECT')
+  AND has_column_privilege(current_user, 'public.known_callers', 'name', 'INSERT')
+  AND has_column_privilege(current_user, 'public.known_callers', 'phone_e164', 'INSERT')
+  AND has_column_privilege(current_user, 'public.known_callers', 'category', 'INSERT')
+  AND has_column_privilege(current_user, 'public.known_callers', 'source', 'INSERT')
+  AND has_column_privilege(current_user, 'public.call_log', 'known_caller_id', 'INSERT')
+  AND has_column_privilege(current_user, 'public.call_log', 'known_caller_category', 'INSERT')
+"""
 # Column write grants plus table-level SELECT on call_log. With RLS on,
 # INSERT … ON CONFLICT DO UPDATE requires table SELECT. Column SELECT on
 # call_sid still raises permission denied for the table, so a column-only
@@ -148,6 +169,9 @@ class PostgresLog:
         self.probe_status = "not_configured"
         self._probe_ok = False
         self._probe_at = 0.0
+        self.known_probe_status = "not_configured"
+        self._known_probe_ok = False
+        self._known_probe_at = 0.0
 
     @property
     def configured(self) -> bool:
@@ -213,6 +237,72 @@ class PostgresLog:
         self.probe_status = "ok" if ok else "denied"
         return ok
 
+    def probe_known_callers(self) -> bool:
+        """True when this role can read the directory and insert an unknown caller."""
+
+        if not self.configured:
+            self.known_probe_status = "not_configured"
+            return False
+        now = time.monotonic()
+        if self._known_probe_ok and now - self._known_probe_at < _PROBE_OK_SECONDS:
+            return True
+        try:
+            with self._connection(timeout=3) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(_KNOWN_PROBE)
+                    row = cur.fetchone()
+        except Exception as exc:
+            logger.exception("Known caller privilege probe failed")
+            self._known_probe_ok = False
+            self._known_probe_at = 0.0
+            text = str(exc).casefold()
+            self.known_probe_status = (
+                "denied" if "permission" in text or "privilege" in text else "unreachable"
+            )
+            return False
+        ok = bool(row and row[0])
+        self._known_probe_ok = ok
+        self._known_probe_at = now if ok else 0.0
+        self.known_probe_status = "ok" if ok else "denied"
+        return ok
+
+    def resolve_caller(self, raw_phone: str) -> dict[str, str]:
+        """Return the active directory row, inserting an unknown caller when needed."""
+
+        from voice.known_callers import normalize_caller_phone
+
+        phone = normalize_caller_phone(raw_phone)
+        if not self.configured or not phone:
+            return {}
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_KNOWN_LOOKUP, (phone,))
+                found = cur.fetchone()
+                if found is None:
+                    cur.execute(_KNOWN_INSERT, ("", phone))
+                    created = cur.fetchone()
+                    if created and created[0]:
+                        conn.commit()
+                        return {
+                            "id": str(created[0]),
+                            "name": "",
+                            "company": "",
+                            "category": "unknown",
+                            "ring_policy": "",
+                        }
+                    cur.execute(_KNOWN_LOOKUP, (phone,))
+                    found = cur.fetchone()
+            conn.commit()
+        if not found:
+            return {}
+        return {
+            "id": str(found[0] or ""),
+            "name": str(found[1] or ""),
+            "company": str(found[2] or ""),
+            "category": str(found[3] or "unknown"),
+            "ring_policy": str(found[4] or ""),
+        }
+
     def save_sms(
         self,
         *,
@@ -249,6 +339,8 @@ class PostgresLog:
             "transfer_outcome": "",
             "sms_notified": sms_notified,
             "building_inquiry_id": "",
+            "known_caller_id": "",
+            "known_caller_category": "",
             "updated_at": now,
         }
         with self._connection() as conn:

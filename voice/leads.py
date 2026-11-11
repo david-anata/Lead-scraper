@@ -181,6 +181,8 @@ def build_call_row(session: CallSession, *, inquiry_id: str, sms_notified: bool)
         "transfer_outcome": session.transfer_outcome[:200],
         "sms_notified": sms_notified,
         "building_inquiry_id": inquiry_id,
+        "known_caller_id": session.known_caller_id,
+        "known_caller_category": session.known_caller_category,
         "updated_at": ended.isoformat(),
     }
 
@@ -303,6 +305,8 @@ class SupabaseStore:
                 "transfer_outcome": "",
                 "sms_notified": sms_notified,
                 "building_inquiry_id": "",
+                "known_caller_id": "",
+                "known_caller_category": "",
                 "updated_at": now,
             },
             prefer="resolution=merge-duplicates,return=minimal",

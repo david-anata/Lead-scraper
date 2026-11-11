@@ -235,6 +235,8 @@ def _transfer(
             notes=str(args.get("notes") or session.notes),
             wants_live_person=bool(args.get("wants_live_person")),
             caller_asked_for_person=bool(args.get("caller_asked_for_person")),
+            ring_policy=session.ring_policy,
+            known_category=session.known_caller_category,
             is_building_emergency=bool(args.get("is_building_emergency")),
             is_current_tenant=bool(args.get("is_current_tenant")),
             is_known_customer=bool(args.get("is_known_customer")),
@@ -287,6 +289,17 @@ def _finish(args: dict[str, Any], session: CallSession) -> dict[str, Any]:
         # The caller was already told David has a message. Do not let goodbye clear that.
         session.callback_needed = True
         session.action = "needs_callback"
+    elif (
+        session.ring_policy == "urgent_only"
+        and not session.transfer_accepted
+        and session.category != "spam"
+    ):
+        session.callback_needed = True
+        session.action = "needs_callback"
+    elif session.ring_policy == "never" and session.category != "spam":
+        session.callback_needed = True
+        if session.action in {"", "transfer"}:
+            session.action = "message"
     if session.category == "spam":
         session.callback_needed = False
         session.action = "logged_only"
