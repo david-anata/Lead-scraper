@@ -1642,6 +1642,8 @@ def _ensure_rich(
     from outbound_personalization import generate
 
     opener, angle, source = generate(lead, llm=llm, api_key=api_key)
+    if not opener and template_fallback_enabled(lead):
+        return
     if domain:
         _OPENERS_BY_DOMAIN[domain] = (opener, source if opener else "none")
         _ANGLES_BY_DOMAIN[domain] = (angle, source if angle else "none")

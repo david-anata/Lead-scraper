@@ -139,9 +139,37 @@ def hemp_is_product(*parts: Any) -> bool:
     text = " ".join(str(part or "") for part in parts)
     if not _HEMP_WORD.search(text):
         return False
-    if _HEMP_COLOR_OR_FABRIC.search(text):
+    if _hemp_is_a_color_name(text) or _HEMP_COLOR_OR_FABRIC.search(text):
         return False
     return True
+
+
+_COLOR_NAME = re.compile(
+    r"\b(?:black|white|ivory|berry|granite|navy|red|blue|green|pink|grey|gray|"
+    r"brown|tan|beige|cream|gold|silver|orange|purple|yellow|charcoal|pepper|"
+    r"sand|olive|rust|coral|teal|khaki|ecru|mocha|wine)\b",
+    re.I,
+)
+
+
+def _hemp_is_a_color_name(text: str) -> bool:
+    """True when Hemp is one entry in a color list, not the product.
+
+    ``Available Colors: Berry, Black, Granite, Hemp, Ivory`` puts the word
+    Colors too far from Hemp for a short window to see it.
+    """
+
+    listed = re.split(r"available\s+colou?rs?\s*:", text or "", maxsplit=1, flags=re.I)
+    if len(listed) == 2 and re.search(r"\bhemp\b", listed[1].split(".")[0], re.I):
+        return True
+    parts = [part.strip() for part in re.split(r"[,|/]", text or "") if part.strip()]
+    if not any(re.fullmatch(r"hemp", part, re.I) for part in parts):
+        return False
+    others = [
+        part for part in parts
+        if not re.fullmatch(r"hemp", part, re.I) and _COLOR_NAME.search(part)
+    ]
+    return len(others) >= 2
 
 
 def blocked_category_reason(*parts: Any) -> str:
@@ -383,12 +411,22 @@ def parse_shopify_products(payload: Any) -> list[dict[str, Any]]:
         tags = _tags(raw.get("tags"))
         if _skip_product(title, product_type, tags):
             continue
+        options = []
+        for option in raw.get("options") or []:
+            if not isinstance(option, dict):
+                continue
+            values = option.get("values") if isinstance(option.get("values"), list) else []
+            options.append({
+                "name": _text(option.get("name"), 40),
+                "values": [_text(value, 40) for value in values[:12] if _text(value, 40)],
+            })
         parsed.append({
             "title": title,
             "handle": str(raw.get("handle") or "").strip().lower(),
             "product_type": product_type,
             "tags": tags,
             "body": _text(raw.get("body_html"), 240),
+            "options": options,
             "in_stock": _in_stock(raw),
             "vendor": _text(raw.get("vendor"), 80),
         })
@@ -1025,6 +1063,8 @@ def _catalog_rows(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "product_type": kind,
             "body": str(item.get("body") or "")[:240],
             "tags": [str(tag) for tag in tags[:8]],
+            "vendor": str(item.get("vendor") or ""),
+            "options": item.get("options") if isinstance(item.get("options"), list) else [],
         })
         if len(kept) >= 5:
             break
@@ -1123,6 +1163,7 @@ def collect_product_facts(
             "phrase": "",
             "description": "",
             "vendor": next((str(item.get("vendor") or "") for item in json_rows if item.get("vendor")), ""),
+            "vendors": [str(item.get("vendor") or "") for item in json_rows if item.get("vendor")][:40],
             "blocked": blocked,
             **signals,
         }
@@ -1193,6 +1234,8 @@ def apply_product_facts(profile: dict[str, Any], facts: dict[str, Any]) -> dict[
         merged["catalog_products"] = products
     if facts.get("pick"):
         merged["product_pick"] = facts["pick"]
+    if facts.get("vendors"):
+        merged["vendors"] = list(facts["vendors"])
     source = str((facts or {}).get("source") or "")
     if not source:
         return merged

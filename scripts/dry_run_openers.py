@@ -223,13 +223,27 @@ def lead_for(
 
 
 def model_timeout_seconds() -> float:
-    """HTTP timeout for one dry-run model call. Default 30s. Override with OUTBOUND_OPENER_TIMEOUT."""
+    """HTTP timeout for one dry-run model call. Default 8s. Override with OUTBOUND_OPENER_TIMEOUT."""
 
-    raw = (os.getenv("OUTBOUND_OPENER_TIMEOUT") or "30").strip()
+    raw = (os.getenv("OUTBOUND_OPENER_TIMEOUT") or "8").strip()
     try:
         return max(1.0, float(raw))
     except ValueError:
-        return 30.0
+        return 8.0
+
+
+def opener_model_name() -> str:
+    """Writer model. Default is the fast non-reasoning Grok model."""
+
+    from outbound_opener_line import FAST_MODEL
+
+    return (os.getenv("OUTBOUND_OPENER_MODEL") or FAST_MODEL).strip()
+
+
+def grader_model_name() -> str:
+    """Grader model. Defaults to the writer model."""
+
+    return (os.getenv("OUTBOUND_OPENER_GRADER_MODEL") or opener_model_name()).strip()
 
 
 def lead_budget_seconds() -> float:
@@ -252,19 +266,20 @@ def first_call_seconds() -> float:
         return 22.0
 
 
-def compatible_llm():
-    """An OpenAI-compatible chat client, or None when the env is unset.
+def compatible_llm(model: Optional[str] = None):
+    """An OpenAI-compatible chat client, or None when the base URL is unset.
 
     Production copy still uses the AI Gateway. This is only for a local dry run.
     ``OUTBOUND_OPENER_BASE_URL`` is the API root, for example ``https://api.x.ai/v1``.
-    ``OUTBOUND_OPENER_MODEL`` is the model name. ``OUTBOUND_OPENER_API_KEY`` is
-    sent as a bearer token and is never printed. ``OUTBOUND_OPENER_TIMEOUT`` is
-    the per-call timeout in seconds (default 30).
+    ``OUTBOUND_OPENER_MODEL`` writes the line. ``OUTBOUND_OPENER_GRADER_MODEL`` grades it.
+    Both default to the fast non-reasoning Grok model. ``OUTBOUND_OPENER_API_KEY`` is
+    sent as a bearer token and is never printed. A 429 is retried once after a short wait.
+    ``OUTBOUND_OPENER_TIMEOUT`` is the per-call timeout in seconds (default 8).
     """
 
     base = (os.getenv("OUTBOUND_OPENER_BASE_URL") or "").strip().rstrip("/")
-    model = (os.getenv("OUTBOUND_OPENER_MODEL") or "").strip()
-    if not base or not model:
+    chosen = (model or opener_model_name()).strip()
+    if not base or not chosen:
         return None
     key = (os.getenv("OUTBOUND_OPENER_API_KEY") or "").strip()
 
@@ -277,19 +292,27 @@ def compatible_llm():
         if key:
             headers["Authorization"] = f"Bearer {key}"
         limit = model_timeout_seconds() if timeout_s is None else timeout_s
-        try:
-            response = requests.post(
-                f"{base}/chat/completions",
-                headers=headers,
-                json={
-                    "model": model,
-                    "temperature": 0.7,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-                timeout=max(0.5, limit),
-            )
-        except requests.Timeout as exc:
-            raise ModelTimeout("model timeout") from exc
+        response = None
+        for attempt in range(2):
+            try:
+                response = requests.post(
+                    f"{base}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": chosen,
+                        "temperature": 0.4,
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                    timeout=max(0.5, limit),
+                )
+            except requests.Timeout as exc:
+                raise ModelTimeout("model timeout") from exc
+            if response.status_code == 429 and attempt == 0:
+                time.sleep(1.5)
+                continue
+            break
+        if response is None:
+            raise ModelTimeout("model timeout")
         response.raise_for_status()
         payload = response.json()
         return str(payload["choices"][0]["message"]["content"] or "")
@@ -303,6 +326,7 @@ def render_row(
     facts: Optional[dict[str, Any]] = None,
     display_brand: str = "",
     llm: Optional[Any] = None,
+    grader: Optional[Any] = None,
     batch: Optional[list[str]] = None,
     angles: Optional[list[str]] = None,
     deadline: Optional[float] = None,
@@ -339,29 +363,20 @@ def render_row(
         hold = "skipped:non_us" + (f" ({detail})" if detail else "")
     elif domain_brand_mismatch(domain, str(row.get("brand") or ""), str(facts.get("vendor") or "")):
         hold = "skipped:domain_brand_mismatch"
-    elif not facts.get("products"):
+    elif not facts.get("products") and not facts.get("phrase") and not facts.get("description"):
         hold = "skipped:no_product"
     else:
-        writer = llm
-        calls = {"n": 0}
-
-        def allow_retry() -> bool:
-            if deadline is None:
-                return True
-            return (deadline - time.monotonic()) >= 12
-
-        if llm is not None:
-            def writer(prompt: str, _llm=llm) -> str:
-                calls["n"] += 1
+        def _bounded(client):
+            def call(prompt: str, _client=client) -> str:
                 remaining = model_timeout_seconds() if deadline is None else deadline - time.monotonic()
                 if remaining < 0.5:
                     raise personalization.ModelTimeout("lead budget")
-                cap = first_call_seconds() if calls["n"] == 1 else remaining
-                return _llm(prompt, timeout_s=min(model_timeout_seconds(), cap, remaining))
+                return _client(prompt, timeout_s=min(model_timeout_seconds(), remaining))
+            return call
 
-        opener, angle, source = personalization.generate(
-            lead, llm=writer, batch=batch, angles=angles, allow_retry=allow_retry,
-        )
+        writer = _bounded(llm) if llm is not None else None
+        judge = _bounded(grader or llm) if (grader or llm) is not None else None
+        opener, angle, source = personalization.generate(lead, llm=writer, grader=judge)
         if source.startswith("skipped"):
             hold = source
             opener, angle = "", ""
@@ -381,7 +396,10 @@ def render_row(
         "hold": hold,
         "source": str(facts.get("source") or lead.get("store_profile", {}).get("product_fact_source") or ""),
         "pick": str(facts.get("pick") or ""),
-        "product": str(lead.get("product_phrase") or facts.get("phrase") or ""),
+        "product": str(lead.get("opener_facts") or lead.get("product_phrase") or facts.get("phrase") or ""),
+        "facts_used": str(lead.get("opener_facts") or ""),
+        "grader": str(lead.get("grader_reason") or ""),
+        "grader_pass": "pass" if lead.get("grader_pass") else "",
     }
 
 
@@ -396,12 +414,15 @@ def render_report(rows: list[dict[str, str]]) -> str:
         product = row.get("product") or "(none)"
         lines.append(f"Source: {source}")
         lines.append(f"Pick: {pick}")
-        lines.append(f"Product: {product}")
+        lines.append(f"Facts: {row.get('facts_used') or product}")
         if row["opener"]:
-            lines.append(f"Opener: {row['opener']}")
-            lines.append(f"Angle: {row['angle'] or '(none)'}")
+            lines.append(f"Line: {row['opener']}")
+            verdict = "pass" if row.get("grader_pass") else "fail"
+            lines.append(f"Grader: {verdict} — {row.get('grader') or '(none)'}")
         else:
             lines.append(f"Skipped: {row['hold']}")
+            if row.get("grader"):
+                lines.append(f"Grader: fail — {row['grader']}")
         lines.append("")
     held = [row for row in rows if row.get("hold")]
     lines.append(f"Skipped {len(held)} of {len(rows)}.")
@@ -432,7 +453,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
         rows = load_recent(url, per_segment=args.per_segment or 4)
     rendered = []
-    llm = compatible_llm()
+    llm = compatible_llm(opener_model_name())
+    grader = compatible_llm(grader_model_name())
     batch: list[str] = []
     angles: list[str] = []
     if args.leads_file:
@@ -461,8 +483,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
             display = str(facts.get("site_name") or facts.get("vendor") or "")
         rendered.append(render_row(
-            row, facts=facts, display_brand=display, llm=llm, batch=batch, angles=angles,
-            deadline=started + budget,
+            row, facts=facts, display_brand=display, llm=llm, grader=grader,
+            batch=batch, angles=angles, deadline=started + budget,
         ))
     sys.stdout.write(render_report(rendered))
     return 0

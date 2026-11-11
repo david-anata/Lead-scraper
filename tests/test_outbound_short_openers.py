@@ -133,37 +133,24 @@ def test_over_long_angle_is_regenerated_once_then_held():
 
 
 def test_rich_pair_over_the_max_is_regenerated_once_then_left_empty():
-    lead = {**LEAD, "domain": "rich.com", "description": "Toothpaste tabs for daily brushing"}
-    calls = {"n": 0}
-    long_opener = _words(30, "Huppy", "sells", "toothpaste", "tabs")
-    short = {
-        "opener": "Huppy's toothpaste tabs give a new shopper one product to remember.",
-        "angle": "Listing photos of the toothpaste tabs give a new shopper a reason to look.",
-    }
+    lead = {**LEAD, "domain": "rich.com", "catalog_products": [
+        {"title": "Cherry Cola", "body": "A cherry soda."},
+    ]}
 
     def llm(_prompt):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return json.dumps({"opener": long_opener, "angle": short["angle"]})
-        return json.dumps(short)
-
-    opener, angle, source = personalization.generate(lead, llm=llm)
-    assert calls["n"] == 2 and source == "ai"
-    assert opener == short["opener"] and angle == short["angle"]
-
-    calls["n"] = 0
-
-    def still_long(_prompt):
-        calls["n"] += 1
-        return json.dumps({"opener": long_opener, "angle": short["angle"]})
+        return "The cherry cola is a cherry soda with a bright color."
 
     opener, angle, source = personalization.generate(
-        {**lead, "domain": "rich-held.com", "template_fallback": True}, llm=still_long,
+        lead, llm=llm, grader=lambda _prompt: json.dumps({"pass": True, "reason": "specific"}),
     )
-    assert calls["n"] == 2 and source == "fallback"
-    assert opener and "toothpaste" in opener.lower()
-    assert len(opener.split()) <= 25
-    assert not angle or len(angle.split()) <= 20
+    assert source == "ai" and "cherry cola" in opener.lower() and angle == ""
+
+    opener, angle, source = personalization.generate(
+        {**lead, "domain": "rich-held.com", "template_fallback": True},
+        llm=lambda _prompt: "The cherry cola is worth a closer look.",
+        grader=lambda _prompt: json.dumps({"pass": False, "reason": "filler"}),
+    )
+    assert source == "skipped:grader" and opener == "" and angle == ""
 
 
 def test_trial_offer_never_claims_or_assumes_amazon():
@@ -274,23 +261,22 @@ def test_a_short_budget_does_not_retry_or_relabel_a_rejected_line():
 
     def llm(_prompt):
         calls["n"] += 1
-        return json.dumps({
-            "product_phrase": "tooth tabs",
-            "opener": "Huppy tooth tabs are a plain product I would mention to a friend.",
-            "angle": "Huppy tooth tabs are what I would put in the ad.",
-        })
+        return "The cherry cola is worth a closer look."
 
-    lead = {**LEAD, "catalog_products": [{"title": "Tooth Tabs", "product_type": "Tabs"}]}
-    _opener, _angle, source = personalization.generate(lead, llm=llm, allow_retry=lambda: False)
-    assert calls["n"] == 1
-    assert source == "skipped:no_product"
+    def grader(_prompt):
+        return json.dumps({"pass": False, "reason": "filler"})
+
+    lead = {**LEAD, "catalog_products": [{"title": "Cherry Cola", "product_type": "Soda", "body": "A cherry soda."}]}
+    _opener, _angle, source = personalization.generate(lead, llm=llm, grader=grader, allow_retry=lambda: False)
+    assert calls["n"] == 2
+    assert source == "skipped:grader"
 
 
 def test_a_model_timeout_stays_a_timeout():
     def llm(_prompt):
         raise personalization.ModelTimeout("slow")
 
-    lead = {**LEAD, "catalog_products": [{"title": "Tooth Tabs", "product_type": "Tabs"}]}
+    lead = {**LEAD, "catalog_products": [{"title": "Cherry Cola", "product_type": "Soda", "body": "A cherry soda."}]}
     assert personalization.generate(lead, llm=llm)[2] == "skipped:model_timeout"
 
 
@@ -315,40 +301,24 @@ def test_the_first_dry_run_call_is_capped_and_a_timeout_is_not_a_missing_product
 
     row = dry.render_row(
         {"domain": "huppy.com", "brand": "Huppy", "first_name": "Ann", "recipe": "amz_on"},
-        facts={"source": "products.json", "products": [{"title": "Tooth Tabs", "product_type": "Tabs"}]},
+        facts={"source": "products.json", "products": [{"title": "Cherry Cola", "product_type": "Soda", "body": "A cherry soda."}]},
         llm=llm,
         deadline=time.monotonic() + 35,
     )
-    assert seen and seen[0] == dry.first_call_seconds()
+    assert seen and seen[0] == dry.model_timeout_seconds()
     assert row["hold"] == "skipped:model_timeout"
     assert dry.lead_budget_seconds() == 35
+    assert dry.opener_model_name() == "grok-4.20-0309-non-reasoning"
 
 
-def test_a_rejected_line_is_retried_when_twelve_seconds_remain():
+def test_a_catalog_without_a_concrete_detail_skips_before_the_model():
     calls = {"n": 0}
 
     def llm(_prompt):
         calls["n"] += 1
-        if calls["n"] == 1:
-            return json.dumps({
-                "product_phrase": "keratin treatment",
-                "opener": "The keratin treatment is the one I would tell a friend about today.",
-                "angle": "New shoppers can picture the treatment in one photo.",
-            })
-        return json.dumps({
-            "product_phrase": "keratin treatment",
-            "opener": "The keratin treatment is the one I would tell a friend about today.",
-            "angle": "I would use one photo of the treatment and leave the rest alone.",
-        })
+        return "The tooth tabs are worth a closer look."
 
-    lead = {
-        **LEAD,
-        "brand": "Inova",
-        "recipe": "trial_offer",
-        "catalog_products": [{"title": "Kera Quik Keratin Treatment", "product_type": "Treatment", "body": ""}],
-    }
-    opener, angle, source = personalization.generate(lead, llm=llm, allow_retry=lambda: True)
-    assert calls["n"] == 2
-    assert source == "ai"
-    assert "picture" not in angle.lower()
-    assert opener
+    lead = {**LEAD, "catalog_products": [{"title": "Tooth Tabs", "product_type": "Tabs"}]}
+    _line, _angle, source = personalization.generate(lead, llm=llm)
+    assert calls["n"] == 0
+    assert source == "skipped:no_product_detail"

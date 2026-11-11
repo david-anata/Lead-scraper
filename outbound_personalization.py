@@ -662,19 +662,20 @@ def generate(
     lead: dict[str, Any],
     *,
     llm: Optional[Callable[[str], str]] = None,
+    grader: Optional[Callable[[str], str]] = None,
     api_key: Optional[str] = None,
     batch: Optional[list[str]] = None,
     angles: Optional[list[str]] = None,
     allow_retry: Optional[Callable[[], bool]] = None,
 ) -> tuple[str, str, str]:
-    """Return (opener, angle, source). Source is ai, fallback, or none.
+    """Return (line, unused angle, source).
 
-    Thin, restricted, and multi-brand records get no lines. A failed model
-    line falls back to a shopper-visible idea when one exists. A category slug
-    is not that idea. A line over the hard word max is regenerated once, then
-    the same idea is used when the record has a product, story, review, store,
-    or social fact.
+    The code picks one product and one detail. The model writes one sentence.
+    A grader may ask for one rewrite. There is no template line.
+    ``batch``, ``angles``, and ``allow_retry`` are ignored. Variety is not scored.
     """
+
+    from outbound_opener_line import compose_line, pick_line_facts
 
     sheet = fact_sheet(lead)
     if sheet.blocked:
@@ -685,87 +686,30 @@ def generate(
         if sheet.blocked == "blocked_category":
             return "", "", "skipped:blocked_category"
         return "", "", "none"
-    prompt = _prompt(sheet)
-    model = llm
-    if model is None:
+    store = lead.get("store_profile") if isinstance(lead.get("store_profile"), dict) else {}
+    products = list(sheet.catalog)
+    if not products and sheet.product:
+        products = [{"title": sheet.product, "body": sheet.product}]
+    facts = pick_line_facts(
+        products,
+        brand=sheet.brand,
+        recipe=sheet.recipe,
+        vendors=store.get("vendors") if isinstance(store.get("vendors"), list) else None,
+    )
+    lead["opener_facts"] = facts.as_text()
+    if facts.skip:
+        lead["grader_reason"] = facts.skip
+        return "", "", f"skipped:{facts.skip}"
+    writer = llm
+    if writer is None:
         from sales_support_agent.services.llm_client import llm_available
 
         if llm_available(api_key=api_key):
-            model = lambda text: _call_model(text, api_key)  # noqa: E731
-    if model is not None:
-        why = ""
-        for _attempt in range(2):
-            if _attempt == 1 and allow_retry is not None and not allow_retry():
-                break
-            try:
-                if sheet.catalog:
-                    phrase, opener, angle = _parse_copy(model(prompt))
-                else:
-                    opener, angle = _parse_pair(model(prompt))
-                    phrase = ""
-            except ModelTimeout:
-                return "", "", "skipped:model_timeout"
-            except Exception:  # noqa: BLE001
-                logger.exception("[outbound-personalization] model call failed")
-                break
-            from outbound_openers import variety_clash
-            from outbound_product_facts import phrase_is_grounded, phrase_is_natural
-
-            why = ""
-            if sheet.catalog and (not phrase_is_natural(phrase) or not phrase_is_grounded(phrase, sheet.catalog)):
-                why = "product phrase is not grounded in the catalog"
-            from outbound_openers import brand_named_twice, missing_possessive
-
-            store = lead.get("store_profile") if isinstance(lead.get("store_profile"), dict) else {}
-            retail = bool(
-                str(store.get("retailer_page") or "").strip()
-                or str(store.get("store_locator_page") or "").strip()
-            ) or any(
-                token in " ".join(sheet.facts).lower()
-                for token in ("store locator", "sold through retailers", "sold in stores")
-            )
-            catalog_text = " ".join(
-                f"{item.get('title') or ''} {item.get('product_type') or ''} {item.get('body') or ''}"
-                for item in sheet.catalog
-            )
-            why = why or style_violation(
-                opener, role="opener", recipe=sheet.recipe,
-                high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
-                retail=retail, catalog_text=catalog_text, product_phrase=phrase,
-            ) or style_violation(
-                angle, role="angle", recipe=sheet.recipe,
-                high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
-                retail=retail, catalog_text=catalog_text, product_phrase=phrase,
-            ) or variety_clash(opener, batch or [], angle=angle, angles=angles)
-            if brand_named_twice(opener, angle, sheet.brand):
-                why = why or "brand named twice"
-            if missing_possessive(opener, sheet.brand) or missing_possessive(angle, sheet.brand):
-                why = why or "missing possessive"
-            if opener and angle and not why and opener.strip() != angle.strip():
-                if phrase:
-                    lead["product_phrase"] = phrase
-                if batch is not None:
-                    batch.append(opener)
-                if angles is not None and angle:
-                    angles.append(angle)
-                return opener, angle, "ai"
-            prompt = (
-                prompt
-                + f"\n\nRejected ({why or 'empty'}). Write a different pair that follows every rule. "
-                "Opener: one or two short sentences, about 25 words, never more than 25. "
-                "Angle: one sentence, about 15 words, never more than 20. "
-                "Name only a product whose words appear in the catalog."
-            )
-        logger.info("[outbound-personalization] model line rejected (%s)", why or "empty")
-        if sheet.catalog:
-            return "", "", "skipped:no_product"
-    from outbound_openers import idea_lines, template_fallback_enabled
-
-    if sheet.catalog:
-        return "", "", "skipped:no_product"
-    if template_fallback_enabled(lead):
-        opener, angle = idea_lines(lead)
-        if opener:
-            return opener, angle, "fallback"
-    logger.info("[outbound-personalization] %s flagged: no safe line", sheet.brand)
-    return "", "", "none"
+            writer = lambda text: _call_model(text, api_key)  # noqa: E731
+    if writer is None:
+        return "", "", "skipped:no_model"
+    result = compose_line(facts, writer=writer, grader=grader or writer)
+    lead["opener_facts"] = result.facts
+    lead["grader_pass"] = result.grader_pass
+    lead["grader_reason"] = result.grader_reason
+    return result.line, "", result.source
