@@ -31,7 +31,7 @@ estimated_sales, visits, rank, and employee_count never appear in the copy.
 
 - Opener (`{{personalization}}`): one sentence of about 20 words, never more than 25. A longer line is regenerated once, then the lead is held.
 - brandAngle: one sentence of about 15 words, never more than 20. Same regenerate-once-then-hold rule. It does not repeat the opener and never starts with "Anata helps".
-- Only mention Amazon when a fact says the brand sells there. A Trial Offer line never mentions Amazon and never assumes the brand sells there.
+- Only mention Amazon when a fact says the brand sells there, except on a Trial Offer. A Trial Offer line must not claim or assume the brand already sells on Amazon: no "your Amazon store", "your listings", or "already on Amazon". The brand angle may mention Amazon as an opportunity, such as a bundle that gives new Amazon shoppers an easy way to try the products.
 - The examples below show voice. Live lines stay inside the word caps above.
 - No digits. Write numbers as words.
 - No em dashes, no URLs, and nothing that is not in the fact sheet.

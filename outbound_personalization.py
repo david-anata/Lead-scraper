@@ -319,7 +319,7 @@ def style_violation(
         return "low rating"
     if re.search(r"\bstars?\b|\brating\b", raw, re.I) and not high_rating:
         return "low rating"
-    from outbound_openers import sentence_count, trial_offer_lead
+    from outbound_openers import sentence_count, trial_amazon_claim, trial_offer_lead
 
     words = raw.split()
     limit = ANGLE_MAX_WORDS if role == "angle" else OPENER_MAX_WORDS
@@ -328,8 +328,8 @@ def style_violation(
     if sentence_count(raw) > 1:
         return "more than one sentence"
     trial = trial_offer or trial_offer_lead({"recipe": recipe})
-    if trial and re.search(r"\b(?:amazon|amzn|asin|fba|seller central)\b", raw, re.I):
-        return "assumes Amazon"
+    if trial and trial_amazon_claim(raw):
+        return "claims the brand already sells on Amazon"
     if role == "angle" and raw.lower().startswith("anata helps"):
         return "anata helps"
     if recipe:
@@ -362,11 +362,16 @@ def _category_lines(sheet: FactSheet) -> tuple[str, str]:
 
 def _prompt(sheet: FactSheet) -> str:
     facts = "\n".join(f"- {fact}" for fact in sheet.facts)
-    trial = ""
     if sheet.trial_offer:
-        trial = (
-            "This is a Trial Offer. Never mention Amazon and never assume the brand "
-            "sells on Amazon. "
+        amazon_rule = (
+            "This is a Trial Offer. Do not claim or assume the brand already sells on Amazon. "
+            "Never write 'your Amazon store', 'your listings', or 'already on Amazon'. "
+            "The angle may mention Amazon as an opportunity, for example: "
+            "A milk and nut butter bundle could give new Amazon shoppers an easy way to try both. "
+        )
+    else:
+        amazon_rule = (
+            "Only mention Amazon when a fact says the brand sells there. Never assume they do. "
         )
     return (
         f"Brand: {sheet.brand}\n"
@@ -374,10 +379,9 @@ def _prompt(sheet: FactSheet) -> str:
         "Shopper-visible facts:\n"
         f"{facts}\n\n"
         "Write JSON with keys opener and angle. Use only the facts above. "
-        f"{trial}"
+        f"{amazon_rule}"
         "Opener is one sentence of about 20 words, never more than 25, in Abby's voice. "
         "Angle is one sentence of about 15 words, never more than 20. "
-        "Only mention Amazon when a fact says the brand sells there. Never assume they do. "
         "The angle must not repeat the opener and must not start with Anata helps. "
         "No digits, no em dashes, no URLs, no hype, no platform, plan, app, pixel, "
         "or the words moved or upgraded. "

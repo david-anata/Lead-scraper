@@ -15,7 +15,8 @@ Hard rules, enforced in code not just in the prompt:
   * A confirmed Amazon product can be named. A rich line may also name Amazon
     as the marketplace opportunity when a positive StoreLeads fact supports it.
     Never use "does not sell on Amazon" as the hook.
-  * A Trial Offer line never mentions Amazon and never assumes the brand sells there.
+  * A Trial Offer line must not claim or assume the brand already sells on Amazon.
+    The brand angle may still mention Amazon as an opportunity for new shoppers.
   * One sentence. The opener aims for about 20 words and never passes 25.
     The brand angle aims for about 15 words and never passes 20.
     A line over that hard max is regenerated once, then the lead is held.
@@ -70,6 +71,19 @@ RECIPE_FACTS = {
 
 _SLUG = re.compile(r"\b[a-z0-9]+_[a-z0-9_]+\b", re.I)
 _AMAZON_WORD = re.compile(r"\b(?:amazon|amzn|asin|fba|seller central)\b", re.I)
+# A current-selling claim. "new Amazon shoppers" is an opportunity, not a claim.
+_TRIAL_AMAZON_CLAIM = re.compile(
+    r"\byour amazon\b"
+    r"|\btheir amazon\b"
+    r"|\byour listings?\b"
+    r"|\balready on amazon\b"
+    r"|\b(?:sells|selling|sold) on amazon\b"
+    r"|\b(?:lists|listed) (?:[\w']+ ){0,8}on amazon\b"
+    r"|\b(?:is|are|was|were) on amazon\b"
+    r"|\breorders? on amazon\b"
+    r"|\bon amazon (?:already|now|today)\b",
+    re.I,
+)
 _OG_TITLE = re.compile(
     r"""<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']"""
     r"""|<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']""",
@@ -94,7 +108,8 @@ _SYSTEM = (
     "install, or a recent plan upgrade. If a plain category is given, you may say "
     "they sell that. Only mention Amazon when an 'Amazon product' fact is listed; "
     "otherwise never say or imply they sell on Amazon. If the facts say this is a "
-    "Trial Offer, never mention Amazon and never assume the brand sells on Amazon. "
+    "Trial Offer, do not claim or assume the brand already sells on Amazon. Never "
+    "write 'your Amazon store', 'your listings', or 'already on Amazon'. "
     "Never print a slug with underscores. Do not claim social momentum, growth, or "
     "anything that is not in the facts. Do not start with 'I noticed' or 'We noticed'. "
     "Never use the words 'curious', 'special', 'building something', or 'ideal customer "
@@ -106,9 +121,12 @@ _ANGLE_SYSTEM = (
     "a consumer brand grow. Tie the line to one fact from the list and to how "
     "Anata helps that brand grow. Use only those facts. Aim for about 15 words "
     "and never more than 20 words. Only mention Amazon when an 'Amazon product' "
-    "fact is listed; otherwise never say or imply they sell on Amazon. If the facts "
-    "say this is a Trial Offer, never mention Amazon and never assume the brand sells "
-    "on Amazon. No numbers. No links. No questions. No em dashes. No greeting, no sign-off."
+    "fact is listed, unless the facts say this is a Trial Offer. A Trial Offer angle "
+    "may mention Amazon as an opportunity for new shoppers, for example a bundle that "
+    "gives new Amazon shoppers an easy way to try the products. Do not claim or assume "
+    "the brand already sells on Amazon. Never write 'your Amazon store', 'your listings', "
+    "or 'already on Amazon'. No numbers. No links. No questions. No em dashes. "
+    "No greeting, no sign-off."
 )
 
 
@@ -121,8 +139,9 @@ def sentence_count(text: str) -> int:
 def trial_offer_lead(lead: Optional[dict[str, Any]]) -> bool:
     """True when the line is for the Trial Offer sequence.
 
-    Those openers must not claim or assume the brand sells on Amazon, even
-    when a product match is on the lead. Other recipes keep the confirmed-product rule.
+    Those lines must not claim or assume the brand already sells on Amazon.
+    The brand angle may still mention Amazon as an opportunity. Other recipes
+    keep the confirmed-product rule.
     """
 
     if not lead:
@@ -156,9 +175,23 @@ def amazon_confirmed(lead: dict[str, Any]) -> bool:
     return conf == "high" and not lead.get("amazon_absent")
 
 
-def validate(text: str, *, allow_amazon: bool = True, max_words: int = MAX_WORDS) -> tuple[bool, str]:
+def trial_amazon_claim(text: str) -> bool:
+    """True when a Trial Offer line treats Amazon as a store the brand already has."""
+
+    return bool(_TRIAL_AMAZON_CLAIM.search(text or ""))
+
+
+def validate(
+    text: str,
+    *,
+    allow_amazon: bool = True,
+    max_words: int = MAX_WORDS,
+    trial_offer: bool = False,
+) -> tuple[bool, str]:
     raw = (text or "").strip()
-    if not allow_amazon and _AMAZON_WORD.search(raw):
+    if trial_offer and trial_amazon_claim(raw):
+        return False, "claims the brand already sells on Amazon"
+    if not trial_offer and not allow_amazon and _AMAZON_WORD.search(raw):
         return False, "claims Amazon without a confirmed match"
     if "—" in raw or "–" in raw:
         return False, "em dash"
@@ -1045,7 +1078,9 @@ def _build_prompt(facts: LeadFacts, *, closing: str) -> str:
     lines = [f"Brand: {facts.brand or 'This brand'}"]
     if facts.trial_offer:
         lines.append(
-            "Trial Offer: never mention Amazon and never assume this brand sells on Amazon."
+            "Trial Offer: do not claim or assume this brand already sells on Amazon. "
+            "Never write 'your Amazon store', 'your listings', or 'already on Amazon'. "
+            "The brand angle may mention Amazon as an opportunity for new shoppers."
         )
         if facts.amazon_product:
             lines.append(f"Product: {facts.amazon_product}")
@@ -1122,13 +1157,16 @@ def _from_model(
     allow_amazon: bool,
     anchors: list[str],
     max_words: int,
+    trial_offer: bool = False,
 ) -> tuple[str, str]:
     """Return a clean line, or ('', reason) after one regeneration."""
 
     why = ""
     for _attempt in range(2):
         raw = llm(prompt)
-        ok, why = validate(raw, allow_amazon=allow_amazon, max_words=max_words)
+        ok, why = validate(
+            raw, allow_amazon=allow_amazon, max_words=max_words, trial_offer=trial_offer,
+        )
         if ok and not _anchored(raw, anchors):
             ok, why = False, "not grounded in a known fact"
         if ok:
@@ -1185,6 +1223,7 @@ def write_opener(
                 model, prompt,
                 allow_amazon=bool(facts.amazon_product) and not facts.trial_offer,
                 anchors=_anchors(facts), max_words=MAX_WORDS,
+                trial_offer=facts.trial_offer,
             )
             if line:
                 return finish(line, "ai")
@@ -1234,7 +1273,8 @@ def write_brand_angle(
             facts,
             closing=(
                 "Write one sentence of about 15 words, never more than 20. "
-                "Write the growth line now."
+                "On a Trial Offer you may mention Amazon as an opportunity for new shoppers. "
+                "Do not claim they already sell there. Write the growth line now."
             ),
         )
         try:
@@ -1242,6 +1282,7 @@ def write_brand_angle(
                 model, prompt,
                 allow_amazon=bool(facts.amazon_product) and not facts.trial_offer,
                 anchors=_anchors(facts), max_words=ANGLE_MAX_WORDS,
+                trial_offer=facts.trial_offer,
             )
             if line:
                 return finish(line, "ai")
@@ -1324,8 +1365,8 @@ def opener_hold_reason(opener: str, lead: Optional[dict[str, Any]] = None) -> st
         return "opener is a category filler with no shopper-visible fact"
     if len(text.split()) > MAX_WORDS:
         return "opener is longer than 25 words"
-    if trial_offer_lead(lead) and _AMAZON_WORD.search(text):
-        return "trial offer opener assumes the brand sells on Amazon"
+    if trial_offer_lead(lead) and trial_amazon_claim(text):
+        return "trial offer opener assumes the brand already sells on Amazon"
     return ""
 
 
@@ -1341,8 +1382,8 @@ def angle_hold_reason(angle: str, lead: Optional[dict[str, Any]] = None) -> str:
         return ""
     if len(text.split()) > ANGLE_MAX_WORDS:
         return "brand angle is longer than 20 words"
-    if trial_offer_lead(lead) and _AMAZON_WORD.search(text):
-        return "trial offer angle assumes the brand sells on Amazon"
+    if trial_offer_lead(lead) and trial_amazon_claim(text):
+        return "trial offer angle assumes the brand already sells on Amazon"
     return ""
 
 
