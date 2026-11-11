@@ -1130,15 +1130,13 @@ def _fit_line(
 
 
 def _product_title(lead: dict[str, Any], facts: list[str], brand: str) -> str:
+    """A product from the storefront. A confirmed Amazon listing is separate."""
+
     for fact in facts:
         if fact.lower().startswith("recent product:"):
             title = _shopper_phrase(fact.split(":", 1)[1], brand)
             if title:
                 return title
-    if amazon_presence_allowed(lead) and amazon_confirmed(lead):
-        title = _shopper_phrase(str(lead.get("amz_product") or ""), brand)
-        if title:
-            return title
     return _shopper_phrase(_scraped_product(lead), brand)
 
 
@@ -1256,26 +1254,37 @@ def idea_decision(lead: dict[str, Any]) -> tuple[str, str, str]:
     if sheet.blocked == "multi-brand retailer":
         return "", "", "multi-brand retailer"
     brand = clean_brand_name(
-        lead.get("brand") or sheet.brand,
+        lead.get("brand") or "",
         display_name=lead.get("display_brand") or "",
     )
+    sheet_brand = sheet.brand if sheet.brand and sheet.brand != "This brand" else ""
+    brand = brand or sheet_brand
     if not brand:
         return "", "", "no recognizable brand"
     trial = bool(sheet.trial_offer or trial_offer_lead(lead))
     allow_amazon = amazon_presence_allowed(lead)
     facts = list(sheet.facts)
-    phrase = plain_product_phrase(
-        _product_title(lead, facts, brand) or _story_phrase(facts, brand),
-        brand,
+
+    def _usable_phrase(text: str) -> str:
+        picked = plain_product_phrase(text, brand)
+        display_folded = re.sub(
+            r"[^a-z0-9]+", " ", str(lead.get("display_brand") or "").lower(),
+        ).strip()
+        if picked and display_folded and picked == display_folded:
+            return ""
+        stem = re.sub(r"[^a-z0-9]+", "", str(lead.get("domain") or "").split(".")[0].lower())
+        if picked and stem and re.sub(r"[^a-z0-9]+", "", picked) == stem:
+            return ""
+        return picked
+
+    # Only the confirmed Amazon listing may be described as on Amazon.
+    # A newer website product is a shopper fact, not proof of that listing.
+    amazon_phrase = ""
+    if allow_amazon and amazon_confirmed(lead):
+        amazon_phrase = _usable_phrase(str(lead.get("amz_product") or ""))
+    phrase = amazon_phrase or _usable_phrase(
+        _product_title(lead, facts, brand) or _story_phrase(facts, brand)
     )
-    display_folded = re.sub(
-        r"[^a-z0-9]+", " ", str(lead.get("display_brand") or "").lower(),
-    ).strip()
-    if phrase and display_folded and phrase == display_folded:
-        phrase = ""
-    stem = re.sub(r"[^a-z0-9]+", "", str(lead.get("domain") or "").split(".")[0].lower())
-    if phrase and stem and re.sub(r"[^a-z0-9]+", "", phrase) == stem:
-        phrase = ""
     category = ""
     trial_signal = str(lead.get("trial_signal") or "")
     if not phrase and trial_signal in {"category", "churned_tool"}:
@@ -1295,11 +1304,11 @@ def idea_decision(lead: dict[str, Any]) -> tuple[str, str, str]:
         digest = hashlib.sha256(f"{domain}|{salt}".encode()).hexdigest()
         return options[int(digest[:8], 16) % len(options)]
 
-    if phrase and allow_amazon:
+    if amazon_phrase:
         opener = choose([
-            f"{brand} already sells {phrase} on Amazon, and the listing should lead with it.",
-            f"{phrase} is already on Amazon from {brand}, so the listing should open on it.",
-            f"On Amazon, {phrase} is the {brand} product a new shopper should see first.",
+            f"{brand} already sells {amazon_phrase} on Amazon, and the listing should lead with it.",
+            f"{amazon_phrase} is already on Amazon from {brand}, so the listing should open on it.",
+            f"On Amazon, {amazon_phrase} is the {brand} product a new shopper should see first.",
         ], "amz-opener")
     elif phrase:
         opener = choose([

@@ -4,7 +4,7 @@ import outbound_instantly_push as push
 import outbound_openers as op
 import outbound_personalization as personalization
 import outbound_pipeline as pipeline
-from outbound_contacts import acceptable_first_name, split_person_name
+from outbound_contacts import acceptable_first_name, lead_quality_reason, split_person_name
 
 
 def setup_function():
@@ -166,3 +166,44 @@ def test_openers_are_short_specific_ideas_without_dashes_or_urls():
     assert op.validate("Nice work - really good for this shopper today.")[1] == "em dash"
     assert op.validate("A smart bottle — with coaching built in for you.")[1] == "em dash"
     assert op.validate("See https://brand.com/pages for the new shopper offer.")[1] == "contains a link or address"
+
+
+def test_stored_full_name_is_a_first_name_for_the_quality_check():
+    assert lead_quality_reason(
+        email="julie@example.com",
+        first_name="Julie Mitchell",
+        title="Founder",
+        require_title=True,
+    ) == ""
+    assert lead_quality_reason(
+        email="julie@example.com",
+        first_name="Julie Mitchell",
+        title="",
+        require_title=True,
+    ) == "title"
+
+
+def test_amazon_line_names_the_confirmed_listing_not_the_website_product():
+    profile = dict(_lead("amz_on")["store_profile"])
+    profile["most_recently_published_product"] = {"title": "new hiking boots"}
+    profile["description"] = "new hiking boots for the trail"
+    lead = _lead(
+        "amz_on",
+        amz_product="wool socks",
+        amz_confidence="high",
+        store_profile=profile,
+    )
+    opener, _angle = op.idea_lines(lead)
+    assert "wool socks" in opener.lower()
+    assert "hiking" not in opener.lower()
+    assert "amazon" in opener.lower()
+
+
+def test_deterministic_copy_uses_the_cleaned_brand():
+    opener, _angle = op.idea_lines(_lead("replatform", brand="Acme, LLC", domain="acme.example"))
+    assert "Acme" in opener
+    assert "LLC" not in opener
+    web, _angle = op.idea_lines(_lead("replatform", brand="https://acme.com", domain="acmeweb.example"))
+    assert "Acme" in web
+    assert "http" not in web.lower()
+    assert "www." not in web.lower()

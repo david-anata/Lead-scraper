@@ -842,9 +842,15 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         for person in allowed:
             email = str(person.get("email") or "").strip().lower()
             domain = str(person.get("domain") or "").strip().lower()
+            first_name, last_name = _contacts.split_person_name(
+                str(person.get("first_name") or ""),
+                str(person.get("last_name") or ""),
+            )
+            person["first_name"] = first_name
+            person["last_name"] = last_name
             quality = _contacts.lead_quality_reason(
                 email=email,
-                first_name=str(person.get("first_name") or ""),
+                first_name=first_name,
                 title=str(person.get("title") or ""),
                 require_title=True,
                 recipe=str(person.get("recipe") or ""),

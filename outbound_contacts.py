@@ -362,7 +362,10 @@ def lead_quality_reason(
 
     if is_role_mailbox(email):
         return "role mailbox"
-    if not acceptable_first_name(first_name):
+    # A stored "Julie Mitchell" is still a first name. Split before the
+    # one-word check so existing rows are not suppressed as nameless.
+    given, _rest = split_person_name(first_name)
+    if not acceptable_first_name(given):
         return "missing first name"
     present = (title or "").strip()
     if require_title or present:

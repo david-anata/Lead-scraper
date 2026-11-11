@@ -9,6 +9,21 @@ import outbound_pipeline as pipeline
 import outbound_reengage as reengage
 
 
+def test_topup_splits_a_stored_full_name_before_keeping_the_lead():
+    result = reengage.select_topup([{
+        "id": "julie",
+        "email": "julie@brand.com",
+        "status": 3,
+        "first_name": "Julie Mitchell",
+        "last_name": "",
+        "title": "Founder",
+        "campaign": "old-campaign",
+    }])
+    assert result["rejected"] == {}
+    assert result["eligible"][0]["first_name"] == "Julie"
+    assert result["eligible"][0]["last_name"] == "Mitchell"
+
+
 def test_title_rank_drops_associate_and_non_buyers_and_keeps_founders():
     assert contacts.title_rank("E-commerce Merchandise Associate") is None
     assert contacts.title_rank("Marketing & Support Associate") is None
