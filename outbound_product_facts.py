@@ -161,17 +161,23 @@ def phrase_is_natural(phrase: str) -> bool:
 def phrase_is_grounded(phrase: str, products: list[dict[str, Any]]) -> bool:
     """True when the phrase's content words appear in the catalog we passed."""
 
-    blob = " ".join(
-        " ".join(str(item.get(key) or "") for key in ("title", "product_type", "body", "tags"))
-        for item in products if isinstance(item, dict)
-    ).lower()
     nouns = [
         word.lower() for word in re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", phrase or "")
         if len(word) >= 2 and word.lower() not in _GROUND_STOP
     ]
-    if not nouns or not blob:
+    if not nouns:
         return False
-    return all(noun in blob for noun in nouns)
+    number_words = {"two": "2", "three": "3", "four": "4", "five": "5"}
+    for item in products:
+        if not isinstance(item, dict):
+            continue
+        blob = f"{item.get('title') or ''} {item.get('product_type') or ''}".lower()
+        if all(
+            noun in blob or (bool(number_words.get(noun)) and number_words[noun] in blob)
+            for noun in nouns
+        ):
+            return True
+    return False
 
 
 def _off_core(title: str, product_type: str, core: str) -> bool:
@@ -350,6 +356,7 @@ def parse_shopify_products(payload: Any) -> list[dict[str, Any]]:
             continue
         parsed.append({
             "title": title,
+            "handle": str(raw.get("handle") or "").strip().lower(),
             "product_type": product_type,
             "tags": tags,
             "body": _text(raw.get("body_html"), 240),
@@ -582,7 +589,16 @@ def fetch_shopify_path(
     last_error = ""
     for attempt in range(max(1, attempts)):
         _pace(sleep, min_interval)
+        streamed = getter is requests.get and "json" not in accept
         try:
+            response = getter(
+                safe,
+                timeout=timeout,
+                headers={"User-Agent": USER_AGENT, "Accept": accept},
+                allow_redirects=True,
+                **({"stream": True} if streamed else {}),
+            )
+        except TypeError:
             response = getter(
                 safe,
                 timeout=timeout,
@@ -595,22 +611,50 @@ def fetch_shopify_path(
                 continue
             logger.info("[outbound-products] shopify fetch failed for %s (%s)", host, last_error)
             return None
-        status = int(getattr(response, "status_code", 0) or 0)
-        if status in {401, 404}:
-            return None
-        if status in {429} or status >= 500:
-            if attempt + 1 < attempts:
-                continue
-            return None
-        if status != 200:
-            return None
-        if "json" in accept:
-            try:
-                return response.json()
-            except Exception:  # noqa: BLE001
+        try:
+            status = int(getattr(response, "status_code", 0) or 0)
+            if status in {401, 404}:
                 return None
-        return (getattr(response, "text", "") or "")[:150000]
+            if status in {429} or status >= 500:
+                if attempt + 1 < attempts:
+                    continue
+                return None
+            if status != 200:
+                return None
+            if "json" in accept:
+                try:
+                    return response.json()
+                except Exception:  # noqa: BLE001
+                    return None
+            return _html_text(response, max_bytes=3_000_000, stop_after_handles=15)
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
     return None
+
+
+def _html_text(response: Any, *, max_bytes: int, stop_after_handles: int) -> str:
+    """Read a page until enough product handles appear, or up to about 3 MB."""
+
+    stream = getattr(response, "iter_content", None)
+    if callable(stream):
+        parts: list[str] = []
+        size = 0
+        try:
+            for chunk in stream(65536):
+                if not chunk:
+                    continue
+                piece = chunk.decode("utf-8", errors="ignore") if isinstance(chunk, bytes) else str(chunk)
+                parts.append(piece)
+                size += len(piece)
+                text = "".join(parts)
+                if size >= max_bytes or len(handles_from_html(text)) >= stop_after_handles:
+                    return text[:max_bytes]
+        except Exception:  # noqa: BLE001
+            if parts:
+                return "".join(parts)[:max_bytes]
+    return (getattr(response, "text", "") or "")[:max_bytes]
 
 
 def fetch_shopify_catalog(
@@ -732,37 +776,36 @@ def signals_from_storefront(html: str, titles: list[str]) -> dict[str, str]:
     }
 
 
-_PRODUCT_LINK = re.compile(
-    r"""<a\b[^>]*href=["'](?:https?://[^"']+)?/products/([^"'?#]+)["'][^>]*>(.*?)</a>""",
-    re.I | re.S,
+_PRODUCT_HANDLE = re.compile(
+    r"""/products/([a-z0-9][a-z0-9-]*)""",
+    re.I,
 )
 
 
-def products_from_collection_html(html: str) -> list[dict[str, Any]]:
-    """Product titles in the order the collection HTML lists them.
+def handles_from_html(html: str, *, limit: int = 15) -> list[str]:
+    """Product handles in page order. Anchor text is not product data.
 
-    Shopify's ``products.json`` ignores ``sort_by``. The HTML collection page
-    does not, so the link order is the best-selling order.
+    Matches ``/products/<handle>`` and ``/collections/<name>/products/<handle>``.
     """
 
     seen: set[str] = set()
-    found: list[dict[str, Any]] = []
-    for handle, inner in _PRODUCT_LINK.findall(html or ""):
+    found: list[str] = []
+    for handle in _PRODUCT_HANDLE.findall(html or ""):
         key = handle.strip().lower()
-        title = _text(re.sub(r"<[^>]+>", " ", inner), 160)
-        if not key or key in seen or not title or len(title) > 140:
+        if not key or key in seen or key in {"products"}:
             continue
         seen.add(key)
-        found.append({
-            "title": title,
-            "product_type": "",
-            "body": "",
-            "tags": [],
-            "in_stock": True,
-        })
-        if len(found) >= 12:
+        found.append(key)
+        if len(found) >= limit:
             break
     return found
+
+
+def products_from_collection_html(html: str) -> list[dict[str, Any]]:
+    """Handles only, in the order the HTML lists them. Titles come from the catalog."""
+
+    return [{"handle": handle, "title": "", "product_type": "", "body": "", "tags": [], "in_stock": True}
+            for handle in handles_from_html(html)]
 
 
 def featured_collection(html: str) -> str:
@@ -869,6 +912,44 @@ def phrase_from_description(text: str, brand: str = "") -> str:
     return natural_product_phrase(raw, brand)
 
 
+def _products_by_handle(
+    domain: str,
+    handles: list[str],
+    *,
+    get: Optional[Callable[..., Any]] = None,
+    sleep: Callable[[float], None] = time.sleep,
+    guard: Optional[Callable[[str], str]] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Join handles to real ``products.json`` records. Order follows the handles.
+
+    Up to three pages. When nothing matches, the caller uses the unfiltered
+    catalog as a fallback.
+    """
+
+    wanted = [handle for handle in handles if handle]
+    found: list[dict[str, Any]] = []
+    index: dict[str, dict[str, Any]] = {}
+    for page in (1, 2, 3):
+        payload = fetch_shopify_path(
+            domain, f"/products.json?limit=250&page={page}",
+            get=get, sleep=sleep, guard=guard, timeout=5, attempts=1,
+        )
+        rows = parse_shopify_products(payload) if isinstance(payload, dict) else []
+        if not rows:
+            break
+        found.extend(rows)
+        for item in rows:
+            handle = str(item.get("handle") or "").strip().lower()
+            if handle and handle not in index:
+                index[handle] = item
+        if wanted and all(handle in index for handle in wanted[:15]):
+            break
+        if len(rows) < 250:
+            break
+    ordered = [index[handle] for handle in wanted if handle in index]
+    return ordered, found
+
+
 def _catalog_rows(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Up to five real products, titles left as the shop wrote them."""
 
@@ -925,7 +1006,9 @@ def collect_product_facts(
             accept="text/html", timeout=5, attempts=1,
         )
         html = page if isinstance(page, str) else ""
-    fetched: list[tuple[str, list[dict[str, Any]]]] = []
+    json_rows: list[dict[str, Any]] = []
+    block_rows: list[dict[str, Any]] = []
+    pick = ""
     for path in (
         "/collections/best-sellers/products.json?limit=30",
         "/collections/bestsellers/products.json?limit=30",
@@ -935,38 +1018,52 @@ def collect_product_facts(
         )
         rows = parse_shopify_products(payload) if isinstance(payload, dict) else []
         if rows:
-            fetched.append(("best-selling", rows))
+            json_rows = rows
+            block_rows = rows
+            pick = "best-selling"
             break
-    if not fetched:
+    handles: list[str] = []
+    if not json_rows:
         page = fetch_shopify_path(
             domain, "/collections/all?sort_by=best-selling",
             get=get, sleep=sleep, guard=guard, accept="text/html", timeout=5, attempts=1,
         )
-        rows = products_from_collection_html(page if isinstance(page, str) else "")
-        if rows:
-            fetched.append(("best-selling", rows))
-    if not fetched:
-        rows = products_from_collection_html(html)
-        if rows:
-            fetched.append(("featured", rows))
-    titles = [str(item.get("title") or "") for _method, rows in fetched for item in rows[:8]]
+        handles = handles_from_html(page if isinstance(page, str) else "")
+        if not handles:
+            handles = handles_from_html(html)
+            if handles:
+                pick = "featured"
+        else:
+            pick = "best-selling"
+        ordered, everything = _products_by_handle(
+            domain, handles, get=get, sleep=sleep, guard=guard,
+        )
+        block_rows = everything or ordered
+        if ordered:
+            json_rows = ordered
+        else:
+            pick = "catalog"
+            json_rows = everything
+    titles = [str(item.get("title") or "") for item in json_rows[:30]]
     signals = signals_from_storefront(html, titles)
-    if fetched:
-        method, rows = fetched[0]
-        catalog = _catalog_rows(rows)
+    if json_rows:
+        catalog = _catalog_rows(json_rows)
+        checked = block_rows or json_rows
         blocked = blocked_category_reason(
-            *(str(item.get("title") or "") for item in rows),
-            *(str(item.get("product_type") or "") for item in rows),
-            *(str(item.get("body") or "") for item in rows),
-            *(" ".join(str(tag) for tag in (item.get("tags") or [])) for item in rows),
+            brand,
+            _text(html, 20000),
+            *(str(item.get("title") or "") for item in checked),
+            *(str(item.get("product_type") or "") for item in checked),
+            *(str(item.get("body") or "") for item in checked),
+            *(" ".join(str(tag) for tag in (item.get("tags") or [])) for item in checked),
         )
         return {
             "source": "products.json" if catalog and not blocked else "",
-            "pick": method if catalog and not blocked else "",
+            "pick": pick if catalog and not blocked else "",
             "products": [] if blocked else catalog,
             "phrase": "",
             "description": "",
-            "vendor": next((str(item.get("vendor") or "") for item in rows if item.get("vendor")), ""),
+            "vendor": next((str(item.get("vendor") or "") for item in json_rows if item.get("vendor")), ""),
             "blocked": blocked,
             **signals,
         }

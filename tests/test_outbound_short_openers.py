@@ -267,3 +267,53 @@ def test_trial_offer_never_claims_or_assumes_amazon():
     assert "backend" in op.opener_hold_reason(
         "Huppy upgraded their store plan.", {"brand": "Huppy"},
     )
+
+
+def test_a_short_budget_does_not_retry_or_relabel_a_rejected_line():
+    calls = {"n": 0}
+
+    def llm(_prompt):
+        calls["n"] += 1
+        return json.dumps({
+            "product_phrase": "tooth tabs",
+            "opener": "Huppy tooth tabs are a plain product I would mention to a friend.",
+            "angle": "Huppy tooth tabs are what I would put in the ad.",
+        })
+
+    lead = {**LEAD, "catalog_products": [{"title": "Tooth Tabs", "product_type": "Tabs"}]}
+    _opener, _angle, source = personalization.generate(lead, llm=llm, allow_retry=lambda: False)
+    assert calls["n"] == 1
+    assert source == "skipped:no_product"
+
+
+def test_a_model_timeout_stays_a_timeout():
+    def llm(_prompt):
+        raise personalization.ModelTimeout("slow")
+
+    lead = {**LEAD, "catalog_products": [{"title": "Tooth Tabs", "product_type": "Tabs"}]}
+    assert personalization.generate(lead, llm=llm)[2] == "skipped:model_timeout"
+
+
+def test_the_first_dry_run_call_is_capped_and_a_timeout_is_not_a_missing_product():
+    import importlib.util
+    import time
+
+    spec = importlib.util.spec_from_file_location(
+        "dry_run_openers", "scripts/dry_run_openers.py",
+    )
+    dry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dry)
+    seen = []
+
+    def llm(_prompt, timeout_s=30):
+        seen.append(timeout_s)
+        raise personalization.ModelTimeout("slow")
+
+    row = dry.render_row(
+        {"domain": "huppy.com", "brand": "Huppy", "first_name": "Ann", "recipe": "amz_on"},
+        facts={"source": "products.json", "products": [{"title": "Tooth Tabs", "product_type": "Tabs"}]},
+        llm=llm,
+        deadline=time.monotonic() + 25,
+    )
+    assert seen and seen[0] <= 15
+    assert row["hold"] == "skipped:model_timeout"

@@ -61,7 +61,7 @@ _EXAMPLES = """
 Opener: Your adai dosa mix caught my eye. It's not something I see from many brands.
 Angle: I would use one photo of the dosa mix and leave the rest of the page alone.
 
-Opener: Saw the cookie mixes at Autumn Sons. The chocolate chunk looks like the one people come back for.
+Opener: The chocolate chunk cookie mix is the one I would come back for.
 Angle: The cookie mix is what I would put in the ad.
 
 Opener: Love that Perfy does flavors like blood orange yuzu instead of another plain cola.
@@ -358,6 +358,7 @@ def style_violation(
     recipe: str = "",
     high_rating: bool = False,
     trial_offer: bool = False,
+    retail: bool = False,
 ) -> str:
     """Empty when the line is allowed. Otherwise a short reason."""
 
@@ -418,8 +419,18 @@ def style_violation(
     sentence_limit = 2 if role == "opener" else 1
     if sentence_count(raw) > sentence_limit:
         return "more than two sentences" if role == "opener" else "more than one sentence"
-    if re.search(r"\bpick up right away\b|\bshoppers will\b|\bwill love\b|\bguaranteed to\b", raw, re.I):
+    if re.search(
+        r"\bpick up right away\b|\bshoppers will\b|\bwill love\b|\bguaranteed to\b|"
+        r"\bnew shoppers can\b|\bshoppers can spot\b",
+        raw, re.I,
+    ):
         return "guesses what shoppers will do"
+    if re.search(r"\bthis brand\b|\blineup\b", raw, re.I):
+        return "generic brand or category label"
+    if re.search(r"\bin the snack aisle\b|\bon the shelf\b|\bat the store\b", raw, re.I):
+        return "made-up sighting"
+    if not retail and re.search(r"\bsaw\b.{0,30}\bat\b", raw, re.I):
+        return "made-up sighting"
     if re.search(r"\bfirst image\b|\bshould be the first\b", raw, re.I):
         return "tells the brand what their first image should be"
     from outbound_openers import copy_tic
@@ -494,6 +505,10 @@ def _prompt(sheet: FactSheet) -> str:
         "Write JSON with keys product_phrase, opener, and angle. "
         "Use only the brand and one product from the list above. "
         "Do not invent a product, a store, a result, or a number. "
+        "Do not say you saw the product in a store or a snack aisle unless the facts name a retailer. "
+        "Name the brand in only one of the two lines, and use an apostrophe when the brand owns the next word. "
+        "Do not say This brand, and do not call the products a lineup. "
+        "The product phrase is the product name, not a tagline from the page. "
         "Do not guess what shoppers will do. Do not critique the store. "
         "Do not paraphrase the product description or list ingredients the way the label does. "
         "Say one plain thing a person would say after looking at that product. "
@@ -589,6 +604,7 @@ def generate(
     api_key: Optional[str] = None,
     batch: Optional[list[str]] = None,
     angles: Optional[list[str]] = None,
+    allow_retry: Optional[Callable[[], bool]] = None,
 ) -> tuple[str, str, str]:
     """Return (opener, angle, source). Source is ai, fallback, or none.
 
@@ -618,6 +634,8 @@ def generate(
     if model is not None:
         why = ""
         for _attempt in range(2):
+            if _attempt == 1 and allow_retry is not None and not allow_retry():
+                break
             try:
                 if sheet.catalog:
                     phrase, opener, angle = _parse_copy(model(prompt))
@@ -635,13 +653,29 @@ def generate(
             why = ""
             if sheet.catalog and (not phrase_is_natural(phrase) or not phrase_is_grounded(phrase, sheet.catalog)):
                 why = "product phrase is not grounded in the catalog"
+            from outbound_openers import brand_named_twice, missing_possessive
+
+            store = lead.get("store_profile") if isinstance(lead.get("store_profile"), dict) else {}
+            retail = bool(
+                str(store.get("retailer_page") or "").strip()
+                or str(store.get("store_locator_page") or "").strip()
+            ) or any(
+                token in " ".join(sheet.facts).lower()
+                for token in ("store locator", "sold through retailers", "sold in stores")
+            )
             why = why or style_violation(
                 opener, role="opener", recipe=sheet.recipe,
                 high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
+                retail=retail,
             ) or style_violation(
                 angle, role="angle", recipe=sheet.recipe,
                 high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
+                retail=retail,
             ) or variety_clash(opener, batch or [], angle=angle, angles=angles)
+            if brand_named_twice(opener, angle, sheet.brand):
+                why = why or "brand named twice"
+            if missing_possessive(opener, sheet.brand) or missing_possessive(angle, sheet.brand):
+                why = why or "missing possessive"
             if opener and angle and not why and opener.strip() != angle.strip():
                 if phrase:
                     lead["product_phrase"] = phrase

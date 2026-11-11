@@ -28,6 +28,7 @@ CAMPAIGN = "11111111-1111-4111-8111-111111111111"
 
 @pytest.fixture(autouse=True)
 def env(monkeypatch):
+    monkeypatch.setattr(oe, "storefront_country_signals", lambda domain, brand="": {})
     monkeypatch.setenv("PROSPEO_API_KEY", "k" * 20)
     monkeypatch.setenv("OUTBOUND_PUSH_ENABLED", "true")
     monkeypatch.setenv("OUTBOUND_AUTO_ENRICH", "true")

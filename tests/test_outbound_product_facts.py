@@ -184,6 +184,8 @@ def test_catalog_fetch_is_two_calls_with_no_retry():
 
 
 def test_blocked_categories_skip_and_a_copper_peptide_serum_passes():
+    import outbound_personalization as personalization
+
     assert blocked_category_reason("CBD oil", "Hemp") == "blocked_category"
     assert blocked_category_reason("Microdose gummies") == "blocked_category"
     assert blocked_category_reason("Psilocybin chocolate") == "blocked_category"
@@ -198,6 +200,38 @@ def test_blocked_categories_skip_and_a_copper_peptide_serum_passes():
     assert blocked_category_reason("Chaga reishi elixir") == "blocked_category"
     assert blocked_category_reason("Mushroom mocktails") == "blocked_category"
     assert blocked_category_reason("Porcini mushroom seasoning") == ""
+    assert blocked_category_reason("Calming chews", "full spectrum CBD oil for dogs") == "blocked_category"
+    assert blocked_category_reason("Cotton candy", "microdose", "THC gummies") == "blocked_category"
+    assert blocked_category_reason("Shroom soda", "lion's mane and chaga") == "blocked_category"
+    assert blocked_category_reason("superCerum", "copper peptide serum", "Skincare") == ""
+    assert not phrase_is_grounded(
+        "blood orange yuzu bright",
+        [{"title": "Blood Orange Yuzu", "product_type": "Soda", "body": "Bright. Citrusy."}],
+    )
+    assert openers.missing_possessive("Paramo Snacks baked organic beet chips.", "Paramo Snacks")
+    assert not openers.missing_possessive("Paramo Snacks' baked beet chips.", "Paramo Snacks")
+    assert openers.brand_named_twice(
+        "Rita Fine Jewelry has an infinity bracelet.",
+        "The bracelet gives Rita Fine Jewelry a listing image.",
+        "Rita Fine Jewelry",
+    )
+    assert personalization.style_violation(
+        "New shoppers can spot the can.", recipe="trial_offer",
+    ) == "guesses what shoppers will do"
+    assert personalization.style_violation(
+        "This brand has a smart bottle in a beverages lineup.",
+    ) == "generic brand or category label"
+    assert personalization.style_violation(
+        "Your Amazon listing should lead with the serum.",
+        role="angle", recipe="trial_offer", trial_offer=True,
+    ) == "claims the brand already sells on Amazon"
+    assert personalization.style_violation(
+        "Saw the chips at Whole Foods while walking past.",
+    ) == "made-up sighting"
+    assert personalization.style_violation(
+        "Saw the chips at Whole Foods while walking past.",
+        retail=True,
+    ) == ""
     assert blocked_category_reason("Copper peptide serum", "Skincare") == ""
     assert phrase_is_natural("24 hour gold keratin treatment")
     assert phrase_is_natural("the Amara necklace")
@@ -217,8 +251,66 @@ def test_blocked_categories_skip_and_a_copper_peptide_serum_passes():
     assert not phrase_is_grounded("blood orange yuzu", products)
     import outbound_personalization as personalization
     assert "Your adai dosa mix caught my eye." in personalization._EXAMPLES
-    assert "Saw the cookie mixes at Autumn Sons." in personalization._EXAMPLES
+    assert "The chocolate chunk cookie mix is the one I would come back for." in personalization._EXAMPLES
     assert "Love that Perfy does flavors like blood orange yuzu" in personalization._EXAMPLES
+
+
+def test_handles_join_real_products_and_ignore_link_text():
+    html = (" " * 180_000) + '<a href="/collections/all/products/cookie-mix">shop now</a>'
+    catalog = {"products": [{
+        "title": "Chocolate Chunk Cookie Mix",
+        "handle": "cookie-mix",
+        "product_type": "Mixes",
+        "tags": [],
+        "body_html": "<p>Just add water and oil.</p>",
+        "variants": [{"available": True}],
+    }]}
+
+    def get(url, timeout=5, headers=None, allow_redirects=True):
+        if "sort_by=best-selling" in url:
+            return _Response(200, html)
+        if "/products.json" in url:
+            return _Response(200, catalog)
+        if "/collections/best-sellers/" in url or "/collections/bestsellers/" in url:
+            return _Response(200, {"products": []})
+        return _Response(200, "<html lang='en'></html>")
+
+    facts = collect_product_facts(
+        "autumn.example", brand="Autumn Sons", allow_storeleads=False,
+        get=get, sleep=lambda _s: None, guard=lambda url: url, homepage_html="<html></html>",
+    )
+    assert facts["products"]
+    assert facts["products"][0]["title"] == "Chocolate Chunk Cookie Mix"
+    assert "shop now" not in facts["products"][0]["title"].lower()
+    assert facts["blocked"] == ""
+
+
+def test_full_catalog_blocks_cbd_even_when_the_title_is_plain():
+    html = '<a href="/products/calm-chews">Quick view</a>'
+    catalog = {"products": [{
+        "title": "Calming Chews",
+        "handle": "calm-chews",
+        "product_type": "Chews",
+        "tags": ["dogs"],
+        "body_html": "<p>Full spectrum CBD oil for anxious dogs.</p>",
+        "variants": [{"available": True}],
+    }]}
+
+    def get(url, timeout=5, headers=None, allow_redirects=True):
+        if "sort_by=best-selling" in url:
+            return _Response(200, html)
+        if "/products.json" in url:
+            return _Response(200, catalog)
+        if "best-sellers" in url or "bestsellers" in url:
+            return _Response(200, {"products": []})
+        return _Response(200, "<html></html>")
+
+    facts = collect_product_facts(
+        "chill.example", brand="Chill Paws", allow_storeleads=False,
+        get=get, sleep=lambda _s: None, guard=lambda url: url, homepage_html="<html></html>",
+    )
+    assert facts["blocked"] == "blocked_category"
+    assert facts["products"] == []
 
 
 def test_homepage_currency_is_read_before_copy():

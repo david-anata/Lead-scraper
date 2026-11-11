@@ -333,15 +333,24 @@ def render_row(
         hold = "skipped:no_product"
     else:
         writer = llm
-        if llm is not None and deadline is not None:
+        calls = {"n": 0}
+
+        def allow_retry() -> bool:
+            if deadline is None:
+                return True
+            return (deadline - time.monotonic()) >= 12
+
+        if llm is not None:
             def writer(prompt: str, _llm=llm) -> str:
-                remaining = deadline - time.monotonic()
+                calls["n"] += 1
+                remaining = model_timeout_seconds() if deadline is None else deadline - time.monotonic()
                 if remaining < 0.5:
                     raise personalization.ModelTimeout("lead budget")
-                return _llm(prompt, timeout_s=min(model_timeout_seconds(), remaining))
+                cap = 15.0 if calls["n"] == 1 else remaining
+                return _llm(prompt, timeout_s=min(model_timeout_seconds(), cap, remaining))
 
         opener, angle, source = personalization.generate(
-            lead, llm=writer, batch=batch, angles=angles,
+            lead, llm=writer, batch=batch, angles=angles, allow_retry=allow_retry,
         )
         if source.startswith("skipped"):
             hold = source

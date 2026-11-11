@@ -103,6 +103,29 @@ def variety_clash(
     return ""
 
 
+def brand_named_twice(opener: str, angle: str, brand: str) -> bool:
+    """True when both lines say the brand. One of them should leave it out."""
+
+    tokens = [token for token in re.findall(r"[a-z0-9]+", (brand or "").lower()) if len(token) > 3]
+    if not tokens:
+        return False
+
+    def hit(text: str) -> bool:
+        folded = re.sub(r"[^a-z0-9]+", " ", (text or "").lower())
+        return any(re.search(rf"\b{re.escape(token)}\b", folded) for token in tokens)
+
+    return hit(opener) and hit(angle)
+
+
+def missing_possessive(text: str, brand: str) -> bool:
+    """True for ``Paramo Snacks baked`` where the brand needs an apostrophe."""
+
+    name = " ".join((brand or "").split())
+    if len(name.split()) < 2:
+        return False
+    return bool(re.search(rf"\b{re.escape(name)}\s+[a-z]+ed\b", text or "", re.I))
+
+
 BANNED_PHRASES = (
     "hope this finds you", "hope you're well", "hope you are well", "game-changing",
     "game changing", "revolutionary", "cutting-edge", "cutting edge", "synergy",
