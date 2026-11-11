@@ -314,8 +314,10 @@ def test_a_lone_product_is_kept_and_a_review_app_is_not_called_reviews(monkeypat
     angle, _angle_source = openers.write_brand_angle(product_only)
     facts = openers.collect_facts(product_only)
     assert "Cedar Soap" in facts.rich_phrases[0]
-    assert source == "none"
-    assert line == "" and angle == ""
+    assert source == "fallback"
+    assert "Cedar Soap" in line and "October" not in line
+    assert "amazon" not in line.lower()
+    assert angle and angle != line
 
     installed = {
         "brand": "Example",
@@ -339,7 +341,10 @@ def test_a_lone_product_is_kept_and_a_review_app_is_not_called_reviews(monkeypat
 def test_style_validator_rejects_digits_dashes_urls_tech_and_low_ratings():
     from outbound_personalization import style_violation
 
-    assert style_violation("Parents leave thousands of reviews.") == ""
+    assert style_violation("Parents leave thousands of happy reviews.") == ""
+    assert style_violation("Too short.") == "too short"
+    assert style_violation("A line with  a doubled space in the sentence here.") == "repr or placeholder"
+    assert style_violation("The catalog is ['apparel'] and nothing else today.") == "repr or placeholder"
     assert style_violation("Plans start at $99.") == "digit"
     assert style_violation("A smart bottle — with coaching.") == "em dash"
     assert style_violation("See https://brand.com/pages for it.") == "url"

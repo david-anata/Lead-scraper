@@ -369,14 +369,16 @@ def dry_run_route_plan(
 def friendly_category(raw: Any) -> str:
     """StoreLeads paths ("/Home & Garden/Gardening & Landscaping, /Business & ...")
     become the words the email reads: "gardening & landscaping"."""
-    if isinstance(raw, (list, tuple)):
-        raw = ", ".join(str(r) for r in raw)
+    from outbound_personalization import as_text
+
+    raw = as_text(raw)
     paths = [p.strip() for p in str(raw or "").split(",") if p.strip()]
     if not paths:
         return ""
     preferred = [p for p in paths if not p.lower().startswith("/business & industrial")] or paths
     leaf = [seg for seg in preferred[0].split("/") if seg.strip()]
-    return leaf[-1].strip().lower() if leaf else ""
+    text = leaf[-1].strip().lower().replace("_", " ") if leaf else ""
+    return " ".join(text.split())
 
 
 def protected_campaigns() -> set[str]:
@@ -401,12 +403,22 @@ def _company_name(lead: dict[str, Any]) -> str:
 def build_lead(contact: dict[str, Any], lead: dict[str, Any], opener: str) -> dict[str, Any]:
     """One Instantly lead. Field names match the sequence variables:
     {{firstName}}, {{companyName}}, {{personalization}}, {{category}}, {{brandAngle}}."""
-    category = friendly_category(lead.get("categories") or "") or str(lead.get("niche") or "").strip().lower()
+    from outbound_contacts import split_person_name
+    from outbound_openers import plain_category
+
+    category = friendly_category(lead.get("categories") or "")
+    if not category or "_" in category:
+        category = plain_category(lead.get("categories") or lead.get("niche") or "")
+    if "_" in category:
+        category = category.replace("_", " ")
     angle = str(contact.get("brand_angle") or lead.get("brand_angle") or "").strip()
+    first_name, last_name = split_person_name(
+        contact.get("first_name") or "", contact.get("last_name") or "",
+    )
     return {
         "email": str(contact.get("email") or "").strip().lower(),
-        "first_name": str(contact.get("first_name") or "").strip(),
-        "last_name": str(contact.get("last_name") or "").strip(),
+        "first_name": first_name,
+        "last_name": last_name,
         "company_name": _company_name(lead),
         "website": str(lead.get("domain") or "").strip(),
         "personalization": opener,

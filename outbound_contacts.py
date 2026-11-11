@@ -252,11 +252,47 @@ def is_role_mailbox(address: str) -> bool:
     return False
 
 
+def _person_token(token: str) -> str:
+    """A single name token. All caps and all lowercase become title case."""
+
+    text = (token or "").strip(" .,")
+    if not text:
+        return ""
+    if re.fullmatch(r"[A-Z]{2}", text):
+        return text
+    if text.isupper() or text.islower():
+        return text[:1].upper() + text[1:].lower()
+    return text
+
+
+def split_person_name(first: str, last: str = "") -> tuple[str, str]:
+    """A first name and the rest of the name.
+
+    ``Julie Mitchell`` in the first-name field becomes Julie and Mitchell.
+    A web address or an email is not a name.
+    """
+
+    first_raw = " ".join(str(first or "").split())
+    last_raw = " ".join(str(last or "").split())
+    if re.search(r"@|https?://|\bwww\.", first_raw, re.I):
+        return "", " ".join(_person_token(part) for part in last_raw.split())
+    parts = [part for part in first_raw.split(" ") if part]
+    if not parts:
+        return "", " ".join(_person_token(part) for part in last_raw.split())
+    given = _person_token(parts[0])
+    if len(parts) > 1 and not last_raw:
+        last_raw = " ".join(parts[1:])
+    rest = " ".join(_person_token(part) for part in last_raw.split())
+    return given, rest
+
+
 def acceptable_first_name(name: str) -> bool:
     """True when the value is a person's first name, not a blank or a role word."""
 
     raw = (name or "").strip()
     if not raw or not re.search(r"[A-Za-z]", raw):
+        return False
+    if " " in raw or "@" in raw or re.search(r"https?://|\bwww\.", raw, re.I):
         return False
     compact = re.sub(r"[^a-z]", "", raw.lower())
     if not compact or compact in ROLE_LOCALS or compact in {"there", "friend", "hey"}:
@@ -557,7 +593,9 @@ def find_contacts(
         if not data.get("free_enrichment"):
             result.credits_used += 1
         enriched_title = (p.get("current_job_title") or "").strip()
-        first_name = (p.get("first_name") or "").strip()
+        first_name, last_name = split_person_name(
+            p.get("first_name") or "", p.get("last_name") or "",
+        )
         if is_role_mailbox(email):
             skipped_role = True
             continue
@@ -570,7 +608,7 @@ def find_contacts(
         result.contacts.append(Contact(
             domain=domain,
             first_name=first_name,
-            last_name=(p.get("last_name") or "").strip(),
+            last_name=last_name,
             email=email,
             title=enriched_title,
             linkedin_url=(p.get("linkedin_url") or "").strip(),

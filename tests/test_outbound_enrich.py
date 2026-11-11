@@ -33,7 +33,12 @@ def finder(emails_by_domain, credits=3):
 
 
 def opener(l, c=None):
-    return f"{l['brand']} caught my eye. Is Amazon on your radar?", "ai"
+    brand = l["brand"]
+    return (
+        f"{brand}'s best seller could be sold as a small set, so a new shopper "
+        "has one clear way to try it.",
+        "ai",
+    )
 
 
 def test_no_key_does_nothing(engine):
@@ -48,7 +53,7 @@ def test_enriches_stores_and_reports(engine):
     assert r.contacts_found == 2 and r.credits_used == 4
     assert r.find_rate == 0.5 and r.credits_per_contact == 2.0
     assert r.dry_run and r.pushed == 0
-    assert len(r.samples) == 2 and "Amazon" in r.samples[0]["opener"]
+    assert len(r.samples) == 2 and "small set" in r.samples[0]["opener"]
 
 
 def test_second_run_never_re_spends_on_same_domain(engine):
@@ -116,7 +121,8 @@ def test_pushed_lead_carries_brand_and_opener(engine):
     oe.run_enrichment(engine, [lead("a.com", "Acme")], api_key="k", find=f, write=opener,
                       campaign_id="new-campaign", dry_run=False, push=ok)
     assert seen["lead"]["company_name"] == "Acme"
-    assert "Acme caught my eye" in seen["lead"]["personalization"]
+    assert "Acme" in seen["lead"]["personalization"]
+    assert "small set" in seen["lead"]["personalization"]
     assert seen["lead"]["email"] == "x@a.com"
 
 
@@ -328,7 +334,7 @@ def test_held_filler_with_a_plan_signal_routes_to_plan_upgrade(engine, monkeypat
     oe._record_person(
         engine,
         oc.Contact(domain="plus.example", first_name="A", last_name="B", email="a@plus.example", title="Founder"),
-        "Plus sells a glass bottle.", "test",
+        "Plus's glass bottle could be sold as a small set a new shopper can try.", "test",
         {"brand": "Plus", "categories": "", "recipe": "icp_baseline", "tier": "B"},
     )
     seen = {}
@@ -508,7 +514,7 @@ def test_category_filler_is_held_and_retried_when_a_product_fact_exists(engine, 
             "SELECT skip_reason FROM outbound_enriched_contacts WHERE email = 'ada@food.com'"
         )).scalar()
     assert str(reason).startswith("held:opener:")
-    assert "category filler" in str(reason)
+    assert "shopper-visible" in str(reason)
 
     assert memory.save_store_profiles(engine, [{
         "domain": "food.com",

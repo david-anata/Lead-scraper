@@ -1,0 +1,276 @@
+"""Print 20 fresh openers from recent leads. Read only.
+
+The default run reads recent contacts for Trial Offer and the four v2
+segments (plan_upgrade, replatform, amz_on, amz_off), attaches a stored
+StoreLeads profile when one exists, and fills a missing product or story
+from the public homepage. It never writes to Instantly or the database.
+
+    python scripts/dry_run_openers.py
+    python scripts/dry_run_openers.py --no-fetch
+    python scripts/dry_run_openers.py --leads-file sample.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Any, Optional
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import outbound_openers as openers
+from outbound_contacts import split_person_name
+from outbound_pipeline import clean_brand_name
+
+TRIAL_OFFER = "e5f5046b-07e4-41ad-a395-79cf8766ccd0"
+SEGMENTS = (
+    ("trial_offer", TRIAL_OFFER),
+    ("plan_upgrade", "4dc10f79-f7c9-43c5-9c3e-5e28e9cf4c72"),
+    ("replatform", "d1c197e3-bf1f-4f41-bcb9-e30e73975a2c"),
+    ("amz_on", "8e0df427-1f18-43ac-b0c6-e8ea787123d7"),
+    ("amz_off", "138a162d-6654-4916-9959-20c11e31214b"),
+)
+_OG_TITLE = re.compile(
+    r"""<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']"""
+    r"""|<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']""",
+    re.I,
+)
+_META_DESC = re.compile(
+    r"""<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']"""
+    r"""|<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']""",
+    re.I,
+)
+
+
+def _database_url() -> str:
+    return (
+        os.getenv("SALES_AGENT_DB_URL")
+        or os.getenv("DATABASE_URL")
+        or ""
+    ).strip()
+
+
+def _segment(row: dict[str, Any]) -> str:
+    campaign = str(row.get("campaign_id") or "")
+    recipe = str(row.get("recipe") or "").strip()
+    if campaign == TRIAL_OFFER or recipe in {"trial", "trial_offer", "icp_baseline", "social_surge"}:
+        if campaign == TRIAL_OFFER:
+            return "trial_offer"
+    for name, campaign_id in SEGMENTS:
+        if recipe in {name, "replatformed"} and name == "replatform":
+            return "replatform"
+        if recipe == name or campaign == campaign_id:
+            return name
+    if recipe in {"replatform", "replatformed"}:
+        return "replatform"
+    return recipe or "unknown"
+
+
+def load_recent(url: str, *, per_segment: int = 4) -> list[dict[str, Any]]:
+    """Newest contacts in each segment. SELECT only."""
+
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(url)
+    found: list[dict[str, Any]] = []
+    sql = text(
+        """
+        SELECT c.first_name, c.last_name, c.domain, c.brand, c.category,
+               c.recipe, c.campaign_id, c.created_at::text AS created_at,
+               l.lead_json
+        FROM outbound_enriched_contacts c
+        LEFT JOIN LATERAL (
+            SELECT lead_json
+            FROM outbound_pull_run_leads p
+            WHERE p.domain = c.domain
+            ORDER BY p.captured_at DESC
+            LIMIT 1
+        ) l ON true
+        WHERE c.campaign_id = :campaign OR c.recipe = :recipe
+           OR (:recipe = 'replatform' AND c.recipe = 'replatformed')
+        ORDER BY c.created_at DESC
+        LIMIT 80
+        """
+    )
+    with engine.connect() as conn:
+        for name, campaign_id in SEGMENTS:
+            recipe = "trial_offer" if name == "trial_offer" else name
+            rows = conn.execute(sql, {"campaign": campaign_id, "recipe": recipe}).mappings()
+            picked = 0
+            seen: set[str] = set()
+            for row in rows:
+                domain = str(row["domain"] or "").strip().lower()
+                if not domain or domain in seen:
+                    continue
+                seen.add(domain)
+                item = dict(row)
+                item["segment"] = name
+                found.append(item)
+                picked += 1
+                if picked >= per_segment:
+                    break
+    return found
+
+
+def _profile_from_json(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        payload = raw
+    else:
+        try:
+            payload = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(payload, dict):
+        return {}
+    profile = payload.get("store_profile")
+    return profile if isinstance(profile, dict) else {}
+
+
+def _useful(profile: dict[str, Any]) -> bool:
+    product = profile.get("most_recently_published_product")
+    title = ""
+    if isinstance(product, dict):
+        title = str(product.get("title") or "")
+    return bool(
+        str(profile.get("description") or "").strip()
+        or title.strip()
+        or str(profile.get("store_locator_page") or "").strip()
+        or str(profile.get("retailer_page") or "").strip()
+    )
+
+
+def _meta(html: str, pattern: re.Pattern[str]) -> str:
+    match = pattern.search(html or "")
+    if not match:
+        return ""
+    return " ".join(next(group for group in match.groups() if group).split())
+
+
+def fetch_public_fact(domain: str, *, timeout: float = 8.0) -> dict[str, str]:
+    """og:title and meta description from the public homepage. Read only."""
+
+    import requests
+
+    host = str(domain or "").strip().lower()
+    if not host or " " in host:
+        return {}
+    try:
+        response = requests.get(
+            f"https://{host}",
+            timeout=timeout,
+            headers={"User-Agent": "AnataOpenerDryRun/1.0"},
+        )
+    except Exception:
+        return {}
+    if response.status_code >= 400:
+        return {}
+    html = response.text or ""
+    title = _meta(html, _OG_TITLE)
+    description = _meta(html, _META_DESC)
+    out: dict[str, str] = {}
+    if description and len(description.split()) >= 3:
+        out["description"] = description[:300]
+    if title and len(title.split()) >= 2:
+        out["title"] = title[:160]
+    return out
+
+
+def lead_for(row: dict[str, Any], *, public: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    profile = _profile_from_json(row.get("lead_json") or row.get("store_profile") or {})
+    if isinstance(row.get("store_profile"), dict):
+        profile = {**profile, **row["store_profile"]}
+    public = public or {}
+    if not _useful(profile):
+        if public.get("description"):
+            profile["description"] = public["description"]
+        if public.get("title"):
+            profile["most_recently_published_product"] = {"title": public["title"]}
+    segment = row.get("segment") or _segment(row)
+    recipe = "trial_offer" if segment == "trial_offer" else (
+        "replatform" if segment == "replatform" else str(row.get("recipe") or segment)
+    )
+    return {
+        "brand": row.get("brand") or "",
+        "domain": row.get("domain") or "",
+        "recipe": recipe,
+        "categories": row.get("category") or row.get("categories") or "",
+        "campaign_id": TRIAL_OFFER if segment == "trial_offer" else row.get("campaign_id") or "",
+        "store_profile": profile,
+    }
+
+
+def render_row(row: dict[str, Any], *, public: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """One opener pair. Nothing is saved."""
+
+    openers._OPENERS_BY_DOMAIN.clear()
+    openers._ANGLES_BY_DOMAIN.clear()
+    lead = lead_for(row, public=public)
+    first, last = split_person_name(row.get("first_name") or "", row.get("last_name") or "")
+    company = clean_brand_name(lead.get("brand") or lead.get("domain") or "")
+    opener, angle = openers.idea_lines({**lead, "brand": company or lead.get("brand") or ""})
+    hold = openers.opener_hold_reason(opener, lead) if opener else "no shopper-visible fact"
+    return {
+        "segment": str(row.get("segment") or _segment(row)),
+        "company": company,
+        "first_name": first,
+        "last_name": last,
+        "domain": str(row.get("domain") or ""),
+        "opener": opener,
+        "angle": angle,
+        "hold": "" if opener and not hold else hold,
+    }
+
+
+def render_report(rows: list[dict[str, str]]) -> str:
+    lines = [f"{len(rows)} openers. Nothing was written to Instantly or the database.", ""]
+    for index, row in enumerate(rows, start=1):
+        who = row["first_name"] or "there"
+        lines.append(f"### {index}. {row['company']} ({who}), {row['segment']}")
+        lines.append(f"Domain: {row['domain']}")
+        if row["opener"]:
+            lines.append(f"Opener: {row['opener']}")
+            lines.append(f"Angle: {row['angle'] or '(none)'}")
+        else:
+            lines.append(f"Opener: (held) {row['hold']}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Dry-run 20 openers from recent leads")
+    parser.add_argument("--leads-file", default="")
+    parser.add_argument("--per-segment", type=int, default=4)
+    parser.add_argument("--no-fetch", action="store_true")
+    args = parser.parse_args(argv)
+    if args.leads_file:
+        payload = json.loads(Path(args.leads_file).read_text())
+        rows = payload if isinstance(payload, list) else payload.get("leads") or []
+    else:
+        url = _database_url()
+        if not url:
+            print("SALES_AGENT_DB_URL is not set, and no --leads-file was given.", file=sys.stderr)
+            return 1
+        rows = load_recent(url, per_segment=args.per_segment)
+    rendered = []
+    for row in rows:
+        if len(rendered) >= args.per_segment * len(SEGMENTS):
+            break
+        public = None
+        profile = _profile_from_json(row.get("lead_json") or row.get("store_profile") or {})
+        if isinstance(row.get("store_profile"), dict):
+            profile = {**profile, **row["store_profile"]}
+        if not args.no_fetch and not _useful(profile):
+            public = fetch_public_fact(str(row.get("domain") or ""))
+        rendered.append(render_row(row, public=public))
+    sys.stdout.write(render_report(rendered))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -40,7 +40,7 @@ def test_prompts_state_the_word_caps_and_one_sentence():
     prompt = personalization._prompt(sheet)
     assert "one sentence of about 20 words, never more than 25" in prompt
     assert "one sentence of about 15 words, never more than 20" in prompt
-    assert "Never assume they do." in prompt
+    assert "amz_on" in prompt and "may say it is on Amazon" in prompt
 
 
 def test_validator_enforces_the_hard_max_and_keeps_the_old_bans():
@@ -70,10 +70,13 @@ def test_over_long_opener_is_regenerated_once_then_held():
         calls.append(prompt)
         if len(calls) == 1:
             return _words(30, "Huppy", "sells", "oral", "care")
-        return "Huppy sells oral care."
+        return (
+            "Huppy's oral care line is easy to picture, and a small set would "
+            "give a new shopper one clear way to try it."
+        )
 
     line, source = op.write_opener({**LEAD, "domain": "retry.com"}, CONTACT, llm=llm)
-    assert source == "ai" and line == "Huppy sells oral care."
+    assert source == "ai" and "oral care" in line and len(line.split()) <= 25
     assert len(calls) == 2
     assert "too long" in calls[1]
     assert "never more than 25" in calls[0]
@@ -104,10 +107,10 @@ def test_over_long_angle_is_regenerated_once_then_held():
         calls.append(prompt)
         if len(calls) == 1:
             return _words(24, "Anata", "helps", "Huppy", "grow", "oral", "care")
-        return "Anata helps Huppy grow oral care."
+        return "A small oral care set would give a new shopper an easy way to try Huppy."
 
     angle, source = op.write_brand_angle({**LEAD, "domain": "angle-retry.com"}, CONTACT, llm=llm)
-    assert source == "ai" and angle == "Anata helps Huppy grow oral care."
+    assert source == "ai" and "oral care" in angle and len(angle.split()) <= 20
     assert len(calls) == 2
     assert "too long" in calls[1]
     assert "never more than 20" in calls[0]
@@ -130,8 +133,11 @@ def test_rich_pair_over_the_max_is_regenerated_once_then_left_empty():
     calls = {"n": 0}
     long_opener = _words(30, "Huppy", "sells", "toothpaste", "tabs")
     short = {
-        "opener": "Huppy sells toothpaste tabs.",
-        "angle": "Shoppers reorder toothpaste tabs.",
+        "opener": (
+            "Huppy's toothpaste tabs are easy to picture, and a small set would "
+            "give a new shopper one clear way to try them."
+        ),
+        "angle": "A small set of toothpaste tabs gives a new shopper an easy way to try Huppy.",
     }
 
     def llm(_prompt):
@@ -153,7 +159,10 @@ def test_rich_pair_over_the_max_is_regenerated_once_then_left_empty():
     opener, angle, source = personalization.generate(
         {**lead, "domain": "rich-held.com"}, llm=still_long,
     )
-    assert calls["n"] == 2 and source == "none" and opener == "" and angle == ""
+    assert calls["n"] == 2 and source == "fallback"
+    assert opener and "toothpaste" in opener.lower()
+    assert len(opener.split()) <= 25
+    assert not angle or len(angle.split()) <= 20
 
 
 def test_trial_offer_never_claims_or_assumes_amazon():
@@ -190,7 +199,9 @@ def test_trial_offer_never_claims_or_assumes_amazon():
     opportunity = (
         "A milk and nut butter bundle could give new Amazon shoppers an easy way to try both."
     )
-    assert op.validate(opportunity, max_words=op.ANGLE_MAX_WORDS, trial_offer=True)[0]
+    assert op.validate(
+        opportunity, max_words=op.ANGLE_MAX_WORDS, trial_offer=True, role="angle",
+    )[0]
     assert personalization.style_violation(opportunity, role="angle", recipe="trial_offer") == ""
     assert op.angle_hold_reason(opportunity, trial) == ""
 
@@ -210,7 +221,10 @@ def test_trial_offer_never_claims_or_assumes_amazon():
     assert "already sells on Amazon" in op.opener_hold_reason(
         "Huppy sells on Amazon.", trial,
     )
-    assert op.opener_hold_reason("Huppy sells toothpaste tabs.", trial) == ""
+    assert op.opener_hold_reason(
+        "Huppy's toothpaste tabs could be sold as a small set a new shopper can try.",
+        trial,
+    ) == ""
     for claim in (
         "Shoppers reorder on Amazon.",
         "Your Amazon store is ready.",

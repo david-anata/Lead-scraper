@@ -1079,16 +1079,52 @@ _BRAND_TLD = re.compile(r"\.(?:com|net|org|io|co|shop|store|us)$", re.I)
 _TRAILING_TAG = re.compile(r"\s*[|]\s*.*$|\s+[–—-]\s+.+$")
 
 
+def _label_from_web_address(text: str) -> str:
+    """The brand label when the whole value is a URL or a bare domain."""
+
+    raw = (text or "").strip()
+    if not raw or " " in raw:
+        return ""
+    raw = re.sub(r"^https?://", "", raw, flags=re.I)
+    raw = re.sub(r"^www\.", "", raw, flags=re.I)
+    raw = raw.split("/")[0].split("?")[0].strip(".")
+    if "." not in raw or not re.fullmatch(r"[A-Za-z0-9.-]+", raw):
+        return ""
+    return raw.split(".")[0].replace("-", " ").strip()
+
+
+def _brand_token(part: str) -> str:
+    """Title-case a token unless it is a short acronym or a clean stylized name."""
+
+    if not part:
+        return ""
+    if "-" in part:
+        bits = [bit for bit in part.split("-") if bit]
+        if bits and all(re.fullmatch(r"[A-Z]{1,3}|[A-Z][a-z]+", bit) for bit in bits):
+            return part
+    if re.fullmatch(r"[A-Z]{2,3}", part):
+        return part
+    if re.fullmatch(r"[A-Z][a-z]+(?:[A-Z][a-z]+)+", part):
+        return part
+    if re.fullmatch(r"[A-Z][a-z]+", part):
+        return part
+    return part[:1].upper() + part[1:].lower()
+
+
 def clean_brand_name(value: Any) -> str:
     """A company name safe to put in an opener or an Instantly field.
 
-    Legal suffixes, store words, a trailing TLD, and a tagline after a
-    separator come off. ALL CAPS and all-lowercase names are title-cased.
-    Mixed case such as REV Gum or MyBevi is left as written.
+    Web addresses, legal suffixes, store words, a trailing TLD, and a tagline
+    after a separator come off. ALL CAPS and all-lowercase names are
+    title-cased. A short acronym such as REV and a clean stylization such as
+    MyBevi stay. Odd mixed case such as JANGEORGe is title-cased.
     """
 
     text = " ".join(str(value or "").replace("—", " ").replace("–", " ").split())
     text = _TRAILING_TAG.sub("", text).strip(" ,.")
+    web = _label_from_web_address(text)
+    if web:
+        text = web
     if not text:
         return ""
     changed = True
@@ -1104,7 +1140,7 @@ def clean_brand_name(value: Any) -> str:
             (part[:1].upper() + part[1:].lower()) if part else ""
             for part in text.split(" ")
         )
-    return text
+    return " ".join(_brand_token(part) for part in text.split(" ") if part)
 
 
 def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
